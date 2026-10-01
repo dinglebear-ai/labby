@@ -1,22 +1,25 @@
 ---
 title: "GitHub Actions Hosted Runner Guide"
 created: "2026-07-30"
-updated: "2026-09-03"
+updated: "2026-09-29"
 ---
 
 # GitHub Actions Hosted Runner Guide
 
-Last updated: 2026-09-03
+Last updated: 2026-09-29
 
 ## Runner selection
 
-All repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04` runners.
-Native Windows checks use `windows-latest`. Release jobs use the native hosted
+Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04` runners, with
+`ubuntu-24.04-arm` for native Linux ARM64 release builds, Unix N-1
+qualification, and the separate pull-request package smoke.
+Native Windows checks use `windows-latest` and require a manual dispatch with
+`run_windows=true`. Release jobs use the native hosted
 runner for each supported target.
 
 No repository-defined workflow uses a self-hosted runner or a custom runner
-label. The central fleet policy and repository contract are reusable workflow
-calls owned by the organization.
+label. Fleet policy and the repository contract execute in local hosted jobs;
+the latter checks out an immutable organization-owned checker implementation.
 
 ## Rust cache behavior
 
@@ -24,10 +27,13 @@ Rust jobs use `.github/actions/setup-rust-kache/action.yml`. The action installs
 the pinned Rust toolchain and Linux build dependencies, then selects the cache
 path for the current hosted runner:
 
-- Jobs with the shared MinIO credentials and a writable hosted tool cache use
-  Kache.
-- Jobs without those credentials use the GitHub Actions Cargo cache.
-- Jobs without a usable cache run Cargo without a compiler wrapper.
+- Repository workflows deliberately clear shared MinIO credentials and use
+  the GitHub Actions Cargo cache on Linux, with no compiler wrapper.
+- The composite retains a conditional Kache path requiring credentials,
+  writable tool cache, and `KACHE_S3_PREFIX_ENFORCED=true`; repository secrets
+  must not enable that path for branch-controlled PR jobs.
+- Disabled caching and non-Linux callers clear the compiler wrapper; individual
+  jobs may configure their own Cargo cache.
 
 The action does not depend on persistent host services or runner-local state.
 Each hosted runner receives a fresh job workspace.

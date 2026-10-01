@@ -76,7 +76,8 @@ The builder should validate both simple and nested schemas:
 - `github::search_issues.perPage` must be an integer.
 - `github::get_file_contents.owner`, `repo`, and `path` must be strings.
 
-Live tool contracts reverified before this update:
+Tool contracts recorded by the 2026-09-16 update (rediscover before execution;
+these upstreams are not built into Labby):
 
 - `time::get_current_time`
 - `filesystem::read_text_file`

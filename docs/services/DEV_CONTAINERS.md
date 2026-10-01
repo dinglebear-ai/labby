@@ -8,8 +8,8 @@ updated: "2026-09-13"
 
 Dev Containers are owner-scoped, quota-bounded development environments. This
 document freezes the contract and persistence boundary. Labby registers the
-`dev_containers` service with the actions `dev_containers.list`, `create`,
-`start`, `stop`, `destroy`, and `reconcile`, exposed over HTTP at
+`dev_containers` service with instance lifecycle actions plus image draft,
+environment, build, and publication inspection actions, exposed over HTTP at
 `POST /v1/dev-containers` and as the `dev_containers` MCP tool. The container
 engine is the pluggable `labby_runtime::dev_container_runtime::ContainerRuntime`
 contract. Production uses an explicitly configured, project-restricted Incus
@@ -39,9 +39,11 @@ container-runtime sockets, host networking, host devices, and kernel
 administration are separate capabilities. Approval of one never implies
 another.
 
-Secrets are stored as opaque secret references. Secret values, environment
-material, credentials, and decrypted content do not belong in the instance
-ledger, audit records, API payloads, or logs.
+Secrets are stored as opaque secret references. Secret values, credentials,
+and decrypted content do not belong in the instance ledger, audit records,
+API payloads, or logs. Image drafts separately accept and return nonsecret
+literal environment entries through `environment.replace`; use approved opaque
+references for secret-valued entries, not literals.
 
 ## Durable lifecycle
 
@@ -80,6 +82,14 @@ reconciliation semantics. Exact parameters, scopes, and destructive
 classification are in the generated [action catalog](../generated/action-catalog.md).
 
 ## Incus runtime
+
+The image workflow starts with `dev_containers.draft.create` from an approved
+base. Draft updates and environment replacement require an exact revision;
+`build` / `rebuild` take a request ID and publish an immutable image revision.
+`templates.list`, `templates.get`, and `build.get` expose authorized bounded
+views, and `launch_reference` returns the configured Incus endpoint, project,
+and immutable image fingerprint. These actions use the same owner authority
+boundary as instance lifecycle operations; a draft alone is not launch authority.
 
 The runtime certificate must be restricted by Incus to one dedicated project.
 That project must be confined to the approved managed network and storage pool,

@@ -1,7 +1,7 @@
 ---
 title: "Environment Variables"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Environment Variables
@@ -51,7 +51,11 @@ paths; move `auth.db` and `auth-jwt.pem` into the selected root, or set
 
 The upstream dotenv fallback for `bearer_token_env` reads `$LABBY_HOME/.env`
 as well; a non-absolute root is ignored there rather than read relative to the
-working directory. A standalone stdio fallback uses its own resolved state root, so
+working directory. An explicitly configured reference must resolve to a nonempty
+credential or the upstream fails with `upstream_credential_missing` before
+connection/spawn. An empty or non-Unicode process value never falls back to a
+stale dotenv value; see [Upstream authentication](../services/UPSTREAM.md#bearer-token).
+A standalone stdio fallback uses its own resolved state root, so
 configure an explicit remote daemon target when stdio must share the daemon's
 project and membership state.
 
@@ -85,15 +89,42 @@ runtime remains gated by the `proxy-testkit` feature and
 
 Named Depot discovery providers reference host-managed `LABBY_DEPOT_*_TOKEN`
 keys from TOML. These keys follow the normal process-over-dotenv precedence;
-their values stay server-side. Public Depot has a fixed endpoint and no token
-override. Discovery configuration is independent of exact-acquisition source
-credentials.
+their values stay server-side. Public Depot uses its fixed anonymous endpoint
+unless the operator configures `[depot.public_read_binding]`; that binding
+requires a protected read credential and an exact acquisition connection.
+See [Depot discovery configuration](CONFIG.md#depot-discovery-configuration).
 
 The legacy keys are `LABBY_DEPOT_URL`, `LABBY_DEPOT_ENABLED`, and
 `LABBY_DEPOT_TOKEN`. The discovery configuration normalizer distinguishes an
 absent enable flag from explicit disable and requires a token for an enabled
 legacy URL. A persisted migration marker or removal tombstone takes precedence
 over legacy environment normalization. See [CONFIG.md](CONFIG.md#depot-discovery-configuration).
+
+## Operator Notifications
+
+These process settings are editable through Settings → Notifications and use
+the normal selected-installation dotenv loading. Settings changes are marked
+restart-required. They are runtime/settings fields, separate from the generated
+per-service `PluginMeta` inventory.
+
+| Variable | Default | Behavior |
+| --- | --- | --- |
+| `LABBY_NOTIFICATIONS_ENABLED` | `true` | Enables the Depot failure monitor; `0`, `false`, `no`, or `off` disables it. Existing inbox records remain readable. |
+| `LABBY_NOTIFICATION_RETENTION` | `200` | Recent inbox records; clamped to 10–2,000 when opening the persistent store. |
+| `LABBY_DEPOT_MONITOR_INTERVAL_SECONDS` | `30` | Poll interval, clamped to 10–3,600 seconds. |
+| `APPRISE_URL` | unset | Optional HTTP(S) Apprise API base URL; redirects are disabled. |
+| `APPRISE_TOKEN` | unset | Optional secret stateful configuration key appended to `/notify/{KEY}`; without it, delivery uses `/notify`. |
+
+The monitor currently requires the legacy `LABBY_DEPOT_ENABLED=1`,
+`LABBY_DEPOT_URL`, and `LABBY_DEPOT_TOKEN` configuration. It does not iterate
+named discovery providers. `APPRISE_TOKEN` values are never returned by the
+settings API: state reports a configured marker and a process-local opaque
+fingerprint for stale-write protection. Delivery has a three-second connect
+and eight-second total request timeout. See
+[Operations](../OPERATIONS.md#operator-notifications) for persistence, retries,
+and coverage limits, and the
+[settings field definitions](../../crates/labby/src/dispatch/setup/settings.rs)
+for the editable schema.
 
 ## Direct Stdio Proxy
 
@@ -194,13 +225,14 @@ Rules:
 ## Remote Gateway CLI Usage
 
 `LABBY_SERVER_URL` selects the remote authority for gateway CLI and direct
-stdio MCP proxy discovery, and is also persisted for plugin setup connectivity
-checks and plugin-setting export. Pair it with `LABBY_MCP_HTTP_TOKEN`; an
+stdio MCP proxy discovery. Authenticate with `LABBY_MCP_HTTP_TOKEN` or a saved
+operator session from `labby auth login --server <url>`; an
 explicit target fails closed instead of falling back to local configuration.
 It does not configure the daemon listener. This client-side selector is outside
 the generated per-service environment inventory.
 
-Server mutations (`labby server add/set/remove/reload/enable/disable`) and
+Server mutations (`labby server add/set/remove/enable/disable` and
+`labby gateway reload`) and
 related server authentication, route, discovery, import, and Code Mode
 workflows prefer the live `labby serve` daemon's HTTP API over their own local
 `config.toml` mutation --
@@ -214,10 +246,10 @@ LABBY_MCP_HTTP_TOKEN=same-token-as-the-daemon
 LABBY_SERVER_URL=https://labby.example.com
 ```
 
-- `LABBY_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
-  bearer auth (copy it from the daemon host's `~/.labby/.env`). Without it,
-  protected operations fail with `auth_required` or `auth_failed`, as
-  applicable.
+- When using static bearer authentication, `LABBY_MCP_HTTP_TOKEN` must be the *same* token the daemon itself uses for
+  bearer auth. It takes precedence over a saved operator OAuth session.
+  Without either credential, protected operations fail with `auth_required`
+  or `auth_failed`, as applicable.
 - `CLAUDE_PLUGIN_OPTION_SERVER_URL` is the invocation-scoped target supplied by
   the Labby Claude plugin. It takes precedence over `LABBY_SERVER_URL` and is
   authenticated only with its paired `CLAUDE_PLUGIN_OPTION_API_TOKEN`; it
@@ -237,8 +269,15 @@ LABBY_SERVER_URL=https://labby.example.com
   `CLAUDE_PLUGIN_OPTION_API_TOKEN` form a separate paired authority domain.
   Do not point either target at a server you do not administer.
 
+On CLI commands supporting remote selection, global `--server` or `--context`
+takes precedence over those environment variables. A selected saved context
+also supplies the target when neither environment variable is set. These
+argument/context targets use destination-bound saved OAuth credentials and
+never borrow `LABBY_MCP_HTTP_TOKEN`; they also fail closed. Opportunistic
+detection applies only when none of these selectors supplies a target.
+
 Verified from a temporary bare client home with no `config.toml` or local
-database: `gateway get` reached the configured live daemon through both
+database: the upstream get operation (now `labby server get`) reached the configured live daemon through both
 explicit target variables with their paired credentials, without creating
 local state. The local
 `GatewayManager` is built lazily only when opportunistic detection returns no
@@ -283,8 +322,8 @@ LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS=5000
 - `LABBY_CODE_MODE_MICROSANDBOX_IMAGE` is required for `microsandbox`, must be
   an immutable OCI digest reference (`name@sha256:<64 hex>`), and must already
   be cached. URLs, userinfo, queries, and tag-only references are rejected.
-  Runtime pulls are disabled with `--pull never`. Before `labby setup
-  host-service install` or `restart` stops the healthy service, Labby preflights
+  Runtime pulls are disabled with `--pull never`. Before `labby host service
+  install` or `labby host service restart` stops the healthy service, Labby preflights
   this setting. A legacy mutable alias or short pinned reference is migrated only
   when its exact digest can be proven from the `labby` service user's existing
   Microsandbox cache: Labby registers the canonical registry+digest reference,
@@ -340,8 +379,8 @@ required/optional environment-variable matrix, secret flags, and examples.
 
 ### Access-store migration approval
 
-Opening an existing access schema older than the binary's schema (any of v1
-through v8 with the current schema-v9 binary) for migration requires an
+Opening an existing access schema older than the binary's schema (currently
+v9, fingerprint `labby-access-v9-20260918`) is denied unless the operator supplies an
 approval document bound to an independent rollback checkpoint, the exact
 source and target, and an explicit activation. Supply it to the offline
 `labby state access migrate` command with the daemon stopped:
@@ -364,7 +403,9 @@ byte-for-byte. An optional legacy `source_sha256` field is accepted and must
 equal `checkpoint_sha256`. Set this only after completing and retaining the
 rehearsal evidence described in the multi-user migration runbook. Missing,
 stale, mismatched, or replayed evidence leaves the access runtime unavailable
-without changing the database.
+without changing the database. With the daemon stopped, run
+`labby state access migrate` to activate the approved migration under the
+installation lifecycle lock; it does not bootstrap an owner or issue credentials.
 
 ### Managed Depot authority secrets
 

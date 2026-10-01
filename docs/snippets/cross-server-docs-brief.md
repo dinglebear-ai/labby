@@ -31,12 +31,13 @@ inputs:
 # Cross-Server Docs Brief
 
 Use this snippet for a compact documentation brief from several independent
-sources. The contracts below were rediscovered and smoke-tested through Labby on
-2026-09-16.
+sources. The contracts below record discovery and smoke tests from 2026-09-16;
+they are deployment-specific examples, not a bundled Labby upstream guarantee.
+Rediscover the tool IDs and schemas on the intended gateway before running.
 
-## Current Tool Contracts
+## Recorded Tool Contracts
 
-| Step | Tool | Current parameters |
+| Step | Tool | Recorded parameters |
 | --- | --- | --- |
 | Timestamp | `time::get_current_time` | `timezone` |
 | Library discovery | `context7::resolve-library-id` | `libraryName`, `query` |
@@ -48,7 +49,8 @@ sources. The contracts below were rediscovered and smoke-tested through Labby on
 
 Older versions of this snippet used removed parameters such as Context7
 `tokens`, SearXNG `count`, Cloudflare `limit`, and the lowercase
-`axon::axon` tool id. Those shapes are not current.
+`axon::axon` tool id. This example uses the shapes recorded above; the current
+gateway's discovered schema remains authoritative.
 
 The calls are independent, so the snippet uses `codemode.batch`. Each call also
 returns its own timing/error envelope, allowing the brief to degrade without

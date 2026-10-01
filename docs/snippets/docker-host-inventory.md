@@ -49,6 +49,18 @@ inputs:
 
 Reusable one-host primitive. Host identity is resolved before Docker enumeration. Container detail groups fan out concurrently. Image drift checks depend on the actual image references returned by the detail stage. Update checks never pull images.
 
+The fixed `claude-macpoo::Bash` controller must exist on the selected gateway.
+Registry comparisons require remote `timeout` and Docker Buildx; missing tools,
+registry access failures, and images without a local digest produce `unknown`,
+not a confirmed update state. `docker_available` records executable discovery,
+not a separate daemon-health assertion. Detail batches bound containers per
+command but do not cap total jobs or extend the Code Mode deadline.
+
+The returned inventory contains selected inspect fields, mount paths, and raw
+recent container logs. It is not a redacted log export. The enclosing homelab
+workflow persists this payload in an artifact, so choose `log_lines` and the
+target hosts with that output in mind.
+
 ```js
 async (o = {}) => {
 	const i = {

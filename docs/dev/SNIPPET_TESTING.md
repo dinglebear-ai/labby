@@ -1,7 +1,7 @@
 ---
 title: Snippet development and testing
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-29
 ---
 
 # Snippet development and testing
@@ -34,11 +34,15 @@ labby --json snippet test unraid-linear-pr-triage --live
 ~~~
 
 A named test uses an adjacent `<name>.test.json` unless `--fixture` supplies
-another JSON file. A missing or malformed fixture is a failure, not permission
+another JSON file. Resolution follows the selected built-in or user snippet,
+so a user override uses its own adjacent fixture. `--all` tests up to 100 unique
+listed names sequentially; an empty set or any failing member fails the run.
+A missing or malformed fixture is a failure, not permission
 to fall back to live execution. Existing automation that intentionally exercised
 live tools through `snippet test` must add `--live`.
 
-Tests return structured JSON and a nonzero CLI exit status on failure. The
+With `--json`, tests emit structured reports; validation or runner failures can
+instead return a structured action error. The CLI exits nonzero on failure. The
 shared `snippets.test` action accepts `name` or `all`, `params`, `live`, and an
 inline `fixture` object. File paths are resolved only by the local CLI; remote
 callers send fixture contents rather than arbitrary local paths.
@@ -95,8 +99,11 @@ paths, such as one timestamp, rather than suppressing meaningful output.
 Fixture JSON is bounded to 512 KiB. Rules and total expected calls are bounded to
 512. A fixture may set at most 64 equality assertions, 64 absence assertions, and 64 normalization paths. The
 wall-clock budget is 1 to 30,000 milliseconds, call budget 0 to 512, and output
-budget 1 to 16,000 UTF-8 bytes. The combined wrapped source must also fit the
-production Code Mode source limit.
+budget 1 to 16,000 UTF-8 bytes. The snippet plus serialized input must fit the
+configured production
+source limit (at most 1 MiB). The harness then embeds that admitted invocation
+and bounded fixture data in a separate wrapper with a 10 MiB source ceiling;
+that larger allowance is private to fixture execution.
 
 ## Execution and isolation
 
@@ -125,7 +132,9 @@ and shaping status. A live report does not turn incomplete upstream pagination
 or a snippet's intentional compacting into complete data. Inspect the snippet's
 own completeness and omission fields as well as the test status.
 
-## Unraid triage regression example
+## Unraid triage regression examples
+
+### Original triage snippet
 
 The example discovers assigned U8 started issues and searches the whole Unraid
 organization, including `unraid/cloudflare`. It uses up to four identifiers per
@@ -146,11 +155,37 @@ rate-limited query is not evidence that an issue has no PR. Repeated live
 benchmarks share the GitHub search quota with other clients; respect reset
 information rather than immediately repeating a failing batch.
 
+### Version 2
+
+[unraid-linear-pr-triage-v2](../snippets/unraid-linear-pr-triage-v2.md) has a
+separate result schema and fixture family. It stores PRs once and returns keys
+from issue and personal-PR lists. Unlike the original snippet, deep mode uses
+separate open and closed searches, and GitHub searches paginate (three pages
+by default). Linear issue discovery remains one page with a continuation cursor.
+Search and handoff batches each allow four concurrent jobs, with an 80-call
+ceiling. The adjacent v2 fixture uses four calls; the harness acceptance
+fixtures use four for fast mode and seven for deep mode. The original
+26-issue fixtures and their 10/36-call counts do not apply to v2.
+
+The acceptance matrix in `crates/labby-codemode/tests/snippet_harness_acceptance.py`
+and product `snippet_harness` tests cover fast/deep output, pagination and page
+budgets, quota and worker failures, absent fields, snapshots, forbidden host
+access, malformed source, and timeouts. Expected error cases are part of the
+matrix, not fixtures that should all report `passed: true`. Fixtures control
+tool responses, not the clock: elapsed times and date-based attention signals
+remain variable. Normalize volatile fields for snapshots.
+
+The v2 snippet accepts `maxOutputBytes` up to 20,000, but the fixture harness
+allows at most 16,000 raw result bytes. A larger snippet setting does not raise
+that harness ceiling. Inspect `complete` and coverage gaps separately from
+`passed`; deliberately incomplete results can satisfy a fixture.
+
 ## Focused verification
 
 ~~~sh
 cargo test -p labby-codemode --lib snippet::
-cargo test -p labby --test snippet_fixture_runtime --test snippet_harness
+cargo test -p labby --test snippet_fixture_runtime --test snippet_harness \
+  --test snippet_harness_regressions --test snippet_triage_v2_regressions
 cargo test -p labby --lib dispatch::snippets
 cargo fmt --all -- --check
 just docs-generate

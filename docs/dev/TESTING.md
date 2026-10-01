@@ -1,7 +1,7 @@
 ---
 title: "Testing"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Testing
@@ -94,7 +94,7 @@ Pure docs changes are excluded.
 
 ## Test Layers
 
-There are four testing layers.
+The test layers follow the owning implementation.
 
 ### 1. SDK Tests
 
@@ -113,7 +113,15 @@ Rules:
 - do not depend on real external services in CI-safe tests
 - test shared HTTP behavior in `labby-apis`
 
-### 2. Shared Dispatch-Layer Tests
+### 2. Extracted Runtime Tests
+
+`labby-gateway`, `labby-codemode`, `labby-runtime`, `labby-auth`, and the other
+extracted crates own tests for their runtime contracts. Gateway pagination,
+cancellation, OAuth lifecycle fencing, runner isolation, and shared error
+serialization must be tested at those owners rather than only through product
+dispatch. Use the owning crate's feature configuration and relevant regressions.
+
+### 3. Shared Dispatch-Layer Tests
 
 Owned by `crates/labby/src/dispatch`.
 
@@ -130,7 +138,7 @@ Rules:
 - these tests must not require CLI, MCP, or HTTP protocol setup
 - they must be the primary place to test shared product-surface orchestration
 
-### 3. Surface Adapter Tests
+### 4. Surface Adapter Tests
 
 Owned by `crates/labby/src/cli`, `crates/labby/src/mcp`, and `crates/labby/src/api`.
 
@@ -145,7 +153,7 @@ Rules:
 - do not re-test shared operation semantics here unless the transport changes them
 - keep these tests focused on adapter behavior
 
-### 4. Live Verification
+### 5. Live Verification
 
 Owned by the implementation task for the service or feature.
 
@@ -170,6 +178,26 @@ Rules:
 - CLI parsing and machine-readable output behavior
 - contract-level serialization and error shape tests
 
+### Saved-snippet fixture tests
+
+`labby snippet test <name>` and `--all` use offline sibling `.test.json`
+fixtures by default. Missing fixtures fail; they never select live execution.
+`--fixture` supplies a local JSON fixture, while the shared `snippets.test`
+action accepts its contents as `fixture`. Real upstream execution requires
+explicit `--live` / `live: true`.
+
+The harness runs the production parser and isolated QuickJS subprocess with
+synthetic `callTool` responses and native `codemode.batch`. It has no live
+gateway or credentials. Tests check rule consumption, result assertions or
+snapshots, and wall-clock/call/raw-output budgets; the CLI exits nonzero for a
+failing report while preserving structured stdout under `--json`.
+
+Coverage lives in `crates/labby-codemode/src/snippet/harness/tests.rs` and product
+targets `snippet_fixture_runtime`, `snippet_harness`,
+`snippet_harness_regressions`, and `snippet_triage_v2_regressions`. These are
+CI-safe process-boundary checks, not proof of live schema compatibility or
+upstream health. See [Snippet development and testing](SNIPPET_TESTING.md).
+
 ### Live Verification Must Cover When Available
 
 - at least one successful read-only path
@@ -181,7 +209,8 @@ Rules:
 
 A new service is not fully online until all of the following exist:
 
-1. SDK tests for core client behavior
+1. Tests at the owning runtime or SDK boundary for core behavior; local product
+   services do not need an artificial `labby-apis` client
 2. shared dispatch-layer tests for operation matching and validation
 3. MCP registry and shared-dispatch tests for envelope and schema behavior
 4. API adapter tests for status and JSON shape
@@ -416,7 +445,9 @@ because that catalog describes product configuration.
 - `LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1` makes `labby serve` bootstrap a durable
   access-control owner behind the static bearer credential, so hermetic live
   tests exercise the real authority paths of the API, MCP, and CLI adapters.
-  Production owner bootstrap still requires an authenticated browser session.
+  Production OAuth owner setup uses the authenticated browser flow; bearer-only
+  installations also support server-host `labby setup` and the explicit local
+  bootstrap lifecycle. The test hook does not replace those production paths.
 - `LABBY_E2E_DETERMINISTIC_EXECUTORS` selects the deterministic Agent and Task
   executor and the deterministic Dev Container runtime, so live matrices can
   drive those lifecycles without a real execution backend or container engine.

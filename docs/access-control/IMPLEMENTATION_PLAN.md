@@ -8,7 +8,7 @@ status: "historical-plan"
 # Access Control Implementation Plan
 
 > **Historical document.** This is the original 2026-08 plan. It is not a
-> description of current code. The access store is now at schema v7 (see
+> description of current code. The access store is now at schema v9 (see
 > [DATA_MODEL.md](./DATA_MODEL.md#schema-v9-current) and
 > [MIGRATION.md](./MIGRATION.md)); current operator behavior is in
 > [services/ACCESS.md](../services/ACCESS.md).
@@ -149,7 +149,10 @@ Keep public API small. Do not expose raw SQL rows as domain types. Add Rustdoc f
 
 ### Exit
 
-cargo test -p labby-access and clippy -D warnings pass.
+After extraction, the proposed gate is `cargo test -p labby-access` plus Clippy
+with `-D warnings`. That package does not exist in the current workspace;
+current Access tests belong to `labby` (for example,
+`cargo nextest run -p labby --all-features -E 'test(access::)'`).
 
 ## Phase 2: AccessStore SQLite persistence and migrations
 

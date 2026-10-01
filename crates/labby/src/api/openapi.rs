@@ -1941,9 +1941,205 @@ pub fn build_openapi_spec(
     }
 
     let mut value = serde_json::to_value(&spec)?;
+    inject_browser_auth_paths(&mut value);
     annotate_access_contracts(&mut value);
     let json = serde_json::to_string_pretty(&value)?;
     Ok(Arc::new(json))
+}
+
+/// Browser adapters are not ActionSpec dispatch routes. Keep their wire shapes
+/// here, including anonymous/development session variants and non-agent errors.
+fn inject_browser_auth_paths(spec: &mut serde_json::Value) {
+    use serde_json::json;
+
+    let json_response = |description: &str, schema: serde_json::Value| json!({"description": description, "content": {"application/json": {"schema": schema}}});
+    let error = |description: &str| {
+        json_response(
+            description,
+            json!({"$ref": "#/components/schemas/AgentErrorResponse"}),
+        )
+    };
+    let simple_error = json!({
+        "type": "object", "required": ["kind", "message"],
+        "properties": {"kind": {"type": "string"}, "message": {"type": "string"}}
+    });
+    let no_store = json!({
+        "description": "private, no-store",
+        "schema": {"type": "string", "enum": ["private, no-store"]}
+    });
+    let cookie = json!({
+        "description": "HttpOnly session cookie; name and Secure attribute depend on session type and configuration.",
+        "schema": {"type": "string"}
+    });
+    let csrf = json!({
+        "name": "x-csrf-token", "in": "header", "required": true,
+        "description": "CSRF token from the authenticated browser session.",
+        "schema": {"type": "string"}
+    });
+    let user = json!({
+        "type": "object", "required": ["sub", "email"],
+        "properties": {"sub": {"type": "string"}, "email": {"type": ["string", "null"]}}
+    });
+    let session = json!({
+        "type": "object",
+        "required": [
+            "authenticated", "login_available", "bearer_login_available", "authority_state",
+            "authority", "is_admin", "is_configured_admin", "user", "project_id", "owner",
+            "organization_id", "teams", "projects", "project", "capabilities",
+            "authority_generation", "expires_at", "csrf_token", "owner_bootstrap_available"
+        ],
+        "properties": {
+            "authenticated": {"type": "boolean", "enum": [true]},
+            "login_available": {"type": "boolean"},
+            "bearer_login_available": {"type": "boolean"},
+            "authority_state": {"type": "string", "enum": ["ready", "transport", "unprovisioned"]},
+            "authority": {"type": ["object", "null"],
+                "required": ["principal_id", "organization_id", "authority_generation"],
+                "properties": {
+                    "principal_id": {"type": "string"}, "organization_id": {"type": "string"},
+                    "authority_generation": {"type": "integer", "minimum": 0}
+                }
+            },
+            "remediation": {"type": "string", "description": "Present for transport or unprovisioned authority."},
+            "is_admin": {"type": "boolean", "description": "Durable platform.manage capability in ready state; transport admin ceiling in transport state."},
+            "is_configured_admin": {"type": "boolean", "description": "Browser session email is in LABBY_AUTH_ADMIN_EMAIL; independent of is_admin."},
+            "user": user,
+            "project_id": {"type": ["string", "null"]},
+            "owner": {"type": ["object", "null"], "required": ["kind", "id"],
+                "properties": {"kind": {"type": "string", "enum": ["personal"]}, "id": {"type": "string"}}
+            },
+            "organization_id": {"type": ["string", "null"]},
+            "teams": {"type": "array", "items": {
+                "type": "object", "required": ["id", "role", "membership_epoch", "policy_epoch"],
+                "properties": {"id": {"type": "string"}, "role": {"type": "string"},
+                    "membership_epoch": {"type": "integer", "minimum": 0},
+                    "policy_epoch": {"type": "integer", "minimum": 0}}
+            }},
+            "projects": {"type": "array", "items": {
+                "type": "object", "required": ["id", "role"],
+                "properties": {"id": {"type": "string"}, "role": {"type": "string"}}
+            }},
+            "project": {"type": ["string", "null"]},
+            "capabilities": {"type": "array", "items": {"type": "string"}},
+            "authority_generation": {"type": ["integer", "null"], "minimum": 0},
+            "expires_at": {"type": "integer", "format": "int64", "description": "Unix seconds."},
+            "csrf_token": {"type": "string"},
+            "owner_bootstrap_available": {"type": "boolean"}
+        }
+    });
+    let session_response = json!({"oneOf": [
+        {"type": "object", "required": ["authenticated", "login_available", "bearer_login_available"],
+            "properties": {
+                "authenticated": {"type": "boolean", "enum": [false]},
+                "login_available": {"type": "boolean"}, "bearer_login_available": {"type": "boolean"}
+            }
+        },
+        session,
+        {"type": "object", "required": ["authenticated", "login_available", "is_admin",
+            "is_configured_admin", "dev_authority_bypass", "user", "expires_at", "csrf_token"],
+            "properties": {
+                "authenticated": {"type": "boolean", "enum": [true]},
+                "login_available": {"type": "boolean", "enum": [false]},
+                "is_admin": {"type": "boolean", "enum": [true]},
+                "is_configured_admin": {"type": "boolean", "enum": [true]},
+                "dev_authority_bypass": {"type": "boolean", "enum": [true]},
+                "user": user, "expires_at": {"type": "integer", "format": "int64"},
+                "csrf_token": {"type": "string", "enum": [""]}
+            }
+        }
+    ]});
+    spec["components"]["securitySchemes"]["static_browser_session"] = json!({
+        "type": "apiKey", "in": "cookie", "name": "labby_bearer_session"
+    });
+    spec["paths"]["/auth/session"] = json!({"get": {
+        "tags": ["auth"], "summary": "Read browser session and access authority",
+        "description": "Standalone browser route, outside auth middleware; omitted in integrated trusted-host mode. Anonymous or invalid credentials normally return 200 with authenticated=false. Accepts OAuth/project session cookies (configured names), the static browser cookie, or the configured static bearer. The browser_session scheme shows the default OAuth cookie name. Development UI bypass returns a synthetic admin view, not durable authority. Ready, transport-only, and unprovisioned authenticated views have distinct authority_state values; owner_bootstrap_available is an offer, not a grant.",
+        "security": [{}, {"browser_session": []}, {"static_browser_session": []}, {"bearer_auth": []}],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-side-effects": "May provision an allowlisted/configured-admin verified identity and its initial Team, default Project, and platform grants, then re-read authority.",
+        "responses": {
+            "200": json_response("Anonymous, authenticated authority, or development bypass session", session_response),
+            "409": error("Conflicting static and OAuth/project browser sessions"),
+            "500": error("Session lookup or identity projection failed"),
+            "503": error("Durable access authority is unavailable")
+        }
+    }});
+    spec["paths"]["/auth/bearer-session"] = json!({"post": {
+        "tags": ["auth"], "summary": "Exchange the configured static bearer for a browser cookie",
+        "description": "Standalone mode only. No request body. Requires an enabled, matching static bearer; OAuth/project bearer credentials are not accepted. Transport admission requires a configured HTTPS public URL, or a loopback Host without forwarding headers. Refuses an existing OAuth/project session. Sets an HttpOnly SameSite=Strict static browser cookie (Secure when the configured public URL is HTTPS); returns no credential or CSRF token. Read /auth/session for session metadata.",
+        "security": [{"bearer_auth": []}],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-side-effects": "Creates an in-memory static bearer browser session and sets its cookie.",
+        "responses": {
+            "200": json_response("Browser cookie created", json!({"type": "object", "required": ["ok"], "properties": {"ok": {"type": "boolean", "enum": [true]}}})),
+            "401": error("Static bearer is missing, invalid, disabled, or unconfigured"),
+            "403": error("Secure transport or direct loopback origin required"),
+            "409": error("Sign out of the existing OAuth/project browser session first"),
+            "500": error("Session lookup or creation failed"),
+            "503": error("Static browser session state unavailable")
+        }
+    }});
+    spec["paths"]["/auth/bearer-session"]["post"]["responses"]["200"]["headers"]["Set-Cookie"] =
+        cookie.clone();
+    let mut optional_csrf = csrf.clone();
+    optional_csrf["required"] = json!(false);
+    optional_csrf["description"] = json!(
+        "Required when a live static or OAuth browser session is being revoked; not required for an anonymous no-op."
+    );
+    spec["paths"]["/auth/logout"] = json!({"post": {
+        "tags": ["auth"], "summary": "Revoke the current static or OAuth browser session",
+        "description": "Standalone mode only. No request body. Anonymous/no-auth requests succeed with 204. A live static or OAuth cookie requires its matching x-csrf-token. Clears the applicable cookie; does not revoke the source bearer credential. Project-bound local sessions use DELETE /auth/local-session. Success does not set Cache-Control; handler errors are private, no-store.",
+        "security": [{}, {"browser_session": []}, {"static_browser_session": []}],
+        "parameters": [optional_csrf],
+        "x-labby-cache-posture": "204: no explicit Cache-Control; handler errors: private, no-store",
+        "x-labby-side-effects": "Revokes the current static/OAuth browser session and clears applicable cookies; anonymous no-op is allowed.",
+        "responses": {
+            "204": {"description": "Session revoked or no active session; empty response", "headers": {"Set-Cookie": cookie}},
+            "409": error("Conflicting static and OAuth/project browser sessions"),
+            "422": json_response("Missing or invalid CSRF token", simple_error.clone()),
+            "500": error("Session lookup or revocation failed")
+        }
+    }});
+    spec["paths"]["/v1/access/owner-link/consume"] = json!({"post": {
+        "tags": ["access"], "summary": "Consume offline approval to link the Google identity to an existing owner",
+        "description": "Requires a live Google browser authority, BrowserSession verified identity, lab:admin, configured admin email, and matching CSRF token. The server selects the exact offline approval for this identity and installation; callers cannot supply a target. Revalidates the published project route/resource/loadout with Depot publishing enabled and the active owner target. First consumption requires unexpired approval; an exact consumed approval can succeed again while the link and target remain valid. Handler denials are {kind,message}, not the agent-error envelope. The route descriptor declares private, no-store, but the current handler does not emit Cache-Control.",
+        "security": [{"browser_session": []}], "parameters": [csrf],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {
+            "type": "object", "properties": {}, "additionalProperties": false
+        }}}},
+        "x-labby-cache-posture": "descriptor: private, no-store; handler: no explicit Cache-Control",
+        "x-labby-side-effects": "Atomically links the external identity to the existing owner, records approval consumption, and increments access revision; preserves original owner links and memberships. Exact accepted retry does not duplicate consumption.",
+        "responses": {
+            "200": json_response("Owner identity linked", json!({
+                "type": "object", "required": ["linked", "projectId"],
+                "properties": {"linked": {"type": "boolean", "enum": [true]}, "projectId": {"type": "string"}}
+            })),
+            "400": {"description": "Malformed JSON (Axum text rejection)", "content": {"text/plain": {"schema": {"type": "string"}}}},
+            "401": error("Authentication middleware rejected credentials"),
+            "403": json_response("Browser authority, CSRF, approval, target, or access-store denial", simple_error),
+            "413": {"description": "Request body exceeds the extraction limit"},
+            "415": {"description": "JSON Content-Type required (Axum text rejection)", "content": {"text/plain": {"schema": {"type": "string"}}}},
+            "422": {"description": "CSRF middleware rejection (JSON), or invalid/unknown request fields (Axum text rejection)", "content": {
+                "application/json": {"schema": {"type": "object", "required": ["kind", "message"], "properties": {"kind": {"type": "string"}, "message": {"type": "string"}}}},
+                "text/plain": {"schema": {"type": "string"}}
+            }}
+        }
+    }});
+    // These handlers set this header on every response. Logout only does so on
+    // errors; the owner-link descriptor is metadata, not header middleware.
+    for (path, method) in [
+        ("/auth/session", "get"),
+        ("/auth/bearer-session", "post"),
+        ("/auth/logout", "post"),
+    ] {
+        if let Some(responses) = spec["paths"][path][method]["responses"].as_object_mut() {
+            for (status, response) in responses {
+                if status != "204" {
+                    response["headers"]["Cache-Control"] = no_store.clone();
+                }
+            }
+        }
+    }
 }
 
 fn annotate_access_contracts(spec: &mut serde_json::Value) {
@@ -2263,6 +2459,171 @@ mod tests {
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].0, "/health");
         assert_eq!(paths[1].0, "/ready");
+    }
+
+    #[test]
+    fn browser_auth_openapi_covers_mounted_methods_and_anonymous_security() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&build_openapi_spec(&[]).unwrap()).unwrap();
+        let routes = crate::api::route_registry::build_route_descriptors();
+        for (path, method) in [
+            ("/auth/session", "get"),
+            ("/auth/bearer-session", "post"),
+            ("/auth/logout", "post"),
+            ("/v1/access/owner-link/consume", "post"),
+        ] {
+            assert!(
+                routes.iter().any(|route| {
+                    route.path == path && route.method.eq_ignore_ascii_case(method)
+                }),
+                "missing mounted {method} {path}"
+            );
+            let operation = &spec["paths"][path][method];
+            assert!(operation["responses"].is_object(), "{path}");
+            assert!(operation["x-labby-side-effects"].is_string(), "{path}");
+        }
+        for (path, method) in [("/auth/session", "get"), ("/auth/logout", "post")] {
+            assert!(
+                spec["paths"][path][method]["security"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!({}))
+            );
+            assert!(spec["paths"][path][method].get("requestBody").is_none());
+        }
+        assert_eq!(
+            spec["paths"]["/auth/bearer-session"]["post"]["security"],
+            serde_json::json!([{"bearer_auth": []}])
+        );
+        assert!(
+            spec["paths"]["/auth/bearer-session"]["post"]
+                .get("requestBody")
+                .is_none()
+        );
+        assert_eq!(
+            spec["components"]["securitySchemes"]["static_browser_session"]["name"],
+            "labby_bearer_session"
+        );
+        assert!(spec["paths"].get("/v1/access/owner-link").is_none());
+        assert!(spec["paths"].get("/access/owner-link/consume").is_none());
+    }
+
+    #[test]
+    fn browser_session_openapi_preserves_response_variants_and_cache_limits() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&build_openapi_spec(&[]).unwrap()).unwrap();
+        let session = &spec["paths"]["/auth/session"]["get"];
+        let variants =
+            session["responses"]["200"]["content"]["application/json"]["schema"]["oneOf"]
+                .as_array()
+                .unwrap();
+        assert_eq!(variants.len(), 3);
+        assert_eq!(
+            variants[0]["properties"]["authenticated"]["enum"],
+            serde_json::json!([false])
+        );
+        assert_eq!(
+            variants[1]["properties"]["authority_state"]["enum"],
+            serde_json::json!(["ready", "transport", "unprovisioned"])
+        );
+        for field in [
+            "is_configured_admin",
+            "owner_bootstrap_available",
+            "csrf_token",
+            "authority",
+        ] {
+            assert!(
+                variants[1]["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&serde_json::json!(field))
+            );
+        }
+        assert_eq!(
+            variants[2]["properties"]["dev_authority_bypass"]["enum"],
+            serde_json::json!([true])
+        );
+        assert!(
+            session["x-labby-side-effects"]
+                .as_str()
+                .unwrap()
+                .contains("provision")
+        );
+        for status in ["200", "409", "500", "503"] {
+            assert_eq!(
+                session["responses"][status]["headers"]["Cache-Control"]["schema"]["enum"],
+                serde_json::json!(["private, no-store"])
+            );
+        }
+        let exchange = &spec["paths"]["/auth/bearer-session"]["post"];
+        for status in ["200", "401", "403", "409", "500", "503"] {
+            assert!(exchange["responses"][status].is_object());
+        }
+        assert!(exchange["responses"]["200"]["headers"]["Set-Cookie"].is_object());
+        let logout = &spec["paths"]["/auth/logout"]["post"];
+        assert_eq!(logout["parameters"][0]["required"], false);
+        assert!(logout["responses"]["204"].get("content").is_none());
+        assert!(
+            logout["responses"]["204"]["headers"]
+                .get("Cache-Control")
+                .is_none()
+        );
+        assert!(
+            logout["responses"]["422"]["content"]["application/json"]["schema"]
+                .get("$ref")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn owner_link_openapi_documents_exact_empty_request_and_handler_errors() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&build_openapi_spec(&[]).unwrap()).unwrap();
+        let operation = &spec["paths"]["/v1/access/owner-link/consume"]["post"];
+        assert_eq!(
+            operation["security"],
+            serde_json::json!([{"browser_session": []}])
+        );
+        assert_eq!(operation["parameters"][0]["name"], "x-csrf-token");
+        assert_eq!(operation["parameters"][0]["required"], true);
+        let request = &operation["requestBody"];
+        assert_eq!(request["required"], true);
+        assert_eq!(
+            request["content"]["application/json"]["schema"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            request["content"]["application/json"]["schema"]["properties"],
+            serde_json::json!({})
+        );
+        let success = &operation["responses"]["200"]["content"]["application/json"]["schema"];
+        assert_eq!(
+            success["required"],
+            serde_json::json!(["linked", "projectId"])
+        );
+        assert_eq!(
+            success["properties"]["linked"]["enum"],
+            serde_json::json!([true])
+        );
+        for status in ["400", "401", "403", "413", "415", "422"] {
+            assert!(operation["responses"][status].is_object());
+        }
+        let denied = &operation["responses"]["403"]["content"]["application/json"]["schema"];
+        assert_eq!(denied["required"], serde_json::json!(["kind", "message"]));
+        assert!(denied.get("$ref").is_none());
+        assert!(operation["responses"]["200"].get("headers").is_none());
+        assert!(
+            operation["x-labby-cache-posture"]
+                .as_str()
+                .unwrap()
+                .contains("no explicit Cache-Control")
+        );
+        assert!(
+            operation["x-labby-side-effects"]
+                .as_str()
+                .unwrap()
+                .contains("Atomically")
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 title: Unraid Linear PR triage v2
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-29
 name: unraid-linear-pr-triage-v2
 description: Bounded org-wide PR triage with opt-in history and handoffs
 tags: [unraid, linear, github, readonly]
@@ -23,22 +23,33 @@ Schema version 2 stores each PR once in `pullRequests`, keyed by `owner/repo#num
 no observed PR. Summary counts describe retrieved data before output-budget trimming.
 
 Inputs: team, assignee, state, org, repos (up to six owner/repo names), chunkSize
-(1-4 history identifiers), maxPages (1-5, default 3), maxOutputBytes (4000-20000,
+(1-4 identifiers per related-PR query), maxPages (1-5, default 3), maxOutputBytes (4000-20000,
 default 16000), maxPRsPerIssue (1-25, default 12), staleDays (1-3650, default 14),
 issueCursor, pageStarts, deep, includeHistory, includeHandoffs, includeReleasePRs,
 and diagnostics. Repo filters narrow issue matches, not the organization-wide
 list of personal PRs. Inputs are validated in JavaScript, including bounded strings and the existing
 camel-case interface. Frontmatter declarations also support camel-case names.
 
-Each issue records correlation evidence (title, exact Linear branch text, or body)
-with a confidence level. Mechanical attention signals call out stale drafts,
+Each issue records correlation evidence (whole issue identifier in the title or
+body, or a case-insensitive branch-text substring) with a confidence level.
+Mechanical attention signals call out stale drafts,
 multiple open PRs, QA-ready issues without observed PRs, status/PR mismatches,
-and incomplete coverage. pageStarts accepts continuation pages by the stable
-job keys returned in coverage gaps.
+and incomplete coverage. The stale-draft signal uses the Linear issue's
+`updatedAt`, not the PR update time. `pageStarts` accepts continuation pages
+by the stable job keys returned in coverage gaps.
 
 Limits: 100 issues, 300 retained PRs, 80 tool calls, four concurrent jobs,
 12 PR references per issue by default, bounded pages, and the gateway deadline.
-Pagination, release suppression, quota skips, and output omissions are explicit.
+GitHub search pagination is automatic within these bounds; Linear issues use
+one page per run, with `issueCursor` for continuation. Deep mode searches open
+and closed PRs separately. Pagination, release suppression, quota skips, and
+output omissions are explicit.
+
+The adjacent `.test.json` covers a four-call default run. Extended v2 fixtures
+live under `crates/labby-codemode/tests/fixtures/snippet-harness/`; the original
+snippet's 26-issue fixtures are not interchangeable. The offline harness caps
+raw output at 16,000 bytes even when `maxOutputBytes` is set higher. A passing
+fixture verifies its assertions; it does not establish complete upstream data.
 Tests and authoring instructions are in [SNIPPET_TESTING.md](../dev/SNIPPET_TESTING.md).
 
 ```js

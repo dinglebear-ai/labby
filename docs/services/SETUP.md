@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-18"
+updated: "2026-09-29"
 ---
 
 # Setup Service
@@ -135,9 +135,9 @@ the remaining service files determine what can start at login.
 
 ## Safety Model
 
-Read-only discovery actions such as `check`, `help`, `schema`, and `schema.get` do not require destructive confirmation. Mutating setup actions are classified as destructive and require `lab:admin` where the action catalog says so.
+Read-only discovery actions such as `check`, `help`, `schema`, and `schema.get` do not require destructive confirmation. Administrative scope and destructive classification are independent; each setup action uses its shared catalog metadata.
 
-Plugin lifecycle and other local host mutations are additionally constrained by the product's local-action policy. Surface adapters must use the shared setup dispatcher rather than reimplementing setup behavior.
+Local host mutations are additionally constrained by the product's local-action policy. Surface adapters must use the shared setup dispatcher rather than reimplementing setup behavior.
 
 ### Config validation
 
@@ -183,6 +183,13 @@ The checked-in Claude plugin is a client connection package only; it does not
 configure or repair the Labby server host. Capability-affecting configuration
 problems are surfaced through `doctor capabilities.status`, Doctor, and the
 global admin warning surface.
+
+Settings includes a Notifications section for inbox retention, Depot failure
+polling, and optional Apprise delivery. These are environment-backed,
+restart-required settings with stale-write protection; `APPRISE_TOKEN` is
+write-only and is projected as a configured marker with an opaque fingerprint.
+The recent inbox is a separate admin-only HTTP feed. See
+[operator notifications](../OPERATIONS.md#operator-notifications).
 
 ## CLI
 

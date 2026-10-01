@@ -172,7 +172,7 @@ command changes.
 | `command` | string | stdio | Command to run for stdio transport. |
 | `args` | string[] | no | Arguments to pass to a stdio command. |
 | `env` | table | no | Environment variables injected into a stdio child process. |
-| `bearer_token_env` | string | no | Name of an env var holding a bearer token for HTTP or Unix-socket transport. Not the token itself. |
+| `bearer_token_env` | string | no | Required credential reference when configured: bearer auth for HTTP/WebSocket/Unix socket, or injection into a stdio child. Not the token itself. |
 | `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
 | `proxy_skills` | bool | no | Whether to aggregate this upstream's Agent Skills (SEP-2640). Default: **`false`**, unlike the other `proxy_*` flags — see below. |
@@ -266,10 +266,30 @@ upstream rather than removing the reference to bypass the failure.
 
 Changing a bearer-token env var does not hot-apply by itself. Use `gateway.reload` when you want the live pool to re-read `bearer_token_env`.
 
+### Lifecycle and transport failures
+
+In `auto` lifecycle mode, compatibility fallback is bounded to one legacy
+`initialize` attempt. Discovery HTTP 401, 403, 429, and 5xx responses do not
+trigger a downgrade. An uncorrelated error or unsupported-protocol text alone
+is not sufficient legacy evidence. Network discovery can still fall back on
+plain 400, 404, 405, 415, or 422 responses and recognized lifecycle errors;
+modern protocol-contract errors retain their failure classification. Stdio
+classification uses the transport's protocol error, not arbitrary child stderr.
+
+Malformed JSON returned for an HTTP request expecting a response is a terminal,
+sanitized transport error rather than an accepted response that waits for a
+timeout. Notification responses keep their no-result semantics. See the
+[HTTP transport](../../crates/labby-gateway/src/upstream/http_client.rs) and
+[lifecycle classifier](../../crates/labby-gateway/src/upstream/pool/lifecycle_compat.rs).
+
 ## Upstream OAuth (authorization_code + PKCE)
 
-OAuth-protected upstream MCP servers are authenticated for a shared gateway
-credential rather than by a static bearer token. Configuration shape and examples live in
+OAuth upstream credentials are selected by explicit subject. Trusted-local and
+`lab:admin` callers use the shared `gateway` subject; authenticated non-admin
+callers use their verified request subject and never fall back to that shared
+credential. Missing, empty, or whitespace-only subjects fail closed for
+non-admin callers, including Code Mode callers wrapped in host authority.
+Configuration shape and examples live in
 [CONFIG.md — Upstream OAuth](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce).
 Operator browser flow lives in [GATEWAY.md](./GATEWAY.md).
 
@@ -477,7 +497,9 @@ For each incoming MCP tool call:
 1. Labby checks whether the tool name belongs to a built-in local service
 2. if not, it checks the discovered upstream tool map
 3. if an upstream owns that tool name, the request is proxied there using the original MCP arguments
-4. the upstream result is normalized into Labby's usual success/error envelope shape
+4. successful MCP result content and structured content are preserved; completed
+   tool failures gain bounded Labby diagnostic/recovery metadata while retaining
+   the original content and structured evidence
 
 This internal precedence rule does not make upstream tools second-class. It is just how collisions are resolved.
 
@@ -552,13 +574,17 @@ Each upstream has independent health tracking.
 ### What Counts as a Failure
 
 - Connection errors
-- Tool call errors (`is_error` responses)
-- Prompt and resource proxy errors
+- Transport-class prompt, resource, and tool RPC failures
 - Dropped connections
 - Timeouts
 - Response size cap exceeded
 
 ### Recovery
+
+A completed `isError: true` tool result or typed MCP application error proves
+the peer responded and does not increment the transport breaker. Caller
+cancellation likewise does not count as an upstream failure. Health is tracked
+per capability, so failed prompt/resource discovery need not hide working tools.
 
 - A successful proxied call resets the upstream to healthy (0 failures).
 - Set `[gateway].auto_reconnect = true` to arm a long-lived recovery task for
@@ -572,6 +598,25 @@ Each upstream has independent health tracking.
   connect are not parked behind a slow listing.
 - Recovery tasks are disabled by default. Ephemeral `gateway.test` probes never
   create background tasks.
+
+## Cancellation and trace context
+
+Caller-attributed RPCs retain the pool's admission, deadline, and cancellation
+rules. An already-cancelled caller must not dispatch; cancellation is not a
+circuit-breaker failure. HTTP/Unix cancellation forwarding requires the same
+configured credential as the call and never falls back to anonymous delivery.
+Cancellation delivery is bounded and cooperative, not proof that a remote
+side effect was undone. An abandoned Code Mode Core-provider call also schedules
+a cancellation request when its guard drops; unavailable runtime or delivery
+failures are logged rather than reported as confirmed remote cancellation.
+
+Direct MCP tool proxying and Code Mode use the shared gateway trace injector.
+It derives a child `traceparent`, preserves valid optional `tracestate` and
+`baggage`, and preserves unrelated request metadata. Host-owned Code Mode
+execution/call correlation replaces caller-supplied correlation. Trace context
+is observability data, never authorization; see
+[MCP trace metadata](../surfaces/MCP.md#trace-metadata) and
+[Observability](../dev/OBSERVABILITY.md).
 
 ## Response Size Cap
 
@@ -746,12 +791,15 @@ If an upstream tool is discovered successfully, MCP clients connected to Labby c
 
 ### HTTP API
 
-The product HTTP API under `/v1/*` does not proxy arbitrary upstream MCP tools. It serves built-in Labby routes plus `/v1/gateway` for gateway management.
+The product HTTP API serves built-in routes, `/v1/gateway` for management, and
+`/v1/palette/execute` for bounded upstream calls against a caller-visible exact
+descriptor and expected contract hash. It does not accept arbitrary proxy URLs.
 
 Keep this distinction explicit in operator docs:
 
 - use MCP when you want the upstream gateway behavior
 - use `/v1/gateway` when you want to manage `[[upstream]]` entries over HTTP
+- use the authenticated Palette descriptor/execute pair for contract-checked HTTP calls
 - use the rest of `/v1/*` for Labby's built-in HTTP API surface
 
 ## End-to-End Setup
@@ -825,7 +873,9 @@ Then an MCP client connected to Labby should see the upstream tools in `list_too
 
 - Upstream tool schemas are cached from discovery and reused for MCP tool metadata.
 - Upstream calls preserve the original MCP argument payload rather than forcing it through Labby's `action` + `params` wrapper.
-- Upstream errors are normalized into Labby envelopes and usually surface as `upstream_error`, `network_error`, `server_error`, `decode_error`, or `internal_error`.
+- Transport failures and completed tool failures remain distinct. Completed
+  errors retain upstream evidence and receive the shared agent-error contract;
+  Code Mode converts them into structured JavaScript rejections.
 - HTTP body, WebSocket message, and stdio line limits apply before MCP deserialization; a
   second capability-specific semantic limit applies after parsing.
 

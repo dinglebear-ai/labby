@@ -89,6 +89,7 @@ pub fn service_catalog(services: &[ServiceDoc]) -> String {
 
 pub fn env_reference(vars: &[EnvDoc]) -> String {
     let mut out = header("env-reference", "labby docs generate");
+    out.push_str("`Required` applies when the owning service or workflow is used, not to every Labby process. OAuth provider credentials are required only for the selected provider; configure exactly one inbound provider. Descriptions identify conditional requirements. See [Environment](../runtime/ENV.md) and [OAuth](../runtime/OAUTH.md) for configuration and admission rules.\n\n");
     out.push_str("| Service | Env Var | Required | Secret | Example | Description |\n");
     out.push_str("| --- | --- | --- | --- | --- | --- |\n");
     for var in vars {
@@ -216,27 +217,20 @@ pub fn api_routes(routes: &[RouteDoc]) -> String {
     }
     out
 }
-pub fn generated_readme() -> String {
+pub fn generated_readme<'a>(artifacts: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
     let mut out = String::from("# Generated Docs\n\n");
-    out.push_str("Files in this directory are generated from code-owned metadata.\n\n");
-    out.push_str("Regenerate all artifacts with:\n\n```bash\njust docs-generate\n```\n\n");
-    out.push_str("Verify tracked artifacts are fresh with:\n\n```bash\njust docs-check\n```\n\n");
-    out.push_str("`docs-check` compares the declared generated artifact manifest and enforces generated-doc invariants such as feature-matrix consistency and safety linting. It does not run Markdown link checks, live service health, or onboarding audit policy gates.\n\n");
-    out.push_str("| Artifact | Source |\n| --- | --- |\n");
-    for artifact in [
-        "service-catalog.md/json",
-        "action-catalog.md/json",
-        "env-reference.md/json",
-        "proxy-config-reference.md/json",
-        "api-routes.md/json",
-        "openapi.json",
-        "feature-matrix.md/json",
-        "mcp-help.md/json",
-        "cli-help.md",
-        "cli-help.json",
-        "cli-migration.md",
-    ] {
-        writeln!(out, "| `{artifact}` | `labby docs generate` |").ok();
+    out.push_str("Every file in this directory, including this README, is code-owned. Do not edit generated Markdown or JSON by hand.\n\n");
+    out.push_str("From the repository root, regenerate the all-feature documentation projection and run the repository documentation gates:\n\n");
+    out.push_str("```bash\njust docs-generate\njust docs-check\n```\n\n");
+    out.push_str("The `just docs-check` recipe in [Justfile](../../Justfile) checks generated freshness, Markdown links and heading fragments, product-documentation rules, instruction topology, Depot control-plane contracts, and their regression fixtures.\n\n");
+    out.push_str("The `labby docs check` subcommand is narrower: it compares freshly rendered content with this artifact manifest and validates generation invariants and built-in snippets. It does not replace the repository recipe and does not test live service health, deployment configuration, or a caller's actual exposure.\n\n");
+    out.push_str("These catalogs describe the all-feature documentation projection, not a live server inventory. Runtime feature, platform, configuration, and authorization gates still apply.\n\n");
+    out.push_str("## Source ownership\n\n");
+    out.push_str("The [artifact manifest](../../crates/labby/src/docs/artifacts.rs) owns this complete inventory, including the index itself. [Shared renderers](../../crates/labby/src/docs/render.rs) own formatting. Follow the entrypoints below to their authoritative action metadata, Clap definitions, route registry, configuration descriptors, or Cargo manifests; fix those sources, then regenerate. See [Documentation Maintenance](../dev/DOCUMENTATION.md) for authored, synchronized, and historical boundaries.\n\n");
+    out.push_str("| Artifact | Source entrypoint |\n| --- | --- |\n");
+    for (path, source) in artifacts {
+        let name = path.strip_prefix("docs/generated/").unwrap_or(path);
+        writeln!(out, "| [{name}]({name}) | [`{source}`](../../{source}) |").ok();
     }
     out
 }

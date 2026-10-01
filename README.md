@@ -320,7 +320,7 @@ gateway host or VM. Labby does not ship a Docker image or Compose deployment;
 stdio MCP servers and agent CLIs are installed and launched at runtime.
 
 ```bash
-scripts/incus-bootstrap.sh --version vX.Y.Z
+labby host incus setup --version vX.Y.Z
 incus exec labby -- systemctl status labby --no-pager
 incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 ```
@@ -463,8 +463,9 @@ MCP call shapes:
 { "code": "async () => codemode.run(\"gateway-summary\", {\"includeHealth\": true})" }
 ```
 
-Code Mode can call exposed upstream MCP tools only. It cannot call Labby actions
-from inside the sandbox.
+Code Mode can call exposed upstream tools and eligible catalog-admitted
+in-process Labby actions. Route, Loadout, caller, and action policy still
+apply; sandbox access does not grant unrestricted administration.
 
 ### Work With Code Mode Snippets
 
@@ -478,14 +479,14 @@ labby snippet test my-snippet
 ```
 
 Snippets are stored per-user under `$LABBY_HOME` and executed through the
-gateway Code Mode runner, so they can reach exposed upstream tools but not Labby
-actions. The `snippets` service is gateway-gated: it is unavailable in builds
+gateway Code Mode runner, so they can reach exposed upstream tools and eligible
+catalog-admitted in-process actions. The `snippets` service is gateway-gated: it is unavailable in builds
 without the `gateway` feature.
 
 ### Audit Health And Logs
 
 ```bash
-labby doctor            # audit every configured service
+labby doctor            # system, auth, gateway, and relay audit
 labby doctor system     # local env vars, disk, toolchain
 labby doctor auth       # auth/OAuth env vars, files, permissions
 labby doctor proxy      # zero-route stdio-proxy config/dependency preflight
@@ -546,14 +547,15 @@ MCP service tools use the shared action shape:
 
 ```json
 {
-  "action": "mcp.list",
-  "params": { "search": "postgres", "limit": 10 }
+  "action": "gateway.list",
+  "params": {}
 }
 ```
 
 Every service tool also supports `help` and `schema` through the shared
-dispatcher. Destructive MCP actions use elicitation when the client supports it;
-headless clients pass `"confirm": true` inside `params`.
+dispatcher. Destructive MCP actions require the MRTR elicitation exchange.
+Clients without form elicitation receive `confirmation_required`;
+`params.confirm` does not authorize execution.
 
 ## Configuration
 
@@ -584,7 +586,7 @@ Useful environment variables:
 | `LABBY_AUTH_PROVIDER` | Inbound OAuth identity provider: `google` (stable) or `authelia` (open beta). |
 | `LABBY_GOOGLE_CLIENT_ID` / `LABBY_GOOGLE_CLIENT_SECRET` | Google credentials when Google is selected. |
 | `LABBY_AUTHELIA_ISSUER_URL` / `LABBY_AUTHELIA_CLIENT_ID` / `LABBY_AUTHELIA_CLIENT_SECRET` | Authelia OIDC configuration; see the pinned registration contract in the OAuth guide. |
-| `LABBY_AUTH_ADMIN_EMAIL` | Bootstrap admin email; required in OAuth mode. |
+| `LABBY_AUTH_ADMIN_EMAIL` | Administrator email or comma-separated emails; required in OAuth mode. |
 | `LABBY_OAUTH_ENCRYPTION_KEY` | Base64 32-byte key required for encrypted upstream OAuth credentials. Rotation requires reauthorizing affected upstreams. |
 | `LABBY_WEB_ASSETS_DIR` | Override static Labby export directory. |
 | `LABBY_WEB_UI_AUTH_DISABLED` | Development-only browser auth bypass. |
@@ -593,13 +595,15 @@ Useful environment variables:
 | `LABBY_ACTOR_KEY_SECRET` | Stable secret for redacted actor correlation in logs. |
 | `LABBY_ADMIN_ENABLED` | Runtime opt-in for the `lab_admin` tool. |
 
-Bearer auth is an operator/admin shortcut for Labby routes. Public protected MCP
-routes validate route-scoped Labby OAuth JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as
-a public resource credential.
+Static bearer authentication establishes an operator transport ceiling, not a
+universal durable administrator grant. Operation-specific access authority
+still applies. Public protected MCP routes validate route-scoped Labby OAuth
+JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as a public resource credential.
 
 When driving the web UI with automation while OAuth is enabled, pass the bearer
-token as a same-origin header. `/auth/session` recognizes that token and returns a
-synthetic admin session:
+token as a same-origin header. `/auth/session` recognizes that token and returns
+an authenticated session projection whose authority depends on durable access
+state; a bearer credential does not universally grant durable administration:
 
 ```bash
 TOKEN=$(awk -F= '/^LABBY_MCP_HTTP_TOKEN=/{print $2}' ~/.labby/.env)
@@ -614,11 +618,13 @@ See [runtime configuration](./docs/runtime/CONFIG.md),
 ## Current Catalogs
 
 Do not maintain action, feature, env, or coverage inventories by hand in this
-README. The generated artifacts are authoritative for the current branch:
+README. The generated artifacts describe the all-feature documentation
+projection. Runtime feature, platform, startup, route, and caller authorization
+gates still determine what a running gateway exposes:
 
 | Artifact | Purpose |
 | --- | --- |
-| [service-catalog.md](./docs/generated/service-catalog.md) | Registered services, exposure, features, categories, and surfaces. |
+| [service-catalog.md](./docs/generated/service-catalog.md) | Service metadata, conditional registration, features, categories, and supported surfaces. |
 | [action-catalog.md](./docs/generated/action-catalog.md) | Per-service actions and destructive metadata. |
 | [env-reference.md](./docs/generated/env-reference.md) | Env vars generated from service metadata. |
 | [api-routes.md](./docs/generated/api-routes.md) | Mounted HTTP routes. |
@@ -634,26 +640,33 @@ just docs-generate
 just docs-check
 ```
 
-`docs-check` verifies generated-artifact freshness and invariants. It is not a
-Markdown link checker, live health check, or onboarding policy audit.
+`labby docs check` verifies generated-artifact freshness and invariants. The
+`just docs-check` recipe also checks Markdown links, documentation policy,
+instruction topology, and control-plane contracts with their regression tests.
+Neither establishes live service health or deployment acceptance. Fix generated
+content at the entrypoints in the [source-ownership index](./docs/generated/README.md),
+then regenerate; that index is itself generated.
 
 ## Architecture
 
-The workspace has 11 members and uses Rust 2024, resolver 3, a single
+The workspace uses Rust 2024, resolver 3, a single
 `[workspace.package]` version, shared `[workspace.dependencies]`, and shared
 `[workspace.lints]` (`unsafe_code = "forbid"`, `mod_module_files = "deny"`,
-`disallowed_macros = "deny"`). The MCP SDK is pinned exactly as
-`rmcp = "=3.1.0"`.
+`disallowed_macros = "deny"`). The member inventory and exact Git-pinned MCP SDK
+revision are maintained in [Cargo.toml](./Cargo.toml);
+[Architecture](./docs/ARCH.md) owns the complete crate map.
 
 | Path | Role |
 | --- | --- |
-| [crates/labby-primitives](./crates/labby-primitives) | Dependency-free leaf crate: `ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`, static SSRF checks. |
-| [crates/labby-apis](./crates/labby-apis) | Shared SDK contracts for core HTTP behavior, setup, and doctor. |
+| [crates/labby-primitives](./crates/labby-primitives) | Workspace dependency-leaf crate: `ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`, static SSRF checks. |
+| [crates/labby-apis](./crates/labby-apis) | Pure SDK contracts for core HTTP behavior, setup, doctor, and Artifact control; no ambient product configuration. |
 | [crates/labby-auth](./crates/labby-auth) | OAuth/JWT/session middleware, route support, and upstream OAuth runtime. |
 | [crates/labby-runtime](./crates/labby-runtime) | Surface-neutral contracts and helpers: `ToolError`, gateway config DTOs, dispatch helpers, redaction, path safety, and security helpers. |
 | [crates/labby-codemode](./crates/labby-codemode) | Client-neutral Code Mode runner kernel, broker, result shaping, snippets, and TypeScript descriptor generation. |
 | [crates/labby-gateway](./crates/labby-gateway) | Gateway manager, upstream MCP proxy pool, Code Mode host adapter, discovery/imports, virtual servers, protected routes, and OAuth lifecycle. |
-| [crates/labby-openapi](./crates/labby-openapi) | OpenAPI 3.1 schema assembly for the HTTP surface. |
+| [crates/labby-openapi](./crates/labby-openapi) | OpenAPI-to-Code-Mode derivation and hardened outbound HTTP execution. |
+| [crates/labby-browser](./crates/labby-browser) | Reusable browser bridge, pairing, permission, and invocation runtime. |
+| [crates/labby-model](./crates/labby-model) | Model-checking and verification support; never a product dependency. |
 | [crates/labby-web](./crates/labby-web) | Embedded/filesystem web asset serving with symlink escape defense. |
 | [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, gateway dispatch, logs, setup, snippets, filesystem access, and output rendering. |
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
@@ -663,10 +676,12 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | [plugins](./plugins) | Claude/Codex plugin assets and skills. |
 | [docs](./docs/README.md) | Topic documentation and generated inventories. |
 
-Shared behavior belongs in the shared execution layer. Upstream/domain logic
-belongs in `labby-apis`; reusable gateway/runtime/code-mode behavior belongs in
-the extracted `labby-*` crates; product dispatch belongs in
-`crates/labby/src/dispatch`; CLI, MCP, HTTP, and web adapters stay thin. See
+Shared operations belong in the owning extracted runtime or product dispatch.
+`labby-gateway` owns upstream discovery, routing, OAuth lifecycle, and the
+gateway Code Mode host; `labby-codemode` owns the host-neutral kernel.
+`labby-apis` remains a pure SDK boundary. Product adapters under
+`crates/labby/src` translate input, caller context, and output without duplicating
+authorization, validation, or operation semantics. See
 [Architecture](./docs/ARCH.md) and [Dispatch](./docs/dev/DISPATCH.md).
 
 ## Development
@@ -698,10 +713,10 @@ just web-watch        # rebuild web assets when frontend files change
 just run -- help      # web export + cargo run --all-features -- <args>
 just chat-local       # local Labby admin UI workflow with browser auth disabled
 just install          # web export + release build + install ~/.local/bin/labby
-just mcp-token        # rotate LABBY_MCP_HTTP_TOKEN in .env
+just mcp-token        # rotate checkout .env token and print it; not daemon secret rotation
 ```
 
-Authoritative Rust verification is all-features:
+Use all-feature workspace verification plus affected standalone feature slices:
 
 ```bash
 cargo check --workspace --all-features
@@ -725,7 +740,7 @@ Frontend changes should also run the relevant `pnpm` scripts under
 ### Host Gateway Runtime
 
 The recommended self-hosted gateway runtime is the Incus system container
-provisioned by `scripts/incus-bootstrap.sh --version vX.Y.Z` and converged
+provisioned by `labby host incus setup --version vX.Y.Z` and converged
 in-box with `labby setup --provision`. Bare metal uses the same provisioner and
 system unit when the host or VM is dedicated to Labby. The default service is
 `/etc/systemd/system/labby.service`, running as `User=labby`, `Group=labby`, with
@@ -737,15 +752,17 @@ remains the rebuild-and-restart developer shortcut.
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. The stable
 tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux and
-macOS archives with checksums, builds and smokes the Incus image,
-publishes the npm launcher, and publishes Labby's
+macOS archives with checksums, publishes the npm launcher, and publishes Labby's
 `server.json` metadata to the official MCP Registry. Only after qualification
 and publication succeed does the workflow promote the draft GitHub release.
+Incus substrate images build and publish independently through
+`.github/workflows/incus-image.yml`; normal binary releases do not build an image.
 
 ### Plugin Setup
 
-The `plugins/labby` plugin ships skills, an MCP config, and `userConfig` — not a
-`labby` binary, and no Claude Code hooks. The former
+`plugins/labby` supplies usage skills; `plugins/install-labby` owns the installer
+skill, MCP configuration, and `userConfig`. Neither bundles the Labby binary
+or automatic lifecycle hooks. The former
 `plugins/labby/hooks/hooks.json` (SessionStart / ConfigChange shims) has been
 removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
 directory, bundle a binary under `plugins/labby/bin/`, or add

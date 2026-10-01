@@ -18,7 +18,7 @@ It is the source of truth for:
 
 This document is normative for future work even where the codebase is still converging.
 
-The reproducible production rmcp Git revision, pinned upstream rmcp `3.1.0`
+The reproducible production rmcp Git revision, pinned upstream rmcp `3.3.0`
 conformance fixture, and MCP `2026-07-28` validation matrix are
 documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
 
@@ -137,13 +137,15 @@ Rules:
 - resources are for stable discovery and read-oriented contextual data, not for mirroring every tool call as a fake resource
 - elicitation is used when the server must explicitly ask the client for confirmation or input
 
-Labby does not change its one-tool-per-service design because RMCP can support finer-grained tools.
+Router projection (`action` plus `params`) remains the default. The registry also
+models atomic and combined projections; eligible atomic descriptors derive from
+the same `ActionSpec`, including its output schema, rather than a second catalog.
 
 Rules:
 
 - keep the compact one-tool-per-service model plus the explicit gateway and control-plane tools owned by the root MCP surface
 - continue to dispatch service operations through `action` + `params`
-- do not explode the tool list into one tool per endpoint or one tool per action
+- do not create a separately maintained per-endpoint or per-action catalog
 - prompts and resources may be richer than tools, but they must still derive from the same shared catalog and dispatch ownership model
 
 Prompt and resource operations must carry the same observability posture as tool

@@ -100,8 +100,9 @@ Rotate every credential an admin-scoped caller could read or replace:
 - the Google OAuth client secret (`LABBY_GOOGLE_CLIENT_SECRET`) at the
   provider, then in `.env`; likewise the Authelia client secret if used;
 - the JWT signing key (`LABBY_AUTH_KEY_PATH`, default `~/.labby/auth-jwt.pem`).
-  Replacing it invalidates every issued Labby access token, so it is a global
-  session reset; see [OPERATIONS.md](../OPERATIONS.md#oauth-auth-state);
+  Replacing it and restarting every issuer invalidates issued access JWTs;
+  browser sessions and database-backed refresh grants need separate revocation.
+  See [OPERATIONS.md](../OPERATIONS.md#oauth-auth-state);
 - Depot tokens and every upstream bearer or API key stored in `.env`.
 
 Do not rotate `LABBY_TOKEN_ENCRYPTION_KEY` as part of this step without a plan:
@@ -138,9 +139,10 @@ config-restore command today. To roll back configuration by hand:
 1. Stop the service.
 2. Copy the chosen `config.toml.bak.*` (and `.env` backup) over the live file.
    Keep owner-only permissions (`0600`) and the original owner.
-3. Start the service and check `/ready` and `labby doctor`. Startup is the
-   only full config validation today; `labby setup check` does not parse
-   `config.toml`.
+3. Run `labby setup check --json` against the selected state root. Its `config`
+   check uses the shared TOML loader and startup/runtime guards. Resolve blocking
+   findings, start the service, then check `/ready` and `labby doctor` to prove
+   runtime health as well as configuration validity.
 4. Keep the replaced file for review instead of deleting it.
 
 ## Related docs

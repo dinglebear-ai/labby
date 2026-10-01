@@ -156,7 +156,7 @@ Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.
 
 The remote control plane extends `artifacts.*` and exposes four supporting
-service families:
+HTTP-context-only service families (not MCP or in-process Code Mode tools):
 
 - `sources.*` controls persisted, refreshable ingestion sources;
 - `jobs.*` starts and observes durable repository, registry, MCP, marketplace,

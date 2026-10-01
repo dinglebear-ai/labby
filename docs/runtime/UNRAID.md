@@ -39,7 +39,7 @@ test box, `tower` (Unraid 7.3.2); see "Validated end-to-end" below.)
   dependency on Incus and is the lowest-risk install path, but it **cannot
   run most stdio MCP servers**: Unraid's bare host ships neither `npx`/Node
   nor `uv`/Python, which is what most community MCP servers are distributed
-  as. Use this mode for the core gateway API, registry, and Code Mode
+  as. Use this mode for the core gateway API, catalog, and Code Mode
   surfaces that do not need a host toolchain.
 - **`incus`** — runs labby inside an Incus system container using labby's own
   pre-built `labby-incus` release image. The image bakes in Node,
@@ -52,7 +52,8 @@ must already be installed, enabled (`SERVICE=enabled` in its own
 `incus.cfg`), and running after the array starts. This plugin does not bundle
 a second Incus daemon. `scripts/labby-incus-env.sh` points the Incus CLI at
 incus-unraid's private prefix (`/usr/local/incus`) and daemon state
-(`INCUS_DIR=/mnt/user/appdata/incus`), and every Incus operation in
+(`INCUS_DIR` from incus-unraid's persisted config, falling back to the
+environment and then `/mnt/user/appdata/incus`), and every Incus operation in
 `scripts/labby-incus-init.sh` goes through that environment.
 
 The Incus container layout is intentionally separate from incus-unraid's own
@@ -123,7 +124,7 @@ configured image version and SHA256; if an existing alias or container does not
 match the configured pin, startup fails with explicit delete/recreate guidance
 instead of silently reusing stale runtime bytes.
 
-Keeping the incus pin current: the
+Historical publication incident (not the current image release contract): the
 `labby-incus-x86_64-unknown-linux-gnu.tar.xz` asset stopped publishing after
 `v1.8.5`. `build-incus-image.yml`'s `publish-image` job had no
 `actions/checkout` step, and `gh` resolves its target repository from git
@@ -189,12 +190,14 @@ small companion file under `source/`, each pinned by its own `<MD5>` entity.
   `labby.cfg.bak` after every attempted use.
 - **Runtime OS files**: `/usr/local/emhttp/plugins/labby/*` (RAM). Rebuilt
   fresh from the flash-cached tarball + `source/` files on every boot.
-- **Gateway state** (`auth.db`, `registry.db`, `config.toml`, the MCP
-  bearer token — everything labby normally writes under `$HOME`/XDG dirs):
-  `LABBY_DIR` in `labby.cfg`, default `/mnt/user/appdata/labby` (array,
+- **Native gateway state** (`auth.db`, `access.db`, `config.toml`, and the MCP
+  bearer token): `rc.labby` sets `HOME=$LABBY_DIR`, so the normal state root
+  is `$LABBY_DIR/.labby`, not `LABBY_DIR` itself. `LABBY_DIR` defaults to
+  `/mnt/user/appdata/labby` (array,
   survives reboots — the same convention every Unraid Docker app's appdata
   mount already uses). `rc.labby` exports `HOME`/`XDG_*` to point there
-  instead of root's RAM-only `/root`.
+  instead of root's RAM-only `/root`. Incus mode uses its separate
+  container-owned `/home/labby/.labby` root.
 
 ## Settings page conventions
 
@@ -224,7 +227,7 @@ disabling the gateway.
 
 In native mode gateway actions run the host plugin binary against
 `LABBY_DIR`; in Incus mode the same actions execute
-`labby --json gateway ...` inside the gateway container as the `labby` user
+the plugin's pinned binary inside the gateway container as the `labby` user
 so they operate on the live container-owned gateway state. The visual shell
 uses the same role patterns and theme contract as the components under
 `~/workspace/upstream/unraid-api/unraid-ui`, adapted to the classic Unraid
@@ -323,8 +326,8 @@ scripts/ci/unraid-plugin-checksums.sh --fix                             # repair
 scripts/ci/unraid-plugin-checksums.sh --tag vX.Y.Z --tarball PATH       # also check labbyVersion + release tarball MD5
 ```
 
-- `ci.yml`'s always-on `unraid-plugin-check` job runs the no-args form on
-  every push/PR, so editing `unraid/source/` without running `--fix`
+- `ci.yml`'s `unraid-plugin-check` job runs the no-args form when the
+  `unraid` changed-path category is enabled, so editing `unraid/source/` without running `--fix`
   afterward fails CI immediately (this is exactly the failure mode that
   motivated the script — see git history for the `Labby.page` checksum
   drift caught and fixed during initial scaffolding).
@@ -381,14 +384,11 @@ git tag unraid-v<version>   # e.g. unraid-v1.3.0e, matching the version entity
 git push origin unraid-v<version>
 ```
 
-This has no automated check — the tag legitimately can't exist until after
-the commit it points at is pushed, so `scripts/ci/unraid-plugin-checksums.sh`
-cannot verify it in the same CI run. Forgetting this step doesn't break the
-commit you just made (fresh installs and installs already on `main`'s
-current state at push time still resolve `srcURL` correctly), but it does
-mean the NEXT commit that touches these files will retroactively break any
-install that adopted the untagged version — tag every round, not just when
-something feels risky.
+The checksum checker does not prove the remote tag exists. Publish the exact
+matching tag as part of each packaging release before treating its manifest
+as installable. A manifest naming a missing `unraid-v<version>` tag already
+has broken companion-file URLs; fresh installs and reboot downloads can fail
+immediately. Never move an existing release tag to repair changed bytes.
 
 ## Community Applications
 
@@ -457,22 +457,16 @@ CA's field describes the open-source license only.
   in place and valid, but until the `/submit` Validate+Scan flow is
   completed, install via the Plugins tab's "Install Plugin" URL field
   pointed at the raw `labby.plg` URL.
-- `RUNTIME_MODE="incus"` now has its architecture, image/version pinning,
-  Tailscale behavior, bridge, and egress defaults wired into the plugin
-  package, and the CI defect that stopped publishing `labby-incus-*.tar.xz`
-  after `v1.8.5` is fixed (missing `actions/checkout` in `publish-image` —
-  see "Keeping the incus pin current" above). The default is now pinned to
-  the `v1.8.5` image (verified to contain labby 1.8.5), up from the old
-  `v1.2.0` image (which ran labby 1.3.0). No release built *with the
-  publishing fix* has shipped yet, so `1.8.5` remains the newest verified
-  image and native (`1.8.9`) is still a step ahead; the next release should
-  land both at the same version. Tracked as `lab-26zqj`.
+- The checked-in Incus consumer still pins image `1.8.5`, while the native
+  manifest pins binary `1.8.9`. Independent current substrate images contain
+  no binary, so a future normal release cannot automatically bring these
+  versions together. Migrating the consumer remains a packaging follow-up.
 - `RUNTIME_MODE="incus"` has not yet been exercised across a real Unraid
   reboot or a real incus-unraid uninstall/reinstall cycle. The current
   implementation is designed for array-start/stop and plugin
   install/update/uninstall of the labby plugin itself; full lifecycle
   validation is still pending.
-- Validated end-to-end on real hardware (tower, Unraid 7.3.2) via Unraid's
+- Historical validation recorded on real hardware (tower, Unraid 7.3.2) via Unraid's
   actual `plugin` command: fresh install (checksum-verified download of
   every file), `rc.labby` start/status/ready/stop, `plugin remove
   labby.plg` uninstall (state correctly preserved), a real version-bump

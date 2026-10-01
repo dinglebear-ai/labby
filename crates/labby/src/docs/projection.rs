@@ -189,17 +189,17 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTH_MODE", false, false, "bearer", "Inbound authentication mode: bearer or oauth"),
         auth_env("LABBY_PUBLIC_URL", true, false, "https://lab.example.com", "Canonical public application URL and OAuth issuer"),
         auth_env("LABBY_AUTH_DESKTOP_ORIGIN", false, false, "https://lab.example.com", "Trusted Control Plane origin for desktop browser-session handoff; defaults to public URL origin"),
-        auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier used in oauth mode"),
-        auth_env("LABBY_GOOGLE_CLIENT_SECRET", true, true, "<labby_google_client_secret>", "Google OAuth client secret used in oauth mode"),
-        auth_env("LABBY_AUTH_PROVIDER", false, false, "authelia", "Active inbound identity provider: google or authelia"),
-        auth_env("LABBY_AUTHELIA_ISSUER_URL", false, false, "https://auth.example.com", "Exact Authelia OIDC issuer URL"),
-        auth_env("LABBY_AUTHELIA_CLIENT_ID", false, false, "labby", "Authelia confidential OIDC client identifier"),
-        auth_env("LABBY_AUTHELIA_CLIENT_SECRET", false, true, "<labby_authelia_client_secret>", "Authelia confidential OIDC client secret"),
+        auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier; required when OAuth mode selects Google"),
+        auth_env("LABBY_GOOGLE_CLIENT_SECRET", true, true, "<labby_google_client_secret>", "Google OAuth client secret; required when OAuth mode selects Google"),
+        auth_env("LABBY_AUTH_PROVIDER", false, false, "authelia", "Inbound identity provider: google or authelia; inferred from credentials when omitted, with exactly one provider configured"),
+        auth_env("LABBY_AUTHELIA_ISSUER_URL", true, false, "https://auth.example.com", "Exact Authelia OIDC issuer URL; required when OAuth mode selects Authelia"),
+        auth_env("LABBY_AUTHELIA_CLIENT_ID", true, false, "labby", "Authelia confidential OIDC client identifier; required when OAuth mode selects Authelia"),
+        auth_env("LABBY_AUTHELIA_CLIENT_SECRET", true, true, "<labby_authelia_client_secret>", "Authelia confidential OIDC client secret; required when OAuth mode selects Authelia"),
         auth_env("LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN", false, false, "https://auth.example.com", "Exact HTTPS private issuer origin explicitly trusted by the operator"),
         auth_env("LABBY_AUTHELIA_CA_CERT_PATH", false, false, "/etc/labby/authelia-ca.pem", "PEM CA certificate trusted only for the exact Authelia issuer origin"),
         auth_env("LABBY_AUTH_ADMIN_EMAIL", true, false, "admin@example.com", "Administrator email, or comma-separated emails, required in oauth mode"),
         auth_env("LABBY_AUTH_ALLOWED_REDIRECT_URIS", false, false, "https://chatgpt.com/connector/oauth/*", "Comma-separated exact or wildcard OAuth redirect allowlist"),
-        auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated Google Workspace hosted-domain allowlist"),
+        auth_env("LABBY_AUTH_ALLOWED_EMAIL_DOMAINS", false, false, "example.com", "Comma-separated admission-domain allowlist: Google Workspace hosted domains or verified Authelia email domains"),
         auth_env("LABBY_AUTH_VIEWER_EMAIL_DOMAINS", false, false, "example.com", "Exact verified-email domains admitted as browser Viewers without administrative OAuth scopes"),
         auth_env("LABBY_AUTH_SQLITE_PATH", false, false, "$LABBY_HOME/auth.db", "OAuth authorization-state SQLite database path"),
         auth_env("LABBY_AUTH_KEY_PATH", false, true, "$LABBY_HOME/auth-jwt.pem", "OAuth JWT signing-key path"),
@@ -944,6 +944,48 @@ mod tests {
             stash.exposure,
             ServiceExposure::RuntimeConditional
         ));
+    }
+
+    #[test]
+    fn auth_domain_environment_docs_cover_both_inbound_providers() {
+        let vars = build_env_reference(&[]);
+        let domains = vars
+            .iter()
+            .find(|var| var.env_var == "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS")
+            .expect("inbound domain allowlist documentation");
+        assert!(
+            domains
+                .description
+                .contains("Google Workspace hosted domains")
+        );
+        assert!(
+            domains
+                .description
+                .contains("verified Authelia email domains")
+        );
+        assert!(!domains.required);
+        assert!(!domains.secret);
+    }
+
+    #[test]
+    fn auth_provider_requirements_are_documented_conditionally() {
+        let vars = build_env_reference(&[]);
+        for (name, provider) in [
+            ("LABBY_GOOGLE_CLIENT_ID", "Google"),
+            ("LABBY_GOOGLE_CLIENT_SECRET", "Google"),
+            ("LABBY_AUTHELIA_ISSUER_URL", "Authelia"),
+            ("LABBY_AUTHELIA_CLIENT_ID", "Authelia"),
+            ("LABBY_AUTHELIA_CLIENT_SECRET", "Authelia"),
+        ] {
+            let var = vars.iter().find(|var| var.env_var == name).expect(name);
+            assert!(var.required, "{name} is required for its selected provider");
+            assert!(
+                var.description
+                    .contains(&format!("required when OAuth mode selects {provider}"))
+            );
+        }
+        let rendered = super::super::render::env_reference(&vars);
+        assert!(rendered.contains("owning service or workflow"));
     }
 
     #[test]

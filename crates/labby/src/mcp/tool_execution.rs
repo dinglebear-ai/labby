@@ -1010,12 +1010,18 @@ mod tests {
         assert_eq!(serialized["content"][0]["text"], "nested/tool:\"kept\"");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(received_meta.lock().await[0]["trace-id"], "opaque-meta");
-        for _ in 0..100 {
-            if pool.usage_row_count_for_tests().await == 1 {
-                break;
+        // Usage recording runs asynchronously on SQLite's worker. Yielding a
+        // fixed number of times does not wait for that worker under CI load.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if pool.usage_row_count_for_tests().await == 1 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("successful upstream call must persist its usage row");
         assert_eq!(pool.usage_row_count_for_tests().await, 1);
 
         assert!(matches!(

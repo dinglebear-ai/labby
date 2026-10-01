@@ -8,7 +8,7 @@ updated: "2026-08-18"
 
 `lab_admin` is a small runtime-conditional administrative service. It is not a general management namespace and it is not exposed through the HTTP API or web UI.
 
-When enabled, the service is available through CLI and MCP and currently owns only the shared onboarding-audit surface plus `help` and `schema` discovery actions.
+When enabled, the service is available through MCP and currently owns only the shared onboarding-audit surface plus `help` and `schema` discovery actions. The public Clap tree has no `lab_admin` or onboarding-audit command; registry membership does not create a CLI adapter.
 
 ## Actions
 

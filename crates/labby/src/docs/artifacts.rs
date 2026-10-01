@@ -15,6 +15,7 @@ pub struct CheckOutcome {
 
 struct Artifact {
     path: &'static str,
+    source: &'static str,
     content: String,
 }
 
@@ -68,79 +69,115 @@ pub fn check() -> Result<CheckOutcome> {
 }
 
 fn build_artifacts(projection: &DocsProjection) -> Result<Vec<Artifact>> {
-    Ok(vec![
-        artifact("docs/generated/README.md", render::generated_readme()),
+    let mut artifacts = vec![
+        artifact(
+            "docs/generated/README.md",
+            "crates/labby/src/docs/render.rs",
+            String::new(),
+        ),
         artifact(
             "docs/generated/service-catalog.md",
+            "crates/labby/src/docs/projection.rs",
             render::service_catalog(&projection.service_catalog),
         ),
         artifact(
             "docs/generated/service-catalog.json",
+            "crates/labby/src/docs/projection.rs",
             render::json(&projection.service_catalog)?,
         ),
         artifact(
             "docs/generated/env-reference.md",
+            "crates/labby/src/docs/projection.rs",
             render::env_reference(&projection.env_reference),
         ),
         artifact(
             "docs/generated/env-reference.json",
+            "crates/labby/src/docs/projection.rs",
             render::json(&projection.env_reference)?,
         ),
         artifact(
             "docs/generated/proxy-config-reference.md",
+            "crates/labby/src/docs/projection.rs",
             render::proxy_config_reference(&projection.proxy_config_reference),
         ),
         artifact(
             "docs/generated/proxy-config-reference.json",
+            "crates/labby/src/docs/projection.rs",
             render::json(&projection.proxy_config_reference)?,
         ),
         artifact(
             "docs/generated/action-catalog.md",
+            "crates/labby/src/docs/action_catalog.rs",
             render::action_catalog(&projection.action_catalog),
         ),
         artifact(
             "docs/generated/action-catalog.json",
+            "crates/labby/src/docs/action_catalog.rs",
             render::json(&projection.action_catalog)?,
         ),
-        artifact("docs/generated/cli-help.md", render::cli_help()),
+        artifact(
+            "docs/generated/cli-help.md",
+            "crates/labby/src/cli/help.rs",
+            render::cli_help(),
+        ),
         artifact(
             "docs/generated/cli-help.json",
+            "crates/labby/src/cli/help.rs",
             render::json(&crate::cli::help::inventory())?,
         ),
-        artifact("docs/generated/cli-migration.md", render::cli_migration()),
+        artifact(
+            "docs/generated/cli-migration.md",
+            "crates/labby/src/cli/migration.rs",
+            render::cli_migration(),
+        ),
         artifact(
             "docs/generated/mcp-help.md",
+            "crates/labby/src/catalog.rs",
             render::mcp_help(&projection.mcp_help),
         ),
         artifact(
             "docs/generated/mcp-help.json",
+            "crates/labby/src/catalog.rs",
             render::json(&projection.mcp_help)?,
         ),
         artifact(
             "docs/generated/api-routes.md",
+            "crates/labby/src/docs/routes.rs",
             render::api_routes(&projection.api_routes),
         ),
         artifact(
             "docs/generated/api-routes.json",
+            "crates/labby/src/docs/routes.rs",
             render::json(&projection.api_routes)?,
         ),
         artifact(
             "docs/generated/openapi.json",
+            "crates/labby/src/api/openapi.rs",
             ensure_newline(&projection.openapi_json),
         ),
         artifact(
             "docs/generated/feature-matrix.md",
+            "crates/labby/src/docs/projection.rs",
             render::feature_matrix(&projection.feature_matrix),
         ),
         artifact(
             "docs/generated/feature-matrix.json",
+            "crates/labby/src/docs/projection.rs",
             render::json(&projection.feature_matrix)?,
         ),
-    ])
+    ];
+    // Include the index itself without maintaining a second artifact inventory.
+    let readme = render::generated_readme(artifacts.iter().map(|item| (item.path, item.source)));
+    artifacts[0].content = readme;
+    Ok(artifacts)
 }
 
-fn artifact(path: &'static str, content: String) -> Artifact {
-    Artifact { path, content }
+fn artifact(path: &'static str, source: &'static str, content: String) -> Artifact {
+    Artifact {
+        path,
+        source,
+        content,
+    }
 }
 
 fn ensure_newline(value: &str) -> String {
@@ -251,6 +288,50 @@ mod tests {
     use crate::docs::secret_example_is_suspicious;
 
     #[test]
+    fn generated_readme_covers_the_manifest_and_source_owners() {
+        let root = workspace_root().expect("workspace root");
+        let projection = build_docs_projection(&root).expect("documentation projection");
+        let artifacts = build_artifacts(&projection).expect("generated artifacts");
+        let readme = &artifacts[0];
+        assert_eq!(readme.path, "docs/generated/README.md");
+        let rows = readme
+            .content
+            .lines()
+            .filter(|line| line.starts_with("| ["))
+            .count();
+        assert_eq!(
+            rows,
+            artifacts.len(),
+            "one ownership row per declared artifact"
+        );
+        let mut paths = std::collections::BTreeSet::new();
+        for item in &artifacts {
+            assert!(paths.insert(item.path), "duplicate artifact: {}", item.path);
+            assert!(
+                root.join(item.source).is_file(),
+                "missing source owner: {}",
+                item.source
+            );
+            let name = item
+                .path
+                .strip_prefix("docs/generated/")
+                .expect("generated path");
+            assert!(readme.content.contains(&format!("| [{name}]({name}) |")));
+            assert!(readme.content.contains(&format!("(../../{})", item.source)));
+        }
+    }
+
+    #[test]
+    fn generated_readme_distinguishes_binary_check_from_repository_gate() {
+        let readme = render::generated_readme(std::iter::empty());
+        assert!(readme.contains("The `just docs-check` recipe"));
+        assert!(readme.contains("Markdown links and heading fragments"));
+        assert!(readme.contains("The `labby docs check` subcommand"));
+        assert!(readme.contains("does not test live service health"));
+        assert!(!readme.contains("It does not run Markdown link checks"));
+    }
+
+    #[test]
     fn secret_lint_rejects_token_like_values() {
         let synthetic_secret_key = ["s", "k", "-placeholder"].concat();
         let synthetic_jwt_prefix = ["e", "y", "Jplaceholder"].concat();
@@ -263,12 +344,21 @@ mod tests {
     fn safety_lint_rejects_local_paths() {
         let artifacts = vec![artifact(
             "docs/generated/test.md",
+            "crates/labby/src/docs/artifacts.rs",
             "/home/jmagar/leak".to_string(),
         )];
         assert!(validate_artifacts(&artifacts, Path::new(".")).is_err());
-        let artifacts = vec![artifact("docs/generated/test.md", "/tmp/leak".to_string())];
+        let artifacts = vec![artifact(
+            "docs/generated/test.md",
+            "crates/labby/src/docs/artifacts.rs",
+            "/tmp/leak".to_string(),
+        )];
         assert!(validate_artifacts(&artifacts, Path::new(".")).is_err());
-        let artifacts = vec![artifact("docs/generated/test.md", "C:\\leak".to_string())];
+        let artifacts = vec![artifact(
+            "docs/generated/test.md",
+            "crates/labby/src/docs/artifacts.rs",
+            "C:\\leak".to_string(),
+        )];
         assert!(validate_artifacts(&artifacts, Path::new(".")).is_err());
     }
 }
