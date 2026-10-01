@@ -97,7 +97,7 @@ export function AllowedUsersPanel() {
   }
 
   return (
-    <div className={cn(AURORA_STRONG_PANEL, 'px-6 py-5')}>
+    <div className={cn(AURORA_STRONG_PANEL, 'min-w-0 max-w-full px-6 py-5')}>
       <div className="flex items-center gap-3">
         <Users className="size-5 text-aurora-accent-primary" />
         <div>
@@ -193,7 +193,7 @@ export function AllowedUsersPanel() {
             No users in the allowlist yet.
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="relative min-w-0 max-w-full overflow-x-auto">
             <table className="w-full text-sm" aria-label="Allowed users">
               <thead>
                 <tr className="border-b border-aurora-border-strong text-left text-xs text-aurora-text-muted">
