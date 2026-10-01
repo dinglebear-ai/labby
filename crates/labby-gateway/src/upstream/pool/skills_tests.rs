@@ -15,6 +15,8 @@
 
 #[cfg(feature = "skills")]
 mod bounded_discovery;
+#[cfg(feature = "skills")]
+mod cold_get;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -2,6 +2,9 @@
 // Transport adapters are wired in dependent beads; keep this shared service
 // independently reviewable until those callers land.
 #![allow(dead_code)]
+mod documents;
+pub(crate) use documents::{MAX_DOCUMENT_BYTES, normalize_folder};
+
 use crate::dispatch::helpers::{action_schema, help_payload, require_str};
 use crate::{
     access::AccessRuntime,
@@ -156,6 +159,34 @@ pub(crate) async fn observe_result<T>(
 
 pub const ACTIONS: &[ActionSpec] = &[
     action(
+        "stash.save_text",
+        "Save a private text or Markdown context document in a virtual folder",
+        false,
+        documents::SAVE_PARAMS,
+        "StashFile",
+    ),
+    action(
+        "stash.read_text",
+        "Read a saved context document by URI with bounded text continuation",
+        false,
+        documents::READ_PARAMS,
+        "TextPage",
+    ),
+    action(
+        "stash.folders",
+        "List caller-visible virtual folders with file counts",
+        false,
+        documents::FOLDERS_PARAMS,
+        "FolderPage",
+    ),
+    action(
+        "stash.move",
+        "Move an owned file to a virtual folder without changing its URI",
+        false,
+        documents::MOVE_PARAMS,
+        "StashFile",
+    ),
+    action(
         "stash.list",
         "List files available to the caller",
         false,
@@ -261,6 +292,7 @@ const FILE_PARAM: &[ParamSpec] = &[
     OWNER_ID_PARAM,
 ];
 const LIST_PARAMS: &[ParamSpec] = &[
+    documents::FOLDER_PARAM,
     ParamSpec {
         name: "cursor",
         ty: "string",
@@ -277,6 +309,7 @@ const LIST_PARAMS: &[ParamSpec] = &[
     OWNER_ID_PARAM,
 ];
 const SEARCH_PARAMS: &[ParamSpec] = &[
+    documents::FOLDER_PARAM,
     ParamSpec {
         name: "query",
         ty: "string",
@@ -379,6 +412,8 @@ pub(crate) struct FileStashService {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct FileView {
+    pub folder: String,
+    pub content_type: String,
     pub file_id: String,
     pub uri: String,
     pub display_name: String,
@@ -416,6 +451,8 @@ impl From<StashFile> for FileView {
     fn from(file: StashFile) -> Self {
         Self {
             uri: file.uri(),
+            folder: file.folder,
+            content_type: file.content_type,
             file_id: file.file_id,
             display_name: file.display_name,
             size_bytes: file.size_bytes,
@@ -486,7 +523,7 @@ impl FileStashService {
         cursor: Option<&str>,
         limit: Option<usize>,
     ) -> Result<FilePage, ToolError> {
-        self.list_inner(principal, None, cursor, limit).await
+        self.list_inner(principal, None, cursor, limit, None).await
     }
     pub(crate) async fn search(
         &self,
@@ -498,7 +535,23 @@ impl FileStashService {
         if query.is_empty() || query.len() > self.max_query_bytes {
             return Err(invalid("query"));
         }
-        self.list_inner(principal, Some(search_key(query)), cursor, limit)
+        self.list_inner(principal, Some(search_key(query)), cursor, limit, None)
+            .await
+    }
+    pub(crate) async fn list_in_folder(
+        &self,
+        principal: &PrincipalId,
+        query: Option<&str>,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        folder: Option<&str>,
+    ) -> Result<FilePage, ToolError> {
+        if let Some(query) = query
+            && (query.is_empty() || query.len() > self.max_query_bytes)
+        {
+            return Err(invalid("query"));
+        }
+        self.list_inner(principal, query.map(search_key), cursor, limit, folder)
             .await
     }
     async fn list_inner(
@@ -507,12 +560,18 @@ impl FileStashService {
         query: Option<String>,
         cursor: Option<&str>,
         limit: Option<usize>,
+        folder: Option<&str>,
     ) -> Result<FilePage, ToolError> {
         let limit = validated_limit(limit, self.page_limit)?;
         let cursor = cursor.map(parse_cursor).transpose()?;
         let (store, _) = self.stores().await?;
         let rows = store
-            .list_files(principal.as_str().to_owned(), cursor, limit + 1)
+            .list_files_in_folder(
+                principal.as_str().to_owned(),
+                cursor,
+                limit + 1,
+                folder.map(normalize_folder).transpose()?,
+            )
             .await
             .map_err(map_error)?;
         Ok(page_local_search(rows, query.as_deref(), limit))
@@ -703,12 +762,16 @@ pub(crate) fn required_capability(action: &str) -> Option<labby_primitives::acce
         | "stash.stats"
         | "stash.metadata"
         | "stash.download"
-        | "stash.resources.read" => Capability::ScopeRead,
-        "stash.upload" => Capability::ScopeCreate,
+        | "stash.resources.read"
+        | "stash.read_text"
+        | "stash.folders" => Capability::ScopeRead,
+        "stash.upload" | "stash.save_text" => Capability::ScopeCreate,
         "stash.delete" => Capability::ScopeDelete,
-        "stash.rename" | "stash.grants.create" | "stash.grants.list" | "stash.grants.revoke" => {
-            Capability::ScopeManage
-        }
+        "stash.rename"
+        | "stash.move"
+        | "stash.grants.create"
+        | "stash.grants.list"
+        | "stash.grants.revoke" => Capability::ScopeManage,
         _ => return None,
     })
 }
@@ -844,18 +907,51 @@ pub(crate) async fn dispatch_for_principal(
     // therefore be both premature and a duplicate for MCP calls.
     let _ = surface;
     let value = match action {
+        "stash.save_text" => serde_json::to_value(
+            service
+                .save_text(
+                    principal,
+                    string("filename")?,
+                    string("content")?,
+                    optional_string("format")?,
+                    optional_string("folder")?,
+                )
+                .await?,
+        ),
+        "stash.read_text" => serde_json::to_value(
+            service
+                .read_text(principal, string("uri")?, optional_string("cursor")?)
+                .await?,
+        ),
+        "stash.folders" => serde_json::to_value(
+            service
+                .folders(principal, optional_string("cursor")?, optional_limit()?)
+                .await?,
+        ),
+        "stash.move" => serde_json::to_value(
+            service
+                .move_file(principal, string("file_id")?, string("folder")?)
+                .await?,
+        ),
         "stash.list" => serde_json::to_value(
             service
-                .list(principal, optional_string("cursor")?, optional_limit()?)
+                .list_in_folder(
+                    principal,
+                    None,
+                    optional_string("cursor")?,
+                    optional_limit()?,
+                    optional_string("folder")?,
+                )
                 .await?,
         ),
         "stash.search" => serde_json::to_value(
             service
-                .search(
+                .list_in_folder(
                     principal,
-                    string("query")?,
+                    Some(string("query")?),
                     optional_string("cursor")?,
                     optional_limit()?,
+                    optional_string("folder")?,
                 )
                 .await?,
         ),
@@ -907,6 +1003,112 @@ pub(crate) async fn dispatch_for_principal(
         }
     };
     value.map_err(|_| service_error("internal_error", "File Stash response failed"))
+}
+
+const AUTHORITY_GATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+async fn check_final_authority<G>(
+    check: impl Future<Output = Result<G, ToolError>>,
+) -> Result<G, ToolError> {
+    tokio::time::timeout(AUTHORITY_GATE_TIMEOUT, check)
+        .await
+        .map_err(|_| service_error("busy", "File Stash authority check timed out"))?
+}
+
+/// Keep metadata unpublished until current authority passes its commit gate.
+/// The owned task retains caller/recipient leases and completes rollback or
+/// delete reclamation even after its awaiting transport request disappears.
+pub(crate) async fn dispatch_with_final_check<G: Send + 'static>(
+    service: &FileStashService,
+    principal: &PrincipalId,
+    surface: &'static str,
+    action: &str,
+    params: Value,
+    validated_grantee: Option<&PrincipalId>,
+    check: impl Future<Output = Result<G, ToolError>> + Send + 'static,
+) -> Result<Value, ToolError> {
+    if matches!(
+        action,
+        "stash.move"
+            | "stash.rename"
+            | "stash.delete"
+            | "stash.grants.create"
+            | "stash.grants.revoke"
+    ) {
+        use crate::file_stash::{MetadataMutation, MetadataReceipt};
+        let file_id = require_str(&params, "file_id")?.to_owned();
+        validate_id(&file_id, "file_id")?;
+        let mutation = match action {
+            "stash.move" => MetadataMutation::Move {
+                folder: normalize_folder(require_str(&params, "folder")?)?,
+            },
+            "stash.rename" => {
+                let (display_name, collision_key) =
+                    normalize_name(require_str(&params, "display_name")?)?;
+                MetadataMutation::Rename {
+                    display_name,
+                    collision_key,
+                }
+            }
+            "stash.delete" => MetadataMutation::Delete,
+            "stash.grants.create" => MetadataMutation::CreateGrant {
+                grantee: validated_grantee
+                    .ok_or_else(|| service_error("not_found", "File Stash operation failed"))?
+                    .as_str()
+                    .to_owned(),
+            },
+            "stash.grants.revoke" => {
+                let grant_id = require_str(&params, "grant_id")?.to_owned();
+                validate_id(&grant_id, "grant_id")?;
+                MetadataMutation::RevokeGrant { grant_id }
+            }
+            _ => return Err(invalid("action")),
+        };
+        let service = service.clone();
+        let owner = principal.as_str().to_owned();
+        return tokio::spawn(async move {
+            let (store, blobs) = service.stores().await?;
+            let runtime = tokio::runtime::Handle::current();
+            let receipt = store.mutate_metadata_checked(owner, file_id, mutation, move || {
+                runtime.block_on(check_final_authority(check))
+            }).await.map_err(map_error)??;
+            match receipt {
+                MetadataReceipt::File(file) => serde_json::to_value(FileView::from(file)),
+                MetadataReceipt::Grant(grant) => serde_json::to_value(GrantView::from(grant)),
+                MetadataReceipt::Deleted(key) => {
+                    // Reclaim only after the authorized database commit. A
+                    // denied delete leaves both metadata and bytes untouched.
+                    if let Err(error) = blobs.remove_blob(&key) {
+                        tracing::warn!(error_kind=%error,"file stash deleted metadata; blob reclamation deferred");
+                    }
+                    Ok(serde_json::json!({"deleted":true}))
+                }
+                MetadataReceipt::Revoked => Ok(serde_json::json!({"revoked":true})),
+            }.map_err(|_| service_error("internal_error", "File Stash response failed"))
+        }).await.map_err(|_| service_error("service_unavailable", "File Stash mutation task failed; check Stash before retrying"))?;
+    }
+    let response = dispatch_for_principal(
+        service,
+        principal,
+        surface,
+        action,
+        params,
+        validated_grantee,
+    )
+    .await?;
+    if let Err(error) = check_final_authority(check).await {
+        if action == "stash.save_text" {
+            let id = response
+                .get("file_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    service_error("integrity_error", "Context save receipt is unavailable")
+                })?;
+            service.delete(principal, id).await?;
+        }
+        return Err(error);
+    }
+    Ok(response)
 }
 
 /// Context-free entrypoint used by catalog machinery. Caller-bound actions are
@@ -1061,6 +1263,8 @@ mod tests {
     #[test]
     fn canonical_uri_is_id_based() {
         let f = StashFile {
+            folder: String::new(),
+            content_type: "application/octet-stream".into(),
             file_id: "01ARZ3NDEKTSV4RRFFQ69G5FAV".into(),
             display_name: "a".into(),
             size_bytes: 1,
@@ -1089,6 +1293,8 @@ mod tests {
     #[test]
     fn page_local_search_preserves_cursor_across_an_empty_filtered_page() {
         let row = |file_id: &str, display_name: &str, created_at| StashFile {
+            folder: String::new(),
+            content_type: "application/octet-stream".into(),
             file_id: file_id.into(),
             display_name: display_name.into(),
             size_bytes: 1,

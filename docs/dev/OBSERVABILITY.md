@@ -91,7 +91,7 @@ Optional when applicable:
 - `operation = "health"`
 - `kind` on failure
 - `input_tokens` / `output_tokens` — estimated request/response token counts
-  (≈chars/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
+  (≈compact UTF-8 bytes/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
 
 ### API Dispatch
 
@@ -111,7 +111,7 @@ Optional when applicable:
 - `operation = "health"`
 - `kind` on failure
 - `input_tokens` / `output_tokens` — estimated request/response token counts
-  (≈chars/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
+  (≈compact UTF-8 bytes/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
 
 This same contract applies to auth-adjacent HTTP handlers that are part of the
 product surface, including:
@@ -263,7 +263,7 @@ The operator UI deliberately separates these two retention shapes:
 
 - **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
 - **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes those correlation identifiers plus `span_id` and numeric `call_ordinal` from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
-- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
+- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `compact UTF-8 bytes / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
 
 Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
 

@@ -9,7 +9,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use labby_codemode::{
-    CatalogDescriptor, CodeModeCaller, CodeModeCatalogKind, CodeModeSurface, ToolScope,
+    ArtifactSearchResult, CodeModeCaller, CodeModeCatalogKind, CodeModeSurface, ToolScope,
 };
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::CodeModeSearchConfig;
@@ -37,6 +37,19 @@ pub struct CodeModeSkillSummary {
 /// unavailable. Catalog membership is discovery metadata only; get/read repeat
 /// authorization through the canonical Skills registry.
 pub trait CodeModeSkillProvider: Send + Sync {
+    /// Cheap caller-authorized metadata hints for sandbox bootstrap.
+    /// Implementations must use local snapshots and must not start discovery.
+    /// Explicit `listSkills` and query-driven search remain available when this
+    /// default omits hints.
+    fn bootstrap<'a>(
+        &'a self,
+        _caller: &'a CodeModeCaller,
+        _scope: &'a ToolScope,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<CodeModeSkillSummary>, ToolError>> + Send + 'a>>
+    {
+        Box::pin(std::future::ready(Ok(Vec::new())))
+    }
+
     fn list<'a>(
         &'a self,
         caller: &'a CodeModeCaller,
@@ -73,5 +86,5 @@ pub trait CodeModeArtifactSearchProvider: Send + Sync {
         caller: &'a CodeModeCaller,
         surface: CodeModeSurface,
         scope: &'a ToolScope,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<ArtifactSearchResult, ToolError>> + Send + 'a>>;
 }

@@ -6447,12 +6447,166 @@
       "requires_http_subject": false,
       "actions": [
         {
+          "name": "stash.save_text",
+          "description": "Save a private text or Markdown context document in a virtual folder",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "filename",
+              "ty": "string",
+              "required": true,
+              "description": "Display filename; existing names in the same folder conflict"
+            },
+            {
+              "name": "content",
+              "ty": "string",
+              "required": true,
+              "description": "Exact UTF-8 document, at most 512 KiB"
+            },
+            {
+              "name": "format",
+              "ty": "markdown|text",
+              "required": false,
+              "description": "Document format; defaults to markdown"
+            },
+            {
+              "name": "folder",
+              "ty": "string",
+              "required": false,
+              "description": "Virtual folder, such as dinglebear-ai/labby; empty selects Unfiled"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "StashFile"
+        },
+        {
+          "name": "stash.read_text",
+          "description": "Read a saved context document by URI with bounded text continuation",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "uri",
+              "ty": "string",
+              "required": true,
+              "description": "Stable stash://me/files/{id} resource URI"
+            },
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Continuation from the preceding text read"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "TextPage"
+        },
+        {
+          "name": "stash.folders",
+          "description": "List caller-visible virtual folders with file counts",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "cursor",
+              "ty": "string",
+              "required": false,
+              "description": "Folder continuation from the preceding folder page"
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, at most 200"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "FolderPage"
+        },
+        {
+          "name": "stash.move",
+          "description": "Move an owned file to a virtual folder without changing its URI",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "file_id",
+              "ty": "string",
+              "required": true,
+              "description": "Opaque file ID; moving preserves its resource URI"
+            },
+            {
+              "name": "folder",
+              "ty": "string",
+              "required": true,
+              "description": "Destination virtual folder; empty moves to Unfiled"
+            },
+            {
+              "name": "owner_kind",
+              "ty": "personal|team",
+              "required": false,
+              "description": "Explicit owner scope; defaults to personal"
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": false,
+              "description": "Required with Team ownership"
+            }
+          ],
+          "returns": "StashFile"
+        },
+        {
           "name": "stash.list",
           "description": "List files available to the caller",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
           "params": [
+            {
+              "name": "folder",
+              "ty": "string",
+              "required": false,
+              "description": "Virtual folder, such as dinglebear-ai/labby; empty selects Unfiled"
+            },
             {
               "name": "cursor",
               "ty": "string",
@@ -6487,6 +6641,12 @@
           "requires_admin": false,
           "required_scopes": [],
           "params": [
+            {
+              "name": "folder",
+              "ty": "string",
+              "required": false,
+              "description": "Virtual folder, such as dinglebear-ai/labby; empty selects Unfiled"
+            },
             {
               "name": "query",
               "ty": "string",

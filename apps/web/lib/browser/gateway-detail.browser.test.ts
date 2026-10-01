@@ -127,6 +127,64 @@ test.after(async () => {
   }
 })
 
+test('Stash repo folders support filtering and moving with a stable URI on mobile', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  let releaseFolderFailure!: () => void
+  const folderFailure = new Promise<void>(resolve => { releaseFolderFailure = resolve })
+  t.after(() => { releaseFolderFailure() })
+  let folder = 'org/repo'
+  const uri = 'stash://me/files/context-1'
+  const selected: Array<string | null> = []
+  await page.route('**/v1/stash**', async route => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.searchParams.get('folder') === 'org/unavailable') {
+      await folderFailure
+      await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ kind: 'busy', message: 'Folder unavailable' }) })
+      return
+    }
+    let body: unknown
+    if (url.pathname.endsWith('/stats')) body = { owned_file_count: 1, owned_shared_file_count: 0, owned_committed_bytes: 5, owned_reserved_bytes: 0 }
+    else if (url.pathname.endsWith('/folders')) body = { folders: [{ folder, file_count: 1 }], next_cursor: null }
+    else if (url.pathname.endsWith('/grants')) body = { grants: [], next_cursor: null }
+    else if (request.method() === 'POST') {
+      const action = request.postDataJSON()
+      assert.equal(action.action, 'stash.move')
+      folder = action.params.folder
+      body = { file_id: 'context-1', uri, folder, display_name: 'handoff.md', size_bytes: 5, created_at: 1, updated_at: 2, owned: true }
+    } else {
+      selected.push(url.searchParams.get('folder'))
+      body = { files: url.searchParams.has('folder') && url.searchParams.get('folder') !== folder ? [] : [{ file_id: 'context-1', uri, folder, display_name: 'handoff.md', size_bytes: 5, created_at: 1, updated_at: 1, owned: true }], next_cursor: null }
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+  })
+  await page.goto(`${baseUrl}/stash/`, { waitUntil: 'networkidle' })
+  const filtered = page.waitForResponse(response => new URL(response.url()).searchParams.get('folder') === 'org/repo')
+  await page.getByRole('combobox', { name: 'Document folder' }).selectOption('folder:org/repo')
+  await filtered
+  await page.getByText('Uploads go to org/repo.', { exact: false }).waitFor()
+  await page.getByRole('button', { name: 'Actions for handoff.md' }).click()
+  await page.getByRole('menuitem', { name: 'Manage file' }).click()
+  await page.getByRole('textbox', { name: 'Folder', exact: true }).fill('org/other-repo')
+  await page.getByRole('button', { name: 'Move to folder' }).click()
+  await page.getByRole('combobox', { name: 'Document folder' }).selectOption('all')
+  await page.getByText('org/other-repo', { exact: true }).first().waitFor()
+  assert.ok(selected.includes('org/repo'))
+  assert.equal(await page.locator('article code').textContent(), uri)
+  await page.getByRole('textbox', { name: 'Open a repo or folder' }).fill('org/unavailable')
+  await page.getByRole('button', { name: 'Open folder', exact: true }).click()
+  await page.getByText('Loading your files…', { exact: true }).waitFor()
+  assert.equal(await page.locator('article').count(), 0, 'opening a folder must immediately remove the previous folder rows')
+  releaseFolderFailure()
+  await page.getByRole('alert').filter({ hasText: 'Stash is busy' }).waitFor()
+  assert.equal(await page.locator('article').count(), 0, 'a failed folder request must not revive earlier rows')
+  assert.equal(await page.getByRole('button', { name: 'Load more', exact: true }).count(), 0)
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'folder controls must fit the mobile viewport')
+})
+
 test('gateway manage tools flow persists after a full reload in mock preview', { concurrency: false }, async (t) => {
   await startPreviewServer()
 

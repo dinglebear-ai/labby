@@ -7,8 +7,8 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, params};
 
@@ -21,6 +21,9 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 // actual writers regardless of connection count, so this does not buy write
 // parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
+// Bound admitted operations, including active workers and async waiters.
+// Saturation returns the existing storage error instead of growing a queue.
+const SQLITE_PENDING_LIMIT: usize = 64;
 const SCHEMA_VERSION: i64 = 3;
 /// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
 /// loop, so a large prune backlog doesn't hold the writer lock in one shot.
@@ -33,7 +36,8 @@ const WRITE_SEMAPHORE_PERMITS: usize = 64;
 
 #[derive(Clone)]
 pub struct UsageStore {
-    conns: Arc<Vec<Mutex<Connection>>>,
+    conns: Arc<Vec<Arc<tokio::sync::Mutex<Connection>>>>,
+    admission: Arc<tokio::sync::Semaphore>,
     next_conn: Arc<AtomicUsize>,
     path: Arc<PathBuf>,
     write_semaphore: Arc<tokio::sync::Semaphore>,
@@ -56,7 +60,13 @@ impl UsageStore {
         .await
         .map_err(|error| storage_error(format!("sqlite open task failed: {error}")))??;
         Ok(Self {
-            conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
+            conns: Arc::new(
+                conns
+                    .into_iter()
+                    .map(|conn| Arc::new(tokio::sync::Mutex::new(conn)))
+                    .collect(),
+            ),
+            admission: Arc::new(tokio::sync::Semaphore::new(SQLITE_PENDING_LIMIT)),
             next_conn: Arc::new(AtomicUsize::new(0)),
             path: Arc::new(path),
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(WRITE_SEMAPHORE_PERMITS)),
@@ -210,10 +220,25 @@ impl UsageStore {
         let conns = Arc::clone(&self.conns);
         let len = conns.len();
         let idx = self.next_conn.fetch_add(1, Ordering::Relaxed) % len;
+        let permit = self
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| storage_error("sqlite store busy".to_string()))?;
+        // Connection waiters park before entering the shared blocking executor.
+        // The worker owns capacity and its connection until work actually ends.
+        let guard = {
+            // Prefer any idle connection before queueing on the round-robin
+            // candidate. A busy connection must not strand idle pool capacity.
+            let available = (0..len)
+                .find_map(|offset| conns[(idx + offset) % len].clone().try_lock_owned().ok());
+            match available {
+                Some(guard) => guard,
+                None => conns[idx].clone().lock_owned().await,
+            }
+        };
         tokio::task::spawn_blocking(move || {
-            let guard = conns[idx]
-                .lock()
-                .map_err(|_| storage_error("sqlite mutex poisoned".to_string()))?;
+            let _permit = permit;
             op(&guard)
         })
         .await
@@ -2606,5 +2631,111 @@ mod tests {
             semaphore.try_acquire().is_ok(),
             "a released permit should be acquirable again"
         );
+    }
+    #[test]
+    fn queued_sqlite_calls_do_not_occupy_blocking_workers() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(5)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let store = UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap();
+            let baseline = store.next_conn.load(std::sync::atomic::Ordering::Relaxed);
+            let mut releases = Vec::new();
+            let mut holders = Vec::new();
+            for _ in 0..4 {
+                let (release, wait) = std::sync::mpsc::channel();
+                let (entered, ready) = tokio::sync::oneshot::channel();
+                let copy = store.clone();
+                holders.push(tokio::spawn(async move {
+                    copy.with_conn(move |_| {
+                        entered.send(()).unwrap();
+                        wait.recv().unwrap();
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+                }));
+                ready.await.unwrap();
+                releases.push(release);
+            }
+            let copy = store.clone();
+            let queued = tokio::spawn(async move { copy.with_conn(|_| Ok(())).await });
+            // Observe that the queued operation selected a connection before probing
+            // the blocking executor. This current-thread runtime resumes us only
+            // after that task parks; all connections are held, so no DB work can run.
+            while store.next_conn.load(std::sync::atomic::Ordering::Relaxed) < baseline + 5 {
+                tokio::task::yield_now().await;
+            }
+            let probe = tokio::task::spawn_blocking(|| ());
+            let result = tokio::time::timeout(std::time::Duration::from_millis(200), probe).await;
+            for release in releases {
+                release.send(()).unwrap();
+            }
+            for holder in holders {
+                holder.await.unwrap();
+            }
+            queued.await.unwrap().unwrap();
+            assert!(
+                result.is_ok(),
+                "queued SQLite lock must not consume the fifth blocking worker"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn cancelled_sqlite_caller_retains_running_connection_and_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(directory.path().join("usage.db"))
+            .await
+            .unwrap();
+        let selected = store.next_conn.load(std::sync::atomic::Ordering::Relaxed);
+        let (release, wait) = std::sync::mpsc::channel();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let copy = store.clone();
+        let caller = tokio::spawn(async move {
+            copy.with_conn(move |_| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+                Ok(())
+            })
+            .await
+        });
+        ready.await.unwrap();
+        caller.abort();
+        drop(caller.await);
+        assert_eq!(
+            store.admission.available_permits(),
+            super::SQLITE_PENDING_LIMIT - 1
+        );
+        let connection = store.conns[selected % store.conns.len()].clone();
+        assert!(connection.clone().try_lock_owned().is_err());
+        release.send(()).unwrap();
+        drop(connection.lock_owned().await);
+        assert_eq!(
+            store.admission.available_permits(),
+            super::SQLITE_PENDING_LIMIT
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_admission_rejects_saturation_and_recovers() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(directory.path().join("usage.db"))
+            .await
+            .unwrap();
+        let held = store
+            .admission
+            .clone()
+            .acquire_many_owned(super::SQLITE_PENDING_LIMIT as u32)
+            .await
+            .unwrap();
+        assert!(store.with_conn(|_| Ok(())).await.is_err());
+        drop(held);
+        store.with_conn(|_| Ok(())).await.unwrap();
     }
 }
