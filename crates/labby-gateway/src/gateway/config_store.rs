@@ -173,41 +173,19 @@ impl FsGatewayConfigStore {
                 ));
             }
         };
-        let mut inserted = false;
-        let mut matched = false;
-        let mut lines = Vec::new();
-        for line in raw.lines() {
-            let assignment = line.trim_start();
-            let assignment = assignment
-                .strip_prefix("export")
-                .filter(|rest| rest.starts_with(char::is_whitespace))
-                .map_or(assignment, str::trim_start);
-            if assignment
-                .split_once('=')
-                .is_some_and(|(key, _)| key.trim() == env_name)
-            {
-                matched = true;
-                if !inserted && let Some(value) = previous {
-                    lines.push(format!("{env_name}={}", quote_env_value(value)));
-                    inserted = true;
-                }
-            } else {
-                lines.push(line.to_string());
-            }
-        }
-        if !inserted && let Some(value) = previous {
-            lines.push(format!("{env_name}={}", quote_env_value(value)));
-        }
-        if (!matched && previous.is_none()) || lines.join("\n") + "\n" == raw {
+        let replacement = previous.map(|value| format!("{env_name}={}", quote_env_value(value)));
+        let output = labby_runtime::dotenv::rewrite_key(&raw, env_name, replacement.as_deref())
+            .map_err(|_| ToolError::internal_message("cannot rewrite an invalid dotenv file"))?;
+        if output == raw {
             return Ok(());
         }
         if self.env_path.exists() {
             create_env_backup(&self.env_path)?;
         }
-        write_env_lines_atomically(
+        write_env_contents_atomically(
             &self.env_path,
             self.env_path.parent().unwrap_or(Path::new(".")),
-            &lines,
+            &output,
         )
     }
 }
@@ -324,16 +302,23 @@ fn write_env_lines_atomically(
     parent: &Path,
     lines: &[String],
 ) -> Result<(), ToolError> {
+    write_env_contents_atomically(path, parent, &(lines.join("\n") + "\n"))
+}
+
+#[cfg(any(test, feature = "testkit"))]
+fn write_env_contents_atomically(
+    path: &Path,
+    parent: &Path,
+    contents: &str,
+) -> Result<(), ToolError> {
     let mut tmp = NamedTempFile::new_in(parent).map_err(|e| {
         ToolError::internal_message(format!(
             "failed to create temp env file in {}: {e}",
             parent.display()
         ))
     })?;
-    for line in lines {
-        writeln!(tmp, "{line}")
-            .map_err(|e| ToolError::internal_message(format!("failed to write env file: {e}")))?;
-    }
+    tmp.write_all(contents.as_bytes())
+        .map_err(|e| ToolError::internal_message(format!("failed to write env file: {e}")))?;
     tmp.as_file()
         .sync_all()
         .map_err(|e| ToolError::internal_message(format!("failed to sync env file: {e}")))?;
@@ -421,9 +406,12 @@ fn prune_env_backups(parent: &Path, file_name: &str) -> Result<(), ToolError> {
 fn quote_env_value(v: &str) -> String {
     let needs_quotes = v
         .chars()
-        .any(|c| matches!(c, ' ' | '\t' | '#' | '$' | '\\' | '"' | '\'' | '`'));
+        .any(|c| c.is_whitespace() || matches!(c, '#' | '$' | '\\' | '"' | '\'' | '`'));
     if needs_quotes {
-        let escaped = v.replace('\\', r"\\").replace('"', r#"\""#);
+        let escaped = v
+            .replace('\\', r"\\")
+            .replace('"', r#"\""#)
+            .replace('$', r"\$");
         format!("\"{escaped}\"")
     } else {
         v.to_owned()
@@ -437,7 +425,12 @@ fn unquote_env_value(value: &str) -> String {
         .and_then(|inner| inner.strip_suffix('"'))
         .map_or_else(
             || value.to_string(),
-            |inner| inner.replace(r#"\""#, "\"").replace(r"\\", r"\"),
+            |inner| {
+                inner
+                    .replace(r#"\""#, "\"")
+                    .replace(r"\$", "$")
+                    .replace(r"\\", r"\")
+            },
         )
 }
 
@@ -504,6 +497,76 @@ impl GatewayConfigStore for FsGatewayConfigStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_literal_dollar_roundtrips_through_fs_restore_and_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FsGatewayConfigStore::new(dir.path().join("config.toml"));
+        for value in [
+            r"prefix${LABBY_TEST_LITERAL_SECRET_UNSET_91B09}slash\$suffix",
+            r"$",
+            r"\$",
+            r"\\$",
+            r#"quote\"$suffix"#,
+            "first\n${LABBY_TEST_LITERAL_SECRET_UNSET_91B09}\nlast",
+        ] {
+            store.restore_env_key("TOKEN", Some(value)).unwrap();
+            let raw = fs::read_to_string(dir.path().join(".env")).unwrap();
+            let (_, loaded) = dotenvy::from_read_iter(raw.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded, value);
+            assert_eq!(unquote_env_value(&quote_env_value(value)), value);
+        }
+    }
+
+    #[test]
+    fn multiline_credential_restore_preserves_unrelated_assignment_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let store = FsGatewayConfigStore::new(dir.path().join("config.toml"));
+        let unrelated = "# operator comment\r\nNOTE=\"first\r\nTOKEN=keep-this-value\r\nlast\"\r\n";
+        let raw = format!("{unrelated}TOKEN=abc\n");
+        fs::write(&path, &raw).unwrap();
+        store.restore_env_key("TOKEN", Some("abc")).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert_eq!(backup_count(dir.path()), 0);
+        store.restore_env_key("TOKEN", Some("replacement")).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{unrelated}TOKEN=replacement\n")
+        );
+        store.restore_env_key("TOKEN", None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), unrelated);
+    }
+
+    #[test]
+    fn multiline_credential_restore_removes_complete_target_assignments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let store = FsGatewayConfigStore::new(dir.path().join("config.toml"));
+        fs::write(&path, "# top\nexport TOKEN=\"old\nOTHER=inside-token\nlast\"\nTOKEN=duplicate\nKEEP=unchanged").unwrap();
+        store.restore_env_key("TOKEN", Some("new")).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# top\nTOKEN=new\nKEEP=unchanged"
+        );
+        store.restore_env_key("TOKEN", None).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# top\nKEEP=unchanged");
+    }
+
+    #[test]
+    fn multiline_credential_restore_rejects_unclosed_values_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let store = FsGatewayConfigStore::new(dir.path().join("config.toml"));
+        let raw = "NOTE=\"first\nTOKEN=continuation\n";
+        fs::write(&path, raw).unwrap();
+        assert!(store.restore_env_key("TOKEN", Some("new")).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert_eq!(backup_count(dir.path()), 0);
+    }
 
     fn backup_count(dir: &Path) -> usize {
         fs::read_dir(dir)
