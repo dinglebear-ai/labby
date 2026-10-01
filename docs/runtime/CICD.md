@@ -192,9 +192,8 @@ and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
 fail the aggregate. The classifier runs on every event, including fork PRs,
-without repository credentials. Native Windows workspace, installer, and desktop
-checks run only on `workflow_dispatch` with `run_windows=true`. They are advisory:
-none is a dependency or assertion of `ci-gate`, even when manually selected.
+without repository credentials. CI runs on Linux and macOS only; there are no
+Windows lanes or manual Windows selection inputs.
 The gate still rejects a skipped required fork product lane when its category
 was routed.
 
@@ -241,12 +240,11 @@ jobs when their changed-path category is enabled:
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
-| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
+| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests |
 | Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
 | Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
 | Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
-| Tests (Linux fork PR fallback) | currently unreachable on forks | declared credentialless nextest job depends on `changes`, which is skipped for fork PRs |
-| Tests (Windows) | manual `run_windows=true` and `rust_test` | native nextest on GitHub-hosted `windows-latest`; advisory and excluded from `ci-gate`, skipped on ordinary PRs/pushes |
+| Tests (Linux fork PR fallback) | fork PRs with `rust_test` | credentialless all-feature workspace nextest; `changes` runs on every event, and `ci-gate` requires this job when a fork PR routes Rust tests |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
@@ -288,9 +286,8 @@ build. Run `pnpm test` in `apps/web` for the frontend unit and
 install-script test contract.
 
 The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
-script with its declared shell, runs ShellCheck at warning severity, and runs
-PSScriptAnalyzer 1.24.0 against the shipped Windows installer. Analyzer setup,
-parse failures, warnings, and errors all fail the stable `ci-gate`.
+script with its declared shell and runs ShellCheck at warning severity. Analyzer
+setup, parse failures, warnings, and errors all fail the stable `ci-gate`.
 
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
@@ -325,7 +322,7 @@ land the required code/tests and the baseline update together.
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - Native Windows workspace, installer, and desktop jobs require manual `run_windows=true`; all remain advisory and excluded from `ci-gate`
+  - CI uses Linux and macOS runners only, with no manual Windows lanes
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
@@ -348,7 +345,7 @@ native build actions.
 
 Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04`; native ARM64
 release builds use `ubuntu-24.04-arm`.
-Native Windows jobs use `windows-latest`. No repository-defined job selects a
+Native macOS jobs use GitHub-hosted Apple Silicon runners. No repository-defined job selects a
 self-hosted runner or a custom runner label.
 
 Rust jobs use the repository `setup-rust-kache` composite in credentialless
@@ -388,8 +385,7 @@ verification in either mode. Shell and npm installers select the matching
 ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
-runner. Windows has manually enabled CI tests, but is not a release
-target. Cross-compilation may be useful experimentally, but it is not the
+runner. Windows is neither a CI runner nor a release target. Cross-compilation may be useful experimentally, but it is not the
 release support contract.
 
 ## Integration Tests

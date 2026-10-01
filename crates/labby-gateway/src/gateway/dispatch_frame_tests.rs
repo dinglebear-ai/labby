@@ -73,10 +73,11 @@ async fn scoped_dispatch_executes_ephemeral_probe_under_caller_stack_budget() {
 }
 
 #[test]
-fn routed_probe_has_stack_headroom_for_serving_middleware() {
-    // Leave 384 KiB of a 1 MiB serving stack for API and middleware callers.
+fn routed_probe_completes_with_one_mib_serving_stack() {
+    // Exercise the serving stack budget across target architectures. The product
+    // API regression separately covers middleware and handler frames at this budget.
     std::thread::Builder::new()
-        .stack_size(640 * 1024)
+        .stack_size(1024 * 1024)
         .spawn(scoped_dispatch_executes_ephemeral_probe_under_caller_stack_budget)
         .unwrap()
         .join()

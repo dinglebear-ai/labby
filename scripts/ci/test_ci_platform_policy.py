@@ -13,13 +13,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 WORKFLOW_DIR = ROOT / ".github" / "workflows"
 
 
-def job_block(workflow: str, job: str, next_job: str) -> str:
-    start = workflow.index(f"  {job}:\n")
-    end = workflow.index(f"  {next_job}:\n", start)
-    return workflow[start:end]
-
-
-class WindowsCiPolicyTests(unittest.TestCase):
+class CiPlatformPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -42,59 +36,25 @@ class WindowsCiPolicyTests(unittest.TestCase):
                 self.assertTrue(provisions, f"{name} runs real Justfile fixtures and needs pinned just")
                 self.assertRegex((ROOT / ".mise.toml").read_text(), r'(?m)^just = "[0-9.]+"$')
 
-    def test_workspace_windows_job_is_hosted_cached_and_bounded(self) -> None:
-        block = job_block(self.workflow, "test-windows", "release-contract")
-        self.assertIn("runs-on: windows-latest", block)
-        self.assertNotIn("self-hosted", block)
-        self.assertIn("timeout-minutes: 60", block)
-        self.assertIn("Swatinem/rust-cache@", block)
-        self.assertIn("key: workspace-native-windows-v2", block)
-        self.assertIn("cache-on-failure: true", block)
-        self.assertIn("cargo test --workspace --all-features --locked --no-run", block)
-        self.assertIn("shard: [1, 2, 3, 4]", block)
-        self.assertIn("--partition hash:${{ matrix.shard }}/4", block)
-        self.assertIn("if: matrix.shard == 1", block)
-        self.assertIn("--test windows_job_object_reaping", block)
-        self.assertIn("--run-ignored ignored-only", block)
-        self.assertNotIn("--no-tests pass", block)
+    def test_no_workflow_has_a_windows_runner_or_manual_backdoor(self) -> None:
+        for path in WORKFLOW_DIR.glob("*.y*ml"):
+            with self.subTest(workflow=path.name):
+                text = path.read_text(encoding="utf-8")
+                workflow = yaml.load(text, Loader=yaml.BaseLoader)
+                self.assertNotIn("run_windows", text)
+                for name, job in (workflow.get("jobs") or {}).items():
+                    self.assertNotIn("windows", str(job.get("runs-on", "")).lower(), name)
+                    self.assertNotIn("windows", str(job.get("strategy", {}).get("matrix", {})).lower(), name)
+                for name in ("test-windows", "windows-installer", "desktop-windows"):
+                    self.assertNotIn(name, workflow.get("jobs", {}))
 
-    def test_desktop_windows_job_is_hosted_cached_and_bounded(self) -> None:
-        block = job_block(self.workflow, "desktop-windows", "verification-t0")
-        self.assertIn("runs-on: windows-latest", block)
-        self.assertIn("timeout-minutes: 60", block)
-        self.assertIn("Swatinem/rust-cache@", block)
-        self.assertIn("key: labby-desktop-windows-v1", block)
-        self.assertIn("cache-on-failure: true", block)
-
-    def test_native_containment_is_not_replaced_by_unix_supervisor_checks(self) -> None:
-        block = job_block(self.workflow, "test-windows", "release-contract")
-        self.assertIn(
-            "run: cargo nextest run --workspace --all-features --locked --profile ci "
-            "--test-threads 4 --partition hash:${{ matrix.shard }}/4\n",
-            block,
-        )
-        self.assertIn(
-            "run: cargo nextest run -p labby --test windows_job_object_reaping "
-            "--all-features --locked --profile ci --run-ignored ignored-only\n",
-            block,
-        )
-        self.assertNotIn("continue-on-error: true", block)
-
-    def test_all_windows_jobs_are_manually_selected(self) -> None:
-        self.assertIn("      run_windows:\n", self.workflow)
-        self.assertIn("        type: boolean\n", self.workflow)
-        self.assertIn("        default: false\n", self.workflow)
-
-        desktop = job_block(self.workflow, "desktop-windows", "verification-t0")
-        manual_gate = "github.event_name == 'workflow_dispatch' && inputs.run_windows == true"
-        for name in ("test-windows", "windows-installer", "desktop-windows"):
-            self.assertIn(manual_gate, yaml.safe_load(self.workflow)["jobs"][name]["if"])
-
-    def test_windows_jobs_do_not_block_ci_gate(self) -> None:
-        gate = yaml.safe_load(self.workflow)["jobs"]["ci-gate"]
-        for name in ("test-windows", "windows-installer", "desktop-windows"):
-            self.assertNotIn(name, gate["needs"])
-            self.assertNotIn(f"needs.{name}.result", str(gate))
+    def test_lifecycle_analysis_keeps_shell_checks_without_powershell(self) -> None:
+        steps = yaml.safe_load(self.workflow)["jobs"]["lifecycle-static-analysis"]["steps"]
+        self.assertTrue(any(step.get("run") == "scripts/ci/check-lifecycle-scripts.sh" for step in steps))
+        for step in steps:
+            self.assertNotEqual("pwsh", step.get("shell"))
+            self.assertNotIn("Pester", step.get("run", ""))
+            self.assertNotIn("PSScriptAnalyzer", step.get("run", ""))
 
     def test_self_hosted_jobs_are_declared_non_blocking_and_same_repository(self) -> None:
         # Hosted runners stay the default. The self-hosted fleet is privileged
@@ -166,7 +126,6 @@ class ProductRoutingTests(unittest.TestCase):
             "github.event_name": event,
             "github.repository": "acme/labby",
             "github.event.pull_request.head.repo.full_name": "contributor/labby" if fork else "acme/labby",
-            "inputs.run_windows": False,
         }
         context.update({"needs.changes.outputs." + key: str(value).lower() for key, value in output.items()})
         return context
@@ -182,23 +141,6 @@ class ProductRoutingTests(unittest.TestCase):
             text=True, capture_output=True, timeout=10, check=False,
         )
 
-    def test_windows_jobs_require_explicit_manual_selection(self) -> None:
-        for name in ("test-windows", "windows-installer", "desktop-windows"):
-            for event in ("pull_request", "push", "schedule", "workflow_dispatch"):
-                for selected in (False, True):
-                    with self.subTest(job=name, event=event, selected=selected):
-                        context = self.context(event, False, ["scripts/install.ps1", "crates/labby/src/main.rs", "apps/tauri/src/lib.rs"])
-                        context["inputs.run_windows"] = selected
-                        self.assertEqual(event == "workflow_dispatch" and selected,
-                                         evaluate_condition(self.jobs[name].get("if"), context))
-
-    def test_windows_failures_do_not_fail_aggregate_even_when_selected(self) -> None:
-        context = self.context("workflow_dispatch", False, ["crates/labby/src/main.rs"])
-        context["inputs.run_windows"] = True
-        result = self.run_aggregate(context, **{name: "failure" for name in
-                                   ("test-windows", "windows-installer", "desktop-windows")})
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-
     def test_fork_product_routing_has_a_classifier_and_test_lane(self) -> None:
         for files, expected in [(["crates/labby-gateway/src/gateway/dispatch.rs"], "test-fork"), (["apps/web/app/(admin)/gateway/page.tsx"], "gateway-admin-browser")]:
             with self.subTest(files=files):
@@ -212,10 +154,9 @@ class ProductRoutingTests(unittest.TestCase):
         result = self.run_aggregate(self.context("pull_request", True, ["README.md"]), changes="skipped")
         self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
 
-    def test_unrouted_windows_skip_is_intentional(self) -> None:
+    def test_unrouted_product_skip_is_intentional(self) -> None:
         context = self.context("pull_request", False, ["docs/services/ACCESS.md"])
-        self.assertFalse(evaluate_condition(self.jobs["test-windows"].get("if"), context))
-        result = self.run_aggregate(context, **{"test-windows": "skipped", "windows-installer": "skipped", "test-fork": "skipped", "test": "skipped"})
+        result = self.run_aggregate(context, **{"test-fork": "skipped", "test": "skipped"})
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
 

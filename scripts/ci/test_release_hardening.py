@@ -871,8 +871,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_ci_runs_centralized_lifecycle_static_analysis(self) -> None:
         workflow = self.text(".github/workflows/ci.yml")
         self.assertIn("scripts/ci/check-lifecycle-scripts.sh", workflow)
-        self.assertIn("PSScriptAnalyzer", workflow)
-        self.assertIn("Invoke-ScriptAnalyzer", workflow)
+        self.assertNotIn("PSScriptAnalyzer", workflow)
+        self.assertNotIn("Invoke-ScriptAnalyzer", workflow)
 
 class PromotionDurabilityTests(unittest.TestCase):
     def npm_helper(self):

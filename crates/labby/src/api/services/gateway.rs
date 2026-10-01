@@ -1625,6 +1625,18 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[test]
+    fn gateway_test_api_completes_with_one_mib_serving_stack() {
+        // Exercise the handler and scoped dispatcher together, rather than
+        // inferring serving-stack safety from a child future's size.
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(gateway_test_accepts_proposed_spec)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn atomic_gateway_save_api_rejects_selected_team_before_effects() {
         let (manager, path) = test_manager_with_path();
