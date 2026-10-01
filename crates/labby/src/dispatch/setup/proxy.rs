@@ -187,6 +187,7 @@ fn ensure_secret_file_permissions(_path: &Path) -> Result<bool, ToolError> {
 fn preference_patches(preferences: &ProxyPreferences) -> Vec<ConfigScalarPatch> {
     let exposure = match preferences.exposure {
         crate::proxy::config::ProxyExposure::Tailscale => "tailscale",
+        crate::proxy::config::ProxyExposure::Funnel => "funnel",
         crate::proxy::config::ProxyExposure::Local => "local",
     };
     let auth = match preferences.auth {

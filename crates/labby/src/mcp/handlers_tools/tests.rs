@@ -6633,6 +6633,60 @@ async fn authenticated_http_gets_scoped_artifact_management_while_local_peers_do
 }
 
 #[tokio::test]
+async fn proxy_aggregate_catalog_matches_peer_contract_and_preserves_collisions() {
+    let pool = Arc::new(UpstreamPool::new());
+    for name in ["alpha", "beta"] {
+        let upstream_name: Arc<str> = Arc::from(name);
+        pool.insert_entry_for_test(
+            name,
+            fixture_upstream_entry(
+                name,
+                HashMap::from([(
+                    "fixture.echo".to_string(),
+                    fixture_upstream_tool(&upstream_name, "fixture.echo", None),
+                )]),
+            ),
+        )
+        .await;
+    }
+    let manager = code_mode_manager_with_pool_multi(
+        false,
+        vec![
+            fixture_upstream_config("alpha"),
+            fixture_upstream_config("beta"),
+        ],
+        pool,
+    )
+    .await;
+    let server = test_server(
+        ToolRegistry::proxy_aggregate(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .unwrap()
+        .tools;
+    assert_eq!(listed, contract);
+    let mut names: Vec<_> = listed.iter().map(|tool| tool.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["alpha::fixture.echo", "beta::fixture.echo"]);
+}
+
+#[tokio::test]
 async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths() {
     let upstream_name: Arc<str> = Arc::from("annotated");
     let mut expected = rmcp::model::ToolAnnotations::new()

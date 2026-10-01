@@ -390,7 +390,14 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         registry,
         config.services.built_in_upstream_apis_enabled,
     );
-    let registry = filter_registry(registry, &args.services)?;
+    let registry = if std::env::var_os("LABBY_MCP_PROXY_AGGREGATE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+        && matches!(transport, Transport::Stdio)
+    {
+        ToolRegistry::proxy_aggregate()
+    } else {
+        filter_registry(registry, &args.services)?
+    };
     tracing::info!(
         subsystem = "startup",
         phase = "bootstrap.registry",
@@ -410,7 +417,11 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // full rationale; this mirrors what the `gateway` CLI subcommands
     // already do for their own dispatch.
     #[cfg(feature = "gateway")]
-    if stdio_mode && let Some(live) = crate::live_gateway::detect(config, "mcp").await? {
+    if stdio_mode
+        && std::env::var_os("LABBY_MCP_FORCE_STANDALONE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        && let Some(live) = crate::live_gateway::detect(config, "mcp").await?
+    {
         tracing::info!(
             subsystem = "startup",
             phase = "bridge.detected",
@@ -2208,6 +2219,33 @@ async fn build_gateway_runtime(
     let pool = Arc::new(pool_builder);
     if !suppress_upstream_runtime {
         pool.seed_lazy_upstreams(&config.upstream).await;
+        if std::env::var_os("LABBY_MCP_PROXY_AGGREGATE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            use futures::{StreamExt as _, TryStreamExt as _};
+            // Cold package runners are independent; bound fanout while requiring
+            // every configured server to finish before advertising the aggregate.
+            futures::stream::iter(config.upstream.iter().map(|upstream| {
+                let pool = pool.clone();
+                async move {
+                    pool.ensure_tools_for_upstream(upstream, None, None)
+                        .await
+                        .with_context(|| {
+                            format!("proxy MCP upstream `{}` failed discovery", upstream.name)
+                        })?;
+                    let tools = pool.healthy_tools_for_upstream(&upstream.name).await;
+                    anyhow::ensure!(!tools.is_empty(), "proxy MCP upstream `{}` did not expose tools", upstream.name);
+                    for tool in tools {
+                        anyhow::ensure!(!tool.tool.name.contains("::"),
+                            "proxy MCP upstream `{}` exposes tool `{}` with unsupported namespace separator `::`", upstream.name, tool.tool.name);
+                    }
+                    anyhow::Ok(())
+                }
+            }))
+            .buffer_unordered(4)
+            .try_collect::<Vec<_>>()
+            .await?;
+        }
         tracing::info!(
             subsystem = "gateway_client",
             phase = "discovery.lazy",

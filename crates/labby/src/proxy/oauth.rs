@@ -65,6 +65,73 @@ impl ProxyOauthContext {
     }
 }
 
+/// Build an issuer hosted by the proxy itself, using the planned Funnel origin.
+pub async fn prepare_self_hosted(
+    config: &crate::config::LabConfig,
+    resource: &url::Url,
+    scopes: &[String],
+) -> Result<(std::sync::Arc<labby_auth::state::AuthState>, url::Url)> {
+    let mut auth_config = resolve_self_hosted_auth_config(config, resource)?;
+    let issuer = auth_config
+        .public_url
+        .clone()
+        .context("Funnel issuer is missing")?;
+    configure_scope_policy(&mut auth_config, scopes)?;
+    auth_config.enable_dynamic_registration = true;
+    auth_config.disable_static_token_with_oauth = true;
+    let state = labby_auth::state::AuthState::new(auth_config)
+        .await
+        .context("self-hosted OAuth state construction failed")?;
+    state
+        .replace_configured_resource_scopes([(resource.to_string(), scopes.to_vec())])
+        .context("register Funnel MCP OAuth resource")?;
+    Ok((std::sync::Arc::new(state), issuer))
+}
+
+/// Resolve the Funnel issuer before OAuth configuration validation, preserving
+/// explicit file and environment overrides and rejecting a mismatched origin.
+pub fn resolve_self_hosted_auth_config(
+    config: &crate::config::LabConfig,
+    resource: &url::Url,
+) -> Result<labby_auth::config::AuthConfig> {
+    resolve_self_hosted_auth_config_with_env(config, resource, std::env::vars())
+}
+
+fn resolve_self_hosted_auth_config_with_env(
+    config: &crate::config::LabConfig,
+    resource: &url::Url,
+    env: impl IntoIterator<Item = (String, String)>,
+) -> Result<labby_auth::config::AuthConfig> {
+    let mut issuer = resource.clone();
+    issuer.set_path("/");
+    issuer.set_query(None);
+    issuer.set_fragment(None);
+    let mut file_auth = config.auth.clone().unwrap_or_default();
+    if file_auth.public_url.is_none() {
+        file_auth.public_url = config
+            .public_urls
+            .as_ref()
+            .and_then(|urls| urls.app.clone())
+            .or_else(|| Some(issuer.to_string()));
+    }
+    let mut auth_config = crate::config::resolve_auth_with_env(Some(&file_auth), env)
+        .context("proxy OAuth configuration is invalid")?;
+    if !matches!(auth_config.mode, labby_auth::config::AuthMode::OAuth) {
+        bail!("Funnel requires LABBY_AUTH_MODE=oauth and Google OAuth credentials");
+    }
+    if auth_config
+        .public_url
+        .as_ref()
+        .is_some_and(|configured| configured.origin() != issuer.origin())
+    {
+        bail!("configured OAuth issuer differs from the Tailscale Funnel origin");
+    }
+    validate_google_callback(&auth_config, &issuer)?;
+    auth_config.public_url = Some(issuer);
+    auth_config.resource_path = resource.path().to_string();
+    Ok(auth_config)
+}
+
 pub const DEFAULT_LEASE_TTL: Duration = Duration::from_mins(2);
 pub const DEFAULT_RENEW_INTERVAL: Duration = Duration::from_secs(40);
 pub const DEFAULT_RENEW_JITTER_MAX: Duration = Duration::from_secs(4);
@@ -288,4 +355,139 @@ fn bounded_jitter(max: Duration) -> Duration {
     let max_nanos = max.as_nanos().min(u128::from(u64::MAX)) as u64;
     let nanos = u64::from_le_bytes(bytes) % max_nanos.saturating_add(1);
     Duration::from_nanos(nanos)
+}
+
+fn validate_google_callback(
+    config: &labby_auth::config::AuthConfig,
+    issuer: &url::Url,
+) -> Result<()> {
+    if matches!(
+        config.inbound_provider,
+        Some(labby_auth::config::InboundProviderKind::Authelia)
+    ) {
+        return Ok(());
+    }
+    let mut callback = issuer.clone();
+    callback.set_path(labby_auth::config::GOOGLE_CALLBACK_PATH);
+    if config.google.callback_path != labby_auth::config::GOOGLE_CALLBACK_PATH
+        || config
+            .google
+            .callback_url
+            .as_ref()
+            .is_some_and(|configured| configured != &callback)
+    {
+        bail!("configured Google callback differs from the Tailscale Funnel callback {callback}");
+    }
+    Ok(())
+}
+
+fn configure_scope_policy(
+    config: &mut labby_auth::config::AuthConfig,
+    scopes: &[String],
+) -> Result<()> {
+    if scopes.is_empty() {
+        bail!("Funnel OAuth requires at least one scope");
+    }
+    config.scopes_supported = scopes.to_vec();
+    // The proxy requires all of these scopes for every MCP request. The
+    // canonical resource's omitted-scope grant must satisfy that same policy.
+    config.default_scope = scopes.join(" ");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn funnel_issuer_fallback_precedes_oauth_validation_and_respects_overrides() {
+        let resource = url::Url::parse("https://node.example.ts.net:8443/mcp").unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::config::LabConfig {
+            auth: Some(crate::config::AuthFileConfig {
+                mode: Some("oauth".to_string()),
+                google_client_id: Some("client".to_string()),
+                google_client_secret: Some("secret".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let env = || {
+            vec![
+                (
+                    "LABBY_HOME".to_string(),
+                    home.path().to_string_lossy().into_owned(),
+                ),
+                ("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "00".repeat(32)),
+                (
+                    "LABBY_AUTH_ADMIN_EMAIL".to_string(),
+                    "owner@example.com".to_string(),
+                ),
+            ]
+        };
+        let resolved =
+            super::resolve_self_hosted_auth_config_with_env(&config, &resource, env()).unwrap();
+        assert_eq!(
+            resolved.public_url.unwrap().as_str(),
+            "https://node.example.ts.net:8443/"
+        );
+        assert_eq!(resolved.resource_path, "/mcp");
+        let mut explicit = config.clone();
+        explicit.auth.as_mut().unwrap().public_url = Some("https://other.example/".to_string());
+        assert!(
+            super::resolve_self_hosted_auth_config_with_env(&explicit, &resource, env()).is_err()
+        );
+        let mut public_urls = config.clone();
+        public_urls.public_urls = Some(crate::config::PublicUrlsConfig {
+            app: Some("https://other.example/".to_string()),
+            ..Default::default()
+        });
+        assert!(
+            super::resolve_self_hosted_auth_config_with_env(&public_urls, &resource, env())
+                .is_err()
+        );
+        public_urls.auth.as_mut().unwrap().public_url =
+            Some("https://node.example.ts.net:8443/".to_string());
+        super::resolve_self_hosted_auth_config_with_env(&public_urls, &resource, env()).unwrap();
+        let mut override_env = env();
+        override_env.push((
+            "LABBY_PUBLIC_URL".to_string(),
+            "https://node.example.ts.net:8443/".to_string(),
+        ));
+        super::resolve_self_hosted_auth_config_with_env(&explicit, &resource, override_env)
+            .unwrap();
+        let mut mismatch_env = env();
+        mismatch_env.push((
+            "LABBY_PUBLIC_URL".to_string(),
+            "https://other.example/".to_string(),
+        ));
+        assert!(
+            super::resolve_self_hosted_auth_config_with_env(&config, &resource, mismatch_env)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn funnel_google_callback_rejects_stale_overrides() {
+        let issuer = url::Url::parse("https://node.example.ts.net:8443/").unwrap();
+        let mut config = labby_auth::config::AuthConfig::default();
+        config.google.callback_path = "/auth/google/callback".to_string();
+        super::validate_google_callback(&config, &issuer).unwrap();
+        config.google.callback_url = Some(issuer.join("auth/google/callback").unwrap());
+        super::validate_google_callback(&config, &issuer).unwrap();
+        config.google.callback_url =
+            Some(url::Url::parse("https://old.example/auth/google/callback").unwrap());
+        assert!(super::validate_google_callback(&config, &issuer).is_err());
+        config.google.callback_url = None;
+        config.google.callback_path = "/legacy/callback".to_string();
+        assert!(super::validate_google_callback(&config, &issuer).is_err());
+    }
+
+    #[test]
+    fn self_hosted_default_scope_grants_every_required_scope() {
+        let mut config = labby_auth::config::AuthConfig::default();
+        let scopes = vec!["mcp:read".to_string(), "mcp:write".to_string()];
+        super::configure_scope_policy(&mut config, &scopes).unwrap();
+        assert_eq!(config.scopes_supported, scopes);
+        assert_eq!(config.default_scope, "mcp:read mcp:write");
+        assert!(super::configure_scope_policy(&mut config, &[]).is_err());
+    }
 }

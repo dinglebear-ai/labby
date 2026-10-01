@@ -13,6 +13,7 @@ pub const DEFAULT_PROXY_BEARER_TOKEN_ENV: &str = "LABBY_PROXY_BEARER_TOKEN";
 pub enum ProxyExposure {
     #[default]
     Tailscale,
+    Funnel,
     Local,
 }
 
@@ -121,6 +122,16 @@ impl ProxyPreferences {
         {
             return Err(ProxyConfigError::TailnetAuthRequiresTailscale);
         }
+        if matches!(self.exposure, ProxyExposure::Funnel) {
+            if !matches!(self.auth, ProxyAuthMode::Oauth) {
+                return Err(ProxyConfigError::FunnelRequiresOauth);
+            }
+            if let Some(port) = self.port.fixed() {
+                if !matches!(port, 443 | 8443 | 10000) {
+                    return Err(ProxyConfigError::InvalidFunnelPort { port });
+                }
+            }
+        }
         if self.bearer_token_env.trim().is_empty() {
             return Err(ProxyConfigError::EmptyBearerTokenEnv);
         }
@@ -216,6 +227,10 @@ pub enum ProxyConfigError {
     InvalidFixedPort,
     #[error("proxy auth `tailnet` requires Tailscale exposure")]
     TailnetAuthRequiresTailscale,
+    #[error("public Funnel exposure requires OAuth authentication")]
+    FunnelRequiresOauth,
+    #[error("Tailscale Funnel port {port} is unsupported; use 443, 8443, or 10000")]
+    InvalidFunnelPort { port: u16 },
     #[error("proxy bearer token environment key must not be empty")]
     EmptyBearerTokenEnv,
     #[error("invalid environment variable name `{name}`")]
@@ -263,6 +278,24 @@ mod tests {
             cfg.validate(),
             Err(ProxyConfigError::TailnetAuthRequiresTailscale)
         );
+    }
+
+    #[test]
+    fn public_funnel_requires_oauth_and_supported_port() {
+        let mut cfg = ProxyPreferences {
+            exposure: ProxyExposure::Funnel,
+            ..ProxyPreferences::default()
+        };
+        assert_eq!(cfg.validate(), Err(ProxyConfigError::FunnelRequiresOauth));
+        cfg.auth = ProxyAuthMode::Oauth;
+        cfg.validate().unwrap();
+        cfg.port = ProxyPortPreference::Fixed(9000);
+        assert_eq!(
+            cfg.validate(),
+            Err(ProxyConfigError::InvalidFunnelPort { port: 9000 })
+        );
+        cfg.port = ProxyPortPreference::Fixed(8443);
+        cfg.validate().unwrap();
     }
 
     #[test]

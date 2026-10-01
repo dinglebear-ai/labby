@@ -416,7 +416,7 @@ impl AuthConfig {
                 "session_cookie_name must not be empty".to_string(),
             ));
         }
-        if self.default_scope.is_empty() {
+        if self.default_scope.trim().is_empty() {
             return Err(AuthError::Config(
                 "default_scope must not be empty".to_string(),
             ));
@@ -426,9 +426,13 @@ impl AuthConfig {
                 "scopes_supported must contain at least one scope".to_string(),
             ));
         }
-        if !self.scopes_supported.contains(&self.default_scope) {
+        if !self.default_scope.split_whitespace().all(|scope| {
+            self.scopes_supported
+                .iter()
+                .any(|supported| supported == scope)
+        }) {
             return Err(AuthError::Config(format!(
-                "default_scope `{}` must be listed in scopes_supported",
+                "every default_scope entry in `{}` must be listed in scopes_supported",
                 self.default_scope
             )));
         }
@@ -1490,6 +1494,19 @@ mod tests {
         assert_eq!(cfg.login_path, "/auth/login");
         assert!(!cfg.enable_dynamic_registration);
         assert!(!cfg.disable_static_token_with_oauth);
+    }
+
+    #[test]
+    fn default_scope_accepts_multiple_supported_scopes_and_rejects_unknown_or_blank() {
+        let mut config =
+            AuthConfig::from_sources(fake_env_with_many([("LAB_AUTH_MODE", "bearer")])).unwrap();
+        config.scopes_supported = vec!["mcp:read".to_string(), "mcp:write".to_string()];
+        config.default_scope = "mcp:read mcp:write".to_string();
+        config.validate().unwrap();
+        config.default_scope = "mcp:read unknown".to_string();
+        assert!(config.validate().is_err());
+        config.default_scope = "   ".to_string();
+        assert!(config.validate().is_err());
     }
 
     #[test]

@@ -39,6 +39,7 @@ pub enum LocalProxyAuthPolicy {
         resource: url::Url,
         issuer: url::Url,
         required_scopes: Vec<String>,
+        host_issuer: bool,
     },
 }
 
@@ -367,8 +368,20 @@ impl PreparedLocalProxy {
             .with_json_response(false)
             .with_cancellation_token(cancellation.clone());
         let session_manager = Arc::new(NeverSessionManager::default());
+        let tool_security_schemes = match &auth {
+            LocalProxyAuthPolicy::Oauth {
+                required_scopes, ..
+            } => Some(serde_json::json!([
+                {"type":"oauth2", "scopes":required_scopes}
+            ])),
+            LocalProxyAuthPolicy::None => Some(serde_json::json!([{"type":"noauth"}])),
+            LocalProxyAuthPolicy::Bearer { .. } => None,
+        };
         let mcp_service = StreamableHttpService::new(
-            move || Ok(BridgeServerHandler::from_peer(peer.clone())),
+            move || {
+                Ok(BridgeServerHandler::from_peer(peer.clone())
+                    .with_tool_security_schemes(tool_security_schemes.clone()))
+            },
             session_manager,
             service_config,
         );
@@ -389,6 +402,7 @@ impl PreparedLocalProxy {
                 resource,
                 issuer,
                 required_scopes,
+                host_issuer,
             } => {
                 let configured_issuer = auth_state
                     .config
@@ -401,6 +415,8 @@ impl PreparedLocalProxy {
                     bail!("OAuth auth state issuer does not match the stable issuer");
                 }
                 let metadata_url = root_metadata_url(&resource)?;
+                let issuer_router = host_issuer
+                    .then(|| labby_auth::routes::bearer_only_router((*auth_state).clone()));
                 let layer = AuthLayer::from_state(auth_state)
                     .with_resource_url(Some(Arc::from(resource.as_str())))
                     .with_required_scopes(required_scopes.clone())
@@ -412,10 +428,14 @@ impl PreparedLocalProxy {
                     scopes_supported: required_scopes,
                     bearer_methods_supported: vec!["header".to_string()],
                 };
-                let router = mcp_router.route(
-                    "/.well-known/oauth-protected-resource",
-                    get(move || async move { Json(metadata.clone()) }),
-                );
+                let router = if let Some(issuer_router) = issuer_router {
+                    mcp_router.merge(issuer_router)
+                } else {
+                    mcp_router.route(
+                        "/.well-known/oauth-protected-resource",
+                        get(move || async move { Json(metadata.clone()) }),
+                    )
+                };
                 return self.finish_start(
                     connection,
                     cancellation,
@@ -439,10 +459,13 @@ impl PreparedLocalProxy {
     ) -> Result<LocalProxy> {
         let shutdown = cancellation.clone();
         let server_task = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown.cancelled_owned())
-                .await
-                .context("proxy HTTP server failed")
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .context("proxy HTTP server failed")
         });
 
         Ok(LocalProxy {
