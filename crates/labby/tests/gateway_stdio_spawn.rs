@@ -273,7 +273,7 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     }
     // Explicitly do NOT set the canary — mirrors what connect_stdio_upstream does.
     cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::null());
+    cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
 
     let mut child = match cmd.spawn() {
@@ -284,6 +284,28 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
         }
     };
     let pid = child.id();
+
+    // A live PID alone does not prove that exec has finished publishing its
+    // environment in /proc. Wait for cat to echo a byte before inspecting it.
+    // Keep stdin open afterward so the process cannot exit during the read.
+    use std::io::{Read as _, Write as _};
+    child
+        .stdin
+        .as_mut()
+        .expect("piped stdin")
+        .write_all(b"r")
+        .expect("send child readiness probe");
+    let mut ready = [0_u8; 1];
+    child
+        .stdout
+        .as_mut()
+        .expect("piped stdout")
+        .read_exact(&mut ready)
+        .expect("receive child readiness probe");
+    assert_eq!(
+        &ready, b"r",
+        "cat must finish exec before environment inspection"
+    );
 
     // The child blocks reading its piped stdin, so it is guaranteed alive
     // here — a failed environ read is a real failure, not a race to tolerate.
