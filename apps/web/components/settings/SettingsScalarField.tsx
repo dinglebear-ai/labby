@@ -58,6 +58,7 @@ export function SettingsScalarField({
   const logLevels = ['off', 'error', 'warn', 'info', 'debug', 'trace']
   const controlProps = {
     id,
+    name: field.key,
     disabled,
     'aria-invalid': Boolean(error),
     'aria-describedby': describedBy,
@@ -71,7 +72,7 @@ export function SettingsScalarField({
     typeof value === 'string' ||
     typeof value === 'number' ||
     typeof value === 'boolean'
-  const stacked =
+  const stacked = field.section === 'agents' || field.control === 'url' || field.secret ||
     field.control === 'text' ||
     field.control === 'string_list' ||
     (field.control === 'read_only' && !isPrimitive)
@@ -93,7 +94,7 @@ export function SettingsScalarField({
       case 'enum':
         return (
           <Select value={inputValue} disabled={disabled} onValueChange={(next) => onChange(field.key, next)}>
-            <SelectTrigger {...controlProps} style={{ ...SETTINGS_CONTROL_STYLE, minWidth: 150 }}>
+            <SelectTrigger {...controlProps} style={{ ...SETTINGS_CONTROL_STYLE, minWidth: stacked ? 0 : 150, width: stacked ? '100%' : undefined }}>
               <SelectValue placeholder={field.example ?? 'Select'} />
             </SelectTrigger>
             <SelectContent>

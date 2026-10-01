@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { ArrowUpRight, CheckCircle2, CircleAlert, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { SettingsScalarSection } from '@/components/settings/SettingsScalarSection'
@@ -21,6 +21,7 @@ export default function AgentProviderSettingsPage(): React.ReactElement {
   const [error, setError] = useState<string>()
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<string>()
+  const [checkFailed, setCheckFailed] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -48,12 +49,14 @@ export default function AgentProviderSettingsPage(): React.ReactElement {
     if (!principalId) return
     setChecking(true)
     setCheckResult(undefined)
+    setCheckFailed(false)
     try {
       const models = await listAgentModels('personal', principalId)
       setCheckResult(models.length > 0
         ? `The running Labby server reached the Agent provider and listed ${models.length} available model${models.length === 1 ? '' : 's'}. Select one when creating an Agent.`
         : 'The running Labby server reached the Agent provider, but it returned no available models.')
     } catch (reason) {
+      setCheckFailed(true)
       setCheckResult(reason instanceof Error ? reason.message : 'Could not check the Agent provider from the Labby server.')
     } finally {
       setChecking(false)
@@ -61,27 +64,27 @@ export default function AgentProviderSettingsPage(): React.ReactElement {
   }
 
   return <>
-    {loading ? <p className="flex items-center gap-2 text-xs text-aurora-text-muted"><Loader2 className="size-4 animate-spin" />Loading Agent provider settings…</p> : null}
-    {error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}
+    {loading ? <p className="flex items-center gap-2 text-sm text-aurora-text-muted"><Loader2 className="size-4 animate-spin" />Loading Agent provider settings…</p> : null}
+    {error ? <p role="alert" className="text-sm text-aurora-error">{error}</p> : null}
     {schema && settings ? <>
       <SettingsScalarSection
         title="Connect an Agent provider"
-        description="Labby's built-in Agents use this provider. For a new standard API connection, select OpenAI-compatible API. Select Phoenix only when your provider supports its session extension; existing connections retain Phoenix until you choose a protocol. Save the connection here, check models, then open Agents to choose a model returned by the provider and run a test Agent. Saving a URL or key alone does not verify the connection."
+        description="Connect the API that Labby’s built-in Agents call from this server. Choose OpenAI-compatible API for standard providers, or Phoenix for its session extension. Existing connections retain Phoenix until you choose a protocol. Save the connection, check its models, then run a test Agent."
         section="agents"
         state={settings}
         fields={fieldsForSection(schema.fields, 'agents')}
         onSaved={setSettings}
       />
-      <div className="space-y-2 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4">
-        <h2 className="text-sm font-semibold text-aurora-text-primary">Check the running provider connection</h2>
-        <p className="text-xs text-aurora-text-muted">Labby requests the model list from the provider using the saved connection and any service environment overrides. New Agent runs use this connection immediately; existing runs keep their original connection. A model list confirms access to models; run an Agent to verify generation.</p>
-        <Button type="button" size="sm" variant="outline" disabled={checking || !principalId} onClick={() => void checkProvider()}>
+      <div className="space-y-4 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-5 sm:p-6">
+        <h2 className="text-sm font-semibold text-aurora-text-primary">Check available models</h2>
+        <p className="max-w-prose text-sm leading-relaxed text-aurora-text-muted">Labby requests the model list from the provider using the saved connection and any service environment overrides. New Agent runs use this connection immediately; existing runs keep their original connection. A model list confirms access to models; run an Agent to verify generation.</p>
+        <Button data-visible-label type="button" size="sm" variant="outline" className="h-9" disabled={checking || !principalId} onClick={() => void checkProvider()}>
           {checking ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
           Check models
         </Button>
-        {checkResult ? <p role="status" className="text-xs text-aurora-text-primary">{checkResult}</p> : null}
+        {checkResult ? <p role={checkFailed ? "alert" : "status"} className="flex items-start gap-2 text-sm leading-relaxed text-aurora-text-primary">{checkFailed ? <CircleAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-aurora-error" /> : <CheckCircle2 aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-aurora-text-muted" />}{checkResult}</p> : null}
       </div>
-      <Link href="/agents/" className="text-xs font-semibold text-aurora-accent-strong underline-offset-2 hover:underline">Open Agents to verify the provider</Link>
+      <Link href="/agents/" className="inline-flex min-h-9 items-center gap-2 text-sm font-medium text-aurora-accent-strong underline-offset-4 hover:underline">Open Agents to verify the provider<ArrowUpRight aria-hidden="true" className="size-4" /></Link>
     </> : null}
   </>
 }

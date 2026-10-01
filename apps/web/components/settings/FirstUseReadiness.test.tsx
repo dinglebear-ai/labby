@@ -39,11 +39,13 @@ test('saved progress resumes and application deferral remains visibly unverified
   const { FirstUseReadiness } = await import('./FirstUseReadiness')
   const view = await renderClient(<FirstUseReadiness />).catch((error) => { throw error instanceof AggregateError ? error.errors[0] : error })
   try {
-    await waitFor(() => assert.match(view.container.textContent ?? '', /1 checks verified/))
+    await waitFor(() => assert.match(view.container.textContent ?? '', /1 check verified/))
     assert.doesNotMatch(view.container.textContent ?? '', /Your first-use checks passed/)
     await act(async () => [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('Use Labby only'))!.click())
     await waitFor(() => assert.match(view.container.textContent ?? '', /external applications deferred/))
     assert.equal(deferrals, 1)
+    assert.equal(view.container.querySelector('[role="progressbar"]')?.getAttribute('aria-valuetext'), '1 of 6 checks verified')
+    assert.match(view.container.textContent ?? '', /Next step/)
     assert.match(view.container.textContent ?? '', /Deferred/)
     assert.doesNotMatch(view.container.textContent ?? '', /Your first-use checks passed/)
   } finally { await view.unmount() }
