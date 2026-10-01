@@ -13,6 +13,44 @@ public internet; Labby permits Funnel only with OAuth. In Funnel mode, this
 single proxy process also serves the OAuth routes, including the Google
 callback. It needs durable Labby OAuth state but no separate `labby serve`.
 
+## The 30-second version
+
+**You need:** Node.js, signed-in Tailscale with Funnel enabled, and Apple
+Silicon or Linux with KVM. Until this feature is released, use the built
+checkout binary instead of `npx -y @dinglebear/labby`.
+
+1. **Get your Google callback first:**
+
+   ```console
+   npx -y @dinglebear/labby proxy --funnel --port 8443
+   ```
+
+   Copy the printed callback into a Google Cloud **Web application** OAuth
+   client's authorized redirect URIs. This preview publishes nothing.
+2. **Configure OAuth and save defaults.** Replace the example origin with the
+   printed origin; provide your Google client ID, secret, and admin email when
+   setup requests them:
+
+   ```console
+   npx -y @dinglebear/labby setup --role server --auth oauth --oauth google --public-url https://YOUR-NODE.ts.net:8443 --no-desktop --yes
+   npx -y @dinglebear/labby config proxy set --exposure funnel --auth oauth --port 8443 --yes
+   ```
+
+3. **Start it and keep it running:**
+
+   ```console
+   npx -y @dinglebear/labby proxy -- npx -y microsandbox-mcp
+   ```
+
+4. **Connect ChatGPT:** enable Developer mode, create an app using the printed
+   `/mcp` URL and **OAuth**, then sign in with Google.
+5. **Ask ChatGPT:** “Check the Microsandbox runtime, install it if needed,
+   then create, run, and remove a test sandbox.”
+
+Keep `~/.labby` across restarts. Subscriptions work; no OpenAI API integration
+is required. See the detailed steps below for prerequisites and troubleshooting,
+or use the [private OpenAI tunnel](#optional-private-mcp-connection-with-openai-secure-mcp-tunnel).
+
 ## ChatGPT web with Google OAuth and Microsandbox
 
 Labby and the Microsandbox MCP adapter can both run through `npx`; there is no
