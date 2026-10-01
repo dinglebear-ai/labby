@@ -21,9 +21,113 @@ async fn query_search_follows_pages_until_a_match_contributes() {
 
     let result = provider.search("deep-match", 1).await.unwrap();
 
-    assert_eq!(result.len(), 1);
-    assert_eq!(result[0].descriptor().name, "deep-match");
+    assert_eq!(result.skills.len(), 1);
+    assert_eq!(result.skills[0].descriptor().name, "deep-match");
+    assert!(!result.incomplete);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn query_search_reuses_complete_fresh_caller_catalog() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "unrelated"), entry("up", "deep-match")]
+    })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
+
+    provider
+        .discover(&SkillDiscoverRequest::default())
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    let result = provider.search("deep-match", 1).await.unwrap();
+    assert_eq!(result.skills.len(), 1);
+    assert_eq!(result.skills[0].descriptor().name, "deep-match");
+    assert!(!result.incomplete);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn cached_query_search_rechecks_exposure_policy() {
+    let server = SkillsServer::new(vec![json!({
+        "skills": [entry("up", "visible"), entry("up", "hidden")]
+    })]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let broad =
+        super::super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    broad
+        .discover(&SkillDiscoverRequest::default())
+        .await
+        .unwrap();
+
+    let narrowed =
+        super::super::SepSkillProvider::new(pool, skills_config("up", Some(vec!["visible"])), None);
+    let result = narrowed.search("hidden", 1).await.unwrap();
+    assert!(result.skills.is_empty());
+    assert!(!result.incomplete);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn query_search_preserves_matches_when_cursor_repeats() {
+    let server = SkillsServer::new(vec![
+        json!({"skills": [entry("up", "deep-match")], "nextCursor": "more"}),
+        json!({"skills": [entry("up", "unrelated")], "nextCursor": "more"}),
+    ]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
+
+    let result = provider.search("deep-match", 2).await.unwrap();
+    assert_eq!(result.skills.len(), 1);
+    assert!(result.incomplete);
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn query_search_returns_first_page_matches_before_provider_deadline() {
+    #[derive(Clone)]
+    struct SlowSecondPage {
+        inner: SkillsServer,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for SlowSecondPage {
+        fn get_info(&self) -> ServerInfo {
+            self.inner.get_info()
+        }
+
+        async fn on_custom_request(
+            &self,
+            request: CustomRequest,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CustomResult, ErrorData> {
+            if request.method.as_str() == "skills/list"
+                && self.calls.fetch_add(1, Ordering::SeqCst) > 0
+            {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            self.inner.on_custom_request(request, context).await
+        }
+    }
+
+    let server = SlowSecondPage {
+        inner: SkillsServer::new(vec![
+            json!({"skills": [entry("up", "deep-match")], "nextCursor": "more"}),
+            json!({"skills": [entry("up", "unrelated")]}),
+        ]),
+        calls: Arc::new(AtomicUsize::new(0)),
+    };
+    let pool =
+        catalog_pool_with_server_and_timeout("up", server, Some(Duration::from_millis(500))).await;
+    let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
+
+    let result = provider.search("deep-match", 2).await.unwrap();
+    assert_eq!(result.skills.len(), 1);
+    assert!(result.incomplete);
 }
 
 #[tokio::test]

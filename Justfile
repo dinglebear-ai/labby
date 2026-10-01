@@ -207,7 +207,15 @@ host-sync: web-build
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
     cargo build --workspace --all-features --profile "$profile" --bin labby
-    LABBY_BIN="target/$profile/labby"
+    LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
+    case "$LABBY_TARGET_DIR" in
+      /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
+      *)  LABBY_BIN="$(pwd)/$LABBY_TARGET_DIR/$profile/labby" ;;
+    esac
+    if [ ! -x "$LABBY_BIN" ]; then
+      echo "$profile binary not found at $LABBY_BIN — build did not produce an executable" >&2
+      exit 1
+    fi
     sudo mkdir -p /usr/local/bin
     sudo install -m 755 "$LABBY_BIN" /usr/local/bin/labby
     if systemctl is-active --quiet labby.service; then

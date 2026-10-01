@@ -177,6 +177,13 @@ disclosure uses explicit retrieval APIs instead. Resource helpers point to
 `codemode.getSkill(uri)`. `codemode.describe(...)` stays metadata-only
 and returns the namespace/name/helper/tags needed to continue without guessing.
 
+Code Mode initializes Skill hints from the caller-authorized first-party
+catalog generation. Bootstrap does not refresh upstream Skill catalogs.
+Query-driven `codemode.search()` and explicit `codemode.listSkills()`,
+`codemode.getSkill()`, and `codemode.readSkill()` retain remote discovery and
+access checks. Ready local search results survive an incomplete remote source;
+coverage reports identify which sources did not finish.
+
 Catalog membership is discovery metadata, not authorization. Tool execution is
 still checked against the current `ToolScope` at dispatch time, and a
 `kinds` search filter only narrows results. It never grants a capability.
@@ -482,6 +489,22 @@ and snippets omit `safety` because they are composite programs. These facts do
 not grant access, request approval, or replace the live descriptor and policy
 checks immediately before dispatch. When a schema is missing or too complex for
 the TypeScript emitter, generated signatures fall back to `unknown`.
+
+Query-backed Skill search uses Depot's indexed API for selected, caller-visible
+Depot providers. To avoid listing the same catalog through a separate MCP
+hostname, bind its Skill proxy upstream in `[code_mode.search.depot_skill_upstreams]`
+with an upstream name as the key and Depot provider ID as the value (for example,
+`public-depot = "public"`). An MCP URL exactly matching the provider's `/mcp`
+endpoint is also recognized. Unbound aliases remain searchable as ordinary MCP
+Skill upstreams. A disabled or unauthorized indexed source does not suppress its
+MCP Skill proxy. Labby-owned Skills and other route-visible MCP Skill upstreams
+remain searchable. Personal and Depot sources run concurrently; once Depot
+completes, a still-running personal scan gets a short grace period. Successful
+hits are returned when another source fails or exceeds that period, with
+`incomplete: true` and `incompleteSources` naming the affected source. Native
+`skills/list` remains the caller-facing listing surface.
+Depot admission and provider requests have separate short deadlines; completed
+provider buckets remain in the response when another bucket exceeds its deadline.
 
 ### Authenticated Web tool browser
 

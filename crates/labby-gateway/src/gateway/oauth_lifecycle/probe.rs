@@ -19,6 +19,41 @@ use labby_runtime::redact::redact_url;
 
 use super::{OauthRuntime, should_use_dynamic_registration};
 
+#[cfg(feature = "testkit")]
+pub(super) mod fixture_metadata {
+    use rmcp::transport::auth::AuthorizationMetadata;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    fn entries() -> &'static Mutex<HashMap<String, AuthorizationMetadata>> {
+        static ENTRIES: OnceLock<Mutex<HashMap<String, AuthorizationMetadata>>> = OnceLock::new();
+        ENTRIES.get_or_init(Mutex::default)
+    }
+
+    pub(in crate::gateway::oauth_lifecycle) struct Guard(String);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            entries().lock().unwrap().remove(&self.0);
+        }
+    }
+    pub(in crate::gateway::oauth_lifecycle) fn install(
+        url: &str,
+        metadata: AuthorizationMetadata,
+    ) -> Guard {
+        assert!(
+            entries()
+                .lock()
+                .unwrap()
+                .insert(url.into(), metadata)
+                .is_none()
+        );
+        Guard(url.into())
+    }
+    pub(super) fn get(url: &str) -> Option<AuthorizationMetadata> {
+        entries().lock().unwrap().get(url).cloned()
+    }
+}
+
 // ── public validators (also used by tests in the parent module) ──────────────
 
 pub(crate) fn validate_probe_url(raw: &str) -> Result<Url, ToolError> {
@@ -350,86 +385,96 @@ pub(crate) async fn run(
         "upstream oauth probe: connecting"
     );
 
-    let auth_manager = authorization_manager_for_upstream(&canonical_url)
-        .await
-        .map_err(|e| {
-            tracing::warn!(
-                service = "upstream_oauth",
-                action = "probe",
-                upstream = %name,
-                url = %redacted_url,
-                kind = e.kind(),
-                error = %e,
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream oauth probe: connection failed"
-            );
-            ToolError::Sdk {
-                sdk_kind: e.kind().to_string(),
-                message: format!("failed to prepare upstream OAuth client: {e}"),
-            }
-        })?;
+    #[cfg(feature = "testkit")]
+    let injected = fixture_metadata::get(&canonical_url);
+    #[cfg(not(feature = "testkit"))]
+    let injected: Option<rmcp::transport::auth::AuthorizationMetadata> = None;
 
-    let metadata = match auth_manager.resolve_metadata().await {
-        Ok(resolution) if resolution.source.is_discovered() => {
-            let m = resolution.metadata;
-            tracing::info!(
-                service = "upstream_oauth",
-                action = "probe",
-                upstream = %name,
-                url = %redacted_url,
-                issuer = m.issuer.as_deref().unwrap_or("<none>"),
-                supports_dynamic_registration = m.registration_endpoint.is_some(),
-                scopes = ?m.scopes_supported,
-                elapsed_ms = started.elapsed().as_millis(),
-                "upstream oauth probe: OAuth metadata discovered"
-            );
-            m
-        }
-        resolution => {
-            let fallback =
-                labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
-                    .await
-                    .map_err(|error| ToolError::Sdk {
-                        sdk_kind: error.kind().to_string(),
-                        message: format!("OAuth metadata discovery failed: {error}"),
-                    })?;
-            if let Some(metadata) = fallback {
+    let metadata = if let Some(metadata) = injected {
+        metadata
+    } else {
+        let auth_manager = authorization_manager_for_upstream(&canonical_url)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    service = "upstream_oauth",
+                    action = "probe",
+                    upstream = %name,
+                    url = %redacted_url,
+                    kind = e.kind(),
+                    error = %e,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "upstream oauth probe: connection failed"
+                );
+                ToolError::Sdk {
+                    sdk_kind: e.kind().to_string(),
+                    message: format!("failed to prepare upstream OAuth client: {e}"),
+                }
+            })?;
+
+        let metadata = match auth_manager.resolve_metadata().await {
+            Ok(resolution) if resolution.source.is_discovered() => {
+                let m = resolution.metadata;
                 tracing::info!(
                     service = "upstream_oauth",
                     action = "probe",
                     upstream = %name,
                     url = %redacted_url,
-                    issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
+                    issuer = m.issuer.as_deref().unwrap_or("<none>"),
+                    supports_dynamic_registration = m.registration_endpoint.is_some(),
+                    scopes = ?m.scopes_supported,
                     elapsed_ms = started.elapsed().as_millis(),
-                    "upstream oauth probe: OAuth metadata discovered with Labby issuer policy"
+                    "upstream oauth probe: OAuth metadata discovered"
                 );
-                metadata
-            } else {
-                let reason = resolution
-                    .err()
-                    .map(|error| error.to_string())
-                    .unwrap_or_else(|| "no published OAuth metadata".to_string());
-                tracing::info!(
-                    service = "upstream_oauth",
-                    action = "probe",
-                    upstream = %name,
-                    url = %redacted_url,
-                    reason,
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "upstream oauth probe: no OAuth metadata found"
-                );
-                return Ok(ProbeResult {
-                    upstream: name,
-                    url: redacted_url.clone(),
-                    transient: false,
-                    durability: "not_registered_no_oauth_metadata".to_string(),
-                    oauth_discovered: false,
-                    issuer: None,
-                    scopes: None,
-                    registration_strategy: None,
-                });
+                m
             }
-        }
+            resolution => {
+                let fallback =
+                    labby_auth::upstream::manager::discover_published_metadata(&canonical_url)
+                        .await
+                        .map_err(|error| ToolError::Sdk {
+                            sdk_kind: error.kind().to_string(),
+                            message: format!("OAuth metadata discovery failed: {error}"),
+                        })?;
+                if let Some(metadata) = fallback {
+                    tracing::info!(
+                        service = "upstream_oauth",
+                        action = "probe",
+                        upstream = %name,
+                        url = %redacted_url,
+                        issuer = metadata.issuer.as_deref().unwrap_or("<none>"),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "upstream oauth probe: OAuth metadata discovered with Labby issuer policy"
+                    );
+                    metadata
+                } else {
+                    let reason = resolution
+                        .err()
+                        .map(|error| error.to_string())
+                        .unwrap_or_else(|| "no published OAuth metadata".to_string());
+                    tracing::info!(
+                        service = "upstream_oauth",
+                        action = "probe",
+                        upstream = %name,
+                        url = %redacted_url,
+                        reason,
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "upstream oauth probe: no OAuth metadata found"
+                    );
+                    return Ok(ProbeResult {
+                        upstream: name,
+                        url: redacted_url.clone(),
+                        transient: false,
+                        durability: "not_registered_no_oauth_metadata".to_string(),
+                        oauth_discovered: false,
+                        issuer: None,
+                        scopes: None,
+                        registration_strategy: None,
+                    });
+                }
+            }
+        };
+        metadata
     };
 
     let prefer_cimd = resolve_prefer_cimd(manager, &name).await;

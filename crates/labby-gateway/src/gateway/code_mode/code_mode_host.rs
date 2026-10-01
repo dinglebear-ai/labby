@@ -176,7 +176,7 @@ impl GatewayManager {
         {
             match tokio::time::timeout(
                 CODE_MODE_SKILL_CATALOG_TIMEOUT,
-                provider.list(caller, scope),
+                provider.bootstrap(caller, scope),
             )
             .await
             {
@@ -616,6 +616,12 @@ impl CodeModeHost for GatewayManager {
             if let Some(config) = self.upstream_config(upstream).await
                 && config.oauth.is_some()
             {
+                if !config.enabled || !config.proxy_resources {
+                    return Err(ToolError::Sdk {
+                        sdk_kind: "forbidden".into(),
+                        message: format!("resource proxying is disabled for upstream `{upstream}`"),
+                    });
+                }
                 let subject = oauth_subject(caller)
                     .filter(|subject| !subject.is_empty())
                     .ok_or_else(|| ToolError::Sdk {
@@ -901,9 +907,7 @@ impl CodeModeHost for GatewayManager {
         // own arguments. `include_snippets`/`use_cache` come from
         // labby-codemode's `discovery_render_params` — the SAME function
         // `build_code_mode_proxy` calls — so the fingerprint computed here
-        // structurally cannot diverge from the one the warming path in
-        // `catalog_from_tools` already embedded for this execution's
-        // catalog. `allow_cold_connect` is hardcoded `false`
+        // structurally cannot diverge from this execution's catalog. `allow_cold_connect` is hardcoded `false`
         // (unlike `list_tools`'s `caller.can_execute()`): semantic ranking
         // must never spend wall-clock cold-connecting upstreams — by the
         // time a sandbox calls search(), the proxy build already connected
@@ -933,8 +937,8 @@ impl CodeModeHost for GatewayManager {
         if !self.semantic_search_available().await {
             return Ok(Vec::new());
         }
-        // Embeddings are cached/warmed over the FULL render (same
-        // fingerprint + entry set as `catalog_from_tools`' warming path);
+        // Semantic ranking warms embeddings on demand over the FULL render
+        // using the same fingerprint and entry set as catalog discovery;
         // ranking is then restricted to exactly the entry subset the
         // sandbox's own `__codemodeDiscovery` contains for this scope —
         // labby-codemode's `discovery_entry_visible`, the SAME function
@@ -988,13 +992,13 @@ impl CodeModeHost for GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-    ) -> Result<Vec<CatalogDescriptor>, ToolError> {
+    ) -> Result<labby_codemode::ArtifactSearchResult, ToolError> {
         let Some(provider) = self.code_mode_artifact_search_provider.as_ref() else {
-            return Ok(Vec::new());
+            return Ok(labby_codemode::ArtifactSearchResult::default());
         };
         let search_config = self.code_mode_config().await.search;
         if search_config.sources.is_empty() || search_config.kinds.is_empty() {
-            return Ok(Vec::new());
+            return Ok(labby_codemode::ArtifactSearchResult::default());
         }
         let configured_kinds = configured_catalog_kinds(&search_config);
         let effective_kinds = if kinds.is_empty() {
@@ -1007,7 +1011,7 @@ impl CodeModeHost for GatewayManager {
                 .collect()
         };
         if effective_kinds.is_empty() {
-            return Ok(Vec::new());
+            return Ok(labby_codemode::ArtifactSearchResult::default());
         }
         provider
             .search(
@@ -2312,6 +2316,25 @@ mod tests {
     struct FixtureSkillProvider;
 
     impl crate::gateway::code_mode::skills::CodeModeSkillProvider for FixtureSkillProvider {
+        // This fixture intentionally publishes cheap static bootstrap hints.
+        fn bootstrap<'a>(
+            &'a self,
+            caller: &'a CodeModeCaller,
+            scope: &'a ToolScope,
+        ) -> std::pin::Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
+                            ToolError,
+                        >,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            self.list(caller, scope)
+        }
+
         fn list<'a>(
             &'a self,
             _caller: &'a CodeModeCaller,
@@ -2366,6 +2389,66 @@ mod tests {
                 })
             })
         }
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::panic,
+        reason = "fixture fails if bootstrap invokes live discovery"
+    )]
+    async fn bootstrap_does_not_invoke_live_skill_listing() {
+        struct LiveOnly;
+        impl crate::gateway::code_mode::skills::CodeModeSkillProvider for LiveOnly {
+            fn list<'a>(
+                &'a self,
+                _: &'a CodeModeCaller,
+                _: &'a ToolScope,
+            ) -> std::pin::Pin<
+                Box<
+                    dyn Future<
+                            Output = Result<
+                                Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
+                                ToolError,
+                            >,
+                        > + Send
+                        + 'a,
+                >,
+            > {
+                Box::pin(async { panic!("bootstrap must not invoke live Skill listing") })
+            }
+            fn get<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a CodeModeCaller,
+                _: &'a ToolScope,
+            ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>>
+            {
+                Box::pin(std::future::pending())
+            }
+            fn read<'a>(
+                &'a self,
+                _: &'a str,
+                _: &'a CodeModeCaller,
+                _: &'a ToolScope,
+            ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>>
+            {
+                Box::pin(std::future::pending())
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            root.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        )
+        .with_code_mode_skill_provider(Arc::new(LiveOnly));
+        let entries = manager
+            .code_mode_metadata_entries(
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Mcp,
+                &ToolScope::default(),
+            )
+            .await;
+        assert!(entries.is_empty());
     }
 
     struct StallingSkillProvider;

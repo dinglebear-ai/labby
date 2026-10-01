@@ -19,6 +19,7 @@ mod manager_tests;
 pub mod network;
 #[cfg(test)]
 mod network_tests;
+mod network_tls;
 mod operation_contracts;
 pub mod operations;
 pub mod provider;

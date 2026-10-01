@@ -267,7 +267,7 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayCatalogDiff, ToolError> {
-        self.reload_with_origin_unlocked_mode(origin, owner, false)
+        self.reload_with_origin_unlocked_mode(origin, owner, false, &[])
             .await
     }
 
@@ -280,7 +280,22 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayCatalogDiff, ToolError> {
-        self.reload_with_origin_unlocked_mode(origin, owner, true)
+        self.reload_with_origin_unlocked_mode(origin, owner, true, &[])
+            .await
+    }
+
+    pub(super) async fn reload_with_credentials_changed(
+        &self,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        upstreams: &[String],
+    ) -> Result<GatewayCatalogDiff, ToolError> {
+        if upstreams.is_empty() {
+            return self
+                .reload_with_origin_unlocked_transactional(origin, owner)
+                .await;
+        }
+        self.reload_with_origin_unlocked_mode(origin, owner, true, upstreams)
             .await
     }
 
@@ -289,6 +304,7 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
         allow_in_place_selective: bool,
+        credentials_changed: &[String],
     ) -> Result<GatewayCatalogDiff, ToolError> {
         let started = Instant::now();
         tracing::info!(
@@ -381,7 +397,18 @@ impl GatewayManager {
 
         let (previous_cfg, pool_settings_unchanged, changed_upstreams) = {
             let current = self.config.read().await;
-            let changed_upstreams = upstream_changed_names(&current, &cfg);
+            let mut changed_upstreams = upstream_changed_names(&current, &cfg);
+            changed_upstreams.extend(credentials_changed.iter().cloned());
+            // Manual reload also refreshes credential inputs outside TOML.
+            // Reconnect configured bearer peers without fingerprinting secrets.
+            if !allow_in_place_selective {
+                changed_upstreams.extend(
+                    cfg.upstream
+                        .iter()
+                        .filter(|upstream| upstream.bearer_token_env.is_some())
+                        .map(|upstream| upstream.name.clone()),
+                );
+            }
             (
                 current.clone(),
                 pool_settings_fingerprint(&current) == pool_settings_fingerprint(&cfg),
@@ -444,12 +471,12 @@ impl GatewayManager {
             let reconcile_cleanup = {
                 let _publication = self.publication_barrier.write().await;
                 self.store
-                    .set_process_code_mode_enabled(cfg.code_mode.enabled);
+                    .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
                 self.code_mode_app_state
-                    .set_enabled(cfg.code_mode.mcp_ui_enabled);
+                    .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
                 *self.protected_route_index.write().await =
-                    ProtectedRouteIndex::from_routes(&cfg.protected_mcp_routes);
-                *self.config.write().await = cfg.clone();
+                    ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
+                *self.config.write().await = runtime_cfg.clone();
                 self.advance_runtime_config_generation();
                 pool.apply_lazy_upstream_reconcile(
                     &cfg.upstream,

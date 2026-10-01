@@ -40,11 +40,15 @@ use crate::util::{ensure_restrictive_permissions, now_unix, set_restrictive_perm
 
 const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 const SQLITE_POOL_SIZE: usize = 4;
+// Bound admitted operations, including active workers and async waiters.
+// Saturation returns the existing storage error instead of growing a queue.
+const SQLITE_PENDING_LIMIT: usize = 64;
 static SQLITE_OPEN_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone)]
 pub struct SqliteStore {
-    conns: Arc<Vec<Mutex<Connection>>>,
+    conns: Arc<Vec<Arc<tokio::sync::Mutex<Connection>>>>,
+    admission: Arc<tokio::sync::Semaphore>,
     next_conn: Arc<AtomicUsize>,
     path: Arc<PathBuf>,
     /// Optional at-rest encryption key for upstream provider refresh tokens.
@@ -81,7 +85,13 @@ impl SqliteStore {
             ))),
         }
         .map(|conns| Self {
-            conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
+            conns: Arc::new(
+                conns
+                    .into_iter()
+                    .map(|conn| Arc::new(tokio::sync::Mutex::new(conn)))
+                    .collect(),
+            ),
+            admission: Arc::new(tokio::sync::Semaphore::new(SQLITE_PENDING_LIMIT)),
             next_conn: Arc::new(AtomicUsize::new(0)),
             path: Arc::new(path),
             enc_key: enc_key.map(Arc::new),
@@ -1160,10 +1170,25 @@ impl SqliteStore {
         let path = Arc::clone(&self.path);
         let len = conns.len();
         let idx = self.next_conn.fetch_add(1, Ordering::Relaxed) % len;
+        let permit = self
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| AuthError::Storage("sqlite store busy".to_string()))?;
+        // Park connection waiters asynchronously. Retain both capacity and the
+        // connection in the blocking worker even when its caller is cancelled.
+        let mut guard = {
+            // Prefer any idle connection before queueing on the round-robin
+            // candidate. A busy connection must not strand idle pool capacity.
+            let available = (0..len)
+                .find_map(|offset| conns[(idx + offset) % len].clone().try_lock_owned().ok());
+            match available {
+                Some(guard) => guard,
+                None => conns[idx].clone().lock_owned().await,
+            }
+        };
         tokio::task::spawn_blocking(move || {
-            let mut guard = conns[idx]
-                .lock()
-                .map_err(|_| AuthError::Storage("sqlite mutex poisoned".to_string()))?;
+            let _permit = permit;
             validate_or_reopen_connection(&mut guard, path.as_ref())?;
             op(&mut guard)
         })

@@ -456,27 +456,41 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
   const fixtureNow = 1_800_086_400_000
   await page.addInitScript((now) => { Date.now = () => now }, fixtureNow)
-  const summaryRequests: string[] = []
+  const summaryRequests: unknown[] = []
+  const serverCalls = { alpha: 3, beta: 2, gamma: 1, delta: 1 }
+  const buckets = (calls: number) => Array.from({ length: 24 }, (_, index) => ({
+    ts_unix: 1_800_000_000 + index * 3600, calls: index === 0 ? calls : 0, failed: 0,
+  }))
   await page.route('**/v1/gateway', async (route) => {
-    const call = route.request().postDataJSON() as { action: string; params: { upstream?: string; since_unix?: number; until_unix?: number; bucket_count?: number } }
-    if (call.action !== 'gateway.usage.metrics' || !call.params.upstream) { await route.continue(); return }
+    const call = route.request().postDataJSON() as { action: string; params: { upstream?: string; since_unix?: number; until_unix?: number; bucket_count?: number; include_upstream_timeseries?: boolean } }
+    if (call.action !== 'gateway.usage.metrics' || !call.params.include_upstream_timeseries) { await route.continue(); return }
+    assert.equal(call.params.upstream, undefined, 'one transactional request replaces per-server fan-out')
     assert.equal(call.params.since_unix, 1_800_000_000)
     assert.equal(call.params.until_unix, 1_800_086_400)
     assert.equal(call.params.bucket_count, 24)
-    summaryRequests.push(call.params.upstream)
+    summaryRequests.push(call.params)
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
-      total_calls: 0, error_calls: 0,
-      timeseries: Array.from({ length: 24 }, (_, index) => ({ ts_unix: 1_800_000_000 + index * 3600, calls: 0, failed: 0 })),
+      total_calls: 10, error_calls: 0,
+      upstreams: Object.entries(serverCalls).map(([upstream, calls]) => ({ upstream, calls })),
+      timeseries: buckets(10),
+      upstream_timeseries: Object.fromEntries(Object.entries(serverCalls).map(([name, calls]) => [name, buckets(calls)])),
     }) })
   })
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  assert.equal(await page.getByRole('tab', { name: '1h', exact: true }).getAttribute('aria-selected'), 'true')
+  assert.equal(summaryRequests.length, 0, 'the default volume chart needs no optional server request')
+  await page.getByRole('tab', { name: '24h', exact: true }).click()
+  await page.getByRole('button', { name: 'Overview chart', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Calls by server', exact: true }).click()
 
   const chart = page.locator('[aria-label="Calls by server"]')
   await chart.waitFor({ state: 'visible' })
-  assert.equal(new Set(summaryRequests).size, 4, 'default chart requests the four busiest server summaries')
+  assert.equal(summaryRequests.length, 1, 'one selected-chart request returns totals and all four server series')
   const firstBucket = chart.getByRole('button').first()
+  await firstBucket.waitFor({ state: 'visible' })
   assert.equal(await chart.getByRole('button').count(), 24)
-  assert.match(await firstBucket.getAttribute('aria-label') ?? '', /calls$/)
+  assert.match(await firstBucket.getAttribute('aria-label') ?? '', /10 calls$/)
+  assert.match(await firstBucket.getAttribute('title') ?? '', /Other: 3/)
   await firstBucket.focus()
   await page.keyboard.press('Enter')
   await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.has('from') && url.searchParams.has('to'))
@@ -488,6 +502,7 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   assert.equal(to - from, 3_599_000, '24h buckets should stop one stored second before the next inclusive bucket')
 
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  await page.getByRole('tab', { name: '24h', exact: true }).click()
   await page.getByTitle('Upstream calls — open details').click()
   await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.get('window') === '24h')
 })
@@ -742,11 +757,36 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    await page.getByRole('group', { name: 'Server view' }).getByRole('button', { name: 'Card view' }).click()
     await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
     await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })
     await assert.doesNotReject(() => page.getByText(/Metric drill-down:/).waitFor())
     assert.equal(new URL(page.url()).searchParams.get('focus'), 'latency')
     assert.equal(new URL(page.url()).searchParams.get('outcome'), 'failed')
+    await page.close()
+  }
+})
+
+test('server list, card, and table choices persist on phone and tablet', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  for (const width of [390, 768]) {
+    const page = await browser.newPage({ viewport: { width, height: 844 } })
+    await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    for (const [label, section] of [
+      ['List view', 'Server inventory cards'],
+      ['Card view', 'Server inventory cards'],
+      ['Table view', 'Server inventory'],
+    ] as const) {
+      await page.getByRole('group', { name: 'Server view' }).getByRole('button', { name: label }).click()
+      await page.reload({ waitUntil: 'networkidle' })
+      assert.equal(await page.getByRole('button', { name: label, exact: true }).getAttribute('aria-pressed'), 'true', `${width}px ${label} did not persist`)
+      await page.getByRole('region', { name: section, exact: true }).waitFor({ state: 'visible' })
+      assert.ok(await page.getByRole('region', { name: section, exact: true }).count() > 0)
+      if (label === 'Card view') await page.getByRole('region', { name: section }).getByRole('link', { name: 'Open', exact: true }).first().waitFor()
+      if (label === 'List view') assert.equal(await page.getByRole('region', { name: section }).getByRole('link', { name: 'Open', exact: true }).count(), 0)
+    }
     await page.close()
   }
 })
@@ -1286,4 +1326,74 @@ test('Discovery table labels align with rows and remain usable on phones', { con
   await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByRole('button', { name: 'Card view', exact: true }).getAttribute('aria-pressed'), 'true')
+})
+
+
+test('Overview repacks the same page across breakpoints and growing replacement content', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 768, height: 1024 } })
+  await page.goto(baseUrl, { waitUntil: 'networkidle' })
+  for (const width of [768, 390, 768]) {
+    await page.setViewportSize({ width, height: 1024 })
+    await page.waitForTimeout(150)
+    const positions = await page.locator('[data-overview-lane="telemetry"] > [data-overview-card]').evaluateAll(cards => cards.map(card => ({ left: card.getBoundingClientRect().left, right: card.getBoundingClientRect().right, top: card.getBoundingClientRect().top, bottom: card.getBoundingClientRect().bottom })))
+    assert.equal(new Set(positions.map(card => Math.round(card.left))).size, width === 390 ? 1 : 2)
+    assert.ok(positions.every(card => card.left >= 0 && card.right <= width), 'cards stay inside the viewport')
+    for (let i = 0; i < positions.length; i++) for (const other of positions.slice(i + 1)) {
+      const card = positions[i]
+      assert.ok(card.right <= other.left || other.right <= card.left || card.bottom <= other.top || other.bottom <= card.top)
+    }
+  }
+  const card = page.locator('[data-overview-card="Top Tools"]')
+  await card.evaluate(card => {
+    const panel = card.querySelector('[data-overview-content]')?.firstElementChild ?? card.lastElementChild!
+    panel.replaceWith(Object.assign(document.createElement('div'), { textContent: 'Replacement panel' }))
+  })
+  await page.waitForTimeout(100)
+  const before = await card.boundingBox()
+  await card.evaluate(card => { ((card.querySelector('[data-overview-content]')?.firstElementChild ?? card.lastElementChild) as HTMLElement).style.height = '900px' })
+  await page.waitForTimeout(150)
+  const after = await card.boundingBox()
+  assert.ok(after!.height > before!.height + 500)
+  const geometry = await page.locator('[data-overview-lane="telemetry"] > [data-overview-card]').evaluateAll(cards => cards.map(card => ({ ...card.getBoundingClientRect().toJSON(), content: card.lastElementChild!.getBoundingClientRect().toJSON() })))
+  for (let i = 0; i < geometry.length; i++) for (const other of geometry.slice(i + 1)) {
+    const card = geometry[i]
+    if (card.left < other.right && other.left < card.right) {
+      assert.ok(card.bottom <= other.top || other.bottom <= card.top)
+      const [upper, lower] = card.top < other.top ? [card, other] : [other, card]
+      assert.ok(lower.content.top - upper.content.bottom >= 11, 'replacement growth preserves the panel gap')
+    }
+  }
+})
+
+test('phone table has operable targets and ordered table relationships', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Table view', exact: true }).click()
+  const table = page.getByRole('table', { name: 'Server inventory' })
+  await table.waitFor()
+  const row = table.locator('[data-gwrow]').first()
+  const select = row.getByRole('checkbox')
+  for (const target of [select, row.getByRole('button', { name: 'More actions', exact: true }), row.getByRole('link', { name: /View logs for/ }), table.getByRole('button', { name: 'Reorder exposed column' })]) {
+    const rect = await target.boundingBox()
+    assert.ok(rect && rect.width >= 44 && rect.height >= 44, JSON.stringify(rect))
+  }
+  await select.tap()
+  assert.equal(await select.getAttribute('aria-checked'), 'true')
+  await row.getByRole('button', { name: 'More actions', exact: true }).tap()
+  await page.getByRole('menuitem', { name: 'Expand runtime details' }).waitFor()
+  await page.keyboard.press('Escape')
+  const reorder = table.getByRole('button', { name: 'Reorder exposed column' })
+  await reorder.focus()
+  await page.keyboard.press('ArrowRight')
+  const headers = await table.getByRole('columnheader').allTextContents()
+  assert.ok(headers.findIndex(value => value.includes('Endpoint')) < headers.findIndex(value => value.includes('Exposed')))
+  const cells = await row.getByRole('cell').evaluateAll(cells => cells.map(cell => cell.getAttribute('aria-colindex')))
+  assert.deepEqual(cells, headers.map((_, index) => String(index + 1)))
+  assert.match(await table.ariaSnapshot(), /columnheader/)
 })

@@ -14,10 +14,22 @@ pub fn discover(home: &Path) -> Vec<DiscoveredServer> {
 }
 
 fn discover_with_xdg(home: &Path, xdg: Option<&Path>) -> Vec<DiscoveredServer> {
+    discover_with_roots(
+        home,
+        xdg,
+        std::env::var_os("APPDATA").map(PathBuf::from).as_deref(),
+    )
+}
+
+pub(super) fn discover_with_roots(
+    home: &Path,
+    xdg: Option<&Path>,
+    appdata: Option<&Path>,
+) -> Vec<DiscoveredServer> {
     let now = jiff::Timestamp::now().to_string();
     let mut results = Vec::new();
 
-    for path in candidate_paths(home, xdg) {
+    for path in candidate_paths(home, xdg, appdata) {
         let Some(value) = read_json(&path) else {
             continue;
         };
@@ -82,18 +94,28 @@ mod tests {
         // opencode only uses "mcp" key, NOT "mcpServers"
         write(
             dir.path(),
-            ".config/opencode/opencode.json",
+            if cfg!(windows) {
+                "AppData/Roaming/opencode/opencode.json"
+            } else {
+                ".config/opencode/opencode.json"
+            },
             r#"{"mcpServers": {"wrong-key": {"command": "node"}}}"#,
         );
         let xdg = dir.path().join(".config");
-        let results = super::discover_with_xdg(dir.path(), Some(&xdg));
+        let results = super::discover_with_roots(
+            dir.path(),
+            Some(&xdg),
+            Some(&dir.path().join("AppData/Roaming")),
+        );
         assert!(results.is_empty(), "opencode must not use mcpServers key");
     }
 }
 
-fn candidate_paths(home: &Path, xdg: Option<&Path>) -> Vec<PathBuf> {
+fn candidate_paths(home: &Path, xdg: Option<&Path>, appdata: Option<&Path>) -> Vec<PathBuf> {
     #[cfg(target_os = "windows")]
     let _ = xdg;
+    #[cfg(not(windows))]
+    let _ = appdata;
     let mut paths = Vec::new();
 
     // Env override — reject empty strings; an empty OPENCODE_CONFIG would produce
@@ -114,9 +136,9 @@ fn candidate_paths(home: &Path, xdg: Option<&Path>) -> Vec<PathBuf> {
     }
 
     #[cfg(target_os = "windows")]
-    let default_config_dir = std::env::var("APPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| home.join("AppData/Roaming"))
+    let default_config_dir = appdata
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| home.join("AppData/Roaming"))
         .join("opencode");
 
     #[cfg(not(target_os = "windows"))]

@@ -516,7 +516,9 @@ fn every_public_help_path_runs_offline_and_has_qualified_usage() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains(&format!("Usage: {path}")),
+            String::from_utf8_lossy(&output.stdout)
+                .replace("labby.exe", "labby")
+                .contains(&format!("Usage: {path}")),
             "unqualified usage at {path}"
         );
     }
@@ -1159,23 +1161,24 @@ fn public_name_contract_detects_injected_bad_commands_and_aliases() {
 
 #[test]
 fn setup_validation_recipe_uses_the_executable_cli_grammar() {
-    let recipe = include_str!("../../../Justfile")
-        .split_once("\nvalidate-plugin:\n")
-        .expect("plugin validation recipe")
-        .1
-        .split("\n\n")
-        .next()
-        .unwrap();
-    let command = recipe
-        .lines()
-        .find(|line| line.contains("cargo run"))
-        .expect("CLI invocation");
-    let arguments = command
-        .split_once(" -- ")
-        .expect("cargo argument boundary")
-        .1;
-    let argv = std::iter::once("labby").chain(arguments.split_whitespace());
-    Cli::try_parse_from(argv).expect("setup-validation recipe must use valid Labby arguments");
+    let justfile = include_str!("../../../Justfile").replace("\r\n", "\n");
+    for text in [justfile.clone(), justfile.replace('\n', "\r\n")] {
+        let mut lines = text.lines();
+        assert!(
+            lines.any(|line| line == "validate-plugin:"),
+            "plugin validation recipe"
+        );
+        let command = lines
+            .take_while(|line| !line.is_empty())
+            .find(|line| line.contains("cargo run"))
+            .expect("CLI invocation");
+        let arguments = command
+            .split_once(" -- ")
+            .expect("cargo argument boundary")
+            .1;
+        let argv = std::iter::once("labby").chain(arguments.split_whitespace());
+        Cli::try_parse_from(argv).expect("setup-validation recipe must use valid Labby arguments");
+    }
 }
 
 fn snapshot_tree(

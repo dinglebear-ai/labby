@@ -27,3 +27,18 @@ test('rollback failure is surfaced distinctly for operator recovery', async () =
     GatewaySaveCompensationError,
   )
 })
+
+test('identity navigation commits only after the protected route succeeds', async () => {
+  const events: string[] = []
+  await runGatewaySaveTransaction(
+    async () => ({ rollback: async () => { events.push('rollback new-id') }, commit: () => { events.push('navigate new-id') } }),
+    async () => { events.push('route') },
+  )
+  assert.deepEqual(events, ['route', 'navigate new-id'])
+  events.length = 0
+  await assert.rejects(runGatewaySaveTransaction(
+    async () => ({ rollback: async () => { events.push('rollback new-id') }, commit: () => { events.push('navigate new-id') } }),
+    async () => { throw new Error('route failed') },
+  ), /route failed/)
+  assert.deepEqual(events, ['rollback new-id'])
+})

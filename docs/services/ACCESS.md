@@ -1,14 +1,14 @@
 ---
 title: "Access Service"
 created: "2026-08-23"
-updated: "2026-09-16"
+updated: "2026-09-30"
 ---
 
 # Access Service
 
 Labby's durable multi-user authority lives in the access store
-(`$LABBY_HOME/access.db`, schema v7; see the
-[data model](../access-control/DATA_MODEL.md#schema-v7-current)). This page is
+(`$LABBY_HOME/access.db`, schema v9; see the
+[data model](../access-control/DATA_MODEL.md#schema-v9-current)). This page is
 the operator guide for it:
 
 - the registered `access` service (Teams, invitations, platform
@@ -215,16 +215,17 @@ credential. Loopback location by itself grants nothing. See
 ### Existing stores
 
 Owner bootstrap never migrates an existing older-schema store. Upgrading a
-v1–v6 store to v7 is the offline `labby state access migrate` flow in
+supported older store to the current schema is the offline `labby state access migrate` flow in
 [MIGRATION.md](../access-control/MIGRATION.md).
 
 Because every schema crossing costs the operator an approved offline
 migration, the schema version is bumped only when a shipped feature reads or
 writes the new tables. Tables with no reader or writer outside the migration
-code do not justify a bump. The current v8 schema adds exactly the tables
-consumed by recurring Task schedules (`tasks.schedule_*`) and by dev-container
-image drafts, builds, and publications; the migration test suite pins the
-current schema to that table set.
+code do not justify a bump. Schema v8 added recurring Task schedules
+(`tasks.schedule_*`) and dev-container image drafts, builds, and publications.
+The current v9 schema also adds local Artifact distribution ownership,
+publisher and assignment ceilings, managed mirrors, and follow subscriptions.
+The compiled schema manifest and migration tests define the accepted shape.
 
 ## Owner identity link
 

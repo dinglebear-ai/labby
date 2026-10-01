@@ -30,3 +30,9 @@ test('unsupported metrics errors are never retried', () => {
   assert.equal(shouldRetryMetrics(new Error('temporary failure')), true)
   assert.equal(shouldRetryMetrics(new DOMException('Authority changed', 'AbortError')), false)
 })
+
+
+test('permanent telemetry failures stop automatic retries', () => {
+  for (const status of [400, 401, 403, 409, 422]) assert.equal(shouldRetryMetrics(Object.assign(new Error('permanent'), { status })), false)
+  for (const status of [408, 429, 503]) assert.equal(shouldRetryMetrics(Object.assign(new Error('transient'), { status })), true)
+})

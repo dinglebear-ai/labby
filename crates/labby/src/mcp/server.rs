@@ -487,6 +487,26 @@ fn connected_client_from_discovery(
         client_version: client_info.as_ref().map(|info| info.version.clone()),
         transport: transport_label.to_string(),
         connected_at,
+        last_seen_at: None,
+        observation_count: 1,
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl LabMcpServer {
+    async fn observe_client(&self, context: &RequestContext<RoleServer>) {
+        let actor_key = actor_key_from_extensions(&context.extensions);
+        let scope_key = actor_key.map(|key| format!("actor:{key}")).or_else(|| {
+            (self.transport_label != "http")
+                .then(|| format!("connection:{}", self.relay_session_id))
+        });
+        let client = connected_client_from_discovery(
+            context.client_info(),
+            &context.extensions,
+            self.transport_label,
+            jiff::Timestamp::now().to_string(),
+        );
+        self.client_registry.observe(client, scope_key).await;
     }
 }
 
@@ -536,6 +556,8 @@ impl ServerHandler for LabMcpServer {
             "adapting legacy MCP initialize lifecycle to the stateless server"
         );
         context.peer.set_peer_info(request.clone());
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         let mut info = self.get_info();
         // RMCP adapts subsequent request validation and wire behavior from the
         // negotiated peer version. Echo the requested version because every
@@ -662,16 +684,7 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
         #[cfg(feature = "gateway")]
-        {
-            let client_info = context.client_info();
-            let connected_client = connected_client_from_discovery(
-                client_info,
-                &context.extensions,
-                self.transport_label,
-                jiff::Timestamp::now().to_string(),
-            );
-            self.client_registry.push(connected_client).await;
-        }
+        self.observe_client(&context).await;
 
         Ok(DiscoverResult::from_server_info(
             self.supported_protocol_versions().into_owned(),
@@ -797,6 +810,8 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CompleteResult, ErrorData>> + Send {
         Box::pin(async move {
+            #[cfg(feature = "gateway")]
+            self.observe_client(&context).await;
             restore_request_meta(&mut request.meta, &context.meta);
             Ok(provenance::stamp_complete_result(
                 self.complete_impl(request, context).await?,
@@ -809,6 +824,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_prompts_result(
             self.list_prompts_impl(request, context).await?,
         ))
@@ -822,6 +839,8 @@ impl ServerHandler for LabMcpServer {
         // Bound the SDK's shared request-dispatch frame, including discovery
         // requests which never execute this branch.
         Box::pin(async move {
+            #[cfg(feature = "gateway")]
+            self.observe_client(&context).await;
             restore_request_meta(&mut request.meta, &context.meta);
             Ok(provenance::stamp_get_prompt_response(
                 labby_runtime::usage_actor::scope_attributed(
@@ -838,6 +857,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_resources_result(
             self.list_resources_impl(request, context).await?,
         ))
@@ -848,6 +869,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_resource_templates_result(
             self.list_resource_templates_impl(request, context).await?,
         ))
@@ -859,6 +882,8 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send {
         Box::pin(async move {
+            #[cfg(feature = "gateway")]
+            self.observe_client(&context).await;
             restore_request_meta(&mut request.meta, &context.meta);
             let response = match labby_runtime::usage_actor::scope_attributed(
                 self.request_usage_attribution(&context),
@@ -881,6 +906,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_tools_result(
             self.list_tools_impl(request, context).await?,
         ))
@@ -903,6 +930,8 @@ impl ServerHandler for LabMcpServer {
         {
             context.extensions.insert(identity);
         }
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         context
             .extensions
@@ -1131,6 +1160,47 @@ mod tests {
             assert_eq!(running.service().request_subject(&context), None);
         }
         running.cancel().await.unwrap();
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn legacy_initialize_and_later_metadata_update_one_observed_client() {
+        let server = stateless_test_server(Default::default());
+        let registry = server.client_registry.clone();
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        running
+            .service()
+            .initialize(
+                rmcp::model::InitializeRequestParams::new(
+                    rmcp::model::ClientCapabilities::default(),
+                    rmcp::model::Implementation::new("legacy-client", "1.0"),
+                ),
+                context,
+            )
+            .await
+            .expect("legacy initialize");
+        let first = registry.list().await;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].client_name.as_deref(), Some("legacy-client"));
+
+        let mut context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(2), running.peer().clone());
+        context.meta = rmcp::model::RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            rmcp::model::Implementation::new("request-client", "2.0"),
+            rmcp::model::ClientCapabilities::default(),
+        );
+        drop(running.service().list_tools(None, context).await);
+        let observed = registry.list().await;
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[1].client_name.as_deref(), Some("request-client"));
+        assert_eq!(observed[1].observation_count, 1);
+        assert!(observed[1].last_seen_at.is_some());
     }
 
     #[test]

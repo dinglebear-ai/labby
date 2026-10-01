@@ -2861,7 +2861,7 @@ static PROCESS_ENV_KEYS_BEFORE_DOTENV: OnceLock<std::collections::BTreeSet<Strin
 pub fn env_key_set_outside_dotenv(key: &str) -> bool {
     PROCESS_ENV_KEYS_BEFORE_DOTENV
         .get()
-        .is_some_and(|keys| keys.contains(key))
+        .is_some_and(|keys| labby_runtime::helpers::environment_keys_contain(keys, key))
 }
 
 /// Load `.env` files into the process environment.
@@ -2872,11 +2872,15 @@ pub fn env_key_set_outside_dotenv(key: &str) -> bool {
 pub fn load_dotenv() -> Result<()> {
     // Names only, never values: the settings surface uses this to tell an
     // externally managed variable from one `.env` supplied.
-    PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
+    let external_keys = PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
         std::env::vars_os()
             .filter_map(|(key, _)| key.into_string().ok())
             .collect()
     });
+    #[cfg(feature = "gateway")]
+    labby_gateway::upstream::auth::register_external_environment_keys(external_keys.clone());
+    #[cfg(not(feature = "gateway"))]
+    let _ = external_keys;
     // Candidates are ordered from authoritative installation state to the
     // implicit development fallback. dotenvy preserves values loaded by an
     // earlier candidate. An explicit LABBY_HOME excludes the CWD fallback.
@@ -3235,6 +3239,12 @@ mod tests {
             "[phoenix]\nenabled = true\ncommand = \"/home/labby/.local/bin/codex\"\ncodex_home = \"/home/labby/.codex\"\nworkspace_root = \"/home/labby\"\nmodel = \"gpt-5.6-sol\"\n",
         )
         .unwrap();
+        let mut configured = configured;
+        if cfg!(windows) {
+            configured.phoenix.command = Some("C:/labby/codex.exe".into());
+            configured.phoenix.codex_home = Some("C:/labby/.codex".into());
+            configured.phoenix.workspace_root = Some("C:/labby".into());
+        }
         configured.validate().unwrap();
 
         let openai_compatible: LabConfig = toml::from_str(
@@ -3367,12 +3377,20 @@ mod tests {
         assert_eq!(pruned, vec![PathBuf::from("a")]);
     }
 
-    /// Auth resolution needs an installation root, and these tests must not
-    /// depend on the process environment, so they name one explicitly.
-    const TEST_HOME: &str = "/labby-config-test-home";
-
+    /// Auth resolution needs an absolute installation root. Supply it explicitly
+    /// without reading HOME or changing the process environment.
     fn with_test_home(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
-        let mut env = vec![("HOME".to_string(), TEST_HOME.to_string())];
+        // Resolution only constructs paths; it never creates or opens this root.
+        // Use the platform's absolute temp directory instead of Unix-only syntax.
+        let home = std::env::temp_dir().join("labby-config-test-home");
+        assert!(
+            home.is_absolute(),
+            "the OAuth fixture HOME must be absolute"
+        );
+        let mut env = vec![(
+            "HOME".to_string(),
+            home.to_str().expect("UTF-8 fixture HOME").to_owned(),
+        )];
         env.extend(vars);
         env
     }
@@ -3937,25 +3955,38 @@ future = "keep"
     /// moves them, so it must at least say so.
     #[test]
     fn legacy_auth_store_is_reported_when_the_resolved_store_is_absent() {
-        let vars = |labby_home: Option<&str>, home: &str| {
-            let labby_home = labby_home.map(str::to_owned);
-            let home = home.to_owned();
+        let fixture_directory = tempfile::tempdir().expect("temporary legacy fixture parent");
+        let raw_installation_root = fixture_directory
+            .path()
+            .join("unused")
+            .join("..")
+            .join("relocated");
+        let installation_root =
+            crate::installation::InstallationPaths::from_root(&raw_installation_root)
+                .expect("native canonical installation root")
+                .root()
+                .to_path_buf();
+        let home = fixture_directory.path().join("operator");
+        let vars = |labby_home: Option<&Path>, home: &Path| {
+            let labby_home = labby_home.map(|path| path.as_os_str().to_owned());
+            let home = home.as_os_str().to_owned();
             move |name: &str| match name {
-                "LABBY_HOME" => labby_home.clone().map(std::ffi::OsString::from),
-                "HOME" => Some(std::ffi::OsString::from(home.clone())),
+                "LABBY_HOME" => labby_home.clone(),
+                "HOME" => Some(home.clone()),
                 _ => None,
             }
         };
-        let legacy = PathBuf::from("/home/operator/.labby/auth.db");
-        let legacy_key = PathBuf::from("/home/operator/.labby/auth-jwt.pem");
-        let resolved = PathBuf::from("/srv/labby/auth.db");
-        let resolved_key = PathBuf::from("/srv/labby/auth-jwt.pem");
+        let legacy = home.join(".labby").join("auth.db");
+        let legacy_key = home.join(".labby").join("auth-jwt.pem");
+        // Auth defaults use the resolver's canonical root, including native Windows prefixes.
+        let resolved = installation_root.join("auth.db");
+        let resolved_key = installation_root.join("auth-jwt.pem");
         let legacy_files = |path: &Path| path == legacy || path == legacy_key;
 
         let notice = legacy_auth_store_with(
             &resolved,
             &resolved_key,
-            vars(Some("/srv/labby"), "/home/operator"),
+            vars(Some(&raw_installation_root), &home),
             legacy_files,
         )
         .expect("a legacy store this installation no longer reads");
@@ -3964,10 +3995,13 @@ future = "keep"
         assert_eq!(notice.legacy_key, legacy_key);
         assert_eq!(notice.resolved_key, resolved_key);
         assert!(notice.legacy_key_exists);
-        let message = notice.message();
-        assert!(message.contains("/srv/labby/auth.db"), "{message}");
+        let message = notice.message().replace('\\', "/");
         assert!(
-            message.contains("/home/operator/.labby/auth.db"),
+            message.contains(&resolved.display().to_string().replace('\\', "/")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&legacy.display().to_string().replace('\\', "/")),
             "{message}"
         );
         assert!(message.contains("LABBY_AUTH_SQLITE_PATH"), "{message}");
@@ -3975,19 +4009,14 @@ future = "keep"
         // Nothing to report: no explicit root, an already-populated resolved
         // store, or no legacy store at all.
         assert_eq!(
-            legacy_auth_store_with(
-                &PathBuf::from("/home/operator/.labby/auth.db"),
-                &PathBuf::from("/home/operator/.labby/auth-jwt.pem"),
-                vars(None, "/home/operator"),
-                legacy_files
-            ),
+            legacy_auth_store_with(&legacy, &legacy_key, vars(None, &home), legacy_files),
             None
         );
         assert_eq!(
             legacy_auth_store_with(
                 &resolved,
                 &resolved_key,
-                vars(Some("/srv/labby"), "/home/operator"),
+                vars(Some(&raw_installation_root), &home),
                 |_| true
             ),
             None
@@ -3996,7 +4025,7 @@ future = "keep"
             legacy_auth_store_with(
                 &resolved,
                 &resolved_key,
-                vars(Some("/srv/labby"), "/home/operator"),
+                vars(Some(&raw_installation_root), &home),
                 |_| false
             ),
             None
@@ -4006,9 +4035,9 @@ future = "keep"
         // installation root stranded the legacy defaults.
         assert_eq!(
             legacy_auth_store_with(
-                &PathBuf::from("/srv/custom/auth.sqlite"),
+                &fixture_directory.path().join("custom").join("auth.sqlite"),
                 &resolved_key,
-                vars(Some("/srv/labby"), "/home/operator"),
+                vars(Some(&raw_installation_root), &home),
                 legacy_files,
             ),
             None
@@ -4016,8 +4045,8 @@ future = "keep"
         assert_eq!(
             legacy_auth_store_with(
                 &resolved,
-                &PathBuf::from("/srv/custom/signing.pem"),
-                vars(Some("/srv/labby"), "/home/operator"),
+                &fixture_directory.path().join("custom").join("signing.pem"),
+                vars(Some(&raw_installation_root), &home),
                 legacy_files,
             ),
             None
@@ -4026,7 +4055,7 @@ future = "keep"
         let missing_key_notice = legacy_auth_store_with(
             &resolved,
             &resolved_key,
-            vars(Some("/srv/labby"), "/home/operator"),
+            vars(Some(&raw_installation_root), &home),
             |path| path == legacy,
         )
         .expect("the legacy database is still actionable without a key");
@@ -4034,7 +4063,7 @@ future = "keep"
         let message = missing_key_notice.message();
         assert!(message.contains("was not found"), "{message}");
         assert!(
-            !message.contains("Move /home/operator/.labby/auth.db and"),
+            !message.contains(&format!("Move {} and", legacy.display())),
             "{message}"
         );
 
@@ -4047,7 +4076,7 @@ future = "keep"
         let normalized_notice = legacy_auth_store_with(
             &canonical_root.join("auth.db"),
             &canonical_root.join("auth-jwt.pem"),
-            vars(raw_root.to_str(), "/home/operator"),
+            vars(Some(&raw_root), &home),
             legacy_files,
         );
         assert!(
@@ -5947,5 +5976,83 @@ services = ["removed-service"]
                     .is_err()
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod gateway_bearer_reload_tests {
+    #[test]
+    fn dotenv_bearer_reload_preserves_external_env_authority() {
+        #[cfg(target_os = "macos")]
+        let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=original-file\nLABBY_DOTENV_RELOAD_EXTERNAL=ignored-file\n").unwrap();
+        // A subprocess exercises the real startup loader without modifying the
+        // environment of ordinary cargo-test threads or other test managers.
+        let external_name = if cfg!(windows) {
+            "Labby_Dotenv_Reload_External"
+        } else {
+            "LABBY_DOTENV_RELOAD_EXTERNAL"
+        };
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::gateway_bearer_reload_tests::startup_dotenv_reload_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LABBY_HOME", dir.path())
+            .env(external_name, "external-authority")
+            .env_remove("LABBY_DOTENV_RELOAD_MANAGED")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated startup regression failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child fixture must actually execute"
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for dotenv_bearer_reload_preserves_external_env_authority"]
+    fn startup_dotenv_reload_child() {
+        super::load_dotenv().unwrap();
+        assert!(super::env_key_set_outside_dotenv(
+            "LABBY_DOTENV_RELOAD_EXTERNAL"
+        ));
+        assert!(!super::env_key_set_outside_dotenv(
+            "LABBY_DOTENV_RELOAD_MANAGED"
+        ));
+        assert_eq!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
+                .as_deref(),
+            Some("original-file")
+        );
+        let path = super::dotenv_path().unwrap();
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=replacement-file\nLABBY_DOTENV_RELOAD_EXTERNAL=replacement-file\n").unwrap();
+        assert_eq!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
+                .as_deref(),
+            Some("replacement-file"),
+            "initial dotenv process snapshot must not mask changed installation credentials"
+        );
+        assert_eq!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_EXTERNAL")
+                .as_deref(),
+            Some("external-authority")
+        );
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_EXTERNAL=replacement-file\n").unwrap();
+        assert!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
+                .is_none(),
+            "deleting a file-managed key must not resurrect its startup snapshot"
+        );
     }
 }

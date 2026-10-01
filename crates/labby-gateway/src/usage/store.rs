@@ -7,8 +7,8 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, params};
 
@@ -21,6 +21,9 @@ const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
 // actual writers regardless of connection count, so this does not buy write
 // parallelism, only concurrent readers alongside a writer.
 const SQLITE_POOL_SIZE: usize = 4;
+// Bound admitted operations, including active workers and async waiters.
+// Saturation returns the existing storage error instead of growing a queue.
+const SQLITE_PENDING_LIMIT: usize = 64;
 const SCHEMA_VERSION: i64 = 3;
 /// Max rows deleted per `DELETE` statement in `prune_older_than`'s batching
 /// loop, so a large prune backlog doesn't hold the writer lock in one shot.
@@ -33,7 +36,8 @@ const WRITE_SEMAPHORE_PERMITS: usize = 64;
 
 #[derive(Clone)]
 pub struct UsageStore {
-    conns: Arc<Vec<Mutex<Connection>>>,
+    conns: Arc<Vec<Arc<tokio::sync::Mutex<Connection>>>>,
+    admission: Arc<tokio::sync::Semaphore>,
     next_conn: Arc<AtomicUsize>,
     path: Arc<PathBuf>,
     write_semaphore: Arc<tokio::sync::Semaphore>,
@@ -56,7 +60,13 @@ impl UsageStore {
         .await
         .map_err(|error| storage_error(format!("sqlite open task failed: {error}")))??;
         Ok(Self {
-            conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
+            conns: Arc::new(
+                conns
+                    .into_iter()
+                    .map(|conn| Arc::new(tokio::sync::Mutex::new(conn)))
+                    .collect(),
+            ),
+            admission: Arc::new(tokio::sync::Semaphore::new(SQLITE_PENDING_LIMIT)),
             next_conn: Arc::new(AtomicUsize::new(0)),
             path: Arc::new(path),
             write_semaphore: Arc::new(tokio::sync::Semaphore::new(WRITE_SEMAPHORE_PERMITS)),
@@ -210,10 +220,25 @@ impl UsageStore {
         let conns = Arc::clone(&self.conns);
         let len = conns.len();
         let idx = self.next_conn.fetch_add(1, Ordering::Relaxed) % len;
+        let permit = self
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| storage_error("sqlite store busy".to_string()))?;
+        // Connection waiters park before entering the shared blocking executor.
+        // The worker owns capacity and its connection until work actually ends.
+        let guard = {
+            // Prefer any idle connection before queueing on the round-robin
+            // candidate. A busy connection must not strand idle pool capacity.
+            let available = (0..len)
+                .find_map(|offset| conns[(idx + offset) % len].clone().try_lock_owned().ok());
+            match available {
+                Some(guard) => guard,
+                None => conns[idx].clone().lock_owned().await,
+            }
+        };
         tokio::task::spawn_blocking(move || {
-            let guard = conns[idx]
-                .lock()
-                .map_err(|_| storage_error("sqlite mutex poisoned".to_string()))?;
+            let _permit = permit;
             op(&guard)
         })
         .await
@@ -408,6 +433,16 @@ impl UsageStore {
         &self,
         query: super::query::UsageMetricsQuery,
     ) -> Result<super::query::UsageMetrics, ToolError> {
+        self.metrics_in_snapshot(query, || {}).await
+    }
+
+    // The observer is a deterministic test seam for writes between aggregate
+    // reads. Production supplies a zero-cost no-op; all reads still own one tx.
+    async fn metrics_in_snapshot(
+        &self,
+        query: super::query::UsageMetricsQuery,
+        after_totals: impl FnOnce() + Send + 'static,
+    ) -> Result<super::query::UsageMetrics, ToolError> {
         self.with_conn(move |conn| {
             let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
             let result = (|| {
@@ -456,6 +491,8 @@ impl UsageStore {
                     },
                 )
                 .map_err(sqlite_error)?;
+
+            after_totals();
 
             if query.include_facets && has_detail_filters {
                 let bounded_window_total =
@@ -711,6 +748,7 @@ impl UsageStore {
             let mut upstreams_stmt = conn.prepare(&format!("SELECT upstream_name, COUNT(*) AS calls, SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) AS failed FROM upstream_calls {where_clause} GROUP BY upstream_name ORDER BY calls DESC, upstream_name ASC")).map_err(sqlite_error)?;
             let upstreams = upstreams_stmt.query_map(rusqlite::params_from_iter(bind.iter()), |row| Ok(super::query::UsageUpstreamCount { upstream: row.get(0)?, calls: row.get(1)?, failed: row.get(2)? })).map_err(sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(sqlite_error)?;
 
+            let mut upstream_timeseries = query.include_upstream_timeseries.then(std::collections::BTreeMap::new);
             let timeseries = if query.bucket_count > 0 {
                 if let (Some(since), Some(until)) = (query.since_unix, query.until_unix) {
                     let count = query.bucket_count.clamp(1, super::query::MAX_METRICS_BUCKETS);
@@ -749,6 +787,30 @@ impl UsageStore {
                                 bucket.outcomes.push(super::query::UsageOutcomeCount { kind, calls });
                             }
                         }
+                        if let Some(series) = upstream_timeseries.as_mut() {
+                            // One bounded grouping, inside the existing read transaction.
+                            // Reuse every route, attribution, and detail predicate.
+                            let mut selected = Vec::new();
+                            for upstream in upstreams.iter().take(4) {
+                                bucket_bind.push(rusqlite::types::Value::Text(upstream.upstream.clone()));
+                                selected.push(format!("?{}", bucket_bind.len()));
+                                series.insert(upstream.upstream.clone(), buckets.iter().map(|bucket| super::query::UsageTimeBucket {
+                                    ts_unix: bucket.ts_unix, calls: 0, failed: 0, outcomes: Vec::new(),
+                                }).collect::<Vec<_>>());
+                            }
+                            if !selected.is_empty() {
+                                let selected_where = append_usage_predicate(&where_clause, &format!("upstream_name IN ({})", selected.join(",")));
+                                let mut statement = conn.prepare(&format!("SELECT upstream_name, MIN(?{max_index_param}, ((ts_unix - ?{since_param}) / ?{width_param})) AS bucket_index, COUNT(*), SUM(CASE WHEN outcome != 'ok' THEN 1 ELSE 0 END) FROM upstream_calls {selected_where} GROUP BY upstream_name, bucket_index")).map_err(sqlite_error)?;
+                                let rows = statement.query_map(rusqlite::params_from_iter(bucket_bind.iter()), |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, i64>(3)?))).map_err(sqlite_error)?;
+                                for row in rows {
+                                    let (name, index, calls, failed) = row.map_err(sqlite_error)?;
+                                    if let Some(bucket) = series.get_mut(&name).and_then(|buckets| usize::try_from(index).ok().and_then(|index| buckets.get_mut(index))) {
+                                        bucket.calls = calls;
+                                        bucket.failed = failed;
+                                    }
+                                }
+                            }
+                        }
                         buckets
                     } else { Vec::new() }
                 } else { Vec::new() }
@@ -779,7 +841,7 @@ impl UsageStore {
                 super::query::UsageFacets { tools, capabilities, operations, subject_scopes, actors, upstreams, outcomes }
             } else { super::query::UsageFacets::default() };
 
-            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, actor_populations, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, facets })
+            Ok(super::query::UsageMetrics { window_total_calls, total_calls, error_calls, avg_elapsed_ms, p50_elapsed_ms, p95_elapsed_ms, p99_elapsed_ms, distinct_tools, distinct_actors, actor_populations, peak_per_min, top_tools, least_tools, top_actors, slowest_tools, errors, upstreams, hourly, timeseries, upstream_timeseries, facets })
             })();
             match result {
                 Ok(metrics) => {
@@ -803,6 +865,24 @@ impl UsageStore {
         ),
         ToolError,
     > {
+        let (rows, total, cursor, _) = self.list_calls_with_ingestion_watermark(query).await?;
+        Ok((rows, total, cursor))
+    }
+
+    /// The optional marker is present only for an unfiltered, first-row poll.
+    /// Its inner `None` means that no calls exist in the current snapshot.
+    pub async fn list_calls_with_ingestion_watermark(
+        &self,
+        query: super::query::UsageCallsQuery,
+    ) -> Result<
+        (
+            Vec<super::query::UpstreamCallRecordView>,
+            Option<i64>,
+            Option<super::query::UsageCursor>,
+            Option<Option<i64>>,
+        ),
+        ToolError,
+    > {
         self.with_conn(move |conn| {
             let tx = conn.unchecked_transaction().map_err(sqlite_error)?;
             let conn = &*tx;
@@ -822,6 +902,11 @@ impl UsageStore {
                 &query.search,
                 &query.allowed_upstreams,
             );
+            // Never attach a global marker to a filtered or route-scoped page.
+            let include_ingestion_watermark = where_clause.is_empty()
+                && query.cursor.is_none()
+                && query.limit == 1
+                && !query.include_total;
 
             let total = if query.include_total {
                 Some(
@@ -901,8 +986,20 @@ impl UsageStore {
                 }
             });
 
-            let result = (rows, total, next_cursor);
             drop(stmt);
+            // The page and marker share this read transaction's SQLite snapshot.
+            // MAX(id) uses the INTEGER PRIMARY KEY index, regardless of ts_unix.
+            // AUTOINCREMENT prevents reuse after pruning, while an empty table
+            // reports null. This is an insertion marker, not a prune revision.
+            let ingestion_watermark = if include_ingestion_watermark {
+                Some(
+                    conn.query_row("SELECT MAX(id) FROM upstream_calls", [], |row| row.get(0))
+                        .map_err(sqlite_error)?,
+                )
+            } else {
+                None
+            };
+            let result = (rows, total, next_cursor, ingestion_watermark);
             tx.commit().map_err(sqlite_error)?;
             Ok(result)
         })
@@ -1294,6 +1391,112 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn metrics_server_sample_keeps_snapshot_during_insertion_and_pruning() {
+        use super::super::query::UsageMetricsQuery;
+        for prune in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("usage.db");
+            let store = UsageStore::open(path.clone()).await.unwrap();
+            for name in ["a", "a", "a", "a", "a", "b", "c", "d", "e", "z"] {
+                let mut row = sample_record(1_000);
+                row.upstream_name = name.into();
+                store.record_call(row).await.unwrap();
+            }
+            let query = UsageMetricsQuery {
+                since_unix: Some(900),
+                until_unix: Some(1_100),
+                bucket_count: 1,
+                include_upstream_timeseries: true,
+                ..Default::default()
+            };
+            let sample = store.metrics_in_snapshot(query.clone(), move || {
+                let writer = rusqlite::Connection::open(path).unwrap();
+                if prune {
+                    writer.execute("DELETE FROM upstream_calls WHERE id = (SELECT MIN(id) FROM upstream_calls WHERE upstream_name = 'a')", []).unwrap();
+                } else {
+                    writer.execute("INSERT INTO upstream_calls (ts_unix, upstream_name, tool_name, capability, operation, subject_scoped, actor, outcome, elapsed_ms) VALUES (1000, 'a', 'test', 'tools', 'tool.call', 0, 'unattributed', 'ok', 1)", []).unwrap();
+                }
+            }).await.unwrap();
+            assert_eq!(sample.total_calls, 10);
+            let series = sample.upstream_timeseries.unwrap();
+            assert_eq!(series["a"][0].calls, 5);
+            let known: i64 = series.values().map(|buckets| buckets[0].calls).sum();
+            assert_eq!(
+                sample.timeseries[0].calls - known,
+                2,
+                "Other is pinned even when the changed known sum would fit under the old total"
+            );
+            let next = store.metrics(query).await.unwrap();
+            assert_eq!(next.total_calls, if prune { 9 } else { 11 });
+            assert_eq!(
+                next.upstream_timeseries.unwrap()["a"][0].calls,
+                if prune { 4 } else { 6 }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn metrics_upstream_timeseries_is_opt_in_bounded_and_scoped() {
+        use super::super::query::{MAX_METRICS_BUCKETS, UsageMetricsQuery};
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        for index in 0..6 {
+            let mut row = sample_record(1_000);
+            row.upstream_name = format!("server-{index}");
+            store.record_call(row).await.unwrap();
+        }
+        let mut excluded = sample_record(1_000);
+        excluded.upstream_name = "server-5".into();
+        excluded.actor = "another-actor".into();
+        store.record_call(excluded).await.unwrap();
+        let mut outside_window = sample_record(2_000);
+        outside_window.upstream_name = "server-5".into();
+        store.record_call(outside_window).await.unwrap();
+        let query = UsageMetricsQuery {
+            since_unix: Some(900),
+            until_unix: Some(1_100),
+            bucket_count: 999,
+            ..Default::default()
+        };
+        let light = store.metrics(query.clone()).await.unwrap();
+        assert!(light.upstream_timeseries.is_none());
+        let detailed = store
+            .metrics(UsageMetricsQuery {
+                include_upstream_timeseries: true,
+                ..query.clone()
+            })
+            .await
+            .unwrap();
+        let series = detailed.upstream_timeseries.unwrap();
+        assert_eq!(series.len(), 4);
+        assert!(
+            series
+                .values()
+                .all(|buckets| buckets.len() == MAX_METRICS_BUCKETS)
+        );
+        assert_eq!(detailed.timeseries, light.timeseries);
+        let scoped = store
+            .metrics(UsageMetricsQuery {
+                include_upstream_timeseries: true,
+                allowed_upstreams: Some(vec!["server-5".into()]),
+                actor: Some("unattributed".into()),
+                ..query
+            })
+            .await
+            .unwrap();
+        let scoped_series = scoped.upstream_timeseries.unwrap();
+        assert_eq!(scoped_series.len(), 1);
+        assert_eq!(
+            scoped_series["server-5"]
+                .iter()
+                .map(|bucket| bucket.calls)
+                .sum::<i64>(),
+            1
+        );
+        assert_eq!(scoped.total_calls, 1);
     }
 
     #[tokio::test]
@@ -2213,6 +2416,113 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ingestion_watermark_tracks_insert_order_without_changing_call_pages() {
+        use super::super::query::UsageCallsQuery;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(dir.path().join("usage.db")).await.unwrap();
+        let head = || UsageCallsQuery {
+            limit: 1,
+            include_total: false,
+            ..Default::default()
+        };
+
+        let (rows, total, cursor, marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert!(rows.is_empty());
+        assert_eq!(total, None);
+        assert_eq!(cursor, None);
+        assert_eq!(marker, Some(None));
+
+        store.record_call(sample_record(100)).await.unwrap();
+        let (first, _, _, first_marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(first[0].ts_unix, 100);
+        assert_eq!(first_marker, Some(Some(first[0].id)));
+
+        store.record_call(sample_record(99)).await.unwrap();
+        let (older_insert, _, _, older_marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(older_insert[0].id, first[0].id);
+        assert_eq!(older_marker, Some(Some(first[0].id + 1)));
+
+        store.record_call(sample_record(100)).await.unwrap();
+        let (same_second, _, _, same_second_marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(same_second[0].ts_unix, 100);
+        assert_eq!(
+            same_second_marker,
+            Some(Some(older_marker.unwrap().unwrap() + 1))
+        );
+        assert_eq!(same_second[0].id, same_second_marker.unwrap().unwrap());
+
+        let (page, total, cursor, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                limit: 2,
+                include_total: true,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            page.iter().map(|row| row.ts_unix).collect::<Vec<_>>(),
+            vec![100, 100]
+        );
+        assert_eq!(total, Some(3));
+        assert_eq!(marker, None);
+        let (tail, total, _, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                limit: 1,
+                cursor: Some(cursor.unwrap()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(tail[0].ts_unix, 99);
+        assert_eq!(total, None);
+        assert_eq!(marker, None);
+
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                upstream: Some("github".into()),
+                ..head()
+            })
+            .await
+            .unwrap();
+        assert_eq!(marker, None);
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
+                allowed_upstreams: Some(vec!["github".into()]),
+                ..head()
+            })
+            .await
+            .unwrap();
+        assert_eq!(marker, None);
+
+        let previous_id = same_second[0].id;
+        assert_eq!(store.prune_older_than(101).await.unwrap(), 3);
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert_eq!(marker, Some(None));
+        store.record_call(sample_record(101)).await.unwrap();
+        let (_, _, _, marker) = store
+            .list_calls_with_ingestion_watermark(head())
+            .await
+            .unwrap();
+        assert!(marker.unwrap().unwrap() > previous_id);
+    }
+
+    #[tokio::test]
     async fn list_calls_clamps_zero_limit_to_one_row() {
         use super::super::query::UsageCallsQuery;
 
@@ -2321,5 +2631,111 @@ mod tests {
             semaphore.try_acquire().is_ok(),
             "a released permit should be acquirable again"
         );
+    }
+    #[test]
+    fn queued_sqlite_calls_do_not_occupy_blocking_workers() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(5)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            let store = UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap();
+            let baseline = store.next_conn.load(std::sync::atomic::Ordering::Relaxed);
+            let mut releases = Vec::new();
+            let mut holders = Vec::new();
+            for _ in 0..4 {
+                let (release, wait) = std::sync::mpsc::channel();
+                let (entered, ready) = tokio::sync::oneshot::channel();
+                let copy = store.clone();
+                holders.push(tokio::spawn(async move {
+                    copy.with_conn(move |_| {
+                        entered.send(()).unwrap();
+                        wait.recv().unwrap();
+                        Ok(())
+                    })
+                    .await
+                    .unwrap();
+                }));
+                ready.await.unwrap();
+                releases.push(release);
+            }
+            let copy = store.clone();
+            let queued = tokio::spawn(async move { copy.with_conn(|_| Ok(())).await });
+            // Observe that the queued operation selected a connection before probing
+            // the blocking executor. This current-thread runtime resumes us only
+            // after that task parks; all connections are held, so no DB work can run.
+            while store.next_conn.load(std::sync::atomic::Ordering::Relaxed) < baseline + 5 {
+                tokio::task::yield_now().await;
+            }
+            let probe = tokio::task::spawn_blocking(|| ());
+            let result = tokio::time::timeout(std::time::Duration::from_millis(200), probe).await;
+            for release in releases {
+                release.send(()).unwrap();
+            }
+            for holder in holders {
+                holder.await.unwrap();
+            }
+            queued.await.unwrap().unwrap();
+            assert!(
+                result.is_ok(),
+                "queued SQLite lock must not consume the fifth blocking worker"
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn cancelled_sqlite_caller_retains_running_connection_and_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(directory.path().join("usage.db"))
+            .await
+            .unwrap();
+        let selected = store.next_conn.load(std::sync::atomic::Ordering::Relaxed);
+        let (release, wait) = std::sync::mpsc::channel();
+        let (entered, ready) = tokio::sync::oneshot::channel();
+        let copy = store.clone();
+        let caller = tokio::spawn(async move {
+            copy.with_conn(move |_| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+                Ok(())
+            })
+            .await
+        });
+        ready.await.unwrap();
+        caller.abort();
+        drop(caller.await);
+        assert_eq!(
+            store.admission.available_permits(),
+            super::SQLITE_PENDING_LIMIT - 1
+        );
+        let connection = store.conns[selected % store.conns.len()].clone();
+        assert!(connection.clone().try_lock_owned().is_err());
+        release.send(()).unwrap();
+        drop(connection.lock_owned().await);
+        assert_eq!(
+            store.admission.available_permits(),
+            super::SQLITE_PENDING_LIMIT
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_admission_rejects_saturation_and_recovers() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = UsageStore::open(directory.path().join("usage.db"))
+            .await
+            .unwrap();
+        let held = store
+            .admission
+            .clone()
+            .acquire_many_owned(super::SQLITE_PENDING_LIMIT as u32)
+            .await
+            .unwrap();
+        assert!(store.with_conn(|_| Ok(())).await.is_err());
+        drop(held);
+        store.with_conn(|_| Ok(())).await.unwrap();
     }
 }
