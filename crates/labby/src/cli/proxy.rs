@@ -47,7 +47,7 @@ pub struct ProxyArgs {
     #[arg(long, requires = "funnel", conflicts_with = "command")]
     pub print_google_callback: bool,
 
-    /// Load multiple stdio servers from a .mcp.json mcpServers object.
+    /// Load local or remote servers from a .mcp.json mcpServers object.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["command", "print_google_callback"])]
     pub mcp_json: Option<PathBuf>,
 

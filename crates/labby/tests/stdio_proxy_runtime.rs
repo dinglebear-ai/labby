@@ -948,6 +948,114 @@ async fn cli_discovers_home_mcp_json_and_aggregates_two_servers() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn cli_aggregates_stdio_and_http_with_configured_authorization_header() {
+    use tokio::process::Command;
+
+    ensure_tls_provider();
+    let temp = tempfile::tempdir().unwrap();
+    // This is a real authenticated Streamable HTTP MCP endpoint, backed by a
+    // separate fixture child. Successful discovery/calls require header delivery.
+    let http_proxy = LocalProxy::start(LocalProxyOptions {
+        command: fixture_command(temp.path().to_path_buf(), &temp.path().join("http.pid")),
+        preferences: local_preferences(ProxyAuthMode::Bearer),
+        bearer_token: Some("mixed-http-secret".into()),
+        explicit_env: vec![(OsString::from("PROXY_EXPLICIT"), OsString::from("http"))],
+        inherit_env: vec![OsString::from("PATH")],
+    })
+    .await
+    .unwrap();
+    for token in [None, Some("wrong-secret")] {
+        let mut request = reqwest::Client::new()
+            .post(http_proxy.url().clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        assert_eq!(
+            request.send().await.unwrap().status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+    }
+    let config = serde_json::json!({"mcpServers": {
+        "local": {
+            "command": env!("CARGO_BIN_EXE_stdio-mcp-fixture"),
+            "args": ["--pid-file", temp.path().join("stdio.pid")],
+            "env": {"PROXY_EXPLICIT": "stdio"}
+        },
+        "remote": {
+            "type": "http",
+            "url": http_proxy.url().as_str(),
+            "headers": {"Authorization": "Bearer mixed-http-secret"}
+        }
+    }});
+    std::fs::write(temp.path().join(".mcp.json"), config.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy", "--local", "--auth", "none"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", temp.path())
+        .env("LABBY_HOME", temp.path())
+        .current_dir(temp.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let line = wait_for_readiness_or_exit(&mut child, stdout, "mixed stdio/HTTP proxy")
+        .await
+        .unwrap();
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let service = connect(
+        &url::Url::parse(ready["url"].as_str().unwrap()).unwrap(),
+        None,
+    )
+    .await;
+    let tools = service.peer().list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 2);
+    let names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        names,
+        std::collections::BTreeSet::from(["local::fixture.echo", "remote::fixture.echo"])
+    );
+    for (name, marker) in [
+        ("local::fixture.echo", "stdio"),
+        ("remote::fixture.echo", "http"),
+    ] {
+        let result = service
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new(name))
+            .await
+            .unwrap();
+        let context: serde_json::Value =
+            serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(context["explicit_env"], marker);
+    }
+    service.cancel().await.unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    let output = wait_for_child_output(child, "mixed stdio/HTTP proxy shutdown")
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("mixed-http-secret"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("mixed-http-secret"));
+    http_proxy.shutdown().await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn cli_local_oauth_fails_clearly_when_loopback_leases_are_not_enabled() {
     use tokio::process::Command;
     use wiremock::matchers::{method, path};

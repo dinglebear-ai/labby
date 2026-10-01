@@ -8182,7 +8182,7 @@ Options:
           Explicit Labby server URL; uses credentials bound to that destination
 
       --mcp-json <PATH>
-          Load multiple stdio servers from a .mcp.json mcpServers object
+          Load local or remote servers from a .mcp.json mcpServers object
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)

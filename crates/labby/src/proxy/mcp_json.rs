@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use labby_runtime::gateway_config::{UpstreamConfig, UpstreamTransport};
 use serde::{Deserialize, Serialize};
 
 use super::command::ProxyCommand;
@@ -15,18 +16,43 @@ struct McpFile {
     servers: BTreeMap<String, McpEntry>,
 }
 
-#[derive(Deserialize)]
-struct McpEntry {
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
+type McpEntry = serde_json::Map<String, serde_json::Value>;
+
+fn valid_env_name(key: &str) -> bool {
+    !key.is_empty()
+        && key.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic() || byte == b'_' || (index > 0 && byte.is_ascii_digit())
+        })
+}
+
+/// Adapt common MCP JSON entries to the gateway's canonical configuration.
+fn upstream_entry(name: &str, mut entry: McpEntry) -> Result<UpstreamConfig> {
+    if let Some(kind) = entry.remove("type") {
+        let transport = match kind.as_str() {
+            Some("http" | "streamable-http" | "streamable_http") => "http",
+            Some("stdio") => "stdio",
+            Some("websocket") => "websocket",
+            Some("unix_socket") => "unix_socket",
+            _ => bail!(
+                "MCP server `{name}` has an unsupported transport type; use http, stdio, websocket, or unix_socket"
+            ),
+        };
+        if let Some(existing) = entry.get("transport") {
+            anyhow::ensure!(
+                existing.as_str() == Some(transport),
+                "MCP server `{name}` has conflicting type and transport"
+            );
+        }
+        entry.insert("transport".into(), transport.into());
+    }
+    entry.insert("name".into(), name.into());
+    serde_json::from_value(serde_json::Value::Object(entry))
+        .with_context(|| format!("MCP server `{name}` has invalid upstream fields"))
 }
 
 #[derive(Serialize)]
 struct IsolatedConfig {
-    upstream: Vec<IsolatedUpstream>,
+    upstream: Vec<UpstreamConfig>,
     code_mode: IsolatedCodeMode,
     gateway: IsolatedGateway,
 }
@@ -39,15 +65,6 @@ struct IsolatedGateway {
 #[derive(Serialize)]
 struct IsolatedCodeMode {
     enabled: bool,
-}
-
-#[derive(Serialize)]
-struct IsolatedUpstream {
-    name: String,
-    transport: &'static str,
-    command: String,
-    args: Vec<String>,
-    env: BTreeMap<String, String>,
 }
 
 pub struct PreparedMcpJson {
@@ -112,8 +129,9 @@ pub fn prepare_with_overrides(
         .with_context(|| format!("open MCP configuration {}", path.display()))?;
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("read MCP configuration {}", path.display()))?;
-    let file: McpFile = serde_json::from_str(&raw)
-        .context(".mcp.json must contain a valid mcpServers object with stdio commands")?;
+    let file: McpFile = serde_json::from_str(&raw).context(
+        ".mcp.json must contain a valid mcpServers object with commands or upstream URLs",
+    )?;
     if file.servers.is_empty() {
         bail!(".mcp.json contains no MCP servers");
     }
@@ -123,47 +141,98 @@ pub fn prepare_with_overrides(
     let count = file.servers.len();
     let mut upstream = Vec::with_capacity(count);
     let mut extra_stdio_commands = Vec::with_capacity(count);
-    for (name, mut entry) in file.servers {
-        let mut environment = inherited.clone();
-        environment.extend(entry.env);
-        environment.extend(explicit.clone());
-        entry.env = environment;
-        if name.is_empty()
-            || name.len() > 64
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        {
-            bail!("MCP server names must contain only letters, digits, `_`, or `-`");
+    let mut credentials = BTreeMap::new();
+    let credential_prefix = format!("LABBY_AGGREGATE_TOKEN_{}", uuid::Uuid::new_v4().simple());
+    for (index, (name, entry)) in file.servers.into_iter().enumerate() {
+        let mut entry = upstream_entry(&name, entry)?;
+        // Common MCP configs carry bearer Authorization in headers. Translate
+        // it into the gateway's credential reference rather than weakening its
+        // custom-header policy or leaking the token into stdio environments.
+        let authorization = entry
+            .headers
+            .keys()
+            .filter(|key| key.eq_ignore_ascii_case("authorization"))
+            .cloned()
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            authorization.len() <= 1,
+            "MCP server `{name}` has duplicate Authorization headers"
+        );
+        if let Some(key) = authorization.first() {
+            anyhow::ensure!(
+                entry.effective_transport() != Some(UpstreamTransport::Stdio),
+                "MCP server `{name}` cannot use HTTP Authorization with stdio"
+            );
+            anyhow::ensure!(
+                entry.bearer_token_env.is_none() && entry.oauth.is_none(),
+                "MCP server `{name}` has conflicting authentication"
+            );
+            let value = entry.headers.remove(key).expect("selected header exists");
+            let (scheme, token) = value
+                .split_once(' ')
+                .context("Authorization must use Bearer followed by a token")?;
+            anyhow::ensure!(
+                scheme.eq_ignore_ascii_case("Bearer")
+                    && !token.trim().is_empty()
+                    && !token.chars().any(char::is_control),
+                "MCP server `{name}` requires a valid Bearer Authorization header"
+            );
+            let key = format!("{credential_prefix}_{index}");
+            credentials.insert(key.clone(), token.trim().to_owned());
+            entry.bearer_token_env = Some(key);
+        } else if let Some(key) = entry.bearer_token_env.clone() {
+            anyhow::ensure!(
+                valid_env_name(&key),
+                "MCP server `{name}` has an invalid bearer_token_env name"
+            );
+            let token = explicit.get(&key).or_else(|| entry.env.get(&key)).or_else(|| inherited.get(&key)).cloned()
+                .or_else(|| labby_gateway::upstream::auth::configured_bearer_token(&key))
+                .filter(|token| !token.trim().is_empty())
+                .with_context(|| format!("MCP server `{name}` requires credential `{key}`; anonymous fallback is disabled"))?;
+            // Separate names avoid cross-server collisions and do not forward
+            // HTTP credentials to unrelated stdio children.
+            if entry.effective_transport() == Some(UpstreamTransport::Stdio) {
+                entry.env.insert(key, token);
+                entry.bearer_token_env = None;
+            } else {
+                let private_key = format!("{credential_prefix}_{index}");
+                credentials.insert(private_key.clone(), token);
+                entry.bearer_token_env = Some(private_key);
+            }
         }
-        if entry.command.trim().is_empty() {
-            bail!("MCP server `{name}` has no stdio command");
+        entry
+            .validate()
+            .with_context(|| format!("invalid MCP server `{name}`"))?;
+        if entry.effective_transport() == Some(UpstreamTransport::Stdio) {
+            let command = entry
+                .command
+                .as_ref()
+                .context("stdio command is required")?;
+            if Path::new(command)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("labby"))
+            {
+                bail!("MCP server `{name}` cannot recursively launch Labby");
+            }
+            let mut environment = inherited.clone();
+            environment.extend(entry.env);
+            environment.extend(explicit.clone());
+            anyhow::ensure!(
+                environment.keys().all(|key| valid_env_name(key)),
+                "MCP server `{name}` has an invalid environment variable name"
+            );
+            entry.env = environment;
+            extra_stdio_commands.push(command.clone());
+        } else {
+            anyhow::ensure!(
+                entry.args.is_empty(),
+                "MCP server `{name}` cannot use child args with a URL transport"
+            );
+            // URL entries may select credentials from env but do not spawn.
+            entry.env.clear();
         }
-        if Path::new(&entry.command)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .is_some_and(|stem| stem.eq_ignore_ascii_case("labby"))
-        {
-            bail!("MCP server `{name}` cannot recursively launch Labby");
-        }
-        if entry.env.keys().any(|key| {
-            key.is_empty()
-                || !key.bytes().enumerate().all(|(index, byte)| {
-                    byte.is_ascii_alphabetic()
-                        || byte == b'_'
-                        || (index > 0 && byte.is_ascii_digit())
-                })
-        }) {
-            bail!("MCP server `{name}` has an invalid environment variable name");
-        }
-        extra_stdio_commands.push(entry.command.clone());
-        upstream.push(IsolatedUpstream {
-            name,
-            transport: "stdio",
-            command: entry.command,
-            args: entry.args,
-            env: entry.env,
-        });
+        upstream.push(entry);
     }
     let home = tempfile::tempdir().context("create isolated MCP aggregator home")?;
     let config = toml::to_string(&IsolatedConfig {
@@ -181,6 +250,29 @@ pub fn prepare_with_overrides(
         use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
             .context("protect isolated MCP aggregator configuration")?;
+    }
+    if !credentials.is_empty() {
+        let dotenv = credentials
+            .iter()
+            .map(|(key, value)| {
+                // JSON string quoting is accepted by dotenv and protects quotes,
+                // backslashes and line breaks without logging credential values.
+                format!(
+                    "{key}={}\n",
+                    serde_json::to_string(value)
+                        .expect("string serializes")
+                        .replace('$', "\\$")
+                )
+            })
+            .collect::<String>();
+        let env_path = home.path().join(".env");
+        std::fs::write(&env_path, dotenv).context("write isolated upstream credentials")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&env_path, std::fs::Permissions::from_mode(0o600))
+                .context("protect isolated upstream credentials")?;
+        }
     }
     let executable = std::env::current_exe().context("locate current Labby executable")?;
     let cwd = cwd.map_or_else(
@@ -227,38 +319,5 @@ pub fn prepare_with_overrides(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn discovery_prefers_home_then_executable_directory() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        let bin = temp.path().join("bin");
-        std::fs::create_dir_all(&home).unwrap();
-        std::fs::create_dir_all(&bin).unwrap();
-        let executable = bin.join("labby");
-        assert!(discover(&home, &executable).unwrap().is_none());
-        let beside_binary = bin.join(".mcp.json");
-        std::fs::write(&beside_binary, "{}").unwrap();
-        assert_eq!(discover(&home, &executable).unwrap(), Some(beside_binary));
-        let in_home = home.join(".mcp.json");
-        std::fs::write(&in_home, "invalid JSON").unwrap();
-        let selected = discover(&home, &executable).unwrap().unwrap();
-        assert_eq!(selected, in_home);
-        assert!(
-            prepare(&selected).is_err(),
-            "invalid home config must not fall back"
-        );
-    }
-
-    #[test]
-    fn discovery_rejects_a_directory_instead_of_falling_back() {
-        let temp = tempfile::tempdir().unwrap();
-        let home = temp.path().join("home");
-        std::fs::create_dir_all(home.join(".mcp.json")).unwrap();
-        std::fs::write(temp.path().join(".mcp.json"), "{}").unwrap();
-        let error = discover(&home, &temp.path().join("labby")).unwrap_err();
-        assert!(error.to_string().contains("not a file"));
-    }
-}
+#[path = "mcp_json/tests.rs"]
+mod tests;

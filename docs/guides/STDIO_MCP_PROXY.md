@@ -1,15 +1,15 @@
 ---
 title: "Stdio MCP Proxy Guide"
 created: "2026-08-01"
-updated: "2026-09-30"
+updated: "2026-10-01"
 ---
 
 # Stdio MCP Proxy
 
 `labby proxy` runs a stdio MCP server in the foreground and exposes its tools
-as a Streamable HTTP endpoint. With `--mcp-json`, it aggregates the stdio
-servers in a `.mcp.json` instead. Funnel makes the endpoint reachable from the
-public internet; Labby permits Funnel only with OAuth. In Funnel mode, this
+as a Streamable HTTP endpoint. With `--mcp-json`, it aggregates local stdio
+and remote HTTP servers from a `.mcp.json`. Funnel makes the endpoint reachable
+from the public internet; Labby permits Funnel only with OAuth. In Funnel mode, this
 single proxy process also serves the OAuth routes, including the Google
 callback. It needs durable Labby OAuth state but no separate `labby serve`.
 
@@ -422,18 +422,40 @@ Example `.mcp.json`:
 npx -y @dinglebear/labby proxy --funnel --port 8443 --mcp-json /path/to/.mcp.json
 ```
 
-The file can contain up to 16 named stdio servers. Each entry supports
-`command`, `args`, and an `env` object. Paths resolve relative to the file's
-directory unless `--cwd` overrides it. Selected `--inherit-env` values reach
+The file can contain up to 16 named servers, mixing local stdio commands and
+remote Streamable HTTP endpoints. Stdio entries support `command`, `args`, and
+an `env` object. HTTP entries use `url`, optionally `type: "http"` or
+`type: "streamable-http"`, and `headers`. Native gateway `transport`,
+`socket_path`, lifecycle and exposure settings also pass through shared
+validation. Paths resolve relative to the file's directory unless `--cwd`
+overrides it. Selected `--inherit-env` values reach
 all servers; each JSON entry overrides those values, and explicit `--env` values
 have the highest priority. Unselected ambient secrets remain scrubbed.
 Labby starts an isolated local MCP aggregator and connects to every
-configured server before public publication. Tools are qualified by upstream
-name, such as `sandbox::runtime_check`, so matching tool names can coexist.
+configured local or remote server before public publication. Tools are
+qualified by upstream name, such as `sandbox::runtime_check`, so matching tool names can coexist.
 Native tool names containing `::` are rejected before startup publication.
 Labby-owned control tools are excluded from this aggregate surface. The file
-and any environment secrets must be readable only by the operator. HTTP/SSE entries
-are not supported by this option.
+and any environment secrets must be readable only by the operator. Streamable
+HTTP is supported; legacy standalone SSE transport is not.
+
+```json
+{
+  "mcpServers": {
+    "sandbox": { "command": "npx", "args": ["-y", "microsandbox-mcp"] },
+    "remote": { "type": "http", "url": "https://mcp.example.com/mcp", "bearer_token_env": "REMOTE_MCP_TOKEN" }
+  }
+}
+```
+
+`bearer_token_env` selects a credential from the supplied entry environment,
+CLI environment overrides, or the running Labby installation. Common
+`headers: {"Authorization": "Bearer ..."}` entries are also accepted and
+translated into private gateway credential references. HTTP credentials are
+kept in the isolated aggregate home and are not implicitly copied to unrelated
+stdio children; explicit `--env` and `--inherit-env` selections still apply to
+child processes. Missing configured credentials fail startup; there is no
+anonymous fallback. Other custom headers use the gateway validation rules.
 
 ## OAuth resource lifecycle
 
