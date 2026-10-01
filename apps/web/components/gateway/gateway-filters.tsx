@@ -255,7 +255,7 @@ export function GatewayFilters({
           data-mobile-search={mode}
           className={cn(
             AURORA_CONTROL_SURFACE,
-            'relative flex h-11 items-center gap-2 border px-2 transition-shadow focus-within:border-aurora-accent-primary/45 focus-within:shadow-[var(--aurora-active-glow)]',
+            'relative flex h-12 items-center gap-2 border px-2 transition-shadow focus-within:border-aurora-accent-primary/45 focus-within:shadow-[var(--aurora-active-glow)]',
           )}
         >
           <div className="grid size-7 shrink-0 place-items-center rounded-aurora-1 border border-aurora-border-strong/70 bg-aurora-panel-strong/60 text-aurora-accent-strong">
@@ -287,7 +287,7 @@ export function GatewayFilters({
               variant="outline"
               size="icon"
               onClick={() => onMobileSheetOpenChange(!mobileSheetOpen)}
-              className={cn(gatewayActionTone(), 'relative size-7 rounded-aurora-1 text-aurora-accent-strong hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
+              className={cn(gatewayActionTone(), 'relative size-11 shrink-0 rounded-aurora-1 text-aurora-accent-strong hover:bg-aurora-hover-bg hover:text-aurora-text-primary')}
               aria-label="Open filters"
             >
               <SlidersHorizontal className="size-3.5" />

@@ -86,7 +86,9 @@ impl ClientHandler for BridgeClientHandler {
     /// task and MRTR support are negotiated per request rather than frozen at
     /// bridge startup.
     fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
+        let mut info = ClientInfo::default();
+        info.client_info = Implementation::new("labby-bridge", env!("CARGO_PKG_VERSION"));
+        info
     }
 }
 
@@ -208,7 +210,14 @@ impl BridgeServerHandler {
         context: &RequestContext<RoleServer>,
         action: &str,
     ) -> Result<ServerResult, ErrorData> {
-        let options = PeerRequestOptions::no_options().with_meta(context.meta.clone());
+        let mut meta = context.meta.clone();
+        // Legacy initialize stores clientInfo on the peer, outside per-request
+        // metadata. Carry the effective descriptive identity across the bridge;
+        // modern request metadata still wins when it is present.
+        if let Some(client_info) = context.client_info() {
+            meta.set_client_info(client_info);
+        }
+        let options = PeerRequestOptions::no_options().with_meta(meta);
         let mut handle = self
             .peer
             .send_cancellable_request(request, options)
@@ -791,11 +800,12 @@ mod tests {
         async fn on_custom_request(
             &self,
             request: CustomRequest,
-            _context: RequestContext<RoleServer>,
+            context: RequestContext<RoleServer>,
         ) -> Result<CustomResult, McpError> {
             Ok(CustomResult::new(serde_json::json!({
                 "echoed_method": request.method,
                 "echoed_params": request.params,
+                "client_info": context.client_info(),
             })))
         }
     }
@@ -812,6 +822,7 @@ mod tests {
     impl ClientHandler for TestDownstreamClient {
         fn get_info(&self) -> ClientInfo {
             let mut info = ClientInfo::default();
+            info.client_info = Implementation::new("legacy-operator", "1.2.3");
             info.capabilities = ClientCapabilities::builder().enable_tasks().build();
             info
         }
@@ -831,7 +842,7 @@ mod tests {
 
     /// Wires up the full two-hop bridge topology:
     /// test client -> `BridgeServerHandler` -> `BridgeClientHandler` -> fake daemon.
-    async fn wire_bridge() -> BridgeHarness {
+    async fn wire_bridge_with_lifecycle(mode: ClientLifecycleMode) -> BridgeHarness {
         // Hop 1: bridge -> fake daemon, served with `BridgeClientHandler` so
         // the daemon's server->client requests would be relayed (unused by
         // these tests, but this is the real production wiring shape from
@@ -866,12 +877,7 @@ mod tests {
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
         let (bridge_service, client_service) = tokio::join!(
             bridge_handler.serve(bridge_inbound_transport),
-            TestDownstreamClient.serve_with_lifecycle(
-                client_transport,
-                ClientLifecycleMode::Discover {
-                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-                },
-            ),
+            TestDownstreamClient.serve_with_lifecycle(client_transport, mode,),
         );
         let bridge_service: RunningService<RoleServer, BridgeServerHandler> =
             bridge_service.expect("test client connects to bridge");
@@ -884,6 +890,61 @@ mod tests {
             _client_service: client_service,
             _bridge_service: bridge_service,
         }
+    }
+
+    async fn wire_bridge() -> BridgeHarness {
+        wire_bridge_with_lifecycle(ClientLifecycleMode::Discover {
+            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        })
+        .await
+    }
+
+    #[test]
+    fn outbound_bridge_identifies_itself_without_claiming_downstream_identity() {
+        let info = BridgeClientHandler::new().get_info();
+        assert_eq!(info.client_info.name, "labby-bridge");
+        assert_eq!(info.client_info.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn legacy_initialize_identity_reaches_daemon_on_subsequent_request() {
+        let harness = wire_bridge_with_lifecycle(ClientLifecycleMode::Initialize).await;
+        let response = harness
+            .peer
+            .send_request(ClientRequest::CustomRequest(CustomRequest::new(
+                "x-lab/identity",
+                None,
+            )))
+            .await
+            .expect("legacy request crosses bridge");
+        let ServerResult::CustomResult(CustomResult(value)) = response else {
+            panic!("expected custom response");
+        };
+        assert_eq!(value["client_info"]["name"], "legacy-operator");
+        assert_eq!(value["client_info"]["version"], "1.2.3");
+    }
+
+    #[tokio::test]
+    async fn modern_request_identity_overrides_bridge_connection_identity() {
+        let harness = wire_bridge().await;
+        let mut meta = rmcp::model::RequestMetaObject::new();
+        meta.set_client_info(Implementation::new("request-operator", "4.5.6"));
+        let response = harness
+            .peer
+            .send_request_with_option(
+                ClientRequest::CustomRequest(CustomRequest::new("x-lab/identity", None)),
+                PeerRequestOptions::no_options().with_meta(meta),
+            )
+            .await
+            .expect("modern request sent")
+            .await_response()
+            .await
+            .expect("modern request crosses bridge");
+        let ServerResult::CustomResult(CustomResult(value)) = response else {
+            panic!("expected custom response");
+        };
+        assert_eq!(value["client_info"]["name"], "request-operator");
+        assert_eq!(value["client_info"]["version"], "4.5.6");
     }
 
     #[tokio::test]

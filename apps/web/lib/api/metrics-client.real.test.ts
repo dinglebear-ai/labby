@@ -86,6 +86,7 @@ test('fetchDashboardMetrics uses complete-window aggregate analytics without raw
     assert.equal(metricsParams?.bucket_count, 24)
     assert.equal(typeof metricsParams?.timezone, 'string')
     assert.equal(metricsParams?.include_facets, false)
+    assert.equal(metricsParams?.include_upstream_timeseries, undefined, 'main Overview keeps the default aggregate light')
     assert.deepEqual(serverLogParams, { limit: 500, max_scan_bytes: 2 * 1024 * 1024, stop_after_limit: true })
     assert.equal(result.tool_calls.total, 48_649)
     assert.equal(result.timeseries.length, 24)
@@ -338,4 +339,300 @@ test('upstream summary preserves fixed window, full bucket counts and exact upst
   } finally {
     globalThis.fetch = originalFetch
   }
+})
+
+test('change token uses one indexed row without total count or log scan', async () => {
+  const requests: Array<{ action: string; params: Record<string, unknown> }> = []
+  const originalFetch = globalThis.fetch
+  let watermark = 40
+  globalThis.fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { action: string; params: Record<string, unknown> }
+    requests.push(request)
+    return Response.json({ calls: [{ id: 40, ts_unix: 1_800_000_000 }], latest_ingested_call_id: ++watermark })
+  }
+  try {
+    const { fetchDashboardChangeToken } = await import('./metrics-client.ts')
+    const first = await fetchDashboardChangeToken()
+    const second = await fetchDashboardChangeToken()
+    assert.notEqual(first.latestCallId, second.latestCallId)
+    assert.equal(first.tsUnix, second.tsUnix)
+    assert.deepEqual(requests.map(({ action }) => action), ['gateway.usage.calls', 'gateway.usage.calls'])
+    assert.deepEqual(requests[0].params, { limit: 1, include_total: false })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('change token follows ingestion order when the page head has a newer timestamp', async () => {
+  const originalFetch = globalThis.fetch
+  let watermark = 1
+  globalThis.fetch = async () => Response.json({
+    calls: [{ id: 1, ts_unix: 100 }],
+    latest_ingested_call_id: watermark++,
+  })
+  try {
+    const { fetchDashboardChangeToken } = await import('./metrics-client.ts')
+    const first = await fetchDashboardChangeToken()
+    const second = await fetchDashboardChangeToken()
+    assert.deepEqual(first, { latestCallId: 1, tsUnix: 100 })
+    assert.deepEqual(second, { latestCallId: 2, tsUnix: 100 })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('change token accepts an empty marker and rejects older daemon responses', async () => {
+  const originalFetch = globalThis.fetch
+  let includeMarker = true
+  globalThis.fetch = async () => Response.json(includeMarker
+    ? { calls: [], latest_ingested_call_id: null }
+    : { calls: [{ id: 1, ts_unix: 100 }] })
+  try {
+    const { fetchDashboardChangeToken, MetricsApiError } = await import('./metrics-client.ts')
+    assert.deepEqual(await fetchDashboardChangeToken(), { latestCallId: null, tsUnix: null })
+    includeMarker = false
+    await assert.rejects(fetchDashboardChangeToken(), (error: unknown) =>
+      error instanceof MetricsApiError && error.code === 'usage_change_token_unsupported')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('per-hook sampler reuses bounded logs only within base and session epoch', async () => {
+  const originalFetch = globalThis.fetch
+  const logsByBase = new Map<string, number>()
+  globalThis.fetch = async (input, init) => {
+    const request = JSON.parse(String(init?.body)) as { action: string }
+    if (request.action === 'server_logs.query') {
+      const base = String(input)
+      logsByBase.set(base, (logsByBase.get(base) ?? 0) + 1)
+      return Response.json({ entries: [], truncated: false })
+    }
+    return Response.json(metrics())
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    await sampler.fetch('1h', { baseUrl: 'https://one.example' })
+    await sampler.fetch('1h', { baseUrl: 'https://one.example' })
+    assert.equal([...logsByBase.values()].reduce((a, b) => a + b, 0), 1)
+    await sampler.fetch('1h', { baseUrl: 'https://two.example' })
+    assert.equal([...logsByBase.values()].reduce((a, b) => a + b, 0), 2)
+    __setBrowserSessionStateForTests({ status: 'loading' })
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    await sampler.fetch('1h', { baseUrl: 'https://two.example' })
+    assert.equal([...logsByBase.values()].reduce((a, b) => a + b, 0), 3)
+    await sampler.fetch('1h', { baseUrl: 'https://two.example', standaloneBearerAuth: true, token: 'local-test-token' })
+    assert.equal([...logsByBase.values()].reduce((a, b) => a + b, 0), 3, 'standalone bearer never reads cookie-authenticated logs')
+    await sampler.fetch('1h', { baseUrl: 'https://two.example' })
+    assert.equal([...logsByBase.values()].reduce((a, b) => a + b, 0), 4)
+  } finally {
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('cancelling one sampler request does not cancel another caller', async () => {
+  const originalFetch = globalThis.fetch
+  const controller = new AbortController()
+  let releaseFirst: ((response: Response) => void) | undefined
+  let logRequests = 0
+  globalThis.fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { action: string }
+    if (request.action !== 'server_logs.query') return Response.json(metrics())
+    logRequests += 1
+    if (logRequests === 1) return new Promise<Response>((resolve) => { releaseFirst = resolve })
+    return Response.json({ entries: [], truncated: false })
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    const cancelled = sampler.fetch('1h', { signal: controller.signal })
+    await Promise.resolve()
+    const survivor = sampler.fetch('1h')
+    controller.abort()
+    releaseFirst?.(Response.json({ entries: [], truncated: false }))
+    await assert.rejects(cancelled, (error: unknown) => error instanceof DOMException && error.name === 'AbortError')
+    assert.equal((await survivor).tool_calls.total, 2)
+    assert.equal(logRequests, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('late logs from an old authority cannot populate the sampler cache', async () => {
+  const originalFetch = globalThis.fetch
+  let release: ((response: Response) => void) | undefined
+  let logRequests = 0
+  globalThis.fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { action: string }
+    if (request.action !== 'server_logs.query') return Response.json(metrics())
+    logRequests += 1
+    if (logRequests === 1) return new Promise<Response>((resolve) => { release = resolve })
+    return Response.json({ entries: [], truncated: false })
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    const old = sampler.fetch('1h')
+    await Promise.resolve()
+    __setBrowserSessionStateForTests({ status: 'loading' })
+    release?.(Response.json({ entries: [], truncated: false }))
+    await assert.rejects(old, (error: unknown) => error instanceof DOMException && error.name === 'AbortError')
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    await sampler.fetch('1h')
+    assert.equal(logRequests, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('standalone credential change fences a late aggregate without cookie log requests', async () => {
+  const originalFetch = globalThis.fetch
+  let release: ((response: Response) => void) | undefined
+  let aggregateRequests = 0
+  globalThis.fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { action: string }
+    assert.equal(request.action, 'gateway.usage.metrics')
+    aggregateRequests += 1
+    if (aggregateRequests === 1) return new Promise<Response>((resolve) => { release = resolve })
+    return Response.json(metrics())
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    const old = sampler.fetch('1h', { standaloneBearerAuth: true, token: 'test-token-a' })
+    await Promise.resolve()
+    const current = sampler.fetch('1h', { standaloneBearerAuth: true, token: 'test-token-b' })
+    release?.(Response.json(metrics()))
+    await assert.rejects(old, (error: unknown) => error instanceof DOMException && error.name === 'AbortError')
+    assert.equal((await current).tool_calls.total, 2)
+    assert.equal(aggregateRequests, 2)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('standalone dashboard analytics never merge observations from the browser session', async () => {
+  const originalFetch = globalThis.fetch
+  const actions: string[] = []
+  globalThis.fetch = async (_input, init) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    actions.push(action)
+    assert.equal(action, 'gateway.usage.metrics')
+    // The browser gateway deliberately ignores legacy token options. This
+    // change must not introduce bearer injection into the cookie transport.
+    assert.equal(new Headers(init?.headers).get('Authorization'), null)
+    assert.equal(init?.credentials, 'include')
+    return Response.json(metrics())
+  }
+  try {
+    const { fetchDashboardMetrics } = await import('./metrics-client.ts')
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const options = { standaloneBearerAuth: true, token: 'test-only-token' }
+    const direct = await fetchDashboardMetrics('1h', options)
+    const sampled = await createDashboardMetricsSampler().fetch('1h', options)
+    for (const result of [direct, sampled]) {
+      assert.equal(result.tool_calls.total, 2)
+      assert.equal(result.collected.tokens, false)
+      assert.match(result.warnings?.join(' ') ?? '', /standalone bearer mode/)
+    }
+    assert.deepEqual(actions, ['gateway.usage.metrics', 'gateway.usage.metrics'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('failed retained-log query has a minute cooldown without being cached as success', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: 1_800_000_000_000 })
+  const originalFetch = globalThis.fetch
+  let logRequests = 0
+  globalThis.fetch = async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as { action: string }
+    if (request.action !== 'server_logs.query') return Response.json(metrics())
+    logRequests += 1
+    return logRequests === 1
+      ? Response.json({ kind: 'unavailable', message: 'log reader offline' }, { status: 503 })
+      : Response.json({ entries: [], truncated: false })
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    const first = await sampler.fetch('1h')
+    assert.match(first.warnings?.[0] ?? '', /Retained observability is unavailable/)
+    const second = await sampler.fetch('1h')
+    assert.equal(logRequests, 1)
+    assert.match(second.warnings?.[0] ?? '', /Retained observability is unavailable/)
+    t.mock.timers.tick(60_000)
+    const recovered = await sampler.fetch('1h')
+    assert.equal(logRequests, 2)
+    assert.match(recovered.sampleProvenance ?? '', /bounded sample/)
+    assert.equal(recovered.warnings?.length ?? 0, 0)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+
+test('sampler starts core aggregation while retained logs are still pending', async () => {
+  const originalFetch = globalThis.fetch
+  let release!: (response: Response) => void
+  const pending = new Promise<Response>(resolve => { release = resolve })
+  let aggregateStarted = false
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'server_logs.query') return pending
+    aggregateStarted = true
+    return Response.json(metrics())
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const result = createDashboardMetricsSampler().fetch('1h')
+    await new Promise(resolve => setImmediate(resolve))
+    const startedBeforeLogs = aggregateStarted
+    release(Response.json({ entries: [], truncated: false }))
+    await result
+    assert.equal(startedBeforeLogs, true)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+
+test('sampler preserves authorization failures and their cooldown instead of returning degraded success', async () => {
+  const originalFetch = globalThis.fetch
+  let logs = 0
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'server_logs.query') {
+      logs += 1
+      return Response.json({ message: 'log access forbidden' }, { status: 403 })
+    }
+    return Response.json(metrics())
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const sampler = createDashboardMetricsSampler()
+    for (let i = 0; i < 2; i++) await assert.rejects(sampler.fetch('1h'), (error: unknown) => error instanceof Error && (error as Error & { status?: number }).status === 403)
+    assert.equal(logs, 1)
+  } finally { globalThis.fetch = originalFetch }
+})
+
+
+test('a failed core query retains flight ownership until its parallel log scan settles', async () => {
+  const originalFetch = globalThis.fetch
+  let release!: (response: Response) => void
+  let settled = false
+  globalThis.fetch = async (_url, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    return action === 'server_logs.query' ? new Promise(resolve => { release = resolve }) : Response.json({ message: 'unavailable' }, { status: 503 })
+  }
+  try {
+    const { createDashboardMetricsSampler } = await import('./dashboard-metrics-sampler.ts')
+    const request = createDashboardMetricsSampler().fetch('1h').finally(() => { settled = true })
+    const rejected = assert.rejects(request, (error: unknown) => error instanceof Error && (error as Error & { status?: number }).status === 503)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(settled, false)
+    release(Response.json({ entries: [], truncated: false }))
+    await rejected
+  } finally { globalThis.fetch = originalFetch }
 })

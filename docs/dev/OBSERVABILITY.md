@@ -820,3 +820,55 @@ prefers the nearest host span over event fields and omits event baggage. Baggage
 is opaque propagation data and must never be logged or used as identity,
 authorization, routing, or tenant context. This supplies correlation metadata;
 it does not configure an OpenTelemetry exporter.
+
+## Overview freshness and client observations
+
+The Overview defaults to a one-hour activity window. While visible and online,
+its cheap change detector queries `gateway.usage.calls` with `limit: 1` and
+`include_total: false`. The additive `latest_ingested_call_id` watermark distinguishes insertions
+even when timestamps are equal or writes arrive out of timestamp order. The detector does not dispatch upstream tools or record itself
+as upstream usage. An older gateway without row IDs uses the slower fallback.
+
+Activity changes are coalesced: complete-window aggregates refresh no more often
+than every 10 seconds for 1h, 30 seconds for 24h, and 60 seconds for 7d/30d. A
+minute refresh also ages idle windows. These are scheduling targets, not a
+latency guarantee: network, database, and tab suspension can delay publication.
+Hidden/offline views pause automatic work and catch up when active again.
+The page reports freshness and errors rather than claiming a continuously live
+stream. Requests and caches are scoped to the browser authority and API target.
+
+The default volume chart reuses the aggregate. The optional per-server breakdown
+is fetched only when selected and carries its own sample timestamp. A single
+`gateway.usage.metrics` request with `include_upstream_timeseries: true` returns
+at most four server series and the total series from the same SQLite read
+transaction. The flag defaults to false so ordinary aggregates do not pay for
+that grouping. The chart uses those transactional totals, never an older main
+counter sample, and reports unsupported older gateways rather than combining
+inconsistent snapshots. Its authority-scoped sampler coalesces in-flight work
+and applies a one-minute settled-sample cooldown across timers, view toggles,
+focus, and reconnect triggers.
+
+Host resources and retained-log enrichment also use slower sampling. Log
+observations start alongside, rather than before, the core aggregate. A per-hook
+log sample or failed attempt is reused for up to one minute and bounded to
+500 rows / 2 MiB. Aborted or stale-authority attempts cannot populate the cache,
+and authentication or authorization failures remain typed errors. Token, surface,
+and Code Mode values derived from logs are sampled observations, not
+complete-window totals. Successful sampling provenance is informational, not a
+degradation warning. Unavailable token telemetry displays an unavailable value,
+not a fabricated zero.
+
+`gateway.clients.list` is a bounded recent-observation registry, not a count of
+active sessions. Legacy initialization and subsequent MCP requests refresh
+observations; `last_seen_at` and `observation_count` are additive fields.
+Repeated observations use private actor/connection identity for deduplication,
+never a short redacted display tag. At most 500 entries are retained. The UI
+shows the most recently observed entries first in a bounded, scrollable panel.
+
+Client name/version are self-reported metadata. Bridge forwarding preserves
+legacy and request-scoped client information, and Labby's own bridges identify
+as `labby-bridge` rather than a generic SDK. A verified OAuth client ID is shown
+separately. SDK-only metadata such as `rmcp` cannot establish the originating
+application or agent; historical rows cannot be retroactively attributed without
+additional trustworthy evidence. None of these descriptive fields grants
+permissions or changes authenticated caller scope.

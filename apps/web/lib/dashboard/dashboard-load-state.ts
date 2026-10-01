@@ -21,5 +21,7 @@ export function metricsLoadState(
 
 export function shouldRetryMetrics(error: unknown): boolean {
   if (error instanceof Error && error.name === 'AbortError') return false
-  return !isMetricsUnsupported(error)
+  if (isMetricsUnsupported(error)) return false
+  const status = (error as MetricsError | null)?.status
+  return status === undefined || status === 408 || status === 429 || status >= 500
 }
