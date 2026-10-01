@@ -1,5 +1,6 @@
 'use client'
 
+import { summarizeCapabilities } from '@/lib/gateway-capabilities'
 import * as React from 'react'
 import Link from 'next/link'
 import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
@@ -238,15 +239,10 @@ export function OverviewHero({
           ? `${discovering.length} discovering`
           : 'all systems nominal'
 
-  const exposedPrompts = gateways.filter((gateway) => gateway.enabled !== false).reduce(
-    (sum, gateway) => sum + gateway.status.exposed_prompt_count,
-    0,
-  )
-  const exposedResources = gateways.filter((gateway) => gateway.enabled !== false).reduce(
-    (sum, gateway) => sum + gateway.status.exposed_resource_count,
-    0,
-  )
-
+  const activeStatuses = gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status)
+  const promptSummary = summarizeCapabilities(activeStatuses, 'prompts')
+  const resourceSummary = summarizeCapabilities(activeStatuses, 'resources')
+  const totalLabel = (value: number, incomplete: number) => incomplete ? `${value}+ · incomplete` : value
   // The reference stat strip: Connected · Offline · Tools · Prompts · Resources ·
   // Upstream calls · Failed · Tokens · P95 latency. Only Failed carries a tone;
   // every other value renders in primary text.
@@ -254,9 +250,9 @@ export function OverviewHero({
   const stats: HeroStat[] = [
     { label: 'Connected', value: live.connectedServers, icon: Cable, href: '/gateways/' },
     { label: 'Offline', value: live.offlineServers, icon: PlugZap, href: '/gateways/' },
-    { label: 'Tools', value: live.exposedTools, icon: Wrench, href: '/tools/' },
-    { label: 'Prompts', value: exposedPrompts, icon: MessageSquare, href: '/gateways/' },
-    { label: 'Resources', value: exposedResources, icon: FileText, href: '/gateways/' },
+    { label: 'Tools', value: totalLabel(live.exposedTools, live.incompleteTools ?? 0), icon: Wrench, href: '/tools/' },
+    { label: 'Prompts', value: totalLabel(promptSummary.exposed, promptSummary.incomplete), icon: MessageSquare, href: '/gateways/' },
+    { label: 'Resources', value: totalLabel(resourceSummary.exposed, resourceSummary.incomplete), icon: FileText, href: '/gateways/' },
     {
       label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',

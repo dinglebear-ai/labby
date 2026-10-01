@@ -105,52 +105,263 @@ impl GatewayManager {
         );
     }
 
-    async fn oauth_status_discovery(
+    async fn oauth_status_snapshot_current(
+        &self,
+        upstream: &str,
+        snapshot: &OauthStatusDiscoverySnapshot,
+    ) -> bool {
+        if snapshot
+            .lifecycle_epoch
+            .as_ref()
+            .is_some_and(|epoch| !epoch.is_current())
+        {
+            return false;
+        }
+        let (cfg, pool) = self.published_config_and_pool().await;
+        if let Some(config) = cfg.upstream.iter().find(|config| config.name == upstream) {
+            return super::code_mode::catalog_cache::fingerprint(config)
+                == snapshot.config_fingerprint
+                && pool.as_ref().map(|pool| Arc::as_ptr(pool) as usize) == snapshot.pool_identity;
+        }
+        snapshot.pool_identity.is_none()
+            && self
+                .upstream_oauth_managers
+                .as_ref()
+                .and_then(|managers| managers.get(upstream))
+                .is_some_and(|manager| {
+                    super::code_mode::catalog_cache::fingerprint(manager.upstream_config())
+                        == snapshot.config_fingerprint
+                })
+    }
+
+    pub(super) async fn oauth_status_discovery(
         &self,
         upstream: &str,
         subject: &str,
         config: UpstreamConfig,
     ) -> OauthStatusDiscoverySnapshot {
         let key = (upstream.to_string(), subject.to_string());
-        if let Some(snapshot) = self.oauth_status_discovery_cache.lock().await.get(&key)
-            && oauth_status_discovery_is_fresh(snapshot)
-        {
-            tracing::debug!(
-                service = "upstream_oauth",
-                action = "status.discovery",
-                upstream,
-                cache_hit = true,
-                failure_cooldown = snapshot.tool_error.is_some() || snapshot.error.is_some(),
-                "upstream oauth status discovery reused cached result"
-            );
-            return snapshot.clone();
-        }
-
+        let fingerprint = super::code_mode::catalog_cache::fingerprint(&config);
+        let (published_config, runtime_pool) = self.published_config_and_pool().await;
+        let configured = published_config.upstream.iter().any(|current| {
+            current.name == upstream
+                && super::code_mode::catalog_cache::fingerprint(current) == fingerprint
+        });
+        let runtime_pool = runtime_pool.filter(|_| configured);
+        let pool_identity = runtime_pool.as_ref().map(|pool| Arc::as_ptr(pool) as usize);
+        let usable = |snapshot: &OauthStatusDiscoverySnapshot| {
+            oauth_status_discovery_is_fresh(snapshot)
+                && snapshot.config_fingerprint == fingerprint
+                && snapshot.pool_identity == pool_identity
+                && snapshot
+                    .lifecycle_epoch
+                    .as_ref()
+                    .is_none_or(|epoch| epoch.is_current())
+        };
         let lock = self
             .oauth_status_discovery_locks
             .entry(key.clone())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone();
         let _guard = lock.lock().await;
-        if let Some(snapshot) = self.oauth_status_discovery_cache.lock().await.get(&key)
-            && oauth_status_discovery_is_fresh(snapshot)
-        {
-            return snapshot.clone();
+        let cached = {
+            self.oauth_status_discovery_cache
+                .lock()
+                .await
+                .get(&key)
+                .filter(|snapshot| usable(snapshot))
+                .cloned()
+        };
+        if let Some(mut snapshot) = cached {
+            let publication = match &self.oauth_client_cache {
+                Some(cache) => Some(cache.invalidation_barrier().read_owned().await),
+                None => None,
+            };
+            if !self
+                .oauth_status_snapshot_current(upstream, &snapshot)
+                .await
+            {
+                snapshot.summary = None;
+                snapshot.observation = super::view_models::CapabilityObservation {
+                    scope: super::view_models::CapabilityObservationScope::Credential,
+                    ..Default::default()
+                };
+                snapshot.tool_error = Some(
+                    "Configuration or credentials changed during discovery; retry status."
+                        .to_owned(),
+                );
+                return snapshot;
+            }
+            // The status cache controls probe frequency, never catalog authority.
+            if let Some(pool) = &runtime_pool {
+                let scoped = pool.cached_subject_summary(&config, Some(subject)).await;
+                snapshot.summary = Some(scoped.summary);
+                snapshot.observation = scoped.observation();
+                snapshot.tool_error = scoped.last_error.clone();
+                snapshot.error = snapshot
+                    .observation
+                    .resources
+                    .error
+                    .clone()
+                    .or_else(|| snapshot.observation.prompts.error.clone());
+                // An explicit successful refresh ends a cached failure's longer
+                // cooldown; subsequent probes use the normal freshness window.
+                self.oauth_status_discovery_cache
+                    .lock()
+                    .await
+                    .insert(key.clone(), snapshot.clone());
+            }
+            drop(publication);
+            if Arc::strong_count(&lock) <= 2 {
+                self.oauth_status_discovery_locks.remove(&key);
+            }
+            return snapshot;
         }
-
+        let lifecycle_epoch = self
+            .oauth_client_cache
+            .as_ref()
+            .map(|cache| cache.lifecycle_epoch_for(upstream, subject));
         let started = std::time::Instant::now();
-        let (request_timeout, relay_timeout) = {
-            let cfg = self.config.read().await;
-            (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
+        let snapshot = if let Some(pool) = &runtime_pool {
+            let warm = pool
+                .cached_subject_summary(&config, Some(subject))
+                .await
+                .tools_known;
+            let request_timeout = self.config.read().await.upstream_request_timeout();
+            let discovery_timeout =
+                crate::upstream::pool::upstream_discovery_timeout(&config, request_timeout);
+            let fence = pool.subject_tool_observation_fence(upstream, subject).await;
+            let result = tokio::time::timeout(discovery_timeout, async {
+                if warm {
+                    pool.reprobe_tools_for_upstream_as(&config, Some(subject), None)
+                        .await
+                } else {
+                    pool.ensure_tools_for_upstream(&config, Some(subject), None)
+                        .await
+                }
+            })
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => {
+                    let error = "subject tool discovery timed out";
+                    // The timeout drops the RPC future before its normal error
+                    // bookkeeping can run. Publish its failure canonically so
+                    // passive views and cached status preserve the same result.
+                    let current = OauthStatusDiscoverySnapshot {
+                        config_fingerprint: fingerprint.clone(),
+                        lifecycle_epoch: lifecycle_epoch.clone(),
+                        pool_identity,
+                        completed_at: tokio::time::Instant::now(),
+                        summary: None,
+                        observation: Default::default(),
+                        tool_error: None,
+                        error: None,
+                    };
+                    let recorded = self.oauth_status_snapshot_current(upstream, &current).await
+                        && pool
+                            .record_subject_tool_probe_failure(
+                                &config,
+                                subject,
+                                &fence,
+                                lifecycle_epoch.as_ref(),
+                                error,
+                            )
+                            .await;
+                    if recorded {
+                        Err(anyhow::anyhow!(error))
+                    } else {
+                        Ok(false)
+                    }
+                }
+            };
+            if result.is_ok() {
+                let configs = std::slice::from_ref(&config);
+                let resources = async {
+                    if config.proxy_resources {
+                        pool.subject_scoped_resources(configs, subject).await;
+                    }
+                };
+                let prompts = async {
+                    if config.proxy_prompts {
+                        pool.subject_scoped_prompts(configs, subject, &[]).await;
+                    }
+                };
+                tokio::join!(resources, prompts);
+            }
+            let scoped = pool.cached_subject_summary(&config, Some(subject)).await;
+            let mut observation = scoped.observation();
+            let tool_error = result
+                .err()
+                .map(|error| labby_runtime::redact::sanitize_error_text(&error.to_string(), 512))
+                .or(scoped.last_error.clone());
+            if let Some(error) = &tool_error {
+                observation.tools.state = super::view_models::CapabilityObservationState::Failed;
+                observation.tools.error = Some(error.clone());
+            }
+            let error = (observation.resources.state
+                == super::view_models::CapabilityObservationState::Failed
+                || observation.prompts.state
+                    == super::view_models::CapabilityObservationState::Failed)
+                .then(|| {
+                    "Optional capability discovery failed; working tools remain available."
+                        .to_owned()
+                });
+            OauthStatusDiscoverySnapshot {
+                config_fingerprint: fingerprint.clone(),
+                lifecycle_epoch: lifecycle_epoch.clone(),
+                pool_identity,
+                completed_at: tokio::time::Instant::now(),
+                summary: Some(scoped.summary),
+                observation,
+                tool_error,
+                error,
+            }
+        } else {
+            let (request_timeout, relay_timeout) = {
+                let cfg = self.config.read().await;
+                (cfg.upstream_request_timeout(), cfg.upstream_relay_timeout())
+            };
+            let pool = self.new_base_pool(request_timeout, relay_timeout, false);
+            pool.discover_all_for_subject_ephemeral(std::slice::from_ref(&config), subject)
+                .await;
+            let mut observation = pool.cached_global_observation(upstream).await;
+            observation.scope = super::view_models::CapabilityObservationScope::Credential;
+            OauthStatusDiscoverySnapshot {
+                config_fingerprint: fingerprint.clone(),
+                lifecycle_epoch: lifecycle_epoch.clone(),
+                pool_identity,
+                completed_at: tokio::time::Instant::now(),
+                summary: pool.cached_upstream_summary(upstream).await,
+                observation,
+                tool_error: pool.upstream_tool_last_error(upstream).await,
+                error: pool.upstream_last_error(upstream).await,
+            }
         };
-        let pool = self.new_base_pool(request_timeout, relay_timeout, false);
-        pool.discover_all_for_subject(&[config], subject).await;
-        let snapshot = OauthStatusDiscoverySnapshot {
-            completed_at: tokio::time::Instant::now(),
-            summary: pool.cached_upstream_summary(upstream).await,
-            tool_error: pool.upstream_tool_last_error(upstream).await,
-            error: pool.upstream_last_error(upstream).await,
+        // Hold the credential publication barrier through cache insertion. A
+        // config replacement also makes this result ineligible for reuse.
+        let _publication = match &self.oauth_client_cache {
+            Some(cache) => Some(cache.invalidation_barrier().read_owned().await),
+            None => None,
         };
+        if !self
+            .oauth_status_snapshot_current(upstream, &snapshot)
+            .await
+        {
+            return OauthStatusDiscoverySnapshot {
+                summary: None,
+                observation: super::view_models::CapabilityObservation {
+                    scope: super::view_models::CapabilityObservationScope::Credential,
+                    ..Default::default()
+                },
+                tool_error: Some(
+                    "Configuration or credentials changed during discovery; retry status."
+                        .to_owned(),
+                ),
+                error: None,
+                ..snapshot
+            };
+        }
         let mut cache = self.oauth_status_discovery_cache.lock().await;
         if cache.len() >= OAUTH_STATUS_DISCOVERY_CACHE_MAX && !cache.contains_key(&key) {
             if let Some(oldest) = cache
@@ -728,6 +939,10 @@ impl GatewayManager {
         let mut discovered_tool_count = 0;
         let mut exposed_tool_count = 0;
         let mut discovery_error = None;
+        let mut capability_observation = super::view_models::CapabilityObservation {
+            scope: super::view_models::CapabilityObservationScope::Credential,
+            ..Default::default()
+        };
 
         if authenticated {
             discovery_checked = true;
@@ -735,6 +950,7 @@ impl GatewayManager {
             let discovery = self
                 .oauth_status_discovery(upstream, subject, upstream_config)
                 .await;
+            capability_observation = discovery.observation;
             if let Some(summary) = discovery.summary {
                 discovered_tool_count = summary.discovered_tool_count;
                 exposed_tool_count = summary.exposed_tool_count;
@@ -753,10 +969,8 @@ impl GatewayManager {
                 discovery_error = Some(error);
             }
         }
-        let authenticated = matches!(
-            state,
-            UpstreamOauthConnectionState::Connected | UpstreamOauthConnectionState::Expiring
-        );
+        // Authentication comes from credential validity; a failed catalog walk
+        // does not invalidate those credentials or close the live transport.
 
         tracing::debug!(
             service = "upstream_oauth",
@@ -774,6 +988,7 @@ impl GatewayManager {
             "upstream oauth status: checked"
         );
         Ok(UpstreamOauthStatusView {
+            capability_observation: Some(capability_observation),
             authenticated,
             upstream: upstream.to_string(),
             credential_source,

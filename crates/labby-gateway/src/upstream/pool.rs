@@ -108,6 +108,8 @@ pub(crate) use skills::OperatorSkillRejection;
 pub(crate) use skills::OperatorSkills;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills_exposure::{SkillExposureDecision, SkillExposureReason};
+mod capability_observation;
+mod scoped_inventory;
 mod scoped_summary;
 mod skills_cache;
 #[cfg(feature = "skills")]
@@ -117,6 +119,7 @@ mod skills_list;
 mod skills_provider;
 #[cfg(feature = "skills")]
 mod skills_targeted;
+mod subject_tool_observation;
 #[cfg(feature = "skills")]
 pub use skills_provider::{SepSkillProvider, SkillSearchResult};
 mod skills_tests;

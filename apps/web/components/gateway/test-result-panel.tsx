@@ -1,5 +1,7 @@
 'use client'
 
+import { capabilityLabel } from '@/lib/gateway-capabilities'
+import type { GatewayStatus } from '@/lib/types/gateway'
 import { CheckCircle2, XCircle, Clock, Wrench, FileText, MessageSquare, X } from 'lucide-react'
 import {
   Sheet,
@@ -29,6 +31,11 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
   const severity = testResult.severity ?? (testResult.success ? 'success' : 'failure')
   const isSuccess = severity === 'success'
   const isWarning = severity === 'warning'
+  const diagnostics = (['tools', 'resources', 'prompts', 'skills'] as const)
+    .flatMap(kind => {
+      const error = testResult.capability_observation?.[kind].error
+      return error ? [{ kind, error }] : []
+    })
 
   return (
     <Sheet open={!!result} onOpenChange={(open) => !open && onClose()}>
@@ -121,8 +128,8 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
                   <DetailStatCard
                     icon={<Wrench size={11} />}
                     label="Tools"
-                    value={testResult.discovered_tools ?? DETAIL_NO_DATA}
-                    sub="discovered"
+                    value={testResult.capability_observation ? capabilityLabel({ capability_observation: testResult.capability_observation } as GatewayStatus, 'tools') : testResult.discovered_tools ?? DETAIL_NO_DATA}
+                    sub={testResult.capability_observation ? 'exposed / discovered' : 'discovered'}
                   />
                 )}
 
@@ -130,8 +137,8 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
                   <DetailStatCard
                     icon={<FileText size={11} />}
                     label="Resources"
-                    value={testResult.discovered_resources ?? DETAIL_NO_DATA}
-                    sub="discovered"
+                    value={testResult.capability_observation ? capabilityLabel({ capability_observation: testResult.capability_observation } as GatewayStatus, 'resources') : testResult.discovered_resources ?? DETAIL_NO_DATA}
+                    sub={testResult.capability_observation ? 'exposed / discovered' : 'discovered'}
                   />
                 )}
 
@@ -139,14 +146,20 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
                   <DetailStatCard
                     icon={<MessageSquare size={11} />}
                     label="Prompts"
-                    value={testResult.discovered_prompts ?? DETAIL_NO_DATA}
-                    sub="discovered"
+                    value={testResult.capability_observation ? capabilityLabel({ capability_observation: testResult.capability_observation } as GatewayStatus, 'prompts') : testResult.discovered_prompts ?? DETAIL_NO_DATA}
+                    sub={testResult.capability_observation ? 'exposed / discovered' : 'discovered'}
                   />
                 )}
               </div>
             </div>
           )}
         </div>
+
+        {diagnostics.length > 0 && (
+          <ul aria-label="Capability discovery diagnostics" className="mt-4 space-y-2 px-4 text-sm text-aurora-text-muted">
+            {diagnostics.map(({ kind, error }) => <li key={kind}><span className="capitalize">{kind}</span>: {error}</li>)}
+          </ul>
+        )}
 
         <div className="mt-8 px-4 pb-4">
           <Button variant="outline" onClick={onClose} className="w-full">

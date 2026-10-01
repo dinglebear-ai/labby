@@ -1,5 +1,6 @@
 'use client'
 
+import { capabilityDescription, capabilityLabel, capabilityScopeLabel, capabilityValue, summarizeCapabilities } from '@/lib/gateway-capabilities'
 import { Fragment, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
@@ -321,7 +322,7 @@ export function GatewayTable({
           break
         case 'exposed':
           result =
-            left.status.exposed_tool_count - right.status.exposed_tool_count ||
+            (capabilityValue(left.status, 'tools').exposed ?? -1) - (capabilityValue(right.status, 'tools').exposed ?? -1) ||
             left.status.exposed_resource_count - right.status.exposed_resource_count ||
             left.status.exposed_prompt_count - right.status.exposed_prompt_count ||
             (left.status.exposed_skill_count ?? 0) - (right.status.exposed_skill_count ?? 0)
@@ -384,17 +385,7 @@ export function GatewayTable({
     gatewayNeedsAttention(gateway) && hasUndismissedIncident(gateway),
   )
 
-  const exposureTotals = useMemo(
-    () =>
-      gateways.reduce(
-        (totals, gateway) => ({
-          exposed: totals.exposed + gateway.status.exposed_tool_count,
-          discovered: totals.discovered + gateway.status.discovered_tool_count,
-        }),
-        { exposed: 0, discovered: 0 },
-      ),
-    [gateways],
-  )
+  const exposureTotals = useMemo(() => summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools'), [gateways])
 
   const isGroupCollapsed = (id: StatusGroupId) => collapsedGroups.includes(id)
 
@@ -521,7 +512,8 @@ export function GatewayTable({
       exposed: (<div data-gateway-cell="exposed" className="min-w-0 justify-self-center">
           <span
             className="grid grid-cols-[40px_40px_40px] items-center gap-x-[6px]"
-            title={status.catalog_warming ? 'Capability catalog is warming' : `Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
+            title={`${capabilityScopeLabel(status) ?? 'Catalog'} — tools ${capabilityDescription(status, 'tools')} · resources ${capabilityDescription(status, 'resources')} · prompts ${capabilityDescription(status, 'prompts')}`}
+            aria-label={`${capabilityScopeLabel(status) ?? 'Catalog'} — tools ${capabilityLabel(status, 'tools')} · resources ${capabilityLabel(status, 'resources')} · prompts ${capabilityLabel(status, 'prompts')}`}
           >
             <span
               className={cn(
@@ -531,7 +523,7 @@ export function GatewayTable({
             >
               <Wrench className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Tools:</span>
-              {status.catalog_warming ? '…' : status.discovered_tool_count === 0 ? EM_DASH : status.exposed_tool_count}
+              {capabilityValue(status, 'tools').state === 'known' ? capabilityValue(status, 'tools').exposed : '…'}
             </span>
             <span
               className={cn(
@@ -541,7 +533,7 @@ export function GatewayTable({
             >
               <FileText className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Resources:</span>
-              {status.discovered_resource_count === 0 ? EM_DASH : status.exposed_resource_count}
+              {capabilityValue(status, 'resources').state === 'known' ? capabilityValue(status, 'resources').exposed : '…'}
             </span>
             <span
               className={cn(
@@ -551,7 +543,7 @@ export function GatewayTable({
             >
               <MessageSquare className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Prompts:</span>
-              {status.discovered_prompt_count === 0 ? EM_DASH : status.exposed_prompt_count}
+              {capabilityValue(status, 'prompts').state === 'known' ? capabilityValue(status, 'prompts').exposed : '…'}
             </span>
           </span>
         </div>),
@@ -922,18 +914,19 @@ export function GatewayTable({
                   </div>
                 ) : null}
 
-                {presentation === 'list' ? <p className="text-xs tabular-nums text-aurora-text-muted">{gateway.status.exposed_tool_count}/{gateway.status.discovered_tool_count} tools · {gateway.status.exposed_resource_count}/{gateway.status.discovered_resource_count} resources · {runtimeLabel} runtime</p> : <div className="grid grid-cols-2 gap-2">
-                  {counts.map(({ label, icon: Icon, exposed, discovered }) => (
-                    <div key={label} data-mobile-metric={label.toLowerCase()} className="rounded-lg border border-aurora-border-subtle bg-aurora-control-surface/15 px-2.5 py-2">
+                {presentation === 'list' ? <p className="text-xs tabular-nums text-aurora-text-muted">{capabilityLabel(gateway.status, 'tools')} tools · {capabilityLabel(gateway.status, 'resources')} resources · {capabilityLabel(gateway.status, 'prompts')} prompts · {capabilityLabel(gateway.status, 'skills')} skills · {runtimeLabel} runtime</p> : <div className="grid grid-cols-2 gap-2">
+                  {counts.map(({ label, icon: Icon }) => (
+                    <div key={label} title={capabilityDescription(gateway.status, label.toLowerCase() as 'tools' | 'resources' | 'prompts' | 'skills')} data-mobile-metric={label.toLowerCase()} className="rounded-lg border border-aurora-border-subtle bg-aurora-control-surface/15 px-2.5 py-2">
                       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.09em] text-aurora-text-muted"><Icon className="size-3.5" />{label}</div>
                       <div className="mt-1 font-display text-[16px] font-bold tabular-nums text-aurora-text-primary">
-                        {exposed}<span className="ml-1 text-[10px] font-medium text-aurora-text-muted">/ {discovered}</span>
+                        {capabilityLabel(gateway.status, label.toLowerCase() as 'tools' | 'resources' | 'prompts' | 'skills')}
                       </div>
                     </div>
                   ))}
                 </div>}
 
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-aurora-border-subtle pt-2 text-[10px] text-aurora-text-muted">
+                  {capabilityScopeLabel(gateway.status) ? <span>{capabilityScopeLabel(gateway.status)}</span> : null}
                   <span data-mobile-metric="runtime">Runtime <strong className="font-semibold text-aurora-text-primary">{runtimeLabel}</strong></span>
                   {cleanupSummaryLabel ? <span>· {cleanupSummaryLabel}</span> : null}
                   {gateway.warnings.length > 0 ? <span className="text-aurora-warn">· {gateway.warnings.length} warning{gateway.warnings.length === 1 ? '' : 's'}</span> : null}
@@ -1100,7 +1093,7 @@ export function GatewayTable({
         <div className="flex items-center justify-between gap-3 border-t border-[color-mix(in_srgb,var(--aurora-border-default)_70%,var(--aurora-page-bg))] bg-[var(--gw-footer)] px-5 py-[9px]">
           <span className="text-[11.5px] tabular-nums text-aurora-text-muted">
             {gateways.length} {gateways.length === 1 ? 'server' : 'servers'} ·{' '}
-            {exposureTotals.exposed}/{exposureTotals.discovered} tools
+            {exposureTotals.exposed}/{exposureTotals.discovered} tools{exposureTotals.incomplete ? ' · incomplete' : ''}
             {selectedGatewayIds.length > 0 ? ` · ${selectedGatewayIds.length} selected` : ''}
             {layoutWarning ? ' · Column layout could not be read or saved on this device.' : ''}
           </span>

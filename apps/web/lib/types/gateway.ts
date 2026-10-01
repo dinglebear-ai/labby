@@ -37,7 +37,17 @@ export interface GatewayWriteConfig extends GatewayConfig {
   oauth?: { registration_strategy: string; scopes?: string[] } | null
 }
 
+export type CapabilityKind = 'tools' | 'resources' | 'prompts' | 'skills'
+export interface CapabilityObservationValue {
+  state: 'unknown' | 'known' | 'stale' | 'failed'
+  discovered: number | null
+  exposed: number | null
+  error?: string | null
+}
+export type CapabilityObservation = { scope: 'global' | 'credential' } & Record<CapabilityKind, CapabilityObservationValue>
+
 export interface GatewayStatus {
+  capability_observation?: CapabilityObservation
   healthy: boolean
   connected: boolean
   /** Connected, but the runtime capability snapshot is still being populated. */
@@ -222,6 +232,7 @@ export interface UpdateGatewayInput {
 }
 
 export interface TestGatewayResult {
+  capability_observation?: CapabilityObservation
   success: boolean
   severity?: 'success' | 'warning' | 'failure'
   message: string

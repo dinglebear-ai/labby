@@ -1014,6 +1014,8 @@ impl UpstreamPool {
                         None,
                     )
                     .await;
+                } else if let Err(error) = &result {
+                    pool.record_subject_optional_failure(&config.name, &subject, &peer, true, error).await;
                 }
                 (config.name.clone(), policy, result)
             });

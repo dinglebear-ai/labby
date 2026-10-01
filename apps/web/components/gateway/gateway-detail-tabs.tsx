@@ -625,6 +625,8 @@ export function DetailStripCard({
 }
 
 export interface DetailExposureStat {
+  observationLabel?: string
+  observationDescription?: string
   label: string
   icon: React.ReactNode
   exposed: number
@@ -713,7 +715,7 @@ export function DetailExposureCell({
             <span
               key={stat.label}
               style={{ minWidth: 0 }}
-              title={`${stat.label} — ${empty ? 'none discovered' : `${stat.exposed}/${stat.discovered} exposed`}`}
+              title={`${stat.label} — ${stat.observationDescription ?? stat.observationLabel ?? (empty ? 'none discovered' : `${stat.exposed}/${stat.discovered} exposed`)}`}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                 <span
@@ -731,7 +733,7 @@ export function DetailExposureCell({
                       : 'var(--aurora-text-primary)',
                   }}
                 >
-                  {empty ? '—' : `${stat.exposed}/${stat.discovered}`}
+                  {stat.observationLabel ?? (empty ? '—' : `${stat.exposed}/${stat.discovered}`)}
                 </span>
               </span>
               <span

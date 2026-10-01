@@ -204,13 +204,22 @@ impl GatewayManager {
     }
 
     pub async fn list(&self) -> Result<Vec<ServerView>, ToolError> {
+        self.list_scoped(&GatewayEnrichmentScope::default()).await
+    }
+
+    pub async fn list_scoped(
+        &self,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<ServerView>, ToolError> {
         let (cfg, pool) = self.published_config_and_pool().await;
         // Inspection must remain side-effect free. Project whatever the runtime
         // has already observed; callers that need fresh discovery use the
         // explicit status refresh or per-upstream test/reload actions.
         let mut views = Vec::with_capacity(cfg.upstream.len() + cfg.virtual_servers.len());
         for upstream in &cfg.upstream {
-            views.push(server_view_from_upstream(pool.as_deref(), upstream).await);
+            views.push(
+                scoped_server_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref()).await,
+            );
         }
         for virtual_server in &cfg.virtual_servers {
             let peer_name = in_process_upstream_name(&virtual_server.service);
@@ -227,6 +236,9 @@ impl GatewayManager {
                 self.builtin_service_registry().as_ref(),
             ));
         }
+        if let Some(visible) = scope.route_visible_upstreams.as_ref() {
+            views.retain(|view| view.source == "custom_gateway" && visible.contains(&view.id));
+        }
         let unknown_service_count = degraded_server_warning_count(&views, WARNING_UNKNOWN_SERVICE);
         if unknown_service_count > 0 {
             tracing::warn!(
@@ -238,27 +250,23 @@ impl GatewayManager {
         Ok(views)
     }
 
-    pub async fn list_scoped(
+    /// Cache-only single-server projection under the same scope as list and status.
+    pub async fn get_server_scoped(
         &self,
+        id: &str,
         scope: &GatewayEnrichmentScope,
-    ) -> Result<Vec<ServerView>, ToolError> {
-        let mut views = self.list().await?;
+    ) -> Result<ServerView, ToolError> {
+        scope.ensure_visible(id)?;
         let (cfg, pool) = self.published_config_and_pool().await;
-        for view in &mut views {
-            if let Some(upstream) = cfg
-                .upstream
-                .iter()
-                .find(|upstream| upstream.name == view.id && upstream.oauth.is_some())
-            {
-                *view =
-                    scoped_server_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref())
-                        .await;
-            }
+        if let Some(upstream) = cfg.upstream.iter().find(|upstream| upstream.name == id) {
+            return Ok(scoped_server_view(
+                pool.as_deref(),
+                upstream,
+                scope.oauth_subject.as_deref(),
+            )
+            .await);
         }
-        if let Some(visible) = scope.route_visible_upstreams.as_ref() {
-            views.retain(|view| view.source == "custom_gateway" && visible.contains(&view.id));
-        }
-        Ok(views)
+        self.get_server(id).await
     }
 
     pub async fn get_server(&self, id: &str) -> Result<ServerView, ToolError> {
@@ -310,14 +318,22 @@ impl GatewayManager {
         scope: &GatewayEnrichmentScope,
     ) -> Result<GatewayView, ToolError> {
         scope.ensure_visible(name)?;
-        let mut view = self.get(name).await?;
         let (cfg, pool) = self.published_config_and_pool().await;
-        if let Some(upstream) = cfg.upstream.iter().find(|upstream| upstream.name == name) {
-            view.runtime =
-                scoped_runtime_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref())
-                    .await;
-        }
-        Ok(view)
+        let upstream = cfg
+            .upstream
+            .iter()
+            .find(|upstream| upstream.name == name)
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "not_found".to_owned(),
+                message: format!("gateway `{name}` not found"),
+            })?;
+        Ok(GatewayView {
+            config: config_view(upstream, &cfg.code_mode),
+            runtime: scoped_runtime_view(pool.as_deref(), upstream, scope.oauth_subject.as_deref())
+                .await,
+            enrichment_suggestion: None,
+            enrichment_suggestion_error: None,
+        })
     }
 
     pub async fn surface_enabled_for_service(&self, service: &str, surface: &str) -> bool {
@@ -440,14 +456,23 @@ impl GatewayManager {
         };
         let pool = self.new_base_pool(request_timeout, relay_timeout, false);
         let registry = self.builtin_service_registry();
-        pool.discover_all_for_subject_ephemeral_with_in_process_peers(
-            &[upstream.clone()],
-            SHARED_GATEWAY_OAUTH_SUBJECT,
-            registry.as_ref(),
+        // Bound the future embedded in API/CLI callers and daemon workers.
+        // Discovery and projection keep their existing lifecycle and cancellation.
+        Box::pin(
+            pool.discover_all_for_subject_ephemeral_with_in_process_peers(
+                &[upstream.clone()],
+                SHARED_GATEWAY_OAUTH_SUBJECT,
+                registry.as_ref(),
+            ),
         )
         .await;
 
-        let view = runtime_view(Some(&pool), &upstream.name, None).await;
+        let mut view = Box::pin(runtime_view(Some(&pool), &upstream.name, None)).await;
+        if upstream.oauth.is_some()
+            && let Some(observation) = view.capability_observation.as_mut()
+        {
+            observation.scope = crate::gateway::view_models::CapabilityObservationScope::Credential;
+        }
         pool.drain_for_swap("gateway.test.ephemeral").await;
         Ok(view)
     }
@@ -487,6 +512,80 @@ impl GatewayManager {
             args: (!upstream.args.is_empty()).then_some(upstream.args),
             env: None,
         })
+    }
+
+    async fn scoped_inventory_source(
+        &self,
+        name: &str,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<
+        Option<(
+            UpstreamConfig,
+            Option<std::sync::Arc<crate::upstream::pool::UpstreamPool>>,
+        )>,
+        ToolError,
+    > {
+        scope.ensure_visible(name)?;
+        let (cfg, pool) = self.published_config_and_pool().await;
+        Ok(cfg
+            .upstream
+            .iter()
+            .find(|config| config.name == name && config.oauth.is_some())
+            .cloned()
+            .map(|config| (config, pool)))
+    }
+
+    /// Inspect only the caller's cached tool rows; schemas are not returned.
+    pub async fn discovered_tools_scoped(
+        &self,
+        name: &str,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<GatewayToolExposureRowView>, ToolError> {
+        match self.scoped_inventory_source(name, scope).await? {
+            Some((config, Some(pool))) => Ok(pool
+                .cached_subject_tool_inventory(&config, scope.oauth_subject.as_deref())
+                .await
+                .into_iter()
+                .map(|row| GatewayToolExposureRowView {
+                    name: row.name,
+                    description: row.description,
+                    exposed: row.exposed,
+                    matched_by: row.matched_by,
+                })
+                .collect()),
+            Some((_, None)) => Ok(Vec::new()),
+            None => self.discovered_tools(name).await,
+        }
+    }
+
+    /// Inspect only the caller's cached resource inventory without acquiring a peer.
+    pub async fn discovered_resources_scoped(
+        &self,
+        name: &str,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<String>, ToolError> {
+        match self.scoped_inventory_source(name, scope).await? {
+            Some((config, Some(pool))) => Ok(pool
+                .cached_subject_resource_inventory(&config, scope.oauth_subject.as_deref())
+                .await),
+            Some((_, None)) => Ok(Vec::new()),
+            None => self.discovered_resources(name).await,
+        }
+    }
+
+    /// Inspect only the caller's cached prompt inventory without acquiring a peer.
+    pub async fn discovered_prompts_scoped(
+        &self,
+        name: &str,
+        scope: &GatewayEnrichmentScope,
+    ) -> Result<Vec<String>, ToolError> {
+        match self.scoped_inventory_source(name, scope).await? {
+            Some((config, Some(pool))) => Ok(pool
+                .cached_subject_prompt_inventory(&config, scope.oauth_subject.as_deref())
+                .await),
+            Some((_, None)) => Ok(Vec::new()),
+            None => self.discovered_prompts(name).await,
+        }
     }
 
     pub async fn discovered_tools(

@@ -2,6 +2,7 @@ import type { ExposurePolicy, Gateway } from '../types/gateway.ts'
 import { EXPOSE_NONE_PATTERN } from './tool-exposure-draft.ts'
 
 export interface MockGatewayOverride {
+  capabilityObservation?: Gateway['status']['capability_observation']
   exposurePolicy?: ExposurePolicy
   proxyResources?: boolean
   config?: Partial<Gateway['config']>
@@ -104,6 +105,7 @@ export function applyMockGatewayOverride(
     },
     status: {
       ...gateway.status,
+      capability_observation: override.capabilityObservation ?? gateway.status.capability_observation,
       exposed_tool_count: tools.filter((tool) => tool.exposed).length,
       exposed_resource_count: proxyResources ? gateway.discovery.resources.length : 0,
     },

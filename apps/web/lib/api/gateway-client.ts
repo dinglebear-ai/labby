@@ -286,6 +286,7 @@ function applyRuntimeRow(gateway: Gateway, runtime: BackendGatewayMcpRuntimeView
         && !gateway.status.last_error
         && gateway.warnings.length === 0
       ),
+      capability_observation: runtime.capability_observation ?? gateway.status.capability_observation,
       discovered_tool_count: discoveredToolCount,
       exposed_tool_count: exposedToolCount,
       discovered_resource_count: discoveredResourceCount,

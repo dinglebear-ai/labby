@@ -1,3 +1,5 @@
+import type { CapabilityObservation } from './gateway'
+
 export interface UpstreamEntry {
   name: string
 }
@@ -12,6 +14,7 @@ export interface GoogleCredentialBrokerStatus {
 }
 
 export interface UpstreamOauthStatus {
+  capability_observation?: CapabilityObservation
   authenticated: boolean
   upstream: string
   credential_source: 'dedicated' | 'google_provider'

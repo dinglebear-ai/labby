@@ -369,6 +369,14 @@ impl UpstreamPool {
                     );
                 }
                 Err(error) => {
+                    self.record_subject_optional_failure(
+                        &name,
+                        subject,
+                        &peer,
+                        false,
+                        &error.bounded_text(),
+                    )
+                    .await;
                     tracing::warn!(
                         upstream = %name,
                         kind = error.kind(),

@@ -53,6 +53,10 @@ use super::types::CatalogChangeNotifier;
 
 #[derive(Clone)]
 pub(super) struct OauthStatusDiscoverySnapshot {
+    pub(super) config_fingerprint: String,
+    pub(super) lifecycle_epoch: Option<labby_auth::upstream::cache::OAuthLifecycleEpoch>,
+    pub(super) pool_identity: Option<usize>,
+    pub(super) observation: crate::gateway::view_models::CapabilityObservation,
     pub(super) completed_at: Instant,
     pub(super) summary: Option<crate::upstream::pool::UpstreamCachedSummary>,
     pub(super) tool_error: Option<String>,

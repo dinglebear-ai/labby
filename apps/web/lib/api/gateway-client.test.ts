@@ -1432,3 +1432,13 @@ test('gatewayApi.reload trusts the backend connected verdict over capability cou
     assert.equal(result.message, 'Server restarted successfully')
   })
 })
+
+test('runtime hydration replaces scoped observation independently of legacy zero counts', async () => {
+ const unknown = {state:'unknown' as const, discovered:null, exposed:null}
+ const observation = {scope:'credential' as const, tools:{state:'known' as const,discovered:91,exposed:91},resources:unknown,prompts:unknown,skills:unknown}
+ await withGatewayFetch({'gateway.mcp.list':()=>[{name:'linear',connected:false,discovered_tool_count:0,capability_observation:observation}]},async()=>{
+  const [gateway] = await gatewayApi.hydrateRuntime([{id:'linear',name:'linear',transport:'http',config:{},status:{healthy:false,connected:false,discovered_tool_count:0,exposed_tool_count:0,discovered_resource_count:0,exposed_resource_count:0,discovered_prompt_count:0,exposed_prompt_count:0},discovery:{tools:[],resources:[],prompts:[]},warnings:[]}])
+  assert.deepEqual(gateway.status.capability_observation,observation)
+  assert.equal(gateway.status.connected,false)
+ })
+})

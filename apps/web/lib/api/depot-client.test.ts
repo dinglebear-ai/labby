@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mcpConnectionSchema } from './depot-client.ts'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 import { cancelDepotIngestJob, configureDepotSource, consumeOwnerLinkApproval, deleteDepotSource, depotCall, depotIngestJobs, depotOperations, depotSession, depotSources, depotStatus, depotPublishCapability, publishDepotSkill, refreshDepotSource, retryDepotIngestJob, startDepotRepoIngest, getArtifact, listArtifacts, listProviders, providerOperation, removeProvider, upsertProvider } from './depot-client.ts'
 
@@ -18,6 +19,15 @@ async function withFetch(response: Response, run: () => Promise<void>) {
   try { await run() } finally { globalThis.fetch = original }
 }
 const artifact = { id: 'artifact-1', kind: 'skill', name: 'demo' }
+
+test('MCP endpoint metadata rejects every ASCII control, DEL, whitespace and backslash', () => {
+  const connection = { schemaVersion: 'labby.mcp-connection/v1', revisionId: 'r1', transport: 'http', authentication: 'none', url: 'https://example.org/mcp' }
+  assert.equal(mcpConnectionSchema.safeParse(connection).success, true)
+  const forbidden = [...Array.from({ length: 32 }, (_, code) => String.fromCharCode(code)), String.fromCharCode(127), ' ', '\u00a0', '\\']
+  for (const character of forbidden) {
+    assert.equal(mcpConnectionSchema.safeParse({ ...connection, url: `https://example.org/m${character}cp` }).success, false, `accepted character ${character.charCodeAt(0)}`)
+  }
+})
 
 test('v1 descriptors retain bounded supplied tags without inventing missing metadata', async () => {
   for (const tags of [undefined, [], ['review', 'rust']]) {

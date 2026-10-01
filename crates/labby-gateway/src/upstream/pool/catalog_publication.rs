@@ -758,7 +758,7 @@ impl CatalogState {
 
     /// When `upstream`'s current connection last settled a resources/list
     /// result, successful or rejected. `None` when it never has.
-    fn resource_snapshot_listed_at(&self, upstream: &str) -> Option<Instant> {
+    pub(super) fn resource_snapshot_listed_at(&self, upstream: &str) -> Option<Instant> {
         let current = self.incarnation(upstream)?;
         let (incarnation, listed_at) = match self.resource_sources.get(upstream)? {
             ResourceSourceState::Ready(source) => (source.incarnation, source.listed_at),
@@ -769,6 +769,10 @@ impl CatalogState {
             } => (*incarnation, *listed_at),
         };
         (incarnation == current).then_some(listed_at)
+    }
+
+    pub(super) fn has_prompt_snapshot(&self, upstream: &str) -> bool {
+        self.prompt_sources.contains_key(upstream)
     }
 
     pub(super) fn set_prompt_source(

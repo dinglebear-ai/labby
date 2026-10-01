@@ -515,6 +515,22 @@ impl UpstreamPool {
     }
 
     #[cfg(test)]
+    pub(crate) async fn hold_subject_connect_gate_for_tests(
+        &self,
+        name: &str,
+        subject: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.subject_connect_locks
+            .write()
+            .await
+            .entry((name.to_owned(), subject.to_owned()))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+            .lock_owned()
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn register_upstream_config_for_tests(&self, config: &UpstreamConfig) {
         self.upstream_config_fingerprints.insert(
             config.name.clone(),
@@ -597,7 +613,7 @@ impl UpstreamPool {
             upstream_discovery_timeout(config, self.request_timeout),
             MAX_UPSTREAM_TOOLS,
         )
-        .await?;
+        .await;
         let _oauth_publication = self
             .oauth_publication_guard(lifecycle_epoch.as_ref())
             .await?;
@@ -611,7 +627,38 @@ impl UpstreamPool {
             self.acquire_or_connect_subject(config, subject).await?;
             return Ok(());
         };
+        anyhow::ensure!(
+            self.upstream_config_matches(config),
+            "upstream configuration changed during subject refresh"
+        );
+        anyhow::ensure!(
+            !entry.peer.is_transport_closed()
+                && match (entry.peer.peer_info(), peer.peer_info()) {
+                    (Some(current), Some(observed)) => Arc::ptr_eq(&current, &observed),
+                    _ => false,
+                },
+            "subject connection replaced during catalog refresh"
+        );
+        let tools = match tools {
+            Ok(tools) => tools,
+            Err(error) => {
+                self.subject_connect_errors.write().await.insert(
+                    key.clone(),
+                    super::SubjectConnectErrorEntry {
+                        message: labby_runtime::redact::sanitize_error_text(
+                            &error.to_string(),
+                            512,
+                        ),
+                        recorded_at: Instant::now(),
+                    },
+                );
+                return Err(error.into());
+            }
+        };
+        self.subject_connect_errors.write().await.remove(&key);
         entry.tools = tools;
+        entry.optional_catalogs.tools_revision =
+            entry.optional_catalogs.tools_revision.saturating_add(1);
         entry.last_used = Instant::now();
         Ok(())
     }

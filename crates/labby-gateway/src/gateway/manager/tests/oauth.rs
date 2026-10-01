@@ -194,6 +194,10 @@ async fn cancelled_oauth_clear_finishes_client_and_status_invalidation() {
     status_guard.insert(
         cache_key.clone(),
         super::super::OauthStatusDiscoverySnapshot {
+            config_fingerprint: String::new(),
+            lifecycle_epoch: None,
+            pool_identity: None,
+            observation: Default::default(),
             completed_at: tokio::time::Instant::now(),
             summary: None,
             tool_error: None,
@@ -334,6 +338,10 @@ async fn google_revoke_invalidates_shared_clients_and_status(
     status_guard.insert(
         cache_key.clone(),
         super::super::OauthStatusDiscoverySnapshot {
+            config_fingerprint: String::new(),
+            lifecycle_epoch: None,
+            pool_identity: None,
+            observation: Default::default(),
             completed_at: tokio::time::Instant::now(),
             summary: None,
             tool_error: None,
@@ -344,6 +352,10 @@ async fn google_revoke_invalidates_shared_clients_and_status(
     status_guard.insert(
         peer_key.clone(),
         super::super::OauthStatusDiscoverySnapshot {
+            config_fingerprint: String::new(),
+            lifecycle_epoch: None,
+            pool_identity: None,
+            observation: Default::default(),
             completed_at: tokio::time::Instant::now(),
             summary: None,
             tool_error: None,
