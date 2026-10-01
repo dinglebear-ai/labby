@@ -116,7 +116,9 @@ mod skills_list;
 #[cfg(feature = "skills")]
 mod skills_provider;
 #[cfg(feature = "skills")]
-pub use skills_provider::SepSkillProvider;
+mod skills_targeted;
+#[cfg(feature = "skills")]
+pub use skills_provider::{SepSkillProvider, SkillSearchResult};
 mod skills_tests;
 mod spawn_lock;
 mod stdio_stderr;

@@ -6,9 +6,9 @@ const MAX_ROWS = 1000
 const MAX_BYTES = 8 * 1024 * 1024
 const VISIBLE_PAGES = 3
 
-export type DiscoveryWindow = {
-  pages: FederatedArtifact[][]
-  index: Map<string, FederatedArtifact>
+export type CatalogWindow<T> = {
+  pages: T[][]
+  index: Map<string, T>
   pageBytes: number[]
   projectedBytes: number
   rowCount: number
@@ -16,18 +16,20 @@ export type DiscoveryWindow = {
   historyExpired: boolean
 }
 
-export function createDiscoveryWindow(): DiscoveryWindow {
+export type DiscoveryWindow = CatalogWindow<FederatedArtifact>
+
+export function createCatalogWindow<T>(): CatalogWindow<T> {
   return { pages: [], index: new Map(), pageBytes: [], projectedBytes: 0, rowCount: 0, evictedRows: 0, historyExpired: false }
 }
 
-function projectedSize(value: FederatedArtifact): number {
+function projectedSize(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).length
 }
 
-export function appendDiscoveryPage(current: DiscoveryWindow, incoming: FederatedArtifact[]): DiscoveryWindow {
+export function appendCatalogPage<T>(current: CatalogWindow<T>, incoming: T[], keyFor: (item: T) => string): CatalogWindow<T> {
   const index = new Map(current.index)
   const page = incoming.filter(item => {
-    const key = artifactKey(item.providerId, item.artifactId)
+    const key = keyFor(item)
     if (index.has(key)) return false
     index.set(key, item)
     return true
@@ -43,12 +45,20 @@ export function appendDiscoveryPage(current: DiscoveryWindow, incoming: Federate
     const removed = pages.shift()
     const removedBytes = pageBytes.shift() ?? 0
     if (!removed) break
-    for (const item of removed) index.delete(artifactKey(item.providerId, item.artifactId))
+    for (const item of removed) index.delete(keyFor(item))
     rowCount -= removed.length
     evictedRows += removed.length
     projectedBytes -= removedBytes
   }
   return { pages, index, pageBytes, projectedBytes, rowCount, evictedRows, historyExpired: evictedRows > 0 }
+}
+
+export function createDiscoveryWindow(): DiscoveryWindow {
+  return createCatalogWindow<FederatedArtifact>()
+}
+
+export function appendDiscoveryPage(current: DiscoveryWindow, incoming: FederatedArtifact[]): DiscoveryWindow {
+  return appendCatalogPage(current, incoming, item => artifactKey(item.providerId, item.artifactId))
 }
 
 export function visibleArtifacts(window: DiscoveryWindow, anchorPage = window.pages.length - 1) {

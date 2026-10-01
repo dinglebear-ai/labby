@@ -306,6 +306,7 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     };
+
     drop(child.stdin.take()); // EOF → cat exits
     child.wait().ok();
 

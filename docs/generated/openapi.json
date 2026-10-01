@@ -9022,6 +9022,9 @@
           "include_facets": {
             "type": "boolean"
           },
+          "include_upstream_timeseries": {
+            "type": "boolean"
+          },
           "operation": {
             "type": "string"
           },

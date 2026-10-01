@@ -633,7 +633,8 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
             "search": "timeout",
             "bucket_count": 2,
             "timezone_offset_minutes": -240,
-            "include_facets": true
+            "include_facets": true,
+            "include_upstream_timeseries": true
         }),
     )
     .await
@@ -649,6 +650,7 @@ async fn gateway_usage_metrics_and_calls_expose_exact_filtered_contract() {
         metrics["timeseries"][1]["outcomes"],
         json!([{ "kind": "timeout", "calls": 1 }])
     );
+    assert_eq!(metrics["upstream_timeseries"]["github"][1]["calls"], 1);
     assert_eq!(metrics["facets"]["actors"], json!(["alice", "bob"]));
     assert_eq!(metrics["facets"]["upstreams"], json!(["github"]));
     assert_eq!(metrics["facets"]["capabilities"], json!(["tools"]));
@@ -5417,6 +5419,8 @@ async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
             client_version: Some("1.2.3".into()),
             transport: "http".into(),
             connected_at: "2026-09-13T05:00:00Z".into(),
+            last_seen_at: None,
+            observation_count: 1,
         })
         .await;
     let manager = test_manager().with_client_registry(registry);
@@ -5431,7 +5435,9 @@ async fn clients_list_dispatch_returns_observed_redacted_client_projection() {
             "client_name": "operator-client",
             "client_version": "1.2.3",
             "transport": "http",
-            "connected_at": "2026-09-13T05:00:00Z"
+            "connected_at": "2026-09-13T05:00:00Z",
+            "last_seen_at": "2026-09-13T05:00:00Z",
+            "observation_count": 1
         }])
     );
     let action = ACTIONS

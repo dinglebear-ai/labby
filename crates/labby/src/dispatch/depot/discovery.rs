@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::cursor::{Binding, CursorError, PageInput};
 use super::health::Failure;
-use super::manager::Manager;
+use super::manager::{Manager, Topology};
 use super::network::Operation;
 use super::provider::ProviderError;
 use futures::future::join_all;
@@ -85,7 +85,7 @@ pub async fn discover(
 /// Run one bounded, cursor-free indexed search for a server-selected provider
 /// set under an admission shared by the caller's concurrent search fan-out.
 pub(crate) async fn discover_selected_admitted(
-    manager: &Manager,
+    topology: &Topology,
     provider_ids: &[String],
     query: &str,
     kind: &str,
@@ -96,7 +96,6 @@ pub(crate) async fn discover_selected_admitted(
     if !SUPPORTED_KINDS.contains(&kind) {
         return Err(DiscoveryError::InvalidKind);
     }
-    let topology = manager.snapshot();
     let selected = provider_ids
         .iter()
         .filter_map(|id| topology.providers.get(id))

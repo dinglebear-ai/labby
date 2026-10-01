@@ -729,7 +729,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                let mut entries = host
+                let search = host
                     .search_artifacts(
                         query,
                         limit.saturating_add(1),
@@ -738,7 +738,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         surface,
                         scope,
                     )
-                    .await?
+                    .await?;
+                let mut entries = search
+                    .entries
                     .into_iter()
                     .filter(|entry| discovery_entry_visible(entry, scope))
                     .take(limit.saturating_add(1))
@@ -752,7 +754,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         break;
                     }
                 }
-                Ok(serde_json::json!({ "entries": entries }))
+                Ok(
+                    serde_json::json!({ "entries": entries, "incompleteSources": search.incomplete_sources }),
+                )
             }
             "describe_types" => {
                 let id = params
@@ -1724,14 +1728,17 @@ mod tests {
             _caller: &CodeModeCaller,
             _surface: CodeModeSurface,
             _scope: &ToolScope,
-        ) -> Result<Vec<CatalogDescriptor>, ToolError> {
-            Ok(self
-                .search_entries
-                .iter()
-                .filter(|entry| kinds.is_empty() || kinds.contains(&entry.kind))
-                .take(limit)
-                .cloned()
-                .collect())
+        ) -> Result<crate::ArtifactSearchResult, ToolError> {
+            Ok(crate::ArtifactSearchResult {
+                entries: self
+                    .search_entries
+                    .iter()
+                    .filter(|entry| kinds.is_empty() || kinds.contains(&entry.kind))
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+                incomplete_sources: Vec::new(),
+            })
         }
 
         async fn config(&self) -> CodeModeConfig {
@@ -1777,6 +1784,7 @@ mod tests {
 
         assert_eq!(value["entries"][0]["id"], "depot:skill:fixture");
         assert_eq!(value["entries"][0]["kind"], "skill");
+        assert_eq!(value["incompleteSources"], json!([]));
         assert_eq!(
             value["entries"][0]["path"],
             "skill.public_depot.fixture_skill"

@@ -1639,7 +1639,7 @@ export function GatewayFormDialog({
           data-gateway-json-drawer
           className={cn(
             'absolute top-0 bottom-0 bg-aurora-page-bg border-l border-aurora-border-strong rounded-r-lg overflow-hidden transition-[width] duration-[250ms] ease-[cubic-bezier(.4,0,.2,1)] flex flex-col sm:left-full',
-            'max-[600px]:fixed max-[600px]:inset-0 max-[600px]:rounded-none max-[600px]:border-l-0 max-[600px]:z-50',
+            'max-[600px]:fixed max-[600px]:inset-0 max-[600px]:rounded-none max-[600px]:border-l-0 max-[600px]:z-50 max-[600px]:pt-[env(safe-area-inset-top)] max-[600px]:pb-[env(safe-area-inset-bottom)]',
             jsonDrawerOpen
               ? 'max-[600px]:h-full'
               : 'w-0',

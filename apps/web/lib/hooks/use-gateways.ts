@@ -45,6 +45,8 @@ import type {
 } from '@/lib/types/gateway'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { loadGatewayConfiguration, loadGatewayRuntime, loadGatewayToolInventory } from '@/lib/api/gateway-progressive'
+import { getBrowserSessionContextIdentity, getBrowserSessionEpoch } from '@/lib/auth/session-store'
+import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
 import { withRequestTiming } from '@/lib/api/request-timing'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
@@ -319,6 +321,24 @@ function abortableMockDelay(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+// Coalesce at the fetch boundary, so SWR hydration, catalog warming, and
+// scheduler mutations all share ownership of the underlying operation.
+const gatewayFlights = new Map<string, Promise<Gateway[]>>()
+function gatewaySingleFlight(key: string, fetch: () => Promise<Gateway[]>): Promise<Gateway[]> {
+  const epoch = getBrowserSessionEpoch()
+  const context = getBrowserSessionContextIdentity()
+  const base = normalizeGatewayApiBase()
+  const identity = JSON.stringify([base, context, epoch, key])
+  const existing = gatewayFlights.get(identity)
+  if (existing) return existing
+  const flight = fetch().then(result => {
+    if (epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Gateway authority changed', 'AbortError')
+    return result
+  }).finally(() => { if (gatewayFlights.get(identity) === flight) gatewayFlights.delete(identity) })
+  gatewayFlights.set(identity, flight)
+  return flight
+}
+
 // Fetcher functions that handle mock/real data
 const fetchGateways = async (): Promise<Gateway[]> => {
   if (USE_MOCK_DATA) {
@@ -326,15 +346,15 @@ const fetchGateways = async (): Promise<Gateway[]> => {
     return upstreamMcpGateways(getMockGatewaysFallback())
   }
 
-  return withRequestTiming('gateway.list', async () =>
+  return gatewaySingleFlight('configuration', () => withRequestTiming('gateway.list', async () =>
     upstreamMcpGateways(await loadGatewayConfiguration(gatewayApi)),
-  )
+  ))
 }
 
 const hydrateGatewayRuntime = async (gateways: Gateway[]): Promise<Gateway[]> =>
-  withRequestTiming('gateway.runtime', async () =>
+  gatewaySingleFlight(gatewayRuntimeRevision(gateways), () => withRequestTiming('gateway.runtime', async () =>
     upstreamMcpGateways(await loadGatewayRuntime(gatewayApi, gateways)),
-  )
+  ))
 
 const hydrateGatewayToolInventory = async (gateways: Gateway[]): Promise<Gateway[]> =>
   withRequestTiming('gateway.tool-inventory', async () =>
@@ -455,6 +475,70 @@ export function gatewaysRuntimeRequestKey(
     : null
 }
 
+type GatewayMutate = ReturnType<typeof useSWRConfig>['mutate']
+type GatewayPollingState = { configured: boolean; runtime: boolean; inventory: boolean }
+const gatewayRefreshSubscribers = new Set<{ mutate: GatewayMutate; runtimeCacheId?: string; inventoryCacheId?: string; state: () => GatewayPollingState }>()
+const gatewayRefreshBusy = new Map<GatewayMutate, Set<string>>()
+let gatewayRefreshTimer: number | null = null
+let gatewayRefreshPulse = 0
+
+function refreshGatewayKey(mutate: GatewayMutate, key: string | [string, string]) {
+  const identity = JSON.stringify(key)
+  const busy = gatewayRefreshBusy.get(mutate) ?? new Set<string>()
+  if (busy.has(identity)) return
+  busy.add(identity)
+  gatewayRefreshBusy.set(mutate, busy)
+  void mutate(key).catch(() => undefined).finally(() => {
+    busy.delete(identity)
+    if (!busy.size) gatewayRefreshBusy.delete(mutate)
+  })
+}
+
+function refreshVisibleGateways(catchUp = false) {
+  if (document.visibilityState === 'hidden' || navigator.onLine === false) return
+  if (!catchUp) gatewayRefreshPulse += 1
+  const byCache = new Map<GatewayMutate, Map<string, { key: string | [string, string]; validating: boolean }>>()
+  for (const { mutate, runtimeCacheId, inventoryCacheId, state } of gatewayRefreshSubscribers) {
+    const keys = byCache.get(mutate) ?? new Map<string, { key: string | [string, string]; validating: boolean }>()
+    const polling = state()
+    const add = (key: string | [string, string], validating: boolean) => {
+      const identity = JSON.stringify(key)
+      keys.set(identity, { key, validating: validating || (keys.get(identity)?.validating ?? false) })
+    }
+    if (runtimeCacheId) add(['/gateways/runtime', runtimeCacheId], polling.runtime)
+    if (inventoryCacheId) add(['/gateways/tool-inventory', inventoryCacheId], polling.inventory)
+    if (catchUp || gatewayRefreshPulse % 3 === 0) add(GATEWAYS_KEY, polling.configured)
+    byCache.set(mutate, keys)
+  }
+  for (const [mutate, keys] of byCache) {
+    for (const { key, validating } of keys.values()) {
+      if (!validating) refreshGatewayKey(mutate, key)
+    }
+  }
+}
+
+function subscribeGatewayRefresh(mutate: GatewayMutate, runtimeCacheId: string | undefined, inventoryCacheId: string | undefined, state: () => GatewayPollingState) {
+  const subscriber = { mutate, runtimeCacheId, inventoryCacheId, state }
+  gatewayRefreshSubscribers.add(subscriber)
+  if (gatewayRefreshTimer === null) {
+    gatewayRefreshPulse = 0
+    gatewayRefreshTimer = window.setInterval(() => refreshVisibleGateways(), 5_000)
+    document.addEventListener('visibilitychange', refreshGatewayCatchUp)
+    window.addEventListener('online', refreshGatewayCatchUp)
+  }
+  return () => {
+    gatewayRefreshSubscribers.delete(subscriber)
+    if (gatewayRefreshSubscribers.size === 0 && gatewayRefreshTimer !== null) {
+      window.clearInterval(gatewayRefreshTimer)
+      gatewayRefreshTimer = null
+      document.removeEventListener('visibilitychange', refreshGatewayCatchUp)
+      window.removeEventListener('online', refreshGatewayCatchUp)
+    }
+  }
+}
+
+function refreshGatewayCatchUp() { refreshVisibleGateways(true) }
+
 // Hooks
 export function useGatewaySnapshots(enabled = true) {
   return useSWR<Gateway[]>(gatewaysRequestKey(enabled), fetchGateways, {
@@ -464,11 +548,11 @@ export function useGatewaySnapshots(enabled = true) {
   })
 }
 
-export function useGateways(enabled = true, includeToolInventory = false) {
+export function useGateways(enabled = true, includeToolInventory = false, warmCatalog = true) {
   const { mutate } = useSWRConfig()
   const configured = useGatewaySnapshots(enabled)
   const catalogWarm = useSWR(
-    enabled && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
+    enabled && warmCatalog && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
     () => gatewayApi.refreshStatus(),
     { revalidateOnFocus: false, shouldRetryOnError: true, errorRetryCount: 2, errorRetryInterval: 5_000 },
   )
@@ -516,34 +600,15 @@ export function useGateways(enabled = true, includeToolInventory = false) {
   // response. Poll only idle lanes so slow inventory can finish and publish.
   const pollingState = useRef({ configured: false, runtime: false, inventory: false })
   pollingState.current = { configured: configured.isValidating, runtime: runtime.isValidating, inventory: toolInventory.isValidating }
-  const pollingRequests = useRef(new Set<string>())
   useEffect(() => {
     if (!enabled || USE_MOCK_DATA) return
-    const refresh = (key: string | [string, string], validating: boolean) => {
-      const id = JSON.stringify(key)
-      if (validating || pollingRequests.current.has(id)) return
-      pollingRequests.current.add(id)
-      void mutate(key).catch(() => { /* SWR retains the lane error for recovery. */ }).finally(() => pollingRequests.current.delete(id))
-    }
-    const refreshCatalogView = () => {
-      if (document.visibilityState === 'hidden') return
-      refresh(GATEWAYS_KEY, pollingState.current.configured)
-      if (runtimeCacheId) refresh(['/gateways/runtime', runtimeCacheId], pollingState.current.runtime)
-      if (includeToolInventory && toolInventoryCacheId) refresh(['/gateways/tool-inventory', toolInventoryCacheId], pollingState.current.inventory)
-    }
-    const interval = window.setInterval(refreshCatalogView, 5_000)
-    document.addEventListener('visibilitychange', refreshCatalogView)
-    return () => {
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', refreshCatalogView)
-    }
+    return subscribeGatewayRefresh(mutate, runtimeCacheId, includeToolInventory ? toolInventoryCacheId : undefined, () => pollingState.current)
   }, [enabled, includeToolInventory, runtimeCacheId, toolInventoryCacheId, mutate])
-
   useEffect(() => {
-    if (!enabled || USE_MOCK_DATA || catalogWarm.isLoading || catalogWarm.error) return
+    if (!enabled || !warmCatalog || USE_MOCK_DATA || catalogWarm.isLoading || catalogWarm.error) return
     void mutate(GATEWAYS_KEY)
     if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
-  }, [enabled, catalogWarm.isLoading, catalogWarm.error, runtimeCacheId, mutate])
+  }, [enabled, warmCatalog, catalogWarm.isLoading, catalogWarm.error, runtimeCacheId, mutate])
 
   return {
     ...configured,

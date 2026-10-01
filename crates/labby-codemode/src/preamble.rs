@@ -311,8 +311,12 @@ codemode.search = async function(input) {{
   var searchEntries = __codemodeDiscovery.slice();
   var queryBackedById = Object.create(null);
   var artifactSearchIncomplete = false;
+  var artifactSearchIncompleteSources = [];
   try {{
     var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
+    artifactSearchIncompleteSources = artifactResponse && Array.isArray(artifactResponse.incompleteSources)
+      ? artifactResponse.incompleteSources : [];
+    artifactSearchIncomplete = artifactSearchIncompleteSources.length > 0;
     var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
     var knownIds = Object.create(null);
     for (var localIndex = 0; localIndex < searchEntries.length; localIndex++) knownIds[searchEntries[localIndex].id] = true;
@@ -464,6 +468,7 @@ codemode.search = async function(input) {{
     var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
     if (artifactSearchIncomplete) {{
       empty.incomplete = true;
+      if (artifactSearchIncompleteSources.length) empty.incompleteSources = artifactSearchIncompleteSources;
       empty.hint = "Artifact search was incomplete. Retry or inspect source availability.";
       return empty;
     }}
@@ -487,6 +492,7 @@ codemode.search = async function(input) {{
   }}
   if (artifactSearchIncomplete) {{
     found.incomplete = true;
+    if (artifactSearchIncompleteSources.length) found.incompleteSources = artifactSearchIncompleteSources;
     found.hint = "Artifact search was incomplete. Retry or inspect source availability." + (found.hint ? " " + found.hint : "");
   }}
   return found;
@@ -1261,6 +1267,45 @@ mod tests {
         assert!(value.get("error").is_none(), "{value}");
         assert_eq!(value["hit"], "depot:skill:fixture");
         assert_eq!(value["described"], value["hit"]);
+    }
+
+    #[test]
+    fn query_backed_partial_search_marks_results_incomplete() {
+        let js = generate_discovery_js(&[], 0.5, &[]).expect("js");
+        let remote = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::metadata(
+            CodeModeCatalogKind::Skill,
+            "public_depot",
+            "depot:skill:fixture",
+            "fixture skill",
+            "query-backed result",
+            Vec::new(),
+        ));
+        let remote = serde_json::to_string(&remote).expect("remote entry");
+        let script = format!(
+            "{js}\n\
+             globalThis.callTool = async (id) => id === '__lab_internal::artifact_search'\n\
+               ? {{entries: [{remote}], incompleteSources: ['team_depot']}} : {{ranked: []}};\n\
+             globalThis.result = null;\n\
+             (async () => {{ globalThis.result = JSON.stringify(await codemode.search('fixture')); }})()\n\
+               .catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+        );
+        let runtime = javy::Runtime::new(javy::Config::default()).expect("runtime");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .expect("script");
+        runtime.resolve_pending_jobs().expect("pending jobs");
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .expect("result");
+        let value: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert_eq!(value["results"][0]["id"], "depot:skill:fixture");
+        assert_eq!(value["incomplete"], true);
+        assert_eq!(
+            value["incompleteSources"],
+            serde_json::json!(["team_depot"])
+        );
     }
 
     #[test]

@@ -162,7 +162,7 @@ function artifact(id: string, kind: string, title = id) {
 
 type DepotRequest = { operation: string; input: Record<string, unknown>; projectId: string | null }
 
-async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')]) {
+async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')], pages?: ReturnType<typeof artifact>[][]) {
   const requested: DepotRequest[] = []
   const requestSequence: string[] = []
   const originalFetch = globalThis.fetch
@@ -182,7 +182,10 @@ async function renderLibrary(search = new URLSearchParams(), records = [artifact
       const id = String(body.params?.artifactId ?? '')
       return envelope({ artifact: records.find(item => item.id === id) ?? artifact(id, 'skill', 'Deep linked artifact') })
     }
-    if (body.operation === 'depot.artifacts.list') return envelope({ artifacts: records, total: records.length })
+    if (body.operation === 'depot.artifacts.list') {
+      const page = Number(body.params?.cursor ?? 0)
+      return envelope({ artifacts: pages?.[page] ?? records, total: pages ? pages.reduce((sum, items) => sum + items.length, 0) : records.length, ...(pages && page + 1 < pages.length ? { nextCursor: String(page + 1) } : {}) })
+    }
     return Response.json({ message: 'unexpected request' }, { status: 500 })
   }) as typeof globalThis.fetch
   document.body.replaceChildren()
@@ -317,4 +320,66 @@ test('a stale detail response cannot overwrite a newer artifact selection', asyn
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale/)
     assert.match(document.body.textContent ?? '', /Bravo current/)
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
+})
+
+
+test('Library bounds mounted rows and retained export metadata across seven catalog pages', async () => {
+  const pages = Array.from({ length: 7 }, (_, page) => Array.from({ length: 200 }, (_, row) => artifact(`artifact-${page}-${row}`, 'skill')))
+  const { view, restore } = await renderLibrary(new URLSearchParams(), pages[0], pages)
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  let exported: Blob | undefined
+  URL.createObjectURL = blob => { exported = blob as Blob; return 'blob:library-test' }
+  URL.revokeObjectURL = () => {}
+  try {
+    await flush()
+    for (let page = 1; page < pages.length; page++) {
+      const more = [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Load more')
+      assert.ok(more)
+      await act(async () => more.click())
+      await flush()
+      const rows = view.container.querySelectorAll('[data-library-collection] button.group, [data-library-collection] tbody tr')
+      assert.ok(rows.length <= 200, `page ${page} mounted ${rows.length} artifact rows`)
+    }
+    assert.match(view.container.textContent ?? '', /Earlier results were discarded/)
+    for (let page = 1; page < 5; page++) {
+      const next = [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Next page')!
+      assert.equal(next.disabled, false)
+      await act(async () => next.click())
+    }
+    assert.match(view.container.textContent ?? '', /artifact-6-199/)
+    assert.equal(view.container.querySelectorAll('[data-library-collection] button.group, [data-library-collection] tbody tr').length, 200)
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Export loaded library metadata"]')!.click())
+    assert.ok(exported)
+    const payload = JSON.parse(await exported.text())
+    assert.equal(payload.complete, false, 'an evicted catalog prefix must never be exported as complete')
+    assert.equal(payload.total, 1400)
+    assert.ok(payload.artifacts.length <= 1000)
+    assert.ok(payload.artifacts.some((item: { id: string }) => item.id === 'artifact-6-199'))
+    await act(async () => [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Refresh')!.click())
+    await flush()
+    await act(async () => [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Load more')!.click())
+    await flush()
+    assert.match(view.container.textContent ?? '', /Page 1 of 2/)
+    assert.match(view.container.textContent ?? '', /artifact-0-0/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Earlier results were discarded/)
+  } finally {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    await view.unmount()
+    restore()
+  }
+})
+
+
+test('Library explains capacity eviction without claiming that a populated catalog is empty', async () => {
+  const oversized = artifact('huge', 'skill')
+  oversized.description = 'x'.repeat(9 * 1024 * 1024)
+  const { view, restore } = await renderLibrary(new URLSearchParams(), [oversized])
+  try {
+    await flush()
+    assert.match(view.container.textContent ?? '', /No results fit in the retained window/)
+    assert.doesNotMatch(view.container.textContent ?? '', /No artifacts in your library yet/)
+    assert.equal(view.container.querySelector<HTMLButtonElement>('button[aria-label="Export loaded library metadata"]')!.disabled, true)
+  } finally { await view.unmount(); restore() }
 })
