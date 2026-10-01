@@ -238,6 +238,8 @@ pub struct GatewayUsageMetricsParams {
     pub timezone_offset_minutes: Option<i32>,
     #[serde(default)]
     pub include_facets: Option<bool>,
+    #[serde(default)]
+    pub include_upstream_timeseries: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

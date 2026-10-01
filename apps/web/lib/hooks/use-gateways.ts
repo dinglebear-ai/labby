@@ -44,6 +44,8 @@ import type {
 } from '@/lib/types/gateway'
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { loadGatewayConfiguration, loadGatewayRuntime, loadGatewayToolInventory } from '@/lib/api/gateway-progressive'
+import { getBrowserSessionContextIdentity, getBrowserSessionEpoch } from '@/lib/auth/session-store'
+import { normalizeGatewayApiBase } from '@/lib/api/gateway-config'
 import { withRequestTiming } from '@/lib/api/request-timing'
 
 // Set NEXT_PUBLIC_MOCK_DATA=true to use mock data for development
@@ -281,6 +283,24 @@ function abortableMockDelay(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
+// Coalesce at the fetch boundary, so SWR hydration, catalog warming, and
+// scheduler mutations all share ownership of the underlying operation.
+const gatewayFlights = new Map<string, Promise<Gateway[]>>()
+function gatewaySingleFlight(key: string, fetch: () => Promise<Gateway[]>): Promise<Gateway[]> {
+  const epoch = getBrowserSessionEpoch()
+  const context = getBrowserSessionContextIdentity()
+  const base = normalizeGatewayApiBase()
+  const identity = JSON.stringify([base, context, epoch, key])
+  const existing = gatewayFlights.get(identity)
+  if (existing) return existing
+  const flight = fetch().then(result => {
+    if (epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Gateway authority changed', 'AbortError')
+    return result
+  }).finally(() => { if (gatewayFlights.get(identity) === flight) gatewayFlights.delete(identity) })
+  gatewayFlights.set(identity, flight)
+  return flight
+}
+
 // Fetcher functions that handle mock/real data
 const fetchGateways = async (): Promise<Gateway[]> => {
   if (USE_MOCK_DATA) {
@@ -288,15 +308,15 @@ const fetchGateways = async (): Promise<Gateway[]> => {
     return upstreamMcpGateways(getMockGatewaysFallback())
   }
 
-  return withRequestTiming('gateway.list', async () =>
+  return gatewaySingleFlight('configuration', () => withRequestTiming('gateway.list', async () =>
     upstreamMcpGateways(await loadGatewayConfiguration(gatewayApi)),
-  )
+  ))
 }
 
 const hydrateGatewayRuntime = async (gateways: Gateway[]): Promise<Gateway[]> =>
-  withRequestTiming('gateway.runtime', async () =>
+  gatewaySingleFlight(gatewayRuntimeRevision(gateways), () => withRequestTiming('gateway.runtime', async () =>
     upstreamMcpGateways(await loadGatewayRuntime(gatewayApi, gateways)),
-  )
+  ))
 
 const hydrateGatewayToolInventory = async (gateways: Gateway[]): Promise<Gateway[]> =>
   withRequestTiming('gateway.tool-inventory', async () =>
@@ -417,6 +437,63 @@ export function gatewaysRuntimeRequestKey(
     : null
 }
 
+type GatewayMutate = ReturnType<typeof useSWRConfig>['mutate']
+const gatewayRefreshSubscribers = new Set<{ mutate: GatewayMutate; runtimeCacheId?: string }>()
+const gatewayRefreshBusy = new Map<GatewayMutate, Set<string>>()
+let gatewayRefreshTimer: number | null = null
+let gatewayRefreshPulse = 0
+
+function refreshGatewayKey(mutate: GatewayMutate, key: string | [string, string]) {
+  const identity = JSON.stringify(key)
+  const busy = gatewayRefreshBusy.get(mutate) ?? new Set<string>()
+  if (busy.has(identity)) return
+  busy.add(identity)
+  gatewayRefreshBusy.set(mutate, busy)
+  void mutate(key).catch(() => undefined).finally(() => {
+    busy.delete(identity)
+    if (!busy.size) gatewayRefreshBusy.delete(mutate)
+  })
+}
+
+function refreshVisibleGateways(catchUp = false) {
+  if (document.visibilityState === 'hidden' || navigator.onLine === false) return
+  if (!catchUp) gatewayRefreshPulse += 1
+  const byCache = new Map<GatewayMutate, Set<string>>()
+  for (const { mutate, runtimeCacheId } of gatewayRefreshSubscribers) {
+    const runtimeIds = byCache.get(mutate) ?? new Set<string>()
+    if (runtimeCacheId) runtimeIds.add(runtimeCacheId)
+    byCache.set(mutate, runtimeIds)
+  }
+  for (const [mutate, runtimeIds] of byCache) {
+    // Runtime is one gateway.mcp.list; configuration is a heavier snapshot.
+    // Each SWR cache/key is single-flight, including with multiple consumers.
+    for (const id of runtimeIds) refreshGatewayKey(mutate, ['/gateways/runtime', id])
+    if (catchUp || gatewayRefreshPulse % 3 === 0) refreshGatewayKey(mutate, GATEWAYS_KEY)
+  }
+}
+
+function subscribeGatewayRefresh(mutate: GatewayMutate, runtimeCacheId?: string) {
+  const subscriber = { mutate, runtimeCacheId }
+  gatewayRefreshSubscribers.add(subscriber)
+  if (gatewayRefreshTimer === null) {
+    gatewayRefreshPulse = 0
+    gatewayRefreshTimer = window.setInterval(() => refreshVisibleGateways(), 5_000)
+    document.addEventListener('visibilitychange', refreshGatewayCatchUp)
+    window.addEventListener('online', refreshGatewayCatchUp)
+  }
+  return () => {
+    gatewayRefreshSubscribers.delete(subscriber)
+    if (gatewayRefreshSubscribers.size === 0 && gatewayRefreshTimer !== null) {
+      window.clearInterval(gatewayRefreshTimer)
+      gatewayRefreshTimer = null
+      document.removeEventListener('visibilitychange', refreshGatewayCatchUp)
+      window.removeEventListener('online', refreshGatewayCatchUp)
+    }
+  }
+}
+
+function refreshGatewayCatchUp() { refreshVisibleGateways(true) }
+
 // Hooks
 export function useGatewaySnapshots(enabled = true) {
   return useSWR<Gateway[]>(gatewaysRequestKey(enabled), fetchGateways, {
@@ -426,11 +503,11 @@ export function useGatewaySnapshots(enabled = true) {
   })
 }
 
-export function useGateways(enabled = true, includeToolInventory = false) {
+export function useGateways(enabled = true, includeToolInventory = false, warmCatalog = true) {
   const { mutate } = useSWRConfig()
   const configured = useGatewaySnapshots(enabled)
   const catalogWarm = useSWR(
-    enabled && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
+    enabled && warmCatalog && !USE_MOCK_DATA ? '/gateway-catalog-warm' : null,
     () => gatewayApi.refreshStatus(),
     { revalidateOnFocus: false, shouldRetryOnError: true, errorRetryCount: 2, errorRetryInterval: 5_000 },
   )
@@ -471,24 +548,13 @@ export function useGateways(enabled = true, includeToolInventory = false) {
   }, [runtimeGateways, toolInventory.data])
   useEffect(() => {
     if (!enabled || USE_MOCK_DATA) return
-    const refreshCatalogView = () => {
-      if (document.visibilityState === 'hidden') return
-      void mutate(GATEWAYS_KEY)
-      if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
-    }
-    const interval = window.setInterval(refreshCatalogView, 5_000)
-    document.addEventListener('visibilitychange', refreshCatalogView)
-    return () => {
-      window.clearInterval(interval)
-      document.removeEventListener('visibilitychange', refreshCatalogView)
-    }
+    return subscribeGatewayRefresh(mutate, runtimeCacheId)
   }, [enabled, runtimeCacheId, mutate])
-
   useEffect(() => {
-    if (!enabled || USE_MOCK_DATA || catalogWarm.isLoading || catalogWarm.error) return
+    if (!enabled || !warmCatalog || USE_MOCK_DATA || catalogWarm.isLoading || catalogWarm.error) return
     void mutate(GATEWAYS_KEY)
     if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
-  }, [enabled, catalogWarm.isLoading, catalogWarm.error, runtimeCacheId, mutate])
+  }, [enabled, warmCatalog, catalogWarm.isLoading, catalogWarm.error, runtimeCacheId, mutate])
 
   return {
     ...configured,

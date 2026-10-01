@@ -79,3 +79,13 @@ test('known client and unknown identity facets use truthful names and expose pro
   assert.doesNotMatch(html, />Devices</)
   assert.doesNotMatch(html, />IPs</)
 })
+
+test('overview ranking names the population actually displayed', () => {
+  const html = renderToStaticMarkup(<MostActivePanel overviewMode actors={{
+    agent: { active: 0, top: [] }, device: { active: 0, top: [] }, ip: { active: 0, top: [] },
+    client: { active: 1, top: [{ id: 'sdk', label: 'Unidentified MCP client', kind: 'client', calls: 2 }] },
+    subject: { active: 0, top: [] }, unknown: { active: 0, top: [] },
+  }} window="24h" onSelectActor={() => {}} />)
+  assert.match(html, /Most active clients/)
+  assert.doesNotMatch(html, /Most active agents/)
+})
