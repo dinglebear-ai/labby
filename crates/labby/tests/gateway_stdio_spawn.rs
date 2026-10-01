@@ -271,9 +271,10 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
             cmd.env(key, val);
         }
     }
+    cmd.env("FIXTURE_ENV_READY", "fixture");
     // Explicitly do NOT set the canary — mirrors what connect_stdio_upstream does.
     cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
+    cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
 
     let mut child = match cmd.spawn() {
@@ -285,32 +286,27 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     };
     let pid = child.id();
 
-    // A live PID alone does not prove that exec has finished publishing its
-    // environment in /proc. Wait for cat to echo a byte before inspecting it.
-    // Keep stdin open afterward so the process cannot exit during the read.
-    use std::io::{Read as _, Write as _};
-    child
-        .stdin
-        .as_mut()
-        .expect("piped stdin")
-        .write_all(b"r")
-        .expect("send child readiness probe");
-    let mut ready = [0_u8; 1];
-    child
-        .stdout
-        .as_mut()
-        .expect("piped stdout")
-        .read_exact(&mut ready)
-        .expect("receive child readiness probe");
-    assert_eq!(
-        &ready, b"r",
-        "cat must finish exec before environment inspection"
-    );
+    // A live child can still expose an empty procfs environment while its
+    // executable initializes. Wait for the known-present fixture marker, with
+    // a fixed deadline; an empty snapshot cannot prove environment isolation.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    let env_bytes = loop {
+        let bytes = std::fs::read(format!("/proc/{pid}/environ"))
+            .expect("read /proc/<pid>/environ of blocked child");
+        if bytes
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(b"FIXTURE_ENV_READY="))
+        {
+            break bytes;
+        }
+        if std::time::Instant::now() >= deadline {
+            drop(child.stdin.take());
+            child.wait().expect("reap environment fixture");
+            panic!("child environment did not become observable within two seconds");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
 
-    // The child blocks reading its piped stdin, so it is guaranteed alive
-    // here — a failed environ read is a real failure, not a race to tolerate.
-    let env_bytes = std::fs::read(format!("/proc/{pid}/environ"))
-        .expect("read /proc/<pid>/environ of blocked child");
     drop(child.stdin.take()); // EOF → cat exits
     child.wait().ok();
 

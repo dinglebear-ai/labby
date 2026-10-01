@@ -8155,6 +8155,9 @@
           "bearer_token_value": {
             "type": "string"
           },
+          "protected_route": {
+            "type": "object"
+          },
           "spec": {
             "type": "string"
           }
@@ -8936,6 +8939,9 @@
           },
           "patch": {
             "type": "string"
+          },
+          "protected_route": {
+            "type": "object"
           }
         }
       },

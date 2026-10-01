@@ -2309,12 +2309,12 @@ impl LabMcpServer {
                         params,
                     ) {
                         Ok(params) => params,
-                        Err(_) => {
+                        Err(error) => {
                             return Ok(error_result_from_envelope(build_error(
                                 &service,
                                 &action,
-                                "forbidden",
-                                "Gateway operation is not authorized",
+                                error.kind(),
+                                error.user_message(),
                             ))
                             .into());
                         }
@@ -3113,3 +3113,7 @@ mod widget_callback_gate_tests;
 #[cfg(all(test, feature = "skills"))]
 #[path = "call_tool/skill_library_callback_tests.rs"]
 mod skill_library_callback_tests;
+
+#[cfg(all(test, feature = "gateway"))]
+#[path = "call_tool/atomic_gateway_save_tests.rs"]
+mod atomic_gateway_save_tests;

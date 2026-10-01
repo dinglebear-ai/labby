@@ -336,17 +336,21 @@ required/optional environment-variable matrix, secret flags, and examples.
 ### Access-store migration approval
 
 Opening an existing access schema older than the binary's schema (any of v1
-through v7 with a schema-v8 binary) is denied unless the operator supplies an
+through v8 with the current schema-v9 binary) for migration requires an
 approval document bound to an independent rollback checkpoint, the exact
-source and target, and an explicit activation:
+source and target, and an explicit activation. Supply it to the offline
+`labby state access migrate` command with the daemon stopped:
 
 ```env
-LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v8.json
+LABBY_ACCESS_MIGRATION_EVIDENCE=/run/labby/access-migration-v9.json
 ```
 
 The JSON document uses schema `labby.access-migration-approval/v1` and contains
 `operation_id`, `source_version`, `target_version`, `target_fingerprint`,
-`checkpoint_path`, `checkpoint_sha256`, and `activate: true`. The checkpoint
+`checkpoint_path`, `checkpoint_sha256`, and `activate: true`. For the current
+binary, `target_version` is `9` and `target_fingerprint` is
+`labby-access-v9-20260918`; `source_version` must match the actual store,
+including `8` for either recognized v8 shape. The checkpoint
 must be a separate consolidated SQLite copy of the quiesced source (`VACUUM
 INTO` or the online backup API) whose streamed file digest matches
 `checkpoint_sha256`; the live store is verified against it logically (schema

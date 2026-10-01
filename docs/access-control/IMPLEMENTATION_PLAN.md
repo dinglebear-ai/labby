@@ -9,7 +9,7 @@ status: "historical-plan"
 
 > **Historical document.** This is the original 2026-08 plan. It is not a
 > description of current code. The access store is now at schema v7 (see
-> [DATA_MODEL.md](./DATA_MODEL.md#schema-v7-current) and
+> [DATA_MODEL.md](./DATA_MODEL.md#schema-v9-current) and
 > [MIGRATION.md](./MIGRATION.md)); current operator behavior is in
 > [services/ACCESS.md](../services/ACCESS.md).
 

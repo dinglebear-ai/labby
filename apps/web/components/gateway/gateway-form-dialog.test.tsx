@@ -404,7 +404,24 @@ test('blocked OAuth popup can be retried from a user click', async () => {
   }
 })
 
-test('saving a changed protected route updates before deleting the new route', async () => {
+test('unchanged protected paths omit the nested policy mutation on ordinary edits', async () => {
+  installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {
+    protectedRoutes: [protectedRouteFixture('old-route', '/old', 'tools')],
+  })) as typeof fetch
+  try {
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    const view = await renderOpenGatewayDialog(gatewayFixture('tools'), async input => { inputs.push(input) })
+    await waitFor(() => assert.equal((document.querySelector('#protected-public-path') as HTMLInputElement).value, 'old'))
+    await clickSave()
+    await waitFor(() => assert.equal(inputs.length, 1))
+    assert.equal('protected_route' in inputs[0], false)
+    await view.unmount()
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('saving a changed protected route sends it in the atomic gateway save', async () => {
   const window = installGatewayDialogDom()
   const actions: string[] = []
   const originalFetch = globalThis.fetch
@@ -434,11 +451,11 @@ test('saving a changed protected route updates before deleting the new route', a
 
     await waitFor(() => {
       assert.deepEqual(onSaveInputs.map(() => 'save'), ['save'])
-      assert.deepEqual(actions.filter((action) => action.startsWith('gateway.protected_route.')), [
-        'gateway.protected_route.list_state',
-        'gateway.protected_route.update',
-        'gateway.protected_route.list_state',
-      ])
+      const saved = onSaveInputs[0] as { protected_route?: { operation: string; name: string; route: { public_path: string } } }
+      assert.equal(saved.protected_route?.operation, 'upsert')
+      assert.equal(saved.protected_route?.name, 'old-route')
+      assert.equal(saved.protected_route?.route.public_path, '/new')
+      assert.ok(!actions.includes('gateway.protected_route.update'))
     })
 
     await view.unmount()
@@ -477,11 +494,8 @@ test('clearing a protected route removes the existing route after saving', async
 
     await waitFor(() => {
       assert.deepEqual(onSaveInputs.map(() => 'save'), ['save'])
-      assert.deepEqual(actions.filter((action) => action.startsWith('gateway.protected_route.')), [
-        'gateway.protected_route.list_state',
-        'gateway.protected_route.remove',
-        'gateway.protected_route.list_state',
-      ])
+      assert.deepEqual((onSaveInputs[0] as { protected_route: unknown }).protected_route, { operation: 'remove', name: 'old-route' })
+      assert.ok(!actions.includes('gateway.protected_route.remove'))
     })
 
     await view.unmount()
@@ -490,94 +504,35 @@ test('clearing a protected route removes the existing route after saving', async
   }
 })
 
-test('protected-route failure rolls back the gateway save and keeps the dialog open', async () => {
-  const window = installGatewayDialogDom()
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = (async (input, init) => {
-    const path = String(input)
-    if (path === '/v1/gateway' && init?.method === 'POST') {
-      return gatewayActionResponse(init, {
-        protectedRoutes: [protectedRouteFixture('old-route', '/old', 'tools')],
-        failAction: 'gateway.protected_route.update',
+for (const code of ['conflict', 'access_setup_required']) {
+  test(`a rejected atomic save keeps its draft without retrying or compensating (${code})`, async () => {
+    const window = installGatewayDialogDom()
+    const actions: string[] = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {
+      protectedRoutes: [protectedRouteFixture('old-route', '/old', 'tools')],
+      onAction: action => actions.push(action),
+    })) as typeof fetch
+    try {
+      let saves = 0
+      const view = await renderOpenGatewayDialog(gatewayFixture('tools'), async input => {
+        saves++
+        assert.equal(input.protected_route?.operation, 'upsert')
+        throw Object.assign(new Error('Atomic route save failed'), { status: 409, code })
       })
-    }
-    throw new Error(`unexpected fetch ${path}`)
-  }) as typeof fetch
-
-  try {
-    let rollbackCalls = 0
-    const view = await renderOpenGatewayDialog(gatewayFixture('tools'), async () => async () => {
-      rollbackCalls += 1
-    })
-
-    const pathInput = document.querySelector('#protected-public-path') as HTMLInputElement | null
-    assert.ok(pathInput)
-    await waitFor(() => assert.equal(pathInput.value, 'old'))
-    await setInputValue(window, pathInput, 'new')
-    await clickSave()
-
-    await waitFor(() => {
-      assert.equal(rollbackCalls, 1)
+      const pathInput = document.querySelector('#protected-public-path') as HTMLInputElement
+      await waitFor(() => assert.equal(pathInput.value, 'old'))
+      await setInputValue(window, pathInput, 'new')
+      await clickSave()
+      await waitFor(() => assert.match(document.body.textContent ?? '', /Atomic route save failed/))
+      assert.equal(saves, 1)
+      assert.equal(pathInput.value, 'new')
       assert.ok(document.querySelector('[role="dialog"]'))
-      assert.match(document.body.textContent ?? '', /Save Changes/i)
-    })
-
-    await view.unmount()
-  } finally {
-    globalThis.fetch = originalFetch
-  }
-})
-
-// A 409 no longer means only "this name already exists": the access setup
-// gate answers 409 too, and replaying the write as an update would hide it.
-async function saveWithProtectedRouteAddFailure(
-  kind: string,
-): Promise<string[]> {
-  const window = installGatewayDialogDom()
-  const actions: string[] = []
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = (async (input, init) => {
-    const path = String(input)
-    if (path === '/v1/gateway' && init?.method === 'POST') {
-      return gatewayActionResponse(init, {
-        protectedRoutes: [],
-        onAction: (action) => actions.push(action),
-        failWith: {
-          action: 'gateway.protected_route.add',
-          status: 409,
-          kind,
-          message: `${kind} while adding the protected route`,
-        },
-      })
-    }
-    throw new Error(`unexpected fetch ${path}`)
-  }) as typeof fetch
-
-  try {
-    const view = await renderOpenGatewayDialog(gatewayFixture('tools'), async () => {})
-    const pathInput = document.querySelector('#protected-public-path') as HTMLInputElement | null
-    assert.ok(pathInput)
-    await setInputValue(window, pathInput, 'new')
-    await clickSave()
-    await waitFor(() => {
-      assert.ok(actions.includes('gateway.protected_route.add'))
-    })
-    await view.unmount()
-    return actions
-  } finally {
-    globalThis.fetch = originalFetch
-  }
+      assert.deepEqual(actions.filter(action => action.startsWith('gateway.protected_route.')), ['gateway.protected_route.list_state'])
+      await view.unmount()
+    } finally { globalThis.fetch = originalFetch }
+  })
 }
-
-test('a name conflict on adding a protected route is retried as an update', async () => {
-  const actions = await saveWithProtectedRouteAddFailure('conflict')
-  assert.ok(actions.includes('gateway.protected_route.update'))
-})
-
-test('a non-conflict 409 on adding a protected route is not retried as an update', async () => {
-  const actions = await saveWithProtectedRouteAddFailure('access_setup_required')
-  assert.ok(!actions.includes('gateway.protected_route.update'))
-})
 
 test('closing the dialog aborts an in-flight gateway connection test', async () => {
   installGatewayDialogDom()
@@ -1123,6 +1078,41 @@ test('editing an existing OAuth HTTP server preserves OAuth config by omission',
 
     await view.unmount()
   } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+for (const authLabel of ['No auth', 'Bearer token']) test(`switching an existing OAuth server to ${authLabel} explicitly clears OAuth`, async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {})) as typeof fetch
+  let view: Awaited<ReturnType<typeof renderOpenGatewayDialog>> | undefined
+  try {
+    const existing = gatewayFixture('oauth-clear')
+    existing.config.oauth_enabled = true
+    existing.config.bearer_token_env = 'OAUTH_REPLACEMENT_TOKEN'
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    view = await renderOpenGatewayDialog(existing, async input => { inputs.push(input) })
+    const trigger = [...document.querySelectorAll('[role="combobox"]')]
+      .find(item => item.textContent?.includes('OAuth (MCP)')) as HTMLElement
+    assert.ok(trigger)
+    await act(async () => {
+      trigger.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }) as unknown as Event)
+    })
+    const option = [...document.querySelectorAll('[role="option"]')].find(item => item.textContent?.trim() === authLabel) as HTMLElement
+    assert.ok(option)
+    await act(async () => {
+      option.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }) as unknown as Event)
+      option.click()
+    })
+    await clickSave()
+    await waitFor(() => {
+      assert.equal(inputs.length, 1)
+      assert.equal(inputs[0].config?.oauth, null)
+      assert.equal(inputs[0].config?.bearer_token_env, authLabel === 'No auth' ? null : 'OAUTH_REPLACEMENT_TOKEN')
+    })
+  } finally {
+    await view?.unmount()
     globalThis.fetch = originalFetch
   }
 })

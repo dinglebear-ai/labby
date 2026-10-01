@@ -36,6 +36,8 @@ export interface BackendServerWarningView {
 export interface BackendServerConfigSummaryView {
   transport?: string | null
   target?: string | null
+  command?: string | null
+  args?: string[]
 }
 
 export interface BackendServerView {
@@ -475,6 +477,7 @@ export function normalizeServerView(
     config: {
       ...((transport === 'http' && target) ? { url: target } : {}),
       ...((transport === 'stdio' && target) ? { command: target } : {}),
+      ...(transport === 'stdio' && view.config_summary?.args ? { args: view.config_summary.args } : {}),
       proxy_resources: config.proxy_resources,
       proxy_prompts: config.proxy_prompts,
       proxy_mcp_ui: config.proxy_mcp_ui,
@@ -669,7 +672,7 @@ export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): Gate
     ? rawLastError
     : undefined
 
-  if (connectedCount > 0) {
+  if (runtime.connected ?? (connectedCount > 0)) {
     return {
       connected: true,
       healthy: !lastError,
@@ -680,7 +683,9 @@ export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): Gate
   return {
     connected: false,
     healthy: false,
-    last_error: lastError ?? 'No capabilities (tools, resources, prompts, or skills) were discovered from this gateway.',
+    last_error: lastError ?? (runtime.connected === false
+      ? 'This gateway is disconnected.'
+      : 'No capabilities (tools, resources, prompts, or skills) were discovered from this gateway.'),
   }
 }
 
@@ -726,7 +731,7 @@ export function buildGatewayCreatePayload(input: CreateGatewayInput) {
     },
   })
 
-  const payload: Record<string, unknown> = { spec }
+  const payload: Record<string, unknown> = { spec, ...(input.protected_route ? { protected_route: input.protected_route } : {}) }
   const bearerTokenValue = input.config.bearer_token_value?.trim()
   if (bearerTokenValue) {
     payload.bearer_token_value = bearerTokenValue
@@ -808,7 +813,7 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
   }
 
   if (config.oauth !== undefined) {
-    patch.oauth = {
+    patch.oauth = config.oauth === null ? null : {
       mode: 'authorization_code_pkce',
       registration: { strategy: config.oauth.registration_strategy },
       scopes: config.oauth.scopes ?? null,
@@ -838,6 +843,7 @@ export function buildGatewayUpdatePayload(
   const payload: Record<string, unknown> = {
     name: id,
     patch,
+    ...(input.protected_route ? { protected_route: input.protected_route } : {}),
   }
   const bearerTokenValue = input.config?.bearer_token_value?.trim()
   if (bearerTokenValue) {

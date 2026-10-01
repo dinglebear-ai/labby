@@ -2230,6 +2230,33 @@ mod tests {
         assert!(schemas.is_empty());
     }
 
+    fn assert_atomic_gateway_route_schema(schema_name: &str) {
+        let registry = crate::registry::build_docs_registry();
+        let spec = build_openapi_spec(registry.services()).expect("generate real OpenAPI contract");
+        let spec: serde_json::Value = serde_json::from_str(&spec).expect("generated JSON");
+        let schema = &spec["components"]["schemas"][schema_name];
+        assert_eq!(
+            schema["properties"]["protected_route"]["type"], "object",
+            "{schema_name} must accept the tagged route mutation sent to shared dispatch"
+        );
+        assert!(
+            !schema["required"]
+                .as_array()
+                .is_some_and(|fields| fields.iter().any(|field| field == "protected_route")),
+            "omitting protected_route preserves the existing routes"
+        );
+    }
+
+    #[test]
+    fn atomic_gateway_add_openapi_accepts_route_object() {
+        assert_atomic_gateway_route_schema("GatewayGatewayAddParams");
+    }
+
+    #[test]
+    fn atomic_gateway_update_openapi_accepts_route_object() {
+        assert_atomic_gateway_route_schema("GatewayGatewayUpdateParams");
+    }
+
     #[test]
     fn build_health_paths_has_two_entries() {
         let paths = build_health_paths();

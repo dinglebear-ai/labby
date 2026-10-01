@@ -717,3 +717,48 @@ pub(super) async fn move_connection_to_subject_cache_with_tools(
         },
     );
 }
+
+/// Live in-process generic and subject peers for gateway lifecycle regressions.
+#[cfg(test)]
+pub(crate) async fn retained_oauth_peers(
+    upstream: &str,
+    peer_upstream: &str,
+    subject: &str,
+    cache: labby_auth::upstream::cache::OauthClientCache,
+) -> (Arc<UpstreamPool>, Vec<rmcp::service::Peer<RoleClient>>) {
+    let pool = Arc::try_unwrap(static_catalog_pool(upstream).await)
+        .ok()
+        .expect("fixture has one owner")
+        .with_oauth_client_cache(cache);
+    let generic_peer = pool
+        .connections
+        .read()
+        .await
+        .get(upstream)
+        .unwrap()
+        .peer
+        .clone();
+    pool.generic_oauth_subjects
+        .write()
+        .await
+        .insert(upstream.into(), subject.into());
+    let subject_pool = static_catalog_pool(peer_upstream).await;
+    let connection = subject_pool
+        .connections
+        .write()
+        .await
+        .remove(peer_upstream)
+        .unwrap();
+    let subject_peer = connection.peer.clone();
+    pool.subject_connections.write().await.insert(
+        (peer_upstream.into(), subject.into()),
+        super::SubjectScopedConnection {
+            optional_catalogs: Default::default(),
+            _connection: connection,
+            peer: subject_peer.clone(),
+            tools: vec![],
+            last_used: std::time::Instant::now(),
+        },
+    );
+    (Arc::new(pool), vec![generic_peer, subject_peer])
+}

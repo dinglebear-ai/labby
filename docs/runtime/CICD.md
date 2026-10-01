@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-05"
+updated: "2026-09-30"
 ---
 
 # CI/CD
 
-Last updated: 2026-09-05
+Last updated: 2026-09-30
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -178,11 +178,16 @@ fallback classifier used when the base commit predates that script emits no
 keys at all and lets reconciliation force every gated key to `true`, so it is
 not a second copy of the list.
 
-Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
+Branch protection on `main` requires `Repository Contract`, `Protected docs guard`,
+and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
-fail the aggregate. Native Windows workspace tests are required; the Palette
-Windows job remains advisory.
+fail the aggregate. The classifier runs on every event, including fork PRs,
+without repository credentials. Required native Windows workspace tests follow
+the `rust_test` category; installer checks follow `workflow` or `release`.
+The gate rejects a skipped required Windows or fork product lane when its
+category was routed. The manual `run_windows` input controls only the advisory
+Palette Windows check.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
