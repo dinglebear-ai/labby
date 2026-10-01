@@ -63,6 +63,16 @@ pub(super) fn should_use_dynamic_registration(
 }
 
 impl GatewayManager {
+    /// Supply provider metadata while exercising the real transient registration path.
+    #[cfg(feature = "testkit")]
+    pub fn inject_probe_metadata_for_test(
+        &self,
+        url: &str,
+        metadata: rmcp::transport::auth::AuthorizationMetadata,
+    ) -> impl Drop {
+        probe::fixture_metadata::install(url, metadata)
+    }
+
     /// Hold the real cleanup boundary for deterministic downstream race tests.
     #[cfg(feature = "testkit")]
     pub async fn hold_oauth_status_invalidation_for_test(&self) -> impl Drop + '_ {
