@@ -436,6 +436,18 @@ function mutationKey(prefix: string): string {
   return prefix + '-' + crypto.randomUUID()
 }
 
+const depotGitCredentialChoicesSchema = z.object({ credentials: z.array(z.object({
+  id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  host: z.string().min(1).max(253),
+}).strict()).max(4096) }).passthrough()
+
+export type DepotGitCredentialChoice = z.infer<typeof depotGitCredentialChoicesSchema>['credentials'][number]
+
+export async function depotGitCredentialChoices(signal?: AbortSignal): Promise<DepotGitCredentialChoice[]> {
+  const value = await depotCall<unknown>('depot.credentials.list', {}, signal)
+  return operationResult(value, depotGitCredentialChoicesSchema, 'repository credential choices').credentials
+}
+
 export async function depotSources(signal?: AbortSignal): Promise<DepotSource[]> {
   const value = await depotCall<unknown>('depot.sources.list', {}, signal)
   return operationResult(value, depotSourcesResultSchema, 'source list response').sources
@@ -516,7 +528,21 @@ export type ArtifactSourceOrigin = (typeof ARTIFACT_SOURCE_ORIGINS)[number]
 // The optional catalog fields below (sourceOrigin, publisherVerified, metrics, readme, provenance,
 // lineage, descriptor.tags, currentRevision.fileCount) belong to the Depot v2 contract and render
 // when present. The built-in discovery projection on this tree does not populate them yet.
+export const mcpConnectionSchema = z.object({
+  schemaVersion: z.literal('labby.mcp-connection/v1'),
+  revisionId: bounded(512).min(1),
+  transport: z.literal('http'),
+  authentication: z.enum(['none', 'bearer']),
+  url: bounded(2048).url().refine(value => {
+    if (/[\s\u0000-\u001f\u007f\\]/.test(value)) return false
+    const url = new URL(value)
+    return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search
+  }, 'Use an HTTPS MCP endpoint without credentials, query, or fragment'),
+}).strict()
+export type CatalogMcpConnection = z.infer<typeof mcpConnectionSchema>
+
 const federatedArtifactSchema = z.object({
+  mcpConnection: mcpConnectionSchema.optional(),
   providerId: bounded(64), artifactId: rawId, id: rawId.optional(), kind: bounded(128).optional(),
   sourceOrigin: z.enum(ARTIFACT_SOURCE_ORIGINS).nullish(),
   namespace: bounded(512).optional(), name: bounded(512).optional(), title: bounded(4096).optional(),

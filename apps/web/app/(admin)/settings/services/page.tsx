@@ -90,9 +90,7 @@ export default function ServicesIndex(): React.ReactElement {
         title="Services"
         description={
           <>
-            Configure connection details for every Bootstrap service. Click a
-            row to edit its env vars; saves commit immediately to{' '}
-            <code>~/.labby/.env</code>.
+            Connect Labby to supported external services. Select a service to edit its server address and credentials. Changes are saved in the gateway server’s selected configuration directory. A configured indicator means required values are saved; use the service connection test to verify access.
           </>
         }
       >
@@ -122,7 +120,7 @@ export default function ServicesIndex(): React.ReactElement {
         ) : null}
         {error ? (
           <SettingsRowStrip>
-            <span className="text-[11.5px] text-destructive">{error}</span>
+            <span className="text-[11.5px] text-aurora-error">{error}</span>
           </SettingsRowStrip>
         ) : null}
         {warning ? (

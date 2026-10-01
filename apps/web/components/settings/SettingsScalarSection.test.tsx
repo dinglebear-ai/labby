@@ -59,6 +59,9 @@ async function renderClient(element: React.ReactElement) {
 
   return {
     container,
+    rerender: async (next: React.ReactElement) => {
+      await act(async () => root.render(next))
+    },
     unmount: async () => {
       await act(async () => root.unmount())
       container.remove()
@@ -117,6 +120,26 @@ test('SettingsScalarSection renders reset and save controls', () => {
   assert.match(html, /Core/)
   assert.match(html, /Reset/)
   assert.match(html, /Save changes/)
+})
+
+test('SettingsScalarSection preserves an unsaved draft when field objects are recreated', async () => {
+  installDom()
+  const view = await renderClient(
+    <SettingsScalarSection title="Core" description="" section="core" state={state} fields={[...fields]} onSaved={() => undefined} />,
+  )
+  try {
+    const input = view.container.querySelector('input')
+    assert.ok(input)
+    await setInputValue(input, 'labby=debug')
+    assert.equal(input.value, 'labby=debug')
+
+    await view.rerender(
+      <SettingsScalarSection title="Core" description="" section="core" state={state} fields={[...fields]} onSaved={() => undefined} />,
+    )
+    assert.equal(input.value, 'labby=debug')
+  } finally {
+    await view.unmount()
+  }
 })
 
 test('SettingsScalarSection sends previous values on confirmed env save', async () => {

@@ -39,6 +39,42 @@ test('settings schema helpers parse scalar controls', () => {
   assert.deepEqual(parseFieldInput({ ...numberField, control: 'string_list' }, 'a,b\nc'), ['a', 'b', 'c'])
 })
 
+test('settings inputs reject values outside the server schema', () => {
+  const envPort = { ...numberField, backend: 'env' as const }
+  assert.equal(isInvalidFieldInput(parseFieldInput(envPort, '')), true)
+  const format = { ...numberField, control: 'enum' as const, options: [{ value: 'human', label: 'Readable text' }, { value: 'json', label: 'JSON' }] }
+  assert.equal(parseFieldInput(format, 'json'), 'json')
+  assert.equal(isInvalidFieldInput(parseFieldInput(format, 'yaml')), true)
+  const publicUrl = { ...numberField, control: 'url' as const }
+  assert.equal(parseFieldInput(publicUrl, 'https://example.com/labby'), 'https://example.com/labby')
+  for (const invalid of ['https://', 'https://user:pass@example.com', 'https://example.com/?token=1', 'javascript:alert(1)']) {
+    assert.equal(isInvalidFieldInput(parseFieldInput(publicUrl, invalid)), true, invalid)
+  }
+})
+
+test('settings inputs validate host and browser origin lists', () => {
+  const hosts = { ...numberField, key: 'mcp.allowed_hosts', control: 'string_list' as const }
+  assert.deepEqual(parseFieldInput(hosts, 'example.com\nexample.com:8443\n::1'), ['example.com', 'example.com:8443', '::1'])
+  for (const invalid of ['*', 'https://example.com', 'example.com/path', 'user@example.com']) {
+    assert.equal(isInvalidFieldInput(parseFieldInput(hosts, invalid)), true, invalid)
+  }
+  const origins = { ...numberField, key: 'api.cors_origins', control: 'string_list' as const }
+  assert.deepEqual(parseFieldInput(origins, 'https://example.com\nhttp://localhost:3000'), ['https://example.com', 'http://localhost:3000'])
+  for (const invalid of ['*', 'example.com', 'https://example.com/path', 'https://user@example.com']) {
+    assert.equal(isInvalidFieldInput(parseFieldInput(origins, invalid)), true, invalid)
+  }
+})
+
+test('bind host settings accept addresses but reject ports and URLs', () => {
+  const host = { ...numberField, key: 'LABBY_MCP_HTTP_HOST', control: 'text' as const }
+  for (const valid of ['127.0.0.1', '::1', 'labby.local']) {
+    assert.equal(parseFieldInput(host, valid), valid)
+  }
+  for (const invalid of ['', 'localhost:8765', 'localhost:80', '[::1]:80', 'https://labby.local', 'host/path']) {
+    assert.equal(isInvalidFieldInput(parseFieldInput(host, invalid)), true, invalid)
+  }
+})
+
 test('settings schema helpers surface invalid numeric errors without losing raw input', () => {
   const invalid = parseFieldInput(numberField, '70000')
   assert.equal(isInvalidFieldInput(invalid), true)

@@ -26,6 +26,8 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — historical implementation plan and progress record; the current contract is [Skills extension](./contracts/skills-extension.md) and current product behavior is [Artifacts And Agent Skills](./services/SKILLS.md).
 - [Verification and compliance](./dev/VERIFICATION.md) — implemented specification oracles, model/replay tiers, real-process conformance, evidence boundaries, and qualification rules; operational commands live in the [verification workspace](../tools/verification/README.md).
+- [First-use release qualification](./dev/FIRST_USE_RELEASE_QUALIFICATION.md) — timed clean-machine evidence, supported starting conditions, and remaining standalone trust boundary.
+- [Discover MCP connection metadata](./contracts/discover-mcp-connection.md) — supported revision metadata and runtime verification.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
 - [Privilege-exposure runbook](./runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md) — tamper review, credential rotation, owner re-verification, and config rollback after an admin-scope exposure.

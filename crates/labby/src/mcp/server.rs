@@ -915,13 +915,20 @@ impl ServerHandler for LabMcpServer {
         // stack. In a multi-hop relay, nested Labby servers otherwise poll the
         // all-features dispatch state on Tokio's bounded worker stack and can
         // overflow it as new in-process services enlarge that state machine.
-        Ok(provenance::stamp_call_tool_response(
-            labby_runtime::usage_actor::scope_attributed(
-                self.request_usage_attribution(&context),
-                self.boxed_call_tool_response_impl(request, context),
-            )
-            .await?,
-        ))
+        let client_binding =
+            crate::dispatch::setup::client_evidence::binding_from_extensions(&context.extensions);
+        let result = labby_runtime::usage_actor::scope_attributed(
+            self.request_usage_attribution(&context),
+            self.boxed_call_tool_response_impl(request, context),
+        )
+        .await?;
+        crate::dispatch::setup::client_evidence::record_completed_tool(
+            &self.access_runtime,
+            client_binding,
+            &result,
+        )
+        .await;
+        Ok(provenance::stamp_call_tool_response(result))
     }
 
     async fn get_task(

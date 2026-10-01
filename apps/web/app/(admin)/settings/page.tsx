@@ -1,23 +1,17 @@
 'use client'
 
-// Settings index — redirects to the Core panel. The fleet-posture
-// dashboard that previously lived here was moved to /settings/doctor/
-// (lab-bg3e.5; the Doctor panel renders the same stat-card content
-// alongside doctor.audit.full results).
+import Link from 'next/link'
 
-import { useEffect } from 'react'
-import { useRouter } from 'next/navigation'
-import { Loader2 } from 'lucide-react'
+import { SettingsCard, SettingsRow } from '@/components/settings/SettingsChrome'
+import { FirstUseReadiness } from '@/components/settings/FirstUseReadiness'
 
 export default function SettingsIndex(): React.ReactElement {
-  const router = useRouter()
-  useEffect(() => {
-    router.replace('/settings/core/')
-  }, [router])
-  return (
-    <div className="flex items-center gap-2 text-[11.5px] text-aurora-text-muted">
-      <Loader2 className="h-4 w-4 animate-spin" />
-      Loading settings…
-    </div>
-  )
+  return <>
+    <FirstUseReadiness />
+    <SettingsCard title="Gateway configuration" description="Change how this installation listens, logs, and exposes its public endpoints. Each field explains where the value takes effect and whether Labby must restart.">
+      <SettingsRow label="Gateway basics" description="Server address and port, logs, workspace, and CLI defaults." control={<Link href="/settings/core/" className="text-xs font-semibold text-aurora-accent-strong hover:underline">Open</Link>} />
+      <SettingsRow label="Client access" description="Public app and MCP addresses, accepted hosts, and browser origins." control={<Link href="/settings/surfaces/" className="text-xs font-semibold text-aurora-accent-strong hover:underline">Open</Link>} />
+      <SettingsRow label="Diagnostics" description="Inspect effective configuration and run gateway checks." control={<Link href="/settings/doctor/" className="text-xs font-semibold text-aurora-accent-strong hover:underline">Open</Link>} />
+    </SettingsCard>
+  </>
 }

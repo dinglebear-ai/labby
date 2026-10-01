@@ -384,7 +384,9 @@ jobs:
           shared-key: macos-installer
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Run installer contracts on macOS
-        run: scripts/tests/installers.sh
+        run: |
+          scripts/tests/installers.sh
+          scripts/tests/release-attestation-bundles.sh
       - name: Run macOS updater and recovery lifecycle tests
         run: |
           cargo test -p labby --all-features --locked self_update::tests
@@ -1561,7 +1563,7 @@ jobs:
       - name: Exercise release qualification contracts before tagging
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 -m unittest scripts.ci.test_release_hardening
+          python3 -m unittest scripts.ci.test_release_hardening scripts.ci.test_verifier_bootstrap scripts.ci.test_release_provenance_bundles
 
   incus-contract:
     name: Incus source contract

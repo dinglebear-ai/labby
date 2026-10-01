@@ -65,8 +65,8 @@ export default function AdvancedPage(): React.ReactElement {
       {settings ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <SettingsScalarSection
-            title="Advanced Scalars"
-            description="Low-risk advanced scalar limits and paths."
+            title="Advanced limits"
+            description="Set timeouts, response sizes, and log retention for the gateway. Each field shows its valid range and when the change takes effect."
             section="advanced"
             state={settings}
             fields={scalarFields}
@@ -87,8 +87,8 @@ function EnvInventoryTable({ entries }: { entries: EnvSettingSpec[] }): React.Re
   )
   return (
     <SettingsCard
-      title="Environment Inventory"
-      description="Known env keys from generated docs and service metadata. Only low-risk core env keys are editable in this epic."
+      title="Environment setting reference"
+      description="Search the environment settings recognized by Labby and its integrations. Edit supported values from the relevant Settings page; this list also shows settings that require a dedicated workflow."
       action={
         <Input
           value={query}

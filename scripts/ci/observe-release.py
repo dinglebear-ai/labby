@@ -30,21 +30,30 @@ for name in names:
 known_assets = set(names) | {
     "release-manifest.json",
 }
+known_assets.update(row["name"] for row in expected.get("provenance_bundles", []))
 if "incus" in dist:
     known_assets.update({dist["incus"]["asset"], "generation.json", "SHA256SUMS"})
 unexpected_assets = sorted(path.name for path in args.assets.iterdir() if path.is_file() and path.name not in known_assets)
 
 attestations = []
 verifier = Path(__file__).with_name("verify-release-provenance.sh")
+bundle_names = {row["subject"]: row["name"] for row in expected.get("provenance_bundles", [])}
 for row in expected.get("attestations", []):
     name = row["subject"]
     path = args.manifest if name == "release-manifest.json" else args.assets / name
     if not path.is_file():
         attestations.append({"subject": name, "status": "missing"})
         continue
+    command = [str(verifier), "--repo", expected["repository"], "--workflow", "release.yml",
+               "--ref", f'refs/tags/{expected["tag"]}', "--artifact", str(path)]
+    if name in bundle_names:
+        bundle = args.assets / bundle_names[name]
+        if not bundle.is_file():
+            attestations.append({"subject": name, "status": "missing_bundle"})
+            continue
+        command += ["--bundle", str(bundle)]
     result = subprocess.run(
-        [str(verifier), "--repo", expected["repository"], "--workflow", "release.yml",
-         "--ref", f'refs/tags/{expected["tag"]}', "--artifact", str(path)],
+        command,
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True, check=False,
     )
     attestations.append({"subject": name, "status": "verified" if result.returncode == 0 else "failed"})

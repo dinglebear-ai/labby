@@ -125,7 +125,8 @@ export default function ServicePage({
       }
       description={
         <>
-          {state?.schema.description ?? `Configure ${service} env vars`}
+          {state?.schema.description ?? `Connect the Labby server to ${service}`}
+          <span style={{ display: 'block', marginTop: 4 }}>These settings configure requests from the Labby server. Save changes before testing; the connection test uses the running server’s configuration. Some changes require a server restart.</span>
           {focusKey ? (
             <span style={{ display: 'block', marginTop: 2, color: 'var(--aurora-warn)' }}>
               Focused field: {focusKey}
@@ -143,7 +144,7 @@ export default function ServicePage({
       ) : null}
       {error ? (
         <SettingsRowStrip>
-          <span className="text-[11.5px] text-destructive">{error}</span>
+          <span className="text-[11.5px] text-aurora-error">{error}</span>
         </SettingsRowStrip>
       ) : null}
       {state ? (
@@ -157,7 +158,7 @@ export default function ServicePage({
           />
           {saved ? (
             <p style={{ marginTop: 10, fontSize: 11, color: 'var(--aurora-success)' }}>
-              ✓ Saved to ~/.labby/.env
+              Saved on the Labby server. Connection access has not yet been verified.
             </p>
           ) : null}
         </SettingsRowStrip>

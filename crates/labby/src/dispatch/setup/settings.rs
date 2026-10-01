@@ -405,7 +405,7 @@ pub fn schema_response() -> SettingsSchemaResponse {
             SettingsSectionSpec {
                 id: "core",
                 label: "Core",
-                description: "Env-backed process defaults and low-risk operator paths.",
+                description: "Where Labby listens, stores workspace files, writes logs, and formats CLI output.",
                 advanced: false,
             },
             SettingsSectionSpec {
@@ -415,33 +415,39 @@ pub fn schema_response() -> SettingsSchemaResponse {
                 advanced: false,
             },
             SettingsSectionSpec {
+                id: "agents",
+                label: "Agent provider",
+                description: "Connect the OpenAI-compatible provider that executes Labby's built-in Agents.",
+                advanced: false,
+            },
+            SettingsSectionSpec {
                 id: "surfaces",
                 label: "Surfaces",
-                description: "Safe scalar HTTP, MCP, URL, and CORS settings.",
+                description: "How browsers and MCP clients reach this gateway, including public URLs and allowed origins.",
                 advanced: false,
             },
             SettingsSectionSpec {
                 id: "features",
                 label: "Features",
-                description: "Runtime feature gates with explicit apply semantics.",
+                description: "Choose which gateway capabilities run and whether changes take effect now or after restart.",
                 advanced: false,
             },
             SettingsSectionSpec {
                 id: "services",
                 label: "Services",
-                description: "Service env vars and service preferences.",
+                description: "Connection details and credentials for external services Labby can use.",
                 advanced: false,
             },
             SettingsSectionSpec {
                 id: "notifications",
                 label: "Notifications",
-                description: "In-app event retention, trusted ingest, and optional Apprise delivery.",
+                description: "Which operational events Labby records, how long it keeps them, and where it sends alerts.",
                 advanced: false,
             },
             SettingsSectionSpec {
                 id: "advanced",
                 label: "Advanced",
-                description: "Redacted read-only complex config and env inventory.",
+                description: "Inspect effective complex configuration and settings that require a dedicated workflow.",
                 advanced: true,
             },
         ],
@@ -474,33 +480,66 @@ const ADMIN_EMAILS_KEY: &str = "LABBY_AUTH_ADMIN_EMAIL";
 pub fn settings_fields() -> Vec<SettingsFieldSpec> {
     let mut fields = vec![
         admin_emails_field(),
+        enum_env(
+            "agents",
+            "LABBY_AGENT_PROVIDER_PROTOCOL",
+            "Agent provider protocol",
+            "Choose OpenAI for standard /models and /chat/completions APIs. Choose Phoenix only for a provider supporting Phoenix's /sessions extension. Existing installations without this setting retain Phoenix behavior. New Agent runs use changes immediately.",
+            vec![
+                SettingsOption {
+                    value: "openai",
+                    label: "OpenAI-compatible API",
+                },
+                SettingsOption {
+                    value: "phoenix",
+                    label: "Phoenix session extension",
+                },
+            ],
+            Some("openai"),
+        ),
+        editable(
+            "agents",
+            "LABBY_PHOENIX_OPENAI_BASE_URL",
+            "Agent provider URL",
+            "Base URL of the OpenAI-compatible API that Labby Agents call from the gateway server. The address must be reachable from that server, not only from this browser. New Agent runs use the saved connection immediately. Existing runs keep their original connection; restart Labby to update other provider consumers.",
+            SettingsBackend::Env,
+            SettingsControl::Url,
+            SettingsApplyMode::Restart,
+            None,
+            Some("https://provider.example.com/v1"),
+        ),
+        secret_env_editable(
+            "agents",
+            "LABBY_PHOENIX_OPENAI_API_KEY",
+            "Agent provider API key",
+            "Credential sent by the Labby server to the Agent provider. Leave blank only if the provider explicitly supports unauthenticated access. The saved value is never shown again. New Agent runs use the saved connection immediately. Existing runs keep their original connection; restart Labby to update other provider consumers.",
+            None,
+        ),
         editable(
             "core",
             "LABBY_MCP_HTTP_HOST",
             "Bind host",
-            "Environment override for HTTP MCP bind host.",
+            "Network address on the Labby server that accepts HTTP and MCP connections. Use 127.0.0.1 for this computer only; use a specific interface address for remote access. Restart Labby to apply it.",
             SettingsBackend::Env,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
             None,
             Some("127.0.0.1"),
         ),
-        editable(
+        env_number_editable(
             "core",
             "LABBY_MCP_HTTP_PORT",
-            "Bind port",
-            "Environment override for HTTP MCP bind port.",
-            SettingsBackend::Env,
-            SettingsControl::Number,
-            SettingsApplyMode::Restart,
-            None,
+            "Gateway port",
+            "TCP port where this Labby server accepts HTTP and MCP connections. The port must be free on the server host. Restart Labby to apply it.",
+            1,
+            65_535,
             Some("8765"),
         ),
         editable(
             "core",
             "LABBY_LOG",
             "Log filter",
-            "Tracing filter directive.",
+            "Which components write diagnostic logs and at what level, for example labby=info,labby_apis=warn. Restart Labby to apply it.",
             SettingsBackend::Env,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
@@ -511,7 +550,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "core",
             "LABBY_LOG_FORMAT",
             "Log format",
-            "Set json for structured logs.",
+            "Choose readable text logs or one JSON object per log line for log collectors. Restart Labby to apply it.",
             vec![
                 SettingsOption {
                     value: "text",
@@ -528,7 +567,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "notifications",
             "LABBY_NOTIFICATIONS_ENABLED",
             "Enable notifications",
-            "Record operational notifications in Labby and monitor Team Depot ingestion failures.",
+            "Store Labby operational events for display in Notifications and check Team Depot ingestion runs for failures. Restart Labby to apply this choice.",
             SettingsBackend::Env,
             SettingsControl::Bool,
             SettingsApplyMode::Restart,
@@ -539,7 +578,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "notifications",
             "APPRISE_URL",
             "Apprise API URL",
-            "Base URL of the Apprise API. Labby posts to /notify or /notify/{KEY}.",
+            "Address of the Apprise service that receives Labby alerts. Labby sends notifications to its /notify endpoint or /notify/{KEY} when a configuration key is set.",
             SettingsBackend::Env,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
@@ -550,14 +589,14 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "notifications",
             "APPRISE_TOKEN",
             "Apprise configuration key",
-            "Optional stateful Apprise configuration key used at /notify/{KEY}. It is never returned by the settings API.",
+            "Optional Apprise configuration key appended to /notify when Labby sends alerts. The saved key is never returned by the settings API.",
             Some("labby"),
         ),
         env_number_editable(
             "notifications",
             "LABBY_NOTIFICATION_RETENTION",
             "Notification retention",
-            "Maximum recent notification records retained locally.",
+            "Maximum number of recent operational notifications Labby keeps in its local store; older records are removed as new ones arrive.",
             10,
             2_000,
             Some("200"),
@@ -566,7 +605,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "notifications",
             "LABBY_DEPOT_MONITOR_INTERVAL_SECONDS",
             "Depot failure check interval",
-            "How often Labby checks Team Depot source history for newly failed ingestion runs.",
+            "Number of seconds between checks for newly failed Team Depot ingestion runs. Smaller values detect failures sooner and send more requests.",
             10,
             3_600,
             Some("30"),
@@ -574,8 +613,8 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         editable(
             "surfaces",
             "LABBY_PUBLIC_URL",
-            "Public app URL env",
-            "Environment override for the public Lab UI and OAuth issuer URL.",
+            "Web app address in service environment",
+            "Address users open for the Labby web app. OAuth redirects and issuer identity also use this URL. Set the externally reachable HTTPS address when using a reverse proxy.",
             SettingsBackend::Env,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
@@ -585,8 +624,8 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         editable(
             "surfaces",
             "LABBY_MCP_GATEWAY_URL",
-            "Public MCP gateway URL env",
-            "Environment override for the public MCP gateway base URL.",
+            "MCP client address in service environment",
+            "Address external MCP clients use to reach Labby. This may differ from the web app address; configure the URL exposed by your proxy.",
             SettingsBackend::Env,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
@@ -597,7 +636,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "core",
             "log.filter",
             "Log filter default",
-            "config.toml tracing filter directive; LABBY_LOG overrides it.",
+            "Default diagnostic log levels for components when LABBY_LOG is not set in the service environment.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
@@ -608,7 +647,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "core",
             "log.format",
             "Log format default",
-            "config.toml log format; LABBY_LOG_FORMAT overrides it.",
+            "Default log format when LABBY_LOG_FORMAT is not set in the service environment.",
             SettingsApplyMode::Restart,
             vec![
                 SettingsOption {
@@ -623,22 +662,29 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("LABBY_LOG_FORMAT"),
             Some("text"),
         ),
-        editable(
+        enum_editable(
             "core",
             "output.format",
             "CLI output format",
-            "Default CLI output format when --json is not supplied.",
-            SettingsBackend::ConfigToml,
-            SettingsControl::Text,
+            "How Labby CLI commands display results unless a command explicitly requests JSON output.",
             SettingsApplyMode::Restart,
-            None,
+            vec![
+                SettingsOption {
+                    value: "human",
+                    label: "Readable text",
+                },
+                SettingsOption {
+                    value: "json",
+                    label: "JSON",
+                },
+            ],
             Some("human"),
         ),
         editable(
             "core",
             "workspace.root",
             "Workspace root",
-            "Root directory used by the filesystem browser.",
+            "Directory on the Labby server that its filesystem browser can open. This is a server path, not a path on your browser's computer.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
@@ -649,7 +695,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "mcp.transport",
             "MCP transport",
-            "Default MCP transport; LABBY_MCP_TRANSPORT overrides it.",
+            "How Labby exposes MCP by default: HTTP for network clients or stdio for a client that launches Labby as a subprocess. LABBY_MCP_TRANSPORT overrides this choice.",
             SettingsApplyMode::Restart,
             vec![
                 SettingsOption {
@@ -668,7 +714,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "mcp.host",
             "MCP HTTP host",
-            "TOML default for HTTP MCP host; LABBY_MCP_HTTP_HOST overrides it.",
+            "Default network address the Labby HTTP server binds to. LABBY_MCP_HTTP_HOST takes precedence when set by the service.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
@@ -679,7 +725,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "mcp.port",
             "MCP HTTP port",
-            "TOML default for HTTP MCP port; LABBY_MCP_HTTP_PORT overrides it.",
+            "Default TCP port for the Labby HTTP and MCP server. LABBY_MCP_HTTP_PORT takes precedence when set by the service.",
             SettingsApplyMode::Restart,
             1,
             65535,
@@ -690,7 +736,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "mcp.allowed_hosts",
             "Allowed hosts",
-            "Additional DNS rebinding allowed hosts; LABBY_MCP_ALLOWED_HOSTS overrides it.",
+            "Host names Labby accepts in incoming HTTP requests in addition to its built-in local names. Enter one host per line, without a URL scheme. LABBY_MCP_ALLOWED_HOSTS overrides this list.",
             SettingsBackend::ConfigToml,
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
@@ -701,7 +747,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "api.cors_origins",
             "CORS origins",
-            "Additional CORS origins. Loopback origins are always included; LABBY_CORS_ORIGINS overrides this list.",
+            "Browser origins permitted to call Labby across origins. Enter each full scheme, host, and port on a separate line. Local loopback origins are already allowed; LABBY_CORS_ORIGINS overrides this list.",
             SettingsBackend::ConfigToml,
             SettingsControl::StringList,
             SettingsApplyMode::Restart,
@@ -712,7 +758,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "web.assets_dir",
             "Web assets directory",
-            "Path to exported Labby assets served by labby serve.",
+            "Directory on the Labby server containing the built web app files that labby serve publishes.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
@@ -723,7 +769,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "public_urls.app",
             "Public app URL",
-            "Public Lab UI and OAuth issuer URL.",
+            "Default browser address for the Labby app and its OAuth issuer. LABBY_PUBLIC_URL takes precedence when set by the service.",
             SettingsBackend::ConfigToml,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
@@ -734,7 +780,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "public_urls.mcp_gateway",
             "Public MCP gateway URL",
-            "Separate public MCP gateway base URL.",
+            "Default address external MCP clients use to reach Labby. LABBY_MCP_GATEWAY_URL takes precedence when set by the service.",
             SettingsBackend::ConfigToml,
             SettingsControl::Url,
             SettingsApplyMode::Restart,
@@ -745,7 +791,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "services.built_in_upstream_apis_enabled",
             "Built-in upstream API services",
-            "Enable bundled external API integrations while keeping bootstrap tools online.",
+            "Expose Labby's bundled integrations with external service APIs. Labby's own bootstrap and setup tools stay available when this is off.",
             SettingsBackend::ConfigToml,
             SettingsControl::Bool,
             SettingsApplyMode::Immediate,
@@ -756,7 +802,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "code_mode.trace_params",
             "Trace Code Mode params",
-            "Include redacted/capped tool params in Code Mode traces.",
+            "Include bounded, redacted tool arguments in Code Mode traces for debugging. Sensitive values remain masked, but more request detail is retained.",
             SettingsBackend::ConfigToml,
             SettingsControl::Bool,
             SettingsApplyMode::Partial,
@@ -767,7 +813,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "gateway.auto_reconnect",
             "Automatically recover disconnected MCPs",
-            "Periodically probe disconnected upstream MCP servers and cycle stale connections when they recover.",
+            "Periodically test disconnected upstream MCP servers and reconnect them when they respond again.",
             SettingsBackend::ConfigToml,
             SettingsControl::Bool,
             SettingsApplyMode::Immediate,
@@ -778,7 +824,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "services",
             "services.tailscale.tailnet",
             "Tailscale tailnet",
-            "Tailnet name. TAILSCALE_TAILNET overrides this.",
+            "Tailscale tailnet name used by Tailscale service integrations. TAILSCALE_TAILNET takes precedence when set by the service.",
             SettingsBackend::ConfigToml,
             SettingsControl::Text,
             SettingsApplyMode::Restart,
@@ -786,11 +832,10 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             Some("-"),
         ),
         editable(
-            "setup",
+            "advanced",
             "setup.install_android_sdk",
             "Install android-sdk on provision",
-            "Run the android-sdk provision step (needed by claude-in-mobile MCP). \
-             Default: off. LABBY_ENABLE_ANDROID_SDK=1 overrides.",
+            "Install Android SDK during provisioning for the claude-in-mobile MCP integration. Off by default; LABBY_ENABLE_ANDROID_SDK=1 overrides this choice.",
             SettingsBackend::ConfigToml,
             SettingsControl::Bool,
             SettingsApplyMode::Immediate,
@@ -801,7 +846,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "upstream_request_timeout_ms",
             "Upstream request timeout",
-            "Maximum time for one proxied upstream MCP response.",
+            "Maximum number of milliseconds Labby waits for one upstream MCP response before returning a timeout to the caller.",
             SettingsApplyMode::Restart,
             1,
             300_000,
@@ -811,8 +856,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "upstream_relay_timeout_ms",
             "Upstream relay (elicitation) timeout",
-            "Maximum time for one relayed upstream call that waits on a human \
-             answering an elicitation. Only used on the opt-in relay path.",
+            "Maximum milliseconds for a relayed upstream MCP call while a person answers an elicitation. Applies only to the enabled relay path.",
             SettingsApplyMode::Restart,
             1,
             1_800_000,
@@ -822,7 +866,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "local_logs.retention_days",
             "Log retention days",
-            "Local log retention window.",
+            "Number of days Labby keeps local diagnostic logs before removing old records.",
             SettingsApplyMode::Partial,
             1,
             3650,
@@ -832,7 +876,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "local_logs.max_bytes",
             "Max log bytes",
-            "Maximum retained logical bytes.",
+            "Maximum total logical bytes of local diagnostic logs Labby retains before pruning older records.",
             SettingsApplyMode::Partial,
             1,
             1_099_511_627_776,
@@ -842,7 +886,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "local_logs.queue_capacity",
             "Log queue capacity",
-            "Bounded ingest queue size.",
+            "Maximum log records waiting to be written to the local log store. Restart Labby after changing it.",
             SettingsApplyMode::Restart,
             1,
             1_000_000,
@@ -852,7 +896,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "local_logs.subscriber_capacity",
             "Subscriber capacity",
-            "Bounded live-subscriber ring size.",
+            "Maximum recent log records held for live log subscribers. Restart Labby after changing it.",
             SettingsApplyMode::Restart,
             1,
             1_000_000,
@@ -864,7 +908,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.timeout_ms",
             "Code Mode timeout",
-            "Maximum wall-clock time for one Code Mode execution.",
+            "Maximum wall-clock milliseconds for one Code Mode JavaScript execution before Labby stops it.",
             SettingsApplyMode::Partial,
             1,
             // Derived from the shared validation ceiling so the editor can
@@ -877,7 +921,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.max_source_bytes",
             "Code Mode max source bytes",
-            "Maximum accepted JavaScript source size for one Code Mode execution.",
+            "Largest JavaScript source body, in UTF-8 bytes, accepted for one Code Mode execution.",
             SettingsApplyMode::Partial,
             1024,
             1_048_576,
@@ -887,7 +931,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.max_response_bytes",
             "Code Mode max response bytes",
-            "Maximum serialized response envelope size.",
+            "Largest serialized response, in bytes, that one Code Mode execution may return.",
             SettingsApplyMode::Partial,
             1024,
             1_048_576,
@@ -897,7 +941,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.max_response_tokens",
             "Code Mode max response tokens",
-            "Approximate maximum response tokens.",
+            "Approximate maximum response tokens returned from one Code Mode execution, estimated from its serialized text.",
             SettingsApplyMode::Partial,
             256,
             256_000,
@@ -907,7 +951,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.token_estimate_divisor",
             "Token estimate divisor",
-            "Lower values are more conservative.",
+            "Number of response bytes counted as one estimated token. Lower values estimate more tokens and reach the response limit sooner.",
             SettingsApplyMode::Partial,
             1,
             64,
@@ -917,7 +961,7 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.max_log_entries",
             "Code Mode max log entries",
-            "Maximum console log lines captured per execution.",
+            "Maximum number of console log entries Labby captures from one Code Mode execution.",
             SettingsApplyMode::Partial,
             1,
             100_000,
@@ -927,13 +971,23 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "code_mode.max_log_bytes",
             "Code Mode max log bytes",
-            "Maximum console log bytes captured per execution.",
+            "Maximum total bytes of console logs Labby captures from one Code Mode execution.",
             SettingsApplyMode::Partial,
             1,
             104_857_600,
             Some("1048576"),
         ),
     ]);
+    for field in &mut fields {
+        if matches!(
+            field.key,
+            "LABBY_PHOENIX_OPENAI_BASE_URL"
+                | "LABBY_PHOENIX_OPENAI_API_KEY"
+                | "LABBY_AGENT_PROVIDER_PROTOCOL"
+        ) {
+            field.apply_mode = SettingsApplyMode::Partial;
+        }
+    }
     fields.extend(readonly_fields());
     fields
 }
@@ -967,7 +1021,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "web.disable_auth",
             "Disable web auth",
-            "Auth bypass is visible here but requires a dedicated dangerous settings flow.",
+            "Whether the web app accepts unauthenticated requests. Changing this can expose the operator UI, so it is shown here for inspection and requires a separate security-reviewed flow.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -975,7 +1029,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "surfaces",
             "auth",
             "Auth config",
-            "OAuth and bearer auth settings are redacted and read-only.",
+            "The gateway's inbound sign-in and bearer-token configuration. Secret values are hidden; use the authentication workflow to change them.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::SecretWriteOnlyFuture,
         ),
@@ -983,7 +1037,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "admin.enabled",
             "Admin tool enabled",
-            "Enabling the lab_admin MCP tool requires a dedicated dangerous settings flow.",
+            "Whether the privileged lab_admin MCP tool is exposed to eligible callers. It cannot be enabled from a general settings form.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -991,7 +1045,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "code_mode.enabled",
             "Code Mode enabled",
-            "Enabling the synthetic Code Mode surface requires dedicated runtime exposure tests.",
+            "Whether Labby exposes its Code Mode execution tool. Changing this alters the MCP tools clients see and requires a dedicated exposure workflow.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -1005,7 +1059,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "gateway_import_mode",
             "Gateway import mode",
-            "External MCP config discovery can expose new upstreams and requires a dedicated dangerous settings flow.",
+            "Controls whether Labby reads external client MCP configurations as possible upstream imports. Imports can expose new capabilities, so changing this requires review.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -1013,7 +1067,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "gateway.extra_stdio_commands",
             "Extra stdio commands",
-            "Additional stdio upstream commands require a dedicated dangerous settings flow.",
+            "Extra executable commands Labby may launch for stdio MCP upstreams. Editing the allowlist changes what can run on the server and requires a dedicated workflow.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -1021,7 +1075,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "features",
             "gateway.disable_spawn_guard",
             "Disable spawn guard",
-            "Disabling stdio command validation requires typed confirmation and rollback instructions.",
+            "Whether Labby skips its stdio command safety checks. This weakens command validation and requires typed confirmation with a rollback path.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::DangerousFlowRequired,
         ),
@@ -1031,7 +1085,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "oauth.machines",
             "OAuth relay machines",
-            "Named OAuth callback relay targets.",
+            "Machines permitted to relay OAuth callbacks to this gateway. Their identities and bindings are shown read-only.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1039,7 +1093,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "deploy",
             "Deploy preferences",
-            "Deploy defaults and per-host overrides.",
+            "Default deployment choices and host-specific overrides used when Labby provisions services.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1047,7 +1101,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "upstream",
             "Gateway upstreams",
-            "Upstream MCP servers proxied through Lab.",
+            "Configured upstream MCP connections that Labby may proxy to authorized clients. Manage each connection in Gateway.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1055,7 +1109,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "upstream_pending",
             "Pending upstream imports",
-            "Discovered upstreams waiting for approval.",
+            "MCP upstreams discovered from external configuration that are waiting for operator review before activation.",
             SettingsRisk::SecuritySensitive,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1063,7 +1117,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "upstream_import_tombstones",
             "Import tombstones",
-            "Deleted imports that should not return automatically.",
+            "Records of removed imported MCP connections that prevent automatic re-import of the same source.",
             SettingsRisk::Restart,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1071,7 +1125,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "protected_mcp_routes",
             "Protected MCP routes",
-            "OAuth-protected public MCP route definitions.",
+            "Public MCP paths and hosts that require OAuth access checks. Use the protected routes editor to change them.",
             SettingsRisk::Dangerous,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1079,7 +1133,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "virtual_servers",
             "Virtual servers",
-            "Virtual MCP servers backed by Lab services.",
+            "MCP server definitions that expose Labby service capabilities without a separate upstream process.",
             SettingsRisk::Restart,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1087,7 +1141,7 @@ fn readonly_fields() -> Vec<SettingsFieldSpec> {
             "advanced",
             "quarantined_virtual_servers",
             "Quarantined virtual servers",
-            "Virtual servers whose backing service is no longer registered.",
+            "Virtual MCP servers disabled because their backing Labby service is no longer registered.",
             SettingsRisk::Restart,
             SettingsWritePolicy::ReadOnly,
         ),
@@ -1491,16 +1545,7 @@ fn config_patch_for_field(
                 .value
                 .as_i64()
                 .ok_or_else(|| invalid_field(field, "must be an integer"))?;
-            if let Some(min) = field.min
-                && raw < min
-            {
-                return Err(invalid_field(field, "below minimum"));
-            }
-            if let Some(max) = field.max
-                && raw > max
-            {
-                return Err(invalid_field(field, "above maximum"));
-            }
+            validate_number_field(field, raw)?;
             ConfigScalarValue::I64(raw)
         }
         SettingsControl::Text | SettingsControl::Url | SettingsControl::Enum => {
@@ -1528,6 +1573,7 @@ fn config_patch_for_field(
                 })
                 .collect::<Option<Vec<String>>>()
                 .ok_or_else(|| invalid_field(field, "must be an array of strings"))?;
+            validate_string_list_field(field, &values)?;
             ConfigScalarValue::StringList(values)
         }
         SettingsControl::ReadOnly => return Err(invalid_field(field, "is read-only")),
@@ -1542,17 +1588,100 @@ fn invalid_field(field: &SettingsFieldSpec, message: &'static str) -> ToolError 
     }
 }
 
+fn validate_number_field(field: &SettingsFieldSpec, value: i64) -> Result<(), ToolError> {
+    if field.min.is_some_and(|min| value < min) {
+        return Err(invalid_field(field, "below minimum"));
+    }
+    if field.max.is_some_and(|max| value > max) {
+        return Err(invalid_field(field, "above maximum"));
+    }
+    Ok(())
+}
+
 fn validate_string_field(field: &SettingsFieldSpec, value: &str) -> Result<(), ToolError> {
-    if field.control == SettingsControl::Url
-        && !value.is_empty()
-        && !(value.starts_with("http://") || value.starts_with("https://"))
+    if matches!(field.key, "LABBY_MCP_HTTP_HOST" | "mcp.host")
+        && value.parse::<std::net::IpAddr>().is_err()
+        && url::Host::parse(value).is_err()
     {
-        return Err(invalid_field(field, "must start with http:// or https://"));
+        return Err(invalid_field(
+            field,
+            "must be an IP address or DNS host name without a port or URL scheme",
+        ));
+    }
+    if matches!(field.key, "LABBY_LOG" | "log.filter")
+        && tracing_subscriber::EnvFilter::try_new(value).is_err()
+    {
+        return Err(invalid_field(
+            field,
+            "must be a valid log filter, such as info or labby=debug,labby_apis=warn",
+        ));
+    }
+    if field.control == SettingsControl::Url && !value.is_empty() {
+        let parsed = url::Url::parse(value)
+            .map_err(|_| invalid_field(field, "must be a valid HTTP or HTTPS URL"))?;
+        if !matches!(parsed.scheme(), "http" | "https")
+            || !parsed.has_host()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(invalid_field(
+                field,
+                "must be an HTTP or HTTPS URL without credentials, query, or fragment",
+            ));
+        }
     }
     if field.control == SettingsControl::Enum
         && !field.options.iter().any(|option| option.value == value)
     {
         return Err(invalid_field(field, "must be one of the allowed values"));
+    }
+    Ok(())
+}
+
+fn validate_string_list_field(
+    field: &SettingsFieldSpec,
+    values: &[String],
+) -> Result<(), ToolError> {
+    for value in values {
+        if field.key == "api.cors_origins" {
+            let parsed = url::Url::parse(value)
+                .map_err(|_| invalid_field(field, "entries must be HTTP or HTTPS origins"))?;
+            if !matches!(parsed.scheme(), "http" | "https")
+                || !parsed.has_host()
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.path() != "/"
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
+            {
+                return Err(invalid_field(
+                    field,
+                    "entries must be HTTP or HTTPS origins without a path, credentials, query, or fragment",
+                ));
+            }
+        } else if field.key == "mcp.allowed_hosts" {
+            if value == "*"
+                || value.chars().any(char::is_whitespace)
+                || value
+                    .chars()
+                    .any(|ch| matches!(ch, '/' | '\\' | '@' | '?' | '#'))
+                || (value.parse::<std::net::IpAddr>().is_err()
+                    && url::Url::parse(&format!("http://{value}/"))
+                        .ok()
+                        .is_none_or(|parsed| {
+                            !parsed.has_host()
+                                || !parsed.username().is_empty()
+                                || parsed.password().is_some()
+                        }))
+            {
+                return Err(invalid_field(
+                    field,
+                    "entries must be host names or IP addresses, optionally with a port; wildcard and URL values are not allowed",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -1592,11 +1721,14 @@ pub fn env_entries_from_updates(
         }
         require_previous(entry)?;
         let value = match field.control {
-            SettingsControl::Number => entry
-                .value
-                .as_i64()
-                .ok_or_else(|| invalid_field(field, "must be an integer"))?
-                .to_string(),
+            SettingsControl::Number => {
+                let raw = entry
+                    .value
+                    .as_i64()
+                    .ok_or_else(|| invalid_field(field, "must be an integer"))?;
+                validate_number_field(field, raw)?;
+                raw.to_string()
+            }
             SettingsControl::Bool => entry
                 .value
                 .as_bool()
@@ -1941,13 +2073,173 @@ fn is_editable_core_env(key: &str) -> bool {
             | "LABBY_LOG_FORMAT"
             | "LABBY_PUBLIC_URL"
             | "LABBY_MCP_GATEWAY_URL"
+            | "LABBY_PHOENIX_OPENAI_BASE_URL"
+            | "LABBY_PHOENIX_OPENAI_API_KEY"
+            | "LABBY_AGENT_PROVIDER_PROTOCOL"
     )
+}
+
+/// Resolve the shared provider for a new Agent operation without mutating the
+/// process environment. Service-manager overrides retain their precedence.
+#[cfg(test)]
+pub(crate) fn agent_provider_values(
+    store: &crate::access::AccessStore,
+) -> Result<(Option<String>, Option<String>), ToolError> {
+    let saved = agent_provider_saved_values(store)?;
+    Ok((
+        saved
+            .get(crate::dispatch::phoenix_openai::BASE_URL_ENV)
+            .cloned(),
+        saved
+            .get(crate::dispatch::phoenix_openai::API_KEY_ENV)
+            .cloned(),
+    ))
+}
+
+pub(crate) fn agent_provider_configuration(
+    store: &crate::access::AccessStore,
+) -> Result<(Option<String>, Option<String>, Option<String>), ToolError> {
+    let saved = agent_provider_saved_values(store)?;
+    Ok((
+        saved
+            .get(crate::dispatch::phoenix_openai::BASE_URL_ENV)
+            .cloned(),
+        saved
+            .get(crate::dispatch::phoenix_openai::API_KEY_ENV)
+            .cloned(),
+        saved
+            .get(crate::dispatch::phoenix_openai::PROTOCOL_ENV)
+            .cloned(),
+    ))
+}
+
+fn agent_provider_saved_values(
+    store: &crate::access::AccessStore,
+) -> Result<BTreeMap<String, String>, ToolError> {
+    let path = store.storage_dir().join(".env");
+    let bytes = match super::secure_file::read_private(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_configuration_unavailable".into(),
+                message: "The protected Agent provider configuration could not be read".into(),
+            });
+        }
+    };
+    let mut saved = BTreeMap::new();
+    for pair in dotenvy::from_read_iter(bytes.as_slice()) {
+        let (key, value) = pair.map_err(|_| ToolError::Sdk {
+            sdk_kind: "provider_configuration_invalid".into(),
+            message: "The protected Agent provider configuration is malformed".into(),
+        })?;
+        if saved.insert(key, value).is_some() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_configuration_invalid".into(),
+                message: "The protected Agent provider configuration contains duplicate keys"
+                    .into(),
+            });
+        }
+    }
+    for key in [
+        crate::dispatch::phoenix_openai::BASE_URL_ENV,
+        crate::dispatch::phoenix_openai::API_KEY_ENV,
+        crate::dispatch::phoenix_openai::PROTOCOL_ENV,
+    ] {
+        if crate::dispatch::helpers::env_set_outside_dotenv(key) {
+            if let Some(value) = crate::dispatch::helpers::env_non_empty(key) {
+                saved.insert(key.into(), value);
+            } else {
+                saved.remove(key);
+            }
+        }
+    }
+    Ok(saved)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::{BTreeSet, HashMap};
+
+    #[test]
+    fn provider_protocol_schema_is_populated_and_validated() {
+        let fields = settings_fields();
+        for field in &fields {
+            assert!(!field.label.trim().is_empty());
+            assert!(!field.description.trim().is_empty());
+            if field.control == SettingsControl::Enum {
+                assert!(!field.options.is_empty());
+                for option in &field.options {
+                    assert!(!option.label.trim().is_empty());
+                    assert!(!option.value.is_empty());
+                }
+            }
+        }
+        let protocol = fields
+            .iter()
+            .find(|field| field.key == "LABBY_AGENT_PROVIDER_PROTOCOL")
+            .unwrap();
+        assert!(validate_string_field(protocol, "openai").is_ok());
+        assert!(validate_string_field(protocol, "phoenix").is_ok());
+        assert!(validate_string_field(protocol, "auto").is_err());
+        assert!(validate_string_field(protocol, "").is_err());
+        assert_eq!(
+            crate::dispatch::phoenix_openai::ProviderProtocol::parse(None).unwrap(),
+            crate::dispatch::phoenix_openai::ProviderProtocol::Phoenix
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_configuration_resolves_protocol_with_connection() {
+        let (_root, store, _) = crate::dispatch::agents::test_support::fixture().await;
+        let path = store.storage_dir().join(".env");
+        super::super::secure_file::replace_journal(&path, b"LABBY_PHOENIX_OPENAI_BASE_URL=https://standard.example/v1\nLABBY_AGENT_PROVIDER_PROTOCOL=openai\n").unwrap();
+        crate::dispatch::helpers::with_env_keys_set_outside_dotenv(BTreeSet::new(), || {
+            let (url, key, mode) = agent_provider_configuration(&store).unwrap();
+            assert_eq!(url.as_deref(), Some("https://standard.example/v1"));
+            assert_eq!(key, None);
+            assert_eq!(mode.as_deref(), Some("openai"));
+        });
+    }
+
+    #[tokio::test]
+    async fn new_agent_connections_follow_saved_values_and_preserve_service_overrides() {
+        let (_root, store, _) = crate::dispatch::agents::test_support::fixture().await;
+        let path = store.storage_dir().join(".env");
+        super::super::secure_file::replace_journal(&path, b"LABBY_PHOENIX_OPENAI_BASE_URL=https://saved.example/v1\nLABBY_PHOENIX_OPENAI_API_KEY=saved-secret\n").unwrap();
+        let empty = BTreeSet::new();
+        crate::dispatch::helpers::with_env_keys_set_outside_dotenv(empty, || {
+            assert_eq!(
+                agent_provider_values(&store).unwrap(),
+                (
+                    Some("https://saved.example/v1".into()),
+                    Some("saved-secret".into())
+                )
+            );
+        });
+        crate::dispatch::helpers::with_env_override(
+            HashMap::from([(
+                "LABBY_PHOENIX_OPENAI_BASE_URL".into(),
+                "https://managed.example/v1".into(),
+            )]),
+            || {
+                crate::dispatch::helpers::with_env_keys_set_outside_dotenv(
+                    BTreeSet::from(["LABBY_PHOENIX_OPENAI_BASE_URL".into()]),
+                    || {
+                        assert_eq!(
+                            agent_provider_values(&store).unwrap().0.as_deref(),
+                            Some("https://managed.example/v1")
+                        );
+                    },
+                );
+            },
+        );
+        super::super::secure_file::replace_journal(&path, b"MALFORMED private-secret LINE\n")
+            .unwrap();
+        let error = agent_provider_values(&store).unwrap_err().to_string();
+        assert!(!error.contains("private-secret"));
+    }
 
     #[test]
     fn malformed_dotenv_and_generated_catalog_fail_visibly() {
@@ -2045,9 +2337,99 @@ mod tests {
 
     #[test]
     fn settings_schema_keys_are_unique() {
+        let schema = schema_response();
+        let sections = schema
+            .sections
+            .iter()
+            .map(|section| section.id)
+            .collect::<BTreeSet<_>>();
         let mut seen = BTreeSet::new();
-        for field in settings_fields() {
+        for field in schema.fields {
             assert!(seen.insert(field.key), "duplicate field {}", field.key);
+            assert!(
+                sections.contains(field.section),
+                "field {} has no visible section",
+                field.key
+            );
+        }
+    }
+
+    #[test]
+    fn host_and_cors_lists_reject_values_that_cannot_work() {
+        let fields = settings_fields();
+        let hosts = fields
+            .iter()
+            .find(|field| field.key == "mcp.allowed_hosts")
+            .unwrap();
+        let origins = fields
+            .iter()
+            .find(|field| field.key == "api.cors_origins")
+            .unwrap();
+        for value in ["example.com", "example.com:8443", "127.0.0.1", "::1"] {
+            assert!(
+                validate_string_list_field(hosts, &[value.into()]).is_ok(),
+                "{value}"
+            );
+        }
+        for value in [
+            "*",
+            "https://example.com",
+            "example.com/path",
+            "user@example.com",
+        ] {
+            assert!(
+                validate_string_list_field(hosts, &[value.into()]).is_err(),
+                "{value}"
+            );
+        }
+        for value in ["https://example.com", "http://localhost:3000"] {
+            assert!(
+                validate_string_list_field(origins, &[value.into()]).is_ok(),
+                "{value}"
+            );
+        }
+        for value in [
+            "*",
+            "example.com",
+            "https://example.com/path",
+            "https://user@example.com",
+        ] {
+            assert!(
+                validate_string_list_field(origins, &[value.into()]).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn log_filter_settings_reject_invalid_directives() {
+        let fields = settings_fields();
+        for key in ["LABBY_LOG", "log.filter"] {
+            let field = fields.iter().find(|field| field.key == key).unwrap();
+            for value in ["info", "off", "labby=debug,labby_apis=warn"] {
+                assert!(validate_string_field(field, value).is_ok(), "{value}");
+            }
+            assert!(validate_string_field(field, "labby=not-a-level").is_err());
+        }
+    }
+
+    #[test]
+    fn bind_host_settings_reject_ports_and_urls() {
+        let fields = settings_fields();
+        for key in ["LABBY_MCP_HTTP_HOST", "mcp.host"] {
+            let field = fields.iter().find(|field| field.key == key).unwrap();
+            for value in ["127.0.0.1", "::1", "labby.local"] {
+                assert!(
+                    validate_string_field(field, value).is_ok(),
+                    "{key}: {value}"
+                );
+            }
+            for value in ["", "localhost:8765", "https://labby.local", "host/path"] {
+                assert!(
+                    validate_string_field(field, value).is_err(),
+                    "{key}: {value}"
+                );
+            }
         }
     }
 
@@ -2207,6 +2589,42 @@ mod tests {
     }
 
     #[test]
+    fn env_port_rejects_values_outside_tcp_range() {
+        let field = settings_fields()
+            .into_iter()
+            .find(|field| field.key == "LABBY_MCP_HTTP_PORT")
+            .unwrap();
+        assert_eq!((field.min, field.max), (Some(1), Some(65_535)));
+        for value in [0, 65_536] {
+            let entry = SettingsUpdateEntry {
+                key: field.key.into(),
+                value: json!(value),
+                previous: json!(8765),
+                unset: false,
+                previous_present: true,
+            };
+            assert!(env_entries_from_updates(&[entry]).is_err());
+        }
+    }
+
+    #[test]
+    fn url_settings_reject_credentials_queries_and_invalid_hosts() {
+        let field = settings_fields()
+            .into_iter()
+            .find(|field| field.key == "LABBY_PUBLIC_URL")
+            .unwrap();
+        for invalid in [
+            "https://",
+            "https://user:pass@example.com",
+            "https://example.com/?token=1",
+            "https://example.com/#section",
+        ] {
+            assert!(validate_string_field(&field, invalid).is_err(), "{invalid}");
+        }
+        assert!(validate_string_field(&field, "https://example.com/labby").is_ok());
+    }
+
+    #[test]
     fn env_previous_validation_accepts_matching_process_value_when_file_missing() {
         let temp = tempfile::tempdir().expect("tempdir");
         let env_path = temp.path().join(".env");
@@ -2306,9 +2724,15 @@ mod tests {
     }
 
     #[test]
-    fn env_schema_only_marks_low_risk_core_env_editable() {
+    fn env_schema_marks_supported_settings_editable() {
         let specs = env_schema().unwrap();
-        for key in ["LABBY_LOG", "LABBY_PUBLIC_URL", "LABBY_MCP_GATEWAY_URL"] {
+        for key in [
+            "LABBY_LOG",
+            "LABBY_PUBLIC_URL",
+            "LABBY_MCP_GATEWAY_URL",
+            "LABBY_PHOENIX_OPENAI_BASE_URL",
+            "LABBY_PHOENIX_OPENAI_API_KEY",
+        ] {
             assert!(
                 specs.iter().find(|spec| spec.key == key).unwrap().editable,
                 "{key} should be editable"

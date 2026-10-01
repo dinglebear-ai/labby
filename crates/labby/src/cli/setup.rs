@@ -22,6 +22,8 @@ use serde_json::json;
 use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
 
+mod browser_handoff;
+mod client_registration;
 mod onboarding;
 
 const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
@@ -48,6 +50,10 @@ pub struct SetupArgs {
     #[arg(long, value_enum)]
     pub role: Option<SetupRoleArg>,
 
+    /// Ask about deployment, listen address, port, and authentication instead of using local defaults.
+    #[arg(long)]
+    pub advanced: bool,
+
     /// Server deployment backend. Native is the fastest path; Incus is isolated.
     #[arg(long, value_enum, requires = "role")]
     pub deployment: Option<SetupDeploymentArg>,
@@ -56,7 +62,7 @@ pub struct SetupArgs {
     #[arg(long)]
     pub host: Option<String>,
 
-    /// Server listen or published port. Defaults to 8765.
+    /// Server listen or published port. Fresh local setup uses 8765 when available, otherwise an available port.
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -75,6 +81,10 @@ pub struct SetupArgs {
     /// OAuth identity provider to configure during setup. Selects exactly one inbound provider.
     #[arg(long, value_enum)]
     pub oauth: Option<SetupOauthArg>,
+
+    /// Register selected installed MCP clients through Labby's protected local bridge.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub clients: Vec<client_registration::ClientArg>,
 
     /// Install the Labby desktop app when a published package is available for this platform.
     #[arg(long, conflicts_with = "no_desktop")]
@@ -138,6 +148,8 @@ pub enum SetupOauthArg {
 
 #[derive(Debug, Subcommand)]
 pub enum SetupCommand {
+    /// Detect or safely register selected external MCP clients on this computer.
+    Clients(client_registration::ClientsArgs),
     /// Show the redacted setup and draft snapshot without changing configuration.
     State,
     /// Manage the local setup draft.
@@ -575,6 +587,9 @@ async fn run_provision(args: SetupArgs, format: OutputFormat) -> Result<ExitCode
 
 async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<ExitCode> {
     match command {
+        SetupCommand::Clients(args) => {
+            client_registration::run(args, format).await?;
+        }
         SetupCommand::State => {
             let snapshot = crate::dispatch::setup::dispatch("state", json!({})).await?;
             print(&snapshot, format)?;

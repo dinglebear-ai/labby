@@ -225,6 +225,16 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         // their executor reads are declared here against the code constants.
         EnvDoc {
             service: "agents".to_string(),
+            env_var: crate::dispatch::phoenix_openai::PROTOCOL_ENV.to_string(),
+            required: false,
+            secret: false,
+            description: "Built-in Agent provider protocol: openai uses standard models and chat/completions endpoints; phoenix also uses provider session extensions. Omitted retains legacy phoenix behavior; select openai for a standard provider"
+                .to_string(),
+            example: "openai".to_string(),
+            default_port: None,
+        },
+        EnvDoc {
+            service: "agents".to_string(),
             env_var: crate::dispatch::phoenix_openai::BASE_URL_ENV.to_string(),
             required: false,
             secret: false,

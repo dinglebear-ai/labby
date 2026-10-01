@@ -26,9 +26,10 @@ export function SettingsScalarSection({
   fields: SettingsFieldSpec[]
   onSaved: (state: SettingsState) => void
 }): React.ReactElement {
+  const fieldKeys = fields.map((field) => field.key).join('\u0000')
   const initialValues = useMemo(
-    () => Object.fromEntries(fields.map((field) => [field.key, state.values[field.key] ?? null])),
-    [fields, state.values],
+    () => Object.fromEntries((fieldKeys ? fieldKeys.split('\u0000') : []).map((key) => [key, state.values[key] ?? null])),
+    [fieldKeys, state.values],
   )
   const [values, setValues] = useState<Record<string, unknown>>(initialValues)
   const [changedKeys, setChangedKeys] = useState<Set<string>>(new Set())

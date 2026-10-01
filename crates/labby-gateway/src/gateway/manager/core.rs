@@ -603,6 +603,11 @@ impl GatewayManager {
         // connect immediately; opt-in background recovery waits for its interval.
     }
 
+    /// Identity of the currently published pool; an observation, never an authorization grant.
+    pub fn current_pool_publication_generation(&self) -> PoolPublicationGeneration {
+        self.runtime.published_pool_snapshot().generation()
+    }
+
     pub fn current_pool_sync(&self) -> Option<Arc<UpstreamPool>> {
         self.runtime.current_pool_sync()
     }

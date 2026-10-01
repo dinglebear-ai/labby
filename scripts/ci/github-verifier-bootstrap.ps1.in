@@ -1,0 +1,100 @@
+# Generated bootstrap trust code; edit this template and reviewed pins JSON.
+function Get-LabbyPinnedGitHubVerifier {
+    param([string]$Architecture)
+    switch ($Architecture) {
+@WINDOWS_PINS@
+        default { throw "No pinned GitHub verifier is available for architecture $Architecture" }
+    }
+}
+
+function New-LabbyPrivateTemporaryDirectory {
+    $directory = Join-Path ([IO.Path]::GetTempPath()) "labby-private-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $directory | Out-Null
+    try { Protect-LabbyMetadataDirectory -Path $directory } catch {
+        Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    return $directory
+}
+
+function Get-LabbyHttpsFile {
+    param([string]$Uri, [string]$OutFile, [long]$MaximumBytes = 25000000)
+    $target = [Uri]$Uri
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    try {
+        for ($redirect = 0; $redirect -le 5; $redirect++) {
+            if ($target.Scheme -ne 'https' -or $target.UserInfo -or $target.Fragment) { throw 'HTTPS download target is invalid' }
+            $request = [Net.HttpWebRequest]::Create($target)
+            $request.AllowAutoRedirect = $false
+            $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+            if ($remaining -le 0) { throw 'HTTPS download exceeded its time limit' }
+            $request.Timeout = $remaining
+            $request.ReadWriteTimeout = 10000
+            $response = $null
+            try {
+                $response = $request.GetResponse()
+                if ([int]$response.StatusCode -in @(301,302,303,307,308)) {
+                    if ($redirect -eq 5 -or -not $response.Headers['Location']) { throw 'HTTPS redirect limit exceeded' }
+                    $target = [Uri]::new($target, $response.Headers['Location'])
+                    continue
+                }
+                if ([int]$response.StatusCode -ne 200 -or $response.ContentLength -gt $MaximumBytes) { throw 'HTTPS download exceeded its limit or returned an invalid status' }
+                $inputStream = $response.GetResponseStream()
+                $outputStream = [IO.File]::Open($OutFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    $buffer = New-Object byte[] 65536
+                    [long]$total = 0
+                    while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $total += $count
+                        if ($total -gt $MaximumBytes -or [DateTime]::UtcNow -ge $deadline) { throw 'HTTPS download exceeded its size or time limit' }
+                        $outputStream.Write($buffer, 0, $count)
+                    }
+                } finally { $outputStream.Dispose(); $inputStream.Dispose() }
+                return
+            } finally { if ($response) { $response.Dispose() } }
+        }
+    } finally { [Net.ServicePointManager]::SecurityProtocol = $originalProtocol }
+}
+
+function Test-LabbyDownloadNotFound {
+    param([Exception]$Exception)
+    while ($Exception.InnerException) { $Exception = $Exception.InnerException }
+    return $Exception -is [Net.WebException] -and $Exception.Response -and [int]$Exception.Response.StatusCode -eq 404
+}
+
+function Ensure-LabbyGitHubVerifier {
+    param([string]$TemporaryDirectory)
+    $existing = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue
+    if ($existing -and (Test-LabbyGitHubVerifierVersion -Executable $existing.Source) -and
+        (Test-LabbyGitHubCliCommand -Executable $existing.Source -Arguments @('attestation','verify','--help'))) {
+        return [IO.Path]::GetFullPath($existing.Source)
+    }
+    $pin = Get-LabbyPinnedGitHubVerifier -Architecture ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString())
+    $archive = Join-Path $TemporaryDirectory 'github-verifier.zip'
+    Get-LabbyHttpsFile -Uri $pin.Url -OutFile $archive
+    $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $pin.Sha256) {
+        $trustError = [Security.SecurityException]::new('Pinned verifier checksum FAILED; downloaded code was not executed')
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    $executable = Join-Path $TemporaryDirectory 'gh.exe'
+    try {
+        $members = @($zip.Entries | Where-Object { $_.FullName -eq 'bin/gh.exe' })
+        if ($members.Count -ne 1 -or $members[0].Length -le 0 -or $members[0].Length -gt 50000000) { throw 'Pinned verifier archive has an invalid executable member' }
+        $unixType = ($members[0].ExternalAttributes -shr 16) -band 0xf000
+        if ($unixType -ne 0 -and $unixType -ne 0x8000) { throw 'Pinned verifier member must be a regular executable' }
+        $inputStream = $members[0].Open()
+        $outputStream = [IO.File]::Open($executable, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose(); $inputStream.Dispose() }
+    } finally { $zip.Dispose() }
+    if (-not (Test-LabbyGitHubVerifierVersion -Executable $executable) -or
+        -not (Test-LabbyGitHubCliCommand -Executable $executable -Arguments @('attestation','verify','--help'))) {
+        throw 'Pinned verifier does not support the required policy'
+    }
+    return [IO.Path]::GetFullPath($executable)
+}

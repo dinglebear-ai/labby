@@ -838,6 +838,42 @@
   },
   {
     "service": "agents",
+    "action": "agents.models.list",
+    "description": "List models available to the configured Agent provider for an authorized owner",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
     "action": "agents.run",
     "description": "Start a pinned Agent session",
     "destructive": false,
@@ -8749,6 +8785,59 @@
   },
   {
     "service": "setup",
+    "action": "clients.session.revoke",
+    "description": "Revoke the authenticated user's current client observation sessions and clear their client readiness evidence",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "ClientObservationRevocation",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser sessions require CSRF, observation proof grants no access",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "clients.session.start",
+    "description": "Issue expiring client-specific observation proofs for the authenticated user's selected applications; does not verify client use or grant authority",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "clients",
+        "ty": "array",
+        "required": true,
+        "description": "Selected supported applications: codex and claude-code"
+      }
+    ],
+    "returns": "ClientObservationSessions",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser sessions require CSRF, observation proof grants no access",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
     "action": "draft.commit",
     "description": "Run audit and atomically merge .env.draft into .env",
     "destructive": true,
@@ -8924,6 +9013,106 @@
   },
   {
     "service": "setup",
+    "action": "mcp.verification.call",
+    "description": "Perform one explicitly approved read-only MCP call with schema-validated inputs and persist real first-use evidence",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Saved MCP server name"
+      },
+      {
+        "name": "expected_url",
+        "ty": "string",
+        "required": true,
+        "description": "Exact HTTPS endpoint the user reviewed"
+      },
+      {
+        "name": "tool",
+        "ty": "string",
+        "required": true,
+        "description": "Actual exposed tool selected by the user"
+      },
+      {
+        "name": "expected_fingerprint",
+        "ty": "string",
+        "required": true,
+        "description": "Exact reviewed tool schema and runtime publication fingerprint from the tool list"
+      },
+      {
+        "name": "arguments",
+        "ty": "object",
+        "required": true,
+        "description": "Reviewed tool inputs validated against its current runtime schema"
+      },
+      {
+        "name": "approved",
+        "ty": "boolean",
+        "required": true,
+        "description": "Explicit approval of this named tool call"
+      }
+    ],
+    "returns": "McpVerificationResult",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "mcp.verification.tools",
+    "description": "List exposed read-only MCP tools with supported scalar input schemas for a reviewed HTTPS server",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Saved MCP server name"
+      },
+      {
+        "name": "expected_url",
+        "ty": "string",
+        "required": true,
+        "description": "Exact HTTPS endpoint the user reviewed"
+      }
+    ],
+    "returns": "McpVerificationTools",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
     "action": "proxy.configure",
     "description": "Persist local stdio-proxy defaults and securely store a bearer secret when required",
     "destructive": true,
@@ -8963,6 +9152,52 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "readiness.clients.defer",
+    "description": "Choose to use Labby without external applications for now; records an optional deferred step, never a verified client connection",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "ReadinessState",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "readiness.state",
+    "description": "Read resumable first-use checks for the authenticated user; required checks remain incomplete until verified by the server",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "ReadinessState",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },

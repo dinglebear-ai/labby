@@ -310,10 +310,15 @@ Product Agents and Agent Tasks execute through one OpenAI-compatible provider
 configured in Labby's private environment file:
 
 ```env
+LABBY_AGENT_PROVIDER_PROTOCOL=openai
 LABBY_PHOENIX_OPENAI_BASE_URL=http://127.0.0.1:43871/v1
 # LABBY_PHOENIX_OPENAI_API_KEY=<labby_phoenix_openai_api_key>
 ```
 
+- `LABBY_AGENT_PROVIDER_PROTOCOL` selects `openai` for standard `/models` and
+  `/chat/completions`, or `phoenix` for the provider's session extensions.
+  An omitted value retains legacy `phoenix` behavior. Settings supplies both
+  valid choices. This controls built-in Agents, not the Assistant lifecycle.
 - `LABBY_PHOENIX_OPENAI_BASE_URL` must be an absolute `http(s)` URL reachable
   from the Labby process, with no embedded credentials, query, or fragment. The
   immutable Agent harness digest is derived from it, so changing the provider
@@ -321,7 +326,7 @@ LABBY_PHOENIX_OPENAI_BASE_URL=http://127.0.0.1:43871/v1
 - `LABBY_PHOENIX_OPENAI_API_KEY` is optional and secret; it is sent as bearer
   authentication and never logged.
 
-Both variables are listed under the `agents` service in the generated
+These variables are listed under the `agents` service in the generated
 reference and in the settings environment schema. See
 [AGENT_TASKS.md](../services/AGENT_TASKS.md).
 

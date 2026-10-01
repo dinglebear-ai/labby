@@ -11,6 +11,8 @@ import {
   configureDepotSource,
   deleteDepotSource,
   depotSources,
+  depotGitCredentialChoices,
+  type DepotGitCredentialChoice,
   refreshDepotSource,
   type DepotSource,
 } from '@/lib/api/depot-client'
@@ -24,9 +26,22 @@ function cadenceParts(seconds: number): { value: number; unit: CadenceUnit } {
   return { value: Math.max(1, Math.round(seconds / 60)), unit: 'minutes' }
 }
 
-function cadenceSeconds(value: number, unit: CadenceUnit): number {
+export function cadenceSeconds(value: number, unit: CadenceUnit): number {
   const multiplier = unit === 'days' ? 86_400 : unit === 'hours' ? 3_600 : 60
-  return value * multiplier
+  return Number.isSafeInteger(value) && value >= 1 && Number.isSafeInteger(value * multiplier) && value * multiplier <= 31_536_000 ? value * multiplier : NaN
+}
+
+export function repositoryInputError(url: string, namespace: string, ref: string, subdir: string): string | undefined {
+  try {
+    const parsed = new URL(url.trim())
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password || !parsed.hostname) return 'Enter an HTTPS repository URL without an embedded username or password.'
+  } catch { return 'Enter a valid HTTPS repository URL.' }
+  if (namespace.trim() && (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(namespace.trim()) || namespace.trim().length > 64)) return 'Use at most 64 lowercase letters, digits, and single hyphens for the catalog namespace.'
+  const revision = ref.trim()
+  if (revision && (revision.startsWith('-') || Array.from(revision).some((char) => char.charCodeAt(0) <= 32 || char.charCodeAt(0) === 127 || '~^:?*[\\'.includes(char)) || revision.includes('..') || revision.includes('@{') || revision.includes('//') || revision.endsWith('/') || revision.endsWith('.') || revision.split('/').some((part) => part.startsWith('.') || part.endsWith('.lock')))) return 'Enter a Git branch, tag, or commit without spaces, control characters, or Git revision expressions.'
+  const path = subdir.trim()
+  if (path && (path.startsWith('/') || path.includes('\\') || Array.from(path).some((char) => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127) || path.split('/').some((part) => part === '..' || part === '.'))) return 'Use a relative repository subdirectory without dot segments or backslashes.'
+  return undefined
 }
 
 function sourceLabel(source: DepotSource): string {
@@ -75,10 +90,10 @@ function SourceCadence({
           className="h-8 w-20"
           type="number"
           min={1}
-          max={525_600}
-          value={value}
+          step={1}
+          value={Number.isFinite(value) ? value : ''}
           disabled={disabled}
-          onChange={(event) => setValue(Math.max(1, Number(event.target.value) || 1))}
+          onChange={(event) => setValue(event.target.value === '' ? NaN : Number(event.target.value))}
         />
       </label>
       <label className="space-y-1 text-[11px] text-aurora-text-muted">
@@ -94,7 +109,7 @@ function SourceCadence({
           <option value="days">days</option>
         </select>
       </label>
-      <Button size="sm" variant="outline" disabled={disabled} onClick={() => void onSave(cadenceSeconds(value, unit))}>
+      <Button size="sm" variant="outline" disabled={disabled || !Number.isFinite(cadenceSeconds(value, unit))} onClick={() => void onSave(cadenceSeconds(value, unit))}>
         Set cadence
       </Button>
     </div>
@@ -111,9 +126,20 @@ export function DepotManagedSources(): React.ReactElement {
   const [namespace, setNamespace] = useState('')
   const [ref, setRef] = useState('')
   const [subdir, setSubdir] = useState('')
+  const [credentialChoices, setCredentialChoices] = useState<DepotGitCredentialChoice[]>([])
+  const [credentialError, setCredentialError] = useState<string>()
   const [credential, setCredential] = useState('')
   const [cadenceValue, setCadenceValue] = useState(1)
   const [cadenceUnit, setCadenceUnit] = useState<CadenceUnit>('days')
+
+  const repositoryHost = useMemo(() => {
+    try { const parsed = new URL(url.trim()); return parsed.protocol === 'https:' && !parsed.username && !parsed.password ? parsed.hostname.toLowerCase() : undefined } catch { return undefined }
+  }, [url])
+  const matchingCredentials = credentialChoices.filter((choice) => choice.host.toLowerCase() === repositoryHost)
+
+  useEffect(() => {
+    if (credential && !matchingCredentials.some((choice) => choice.id === credential)) setCredential('')
+  }, [credential, matchingCredentials])
 
   async function load(signal?: AbortSignal): Promise<boolean> {
     setError(undefined)
@@ -131,6 +157,11 @@ export function DepotManagedSources(): React.ReactElement {
   useEffect(() => {
     const controller = new AbortController()
     void load(controller.signal)
+    void depotGitCredentialChoices(controller.signal).then((choices) => {
+      if (!controller.signal.aborted) { setCredentialChoices(choices); setCredentialError(undefined) }
+    }).catch(() => {
+      if (!controller.signal.aborted) setCredentialError('Saved repository credentials are unavailable. The catalog must support credential choices and your account needs ingestion write access. Public repositories can use no credential.')
+    })
     return () => controller.abort()
   }, [])
 
@@ -153,9 +184,13 @@ export function DepotManagedSources(): React.ReactElement {
 
   async function addRepository(event: React.FormEvent): Promise<void> {
     event.preventDefault()
+    if (!Number.isFinite(cadenceSeconds(cadenceValue, cadenceUnit))) { setError('Choose a refresh interval of one or more whole minutes, hours, or days.'); return }
+    const validationError = repositoryInputError(url, namespace, ref, subdir)
+    if (validationError) { setError(validationError); return }
+    if (credential && !matchingCredentials.some((choice) => choice.id === credential)) { setError('Choose a saved credential matching this repository host.'); return }
     const trimmed = url.trim()
-    if (!trimmed) {
-      setError('Repository URL is required.')
+    if (!repositoryHost) {
+      setError('Enter an HTTPS repository URL without an embedded username or password.')
       return
     }
     const added = await mutate('add', () => addDepotRepoSource({
@@ -178,7 +213,7 @@ export function DepotManagedSources(): React.ReactElement {
     <div className="space-y-4">
       <SettingsCard
         title="Managed repositories"
-        description="Add a repository once. Depot discovers every SKILL.md across the tree, ingests immediately, then refreshes only changed projections on an anchored schedule."
+        description="Register a Git repository for the catalog server to scan for Skills. It reads SKILL.md files immediately, then checks for changes at the interval you choose. This does not install Skills or run MCP servers."
         action={<Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}><RefreshCw className="size-4" />Refresh</Button>}
       >
         <form className="space-y-3 p-4" onSubmit={(event) => void addRepository(event)}>
@@ -189,7 +224,7 @@ export function DepotManagedSources(): React.ReactElement {
           <div className="flex flex-wrap items-end gap-2">
             <label className="space-y-1 text-[11px] text-aurora-text-muted">
               <span className="block">Refresh every</span>
-              <Input className="h-8 w-20" type="number" min={1} value={cadenceValue} onChange={(event) => setCadenceValue(Math.max(1, Number(event.target.value) || 1))} />
+              <Input className="h-8 w-20" type="number" min={1} step={1} value={Number.isFinite(cadenceValue) ? cadenceValue : ''} onChange={(event) => setCadenceValue(event.target.value === '' ? NaN : Number(event.target.value))} />
             </label>
             <label className="space-y-1 text-[11px] text-aurora-text-muted">
               <span className="block">Cadence</span>
@@ -199,18 +234,18 @@ export function DepotManagedSources(): React.ReactElement {
                 <option value="days">days</option>
               </select>
             </label>
-            <span className="pb-2 text-[11px] text-aurora-text-muted">Default is 1 day, anchored to initial registration.</span>
+            <span className="pb-2 text-[11px] text-aurora-text-muted">Whole numbers only, up to 365 days. The schedule starts when this repository is registered.</span>
           </div>
           <details className="rounded-md border border-aurora-border-subtle p-3">
             <summary className="cursor-pointer text-xs font-medium text-aurora-text-primary">Advanced repository options</summary>
             <div className="mt-3 grid gap-3 md:grid-cols-2">
-              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Namespace override</span><Input value={namespace} onChange={(event) => setNamespace(event.target.value)} /></label>
-              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Git ref</span><Input value={ref} onChange={(event) => setRef(event.target.value)} /></label>
-              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Path filter</span><Input value={subdir} onChange={(event) => setSubdir(event.target.value)} placeholder="Leave blank for full repository" /></label>
-              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Credential reference</span><Input value={credential} onChange={(event) => setCredential(event.target.value)} placeholder="github-private" /></label>
+              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Catalog namespace (optional)</span><span className="block">Groups imported Skills. Defaults to the repository name; use lowercase letters, digits, and hyphens.</span><Input value={namespace} onChange={(event) => setNamespace(event.target.value)} /></label>
+              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Git branch, tag, or commit (optional)</span><span className="block">Chooses the revision the catalog scans. Blank follows the default branch; a commit pins the content.</span><Input value={ref} onChange={(event) => setRef(event.target.value)} /></label>
+              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Repository subdirectory (optional)</span><span className="block">Restricts discovery to a relative path inside this repository.</span><Input value={subdir} onChange={(event) => setSubdir(event.target.value)} placeholder="Leave blank for full repository" /></label>
+              <label className="space-y-1 text-[11px] text-aurora-text-muted"><span className="block">Saved catalog credential ID (optional)</span><select className="h-9 w-full rounded-md border border-aurora-border-subtle bg-transparent px-2 text-xs text-aurora-text-primary" value={credential} onChange={(event) => setCredential(event.target.value)}><option value="">No credential (public repository)</option>{matchingCredentials.map((choice) => <option key={choice.id} value={choice.id}>{choice.id} — {choice.host}</option>)}</select><span className="block">Only saved credentials matching this repository host are offered. The catalog server uses the secret; it is never sent to this browser.</span>{credentialError ? <span role="status" className="block">{credentialError}</span> : null}</label>
             </div>
           </details>
-          <Button type="submit" size="sm" disabled={busy === 'add'}><Plus className="size-4" />{busy === 'add' ? 'Adding…' : 'Add repository and ingest now'}</Button>
+          <Button type="submit" size="sm" disabled={busy === 'add' || !!repositoryInputError(url, namespace, ref, subdir) || !Number.isFinite(cadenceSeconds(cadenceValue, cadenceUnit))}><Plus className="size-4" />{busy === 'add' ? 'Adding…' : 'Add repository and ingest now'}</Button>
         </form>
         {error ? <p role="alert" className="border-t border-aurora-border-subtle p-4 text-xs text-aurora-error">{error}</p> : null}
         {loading && sources.length === 0 ? <p className="flex items-center gap-2 border-t border-aurora-border-subtle p-4 text-xs text-aurora-text-muted"><Loader2 className="size-4 animate-spin" />Loading sources…</p> : null}

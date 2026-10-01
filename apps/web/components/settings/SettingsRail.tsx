@@ -12,11 +12,13 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   Activity,
+  Bot,
   Bell,
   Cog,
   FileSearch,
   KeyRound,
   Layers,
+  ListChecks,
   PlugZap,
   Server,
   Shield,
@@ -33,7 +35,9 @@ interface RailEntry {
 }
 
 const ENTRIES: RailEntry[] = [
+  { href: '/settings/', label: 'Overview', icon: ListChecks },
   { href: '/settings/core/', label: 'Core', icon: Cog },
+  { href: '/settings/agents/', label: 'Agent provider', icon: Bot },
   { href: '/settings/services/', label: 'Services', icon: Server },
   { href: '/settings/surfaces/', label: 'Surfaces', icon: PlugZap },
   { href: '/settings/features/', label: 'Features', icon: Layers },
@@ -60,13 +64,20 @@ export function settingsRailEntries(session: BrowserSessionState): RailEntry[] {
   ]
 }
 
+export function activeSettingsHref(pathname: string, entries: RailEntry[]): string {
+  const normalizedPath = pathname.endsWith('/') ? pathname : `${pathname}/`
+  return entries.find((entry) => entry.href !== '/settings/' && normalizedPath.startsWith(entry.href))?.href
+    ?? entries.find((entry) => entry.href === normalizedPath)?.href
+    ?? entries[0]?.href
+    ?? ''
+}
+
 export function SettingsRail(): React.ReactElement {
   const pathname = usePathname() ?? ''
   const router = useRouter()
   const session = useBrowserSession()
   const entries = settingsRailEntries(session)
-  const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
-  const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
+  const activeHref = activeSettingsHref(pathname, entries)
 
   return (
     <nav aria-label="Settings sections">
@@ -91,7 +102,7 @@ export function SettingsRail(): React.ReactElement {
         style={{ gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
       >
         {entries.map((entry) => {
-          const active = pathname.startsWith(entry.href)
+          const active = entry.href === activeHref
           const Icon = entry.icon
           return (
             <Link

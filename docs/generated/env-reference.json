@@ -1,6 +1,15 @@
 [
   {
     "service": "agents",
+    "env_var": "LABBY_AGENT_PROVIDER_PROTOCOL",
+    "required": false,
+    "secret": false,
+    "description": "Built-in Agent provider protocol: openai uses standard models and chat/completions endpoints; phoenix also uses provider session extensions. Omitted retains legacy phoenix behavior; select openai for a standard provider",
+    "example": "openai",
+    "default_port": null
+  },
+  {
+    "service": "agents",
     "env_var": "LABBY_PHOENIX_OPENAI_API_KEY",
     "required": false,
     "secret": true,

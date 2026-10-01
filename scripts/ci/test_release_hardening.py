@@ -156,9 +156,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         helper = self.text("scripts/ci/verify-and-activate-release.sh")
         self.assertLess(helper.index("verify-release-provenance.sh"), helper.index('exec "$@"'))
         unix_installer = self.text("scripts/install.sh")
-        self.assertLess(unix_installer.index("gh attestation verify"), unix_installer.index("tar -xzf"))
+        self.assertLess(unix_installer.index('verify_release_provenance "$tmp/$asset"'), unix_installer.index('tar -xzf "$tmp/$asset"'))
         windows_installer = self.text("scripts/install.ps1")
-        self.assertLess(windows_installer.index("gh attestation verify"), windows_installer.index("Expand-Archive"))
+        self.assertLess(windows_installer.index("Test-LabbyGitHubCliCommand -Executable $Verifier -Arguments $arguments"), windows_installer.index("Expand-Archive"))
 
     def test_release_has_executable_n_minus_one_upgrade_qualification(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
@@ -1139,14 +1139,14 @@ class ReleaseHelperTests(unittest.TestCase):
             work = Path(tmp)
             log = work / "calls"
             gh = work / "gh"
-            gh.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$CALL_LOG\"\n")
+            gh.write_text("#!/bin/sh\ncase \"$*\" in --version) echo 'gh version 2.102.0'; exit 0;; 'attestation verify --help') exit 0;; esac\nprintf '%s\\n' \"$*\" > \"$CALL_LOG\"\n")
             gh.chmod(0o755)
             artifact = work / "artifact"
             bundle = work / "bundle.jsonl"
             root = work / "trusted-root.jsonl"
             for path in (artifact, bundle, root):
                 path.write_text("fixture")
-            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log)}
+            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log), "GH_VERIFIER": str(gh)}
             result = subprocess.run(
                 [
                     "bash", str(ROOT / "scripts/ci/verify-release-provenance.sh"),
@@ -1170,12 +1170,13 @@ class ReleaseHelperTests(unittest.TestCase):
             gh = work / "gh"
             gh.write_text(
                 "#!/bin/sh\n"
+                "case \"$*\" in --version) echo 'gh version 2.102.0'; exit 0;; 'attestation verify --help') exit 0;; esac\n"
                 "case \" $* \" in\n"
                 "*'--repo acme/labby '*'--signer-workflow acme/labby/.github/workflows/release.yml '*'--source-ref refs/tags/v1.2.3 '*) exit 0;;\n"
                 "*) exit 9;; esac\n"
             )
             gh.chmod(0o755)
-            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}"}
+            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "GH_VERIFIER": str(gh)}
             base = ["bash", str(ROOT / "scripts/ci/verify-release-provenance.sh"), "--workflow", "release.yml", "--ref", "refs/tags/v1.2.3", "--artifact", str(artifact)]
             self.assertEqual(0, subprocess.run(base + ["--repo", "acme/labby"], env=env, check=False).returncode)
             self.assertNotEqual(0, subprocess.run(base + ["--repo", "evil/labby"], env=env, check=False).returncode)

@@ -47,7 +47,7 @@ export default function FeaturesPage(): React.ReactElement {
       {settings ? (
         <SettingsScalarSection
           title="Features"
-          description="Runtime feature gates with explicit apply semantics."
+          description="Turn gateway capabilities on or off. Each field explains what changes for users and whether a restart is required."
           section="features"
           state={settings}
           fields={fields}

@@ -129,6 +129,28 @@ mod tests {
     }
 
     #[test]
+    fn local_handoff_documents_bearer_mint_and_one_shot_redemption() {
+        let routes = build_route_docs(&[]);
+        let start = routes
+            .iter()
+            .find(|route| route.path == "/auth/setup-handoff/start")
+            .unwrap();
+        assert!(start.auth_required && start.bearer_only && start.master_only);
+        let redeem = routes
+            .iter()
+            .find(|route| route.path == "/auth/setup-handoff/redeem")
+            .unwrap();
+        assert!(redeem.auth_required && redeem.bootstrap_proof);
+        assert!(!redeem.bearer_only && !redeem.master_only);
+        for route in [start, redeem] {
+            assert!(route.host_validation);
+            assert!(!route.session_cookie_allowed && !route.csrf_required);
+            assert_eq!(route.cache_posture, "private, no-store");
+            assert_eq!(route.failure_disclosure, "uniform non-enumerating denial");
+        }
+    }
+
+    #[test]
     fn aliases_are_explicit_runtime_truth() {
         let routes = build_route_docs(&[]);
         let launcher = routes
