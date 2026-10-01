@@ -3,6 +3,8 @@
 pub mod command;
 pub mod config;
 #[cfg(feature = "gateway")]
+pub mod mcp_json;
+#[cfg(feature = "gateway")]
 pub mod oauth;
 #[cfg(feature = "gateway")]
 pub mod runtime;

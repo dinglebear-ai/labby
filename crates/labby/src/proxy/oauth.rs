@@ -65,6 +65,46 @@ impl ProxyOauthContext {
     }
 }
 
+/// Build an issuer hosted by the proxy itself, using the planned Funnel origin.
+pub async fn prepare_self_hosted(
+    config: &crate::config::LabConfig,
+    resource: &url::Url,
+    scopes: &[String],
+) -> Result<(std::sync::Arc<labby_auth::state::AuthState>, url::Url)> {
+    let mut auth_config = crate::config::resolve_auth_for_config(config)
+        .context("proxy OAuth configuration is invalid")?;
+    if !matches!(auth_config.mode, labby_auth::config::AuthMode::OAuth) {
+        bail!("Funnel requires LABBY_AUTH_MODE=oauth and Google OAuth credentials");
+    }
+    let mut issuer = resource.clone();
+    issuer.set_path("/");
+    issuer.set_query(None);
+    issuer.set_fragment(None);
+    if auth_config
+        .public_url
+        .as_ref()
+        .is_some_and(|configured| configured.origin() != issuer.origin())
+    {
+        bail!("configured OAuth issuer differs from the Tailscale Funnel origin");
+    }
+    auth_config.public_url = Some(issuer.clone());
+    auth_config.resource_path = resource.path().to_string();
+    auth_config.scopes_supported = scopes.to_vec();
+    auth_config.default_scope = scopes
+        .first()
+        .context("Funnel OAuth requires at least one scope")?
+        .clone();
+    auth_config.enable_dynamic_registration = true;
+    auth_config.disable_static_token_with_oauth = true;
+    let state = labby_auth::state::AuthState::new(auth_config)
+        .await
+        .context("self-hosted OAuth state construction failed")?;
+    state
+        .replace_configured_resource_scopes([(resource.to_string(), scopes.to_vec())])
+        .context("register Funnel MCP OAuth resource")?;
+    Ok((std::sync::Arc::new(state), issuer))
+}
+
 pub const DEFAULT_LEASE_TTL: Duration = Duration::from_mins(2);
 pub const DEFAULT_RENEW_INTERVAL: Duration = Duration::from_secs(40);
 pub const DEFAULT_RENEW_JITTER_MAX: Duration = Duration::from_secs(4);

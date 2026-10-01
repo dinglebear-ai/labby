@@ -36,8 +36,20 @@ pub struct ProxyArgs {
     pub bearer_token_stdin: bool,
 
     /// Override exposure to a local loopback URL.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "funnel")]
     pub local: bool,
+
+    /// Select OAuth and publish with Tailscale Funnel; preview callback if unconfigured.
+    #[arg(long, conflicts_with = "local")]
+    pub funnel: bool,
+
+    /// Print the Funnel MCP URL and Google callback without starting a proxy.
+    #[arg(long, requires = "funnel", conflicts_with = "command")]
+    pub print_google_callback: bool,
+
+    /// Load multiple stdio servers from a .mcp.json mcpServers object.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["command", "print_google_callback"])]
+    pub mcp_json: Option<PathBuf>,
 
     /// Child working directory.
     #[arg(long)]
@@ -52,7 +64,7 @@ pub struct ProxyArgs {
     pub inherit_env: Vec<String>,
 
     /// Child program or script followed by its arguments.
-    #[arg(required = true, trailing_var_arg = true)]
+    #[arg(required_unless_present_any = ["funnel", "print_google_callback", "mcp_json"], trailing_var_arg = true)]
     pub command: Vec<OsString>,
 }
 
@@ -66,6 +78,12 @@ impl ProxyArgs {
 
         if self.local {
             prefs.exposure = crate::proxy::config::ProxyExposure::Local;
+        }
+        if self.funnel {
+            prefs.exposure = crate::proxy::config::ProxyExposure::Funnel;
+            if self.auth.is_none() {
+                prefs.auth = crate::proxy::config::ProxyAuthMode::Oauth;
+            }
         }
         if let Some(auth) = self.auth {
             prefs.auth = auth;
@@ -132,6 +150,8 @@ fn tailscale_options(
         prefs.port_range_start,
         prefs.port_range_end,
     );
+    options.exposure = prefs.exposure;
+    options.auth = prefs.auth;
     if let Some(executable) = std::env::var_os("LABBY_TAILSCALE_BIN") {
         options.executable = executable.into();
     }
@@ -165,7 +185,7 @@ fn local_runtime_preferences(
     let auth = match (preferences.exposure, preferences.auth) {
         (ProxyExposure::Tailscale, ProxyAuthMode::Tailnet) => ProxyAuthMode::None,
         (_, auth @ (ProxyAuthMode::None | ProxyAuthMode::Bearer | ProxyAuthMode::Oauth)) => auth,
-        (ProxyExposure::Local, ProxyAuthMode::Tailnet) => {
+        (ProxyExposure::Local | ProxyExposure::Funnel, ProxyAuthMode::Tailnet) => {
             anyhow::bail!("tailnet auth requires Tailscale exposure")
         }
     };
@@ -180,15 +200,47 @@ fn local_runtime_preferences(
 /// Run the stdio MCP proxy command in the foreground.
 #[cfg(feature = "gateway")]
 pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> Result<ExitCode> {
-    let cwd = args.cwd.clone().unwrap_or(std::env::current_dir()?);
-    let command = crate::proxy::command::resolve_proxy_command(
-        &args.command,
-        &cwd,
-        std::env::var_os("PATH").as_deref(),
-    )
-    .map_err(|error| anyhow::anyhow!("proxy command resolution failed: {error}"))?;
-
     let prefs = args.resolve_preferences(config);
+    if args.print_google_callback || (args.funnel && oauth_credentials_absent(config)) {
+        prefs.validate()?;
+        let mut options =
+            tailscale_options(std::net::SocketAddr::from(([127, 0, 0, 1], 1)), &prefs);
+        options.candidate_ports = vec![443, 8443, 10000];
+        let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+        let mut callback = plan.public_url().clone();
+        callback.set_path("/auth/google/callback");
+        callback.set_query(None);
+        callback.set_fragment(None);
+        print(
+            &serde_json::json!({
+                "google_callback_url": callback,
+                "mcp_url": plan.public_url(),
+                "funnel_port": plan.external_port(),
+            }),
+            format,
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    if args.command.is_empty() && args.mcp_json.is_none() {
+        anyhow::bail!("provide a child command or --mcp-json to start the Funnel proxy");
+    }
+    let mcp_json = args
+        .mcp_json
+        .as_ref()
+        .map(|path| crate::proxy::mcp_json::prepare(path))
+        .transpose()?;
+    let command = if let Some(prepared) = &mcp_json {
+        prepared.command.clone()
+    } else {
+        let cwd = args.cwd.clone().unwrap_or(std::env::current_dir()?);
+        crate::proxy::command::resolve_proxy_command(
+            &args.command,
+            &cwd,
+            std::env::var_os("PATH").as_deref(),
+        )
+        .map_err(|error| anyhow::anyhow!("proxy command resolution failed: {error}"))?
+    };
+
     prefs
         .validate()
         .map_err(|error| anyhow::anyhow!("proxy preferences validation failed: {error}"))?;
@@ -236,11 +288,15 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         "starting stdio MCP proxy"
     );
 
+    let mut explicit_env = parse_explicit_env(&args.env)?;
+    if let Some(prepared) = &mcp_json {
+        explicit_env.extend(prepared.child_env.iter().cloned());
+    }
     let local_options = crate::proxy::runtime::LocalProxyOptions {
         command,
         preferences: local_preferences,
         bearer_token: bearer_token.clone(),
-        explicit_env: parse_explicit_env(&args.env)?,
+        explicit_env,
         inherit_env,
     };
     let (mut proxy, mut oauth_lease, oauth_tailscale) = if prefs.auth
@@ -249,123 +305,173 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         let mut prepared = crate::proxy::runtime::LocalProxy::prepare(local_options)
             .await
             .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error}"))?;
-        let oauth = crate::proxy::oauth::ProxyOauthContext::prepare(config).await?;
-        if prefs.exposure == crate::proxy::config::ProxyExposure::Local {
-            anyhow::bail!(
-                "local OAuth exposure is not enabled because the daemon lease API accepts HTTPS resources only; use Tailscale exposure"
-            );
-        }
-        let owner = crate::proxy::oauth::owner_fingerprint();
-        let mut abandoned_ports = std::collections::BTreeSet::new();
-        let max_attempts = 32_usize;
-        let mut attempt = 0_usize;
-        loop {
-            attempt += 1;
-            let plan = if prefs.exposure == crate::proxy::config::ProxyExposure::Tailscale {
-                let mut options = tailscale_options(prepared.local_addr(), &prefs);
-                options.max_attempts = max_attempts;
-                let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
-                if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
-                    continue;
-                }
-                Some(plan)
-            } else {
-                None
-            };
-            let resource = plan.as_ref().map_or_else(
-                || prepared.local_url().clone(),
-                |plan| plan.public_url().clone(),
-            );
-            let mut lease = crate::proxy::oauth::OAuthLeaseGuard::create(
-                oauth.gateway.clone(),
-                resource.as_str(),
-                prefs.oauth_scopes.clone(),
-                &owner,
-                crate::proxy::oauth::OAuthLeaseTiming::proxy_default(),
-            )
-            .await?;
-            let started = prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
-                auth_state: std::sync::Arc::clone(&oauth.auth_state),
+        if prefs.exposure == crate::proxy::config::ProxyExposure::Funnel {
+            let mut options = tailscale_options(prepared.local_addr(), &prefs);
+            options.candidate_ports = vec![443, 8443, 10000];
+            let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+            let resource = plan.public_url().clone();
+            let (auth_state, issuer) =
+                crate::proxy::oauth::prepare_self_hosted(config, &resource, &prefs.oauth_scopes)
+                    .await?;
+            let proxy = prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
+                auth_state,
                 resource: resource.clone(),
-                issuer: oauth.issuer.clone(),
+                issuer,
                 required_scopes: prefs.oauth_scopes.clone(),
-            });
-            let mut proxy = match started {
-                Ok(proxy) => proxy,
+                host_issuer: true,
+            })?;
+            if let Err(error) =
+                crate::proxy::oauth::verify_protected_resource_metadata(proxy.url(), &resource)
+                    .await
+            {
+                let cleanup = proxy.shutdown().await;
+                return Err(combine_cleanup_errors(
+                    error,
+                    [("LocalProxy", cleanup.err())],
+                ));
+            }
+            match plan.claim_typed().await {
+                Ok(funnel) => (proxy, None, Some(funnel)),
                 Err(error) => {
-                    let release = lease.release().await;
+                    let cleanup = proxy.shutdown().await;
                     return Err(combine_cleanup_errors(
-                        error.context("proxy OAuth router startup failed"),
-                        [("OAuth lease", release.err())],
+                        anyhow::Error::new(error),
+                        [("LocalProxy", cleanup.err())],
                     ));
                 }
-            };
-            let Some(plan) = plan else {
-                unreachable!("local OAuth exposure is rejected before lease creation")
-            };
-            match plan.claim_typed().await {
-                Ok(serve) => {
-                    if let Err(error) = crate::proxy::oauth::verify_protected_resource_metadata(
-                        proxy.url(),
-                        &resource,
-                    )
-                    .await
+            }
+        } else {
+            let oauth = crate::proxy::oauth::ProxyOauthContext::prepare(config).await?;
+            if prefs.exposure == crate::proxy::config::ProxyExposure::Local {
+                anyhow::bail!(
+                    "local OAuth exposure is not enabled because the daemon lease API accepts HTTPS resources only; use Tailscale exposure"
+                );
+            }
+            let owner = crate::proxy::oauth::owner_fingerprint();
+            let mut abandoned_ports = std::collections::BTreeSet::new();
+            let max_attempts = 32_usize;
+            let mut attempt = 0_usize;
+            loop {
+                attempt += 1;
+                let plan = if prefs.exposure != crate::proxy::config::ProxyExposure::Local {
+                    let mut options = tailscale_options(prepared.local_addr(), &prefs);
+                    options.max_attempts = max_attempts;
+                    if prefs.exposure == crate::proxy::config::ProxyExposure::Funnel {
+                        options.candidate_ports = [8443, 10000, 443]
+                            .into_iter()
+                            .filter(|port| !abandoned_ports.contains(port))
+                            .collect();
+                        if options.candidate_ports.is_empty() {
+                            anyhow::bail!(
+                                "all Tailscale Funnel ports collided during proxy startup"
+                            );
+                        }
+                    }
+                    let plan =
+                        crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+                    if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
+                        continue;
+                    }
+                    Some(plan)
+                } else {
+                    None
+                };
+                let resource = plan.as_ref().map_or_else(
+                    || prepared.local_url().clone(),
+                    |plan| plan.public_url().clone(),
+                );
+                let mut lease = crate::proxy::oauth::OAuthLeaseGuard::create(
+                    oauth.gateway.clone(),
+                    resource.as_str(),
+                    prefs.oauth_scopes.clone(),
+                    &owner,
+                    crate::proxy::oauth::OAuthLeaseTiming::proxy_default(),
+                )
+                .await?;
+                let started = prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
+                    auth_state: std::sync::Arc::clone(&oauth.auth_state),
+                    resource: resource.clone(),
+                    issuer: oauth.issuer.clone(),
+                    required_scopes: prefs.oauth_scopes.clone(),
+                    host_issuer: false,
+                });
+                let mut proxy = match started {
+                    Ok(proxy) => proxy,
+                    Err(error) => {
+                        let release = lease.release().await;
+                        return Err(combine_cleanup_errors(
+                            error.context("proxy OAuth router startup failed"),
+                            [("OAuth lease", release.err())],
+                        ));
+                    }
+                };
+                let Some(plan) = plan else {
+                    unreachable!("local OAuth exposure is rejected before lease creation")
+                };
+                match plan.claim_typed().await {
+                    Ok(serve) => {
+                        if let Err(error) = crate::proxy::oauth::verify_protected_resource_metadata(
+                            proxy.url(),
+                            &resource,
+                        )
+                        .await
+                        {
+                            let http_cleanup = proxy.stop_http().await;
+                            let serve_cleanup = serve.shutdown().await;
+                            proxy.stop_child().await;
+                            let lease_cleanup = lease.release().await;
+                            return Err(combine_cleanup_errors(
+                                error,
+                                [
+                                    ("LocalProxy HTTP", http_cleanup.err()),
+                                    ("Tailscale publication", serve_cleanup.err()),
+                                    ("OAuth lease", lease_cleanup.err()),
+                                ],
+                            ));
+                        }
+                        break (proxy, Some(lease), Some(serve));
+                    }
+                    Err(crate::proxy::tailscale::TailscaleClaimError::Collision(error))
+                        if prefs.port.fixed().is_none() && attempt < max_attempts =>
                     {
-                        let http_cleanup = proxy.stop_http().await;
-                        let serve_cleanup = serve.shutdown().await;
-                        proxy.stop_child().await;
+                        let port = resource.port().unwrap_or_default();
+                        abandoned_ports.insert(port);
+                        let rollback = proxy.rollback_to_prepared().await;
+                        let release = lease.release().await;
+                        match rollback {
+                            Ok(next) if release.is_ok() => prepared = next,
+                            Ok(_) => {
+                                return Err(combine_cleanup_errors(
+                                    error.context("Tailscale collision rollback failed"),
+                                    [("OAuth lease", release.err())],
+                                ));
+                            }
+                            Err(rollback) => {
+                                return Err(combine_cleanup_errors(
+                                    error.context("Tailscale collision rollback failed"),
+                                    [
+                                        ("LocalProxy rollback", Some(rollback)),
+                                        ("OAuth lease", release.err()),
+                                    ],
+                                ));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        let proxy_cleanup = proxy.shutdown().await;
                         let lease_cleanup = lease.release().await;
                         return Err(combine_cleanup_errors(
-                            error,
+                            anyhow::Error::new(error),
                             [
-                                ("LocalProxy HTTP", http_cleanup.err()),
-                                ("Tailscale Serve", serve_cleanup.err()),
+                                ("LocalProxy", proxy_cleanup.err()),
                                 ("OAuth lease", lease_cleanup.err()),
                             ],
                         ));
                     }
-                    break (proxy, Some(lease), Some(serve));
-                }
-                Err(crate::proxy::tailscale::TailscaleClaimError::Collision(error))
-                    if prefs.port.fixed().is_none() && attempt < max_attempts =>
-                {
-                    let port = resource.port().unwrap_or_default();
-                    abandoned_ports.insert(port);
-                    let rollback = proxy.rollback_to_prepared().await;
-                    let release = lease.release().await;
-                    match rollback {
-                        Ok(next) if release.is_ok() => prepared = next,
-                        Ok(_) => {
-                            return Err(combine_cleanup_errors(
-                                error.context("Tailscale collision rollback failed"),
-                                [("OAuth lease", release.err())],
-                            ));
-                        }
-                        Err(rollback) => {
-                            return Err(combine_cleanup_errors(
-                                error.context("Tailscale collision rollback failed"),
-                                [
-                                    ("LocalProxy rollback", Some(rollback)),
-                                    ("OAuth lease", release.err()),
-                                ],
-                            ));
-                        }
-                    }
-                }
-                Err(error) => {
-                    let proxy_cleanup = proxy.shutdown().await;
-                    let lease_cleanup = lease.release().await;
-                    return Err(combine_cleanup_errors(
-                        anyhow::Error::new(error),
-                        [
-                            ("LocalProxy", proxy_cleanup.err()),
-                            ("OAuth lease", lease_cleanup.err()),
-                        ],
-                    ));
                 }
             }
         }
-    } else if prefs.exposure == crate::proxy::config::ProxyExposure::Tailscale {
+    } else if prefs.exposure != crate::proxy::config::ProxyExposure::Local {
         let mut prepared = crate::proxy::runtime::LocalProxy::prepare(local_options)
             .await
             .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error}"))?;
@@ -449,10 +555,10 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         info.local_addr.port(),
         crate::proxy::tailscale::TailscaleServe::external_port,
     );
-    let exposure = if tailscale.is_some() {
-        "tailscale"
-    } else {
-        "local"
+    let exposure = match prefs.exposure {
+        crate::proxy::config::ProxyExposure::Tailscale => "tailscale",
+        crate::proxy::config::ProxyExposure::Funnel => "funnel",
+        crate::proxy::config::ProxyExposure::Local => "local",
     };
     let auth = match prefs.auth {
         crate::proxy::config::ProxyAuthMode::Tailnet => "tailnet",
@@ -487,7 +593,11 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
             println!(
                 "  Exposure {}",
                 if tailscale.is_some() {
-                    "Tailscale Serve"
+                    if exposure == "funnel" {
+                        "Tailscale Funnel"
+                    } else {
+                        "Tailscale Serve"
+                    }
                 } else {
                     "Local"
                 }
@@ -521,7 +631,7 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
             output_error,
             [
                 ("LocalProxy HTTP", http_shutdown.err()),
-                ("Tailscale Serve", tailscale_shutdown.err()),
+                ("Tailscale publication", tailscale_shutdown.err()),
                 ("OAuth lease", lease_shutdown.err()),
             ],
         ));
@@ -569,7 +679,7 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         return Err(combine_cleanup_errors(
             primary,
             [
-                ("Tailscale Serve", tailscale_shutdown.err()),
+                ("Tailscale publication", tailscale_shutdown.err()),
                 ("LocalProxy HTTP", http_shutdown.err()),
                 ("OAuth lease", lease_shutdown.err()),
             ],
@@ -579,13 +689,48 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         return Err(combine_cleanup_errors(
             anyhow::anyhow!("proxy shutdown failed"),
             [
-                ("Tailscale Serve", tailscale_shutdown.err()),
+                ("Tailscale publication", tailscale_shutdown.err()),
                 ("LocalProxy HTTP", http_shutdown.err()),
                 ("OAuth lease", lease_shutdown.err()),
             ],
         ));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "gateway")]
+fn oauth_credentials_absent(config: &LabConfig) -> bool {
+    oauth_credentials_absent_with(config, |name| std::env::var(name).ok())
+}
+
+#[cfg(feature = "gateway")]
+fn oauth_credentials_absent_with(config: &LabConfig, env: impl Fn(&str) -> Option<String>) -> bool {
+    let configured = |name: &str, file_value: Option<&str>| {
+        env(name).is_some_and(|value| !value.trim().is_empty())
+            || file_value.is_some_and(|value| !value.trim().is_empty())
+    };
+    let auth = config.auth.as_ref();
+    let provider =
+        env("LABBY_AUTH_PROVIDER").or_else(|| auth.and_then(|auth| auth.provider.clone()));
+    if provider.as_deref() == Some("authelia") {
+        return false;
+    }
+    !configured(
+        "LABBY_GOOGLE_CLIENT_ID",
+        auth.and_then(|auth| auth.google_client_id.as_deref()),
+    ) && !configured(
+        "LABBY_GOOGLE_CLIENT_SECRET",
+        auth.and_then(|auth| auth.google_client_secret.as_deref()),
+    ) && !configured(
+        "LABBY_AUTHELIA_CLIENT_ID",
+        auth.and_then(|auth| auth.authelia_client_id.as_deref()),
+    ) && !configured(
+        "LABBY_AUTHELIA_CLIENT_SECRET",
+        auth.and_then(|auth| auth.authelia_client_secret.as_deref()),
+    ) && !configured(
+        "LABBY_AUTHELIA_ISSUER_URL",
+        auth.and_then(|auth| auth.authelia_issuer_url.as_deref()),
+    )
 }
 
 #[cfg(feature = "gateway")]
@@ -699,6 +844,62 @@ mod tests {
             args.resolve_preferences(&LabConfig::default()).exposure,
             crate::proxy::config::ProxyExposure::Local
         );
+    }
+
+    #[test]
+    fn proxy_funnel_override_requires_oauth() {
+        let args = parse([
+            "proxy", "--funnel", "--auth", "oauth", "--port", "8443", "server",
+        ]);
+        let preferences = args.resolve_preferences(&LabConfig::default());
+        assert_eq!(
+            preferences.exposure,
+            crate::proxy::config::ProxyExposure::Funnel
+        );
+        assert!(preferences.validate().is_ok());
+        let first_run = parse(["proxy", "--funnel"]);
+        assert!(first_run.command.is_empty());
+        assert_eq!(
+            first_run.resolve_preferences(&LabConfig::default()).auth,
+            crate::proxy::config::ProxyAuthMode::Oauth
+        );
+        assert!(
+            first_run
+                .resolve_preferences(&LabConfig::default())
+                .validate()
+                .is_ok()
+        );
+        assert!(TestCli::try_parse_from(["proxy", "--funnel", "--local", "server"]).is_err());
+
+        for auth in ["tailnet", "bearer", "none"] {
+            let args = parse(["proxy", "--funnel", "--auth", auth, "server"]);
+            assert_eq!(
+                args.resolve_preferences(&LabConfig::default()).validate(),
+                Err(crate::proxy::config::ProxyConfigError::FunnelRequiresOauth)
+            );
+        }
+        let args = parse(["proxy", "--funnel", "--bearer-token", "secret", "server"]);
+        assert_eq!(
+            args.resolve_preferences(&LabConfig::default()).validate(),
+            Err(crate::proxy::config::ProxyConfigError::FunnelRequiresOauth)
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gateway")]
+    fn funnel_callback_preview_requires_absent_provider_credentials() {
+        let mut config = LabConfig::default();
+        assert!(oauth_credentials_absent_with(&config, |_| None));
+        assert!(!oauth_credentials_absent_with(&config, |name| {
+            (name == "LABBY_GOOGLE_CLIENT_ID").then(|| "partial-client".to_string())
+        }));
+        let mut auth = crate::config::AuthFileConfig::default();
+        auth.google_client_secret = Some("partial-secret".to_string());
+        config.auth = Some(auth);
+        assert!(!oauth_credentials_absent_with(&config, |_| None));
+        config.auth.as_mut().unwrap().google_client_secret = None;
+        config.auth.as_mut().unwrap().provider = Some("authelia".to_string());
+        assert!(!oauth_credentials_absent_with(&config, |_| None));
     }
 
     #[test]

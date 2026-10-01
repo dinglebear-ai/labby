@@ -1,15 +1,121 @@
 ---
 title: "Stdio MCP Proxy Guide"
 created: "2026-08-01"
-updated: "2026-08-01"
+updated: "2026-09-30"
 ---
 
 # Stdio MCP Proxy
 
-`labby proxy` runs one stdio MCP server in the foreground and exposes that
-server, unchanged, as a Streamable HTTP endpoint. It is a direct bridge, not the
-aggregate Labby gateway: it does not add Labby tools, Code Mode, prefixes,
-filters, or catalog normalization.
+`labby proxy` runs a stdio MCP server in the foreground and exposes its tools
+as a Streamable HTTP endpoint. With `--mcp-json`, it aggregates the stdio
+servers in a `.mcp.json` instead. Funnel makes the endpoint reachable from the
+public internet; Labby permits Funnel only with OAuth. In Funnel mode, this
+single proxy process also serves the OAuth routes, including the Google
+callback. It needs durable Labby OAuth state but no separate `labby serve`.
+
+## ChatGPT web with Google OAuth and Microsandbox
+
+Labby and the Microsandbox MCP adapter can both run through `npx`; there is no
+separate manual Labby binary install for this path. You still need Node.js
+18+ and Tailscale. The Microsandbox runtime can be installed through its MCP
+tools after connecting ChatGPT. The Labby npm launcher downloads
+the matching native Labby release binary on first use and verifies its release
+checksum. It does not verify the release's build attestation; use the
+[verified installer](../../README.md) if that provenance check is
+required. The npm launcher supports macOS Apple Silicon and Linux x86-64.
+Keep npm's cache and `$LABBY_HOME` available across runs.
+The commands below require a Labby release containing Funnel proxy support.
+Published npm version 2.3.2 does not include `--funnel` or `--mcp-json`.
+Until these changes are released, replace `npx -y @dinglebear/labby` with the
+built checkout binary, such as `./target/debug/labby`. Keep the child command
+`npx -y microsandbox-mcp` as shown.
+
+1. Install Tailscale on the host that will run Labby and the microVMs. On
+   macOS, Funnel requires a Tailscale open source variant. Sign in,
+   enable Funnel for the node in the tailnet admin console, and ensure its
+   HTTPS certificate is available. Run this **before** creating Google OAuth
+   credentials:
+
+   ```console
+   npx -y @dinglebear/labby proxy --funnel --port 8443
+   ```
+
+   Labby reads the node's public DNS name from `tailscale status --json` and
+   prints the exact Google redirect URI and MCP URL when provider credentials
+   are absent. The preview starts no child and makes no public mapping. Record
+   the printed port; use that same port on every run
+   so the callback and ChatGPT connector URL stay stable. Funnel supports
+   HTTPS ports 443, 8443, and 10000.
+2. In Google Cloud, configure the OAuth consent screen, then create a **Web
+   application** OAuth client. Add the printed redirect URI to its authorized
+   redirect URIs. Save the client ID and secret. Set up
+   [Labby Google OAuth](../services/SETUP.md#google-oauth-and-chatgpt-web)
+   using the printed origin as `--public-url`, and select `--auth oauth`:
+
+   ```console
+   npx -y @dinglebear/labby setup --role server --auth oauth --oauth google \
+     --public-url https://node.example.ts.net:8443 --no-desktop --yes
+   ```
+
+   Provide `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and
+   `LABBY_AUTH_ADMIN_EMAIL` through the setup's secret inputs. Setup generates
+   the signing and token encryption material. Keep `$LABBY_HOME`, its `.env`,
+   auth database, and signing key across restarts. The configured public origin
+   must exactly match the Funnel origin, including its port.
+   Save the proxy defaults once, using the same port:
+
+   ```console
+   npx -y @dinglebear/labby config proxy set \
+     --exposure funnel --auth oauth --port 8443 --yes
+   ```
+3. Ensure the host supports local microVMs: Linux needs KVM access, and macOS
+   requires Apple Silicon. The official
+   [microsandbox-mcp](https://github.com/superradcompany/microsandbox-mcp)
+   adapter starts through `npx` even before the runtime is installed. It
+   exposes `runtime_check` and `runtime_install` for the next step; starting
+   the adapter alone does not automatically install the runtime.
+4. Start the proxy. It reads Funnel, OAuth, and the stable port from the saved
+   configuration, so subsequent runs need no exposure or port flags:
+
+   ```console
+   npx -y @dinglebear/labby proxy -- npx -y microsandbox-mcp
+   ```
+
+   Pin the MCP package for a durable deployment. The proxy runs in the
+   foreground and prints its exact public `/mcp` URL. Keep it running.
+   `--funnel` selects OAuth automatically. Explicit `--auth none`, `bearer`,
+   or `tailnet` fails before publication. The longer
+   `--print-google-callback` option remains available to reprint the callback
+   later without starting the proxy.
+5. In [ChatGPT web developer mode](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt),
+   create a custom MCP app with the printed URL and OAuth authentication, then
+   complete Labby's Google sign-in. On Business, a workspace admin/owner enables
+   developer mode and creates the app; Enterprise/Edu admins grant developer
+   access. Ask ChatGPT to call `runtime_check`, use `runtime_install` if needed,
+   and check again. Then create, run, and remove one disposable sandbox.
+   If MCP installation fails, use the official
+   [manual runtime installer](https://docs.microsandbox.dev/getting-started/quickstart)
+   on the host, then repeat `runtime_check`:
+
+   ```console
+   curl -fsSL https://install.microsandbox.dev | sh
+   ```
+
+   Full MCP write actions currently require Business or
+   Enterprise/Edu; Pro custom apps are limited to read/fetch actions. ChatGPT
+   agent mode does not use custom apps, so invoke the app in an ordinary chat
+   for VM control.
+
+The proxy exposes the Microsandbox MCP tools directly. It does not install a
+coding agent inside a VM, manage task worktrees, or turn a one-off command
+sandbox into a durable worker. Give each task an explicit source transfer,
+agent runtime, resource limit, and cleanup plan.
+
+ChatGPT subscriptions can use custom MCP apps; a Responses API integration is
+not required. OpenAI also offers a [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+for private connections. It can be associated with a ChatGPT workspace, but
+creating and running it requires Platform tunnel permissions, a tunnel ID, and
+a runtime API key. Funnel is the direct public HTTPS route described here.
 
 ## Zero-flag quickstart
 
@@ -80,10 +186,11 @@ directory is used.
 | Setting | Behavior |
 | --- | --- |
 | `tailscale` exposure | Binds HTTP to loopback, publishes one HTTPS port with Tailscale Serve, and prints the tailnet URL. This is the default. |
+| `funnel` exposure | Binds HTTP to loopback and publishes one public HTTPS port with Tailscale Funnel. Requires OAuth and port 443, 8443, or 10000. Random mode tries 8443, 10000, then 443. |
 | `local` exposure | Binds and prints a loopback HTTP URL only. Use `--local`; it never binds a LAN wildcard. |
 | `tailnet` auth | Adds no application token. Reachability and grants are owned by Tailscale. Valid only with Tailscale exposure. This is the default. |
 | `bearer` auth | Requires the separate proxy bearer token on every MCP request and SSE stream. |
-| `oauth` auth | Validates Labby-issued JWTs for the exact proxy resource URL and configured scopes. Requires Tailscale exposure and a live OAuth daemon. |
+| `oauth` auth | Validates Labby-issued JWTs for the exact proxy resource URL and configured scopes. Funnel hosts its own OAuth router; Serve uses a live OAuth daemon. |
 | `none` auth | Adds no application authentication. Intended for explicit loopback use such as `--local --auth none`. |
 | random port | Chooses an unused external Serve port from the configured range, with collision retries. |
 | fixed port | Uses the numeric `proxy.port` or one-run `--port`; startup fails rather than replacing an existing mapping. |
@@ -93,6 +200,7 @@ One-run examples:
 ```console
 labby proxy --port 52177 /path/to/dist.js
 labby proxy --auth oauth /path/to/dist.js
+labby proxy --funnel --port 8443 -- npx -y microsandbox-mcp
 printf '%s\n' "$TOKEN" | labby proxy --auth bearer --bearer-token-stdin /path/to/dist.js
 labby proxy --local --auth none /path/to/dist.js
 ```
@@ -138,7 +246,7 @@ shutdown_grace_ms = 3000
 
 | Key | Accepted values and validation |
 | --- | --- |
-| `proxy.exposure` | `tailscale` or `local`; default `tailscale`. |
+| `proxy.exposure` | `tailscale`, `funnel`, or `local`; default `tailscale`. |
 | `proxy.auth` | `tailnet`, `bearer`, `oauth`, or `none`; default `tailnet`. `local` plus `tailnet` is rejected. |
 | `proxy.path` | Absolute, non-root path without query, fragment, `.` segments, or `..` segments; default `/mcp`. |
 | `proxy.port` | `"random"` or a nonzero integer. It is the external HTTPS port for Tailscale publication. |
@@ -212,6 +320,30 @@ labby doctor proxy \
 Supplying route arguments selects that public Labby/protected-route check; it
 does not run the local stdio-proxy preflight.
 
+## Multiple MCP servers
+
+Pass a `.mcp.json` containing stdio entries instead of a child command:
+
+```json
+{
+  "mcpServers": {
+    "sandbox": { "command": "npx", "args": ["-y", "microsandbox-mcp"] },
+    "files": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"] }
+  }
+}
+```
+
+```console
+npx -y @dinglebear/labby proxy --funnel --port 8443 --mcp-json /path/to/.mcp.json
+```
+
+The file can contain up to 16 named stdio servers. Each entry supports
+`command`, `args`, and an `env` object. Paths resolve relative to the file's
+directory. Labby starts an isolated local MCP aggregator and connects to every
+configured server before public publication. Tools are namespaced by upstream
+name. The file and any environment secrets must be readable only by the
+operator. HTTP/SSE entries are not supported by this option.
+
 ## OAuth resource lifecycle
 
 The OAuth authorization server has a stable issuer such as
@@ -228,11 +360,16 @@ run therefore creates a distinct resource URL. Use a fixed `proxy.port` for a
 long-lived connector configuration; otherwise update the connector to the URL
 printed by every run.
 
-OAuth startup requires `LABBY_AUTH_MODE=oauth`, a stable
-`LABBY_PUBLIC_URL` (or equivalent `[auth]`/`[public_urls]` configuration), the
-same-host signing keys, and a reachable `labby serve` daemon. The CLI verifies
-the daemon's authorization-server metadata and JWKS, checks the three lease
-actions, then dispatches through authenticated `POST /v1/gateway`:
+With Funnel, OAuth startup requires `LABBY_AUTH_MODE=oauth`, Google provider
+credentials, and persistent signing and token state in `$LABBY_HOME`. The
+proxy serves its own authorization server at the Funnel origin and registers
+its exact `/mcp` URL as a protected resource. No daemon or lease is needed.
+
+With Tailscale Serve, OAuth requires a stable `LABBY_PUBLIC_URL` (or equivalent
+`[auth]`/`[public_urls]` configuration), the same-host signing keys, and a
+reachable `labby serve` daemon. The CLI verifies the daemon's metadata and
+JWKS, checks the three lease actions, then dispatches through authenticated
+`POST /v1/gateway`:
 
 - `gateway.oauth.resource_lease.create`
 - `gateway.oauth.resource_lease.renew`
@@ -267,11 +404,17 @@ node DNS name, and `tailscale serve status --json`. It treats ports present in
 either Serve TCP or web maps as occupied. A fixed-port collision fails. Random
 mode retries collision-shaped claim failures, up to 32 candidates.
 
-The owned command is exact:
+The owned Serve command is exact:
 
 ```console
 tailscale serve --yes --https=<external-port> http://127.0.0.1:<local-port>
 ```
+
+Funnel uses the same command shape with `funnel` instead of `serve`.
+Readiness and periodic checks require both the exact loopback backend and
+`AllowFunnel=true` for the exact public authority. If a mapping switches
+between Serve and Funnel, Labby stops and refuses to remove that changed
+mapping during cleanup.
 
 Readiness requires the exact DNS-name, port, root handler, and loopback backend
 to appear in Serve status. While running, Labby watches both the foreground
@@ -327,7 +470,7 @@ mapping.
 : `--local` does not silently weaken `tailnet`. Select `--auth bearer` or
   `--auth none` explicitly for loopback use.
 
-`Tailscale Serve port ... is already configured`
+`Tailscale publication port ... is already configured`
 : Choose another fixed port or return to `port = "random"`. Inspect
   `tailscale serve status --json`; do not reset unrelated routes.
 
@@ -341,9 +484,10 @@ mapping.
   `$LABBY_HOME/config.toml` sets the intended `bearer_token_env`.
 
 `proxy OAuth requires a stable Labby public issuer`
-: Configure OAuth and `LABBY_PUBLIC_URL`, start `labby serve`, and verify the
-  authorization-server metadata issuer exactly matches. A random proxy URL is
-  the resource, never the issuer.
+: For Serve exposure, configure OAuth and `LABBY_PUBLIC_URL`, start `labby serve`,
+  and verify its authorization-server metadata. For Funnel, use the callback
+  preview, configure Google OAuth in the same Labby home, and reuse the
+  previewed port. Funnel uses its own public origin as issuer.
 
 `live Labby daemon does not support proxy OAuth leases`
 : The CLI reached an older daemon. Upgrade/restart the daemon and confirm all
@@ -359,9 +503,9 @@ Host or Origin rejected
   preserve its authority and origin; do not replace the port or MCP path.
 
 Proxy exits after startup
-: Inspect redacted logs for child closure, HTTP exit, Serve ownership drift, or
-  OAuth renewal failure. Cleanup errors are attached to the primary failure
-  rather than replacing it.
+: Inspect redacted logs for child closure, HTTP exit, Serve/Funnel ownership
+  drift, or (in Serve OAuth mode) lease renewal failure. Cleanup errors are
+  attached to the primary failure rather than replacing it.
 
 ## Related documents
 

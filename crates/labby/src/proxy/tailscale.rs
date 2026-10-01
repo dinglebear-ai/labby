@@ -1,4 +1,4 @@
-//! Tailscale Serve publication for the ephemeral stdio proxy.
+//! Tailscale Serve or Funnel publication for the ephemeral stdio proxy.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -13,7 +13,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use tokio::task::JoinHandle;
 
-use crate::proxy::config::ProxyPortPreference;
+use crate::proxy::config::{ProxyAuthMode, ProxyExposure, ProxyPortPreference};
 
 /// Relevant fields from `tailscale status --json`.
 #[derive(Debug, Clone, Deserialize)]
@@ -86,6 +86,8 @@ pub struct ServeStatus {
     web: BTreeMap<String, ServeWeb>,
     #[serde(default)]
     foreground: BTreeMap<String, ServeConfig>,
+    #[serde(default)]
+    allow_funnel: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -95,6 +97,8 @@ struct ServeConfig {
     tcp: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     web: BTreeMap<String, ServeWeb>,
+    #[serde(default)]
+    allow_funnel: BTreeMap<String, bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -144,6 +148,16 @@ impl ServeStatus {
                 .find_map(|config| backend_from_web(&config.web, &authority))
         })
     }
+
+    #[must_use]
+    pub fn is_funnel(&self, dns_name: &str, port: u16) -> bool {
+        let authority = format!("{dns_name}:{port}");
+        self.allow_funnel.get(&authority) == Some(&true)
+            || self
+                .foreground
+                .values()
+                .any(|config| config.allow_funnel.get(&authority) == Some(&true))
+    }
 }
 
 fn extend_ports(ports: &mut BTreeSet<u16>, web: &BTreeMap<String, ServeWeb>) {
@@ -175,7 +189,7 @@ pub fn select_port_from_candidates(
     let occupied = status.occupied_ports();
     if let Some(port) = preference.fixed() {
         if occupied.contains(&port) {
-            bail!("Tailscale Serve port {port} is already configured");
+            bail!("Tailscale publication port {port} is already configured");
         }
         return Ok(port);
     }
@@ -186,7 +200,7 @@ pub fn select_port_from_candidates(
         }
     }
     bail!(
-        "no unused Tailscale Serve port found in {range_start}..={range_end} after {max_attempts} attempts"
+        "no unused Tailscale publication port found in {range_start}..={range_end} after {max_attempts} attempts"
     )
 }
 
@@ -194,6 +208,8 @@ pub fn select_port_from_candidates(
 pub struct TailscaleServeOptions {
     pub executable: PathBuf,
     pub local_addr: SocketAddr,
+    pub exposure: ProxyExposure,
+    pub auth: ProxyAuthMode,
     pub path: String,
     pub port: ProxyPortPreference,
     pub port_range_start: u16,
@@ -216,6 +232,8 @@ impl TailscaleServeOptions {
         Self {
             executable: PathBuf::from("tailscale"),
             local_addr,
+            exposure: ProxyExposure::Tailscale,
+            auth: ProxyAuthMode::Tailnet,
             path,
             port,
             port_range_start,
@@ -228,6 +246,13 @@ impl TailscaleServeOptions {
     }
 }
 
+fn require_funnel_oauth(options: &TailscaleServeOptions) -> Result<()> {
+    if options.exposure == ProxyExposure::Funnel && options.auth != ProxyAuthMode::Oauth {
+        bail!("public Tailscale Funnel exposure requires OAuth authentication");
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct TailscaleServe {
     executable: PathBuf,
@@ -237,6 +262,7 @@ pub struct TailscaleServe {
     dns_name: String,
     external_port: u16,
     backend: String,
+    exposure: ProxyExposure,
     public_url: url::Url,
     poll_interval: Duration,
     readiness_timeout: Duration,
@@ -253,16 +279,17 @@ pub struct TailscaleServePlan {
 
 #[derive(Debug, thiserror::Error)]
 pub enum TailscaleClaimError {
-    #[error("Tailscale Serve port collision: {0:#}")]
+    #[error("Tailscale publication port collision: {0:#}")]
     Collision(anyhow::Error),
-    #[error("Tailscale Serve claim failed: {0:#}")]
+    #[error("Tailscale publication claim failed: {0:#}")]
     Failed(anyhow::Error),
 }
 
 impl TailscaleServePlan {
     pub async fn prepare(options: TailscaleServeOptions) -> Result<Self> {
+        require_funnel_oauth(&options)?;
         if options.max_attempts == 0 {
-            bail!("Tailscale Serve port selection requires at least one attempt");
+            bail!("Tailscale publication port selection requires at least one attempt");
         }
         let version = run_checked(&options.executable, ["version"]).await?;
         if version.trim().is_empty() {
@@ -279,19 +306,37 @@ impl TailscaleServePlan {
         let initial_status = ServeStatus::parse(&serve_output)?;
         let candidates = if let Some(port) = options.port.fixed() {
             vec![port]
-        } else if options.candidate_ports.is_empty() {
+        } else if !options.candidate_ports.is_empty() {
+            options.candidate_ports.clone()
+        } else if options.exposure == ProxyExposure::Funnel {
+            vec![8443, 10000, 443]
+        } else {
             random_candidates(
                 options.port_range_start,
                 options.port_range_end,
                 options.max_attempts,
             )?
+        };
+        let candidates = if options.exposure == ProxyExposure::Funnel {
+            candidates
+                .into_iter()
+                .filter(|port| matches!(port, 443 | 8443 | 10000))
+                .collect()
         } else {
-            options.candidate_ports.clone()
+            candidates
         };
         let external_port = select_port_from_candidates(
             options.port,
-            options.port_range_start,
-            options.port_range_end,
+            if options.exposure == ProxyExposure::Funnel {
+                443
+            } else {
+                options.port_range_start
+            },
+            if options.exposure == ProxyExposure::Funnel {
+                10000
+            } else {
+                options.port_range_end
+            },
             &initial_status,
             candidates,
             options.max_attempts,
@@ -341,8 +386,9 @@ impl TailscaleServePlan {
 
 impl TailscaleServe {
     pub async fn start(options: TailscaleServeOptions) -> Result<Self> {
+        require_funnel_oauth(&options)?;
         if options.max_attempts == 0 {
-            bail!("Tailscale Serve port selection requires at least one attempt");
+            bail!("Tailscale publication port selection requires at least one attempt");
         }
         let version = run_checked(&options.executable, ["version"]).await?;
         if version.trim().is_empty() {
@@ -360,14 +406,16 @@ impl TailscaleServe {
 
         let candidates = if let Some(port) = options.port.fixed() {
             vec![port]
-        } else if options.candidate_ports.is_empty() {
+        } else if !options.candidate_ports.is_empty() {
+            options.candidate_ports.clone()
+        } else if options.exposure == ProxyExposure::Funnel {
+            vec![8443, 10000, 443]
+        } else {
             random_candidates(
                 options.port_range_start,
                 options.port_range_end,
                 options.max_attempts,
             )?
-        } else {
-            options.candidate_ports.clone()
         };
         let occupied = initial_status.occupied_ports();
         let backend = format!("http://127.0.0.1:{}", options.local_addr.port());
@@ -375,8 +423,11 @@ impl TailscaleServe {
         let random_mode = options.port.fixed().is_none();
 
         for external_port in candidates.into_iter().take(options.max_attempts) {
-            if !(options.port_range_start..=options.port_range_end).contains(&external_port)
-                && random_mode
+            if !(if options.exposure == ProxyExposure::Funnel {
+                matches!(external_port, 443 | 8443 | 10000)
+            } else {
+                (options.port_range_start..=options.port_range_end).contains(&external_port)
+            }) && random_mode
             {
                 continue;
             }
@@ -384,7 +435,7 @@ impl TailscaleServe {
                 if random_mode {
                     continue;
                 }
-                bail!("Tailscale Serve port {external_port} is already configured");
+                bail!("Tailscale publication port {external_port} is already configured");
             }
 
             match Self::claim(&options, dns_name.clone(), external_port, backend.clone()).await {
@@ -400,7 +451,7 @@ impl TailscaleServe {
             .map(|error| format!("; last Serve error: {error:#}"))
             .unwrap_or_default();
         bail!(
-            "no usable Tailscale Serve port found in {}..={} after {} attempts{}",
+            "no usable Tailscale publication port found in {}..={} after {} attempts{}",
             options.port_range_start,
             options.port_range_end,
             options.max_attempts,
@@ -414,8 +465,14 @@ impl TailscaleServe {
         external_port: u16,
         backend: String,
     ) -> Result<Self> {
+        require_funnel_oauth(options)?;
+        let verb = if options.exposure == ProxyExposure::Funnel {
+            "funnel"
+        } else {
+            "serve"
+        };
         let mut child = Command::new(&options.executable)
-            .arg("serve")
+            .arg(verb)
             .arg("--yes")
             .arg(format!("--https={external_port}"))
             .arg(&backend)
@@ -442,13 +499,16 @@ impl TailscaleServe {
                 let stdout = join_output(stdout_task).await;
                 let stderr = join_output(stderr_task).await;
                 bail!(
-                    "Tailscale Serve exited before exact mapping verification with {status}: {}{}",
+                    "Tailscale publication exited before exact mapping verification with {status}: {}{}",
                     String::from_utf8_lossy(&stdout),
                     String::from_utf8_lossy(&stderr)
                 );
             }
             let status = read_serve_status(&options.executable).await?;
-            if status.backend_for(&dns_name, external_port) == Some(backend.as_str()) {
+            if status.backend_for(&dns_name, external_port) == Some(backend.as_str())
+                && status.is_funnel(&dns_name, external_port)
+                    == (options.exposure == ProxyExposure::Funnel)
+            {
                 return Ok(Self {
                     executable: options.executable.clone(),
                     child: Some(child),
@@ -457,6 +517,7 @@ impl TailscaleServe {
                     dns_name: dns_name.clone(),
                     external_port,
                     backend,
+                    exposure: options.exposure,
                     public_url: build_public_url(&dns_name, external_port, &options.path)?,
                     poll_interval: options.poll_interval,
                     readiness_timeout: options.readiness_timeout,
@@ -465,7 +526,7 @@ impl TailscaleServe {
             if tokio::time::Instant::now() >= deadline {
                 terminate_child(&mut child).await;
                 bail!(
-                    "timed out waiting for exact Tailscale Serve mapping on {dns_name}:{external_port}"
+                    "timed out waiting for exact Tailscale publication mapping on {dns_name}:{external_port}"
                 );
             }
             tokio::time::sleep(options.poll_interval).await;
@@ -487,20 +548,26 @@ impl TailscaleServe {
             if let Some(status) = self
                 .child
                 .as_mut()
-                .context("Tailscale Serve process is no longer owned")?
+                .context("Tailscale publication process is no longer owned")?
                 .try_wait()
-                .context("failed to inspect Tailscale Serve process")?
+                .context("failed to inspect Tailscale publication process")?
             {
-                bail!("Tailscale Serve foreground process exited unexpectedly: {status}");
+                bail!("Tailscale publication foreground process exited unexpectedly: {status}");
             }
             let status = read_serve_status(&self.executable).await?;
             match status.backend_for(&self.dns_name, self.external_port) {
-                Some(backend) if backend == self.backend => {}
+                Some(backend)
+                    if backend == self.backend
+                        && status.is_funnel(&self.dns_name, self.external_port)
+                            == (self.exposure == ProxyExposure::Funnel) => {}
+                Some(backend) if backend == self.backend => {
+                    bail!("owned Tailscale publication mode changed")
+                }
                 Some(backend) => bail!(
-                    "Tailscale Serve mapping ownership changed from {} to {backend}",
+                    "Tailscale publication mapping ownership changed from {} to {backend}",
                     self.backend
                 ),
-                None => bail!("owned Tailscale Serve mapping disappeared unexpectedly"),
+                None => bail!("owned Tailscale publication mapping disappeared unexpectedly"),
             }
             tokio::time::sleep(self.poll_interval).await;
         }
@@ -524,9 +591,15 @@ impl TailscaleServe {
                 None => return Ok(()),
                 Some(backend) if backend != self.backend => {
                     bail!(
-                        "Tailscale Serve mapping ownership changed from {} to {backend}; refusing cleanup",
+                        "Tailscale publication mapping ownership changed from {} to {backend}; refusing cleanup",
                         self.backend
                     );
+                }
+                Some(_)
+                    if status.is_funnel(&self.dns_name, self.external_port)
+                        != (self.exposure == ProxyExposure::Funnel) =>
+                {
+                    bail!("Tailscale publication mode changed; refusing cleanup");
                 }
                 Some(_) if tokio::time::Instant::now() < deadline => {
                     tokio::time::sleep(self.poll_interval).await;
@@ -538,20 +611,24 @@ impl TailscaleServe {
         run_checked(
             &self.executable,
             [
-                OsString::from("serve"),
+                OsString::from(if self.exposure == ProxyExposure::Funnel {
+                    "funnel"
+                } else {
+                    "serve"
+                }),
                 OsString::from("--yes"),
                 OsString::from(format!("--https={}", self.external_port)),
                 OsString::from("off"),
             ],
         )
         .await
-        .context("exact-port Tailscale Serve cleanup failed")?;
+        .context("exact-port Tailscale publication cleanup failed")?;
         let status = read_serve_status(&self.executable).await?;
         if status
             .backend_for(&self.dns_name, self.external_port)
             .is_some()
         {
-            bail!("exact-port Tailscale Serve cleanup did not remove the owned mapping");
+            bail!("exact-port Tailscale publication cleanup did not remove the owned mapping");
         }
         Ok(())
     }

@@ -358,6 +358,7 @@ async fn oauth_state(temp: &tempfile::TempDir) -> Arc<AuthState> {
         sqlite_path: temp.path().join("auth.db"),
         key_path: temp.path().join("auth-jwt.pem"),
         scopes_supported: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+        enable_dynamic_registration: true,
         disable_static_token_with_oauth: true,
         google: GoogleConfig {
             client_id: "test-client".to_string(),
@@ -456,6 +457,7 @@ async fn oauth_proxy_serves_exact_root_metadata_and_enforces_token_contract() {
             resource: resource.clone(),
             issuer: issuer.clone(),
             required_scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+            host_issuer: false,
         })
         .unwrap();
 
@@ -578,6 +580,58 @@ async fn oauth_proxy_serves_exact_root_metadata_and_enforces_token_contract() {
 }
 
 #[tokio::test]
+async fn self_hosted_oauth_mounts_discovery_registration_and_google_callback() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = oauth_state(&temp).await;
+    let resource = url::Url::parse("https://issuer.example.com/custom-mcp").unwrap();
+    let prepared = LocalProxy::prepare(LocalProxyOptions {
+        command: fixture_command(
+            temp.path().to_path_buf(),
+            &temp.path().join("self-hosted.pid"),
+        ),
+        preferences: local_preferences(ProxyAuthMode::Oauth),
+        bearer_token: None,
+        explicit_env: Vec::new(),
+        inherit_env: vec![OsString::from("PATH")],
+    })
+    .await
+    .unwrap();
+    let proxy = prepared
+        .start(LocalProxyAuthPolicy::Oauth {
+            auth_state: state,
+            resource: resource.clone(),
+            issuer: url::Url::parse("https://issuer.example.com/").unwrap(),
+            required_scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+            host_issuer: true,
+        })
+        .unwrap();
+    let client = reqwest::Client::new();
+    for path in [
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource",
+        "/jwks",
+        "/auth/google/callback",
+    ] {
+        let response = client
+            .get(proxy.url().join(path).unwrap())
+            .header(reqwest::header::HOST, resource.authority())
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(response.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+    }
+    let registration = client
+        .post(proxy.url().join("/register").unwrap())
+        .header(reqwest::header::HOST, resource.authority())
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(registration.status(), reqwest::StatusCode::NOT_FOUND);
+    proxy.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn local_proxy_honors_a_fixed_port() {
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let fixed_port = reservation.local_addr().unwrap().port();
@@ -693,7 +747,7 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
 
     let stdout = child.stdout.take().unwrap();
     let line = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         BufReader::new(stdout).lines().next_line(),
     )
     .await

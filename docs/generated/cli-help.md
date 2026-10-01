@@ -7653,7 +7653,7 @@ Options:
       --exposure <EXPOSURE>
           Exposure mode to persist
 
-          [possible values: tailscale, local]
+          [possible values: tailscale, funnel, local]
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
@@ -8125,10 +8125,10 @@ Options:
 ```text
 Proxy a stdio upstream to Streamable HTTP
 
-Usage: labby proxy [OPTIONS] <COMMAND>...
+Usage: labby proxy [OPTIONS] [COMMAND]...
 
 Arguments:
-  <COMMAND>...
+  [COMMAND]...
           Child program or script followed by its arguments
 
 Options:
@@ -8172,20 +8172,29 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --funnel
+          Select OAuth and publish with Tailscale Funnel; preview callback if unconfigured
+
+      --print-google-callback
+          Print the Funnel MCP URL and Google callback without starting a proxy
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --mcp-json <PATH>
+          Load multiple stdio servers from a .mcp.json mcpServers object
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --cwd <CWD>
           Child working directory
 
       --env <NAME=VALUE>
           Explicit child environment entry; repeatable
 
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
       --inherit-env <NAME>
           Inherit one ambient environment variable; repeatable
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help

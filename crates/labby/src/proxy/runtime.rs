@@ -39,6 +39,7 @@ pub enum LocalProxyAuthPolicy {
         resource: url::Url,
         issuer: url::Url,
         required_scopes: Vec<String>,
+        host_issuer: bool,
     },
 }
 
@@ -389,6 +390,7 @@ impl PreparedLocalProxy {
                 resource,
                 issuer,
                 required_scopes,
+                host_issuer,
             } => {
                 let configured_issuer = auth_state
                     .config
@@ -401,6 +403,8 @@ impl PreparedLocalProxy {
                     bail!("OAuth auth state issuer does not match the stable issuer");
                 }
                 let metadata_url = root_metadata_url(&resource)?;
+                let issuer_router = host_issuer
+                    .then(|| labby_auth::routes::bearer_only_router((*auth_state).clone()));
                 let layer = AuthLayer::from_state(auth_state)
                     .with_resource_url(Some(Arc::from(resource.as_str())))
                     .with_required_scopes(required_scopes.clone())
@@ -412,10 +416,14 @@ impl PreparedLocalProxy {
                     scopes_supported: required_scopes,
                     bearer_methods_supported: vec!["header".to_string()],
                 };
-                let router = mcp_router.route(
-                    "/.well-known/oauth-protected-resource",
-                    get(move || async move { Json(metadata.clone()) }),
-                );
+                let router = if let Some(issuer_router) = issuer_router {
+                    mcp_router.merge(issuer_router)
+                } else {
+                    mcp_router.route(
+                        "/.well-known/oauth-protected-resource",
+                        get(move || async move { Json(metadata.clone()) }),
+                    )
+                };
                 return self.finish_start(
                     connection,
                     cancellation,

@@ -64,7 +64,7 @@ pub async fn check_proxy_preflight(surface: &'static str) -> Report {
         ));
     } else {
         #[cfg(feature = "gateway")]
-        findings.extend(tailscale_findings().await);
+        findings.extend(tailscale_findings(preferences.exposure).await);
         #[cfg(not(feature = "gateway"))]
         findings.push(gateway_feature_unavailable("proxy:tailscale-version"));
     }
@@ -343,7 +343,7 @@ async fn oauth_findings(config: &crate::config::LabConfig, surface: &'static str
 }
 
 #[cfg(feature = "gateway")]
-async fn tailscale_findings() -> Vec<Finding> {
+async fn tailscale_findings(exposure: ProxyExposure) -> Vec<Finding> {
     let executable = std::env::var_os("LABBY_TAILSCALE_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tailscale"));
@@ -438,19 +438,24 @@ async fn tailscale_findings() -> Vec<Finding> {
         },
     ));
 
-    match crate::proxy::tailscale::run_checked(&executable, ["serve", "status", "--json"])
+    let publication = if exposure == ProxyExposure::Funnel {
+        "funnel"
+    } else {
+        "serve"
+    };
+    match crate::proxy::tailscale::run_checked(&executable, [publication, "status", "--json"])
         .await
         .and_then(|raw| ServeStatus::parse(&raw))
     {
         Ok(_) => findings.push(finding(
             "proxy:tailscale-https-serve",
             Severity::Ok,
-            "Tailscale HTTPS Serve status is readable without mutation",
+            format!("Tailscale HTTPS {publication} status is readable without mutation"),
         )),
         Err(error) => findings.push(finding(
             "proxy:tailscale-https-serve",
             Severity::Fail,
-            format!("Tailscale HTTPS Serve capability is unavailable: {error:#}"),
+            format!("Tailscale HTTPS {publication} capability is unavailable: {error:#}"),
         )),
     }
     findings
