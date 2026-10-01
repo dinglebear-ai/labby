@@ -862,7 +862,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         );
     }
 
-    // Executable event/result-matrix regressions in test_windows_ci_policy.py
+    // Executable event/result-matrix regressions in test_ci_platform_policy.py
     // require classifier success even on forks and reject missing routed suites.
     let unconditional = "fleet-policy";
     assert!(
@@ -1085,13 +1085,8 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 /// the `changes` job synthesizes them at runtime.
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
-/// Advisory jobs excluded from `ci-gate`, including manually selected Windows lanes.
-const ADVISORY_JOBS: &[&str] = &[
-    "desktop-windows",
-    "test-windows",
-    "windows-installer",
-    "verification-t1",
-];
+/// Advisory jobs excluded from `ci-gate`.
+const ADVISORY_JOBS: &[&str] = &["verification-t1"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow
