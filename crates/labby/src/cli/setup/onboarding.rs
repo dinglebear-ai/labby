@@ -1557,6 +1557,7 @@ pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
     plan.server_auth.unwrap_or_else(|| {
         if plan.oauth.is_some() {
@@ -1684,6 +1685,7 @@ fn resolve_existing_native_defaults(plan: &mut SetupPlan, root: &Path) -> Result
     Ok(())
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>> {
     // The access store requires an owner-only state directory. Environment
     // merges protect individual files but create new parents with the umask.
