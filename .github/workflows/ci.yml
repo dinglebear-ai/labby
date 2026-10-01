@@ -303,6 +303,10 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Install repository task runner
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
         with:
           go-version: 1.26.5
@@ -328,6 +332,10 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Install repository task runner
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
+        with:
+          install_args: just
       - name: Analyze every shipped shell lifecycle script
         run: scripts/ci/check-lifecycle-scripts.sh
       - name: Install pinned PowerShell validation modules

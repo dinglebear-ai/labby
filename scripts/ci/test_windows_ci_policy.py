@@ -24,6 +24,24 @@ class WindowsCiPolicyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
 
+    def test_behavioral_recipe_collectors_provision_the_repository_task_runner(self) -> None:
+        workflow = yaml.safe_load(self.workflow)
+        for name in ("actionlint", "lifecycle-static-analysis"):
+            with self.subTest(job=name):
+                steps = workflow["jobs"][name]["steps"]
+                collector = next(
+                    i for i, step in enumerate(steps)
+                    if "test_default_web_build.py" in step.get("run", "")
+                    or "check-lifecycle-scripts.sh" in step.get("run", "")
+                )
+                provisions = [
+                    step for step in steps[:collector]
+                    if step.get("uses", "").startswith("jdx/mise-action@")
+                    and "just" in step.get("with", {}).get("install_args", "").split()
+                ]
+                self.assertTrue(provisions, f"{name} runs real Justfile fixtures and needs pinned just")
+                self.assertRegex((ROOT / ".mise.toml").read_text(), r'(?m)^just = "[0-9.]+"$')
+
     def test_workspace_windows_job_is_hosted_cached_and_bounded(self) -> None:
         block = job_block(self.workflow, "test-windows", "release-contract")
         self.assertIn("runs-on: windows-latest", block)

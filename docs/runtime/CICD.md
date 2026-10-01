@@ -178,7 +178,8 @@ fallback classifier used when the base commit predates that script emits no
 keys at all and lets reconciliation force every gated key to `true`, so it is
 not a second copy of the list.
 
-Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
+Branch protection on `main` requires `Repository Contract`, `Protected docs guard`,
+and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
 fail the aggregate. The classifier runs on every event, including fork PRs,

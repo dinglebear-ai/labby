@@ -274,7 +274,7 @@ fn partition_tools_for_access(
     (kept, withheld)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn filter_tools_for_access(
     manager: &GatewayManager,
     tools: Vec<UpstreamTool>,
@@ -284,7 +284,7 @@ fn filter_tools_for_access(
     partition_tools_for_access(filter_in_process_for_access(manager, tools, caller), scope).0
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn withheld_by_access(tools: &[UpstreamTool], scope: &ToolScope) -> Vec<WithheldTools> {
     partition_tools_for_access(tools.to_vec(), scope).1
 }
