@@ -289,7 +289,7 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
     // A live child can still expose an empty procfs environment while its
     // executable initializes. Wait for the known-present fixture marker, with
     // a fixed deadline; an empty snapshot cannot prove environment isolation.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
     let env_bytes = loop {
         let bytes = std::fs::read(format!("/proc/{pid}/environ"))
             .expect("read /proc/<pid>/environ of blocked child");
@@ -304,7 +304,7 @@ fn stdio_child_env_clear_does_not_leak_lab_vars_linux() {
             child.wait().expect("reap environment fixture");
             panic!("child environment did not become observable within two seconds");
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(10));
     };
 
     drop(child.stdin.take()); // EOF → cat exits
