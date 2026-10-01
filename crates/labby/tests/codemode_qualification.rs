@@ -218,10 +218,12 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
     const WORKLOAD: u64 = 12;
     const EXPECTED_ERRORS: u64 = 3;
     // This fixture verifies fanout accounting, not the deadline boundary.
-    // Leave room for twelve concurrent calls under the full CI test matrix;
-    // the timeout-specific case below exercises the strict budget.
+    // Twelve real stdio calls on hosted Windows can consume more than three
+    // seconds after runner startup. Keep this below the harness's 10s request
+    // guard while reserving room for startup and response delivery; the
+    // timeout-specific case below exercises the strict budget.
     let limits = Limits {
-        timeout_ms: 5_000,
+        timeout_ms: 8_000,
         ..Limits::default()
     };
     let runner = CodeModeQualification::start(limits)
