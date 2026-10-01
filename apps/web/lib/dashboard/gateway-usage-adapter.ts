@@ -17,9 +17,15 @@ export function usageActorKind(value?: UsageAttribution | null): ActorKind {
   return value?.actor_kind === 'agent' ? 'agent' : value?.actor_kind === 'client' ? 'client' : value?.actor_kind === 'subject' ? 'subject' : 'unknown'
 }
 
+/** A transport SDK's self-reported name does not identify its host app. */
+export function clientApplicationLabel(name?: string | null): string {
+  if (!name?.trim() || /^rmcp(?:\b|[\s/_-])/i.test(name.trim())) return 'Unidentified MCP client'
+  return name
+}
+
 export function usageActorLabel(actor: string, value?: UsageAttribution | null): string {
   if (value?.agent_id) return value.agent_id.replace(/[-_]+/g, ' ')
-  if (value?.client_name) return value.client_name
+  if (value?.client_name) return clientApplicationLabel(value.client_name)
   if (value?.inbound_actor) return `Subject ${value.inbound_actor.replace(/^sub:/, '')}`
   return actor === 'unattributed' ? 'Unattributed' : actor
 }
@@ -102,6 +108,7 @@ export interface GatewayUsageMetrics {
     failed: number
     outcomes?: Array<{ kind: string; calls: number }>
   }>
+  upstream_timeseries?: Record<string, GatewayUsageMetrics['timeseries']>
   facets: {
     tools: Array<{ upstream: string; tool: string }>
     capabilities?: string[]
@@ -130,6 +137,7 @@ export interface GatewayUsageCall {
 
 export interface GatewayUsageCalls {
   calls: GatewayUsageCall[]
+  latest_ingested_call_id?: number | null
   attribution_filters?: UsageAttributionFilters
   total_matching?: number | null
   next_cursor?: string | null

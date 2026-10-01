@@ -471,11 +471,17 @@ pub struct GatewayUsageMetricsView {
     pub upstreams: Vec<GatewayUsageUpstreamCount>,
     pub hourly: Vec<GatewayUsageHourCount>,
     pub timeseries: Vec<GatewayUsageTimeBucket>,
+    /// Top-four upstream series sharing the total series read snapshot; absent unless requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_timeseries:
+        Option<std::collections::BTreeMap<String, Vec<GatewayUsageTimeBucket>>>,
     pub facets: GatewayUsageFacets,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageCallView {
+    /// Stable SQLite row ID for this retained call row.
+    pub id: i64,
     pub ts_unix: i64,
     pub upstream: String,
     pub tool: String,
@@ -494,6 +500,10 @@ pub struct GatewayUsageCallView {
 #[derive(Debug, Clone, Serialize, JsonSchema, Deserialize, PartialEq)]
 pub struct GatewayUsageCallsView {
     pub calls: Vec<GatewayUsageCallView>,
+    /// Insertion-order marker for an unfiltered head poll. `Some(None)` is an
+    /// empty table; absent on filtered, scoped, or paginated responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_ingested_call_id: Option<Option<i64>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attribution_filters: Option<GatewayUsageAttributionFilters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -627,13 +637,13 @@ pub struct GatewayRuntimeOwnerView {
     pub raw: Option<String>,
 }
 
-/// One live inbound MCP client/session connected to this gateway's `/mcp`
+/// One retained inbound MCP client observation on this gateway's `/mcp`
 /// endpoint. See `labby_runtime::client_registry::ConnectedClient` — this is
 /// its dispatch-layer view projection (same field shape today; kept as a
 /// distinct type so the dispatch layer's serialization contract doesn't
 /// couple directly to the shared runtime crate's internal type).
 ///
-/// Best-effort, not a strict liveness guarantee — see
+/// Observation history, not a strict liveness guarantee — see
 /// `labby_runtime::client_registry` module docs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayClientView {
@@ -647,6 +657,10 @@ pub struct GatewayClientView {
     pub client_version: Option<String>,
     pub transport: String,
     pub connected_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<String>,
+    #[serde(default)]
+    pub observation_count: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]

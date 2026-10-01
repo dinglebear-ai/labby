@@ -202,7 +202,7 @@ test('same-ID edits replace hydrated rows even when catalog polling is inactive'
   }
 })
 
-test('a mounted gateway table observes runtime-only changes after sixty seconds', async () => {
+test('shared gateway refresh polls runtime every five seconds and configuration every fifteen', async () => {
   const { SWRConfig } = await import('swr')
   const { useGateways } = await import('./use-gateways')
   const { mockGateways } = await import('../api/mock-data')
@@ -217,16 +217,18 @@ test('a mounted gateway table observes runtime-only changes after sixty seconds'
   window.clearInterval = window.clearTimeout = ((id: number) => { timers.delete(id) }) as typeof window.clearInterval
   const row = { ...mockGateways[0], id: 'runtime-only-polling' }
   let count = 1
-  gatewayApi.list = async () => [row]
-  gatewayApi.hydrateRuntime = async rows => rows.map(row => ({ ...row, status: { ...row.status, discovered_tool_count: count } }))
+  let configCalls = 0
+  let runtimeCalls = 0
+  gatewayApi.list = async () => { configCalls += 1; return [row] }
+  gatewayApi.hydrateRuntime = async rows => { runtimeCalls += 1; return rows.map(row => ({ ...row, status: { ...row.status, discovered_tool_count: count } })) }
   gatewayApi.refreshStatus = async () => undefined
-  function Harness() { const result = useGateways(); return React.createElement('span', null, result.data?.[0]?.status.discovered_tool_count ?? 'loading') }
-  const view = await renderClient(React.createElement(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  function Harness() { const result = useGateways(true, false, false); return React.createElement('span', null, result.data?.[0]?.status.discovered_tool_count ?? 'loading') }
+  const view = await renderClient(React.createElement(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(React.Fragment, null, React.createElement(Harness), React.createElement(Harness))))
   const settle = async (expected: string) => {
     for (let attempt = 0; attempt < 50 && view.container.textContent !== expected; attempt++) {
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
     }
-    assert.equal(view.container.textContent, expected)
+    assert.equal(view.container.textContent, expected + expected)
   }
   const advance = async (until: number) => {
     while (true) {
@@ -242,15 +244,31 @@ test('a mounted gateway table observes runtime-only changes after sixty seconds'
   }
   try {
     await settle('1')
-    await advance(61_000)
+    assert.equal(timers.size, 1, 'one shared timer for both consumers')
+    assert.equal(configCalls, 1)
+    assert.equal(runtimeCalls, 1)
+    await advance(10_000)
+    assert.equal(configCalls, 1)
+    assert.equal(runtimeCalls, 3)
     count = 7
-    await advance(66_000)
+    await advance(15_000)
     await settle('7')
+    assert.equal(configCalls, 2)
+    assert.equal(runtimeCalls, 4)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    await advance(30_000)
+    assert.equal(configCalls, 2)
+    assert.equal(runtimeCalls, 4)
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await new Promise(resolve => setTimeout(resolve, 1)) })
+    assert.equal(configCalls, 3)
+    assert.equal(runtimeCalls, 5)
   } finally {
     await view.unmount()
     gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.hydrate; gatewayApi.refreshStatus = original.refresh
     window.setInterval = original.interval; window.clearInterval = original.clearInterval
     window.setTimeout = original.timeout; window.clearTimeout = original.clearTimeout
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
   }
 })
 
@@ -298,5 +316,36 @@ test('overlapping reloads of one server issue a single restart request', async (
     gatewayApi.reload = original.reload
     gatewayApi.hydrateRuntime = original.hydrate
     gatewayApi.refreshStatus = original.refresh
+  }
+})
+
+
+test('slow initial runtime hydration coalesces scheduler and catalog warming', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  installTestDom()
+  const original = { list: gatewayApi.list, hydrate: gatewayApi.hydrateRuntime, refresh: gatewayApi.refreshStatus, interval: window.setInterval, clear: window.clearInterval }
+  let pulse!: () => void
+  window.setInterval = ((callback: () => void) => { pulse = callback; return 42 }) as typeof window.setInterval
+  window.clearInterval = (() => {}) as typeof window.clearInterval
+  let finish!: (rows: typeof mockGateways) => void
+  let warm!: () => void
+  let calls = 0
+  gatewayApi.list = async () => [mockGateways[0]]
+  gatewayApi.hydrateRuntime = async () => { calls += 1; return new Promise(resolve => { finish = resolve }) }
+  gatewayApi.refreshStatus = () => new Promise(resolve => { warm = resolve })
+  function Harness() { useGateways(); return null }
+  const view = await renderClient(React.createElement(SWRConfig, { value: { provider: () => new Map(), dedupingInterval: 0 } }, React.createElement(Harness)))
+  try {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(calls, 1)
+    await act(async () => { pulse(); pulse(); warm(); await Promise.resolve() })
+    assert.equal(calls, 1, 'every trigger joins initial hydration')
+    await act(async () => { finish([mockGateways[0]]); await Promise.resolve() })
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.hydrate; gatewayApi.refreshStatus = original.refresh
+    window.setInterval = original.interval; window.clearInterval = original.clear
   }
 })

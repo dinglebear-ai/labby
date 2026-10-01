@@ -61,7 +61,7 @@ export function AgentDetailDrawer({
         <>
           <p className="break-all text-xs text-aurora-text-muted">
             {target?.kind === 'client'
-              ? `Exact initialized client: ${target.filter.client_name} ${target.filter.client_version} · actor ${target.filter.actor}`
+              ? `Self-reported MCP metadata: ${target.filter.client_name} ${target.filter.client_version} · actor ${target.filter.actor}`
               : target?.kind === 'agent'
                 ? `Exact Agent ID: ${target.filter.agent_id} · actor ${target.filter.actor}`
                 : `Recorded identity: ${detail.id}`}

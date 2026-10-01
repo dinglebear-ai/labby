@@ -29,6 +29,8 @@ async fn clients_reflects_entries_pushed_to_the_wired_registry() {
             client_version: Some("1.2.3".to_string()),
             transport: "mcp".to_string(),
             connected_at: "2026-01-01T00:00:00Z".to_string(),
+            last_seen_at: None,
+            observation_count: 1,
         })
         .await;
 
