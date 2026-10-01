@@ -72,7 +72,12 @@ function Get-LabbyPinnedGitHubVerifier {
 }
 
 function New-LabbyPrivateTemporaryDirectory {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
     $directory = Join-Path ([IO.Path]::GetTempPath()) "labby-private-$([guid]::NewGuid().ToString('N'))"
+    if (-not $PSCmdlet.ShouldProcess($directory, 'Create protected temporary directory')) {
+        throw 'Private temporary directory creation was declined; installation cannot continue'
+    }
     New-Item -ItemType Directory -Path $directory | Out-Null
     try { Protect-LabbyMetadataDirectory -Path $directory } catch {
         Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
@@ -128,7 +133,7 @@ function Test-LabbyDownloadNotFound {
     return $Exception -is [Net.WebException] -and $Exception.Response -and [int]$Exception.Response.StatusCode -eq 404
 }
 
-function Ensure-LabbyGitHubVerifier {
+function Get-LabbyGitHubVerifier {
     param([string]$TemporaryDirectory)
     $existing = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue
     if ($existing -and (Test-LabbyGitHubVerifierVersion -Executable $existing.Source) -and
@@ -191,7 +196,7 @@ function Assert-LabbyGitHubVerifierVersion {
 
 function Test-LabbyReleasePrerequisite {
     param([string]$TemporaryDirectory)
-    try { return Ensure-LabbyGitHubVerifier -TemporaryDirectory $TemporaryDirectory } catch {
+    try { return Get-LabbyGitHubVerifier -TemporaryDirectory $TemporaryDirectory } catch {
         $trustError = [Security.SecurityException]::new('Pinned GitHub verifier could not be prepared; downloaded code was not trusted')
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError

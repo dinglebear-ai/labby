@@ -9,9 +9,17 @@ AfterAll {
 }
 
 Describe 'Labby Windows installer contracts' {
+    It 'fails closed without creating a directory when WhatIf declines staging' {
+        Mock New-Item { throw 'directory must not be created' }
+        Mock Protect-LabbyMetadataDirectory { throw 'protection must not run' }
+        { New-LabbyPrivateTemporaryDirectory -WhatIf } | Should -Throw '*creation was declined*'
+        Assert-MockCalled New-Item -Times 0
+        Assert-MockCalled Protect-LabbyMetadataDirectory -Times 0
+    }
+
     It 'rejects an outdated provenance verifier before release downloads' {
         Mock Get-Command { [pscustomobject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
-        Mock Ensure-LabbyGitHubVerifier { throw 'fixture old verifier/bootstrap failed' }
+        Mock Get-LabbyGitHubVerifier { throw 'fixture old verifier/bootstrap failed' }
         Mock Invoke-WebRequest { throw 'release download must not run' }
         try {
             Test-LabbyReleasePrerequisite
@@ -36,7 +44,7 @@ Describe 'Labby Windows installer contracts' {
         Mock Test-LabbyGitHubVerifierVersion { throw 'downloaded code must not be invoked' }
         $private = New-LabbyPrivateTemporaryDirectory
         try {
-            { Ensure-LabbyGitHubVerifier -TemporaryDirectory $private } | Should -Throw '*checksum FAILED*'
+            { Get-LabbyGitHubVerifier -TemporaryDirectory $private } | Should -Throw '*checksum FAILED*'
             Test-Path (Join-Path $private 'gh.exe') | Should -BeFalse
             Assert-MockCalled Test-LabbyGitHubVerifierVersion -Times 0
         } finally { Remove-Item -LiteralPath $private -Recurse -Force }
@@ -61,7 +69,7 @@ Describe 'Labby Windows installer contracts' {
             Mock Get-Command { $existing } -ParameterFilter { $Name -eq 'gh' }
             $private = New-LabbyPrivateTemporaryDirectory
             try {
-                $selected = Ensure-LabbyGitHubVerifier -TemporaryDirectory $private
+                $selected = Get-LabbyGitHubVerifier -TemporaryDirectory $private
                 $selected | Should -Be (Join-Path $private 'gh.exe')
                 [IO.File]::ReadAllText($selected) | Should -Be 'fixture executable bytes'
                 Test-Path (Join-Path $private 'unselected.txt') | Should -BeFalse
@@ -125,7 +133,7 @@ Describe 'Labby Windows installer contracts' {
         # so a fresh machine fails fast with the dependency message instead of
         # downloading an artifact it cannot verify.
         Mock Get-Command { $null } -ParameterFilter { $Name -eq 'gh' }
-        Mock Ensure-LabbyGitHubVerifier { throw 'fixture bootstrap unavailable' }
+        Mock Get-LabbyGitHubVerifier { throw 'fixture bootstrap unavailable' }
         Mock Invoke-RestMethod { throw 'release resolution ran before the prerequisite gate' }
         Mock Invoke-WebRequest { throw 'release download ran before the prerequisite gate' }
         try {
