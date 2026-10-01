@@ -71,3 +71,14 @@ async fn scoped_dispatch_executes_ephemeral_probe_under_caller_stack_budget() {
     assert_eq!(result["connected"], false);
     assert!(result["capability_observation"].is_object());
 }
+
+#[test]
+fn routed_probe_has_stack_headroom_for_serving_middleware() {
+    // Leave 384 KiB of a 1 MiB serving stack for API and middleware callers.
+    std::thread::Builder::new()
+        .stack_size(640 * 1024)
+        .spawn(scoped_dispatch_executes_ephemeral_probe_under_caller_stack_budget)
+        .unwrap()
+        .join()
+        .unwrap();
+}

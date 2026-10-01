@@ -534,7 +534,7 @@ export const mcpConnectionSchema = z.object({
   transport: z.literal('http'),
   authentication: z.enum(['none', 'bearer']),
   url: bounded(2048).url().refine(value => {
-    if (/[\s\u0000-\u001f\u007f\\]/.test(value)) return false
+    if (/[\s\\]/.test(value) || Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return false
     const url = new URL(value)
     return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search
   }, 'Use an HTTPS MCP endpoint without credentials, query, or fragment'),
