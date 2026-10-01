@@ -93,6 +93,46 @@ impl AncestorGuard {
     }
 }
 
+/// Publish a regular same-directory temporary without replacing an existing
+/// destination. Unlike a hard link, this never exposes two links to a secret.
+pub fn publish_file_no_replace(source: &Path, destination: &Path) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileW;
+    if !source.is_absolute()
+        || !destination.is_absolute()
+        || source.parent() != destination.parent()
+    {
+        return Err(io::Error::other(
+            "publication requires absolute same-directory paths",
+        ));
+    }
+    let _ancestors = AncestorGuard::for_file(source)?;
+    let verified = open_read(source, false)?;
+    drop(verified);
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    if source_wide[..source_wide.len() - 1].contains(&0)
+        || destination_wide[..destination_wide.len() - 1].contains(&0)
+    {
+        return Err(io::Error::other("publication path contains NUL"));
+    }
+    // SAFETY: both buffers are NUL-terminated and live throughout this call.
+    // MoveFileW never replaces a destination and has no copy fallback flags.
+    if unsafe { MoveFileW(source_wide.as_ptr(), destination_wide.as_ptr()) } != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
 /// Open a regular file without following its final reparse point. While held,
 /// other handles cannot write, replace, or delete the verified file.
 pub fn open_read(path: &Path, delete_access: bool) -> io::Result<File> {
@@ -554,6 +594,24 @@ fn verify_acl_policy(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publication_never_replaces_a_winner_and_keeps_one_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("secret");
+        let first = dir.path().join("first");
+        std::fs::write(&first, b"winner").unwrap();
+        assert!(super::publish_file_no_replace(&first, &destination).unwrap());
+        assert!(!first.exists());
+        let file = super::open_read(&destination, false).unwrap();
+        assert_eq!(super::identity(&file, false).unwrap().links, 1);
+        drop(file);
+        let second = dir.path().join("second");
+        std::fs::write(&second, b"loser").unwrap();
+        assert!(!super::publish_file_no_replace(&second, &destination).unwrap());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"winner");
+        assert_eq!(std::fs::read(&second).unwrap(), b"loser");
+    }
+
     use super::*;
 
     fn owner_sid(file: &File) -> Vec<u8> {

@@ -509,11 +509,10 @@ pub(crate) fn create_secret_file_atomically(
     let mut last_collision = None;
 
     for attempt in 0..16_u8 {
-        let temporary = parent.join(format!(
-            ".{file_name}.tmp-{}-{}-{attempt}",
-            std::process::id(),
-            now_unix()
-        ));
+        // Process/time/attempt alone collide between threads. Randomness also
+        // prevents a removed competing temporary from confusing collision checks.
+        let nonce = random_token(24)?;
+        let temporary = parent.join(format!(".{file_name}.tmp-{nonce}-{attempt}"));
         let mut file = match create_restricted_secret_file(&temporary) {
             Ok(file) => file,
             Err(AuthError::Storage(message)) if temporary.exists() => {
@@ -542,8 +541,7 @@ pub(crate) fn create_secret_file_atomically(
                 ))
             })?;
             drop(file);
-            // Linking a fully written same-directory file publishes atomically
-            // without replacing a concurrent initializer's winning key.
+            #[cfg(unix)]
             let created = match std::fs::hard_link(&temporary, path) {
                 Ok(()) => true,
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
@@ -554,6 +552,20 @@ pub(crate) fn create_secret_file_atomically(
                     )));
                 }
             };
+            #[cfg(windows)]
+            let created =
+                labby_winjob::fs::publish_file_no_replace(&temporary, path).map_err(|error| {
+                    AuthError::Storage(format!("publish secret `{}`: {error}", path.display()))
+                })?;
+            // Unix publication uses a link; Windows rename has already removed
+            // the temporary when successful. Always remove a losing candidate.
+            if !cfg!(windows) || !created {
+                std::fs::remove_file(&temporary).map_err(|error| {
+                    AuthError::Storage(format!(
+                        "remove temporary secret after publication: {error}"
+                    ))
+                })?;
+            }
             ensure_restrictive_permissions(path)?;
             if let Ok(directory) = std::fs::File::open(parent) {
                 directory.sync_all().map_err(|error| {
@@ -617,6 +629,36 @@ mod restricted_lock_tests {
 
     fn denied(_file: &std::fs::File, _path: &Path) -> Result<(), AuthError> {
         Err(AuthError::Storage("hardening denied".into()))
+    }
+
+    #[test]
+    fn concurrent_secret_publication_uses_one_private_winner_and_removes_temporary_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = test_root(&dir).join("secret.pem");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(32));
+        let handles = (0..32)
+            .map(|index| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    create_secret_file_atomically(&path, &[index]).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let winners = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|created| *created)
+            .count();
+        assert_eq!(winners, 1);
+        ensure_restrictive_permissions(&path).unwrap();
+        assert_eq!(std::fs::read_dir(test_root(&dir)).unwrap().count(), 1);
+        #[cfg(windows)]
+        {
+            let file = labby_winjob::fs::open_read(&path, false).unwrap();
+            assert_eq!(labby_winjob::fs::identity(&file, false).unwrap().links, 1);
+        }
     }
 
     #[cfg(target_os = "macos")]
