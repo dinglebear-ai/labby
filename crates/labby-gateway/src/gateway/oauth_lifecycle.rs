@@ -63,6 +63,12 @@ pub(super) fn should_use_dynamic_registration(
 }
 
 impl GatewayManager {
+    /// Hold the real cleanup boundary for deterministic downstream race tests.
+    #[cfg(feature = "testkit")]
+    pub async fn hold_oauth_status_invalidation_for_test(&self) -> impl Drop + '_ {
+        self.oauth_status_discovery_cache.lock().await
+    }
+
     async fn invalidate_oauth_status_discovery(&self, upstream: &str, subject: Option<&str>) {
         self.oauth_status_discovery_cache.lock().await.retain(
             |(cached_upstream, cached_subject), _| {

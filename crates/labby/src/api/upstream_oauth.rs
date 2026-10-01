@@ -549,7 +549,7 @@ async fn clear(
         upstream = %query.upstream,
         "upstream oauth credentials cleared"
     );
-    if let Err(error) = authority.validate_before_external_effect().await {
+    if let Err(error) = authority.validate_after_external_effect().await {
         return ApiError::new(error).into_response();
     }
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
@@ -588,7 +588,7 @@ async fn revoke_google(
             log_google_revoke_failure(&auth, &body.upstream, started, error.kind());
         })?;
     log_google_revoke_success(&auth, &body.upstream, started, &invalidation);
-    authority.validate_before_external_effect().await?;
+    authority.validate_after_external_effect().await?;
     Ok(Json(invalidation))
 }
 
@@ -1489,3 +1489,7 @@ fn callback_query_preserves_rfc9207_issuer_verbatim() {
         serde_json::from_value(serde_json::json!({"code": "c", "state": "s"})).unwrap();
     assert!(missing.iss.is_none());
 }
+
+#[cfg(all(test, feature = "proxy-testkit"))]
+#[path = "upstream_oauth_authority_tests.rs"]
+mod authority_races;

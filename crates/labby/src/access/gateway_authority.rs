@@ -48,6 +48,35 @@ impl GatewayActionAuthorization {
             .validate_at(AuthoritySafeBoundary::BeforeExternalEffect, now, &epochs)
             .map_err(|_| denied())
     }
+
+    /// Fence response disclosure without misclassifying an executed mutation
+    /// as a denial before dispatch. No operation result is retained here.
+    pub(crate) async fn validate_after_external_effect(&self) -> Result<(), ToolError> {
+        use labby_runtime::agent_error::{
+            AgentErrorOrigin, AgentRecoveryAction, AgentRecoveryAdvice, AgentSameArgumentsRetry,
+            AgentSideEffectRisk,
+        };
+
+        self.validate_before_external_effect().await.map_err(|error| {
+            ToolError::contract(
+                "authority_changed",
+                "Gateway authority could not be confirmed after the operation executed",
+                serde_json::Map::from_iter([
+                    ("service".into(), Value::String("gateway".into())),
+                    ("action".into(), Value::String(self.action.clone())),
+                    ("original_kind".into(), Value::String(error.kind().into())),
+                ]),
+                Some(AgentErrorOrigin::Policy),
+                Some(AgentRecoveryAdvice {
+                    action: AgentRecoveryAction::InspectAndEscalate,
+                    same_arguments: AgentSameArgumentsRetry::Discouraged,
+                    guidance: "Inspect current credential and connection state through an authorized operator before retrying; credential removal and runtime cleanup may already have committed. Confirm current caller authority before starting another operation.".into(),
+                    retry_after_ms: None,
+                }),
+                Some(AgentSideEffectRisk::Possible),
+            )
+        })
+    }
 }
 
 /// Gateway policy is team-manageable; host configuration and process/credential
