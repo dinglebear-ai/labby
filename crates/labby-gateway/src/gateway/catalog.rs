@@ -635,6 +635,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Minutes east of UTC fallback when timezone is omitted (-1440 to 1440)",
             },
             ParamSpec {
+                name: "include_upstream_timeseries",
+                ty: "boolean",
+                required: false,
+                description: "Include at most four upstream bucket series from the same read transaction as total timeseries; default false",
+            },
+            ParamSpec {
                 name: "include_facets",
                 ty: "boolean",
                 required: false,

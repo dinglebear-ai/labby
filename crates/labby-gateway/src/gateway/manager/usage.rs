@@ -68,6 +68,7 @@ impl GatewayManager {
                 timezone: params.timezone,
                 timezone_offset_minutes,
                 include_facets: params.include_facets.unwrap_or(false),
+                include_upstream_timeseries: params.include_upstream_timeseries,
                 allowed_upstreams,
             })
             .await?;
@@ -158,6 +159,32 @@ impl GatewayManager {
                         .collect(),
                 })
                 .collect(),
+            upstream_timeseries: metrics.upstream_timeseries.map(|series| {
+                series
+                    .into_iter()
+                    .map(|(name, buckets)| {
+                        (
+                            name,
+                            buckets
+                                .into_iter()
+                                .map(|b| GatewayUsageTimeBucket {
+                                    ts_unix: b.ts_unix,
+                                    calls: b.calls,
+                                    failed: b.failed,
+                                    outcomes: b
+                                        .outcomes
+                                        .into_iter()
+                                        .map(|o| GatewayUsageErrorCount {
+                                            kind: o.kind,
+                                            calls: o.calls,
+                                        })
+                                        .collect(),
+                                })
+                                .collect(),
+                        )
+                    })
+                    .collect()
+            }),
             facets: GatewayUsageFacets {
                 tools: metrics
                     .facets
@@ -219,8 +246,8 @@ impl GatewayManager {
             .limit
             .unwrap_or(DEFAULT_CALLS_LIMIT)
             .clamp(1, MAX_CALLS_LIMIT);
-        let (rows, total_matching, next_cursor) = store
-            .list_calls(UsageCallsQuery {
+        let (rows, total_matching, next_cursor, latest_ingested_call_id) = store
+            .list_calls_with_ingestion_watermark(UsageCallsQuery {
                 since_unix: params.since_unix,
                 until_unix: params.until_unix,
                 upstream: params.upstream,
@@ -245,6 +272,7 @@ impl GatewayManager {
             calls: rows
                 .into_iter()
                 .map(|r| GatewayUsageCallView {
+                    id: r.id,
                     ts_unix: r.ts_unix,
                     upstream: r.upstream,
                     tool: r.tool,
@@ -260,6 +288,7 @@ impl GatewayManager {
                 .collect(),
             total_matching,
             next_cursor: next_cursor.map(format_usage_cursor),
+            latest_ingested_call_id,
         })
     }
 }

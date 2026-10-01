@@ -1384,3 +1384,21 @@ nav[data-collapsed='1'] [data-navitem]:hover::after {
 @media (prefers-reduced-motion: reduce) {
   [data-console-hero-actions] :is(button, a):not([data-visible-label]) { transition: none !important; }
 }
+
+
+/* The selected inventory table keeps dense desktop geometry and touch-sized
+   controls on phones and coarse pointers, including its column handles. */
+@media (max-width: 700px), (pointer: coarse) {
+  [data-gwtable] button,
+  [data-gwtable] a {
+    min-width: 44px;
+    min-height: 44px;
+  }
+  [data-gwtable] [data-gwhead] {
+    height: auto;
+    min-height: 52px;
+  }
+  [data-gwtable] [data-hoverreveal] {
+    gap: 4px;
+  }
+}
