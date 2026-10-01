@@ -1351,10 +1351,16 @@ them the gateway-global mutation surface — `gateway.reload`,
 `gateway.protected_route.*`,
 `gateway.loadout.*`, `gateway.virtual_server.*`, `gateway.service_config.set`,
 `gateway.code_mode.set`, `gateway.discover`, and `gateway.import` with
-`all: true` — is gated by scope alone, not by the route's upstream allowlist. A
-subset route whose token carries an admin scope can still reach those. Do not
-issue admin-scoped tokens for subset routes and treat the allowlist as the only
-boundary.
+`all: true` — is not bounded by the route's upstream allowlist. That exemption
+does not grant mutation authority: the token's transport scope is a ceiling,
+and the caller must also hold durable `platform.manage` authority for changes
+owned by the installation, or `scope.manage` authority for an explicitly
+selected Team's loadouts and protected routes. Team selection does not grant
+installation authority. An admin-scoped subset token alone cannot authorize
+these mutations. See [durable authority and transport scopes](#browser-session-scopes-and-domain-admission)
+and [selecting the authority context](../access-control/MULTI_USER_AUTHORITY.md#selecting-the-authority-context).
+Do not treat a subset allowlist as the only authority boundary.
+
 
 Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
 catalog. Upstream MCP App owners and callbacks pass through only when the same

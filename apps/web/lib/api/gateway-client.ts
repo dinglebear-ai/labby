@@ -523,24 +523,32 @@ export const gatewayApi = {
   async hydrateToolInventory(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
     const results = await safeFanout(
       gateways,
-      async (gateway) => gateway.source === 'in_process'
-        ? gateway.discovery.tools
-        : (await gatewayAction<Array<string | BackendGatewayToolRow>>(
-            'gateway.discovered_tools',
-            { name: gateway.id },
-            signal,
-          )).map((tool) => ({
-            name: typeof tool === 'string' ? tool : tool.name,
+      async (gateway) => {
+        if (gateway.source === 'in_process') return gateway.discovery.tools
+        const tools = await gatewayAction<Array<string | BackendGatewayToolRow>>(
+          'gateway.discovered_tools', { name: gateway.id }, signal,
+        )
+        let policy = gateway.config.expose_tools
+        // Older backends omit exposure, including on structured rows. A fleet
+        // summary omits policy, so read full config before interpreting them.
+        if (policy === undefined && tools.some(tool => typeof tool === 'string' || tool.exposed === undefined)) {
+          policy = (await gatewayAction<BackendGatewayView>(
+            'gateway.get', { name: gateway.id }, signal,
+          )).config.expose_tools
+        }
+        return tools.map((tool) => {
+          const name = typeof tool === 'string' ? tool : tool.name
+          const inferredMatch = typeof tool === 'string' || tool.exposed === undefined
+            ? matchTool(name, policy)
+            : null
+          return {
+            name,
             description: typeof tool === 'string' ? undefined : tool.description ?? undefined,
-            exposed: matchTool(
-              typeof tool === 'string' ? tool : tool.name,
-              gateway.config.expose_tools,
-            ) !== null,
-            matched_by: matchTool(
-              typeof tool === 'string' ? tool : tool.name,
-              gateway.config.expose_tools,
-            ),
-          })),
+            exposed: typeof tool === 'string' ? inferredMatch !== null : tool.exposed ?? (inferredMatch !== null),
+            matched_by: typeof tool === 'string' || tool.matched_by === undefined ? inferredMatch : tool.matched_by,
+          }
+        })
+      },
     )
 
     return results.map((result) => {

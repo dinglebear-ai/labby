@@ -342,7 +342,7 @@ fn path_test_command(path: &str, writable: bool) -> std::process::Command {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn executable_test_command(program: &str, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new(program);
     command.args(args);

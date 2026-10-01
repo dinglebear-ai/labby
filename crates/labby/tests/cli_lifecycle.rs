@@ -40,6 +40,12 @@ async fn run(server: &MockServer, args: &[&str]) -> Output {
         .args(["--json", "--server", &server.uri()])
         .args(args)
         .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| {
+            cfg!(windows)
+                && (name.to_str().is_some_and(|name| {
+                    name.eq_ignore_ascii_case("SystemRoot") || name.eq_ignore_ascii_case("WINDIR")
+                }))
+        }))
         .env("HOME", home.path())
         .env("LABBY_HOME", home.path().join(".labby"))
         .env("NO_COLOR", "1")

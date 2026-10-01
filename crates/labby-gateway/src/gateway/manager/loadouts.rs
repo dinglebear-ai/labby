@@ -128,8 +128,17 @@ impl GatewayManager {
         name: &str,
         patch: GatewayLoadoutPatch,
     ) -> Result<GatewayLoadoutConfig, ToolError> {
-        let next = apply_loadout_patch(self.loadout_get(name).await?, patch);
-        self.loadout_update(name, next).await
+        let started = std::time::Instant::now();
+        let mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
+        let next = apply_loadout_patch(desired_loadout(&cfg, name)?, patch);
+        self.validate_loadout_services(&next)?;
+        let runtime_cfg = self.config.read().await.clone();
+        reject_hot_loadout_mutation(&cfg, &runtime_cfg, name, "update")?;
+        let loadout = update_loadout(&mut cfg, name, next)?;
+        self.persist_config_owned(mutation_guard, cfg).await?;
+        log_loadout_mutation("gateway.loadout.update", &loadout, started.elapsed());
+        Ok(loadout)
     }
 
     pub async fn loadout_stage_update(
@@ -166,8 +175,29 @@ impl GatewayManager {
         name: &str,
         patch: GatewayLoadoutPatch,
     ) -> Result<Value, ToolError> {
-        let next = apply_loadout_patch(self.loadout_get(name).await?, patch);
-        self.loadout_stage_update(name, next).await
+        let started = std::time::Instant::now();
+        let mutation_guard = self.acquire_config_mutation().await?;
+        let mut cfg = self.load_config_for_mutation().await?;
+        let next = apply_loadout_patch(desired_loadout(&cfg, name)?, patch);
+        self.validate_loadout_services(&next)?;
+        let runtime_cfg = self.config.read().await.clone();
+        if !(loadout_has_enabled_route(&cfg, name) || loadout_has_enabled_route(&runtime_cfg, name))
+        {
+            return Err(ToolError::InvalidParam {
+                message: "staging is only needed for a Loadout referenced by an enabled protected gateway route; use gateway.loadout.update for a hot-safe Loadout".into(),
+                param: "name".into(),
+            });
+        }
+        let loadout = update_loadout(&mut cfg, name, next)?;
+        let runtime_loadout = runtime_cfg
+            .loadouts
+            .iter()
+            .find(|runtime| runtime.name == loadout.name);
+        let result = staged_loadout_result(loadout.clone(), Some(&loadout), runtime_loadout);
+        self.persist_desired_config_owned(mutation_guard, cfg)
+            .await?;
+        log_loadout_mutation("gateway.loadout.stage_update", &loadout, started.elapsed());
+        Ok(result)
     }
 
     pub async fn loadout_stage_remove(&self, name: &str) -> Result<Value, ToolError> {
@@ -223,6 +253,13 @@ impl GatewayManager {
         }
         Ok(())
     }
+}
+
+fn desired_loadout(cfg: &GatewayConfig, name: &str) -> Result<GatewayLoadoutConfig, ToolError> {
+    cfg.loadouts.iter().find(|loadout| loadout.name == name).cloned().ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "not_found".into(),
+        message: format!("loadout `{name}` not found in desired config; run `gateway.loadout.list_state` or `labby loadout list` to inspect pending restart state"),
+    })
 }
 
 fn apply_loadout_patch(

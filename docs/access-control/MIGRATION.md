@@ -1,30 +1,34 @@
 ---
 title: "Multi-user ownership migration and recovery"
 created: "2026-09-05"
-updated: "2026-09-18"
+updated: "2026-09-30"
 status: "implemented-runbook"
 ---
 
 # Multi-user ownership migration and recovery
 
-## Execution schema v8
+## Current schema v9
 
-The current binary targets schema v8 (`labby-access-v8-20260916`). A v7
-installation uses the same offline approval, independent checkpoint and
-verified-reopen workflow below. Its upgrade preserves existing ownership,
-bootstrap generation, authority revisions, definitions and sessions. It adds
-recurring schedule occurrences and retry attempts, and container image
-draft/build/publication records; Agent and Task payloads stay in the
-content-addressed payload store, not in the access schema. It does not
-reclassify existing owners or grant runtime access.
+The current binary targets schema v9 (`labby-access-v9-20260918`). Existing
+v1–v8 stores require the offline approval, independent checkpoint and
+verified-reopen workflow below. Approval must name the actual source version,
+`target_version: 9`, and `target_fingerprint: labby-access-v9-20260918`.
 
-For v7 to v8, retain before/after logical inventories of every existing table
-except the expected schema metadata change, verify the new tables are empty,
+The v8 execution expansion preserves ownership, bootstrap generation,
+authority revisions, definitions and sessions. It adds recurring schedule
+occurrences, retry attempts, and container image draft/build/publication
+records. Agent and Task payloads stay in the content-addressed payload store.
+The v9 expansion adds artifact publication authority, distribution policies,
+assignment distribution records, and mirrors without reclassifying existing
+owners or granting runtime access.
+
+Retain before/after logical inventories of every existing table except the
+expected schema metadata change, verify newly introduced tables are empty,
 run integrity and foreign-key checks, and reopen twice. Rehearse against an
 independent copy before stopping the live daemon for its final checkpoint and
 migration. Keep the matching previous binary and complete installation restore
-set. Once new execution records have been written, restoring the checkpoint
-would discard those writes; never point a v7 binary at a v8 store.
+set. Restoring a checkpoint discards writes made after migration; never point
+an older binary at a v9 store.
 
 The ownership classification and failure-injection sections below describe
 the earlier v1–v6 to v7 transition and continue to apply when upgrading those
@@ -47,14 +51,15 @@ pre-migration checkpoint. After it, rollback means forward repair or restoring
 the complete checkpoint and losing all later writes; an old binary must never
 open the new store and reinterpret scoped rows as globally owned.
 
-Ordinary startup never crosses a schema boundary implicitly: every legacy
-version (v1 through v6) is refused with `MigrationApprovalRequired` until the
-operator sets `LABBY_ACCESS_MIGRATION_EVIDENCE` to the owner-controlled
-approval document described in [ENV.md](../runtime/ENV.md). Bootstrap of a
-never-initialized legacy store is gated the same way. Labby binds that
-document to an independent checkpoint, the exact source/target schema pair, a
-durable operation ID, and an explicit activation decision before opening an
-exclusive migration transaction.
+Ordinary startup observes existing stores without migrating them. To upgrade
+an existing initialized v1–v8 store, stop the daemon and use the offline
+`labby state access migrate` command with `LABBY_ACCESS_MIGRATION_EVIDENCE`
+pointing to the owner-controlled approval document described in
+[ENV.md](../runtime/ENV.md). Bootstrap of a never-initialized legacy store is
+gated by the same evidence contract. Labby binds that document to an
+independent checkpoint, the exact source/target schema pair, a durable
+operation ID, and an explicit activation decision before opening an exclusive
+migration transaction.
 
 Checkpoint verification is logical, not byte-identical. The checkpoint file's
 digest is streamed and must match the document; the live store is then
@@ -129,7 +134,7 @@ variable alone does not activate migration through the daemon.
 
 A short-lived v8 build used schema fingerprint
 `labby-access-v8-20260913` and created three execution-payload tables that
-current v8 (`labby-access-v8-20260916`) no longer defines:
+canonical v8 (`labby-access-v8-20260916`) no longer defines:
 `agent_session_evidence`, `agent_session_requests`, and
 `agent_task_inputs`. Because both stores report `PRAGMA user_version = 8`,
 the compatibility path is shape-aware rather than version-only.
@@ -142,13 +147,13 @@ empty; any rows fail closed rather than being discarded.
 
 The repair uses the same offline approval, independent checkpoint, logical
 fingerprint, installation-lock, exclusive-transaction, completion-marker, and
-verified-reopen controls as an ordinary version migration. The same-version
-repair writes a distinct compatibility completion marker so an existing v8
-receipt from the earlier v7-to-v8 crossing is preserved and cannot block or be
+verified-reopen controls as an ordinary version migration. The compatibility
+repair writes a distinct completion marker so an existing v8 receipt from the earlier v7-to-v8 crossing is preserved and cannot block or be
 overwritten by the repair. Approval therefore
-uses `source_version: 8` and `target_version: 8`, while
-`target_fingerprint` remains `labby-access-v8-20260916`. No daemon startup
-path performs this reconciliation implicitly.
+uses `source_version: 8` and `target_version: 9`, with
+`target_fingerprint: labby-access-v9-20260918`. Within the approved migration,
+Labby first reconciles the source to the canonical v8 shape, then installs the
+v9 expansion. No daemon startup path performs this reconciliation implicitly.
 
 ## Production-shaped v5 inventory
 

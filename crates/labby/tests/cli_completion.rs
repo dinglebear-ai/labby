@@ -50,6 +50,12 @@ async fn run(home: &Path, server: &MockServer, token: &str, team: &str, args: &[
         .args(["--team-id", team])
         .args(args)
         .env_clear()
+        .envs(std::env::vars_os().filter(|(name, _)| {
+            cfg!(windows)
+                && (name.to_str().is_some_and(|name| {
+                    name.eq_ignore_ascii_case("SystemRoot") || name.eq_ignore_ascii_case("WINDIR")
+                }))
+        }))
         .env("HOME", home)
         .env("LABBY_HOME", home.join(".labby"))
         .env("LABBY_SERVER_URL", server.uri())

@@ -1063,3 +1063,60 @@ async fn reload_protected_routes_only_change_preserves_live_pool() {
         "protected route must be applied even on the pool-preserving path"
     );
 }
+
+#[tokio::test]
+async fn selective_add_keeps_staged_route_and_loadout_runtime_pinned() {
+    use labby_runtime::gateway_config::{
+        GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteTarget,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let loadout = GatewayLoadoutConfig {
+        name: "ops".into(),
+        ..Default::default()
+    };
+    let mut route = fixture_protected_route("ops-route");
+    route.backend_url.clear();
+    route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+        ProtectedGatewaySubsetTarget {
+            loadout: Some("ops".into()),
+            ..Default::default()
+        },
+    ));
+    let initial = GatewayConfig {
+        upstream: vec![fixture_http_upstream("alpha")],
+        loadouts: vec![loadout.clone()],
+        protected_mcp_routes: vec![route.clone()],
+        ..Default::default()
+    };
+    write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool = Arc::new(manager.new_base_pool(
+        initial.upstream_request_timeout(),
+        initial.upstream_relay_timeout(),
+        false,
+    ));
+    pool.seed_lazy_upstreams(&initial.upstream).await;
+    manager.runtime.swap(Some(pool.clone())).await;
+    let mut desired = initial.clone();
+    desired.loadouts[0].expose_tools = false;
+    desired.protected_mcp_routes[0].scopes = vec!["lab:admin".into()];
+    write_gateway_config(&path, &desired).unwrap();
+    manager
+        .add(fixture_http_upstream("charlie"), None, Some("test"), None)
+        .await
+        .unwrap();
+    let live = manager.current_config().await;
+    assert_eq!(live.protected_mcp_routes, vec![route]);
+    assert_eq!(live.loadouts, vec![loadout]);
+    assert_eq!(
+        manager.loadout_list_state().await.unwrap()[0]["restart_required"],
+        true
+    );
+    let durable = load_gateway_config(&path).unwrap();
+    assert!(!durable.loadouts[0].expose_tools);
+    assert_eq!(durable.protected_mcp_routes[0].scopes, ["lab:admin"]);
+    assert!(Arc::ptr_eq(&pool, &manager.current_pool().await.unwrap()));
+    assert!(live.upstream.iter().any(|u| u.name == "charlie"));
+}

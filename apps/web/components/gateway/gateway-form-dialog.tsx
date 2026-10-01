@@ -205,16 +205,6 @@ function formatSkillPatterns(patterns: string[] | null | undefined): string {
   return (patterns ?? []).join(', ')
 }
 
-/// A protected-route write rejected because a route of that name already
-/// exists. The backend answers 409 for several kinds, and the mutation layer
-/// throws its own error class, so this matches the reported shape rather than
-/// a class identity.
-export function isRouteNameConflict(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false
-  const { status, code } = error as { status?: unknown; code?: unknown }
-  return status === 409 && code === 'conflict'
-}
-
 const emptyCustomState = {
   transport: 'http' as TransportType,
   name: '',
@@ -248,7 +238,7 @@ export function GatewayFormDialog({
   const protectedRouteTouchedRef = useRef(false)
   const { data: supportedServices } = useSupportedServices()
   const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
-  const { testGateway, saveServiceConfig, enableVirtualServer, disableVirtualServer, addProtectedRoute, updateProtectedRoute, removeProtectedRoute } =
+  const { testGateway, saveServiceConfig, enableVirtualServer, disableVirtualServer } =
     useGatewayMutations()
 
   const [mode, setMode] = useState<FormMode>('custom')
@@ -752,7 +742,9 @@ export function GatewayFormDialog({
       && oauthState.registration_strategy !== 'unknown'
       && !preserveExistingOauth
         ? { registration_strategy: oauthState.registration_strategy, scopes: oauthState.scopes }
-        : undefined
+        : isEditing && gateway?.config.oauth_enabled && (!authEnabled || authMode !== 'oauth')
+          ? null
+          : undefined
     return {
       name,
       display_name: displayName.trim() || null,
@@ -803,57 +795,27 @@ export function GatewayFormDialog({
     health_path: null,
   })
 
-  const saveProtectedRoute = async (publicPath: string, signal?: AbortSignal): Promise<void> => {
+  const buildProtectedRouteChange = (publicPath: string): CreateGatewayInput['protected_route'] => {
+    if (!publicPath) {
+      return existingProtectedRoute ? { operation: 'remove', name: existingProtectedRoute.name } : undefined
+    }
+    // Upstream rename already cascades route references in the backend. An
+    // unchanged path needs no second policy mutation (including Team scope).
+    if (existingProtectedRoute?.public_path === publicPath) return undefined
     const route = buildProtectedRouteInput(publicPath)
-    const existingPathRoute = protectedRoutes.find(
-      (item) =>
-        item.enabled &&
-        item.public_host === route.public_host &&
-        item.public_path === route.public_path,
-    )
-    if (
-      existingPathRoute &&
-      existingPathRoute.name !== route.name &&
-      existingPathRoute.name !== existingProtectedRoute?.name
-    ) {
+    const existingPathRoute = protectedRoutes.find((item) => item.enabled
+      && item.public_host === route.public_host && item.public_path === route.public_path)
+    if (existingPathRoute && existingPathRoute.name !== route.name && existingPathRoute.name !== existingProtectedRoute?.name) {
       throw new GatewayApiError(
         `Protected route ${route.public_path} is already assigned to ${existingPathRoute.upstream ?? existingPathRoute.name}. Choose a different path or edit that route first.`,
         409,
       )
     }
-
-    if (existingProtectedRoute) {
-      await updateProtectedRoute(existingProtectedRoute.name, {
-        ...route,
-        name: existingProtectedRoute.name,
-      }, signal)
-      return
+    return {
+      operation: 'upsert',
+      ...(existingProtectedRoute ? { name: existingProtectedRoute.name } : {}),
+      route: { ...route, name: existingProtectedRoute?.name ?? route.name },
     }
-
-    try {
-      await addProtectedRoute(route, signal)
-    } catch (error) {
-      // Only a name conflict means "this route already exists, update it".
-      // Other 409s (for example the access setup gate) must surface: replaying
-      // the write as an update would hide them behind a second failure.
-      if (isRouteNameConflict(error)) {
-        await updateProtectedRoute(route.name, route, signal)
-        return
-      }
-      throw error
-    }
-  }
-
-  const removeExistingProtectedRouteIfCleared = async (
-    publicPath: string,
-    signal?: AbortSignal,
-  ): Promise<void> => {
-    if (!existingProtectedRoute) return
-    // Only remove when the protected-route field was explicitly cleared.
-    // If publicPath is non-empty, saveProtectedRoute already handled the
-    // update/replace; deleting here would silently discard the just-saved route.
-    if (publicPath) return
-    await removeProtectedRoute(existingProtectedRoute.name, signal)
   }
 
   const handleTest = async () => {
@@ -946,15 +908,9 @@ export function GatewayFormDialog({
             route.name !== existingProtectedRoute?.name,
         ),
       )
+      const protectedRouteChange = buildProtectedRouteChange(normalizedProtectedPath)
       await runGatewaySaveTransaction(
-        () => onSave(buildInput()),
-        async () => {
-          if (normalizedProtectedPath) {
-            await saveProtectedRoute(normalizedProtectedPath, controller.signal)
-          } else {
-            await removeExistingProtectedRouteIfCleared(normalizedProtectedPath, controller.signal)
-          }
-        },
+        () => onSave({ ...buildInput(), ...(protectedRouteChange ? { protected_route: protectedRouteChange } : {}) }),
       )
       if (controller.signal.aborted) return
       toast.success(
@@ -979,16 +935,11 @@ export function GatewayFormDialog({
         setSaveError(error.message)
         return
       }
-      toast.error(
-        getErrorMessage(
-          error,
-          mode === 'lab'
-            ? 'Failed to save Lab server'
-            : isEditing
-              ? 'Failed to update server'
-              : 'Failed to create server',
-        ),
-      )
+      const message = getErrorMessage(error, mode === 'lab'
+        ? 'Failed to save Lab server'
+        : isEditing ? 'Failed to update server' : 'Failed to create server')
+      setSaveError(message)
+      toast.error(message)
     } finally {
       setIsSaving(false)
     }

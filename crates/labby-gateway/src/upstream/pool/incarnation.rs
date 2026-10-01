@@ -11,6 +11,17 @@ use super::{UpstreamConnection, UpstreamPool};
 
 static NEXT_CONNECTION_INCARNATION: AtomicU64 = AtomicU64::new(1);
 
+fn resource_upstream_is_selected(
+    name: &str,
+    allowed: Option<&BTreeSet<String>>,
+    is_resource_upstream: impl FnOnce(&str) -> bool,
+) -> bool {
+    // Singleton warm-ups must reject unrelated catalog entries before the
+    // fleet's linear membership check. Across N warm-ups this bounds that
+    // work to N membership walks rather than N squared walks.
+    allowed.is_none_or(|allowed| allowed.contains(name)) && is_resource_upstream(name)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct ConnectionIncarnation(NonZeroU64);
 
@@ -167,11 +178,11 @@ impl UpstreamPool {
         let mut observed = catalog
             .iter()
             .filter(|(name, entry)| {
-                resource_upstreams.contains(name)
-                    && allowed.is_none_or(|allowed| allowed.contains(*name))
-                    && entry
-                        .health_for(super::super::types::UpstreamCapability::Resources)
-                        .is_routable()
+                resource_upstream_is_selected(name, allowed, |name| {
+                    resource_upstreams.iter().any(|upstream| upstream == name)
+                }) && entry
+                    .health_for(super::super::types::UpstreamCapability::Resources)
+                    .is_routable()
             })
             .filter_map(|(upstream, _)| {
                 let connection = connections.get(upstream)?;
@@ -466,6 +477,34 @@ impl UpstreamPool {
         catalog
             .contains_key(&observed.upstream)
             .then(|| apply(&mut catalog))
+    }
+}
+
+#[cfg(test)]
+mod selection_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn singleton_resource_warmups_bound_fleet_membership_comparisons() {
+        let fleet = (0..32).map(|n| format!("upstream-{n}")).collect::<Vec<_>>();
+        let comparisons = Cell::new(0);
+        for target in &fleet {
+            let allowed = BTreeSet::from([target.clone()]);
+            let selected = fleet
+                .iter()
+                .filter(|name| {
+                    resource_upstream_is_selected(name, Some(&allowed), |name| {
+                        fleet.iter().any(|candidate| {
+                            comparisons.set(comparisons.get() + 1);
+                            candidate == name
+                        })
+                    })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(selected, vec![target]);
+        }
+        assert_eq!(comparisons.get(), fleet.len() * (fleet.len() + 1) / 2);
     }
 }
 

@@ -1098,3 +1098,489 @@ async fn bearer_token_credential_write_persists_through_store_seam() {
         "bearer credential must be persisted to the .env file through the store seam"
     );
 }
+
+async fn patch_observes_latest_loadout_after_waiting_for_writer(staged: bool) {
+    use crate::gateway::params::GatewayLoadoutPatch;
+    use labby_runtime::gateway_config::{
+        GatewayLoadoutConfig, ProtectedGatewaySubsetTarget, ProtectedMcpRouteTarget,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut initial = GatewayConfig {
+        loadouts: vec![GatewayLoadoutConfig {
+            name: "ops".into(),
+            expose_skills: false,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    if staged {
+        let mut route = fixture_protected_route("ops-route");
+        route.backend_url.clear();
+        route.target = Some(ProtectedMcpRouteTarget::GatewaySubset(
+            ProtectedGatewaySubsetTarget {
+                loadout: Some("ops".into()),
+                ..Default::default()
+            },
+        ));
+        initial.protected_mcp_routes.push(route);
+    }
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let writer = manager.acquire_config_mutation().await.unwrap();
+    let waiting =
+        crate::gateway::manager::config_transaction::test_gates::next_mutation_wait(&path);
+    let requester = manager.clone();
+    let request = tokio::spawn(async move {
+        let patch: GatewayLoadoutPatch =
+            serde_json::from_value(serde_json::json!({"expose_tools": false})).unwrap();
+        if staged {
+            requester
+                .loadout_stage_patch("ops", patch)
+                .await
+                .map(|_| ())
+        } else {
+            requester.loadout_patch("ops", patch).await.map(|_| ())
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("patch reaches writer lease")
+        .unwrap();
+    let mut latest = initial;
+    latest.loadouts[0].expose_resources = false;
+    crate::gateway::config::write_gateway_config(&path, &latest).unwrap();
+    drop(writer);
+    request.await.unwrap().unwrap();
+    let desired = manager.loadout_get("ops").await.unwrap();
+    assert!(!desired.expose_tools, "requested patch persists");
+    assert!(
+        !desired.expose_resources,
+        "independent writer patch must survive"
+    );
+}
+
+#[tokio::test]
+async fn hot_loadout_patch_merges_after_writer_lease() {
+    patch_observes_latest_loadout_after_waiting_for_writer(false).await;
+}
+#[tokio::test]
+async fn staged_loadout_patch_merges_after_writer_lease() {
+    patch_observes_latest_loadout_after_waiting_for_writer(true).await;
+}
+
+struct FailBearerReconcileStore {
+    inner: crate::gateway::config_store::FsGatewayConfigStore,
+    path: PathBuf,
+    fail_once: std::sync::atomic::AtomicBool,
+}
+impl GatewayConfigStore for FailBearerReconcileStore {
+    fn public_urls(&self) -> ResolvedPublicUrls {
+        self.inner.public_urls()
+    }
+    fn set_process_code_mode_enabled(&self, enabled: bool) {
+        self.inner.set_process_code_mode_enabled(enabled);
+    }
+    fn env_path(&self) -> PathBuf {
+        self.inner.env_path()
+    }
+    fn persist(&self, cfg: &GatewayConfig) -> Result<(), labby_runtime::error::ToolError> {
+        self.inner.persist(cfg)?;
+        if self.fail_once.swap(false, Ordering::SeqCst) {
+            // A different writer changes an unrelated key after the credential
+            // write. Compensation must restore one key, not an old whole file.
+            use std::io::Write as _;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(self.inner.env_path())
+                .unwrap()
+                .write_all(b"UNRELATED_NEW=survives\n")
+                .unwrap();
+            std::fs::write(&self.path, "invalid config = [").unwrap();
+        }
+        Ok(())
+    }
+    fn persist_gateway_bearer_token<'a>(
+        &'a self,
+        key: &'a str,
+        value: &'a str,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        self.inner.persist_gateway_bearer_token(key, value)
+    }
+    fn restore_gateway_bearer_token<'a>(
+        &'a self,
+        key: &'a str,
+        previous: Option<&'a str>,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        self.inner.restore_gateway_bearer_token(key, previous)
+    }
+    fn persist_service_env<'a>(
+        &'a self,
+        service: &'a str,
+        values: &'a BTreeMap<String, String>,
+    ) -> StoreFuture<'a, Result<(), labby_runtime::error::ToolError>> {
+        self.inner.persist_service_env(service, values)
+    }
+}
+async fn failed_bearer_mutation_restores_one_key(previous_token: Option<&str>) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("rollback-token");
+    upstream.enabled = false;
+    upstream.bearer_token_env = Some("ROLLBACK_FIXTURE_TOKEN".into());
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..Default::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    std::fs::write(
+        dir.path().join(".env"),
+        match previous_token {
+            Some(value) => format!("UNRELATED=unchanged\nexport ROLLBACK_FIXTURE_TOKEN={}\nROLLBACK_FIXTURE_TOKEN=stale-duplicate\n", serde_json::to_string(value).unwrap()),
+            None => "UNRELATED=unchanged\n".into(),
+        },
+    )
+    .unwrap();
+    let store = Arc::new(FailBearerReconcileStore {
+        inner: crate::gateway::config_store::FsGatewayConfigStore::new(path.clone()),
+        path: path.clone(),
+        fail_once: std::sync::atomic::AtomicBool::new(true),
+    });
+    let manager = GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store);
+    manager.seed_config(initial.clone()).await;
+    manager
+        .update(
+            "rollback-token",
+            crate::gateway::params::GatewayUpdatePatch::default(),
+            Some("replacement".into()),
+            None,
+            None,
+        )
+        .await
+        .expect_err("forced reload error");
+    let env = read_env_values(&dir.path().join(".env")).unwrap();
+    assert_eq!(
+        env.get("ROLLBACK_FIXTURE_TOKEN").map(String::as_str),
+        previous_token,
+        "failed config transaction must restore the previous credential key"
+    );
+    assert_eq!(env.get("UNRELATED").map(String::as_str), Some("unchanged"));
+    assert_eq!(
+        env.get("UNRELATED_NEW").map(String::as_str),
+        Some("survives")
+    );
+    assert_eq!(
+        serde_json::to_value(load_gateway_config(&path).unwrap().upstream).unwrap(),
+        serde_json::to_value(&initial.upstream).unwrap()
+    );
+}
+#[tokio::test]
+async fn bearer_rollback_restores_existing_key_without_losing_unrelated_write() {
+    failed_bearer_mutation_restores_one_key(Some("Bearer original")).await;
+}
+#[tokio::test]
+async fn bearer_rollback_removes_new_key_without_losing_unrelated_write() {
+    failed_bearer_mutation_restores_one_key(None).await;
+}
+
+#[tokio::test]
+async fn token_only_update_detaches_preexisting_live_peer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("token-rotation");
+    upstream.bearer_token_env = Some("TOKEN_ROTATION_FIXTURE_KEY".into());
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..Default::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).unwrap();
+    let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
+    manager.seed_config(initial.clone()).await;
+    let pool = Arc::new(manager.new_base_pool(
+        initial.upstream_request_timeout(),
+        initial.upstream_relay_timeout(),
+        false,
+    ));
+    pool.seed_lazy_upstreams(&initial.upstream).await;
+    pool.insert_live_tool_server_for_tests(
+        "token-rotation",
+        Arc::new(tokio::sync::RwLock::new(vec!["old-peer-tool".into()])),
+    )
+    .await;
+    assert!(
+        pool.refresh_tools_after_list_changed("token-rotation")
+            .await
+    );
+    assert_eq!(
+        pool.cached_upstream_summary("token-rotation")
+            .await
+            .unwrap()
+            .discovered_tool_count,
+        1
+    );
+    manager.runtime.swap(Some(pool.clone())).await;
+    manager
+        .update(
+            "token-rotation",
+            crate::gateway::params::GatewayUpdatePatch::default(),
+            Some("replacement".into()),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let current = manager.current_pool().await.unwrap();
+    assert_eq!(
+        current
+            .cached_upstream_summary("token-rotation")
+            .await
+            .unwrap()
+            .discovered_tool_count,
+        0,
+        "token-only rotation must detach the previously authenticated peer and its old catalog"
+    );
+    assert_eq!(
+        serde_json::to_value(manager.current_config().await.upstream).unwrap(),
+        serde_json::to_value(&initial.upstream).unwrap()
+    );
+    current.drain_for_swap("test.token_rotation").await;
+}
+
+#[tokio::test]
+async fn atomic_route_validation_failure_preserves_private_oauth_spec() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("private-oauth");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "synthetic-private-client".into(),
+            client_secret_env: Some("SYNTHETIC_CLIENT_SECRET".into()),
+        },
+        scopes: Some(vec!["synthetic.read".into()]),
+        credential: Default::default(),
+        additional_endpoint_origins: vec![],
+        prefer_client_metadata_document: None,
+    });
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager
+        .seed_config_unchecked_for_tests(initial.clone())
+        .await;
+    let mut invalid_route = fixture_protected_route("invalid-route");
+    invalid_route.public_path = "not-an-absolute-path".into();
+    let error = crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.update",
+        serde_json::json!({
+            "name": "private-oauth", "patch": { "oauth": null },
+            "protected_route": { "operation": "upsert", "route": invalid_route }
+        }),
+    )
+    .await
+    .expect_err("route validation must reject the entire save");
+    assert_eq!(error.kind(), "invalid_param");
+    for cfg in [
+        load_gateway_config(&path).expect("durable"),
+        manager.current_config().await,
+    ] {
+        assert_eq!(
+            serde_json::to_value(cfg.upstream[0].oauth.as_ref()).unwrap(),
+            serde_json::to_value(initial.upstream[0].oauth.as_ref()).unwrap()
+        );
+        assert!(cfg.protected_mcp_routes.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn atomic_route_reconcile_failure_restores_private_oauth_and_route_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("private-oauth");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "synthetic-private-client".into(),
+            client_secret_env: Some("SYNTHETIC_CLIENT_SECRET".into()),
+        },
+        scopes: Some(vec!["synthetic.read".into()]),
+        credential: Default::default(),
+        additional_endpoint_origins: vec![],
+        prefer_client_metadata_document: None,
+    });
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let store = Arc::new(FaultAfterPersistStore::new(path.clone()));
+    let manager =
+        GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store.clone());
+    manager
+        .seed_config_unchecked_for_tests(initial.clone())
+        .await;
+    store.fail_next_reload();
+    crate::gateway::dispatch::dispatch_with_manager(&manager, "gateway.update", serde_json::json!({
+        "name": "private-oauth", "patch": { "oauth": null },
+        "protected_route": { "operation": "upsert", "route": fixture_protected_route("new-route") }
+    })).await.expect_err("reconcile failure must reject the entire save");
+    for cfg in [
+        load_gateway_config(&path).expect("durable"),
+        manager.current_config().await,
+    ] {
+        assert_eq!(
+            serde_json::to_value(cfg.upstream[0].oauth.as_ref()).unwrap(),
+            serde_json::to_value(initial.upstream[0].oauth.as_ref()).unwrap()
+        );
+        assert!(cfg.protected_mcp_routes.is_empty());
+    }
+    assert!(
+        manager
+            .resolve_protected_route("mcp.example.com", "/syslog")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn atomic_route_add_validation_failure_does_not_install_gateway_or_credential() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut route = fixture_protected_route("invalid-route");
+    route.public_path = "/v1/reserved".into();
+    crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.add",
+        serde_json::json!({
+            "spec": fixture_http_upstream("new-gateway"), "bearer_token_value": "synthetic-token",
+            "protected_route": { "operation": "upsert", "route": route }
+        }),
+    )
+    .await
+    .expect_err("invalid route must precede credential persistence");
+    assert!(
+        load_gateway_config(&path)
+            .expect("durable")
+            .upstream
+            .is_empty()
+    );
+    assert!(manager.current_config().await.upstream.is_empty());
+    assert!(!path.with_file_name(".env").exists());
+}
+
+#[tokio::test]
+async fn atomic_route_save_commits_rename_and_route_then_remove_without_disclosing_oauth() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("before");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "synthetic-private-client".into(),
+            client_secret_env: None,
+        },
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        scopes: Some(vec!["synthetic.read".into()]),
+        credential: Default::default(),
+        additional_endpoint_origins: vec![],
+        prefer_client_metadata_document: None,
+    });
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config_unchecked_for_tests(initial).await;
+    let mut route = fixture_protected_route("published");
+    route.upstream = Some("after".into());
+    route.backend_url.clear();
+    let saved = crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.update",
+        serde_json::json!({
+            "name": "before", "patch": { "name": "after" },
+            "protected_route": { "operation": "upsert", "route": route }
+        }),
+    )
+    .await
+    .expect("atomic save");
+    assert_eq!(saved["config"]["name"], "after");
+    assert_eq!(saved["config"]["oauth_enabled"], true);
+    assert!(saved["config"].get("oauth").is_none());
+    assert!(!saved.to_string().contains("synthetic-private-client"));
+    let durable = load_gateway_config(&path).expect("durable");
+    assert_eq!(durable.upstream[0].name, "after");
+    assert_eq!(
+        durable.protected_mcp_routes[0].upstream.as_deref(),
+        Some("after")
+    );
+    assert!(
+        manager
+            .resolve_protected_route("mcp.example.com", "/syslog")
+            .await
+            .is_some()
+    );
+    crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.update",
+        serde_json::json!({
+            "name": "after", "patch": { "oauth": null },
+            "protected_route": { "operation": "remove", "name": "published" }
+        }),
+    )
+    .await
+    .expect("atomic remove route and clear OAuth");
+    let durable = load_gateway_config(&path).expect("durable");
+    assert!(durable.upstream[0].oauth.is_none());
+    assert!(durable.protected_mcp_routes.is_empty());
+    assert!(
+        manager
+            .resolve_protected_route("mcp.example.com", "/syslog")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn atomic_route_save_rejects_team_qualified_routes_before_gateway_write() {
+    for (existing_name, replacement_name) in [
+        (None, "team:alpha:route"),
+        (None, " team:alpha:route "),
+        (Some("installation-route"), " team:alpha:renamed "),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let initial = GatewayConfig {
+            upstream: vec![fixture_http_upstream("installation")],
+            protected_mcp_routes: vec![fixture_protected_route("installation-route")],
+            ..GatewayConfig::default()
+        };
+        crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+        let initial = load_gateway_config(&path).expect("canonical seed");
+        let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+        manager
+            .seed_config_unchecked_for_tests(initial.clone())
+            .await;
+        let mut replacement = fixture_protected_route(replacement_name);
+        replacement.public_path = "/team-attempt".into();
+        crate::gateway::dispatch::dispatch_with_manager(&manager, "gateway.update", serde_json::json!({
+            "name": "installation", "patch": { "display_name": "must-not-commit" },
+            "protected_route": { "operation": "upsert", "name": existing_name, "route": replacement }
+        })).await.expect_err("installation action must not bypass Team policy after route-name normalization");
+        let persisted = load_gateway_config(&path).expect("durable");
+        assert!(persisted.upstream[0].display_name.is_none());
+        assert_eq!(persisted.protected_mcp_routes, initial.protected_mcp_routes);
+        assert_eq!(
+            manager.current_config().await.protected_mcp_routes,
+            initial.protected_mcp_routes
+        );
+    }
+}

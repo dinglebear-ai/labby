@@ -32,6 +32,8 @@ pub mod dev_container;
 pub mod dev_container_image_runtime;
 /// Pluggable Dev Container execution and restart recovery.
 pub mod dev_container_runtime;
+/// Lossless edits of complete credential assignments using the dotenv parser.
+pub mod dotenv;
 pub mod error;
 pub mod gateway_authority;
 pub mod gateway_config;

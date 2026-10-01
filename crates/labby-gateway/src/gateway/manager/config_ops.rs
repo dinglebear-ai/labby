@@ -10,7 +10,9 @@ use crate::gateway::config::{
     update_upstream, validate_bearer_token_env_name, validate_code_mode,
 };
 use crate::gateway::config_mutation::read_env_values;
-use crate::gateway::params::{GatewayEnrichmentScope, GatewayUpdatePatch};
+use crate::gateway::params::{
+    GatewayEnrichmentScope, GatewayProtectedRouteMutation, GatewayUpdatePatch,
+};
 use crate::gateway::projection::*;
 use crate::gateway::types::{
     GatewayCatalogDiff, GatewayRuntimeView, GatewayView, ServiceConfigView,
@@ -143,11 +145,31 @@ impl GatewayManager {
 
     pub(crate) async fn add_scoped(
         &self,
+        spec: UpstreamConfig,
+        bearer_token_value: Option<String>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        enrichment_scope: GatewayEnrichmentScope,
+    ) -> Result<GatewayView, ToolError> {
+        self.add_scoped_with_route(
+            spec,
+            bearer_token_value,
+            origin,
+            owner,
+            enrichment_scope,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn add_scoped_with_route(
+        &self,
         mut spec: UpstreamConfig,
         bearer_token_value: Option<String>,
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
         enrichment_scope: GatewayEnrichmentScope,
+        protected_route: Option<GatewayProtectedRouteMutation>,
     ) -> Result<GatewayView, ToolError> {
         let started = Instant::now();
         let spec_name = spec.name.clone();
@@ -165,17 +187,21 @@ impl GatewayManager {
                 spec.bearer_token_env = Some(trimmed);
             }
 
-            if let Some(token_value) = bearer_token_value.as_deref().map(str::trim)
+            let credential = if let Some(token_value) = bearer_token_value.as_deref().map(str::trim)
                 && !token_value.is_empty()
             {
                 let env_name =
                     resolve_gateway_bearer_env_name(&spec.name, spec.bearer_token_env.as_deref())?;
                 spec.bearer_token_env = Some(env_name.clone());
                 insert_upstream(&mut cfg, spec.clone())?;
-                self.persist_gateway_bearer_token(&env_name, token_value)
-                    .await?;
+                Some((env_name, token_value.to_string()))
             } else {
                 insert_upstream(&mut cfg, spec.clone())?;
+                None
+            };
+
+            if let Some(change) = protected_route.as_ref() {
+                self.apply_protected_route_save(&mut cfg, change).await?;
             }
 
             // Log only after validation (inside insert_upstream) has passed so
@@ -191,7 +217,14 @@ impl GatewayManager {
                 "gateway reconcile"
             );
             let diff = self
-                .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+                .commit_config_and_reload_with_credential(
+                    _mutation_guard,
+                    previous,
+                    cfg,
+                    origin,
+                    owner,
+                    credential,
+                )
                 .await?;
             tracing::info!(
                 surface = "dispatch",
@@ -253,6 +286,24 @@ impl GatewayManager {
             let mut added_names = Vec::new();
             let mut errors: Vec<(String, ToolError)> = Vec::new();
             for mut spec in specs {
+                // Discovery partitioning precedes this lease. Recheck the
+                // latest durable suppression markers before generic insertion
+                // (which deliberately clears tombstones for explicit adds).
+                if matches!(origin, Some("gateway.import" | "gateway.auto_import"))
+                    && cfg.upstream_import_tombstones.iter().any(|tombstone| {
+                        crate::gateway::config::tombstone_matches_upstream(tombstone, &spec)
+                    })
+                {
+                    errors.push((
+                        spec.name,
+                        ToolError::Sdk {
+                            sdk_kind: "import_tombstoned".into(),
+                            message: "discovered gateway was rejected while import was pending"
+                                .into(),
+                        },
+                    ));
+                    continue;
+                }
                 if let Some(ref env_name) = spec.bearer_token_env {
                     let trimmed = env_name.trim().to_string();
                     if let Err(e) = validate_bearer_token_env_name(&trimmed) {
@@ -268,6 +319,15 @@ impl GatewayManager {
             }
 
             if added_names.is_empty() && !errors.is_empty() {
+                if errors
+                    .iter()
+                    .all(|(_, error)| error.kind() == "import_tombstoned")
+                {
+                    return Ok(BatchAddOutcome {
+                        views: Vec::new(),
+                        errors,
+                    });
+                }
                 // Every spec failed — return the first error to the caller.
                 return Err(errors.remove(0).1);
             }
@@ -326,6 +386,19 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayView, ToolError> {
+        self.update_with_route(name, patch, bearer_token_value, origin, owner, None)
+            .await
+    }
+
+    pub(crate) async fn update_with_route(
+        &self,
+        name: &str,
+        patch: GatewayUpdatePatch,
+        bearer_token_value: Option<String>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        protected_route: Option<GatewayProtectedRouteMutation>,
+    ) -> Result<GatewayView, ToolError> {
         let started = Instant::now();
         let mut patch = patch;
         let updated_name = patch.name.clone().unwrap_or_else(|| name.to_string());
@@ -351,7 +424,7 @@ impl GatewayManager {
             patch.bearer_token_env = Some(Some(trimmed));
         }
 
-        if let Some(token_value) = bearer_token_value.as_deref().map(str::trim)
+        let credential = if let Some(token_value) = bearer_token_value.as_deref().map(str::trim)
             && !token_value.is_empty()
         {
             // Resolve env var name: prefer patch > existing config > error.
@@ -381,17 +454,18 @@ impl GatewayManager {
             };
             patch.bearer_token_env = Some(Some(env_name.clone()));
             update_upstream(&mut cfg, name, patch)?;
-            self.persist_gateway_bearer_token(&env_name, token_value)
-                .await?;
+            Some((env_name, token_value.to_string()))
         } else {
             update_upstream(&mut cfg, name, patch)?;
+            None
+        };
+        if let Some(change) = protected_route.as_ref() {
+            self.apply_protected_route_save(&mut cfg, change).await?;
         }
         // State-setting is idempotent only when both durable and currently
         // published configuration already match. Never skip a credential change
         // or reconciliation of externally changed state. The mutation lease is held.
-        let credential_changed = bearer_token_value
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty());
+        let credential_changed = credential.is_some();
         let candidate_value = serde_json::to_value(&cfg)
             .map_err(|_| ToolError::internal_message("Cannot compare gateway configuration"))?;
         let current = self.config.read().await.clone();
@@ -409,7 +483,14 @@ impl GatewayManager {
             return self.get(&updated_name).await;
         }
         let diff = self
-            .commit_config_and_reload(_mutation_guard, previous, cfg, origin, owner)
+            .commit_config_and_reload_with_credential(
+                _mutation_guard,
+                previous,
+                cfg,
+                origin,
+                owner,
+                credential,
+            )
             .await?;
         tracing::info!(
             surface = "dispatch",
