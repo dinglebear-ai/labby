@@ -3117,7 +3117,7 @@
             },
             {
               "name": "protected_route",
-              "ty": "json",
+              "ty": "object",
               "required": false,
               "description": "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead."
             }
@@ -3153,7 +3153,7 @@
             },
             {
               "name": "protected_route",
-              "ty": "json",
+              "ty": "object",
               "required": false,
               "description": "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead."
             }

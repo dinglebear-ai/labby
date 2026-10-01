@@ -1476,6 +1476,52 @@ fn test_manager() -> GatewayManager {
         .with_builtin_service_registry(std::sync::Arc::new(DeployTestRegistry))
 }
 
+#[tokio::test]
+async fn atomic_gateway_save_dispatch_rejects_route_strings_before_effects() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let upstream = oauth_upstream_fixture("private-upstream", false);
+    manager
+        .replace_config_for_tests(vec![upstream.clone()])
+        .await;
+
+    for (action, params) in [
+        (
+            "gateway.add",
+            json!({"spec": upstream, "protected_route": "{\"operation\":\"remove\",\"name\":\"private-route\"}"}),
+        ),
+        (
+            "gateway.update",
+            json!({"name": "private-upstream", "patch": {"oauth": null}, "protected_route": "{\"operation\":\"remove\",\"name\":\"private-route\"}"}),
+        ),
+    ] {
+        let error = dispatch_with_manager(&manager, action, params)
+            .await
+            .expect_err("a JSON string is not a route mutation object");
+        assert!(
+            matches!(error, ToolError::InvalidParam { .. }),
+            "{action}: {error:?}"
+        );
+        assert!(
+            !path.exists(),
+            "invalid params must not persist gateway configuration"
+        );
+        assert!(
+            !dir.path().join(".env").exists(),
+            "invalid params must not persist credentials"
+        );
+        let current = manager
+            .get("private-upstream")
+            .await
+            .expect("unchanged upstream");
+        assert!(
+            current.config.oauth_enabled,
+            "invalid update must preserve private OAuth"
+        );
+    }
+}
+
 fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,

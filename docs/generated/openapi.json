@@ -8156,7 +8156,7 @@
             "type": "string"
           },
           "protected_route": {
-            "type": "string"
+            "type": "object"
           },
           "spec": {
             "type": "string"
@@ -8941,7 +8941,7 @@
             "type": "string"
           },
           "protected_route": {
-            "type": "string"
+            "type": "object"
           }
         }
       },
