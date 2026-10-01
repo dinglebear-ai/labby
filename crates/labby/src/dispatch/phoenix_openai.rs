@@ -7,6 +7,27 @@ use crate::dispatch::error::ToolError;
 
 pub(crate) const BASE_URL_ENV: &str = "LABBY_PHOENIX_OPENAI_BASE_URL";
 pub(crate) const API_KEY_ENV: &str = "LABBY_PHOENIX_OPENAI_API_KEY";
+pub(crate) const PROTOCOL_ENV: &str = "LABBY_AGENT_PROVIDER_PROTOCOL";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProviderProtocol {
+    OpenAi,
+    Phoenix,
+}
+
+impl ProviderProtocol {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self, ToolError> {
+        match value {
+            None | Some("phoenix") => Ok(Self::Phoenix),
+            Some("openai") => Ok(Self::OpenAi),
+            _ => Err(ToolError::InvalidParam {
+                param: PROTOCOL_ENV.into(),
+                message: "Provider protocol must be openai or phoenix".into(),
+            }),
+        }
+    }
+}
+
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(5);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -17,6 +38,7 @@ const MAX_SUCCESS_BODY_BYTES: usize = 100 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(crate) struct OpenAiBackend {
+    protocol: ProviderProtocol,
     http: Client,
     base_url: Url,
     api_key: Option<String>,
@@ -57,12 +79,28 @@ pub(crate) fn install_test_base_url(url: &str) {
 }
 
 impl OpenAiBackend {
+    pub(crate) fn for_access_store(
+        store: &crate::access::AccessStore,
+    ) -> Result<Option<Self>, ToolError> {
+        #[cfg(test)]
+        if let Some(base_url) = TEST_BASE_URL.get() {
+            return Self::from_url(base_url, None).map(Some);
+        }
+        let (base_url, key, protocol) =
+            crate::dispatch::setup::agent_provider_configuration(store)?;
+        let protocol = ProviderProtocol::parse(protocol.as_deref())?;
+        base_url
+            .map(|url| Self::from_url_with_protocol(&url, key, protocol))
+            .transpose()
+    }
+
     pub(crate) fn from_env() -> Option<Self> {
         #[cfg(test)]
         if let Some(base_url) = TEST_BASE_URL.get() {
             return Self::from_url(base_url, None).ok();
         }
         let base_url = env::var(BASE_URL_ENV).ok()?;
+        // Persistent Assistant owns Phoenix sessions independently of Agent mode.
         match Self::from_url(&base_url, env::var(API_KEY_ENV).ok()) {
             Ok(backend) => Some(backend),
             Err(error) => {
@@ -77,6 +115,14 @@ impl OpenAiBackend {
     }
 
     pub(crate) fn from_url(base_url: &str, api_key: Option<String>) -> Result<Self, ToolError> {
+        Self::from_url_with_protocol(base_url, api_key, ProviderProtocol::Phoenix)
+    }
+
+    pub(crate) fn from_url_with_protocol(
+        base_url: &str,
+        api_key: Option<String>,
+        protocol: ProviderProtocol,
+    ) -> Result<Self, ToolError> {
         let mut base_url = Url::parse(base_url).map_err(|_| invalid_endpoint())?;
         if !matches!(base_url.scheme(), "http" | "https")
             || !base_url.has_host()
@@ -104,6 +150,7 @@ impl OpenAiBackend {
                 unavailable(format!("failed to build Phoenix HTTP client: {error}"))
             })?;
         Ok(Self {
+            protocol,
             http,
             base_url,
             api_key: api_key.and_then(|value| {
@@ -111,6 +158,10 @@ impl OpenAiBackend {
                 (!value.is_empty()).then(|| value.to_owned())
             }),
         })
+    }
+
+    pub(crate) fn protocol(&self) -> ProviderProtocol {
+        self.protocol
     }
 
     pub(crate) fn base_url(&self) -> &Url {
@@ -127,6 +178,9 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn create_session(&self, session_id: &str) -> Result<(), ToolError> {
+        if self.protocol == ProviderProtocol::OpenAi {
+            return Ok(());
+        }
         self.send_session_json(
             reqwest::Method::POST,
             "sessions",
@@ -137,6 +191,9 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn close_session(&self, session_id: &str) -> Result<(), ToolError> {
+        if self.protocol == ProviderProtocol::OpenAi {
+            return Ok(());
+        }
         let path = format!("sessions/{}/close", encode_path_segment(session_id));
         self.send_session_json(reqwest::Method::POST, &path, Some(json!({})))
             .await?;
@@ -148,6 +205,9 @@ impl OpenAiBackend {
         session_id: &str,
         title: &str,
     ) -> Result<(), ToolError> {
+        if self.protocol == ProviderProtocol::OpenAi {
+            return Ok(());
+        }
         let path = format!("sessions/{}/title", encode_path_segment(session_id));
         self.send_session_json(reqwest::Method::PUT, &path, Some(json!({"title": title})))
             .await?;
@@ -155,6 +215,9 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn cancel_session(&self, session_id: &str) -> Result<(), ToolError> {
+        if self.protocol == ProviderProtocol::OpenAi {
+            return Ok(());
+        }
         let path = format!("sessions/{}/cancel", encode_path_segment(session_id));
         self.send_session_json(reqwest::Method::POST, &path, Some(json!({})))
             .await?;
@@ -171,17 +234,12 @@ impl OpenAiBackend {
             .iter()
             .map(|message| message.to_value())
             .collect::<Vec<_>>();
+        let mut body = json!({"model": model, "stream": false, "messages": messages});
+        if self.protocol == ProviderProtocol::Phoenix {
+            body["gateway"] = json!({"session_id": session_id});
+        }
         let value = self
-            .send_json(
-                reqwest::Method::POST,
-                "chat/completions",
-                Some(json!({
-                    "model": model,
-                    "stream": false,
-                    "messages": messages,
-                    "gateway": {"session_id": session_id}
-                })),
-            )
+            .send_json(reqwest::Method::POST, "chat/completions", Some(body))
             .await?;
         value
             .pointer("/choices/0/message/content")
@@ -340,6 +398,11 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
         let backend = OpenAiBackend::from_url("http://127.0.0.1:43871/v1", None).unwrap();
         assert_eq!(backend.base_url().as_str(), "http://127.0.0.1:43871/v1/");
+        assert_eq!(
+            backend.protocol(),
+            ProviderProtocol::Phoenix,
+            "legacy Assistant constructor retains session lifecycle"
+        );
         let normalized = OpenAiBackend::from_url("https://example.test/v1///", None).unwrap();
         assert_eq!(normalized.base_url().as_str(), "https://example.test/v1/");
         assert!(OpenAiBackend::from_url("file:///tmp/provider", None).is_err());

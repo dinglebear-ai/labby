@@ -545,14 +545,29 @@ jobs:
             labby-install.sh
             labby-install.sh.sha256
             release-manifest.json
+      - name: Publish account-free provenance bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(lab-*.tar.gz lab-*.spdx.json lab-*.sha256 labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json release-manifest.json)
+          scripts/ci/export-release-attestation-bundles.sh "${artifacts[@]}"
+          bundles=(*.sigstore.jsonl)
+          scripts/ci/upload-immutable-release-assets.sh -- "${bundles[@]}"
       - name: Verify release provenance as a consumer
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+          verifier_dir=$(mktemp -d)
+          trap 'rm -rf "$verifier_dir"' EXIT
+          source scripts/ci/github-verifier-bootstrap.sh
+          ensure_github_verifier "$verifier_dir"
           for artifact in lab-*.tar.gz lab-*.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json release-manifest.json; do
-            scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
+            GH_VERIFIER="$GH_VERIFIER" scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done
       - name: Prepare npm stable pointer transaction
         env:

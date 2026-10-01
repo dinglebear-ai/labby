@@ -8,7 +8,45 @@ use std::path::Path;
 
 use sha2::{Digest as _, Sha256};
 
-use super::types::PrepareFileIdentity;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+/// Identity of a protected installation file and its verified parent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PrepareFileIdentity {
+    pub path: PathBuf,
+    pub digest_hex: String,
+    #[cfg(unix)]
+    pub device: u64,
+    #[cfg(unix)]
+    pub inode: u64,
+    #[cfg(unix)]
+    pub parent_device: u64,
+    #[cfg(unix)]
+    pub parent_inode: u64,
+    #[cfg(unix)]
+    pub owner: u32,
+    #[cfg(unix)]
+    pub mode: u32,
+    #[cfg(unix)]
+    pub links: u64,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub volume: u64,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub file_id: [u8; 16],
+    #[cfg(windows)]
+    #[serde(default)]
+    pub parent_volume: u64,
+    #[cfg(windows)]
+    #[serde(default)]
+    pub parent_file_id: [u8; 16],
+    #[cfg(windows)]
+    #[serde(default)]
+    pub links: u32,
+}
 
 /// Bootstrap proofs, credentials, identity files and journals are each bounded
 /// to 1 MiB, including when reading a locally modified or corrupt artifact.
@@ -36,7 +74,7 @@ fn read_bounded_private(path: &Path, file: &mut File) -> io::Result<Vec<u8>> {
 }
 
 #[cfg(not(windows))]
-pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -49,7 +87,7 @@ pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
+pub(crate) fn create_private_dir(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Ok(_) => {
             let parents =
@@ -80,7 +118,7 @@ pub(super) fn create_private_dir(path: &Path) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub(super) fn publish_new(path: &Path, bytes: &[u8]) -> io::Result<PrepareFileIdentity> {
+pub(crate) fn publish_new(path: &Path, bytes: &[u8]) -> io::Result<PrepareFileIdentity> {
     validate_size(bytes)?;
     let _parents = labby_winjob::fs::AncestorGuard::for_file(path)?;
     _parents.verify_parent_acl()?;
@@ -135,7 +173,7 @@ fn write_private_temporary(
 }
 
 #[cfg(not(windows))]
-pub(super) fn publish_new(path: &Path, bytes: &[u8]) -> io::Result<PrepareFileIdentity> {
+pub(crate) fn publish_new(path: &Path, bytes: &[u8]) -> io::Result<PrepareFileIdentity> {
     publish_new_with_writer(path, bytes, |file| {
         file.write_all(bytes)?;
         file.sync_all()
@@ -174,7 +212,7 @@ fn publish_new_with_writer(
     Ok(identity)
 }
 
-pub(super) fn replace_journal(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn replace_journal(path: &Path, bytes: &[u8]) -> io::Result<()> {
     validate_size(bytes)?;
     let parent = path
         .parent()
@@ -213,11 +251,11 @@ pub(super) fn replace_journal(path: &Path, bytes: &[u8]) -> io::Result<()> {
     }
 }
 
-pub(super) fn verify_identity(expected: &PrepareFileIdentity) -> io::Result<()> {
+pub(crate) fn verify_identity(expected: &PrepareFileIdentity) -> io::Result<()> {
     read_verified(expected).map(drop)
 }
 
-pub(super) fn read_private(path: &Path) -> io::Result<Vec<u8>> {
+pub(crate) fn read_private(path: &Path) -> io::Result<Vec<u8>> {
     #[cfg(windows)]
     let _parents = labby_winjob::fs::AncestorGuard::for_file(path)?;
     #[cfg(windows)]
@@ -240,7 +278,7 @@ pub(super) fn read_private(path: &Path) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-pub(super) fn read_verified(expected: &PrepareFileIdentity) -> io::Result<Vec<u8>> {
+pub(crate) fn read_verified(expected: &PrepareFileIdentity) -> io::Result<Vec<u8>> {
     #[cfg(windows)]
     let _parents = labby_winjob::fs::AncestorGuard::for_file(&expected.path)?;
     #[cfg(windows)]
@@ -267,7 +305,7 @@ pub(super) fn read_verified(expected: &PrepareFileIdentity) -> io::Result<Vec<u8
 }
 
 #[cfg(unix)]
-pub(super) fn delete_exact(expected: &PrepareFileIdentity) -> io::Result<()> {
+pub(crate) fn delete_exact(expected: &PrepareFileIdentity) -> io::Result<()> {
     use nix::fcntl::{OFlag, openat};
     use nix::sys::stat::Mode;
     use nix::unistd::{UnlinkatFlags, unlinkat};
@@ -317,7 +355,7 @@ pub(super) fn delete_exact(expected: &PrepareFileIdentity) -> io::Result<()> {
 }
 
 #[cfg(windows)]
-pub(super) fn delete_exact(expected: &PrepareFileIdentity) -> io::Result<()> {
+pub(crate) fn delete_exact(expected: &PrepareFileIdentity) -> io::Result<()> {
     let _parents = labby_winjob::fs::AncestorGuard::for_file(&expected.path)?;
     _parents.verify_parent_acl()?;
     let mut file = labby_winjob::fs::open_read(&expected.path, true)?;
@@ -338,7 +376,7 @@ pub(super) fn delete_exact(expected: &PrepareFileIdentity) -> io::Result<()> {
 }
 
 #[cfg(not(any(unix, windows)))]
-pub(super) fn delete_exact(_expected: &PrepareFileIdentity) -> io::Result<()> {
+pub(crate) fn delete_exact(_expected: &PrepareFileIdentity) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "verified handle deletion is unavailable on this platform",
@@ -685,8 +723,8 @@ mod tests {
         create_private_dir(&parent).unwrap();
         let sentinel = parent.join("sentinel");
         fs::write(&sentinel, b"unchanged").unwrap();
-        let icacls = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
-            .join("System32/icacls.exe");
+        let icacls =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/icacls.exe");
         assert!(
             std::process::Command::new(&icacls)
                 .arg(&parent)

@@ -29,6 +29,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `agents` | `agents.delete` | false | true | false |  | `resource_capability` | `scope.delete` | `agent` | `agent_id*: string` | `object` | mcp, api |
 | `agents` | `agents.get` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string` | `object` | mcp, api |
 | `agents` | `agents.list` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `cursor: string`<br>`limit: string` | `object` | mcp, api |
+| `agents` | `agents.models.list` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `owner_kind*: string`<br>`owner_id*: string` | `object` | mcp, api |
 | `agents` | `agents.run` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`input: string` | `object` | mcp, api |
 | `agents` | `agents.session.cancel` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
 | `agents` | `agents.session.status` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
@@ -240,13 +241,19 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `server_logs` | `server_logs.query` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `limit: integer`<br>`level: string`<br>`levels: string[]`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer`<br>`stop_after_limit: boolean`<br>`correlated_only: boolean` | `ServerLogsQueryResult` | cli, mcp, api |
 | `setup` | `bootstrap` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `BootstrapOutcome` | mcp, api |
 | `setup` | `check` | false | false | false |  | `transport` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
+| `setup` | `clients.session.revoke` | false | false | false |  | `transport` | `-` | `-` |  | `ClientObservationRevocation` | api |
+| `setup` | `clients.session.start` | false | false | false |  | `transport` | `-` | `-` | `clients*: array` | `ClientObservationSessions` | api |
 | `setup` | `draft.commit` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `draft.discard` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `DraftDiscardOutcome` | cli, mcp, api, web |
 | `setup` | `draft.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `DraftEntry[]` | mcp, api, web |
 | `setup` | `draft.set` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | mcp, api, web |
 | `setup` | `finalize` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
+| `setup` | `mcp.verification.call` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string`<br>`tool*: string`<br>`expected_fingerprint*: string`<br>`arguments*: object`<br>`approved*: boolean` | `McpVerificationResult` | api |
+| `setup` | `mcp.verification.tools` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string` | `McpVerificationTools` | api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
+| `setup` | `readiness.clients.defer` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | api |
+| `setup` | `readiness.state` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | api |
 | `setup` | `repair` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
 | `setup` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `transport` | `-` | `-` | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |

@@ -35,6 +35,7 @@ export function SettingsScalarField({
 }): React.ReactElement {
   const id = `settings-${field.key.replaceAll('.', '-')}`
   const errorId = `${id}-error`
+  const descriptionId = `${id}-description`
   const secretConfigured = field.secret && typeof value === 'object' && value !== null && (value as { configured?: unknown }).configured === true
   const inputValue = field.secret ? (typeof value === 'string' ? value : '') : valueAsInputString(value)
   const source = state.sources[field.key]
@@ -45,11 +46,19 @@ export function SettingsScalarField({
   // never take effect, and the server refuses them.
   const isProcessEnvOverride = field.backend === 'env' && Boolean(envOverride)
   const disabled = field.write_policy !== 'editable' || isEnvShadowedConfig || isProcessEnvOverride
-  const sourceLabel = source?.source ?? 'default'
-  const backendLabel = field.backend === 'env' ? '.env' : 'config.toml'
-  const describedBy = error ? errorId : undefined
+  const sourceLabel = source?.source === 'env' ? 'service environment'
+    : source?.source === 'config_toml' ? 'saved gateway configuration'
+    : 'built-in default'
+  const applyLabel = field.apply_mode === 'restart' ? 'Restart required'
+    : field.apply_mode === 'partial' ? 'Some effects require restart'
+    : field.apply_mode === 'immediate' ? 'Applies immediately'
+    : 'View only'
+  const describedBy = error ? `${descriptionId} ${errorId}` : descriptionId
+  const logFilter = ['LABBY_LOG', 'log.filter'].includes(field.key)
+  const logLevels = ['off', 'error', 'warn', 'info', 'debug', 'trace']
   const controlProps = {
     id,
+    name: field.key,
     disabled,
     'aria-invalid': Boolean(error),
     'aria-describedby': describedBy,
@@ -63,7 +72,7 @@ export function SettingsScalarField({
     typeof value === 'string' ||
     typeof value === 'number' ||
     typeof value === 'boolean'
-  const stacked =
+  const stacked = field.section === 'agents' || field.control === 'url' || field.secret ||
     field.control === 'text' ||
     field.control === 'string_list' ||
     (field.control === 'read_only' && !isPrimitive)
@@ -85,7 +94,7 @@ export function SettingsScalarField({
       case 'enum':
         return (
           <Select value={inputValue} disabled={disabled} onValueChange={(next) => onChange(field.key, next)}>
-            <SelectTrigger {...controlProps} style={{ ...SETTINGS_CONTROL_STYLE, minWidth: 150 }}>
+            <SelectTrigger {...controlProps} style={{ ...SETTINGS_CONTROL_STYLE, minWidth: stacked ? 0 : 150, width: stacked ? '100%' : undefined }}>
               <SelectValue placeholder={field.example ?? 'Select'} />
             </SelectTrigger>
             <SelectContent>
@@ -112,7 +121,7 @@ export function SettingsScalarField({
           <SettingsValue>{inputValue === '' ? '—' : inputValue}</SettingsValue>
         ) : (
           <pre
-            className="max-h-64 overflow-auto"
+            className="max-h-64 overflow-auto aurora-scrollbar"
             style={{ ...SETTINGS_MULTILINE_CONTROL_STYLE, fontSize: 11, margin: 0 }}
           >
             {JSON.stringify(value ?? null, null, 2)}
@@ -120,9 +129,15 @@ export function SettingsScalarField({
         )
       default:
         return (
+          <>
           <Input
             {...controlProps}
-            type={field.secret ? 'password' : field.control === 'number' ? 'number' : 'text'}
+            type={field.secret ? 'password' : field.control === 'number' ? 'number' : field.control === 'url' ? 'url' : 'text'}
+            min={field.control === 'number' ? field.min ?? undefined : undefined}
+            max={field.control === 'number' ? field.max ?? undefined : undefined}
+            step={field.control === 'number' ? 1 : undefined}
+            list={logFilter ? `${id}-levels` : undefined}
+            required={field.required}
             value={inputValue}
             placeholder={field.secret && secretConfigured ? 'Configured ••••••••' : field.example ?? undefined}
             className={stacked ? 'w-full' : undefined}
@@ -133,28 +148,42 @@ export function SettingsScalarField({
             }
             onChange={(event) => onChange(field.key, parseFieldInput(field, event.target.value))}
           />
+          {logFilter ? <datalist id={`${id}-levels`}>{logLevels.map((level) => <option key={level} value={level} />)}</datalist> : null}
+          </>
         )
     }
   }
 
   const meta = (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center' }}>
-      <code style={{ fontSize: 10.5, color: 'var(--aurora-text-muted)' }}>{field.key}</code>
-      <SettingsMetaPill>{backendLabel}</SettingsMetaPill>
-      <SettingsMetaPill>source: {sourceLabel}</SettingsMetaPill>
-      <SettingsMetaPill>risk: {field.risk}</SettingsMetaPill>
-      <SettingsMetaPill>{field.apply_mode}</SettingsMetaPill>
+      <SettingsMetaPill>{applyLabel}</SettingsMetaPill>
+      <SettingsMetaPill>Current value: {sourceLabel}</SettingsMetaPill>
       {field.secret && secretConfigured ? <SettingsMetaPill>configured</SettingsMetaPill> : null}
       {field.write_policy !== 'editable' ? (
-        <SettingsMetaPill tone="warn">{field.write_policy}</SettingsMetaPill>
+        <SettingsMetaPill tone="warn">{field.write_policy === 'dangerous_flow_required' ? 'Requires a dedicated security flow' : 'View only'}</SettingsMetaPill>
       ) : null}
-      {field.env_override ? <SettingsMetaPill>env: {field.env_override}</SettingsMetaPill> : null}
+      <details className="text-[10.5px] text-aurora-text-muted">
+        <summary className="cursor-pointer">Technical key</summary>
+        <code>{field.key}</code>
+        {field.env_override ? <span> · Environment override: {field.env_override}</span> : null}
+      </details>
     </div>
   )
 
   const description = (
-    <>
+    <span id={descriptionId}>
       {field.description}
+      {logFilter ? <span style={{ display: 'block', marginTop: 4 }}>Levels: {logLevels.join(', ')}. Set one level for everything, or use component=level entries separated by commas.</span> : null}
+      {field.control === 'number' && (field.min !== null || field.max !== null) ? (
+        <span style={{ display: 'block', marginTop: 4 }}>
+          Valid range: {field.min ?? 'any'} to {field.max ?? 'any'}.
+        </span>
+      ) : null}
+      {field.control === 'enum' ? (
+        <span style={{ display: 'block', marginTop: 4 }}>
+          Choose from: {field.options.map((option) => option.label).join(', ')}.
+        </span>
+      ) : null}
       {hasEnvOverrideWarning(field, state) ? (
         <span style={{ display: 'block', marginTop: 4, color: 'var(--aurora-warn)' }}>
           {isProcessEnvOverride
@@ -170,7 +199,7 @@ export function SettingsScalarField({
           {error}
         </span>
       ) : null}
-    </>
+    </span>
   )
 
   return (

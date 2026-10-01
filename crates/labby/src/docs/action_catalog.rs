@@ -229,7 +229,7 @@ pub(super) fn build_action_catalog(services: &[RegisteredService]) -> Vec<Action
                     .collect(),
                 returns: action.returns.to_string(),
                 surface_availability: action_surfaces,
-                requires_http_subject: (service.name == "fs" && action.name == "fs.preview")
+                requires_http_subject: crate::catalog::http_only_action(service.name, action.name)
                     || (service.name == "gateway" && action.name == "gateway.oauth.authorize"),
                 auth_posture: auth_posture(service.name, action.name, action.requires_admin),
                 inventory_scope: "global_inventory_not_active_runtime_exposure".to_string(),
@@ -266,6 +266,10 @@ fn action_surfaces(
         surfaces.api = true;
         surfaces.web_ui = true;
     }
+    if crate::catalog::http_only_action(service, action) {
+        surfaces.mcp = false;
+        surfaces.api = true;
+    }
     surfaces
 }
 
@@ -292,6 +296,33 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+
+    #[test]
+    fn first_use_actions_require_authenticated_http_context() {
+        let registry = crate::registry::build_docs_registry();
+        let actions = build_action_catalog(registry.services());
+        for name in [
+            "clients.session.start",
+            "clients.session.revoke",
+            "readiness.state",
+            "readiness.clients.defer",
+            "mcp.verification.tools",
+            "mcp.verification.call",
+        ] {
+            let action = actions
+                .iter()
+                .find(|row| row.service == "setup" && row.action == name)
+                .unwrap();
+            assert!(action.surface_availability.api);
+            assert!(!action.surface_availability.mcp);
+            assert!(action.requires_http_subject);
+            assert!(action.auth_posture.contains("CSRF"));
+            if name.starts_with("mcp.verification.") {
+                assert!(action.requires_admin);
+                assert!(action.auth_posture.contains("lab:admin"));
+            }
+        }
+    }
 
     #[test]
     fn cli_action_bindings_are_unique_registered_actions() {
@@ -537,7 +568,13 @@ mod tests {
 }
 
 fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
-    if service == "fs" && action == "fs.preview" {
+    if service == "setup" && crate::catalog::http_only_action(service, action) {
+        if requires_admin {
+            "HTTP-only authenticated identity with lab:admin and installation gateway authority; browser mutations require CSRF".to_string()
+        } else {
+            "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access".to_string()
+        }
+    } else if service == "fs" && action == "fs.preview" {
         "HTTP-only admin/browser session path; intentionally unavailable on MCP".to_string()
     } else if service == "gateway" && action == "gateway.oauth.authorize" {
         "requires authenticated personal identity and scope.manage; rejects shared credentials and subject overrides".to_string()

@@ -49,6 +49,7 @@ pub mod upstream_oauth;
 
 /// Browser-session endpoints for the hosted UI.
 pub mod browser_session;
+mod setup_handoff;
 
 /// Static Labby web asset serving helpers.
 pub mod web;

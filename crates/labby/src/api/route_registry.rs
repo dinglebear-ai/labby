@@ -315,6 +315,30 @@ fn join(prefix: &str, path: &str) -> String {
 
 /// Assemble the complete static route-pattern inventory from the same local
 /// descriptor functions used by runtime route groups.
+/// Local capability minting and redemption share one declared/router contract.
+pub(crate) fn setup_handoff_descriptor(redeem: bool) -> RouteDescriptor {
+    let (path, handler, auth, effect) = if redeem {
+        (
+            "/auth/setup-handoff/redeem",
+            "setup_handoff_redeem",
+            RouteAuth::BootstrapProof,
+            "consumes one-shot capability and creates browser session",
+        )
+    } else {
+        (
+            "/auth/setup-handoff/start",
+            "setup_handoff_start",
+            RouteAuth::BearerOnly,
+            "creates short-lived local setup capability",
+        )
+    };
+    RouteDescriptor::new("POST", path, handler, "oauth", auth)
+        .host_validated()
+        .private_no_store()
+        .non_enumerating()
+        .side_effects(effect)
+}
+
 pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
     use crate::app_manifest::{
         APPS_LAUNCHER_ROUTE, APPS_MANIFEST_API_ROUTE, LABBY_APP_HOST_JS_ROUTE,
@@ -445,6 +469,10 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
             .when("mounted only when an MCP HTTP router is configured"),
     ];
 
+    routes.extend([
+        setup_handoff_descriptor(false),
+        setup_handoff_descriptor(true),
+    ]);
     routes.extend(crate::api::services::oauth_relay::public_descriptors());
     routes.extend(crate::api::services::browser::public_descriptors());
     routes.extend(prefixed(
@@ -786,6 +814,8 @@ mod tests {
         for path in [
             "/auth/session",
             "/auth/bearer-session",
+            "/auth/setup-handoff/start",
+            "/auth/setup-handoff/redeem",
             "/auth/login",
             "/auth/local-session",
             "/auth/upstream/callback",

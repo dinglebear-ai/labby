@@ -26,6 +26,7 @@ const MAX_SESSIONS: usize = 256;
 #[derive(Debug)]
 pub struct StaticBrowserSessionState {
     sessions: DashMap<String, BrowserSessionRow>,
+    setup_handoffs: crate::setup_handoff::SetupHandoffs,
     cookie_name: String,
     ttl: Duration,
     secure_cookie: bool,
@@ -36,6 +37,7 @@ impl StaticBrowserSessionState {
     pub fn new(secure_cookie: bool) -> Self {
         Self {
             sessions: DashMap::new(),
+            setup_handoffs: crate::setup_handoff::SetupHandoffs::default(),
             cookie_name: STATIC_BROWSER_SESSION_COOKIE_NAME.to_string(),
             ttl: DEFAULT_TTL,
             secure_cookie,
@@ -45,6 +47,23 @@ impl StaticBrowserSessionState {
     #[must_use]
     pub fn cookie_name(&self) -> &str {
         &self.cookie_name
+    }
+
+    /// Mint an independent 60-second capability after the host verifies local operator authority.
+    pub fn start_setup_handoff(&self, origin: &str) -> Result<String, AuthError> {
+        self.setup_handoffs.start(origin)
+    }
+
+    /// Consume exactly once for the same origin; the host validates browser transport first.
+    pub fn redeem_setup_handoff(
+        &self,
+        token: &str,
+        origin: &str,
+    ) -> Result<Option<BrowserSessionRow>, AuthError> {
+        if !self.setup_handoffs.consume(token, origin) {
+            return Ok(None);
+        }
+        self.create().map(Some)
     }
 
     pub fn create(&self) -> Result<BrowserSessionRow, AuthError> {

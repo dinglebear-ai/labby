@@ -26,9 +26,10 @@ export function SettingsScalarSection({
   fields: SettingsFieldSpec[]
   onSaved: (state: SettingsState) => void
 }): React.ReactElement {
+  const fieldKeys = fields.map((field) => field.key).join('\u0000')
   const initialValues = useMemo(
-    () => Object.fromEntries(fields.map((field) => [field.key, state.values[field.key] ?? null])),
-    [fields, state.values],
+    () => Object.fromEntries((fieldKeys ? fieldKeys.split('\u0000') : []).map((key) => [key, state.values[key] ?? null])),
+    [fieldKeys, state.values],
   )
   const [values, setValues] = useState<Record<string, unknown>>(initialValues)
   const [changedKeys, setChangedKeys] = useState<Set<string>>(new Set())
@@ -101,11 +102,12 @@ export function SettingsScalarSection({
       <SettingsRowStrip style={{ flexWrap: 'wrap', justifyContent: 'flex-end', gap: 10 }}>
         {errors._form ? (
           <p
+            role="alert"
             style={{
               flex: '1 1 0%',
               minWidth: 0,
               margin: 0,
-              fontSize: 11.5,
+              fontSize: 13,
               color: 'var(--aurora-error)',
             }}
           >
@@ -118,7 +120,7 @@ export function SettingsScalarSection({
               display: 'flex',
               alignItems: 'center',
               gap: 8,
-              fontSize: 11.5,
+              fontSize: 13,
               color: 'var(--aurora-text-muted)',
             }}
           >
@@ -129,7 +131,7 @@ export function SettingsScalarSection({
         <Button type="button" size="sm" variant="outline" disabled={saving || changedKeys.size === 0} onClick={() => { setValues(initialValues); setChangedKeys(new Set()); setConfirmed(false) }}>
           Reset
         </Button>
-        <Button type="button" size="sm" disabled={saving || changedKeys.size === 0 || !confirmed} onClick={() => void save()}>
+        <Button data-visible-label type="button" size="sm" disabled={saving || changedKeys.size === 0 || !confirmed} onClick={() => void save()}>
           {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
           Save changes
         </Button>

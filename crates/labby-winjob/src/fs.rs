@@ -451,10 +451,10 @@ fn verify_acl_policy(
             }
         }
     }
-    let denied = || {
+    let denied = |reason: &str| {
         io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "protected object owner or ACL is unsafe",
+            format!("protected object owner or ACL is unsafe: {reason}"),
         )
     };
     with_current_user(|user| {
@@ -490,9 +490,11 @@ fn verify_acl_policy(
                 || dacl.is_null()
                 || IsValidSid(owner) == 0
                 || IsValidAcl(dacl) == 0
-                || (require_owner && !trusted(owner))
             {
-                return Err(denied());
+                return Err(denied("invalid_security_descriptor"));
+            }
+            if require_owner && !trusted(owner) {
+                return Err(denied("foreign_owner"));
             }
             let mut control = 0;
             let mut revision = 0;
@@ -500,7 +502,7 @@ fn verify_acl_policy(
                 return Err(io::Error::last_os_error());
             }
             if !directory && control & SE_DACL_PROTECTED == 0 {
-                return Err(denied());
+                return Err(denied("dacl_not_protected"));
             }
             let mut size = std::mem::MaybeUninit::<ACL_SIZE_INFORMATION>::uninit();
             if GetAclInformation(
@@ -514,7 +516,7 @@ fn verify_acl_policy(
             }
             let count = size.assume_init().AceCount;
             if count > 1024 || (!directory && count != 1) {
-                return Err(denied());
+                return Err(denied("ace_count"));
             }
             for index in 0..count {
                 let mut ace = std::ptr::null_mut();
@@ -522,7 +524,7 @@ fn verify_acl_policy(
                     return Err(io::Error::last_os_error());
                 }
                 if ace.is_null() {
-                    return Err(denied());
+                    return Err(denied("null_ace"));
                 }
                 // GetAce guarantees that a successful non-null result points
                 // at an ACE inside the already validated ACL. Copy the fixed
@@ -534,7 +536,7 @@ fn verify_acl_policy(
                 if require_inheritance
                     && (header.AceFlags & 0x3 != 0x3 || header.AceFlags & 0x0c != 0)
                 {
-                    return Err(denied());
+                    return Err(denied("child_inheritance"));
                 }
                 if directory && header.AceType == 1 {
                     continue;
@@ -542,13 +544,13 @@ fn verify_acl_policy(
                 if header.AceType != 0
                     || usize::from(header.AceSize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>()
                 {
-                    return Err(denied());
+                    return Err(denied("ace_type_or_size"));
                 }
                 if !directory && header.AceFlags & 0x18 != 0 {
-                    return Err(denied());
+                    return Err(denied("file_inherited_ace"));
                 } // INHERIT_ONLY / INHERITED
                 if !require_owner && !require_inheritance && header.AceFlags != 0 {
-                    return Err(denied());
+                    return Err(denied("unexpected_ace_flags"));
                 }
                 if directory && header.AceFlags & 0x08 != 0 {
                     continue;
@@ -556,16 +558,16 @@ fn verify_acl_policy(
                 let allowed = ace.cast::<ACCESS_ALLOWED_ACE>().read_unaligned(); // lgtm[rust/access-invalid-pointer]
                 let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
                 if usize::from(header.AceSize) < sid_offset + 8 {
-                    return Err(denied());
+                    return Err(denied("sid_header_size"));
                 }
                 let sid_bytes = ace.cast::<u8>().add(sid_offset);
                 let sid_len = 8 + usize::from(sid_bytes.add(1).read()) * 4;
                 if usize::from(header.AceSize) < sid_offset + sid_len {
-                    return Err(denied());
+                    return Err(denied("sid_size"));
                 }
                 let sid = sid_bytes.cast();
                 if IsValidSid(sid) == 0 {
-                    return Err(denied());
+                    return Err(denied("invalid_sid"));
                 }
                 if directory {
                     // Generic masks are included as well as expanded file rights.
@@ -579,12 +581,15 @@ fn verify_acl_policy(
                         | WRITE_OWNER
                         | 0x5000_0000;
                     if allowed.Mask & writes != 0 && !trusted(sid) {
-                        return Err(denied());
+                        return Err(denied("foreign_directory_writer"));
                     }
-                } else if EqualSid(sid, user) == 0
-                    || allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS
-                {
-                    return Err(denied());
+                } else {
+                    if EqualSid(sid, user) == 0 {
+                        return Err(denied("foreign_file_principal"));
+                    }
+                    if allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS {
+                        return Err(denied("incomplete_file_rights"));
+                    }
                 }
             }
             Ok(())

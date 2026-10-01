@@ -229,6 +229,13 @@ macro_rules! depot {
 /// Depot's own registry completeness test.
 pub(crate) const DEPOT_OPERATIONS: &[DepotOperation] = &[
     depot!("depot.acp_registry.list", Library, Read, USER_OWNED, true),
+    depot!(
+        "depot.credentials.list",
+        Platform,
+        Read,
+        INSTALLATION,
+        false
+    ),
     depot!("depot.artifacts.exact", Library, Read, USER_OWNED, true),
     depot!("depot.artifacts.follow", Library, Operate, USER_OWNED, true),
     depot!("depot.artifacts.fork", Library, Operate, USER_OWNED, true),

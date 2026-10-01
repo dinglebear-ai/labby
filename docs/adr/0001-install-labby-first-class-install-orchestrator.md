@@ -1,7 +1,7 @@
 ---
 title: "ADR 0001: Make install-labby the First-Class Guided Installation Orchestrator"
 created: "2026-09-18"
-updated: "2026-09-18"
+updated: "2026-09-30"
 ---
 
 # ADR 0001: Make install-labby the First-Class Guided Installation Orchestrator
@@ -74,6 +74,24 @@ The Labby binary remains the mutation authority:
 - doctor/log surfaces own runtime diagnosis.
 
 The skill must prefer those interfaces over hand-editing Labby-owned state.
+
+## First-use product flow amendment
+
+The guided skill is optional help for installations that need operator judgment,
+third-party documentation, or repair. The recommended newcomer flow is owned by
+the installer, Labby binary, and authenticated control plane. A user should be
+able to complete its supported local path without a skill-aware agent, a GitHub
+account, or manual `.env` and TOML edits. Account-free release verification
+requires a separately reviewed bootstrap-trust design; this amendment does not
+weaken the existing verified release path.
+
+Installation success and first-use readiness are distinct results. The native
+setup summary reports the installation result and identifies the first-use
+checks that it has not verified. Full readiness requires a provider model
+lookup and Agent run, selected client registration, live catalog search, and
+an activated MCP server with a successful tool call. Failed checks stay visible
+and resumable. UI, CLI, and desktop adapters should call binary-owned setup
+operations rather than implementing their own durable setup engine.
 
 ## Authentication contract
 

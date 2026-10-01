@@ -15,8 +15,19 @@ while (($#)); do
   esac
 done
 [[ -n "$repo" && -n "$workflow" && -n "$ref" && -n "$artifact" ]] || exit 64
-args=(attestation verify "$artifact" --repo "$repo" --signer-workflow "$repo/.github/workflows/$workflow" --source-ref "$ref" --deny-self-hosted-runners)
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+verifier_dir=$(mktemp -d)
+trap 'rm -rf "$verifier_dir"' EXIT
+# shellcheck source=scripts/ci/github-verifier-bootstrap.sh
+source "$script_dir/github-verifier-bootstrap.sh"
+ensure_github_verifier "$verifier_dir"
+args=(attestation verify "$artifact" --hostname github.com --repo "$repo" --signer-workflow "$repo/.github/workflows/$workflow" --source-ref "$ref" --deny-self-hosted-runners)
 [[ -z "$source_digest" ]] || args+=(--source-digest "$source_digest")
 [[ -z "$bundle" ]] || args+=(--bundle "$bundle")
 [[ -z "$trusted_root" ]] || args+=(--custom-trusted-root "$trusted_root")
-gh "${args[@]}" >/dev/null
+if [[ -n "$bundle" ]]; then
+  mkdir "$verifier_dir/config"
+  GH_TOKEN='' GITHUB_TOKEN='' GH_ENTERPRISE_TOKEN='' GITHUB_ENTERPRISE_TOKEN='' GH_HOST=github.com GH_CONFIG_DIR="$verifier_dir/config" "$GH_VERIFIER" "${args[@]}" >/dev/null
+else
+  "$GH_VERIFIER" "${args[@]}" >/dev/null
+fi

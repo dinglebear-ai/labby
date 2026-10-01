@@ -1,0 +1,37 @@
+{
+  "version": "2.102.0",
+  "release_url": "https://github.com/cli/cli/releases/tag/v2.102.0",
+  "release_immutable": true,
+  "release_api": "https://api.github.com/repos/cli/cli/releases/tags/v2.102.0",
+  "checksums_url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_checksums.txt",
+  "checksums_sha256": "afe49e9affa232faa8212aed035417166f6ade9b9470acb53d4dbd28c0504e8d",
+  "verified": "2026-10-01",
+  "policy": "Embed these reviewed digests in the trusted canonical installer; never fetch replacement digests at runtime. Refresh by reviewed change. GitHub CLI 2.102.0 fixes source-ref/workflow matcher and symlink advisories.",
+  "assets": [
+    {
+      "platform_archive": "linux_amd64.tar.gz",
+      "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz",
+      "sha256": "bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386"
+    },
+    {
+      "platform_archive": "linux_arm64.tar.gz",
+      "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_arm64.tar.gz",
+      "sha256": "7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484"
+    },
+    {
+      "platform_archive": "macOS_arm64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_macOS_arm64.zip",
+      "sha256": "da922c20d1792e5b2cbf375593d7a658acf034c12c84e007e71c76ef959c337e"
+    },
+    {
+      "platform_archive": "windows_amd64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_amd64.zip",
+      "sha256": "ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4"
+    },
+    {
+      "platform_archive": "windows_arm64.zip",
+      "url": "https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_arm64.zip",
+      "sha256": "5dcf12aa8525eabd0c46ec414f323ab6cf65229fc2cd46543cc705001bbaf223"
+    }
+  ]
+}

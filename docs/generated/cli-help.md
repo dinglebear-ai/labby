@@ -6012,9 +6012,10 @@ Guide onboarding, check prerequisites, or explicitly repair local setup
 Usage: labby setup [OPTIONS] [COMMAND]
 
 Commands:
-  state   Show the redacted setup and draft snapshot without changing configuration
-  check   Check local setup prerequisites without mutating the filesystem
-  repair  Repair missing local setup prerequisites without contacting external services
+  clients  Detect or safely register selected external MCP clients on this computer
+  state    Show the redacted setup and draft snapshot without changing configuration
+  check    Check local setup prerequisites without mutating the filesystem
+  repair   Repair missing local setup prerequisites without contacting external services
 
 Options:
       --json
@@ -6052,6 +6053,9 @@ Options:
 
           [possible values: server, client]
 
+      --advanced
+          Ask about deployment, listen address, port, and authentication instead of using local defaults
+
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
@@ -6060,17 +6064,17 @@ Options:
 
           [possible values: native, incus]
 
-      --host <HOST>
-          Server listen address. Defaults to 127.0.0.1
-
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
 
-      --port <PORT>
-          Server listen or published port. Defaults to 8765
+      --host <HOST>
+          Server listen address. Defaults to 127.0.0.1
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --port <PORT>
+          Server listen or published port. Fresh local setup uses 8765 when available, otherwise an available port
 
       --server-url <SERVER_URL>
           Explicit Labby server URL for client mode
@@ -6088,11 +6092,308 @@ Options:
 
           [possible values: none, google, authelia]
 
+      --clients <CLIENTS>
+          Register selected installed MCP clients through Labby's protected local bridge
+
+          [possible values: codex, claude-code]
+
       --desktop
           Install the Labby desktop app when a published package is available for this platform
 
       --no-desktop
           Do not install the Labby desktop app
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients`
+
+```text
+Detect or safely register selected external MCP clients on this computer
+
+Usage: labby setup clients [OPTIONS] <COMMAND>
+
+Commands:
+  bridge    Serve stdio MCP using the protected saved connection for exactly this gateway
+  connect   Verify the selected connection and register selected local clients with backups
+  list      Detect supported client executables and configuration files on this computer
+  plan      Review registration using protected saved CLI credentials or client-owned OAuth
+  register  Register Labby using the exact reviewed config version. Client use remains unverified
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients bridge`
+
+```text
+Serve stdio MCP using the protected saved connection for exactly this gateway
+
+Usage: labby setup clients bridge [OPTIONS] --gateway-url <GATEWAY_URL> --state-root <STATE_ROOT>
+
+Options:
+      --gateway-url <GATEWAY_URL>
+
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --state-root <STATE_ROOT>
+
+
+      --client <CLIENT>
+          [possible values: codex, claude-code]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients connect`
+
+```text
+Verify the selected connection and register selected local clients with backups
+
+Usage: labby setup clients connect [OPTIONS] --clients <CLIENTS>
+
+Options:
+      --clients <CLIENTS>
+          [possible values: codex, claude-code]
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --gateway-url <GATEWAY_URL>
+
+
+      --connection <CONNECTION>
+          [default: saved-cli]
+          [possible values: saved-cli, oauth]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --state-root <STATE_ROOT>
+
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients list`
+
+```text
+Detect supported client executables and configuration files on this computer
+
+Usage: labby setup clients list [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients plan`
+
+```text
+Review registration using protected saved CLI credentials or client-owned OAuth
+
+Usage: labby setup clients plan [OPTIONS] --client <CLIENT> --gateway-url <GATEWAY_URL>
+
+Options:
+      --client <CLIENT>
+          [possible values: codex, claude-code]
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --gateway-url <GATEWAY_URL>
+
+
+      --connection <CONNECTION>
+          [default: saved-cli]
+          [possible values: saved-cli, oauth]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --state-root <STATE_ROOT>
+
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients register`
+
+```text
+Register Labby using the exact reviewed config version. Client use remains unverified
+
+Usage: labby setup clients register [OPTIONS] --client <CLIENT> --gateway-url <GATEWAY_URL> --expected-version <EXPECTED_VERSION>
+
+Options:
+      --client <CLIENT>
+          [possible values: codex, claude-code]
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --gateway-url <GATEWAY_URL>
+
+
+      --expected-version <EXPECTED_VERSION>
+
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+      --connection <CONNECTION>
+          [default: saved-cli]
+          [possible values: saved-cli, oauth]
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --state-root <STATE_ROOT>
+
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help

@@ -80,21 +80,21 @@ class WindowsCiPolicyTests(unittest.TestCase):
         )
         self.assertNotIn("continue-on-error: true", block)
 
-    def test_only_advisory_desktop_windows_is_manually_selected(self) -> None:
+    def test_all_windows_jobs_are_manually_selected(self) -> None:
         self.assertIn("      run_windows:\n", self.workflow)
         self.assertIn("        type: boolean\n", self.workflow)
         self.assertIn("        default: false\n", self.workflow)
 
         desktop = job_block(self.workflow, "desktop-windows", "verification-t0")
         manual_gate = "github.event_name == 'workflow_dispatch' && inputs.run_windows == true"
-        self.assertIn(manual_gate, desktop)
+        for name in ("test-windows", "windows-installer", "desktop-windows"):
+            self.assertIn(manual_gate, yaml.safe_load(self.workflow)["jobs"][name]["if"])
 
-    def test_workspace_windows_job_remains_visible_to_ci_gate_when_skipped(self) -> None:
-        block = self.workflow[self.workflow.index("  ci-gate:\n") :]
-        self.assertIn("      - test-windows\n", block)
-        self.assertNotIn("      - desktop-windows\n", block)
-        self.assertIn("needs.test-windows.result", block)
-        self.assertNotIn("needs.desktop-windows.result", block)
+    def test_windows_jobs_do_not_block_ci_gate(self) -> None:
+        gate = yaml.safe_load(self.workflow)["jobs"]["ci-gate"]
+        for name in ("test-windows", "windows-installer", "desktop-windows"):
+            self.assertNotIn(name, gate["needs"])
+            self.assertNotIn(f"needs.{name}.result", str(gate))
 
     def test_self_hosted_jobs_are_declared_non_blocking_and_same_repository(self) -> None:
         # Hosted runners stay the default. The self-hosted fleet is privileged
@@ -121,7 +121,7 @@ class WindowsCiPolicyTests(unittest.TestCase):
         for job in ("rust-coverage", "live-e2e-core"):
             self.assertNotIn(job, yaml.safe_load(self.workflow)["jobs"], f"{job} must run independently of CI")
             self.assertNotIn(job, gate, f"{job} remains advisory")
-        for job in ("test", "feature-slices", "test-windows", "test-fork", "clippy"):
+        for job in ("test", "feature-slices", "test-fork", "clippy"):
             self.assertIn(job, gate)
 
 
@@ -182,22 +182,22 @@ class ProductRoutingTests(unittest.TestCase):
             text=True, capture_output=True, timeout=10, check=False,
         )
 
-    def test_native_windows_executes_on_routed_events(self) -> None:
-        for event, fork in [("pull_request", False), ("pull_request", True), ("push", False), ("schedule", False), ("workflow_dispatch", False)]:
-            with self.subTest(event=event, fork=fork):
-                context = self.context(event, fork, ["crates/labby-gateway/src/upstream/process_guard.rs"])
-                self.assertTrue(evaluate_condition(self.jobs["test-windows"].get("if"), context))
+    def test_windows_jobs_require_explicit_manual_selection(self) -> None:
+        for name in ("test-windows", "windows-installer", "desktop-windows"):
+            for event in ("pull_request", "push", "schedule", "workflow_dispatch"):
+                for selected in (False, True):
+                    with self.subTest(job=name, event=event, selected=selected):
+                        context = self.context(event, False, ["scripts/install.ps1", "crates/labby/src/main.rs", "apps/tauri/src/lib.rs"])
+                        context["inputs.run_windows"] = selected
+                        self.assertEqual(event == "workflow_dispatch" and selected,
+                                         evaluate_condition(self.jobs[name].get("if"), context))
 
-    def test_installer_executes_on_routed_events(self) -> None:
-        for event in ("pull_request", "push", "workflow_dispatch"):
-            with self.subTest(event=event):
-                context = self.context(event, False, ["scripts/install.ps1"])
-                self.assertTrue(evaluate_condition(self.jobs["windows-installer"].get("if"), context))
-
-    def test_required_windows_skip_fails_aggregate(self) -> None:
-        context = self.context("pull_request", False, ["crates/labby-gateway/src/upstream/process_guard.rs"])
-        result = self.run_aggregate(context, **{"test-windows": "skipped"})
-        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+    def test_windows_failures_do_not_fail_aggregate_even_when_selected(self) -> None:
+        context = self.context("workflow_dispatch", False, ["crates/labby/src/main.rs"])
+        context["inputs.run_windows"] = True
+        result = self.run_aggregate(context, **{name: "failure" for name in
+                                   ("test-windows", "windows-installer", "desktop-windows")})
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_fork_product_routing_has_a_classifier_and_test_lane(self) -> None:
         for files, expected in [(["crates/labby-gateway/src/gateway/dispatch.rs"], "test-fork"), (["apps/web/app/(admin)/gateway/page.tsx"], "gateway-admin-browser")]:

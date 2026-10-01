@@ -1,8 +1,10 @@
 #!/bin/sh
 # Install labby — the Lab homelab control plane binary.
 #
-# Download labby-install.sh plus its checksum from an explicit release, verify
-# its GitHub attestation and digest, then run: sh ./labby-install.sh
+# Obtain the standalone script from the canonical repository over HTTPS, or
+# independently verify its release checksum and provenance before running it.
+# The reviewed script carries pinned verifier hashes; no account is needed for
+# releases publishing public provenance bundles.
 #
 # Downloads the latest GitHub release archive for this platform, verifies its
 # SHA-256, and installs the binary to ~/.local/bin/labby. When explicitly
@@ -83,21 +85,70 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "$2"
 }
 
-# Fail fast before release resolution and before any release download when
-# this machine cannot verify the release trust path. The `gh auth status`
-# probe itself contacts GitHub, so the guarantee is "before any release
-# download", not "before any network I/O".
+# BEGIN GENERATED GITHUB VERIFIER BOOTSTRAP
+# shellcheck shell=sh
+# Generated trust code; edit this template and reviewed bootstrap-pins.json.
+# Source this helper and call ensure_github_verifier <private temporary directory>.
+github_verifier_version_ok() {
+    "$1" --version 2>/dev/null | awk '
+      NR == 1 && $1 == "gh" && $2 == "version" {
+        split($3,v,".");
+        if (v[1] ~ /^[0-9]+$/ && v[2] ~ /^[0-9]+$/ && v[3] ~ /^[0-9]+$/ &&
+            (v[1] > 2 || (v[1] == 2 && (v[2] > 102 || (v[2] == 102 && v[3] >= 0))))) ok=1
+      } END { exit !ok }'
+}
+ensure_github_verifier() {
+    verifier_tmp=$(cd "$1" && pwd) || return 1
+    GH_VERIFIER=${GH_VERIFIER:-$(command -v gh 2>/dev/null || true)}
+    if [ -n "$GH_VERIFIER" ] && github_verifier_version_ok "$GH_VERIFIER" && "$GH_VERIFIER" attestation verify --help >/dev/null 2>&1; then
+        case "$GH_VERIFIER" in /*) ;; *) GH_VERIFIER="$(cd "$(dirname "$GH_VERIFIER")" && pwd)/$(basename "$GH_VERIFIER")" ;; esac
+        return 0
+    fi
+    verifier_platform="$(uname -s)/$(uname -m)"
+    case "$verifier_platform" in
+        Linux/x86_64) verifier_asset="gh_2.102.0_linux_amd64.tar.gz"; verifier_digest="bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386"; verifier_member="gh_2.102.0_linux_amd64/bin/gh" ;;
+        Linux/aarch64|Linux/arm64) verifier_asset="gh_2.102.0_linux_arm64.tar.gz"; verifier_digest="7862c86c72f43df3a2d93ddde6f473285b4e2af61b494849846827e513ef6484"; verifier_member="gh_2.102.0_linux_arm64/bin/gh" ;;
+        Darwin/arm64) verifier_asset="gh_2.102.0_macOS_arm64.zip"; verifier_digest="da922c20d1792e5b2cbf375593d7a658acf034c12c84e007e71c76ef959c337e"; verifier_member="gh_2.102.0_macOS_arm64/bin/gh" ;;
+        MINGW*/x86_64|MSYS*/x86_64|CYGWIN*/x86_64) verifier_asset="gh_2.102.0_windows_amd64.zip"; verifier_digest="ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4"; verifier_member="bin/gh.exe" ;;
+        MINGW*/aarch64|MINGW*/arm64|MSYS*/aarch64|MSYS*/arm64) verifier_asset="gh_2.102.0_windows_arm64.zip"; verifier_digest="5dcf12aa8525eabd0c46ec414f323ab6cf65229fc2cd46543cc705001bbaf223"; verifier_member="bin/gh.exe" ;;
+        *) printf '%s\n' 'No pinned GitHub verifier is available for this platform.' >&2; return 1 ;;
+    esac
+    verifier_archive="$verifier_tmp/$verifier_asset"
+    printf '%s\n' 'Bootstrapping pinned GitHub verifier 2.102.0 (no account required).' >&2
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 -fSL --connect-timeout 10 --max-time 120 --max-filesize 25000000 --retry 2 -o "$verifier_archive" "https://github.com/cli/cli/releases/download/v2.102.0/$verifier_asset" || return 1
+    if command -v sha256sum >/dev/null 2>&1; then
+        verifier_actual=$(sha256sum "$verifier_archive" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        verifier_actual=$(shasum -a 256 "$verifier_archive" | awk '{print $1}')
+    else
+        printf '%s\n' 'A SHA-256 tool is required for the verifier bootstrap.' >&2; return 1
+    fi
+    [ "$verifier_actual" = "$verifier_digest" ] || { printf '%s\n' 'Pinned verifier checksum FAILED; downloaded code was not executed.' >&2; return 1; }
+    case "$verifier_asset" in
+        *.tar.gz) tar -xzf "$verifier_archive" -C "$verifier_tmp" "$verifier_member" || return 1 ;;
+        *.zip) command -v unzip >/dev/null 2>&1 || { printf '%s\n' 'unzip is required for the macOS verifier bootstrap.' >&2; return 1; }; unzip -q "$verifier_archive" "$verifier_member" -d "$verifier_tmp" || return 1 ;;
+    esac
+    GH_VERIFIER="$verifier_tmp/$verifier_member"
+    [ -f "$GH_VERIFIER" ] && [ ! -L "$GH_VERIFIER" ] || return 1
+    chmod 700 "$GH_VERIFIER" || return 1
+    if ! github_verifier_version_ok "$GH_VERIFIER" || ! "$GH_VERIFIER" attestation verify --help >/dev/null 2>&1; then
+        printf '%s\n' 'Pinned verifier does not support the required policy.' >&2
+        return 1
+    fi
+}
+# END GENERATED GITHUB VERIFIER BOOTSTRAP
+
+# Require the verifier before downloading release bytes. Published attestation
+# bundles permit verification without a GitHub account; older releases use the
+# authenticated attestation API. Both paths enforce the same signer policy.
 require_release_prerequisites() {
     require_command curl "curl is required for release installation"
     require_command tar "tar is required to unpack the Labby release archive"
-    require_command gh "GitHub CLI (gh) is required to verify Labby release provenance; install gh before running the installer"
-    gh attestation verify --help >/dev/null 2>&1 ||
-        fail "GitHub CLI (gh) with attestation support is required to verify Labby release provenance; upgrade gh before running the installer"
-    gh auth status --hostname github.com >/dev/null 2>&1 ||
-        fail "GitHub CLI must be authenticated to fetch Labby release attestations; run 'gh auth login' or set GH_TOKEN before running the installer"
     if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
         fail "sha256sum or shasum is required to verify the Labby release checksum"
     fi
+    make_tmp_dir
+    ensure_github_verifier "$CREATED_TMP_DIR" || fail "A verified GitHub CLI 2.102.0 or newer is required; verifier bootstrap failed"
 }
 
 print_banner() {
@@ -179,17 +230,27 @@ sha256_check() {
 verify_release_provenance() {
     artifact=$1
     resolved=$2
-    command -v gh >/dev/null 2>&1 \
-        || fail "GitHub CLI (gh) is required to verify release provenance"
+    bundle=${3:-}
+    [ -n "${GH_VERIFIER:-}" ] || fail "GitHub verifier was not prepared"
     # Pin the trust root: GH_HOST or a gh config default must not redirect
     # attestation verification to another host.
-    gh attestation verify "$artifact" \
+    set -- "$artifact"
+    if [ -n "$bundle" ]; then
+        set -- "$@" --bundle "$bundle"
+    fi
+    if [ -n "$bundle" ]; then
+        make_tmp_dir
+        GH_TOKEN='' GITHUB_TOKEN='' GH_ENTERPRISE_TOKEN='' GITHUB_ENTERPRISE_TOKEN='' GH_HOST=github.com GH_CONFIG_DIR="$CREATED_TMP_DIR" \
+            "$GH_VERIFIER" attestation verify "$@" \
         --hostname github.com \
         --repo "$REPO" \
         --signer-workflow "$REPO/.github/workflows/release.yml" \
         --source-ref "refs/tags/$resolved" \
         --deny-self-hosted-runners >/dev/null \
         || fail "GitHub provenance verification FAILED for $asset"
+    else
+        "$GH_VERIFIER" attestation verify "$@" --hostname github.com --repo "$REPO" --signer-workflow "$REPO/.github/workflows/release.yml" --source-ref "refs/tags/$resolved" --deny-self-hosted-runners >/dev/null || fail "GitHub provenance verification FAILED for $asset"
+    fi
     say "GitHub provenance verified"
 }
 
@@ -198,7 +259,7 @@ latest_release_with_asset() {
     # Incus image release. Pick the newest release that actually contains the
     # platform binary archive we are about to download.
     # $1 = asset name
-    curl -fsSL --connect-timeout 10 --max-time 300 --retry 3 "https://api.github.com/repos/${REPO}/releases?per_page=20" |
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 -fsSL --connect-timeout 10 --max-time 300 --retry 3 "https://api.github.com/repos/${REPO}/releases?per_page=20" |
         awk -v asset="$1" '
             function capture_if_match() {
                 if (resolved == "" && tag != "" && found) {
@@ -448,9 +509,27 @@ install_from_release() {
     make_tmp_dir
     tmp="$CREATED_TMP_DIR"
 
+    # A bundle is untrusted input until gh validates its signature, artifact
+    # digest, repository, workflow and source ref. Never fall back after a
+    # published bundle fails verification.
+    provenance_bundle=
+    bundle_status=0
+    bundle_http=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 -fsSL --connect-timeout 10 --max-time 60 --retry 3 --max-filesize 5000000 -w '%{http_code}' -o "$tmp/$asset.sigstore.jsonl" "${base}/${asset}.sigstore.jsonl") || bundle_status=$?
+    case "$bundle_status:$bundle_http" in
+        0:200)
+            [ -s "$tmp/$asset.sigstore.jsonl" ] || fail "empty release provenance bundle for $asset"
+            provenance_bundle="$tmp/$asset.sigstore.jsonl"
+            ;;
+        22:404)
+            "$GH_VERIFIER" auth status --hostname github.com >/dev/null 2>&1 ||
+                fail "This older release has no public provenance bundle; GitHub CLI must be authenticated to fetch Labby release attestations"
+            ;;
+        *) fail "release provenance bundle could not be retrieved; refusing authenticated fallback" ;;
+    esac
+
     say "downloading ${base}/${asset} ..."
-    curl -fsSL --connect-timeout 10 --max-time 300 --retry 3 -o "$tmp/$asset" "${base}/${asset}" || return 1
-    if curl -fsSL --connect-timeout 10 --max-time 300 --retry 3 -o "$tmp/$asset.sha256" "${base}/${asset}.sha256"; then
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 -fsSL --connect-timeout 10 --max-time 300 --retry 3 -o "$tmp/$asset" "${base}/${asset}" || return 1
+    if curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 -fsSL --connect-timeout 10 --max-time 300 --retry 3 -o "$tmp/$asset.sha256" "${base}/${asset}.sha256"; then
         sha256_check "$tmp/$asset" "$tmp/$asset.sha256" \
             || fail "checksum verification FAILED for $asset — aborting"
         say "sha256 verified"
@@ -458,7 +537,7 @@ install_from_release() {
         fail "no .sha256 asset published for $asset; release installs require checksum verification"
     fi
 
-    verify_release_provenance "$tmp/$asset" "${resolved_version:-$VERSION}"
+    verify_release_provenance "$tmp/$asset" "${resolved_version:-$VERSION}" "$provenance_bundle"
 
     tar -xzf "$tmp/$asset" -C "$tmp"
     bin="$(find "$tmp" -type f -name labby | head -n 1)"
