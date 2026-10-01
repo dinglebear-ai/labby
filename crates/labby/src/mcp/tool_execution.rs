@@ -1012,12 +1012,12 @@ mod tests {
         assert_eq!(received_meta.lock().await[0]["trace-id"], "opaque-meta");
         // Usage recording runs asynchronously on SQLite's worker. Yielding a
         // fixed number of times does not wait for that worker under CI load.
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if pool.usage_row_count_for_tests().await == 1 {
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
