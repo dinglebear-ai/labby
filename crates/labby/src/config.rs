@@ -3239,6 +3239,12 @@ mod tests {
             "[phoenix]\nenabled = true\ncommand = \"/home/labby/.local/bin/codex\"\ncodex_home = \"/home/labby/.codex\"\nworkspace_root = \"/home/labby\"\nmodel = \"gpt-5.6-sol\"\n",
         )
         .unwrap();
+        let mut configured = configured;
+        if cfg!(windows) {
+            configured.phoenix.command = Some("C:/labby/codex.exe".into());
+            configured.phoenix.codex_home = Some("C:/labby/.codex".into());
+            configured.phoenix.workspace_root = Some("C:/labby".into());
+        }
         configured.validate().unwrap();
 
         let openai_compatible: LabConfig = toml::from_str(
@@ -3373,7 +3379,10 @@ mod tests {
 
     /// Auth resolution needs an installation root, and these tests must not
     /// depend on the process environment, so they name one explicitly.
+    #[cfg(not(windows))]
     const TEST_HOME: &str = "/labby-config-test-home";
+    #[cfg(windows)]
+    const TEST_HOME: &str = "C:/labby-config-test-home";
 
     fn with_test_home(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
         let mut env = vec![("HOME".to_string(), TEST_HOME.to_string())];
@@ -3942,18 +3951,50 @@ future = "keep"
     #[test]
     fn legacy_auth_store_is_reported_when_the_resolved_store_is_absent() {
         let vars = |labby_home: Option<&str>, home: &str| {
-            let labby_home = labby_home.map(str::to_owned);
-            let home = home.to_owned();
+            let labby_home = labby_home.map(|path| {
+                if cfg!(windows) && path.starts_with('/') {
+                    format!("C:{path}")
+                } else {
+                    path.to_owned()
+                }
+            });
+            let home = if cfg!(windows) && home.starts_with('/') {
+                format!("C:{home}")
+            } else {
+                home.to_owned()
+            };
             move |name: &str| match name {
                 "LABBY_HOME" => labby_home.clone().map(std::ffi::OsString::from),
                 "HOME" => Some(std::ffi::OsString::from(home.clone())),
                 _ => None,
             }
         };
-        let legacy = PathBuf::from("/home/operator/.labby/auth.db");
-        let legacy_key = PathBuf::from("/home/operator/.labby/auth-jwt.pem");
-        let resolved = PathBuf::from("/srv/labby/auth.db");
-        let resolved_key = PathBuf::from("/srv/labby/auth-jwt.pem");
+        let legacy = PathBuf::from(if cfg!(windows) {
+            "C:/home/operator"
+        } else {
+            "/home/operator"
+        })
+        .join(".labby")
+        .join("auth.db");
+        let legacy_key = PathBuf::from(if cfg!(windows) {
+            "C:/home/operator"
+        } else {
+            "/home/operator"
+        })
+        .join(".labby")
+        .join("auth-jwt.pem");
+        let resolved = PathBuf::from(if cfg!(windows) {
+            "C:/srv/labby"
+        } else {
+            "/srv/labby"
+        })
+        .join("auth.db");
+        let resolved_key = PathBuf::from(if cfg!(windows) {
+            "C:/srv/labby"
+        } else {
+            "/srv/labby"
+        })
+        .join("auth-jwt.pem");
         let legacy_files = |path: &Path| path == legacy || path == legacy_key;
 
         let notice = legacy_auth_store_with(
@@ -3968,7 +4009,7 @@ future = "keep"
         assert_eq!(notice.legacy_key, legacy_key);
         assert_eq!(notice.resolved_key, resolved_key);
         assert!(notice.legacy_key_exists);
-        let message = notice.message();
+        let message = notice.message().replace('\\', "/");
         assert!(message.contains("/srv/labby/auth.db"), "{message}");
         assert!(
             message.contains("/home/operator/.labby/auth.db"),
@@ -3980,8 +4021,20 @@ future = "keep"
         // store, or no legacy store at all.
         assert_eq!(
             legacy_auth_store_with(
-                &PathBuf::from("/home/operator/.labby/auth.db"),
-                &PathBuf::from("/home/operator/.labby/auth-jwt.pem"),
+                &PathBuf::from(if cfg!(windows) {
+                    "C:/home/operator"
+                } else {
+                    "/home/operator"
+                })
+                .join(".labby")
+                .join("auth.db"),
+                &PathBuf::from(if cfg!(windows) {
+                    "C:/home/operator"
+                } else {
+                    "/home/operator"
+                })
+                .join(".labby")
+                .join("auth-jwt.pem"),
                 vars(None, "/home/operator"),
                 legacy_files
             ),

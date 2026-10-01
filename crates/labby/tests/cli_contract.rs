@@ -516,7 +516,9 @@ fn every_public_help_path_runs_offline_and_has_qualified_usage() {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            String::from_utf8_lossy(&output.stdout).contains(&format!("Usage: {path}")),
+            String::from_utf8_lossy(&output.stdout)
+                .replace("labby.exe", "labby")
+                .contains(&format!("Usage: {path}")),
             "unqualified usage at {path}"
         );
     }
@@ -1150,7 +1152,8 @@ fn public_name_contract_detects_injected_bad_commands_and_aliases() {
 
 #[test]
 fn setup_validation_recipe_uses_the_executable_cli_grammar() {
-    let recipe = include_str!("../../../Justfile")
+    let justfile = include_str!("../../../Justfile").replace("\r\n", "\n");
+    let recipe = justfile
         .split_once("\nvalidate-plugin:\n")
         .expect("plugin validation recipe")
         .1

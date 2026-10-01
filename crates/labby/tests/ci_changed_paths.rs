@@ -1098,7 +1098,9 @@ fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
 }
 
 fn ci_workflow_text() -> String {
-    fs::read_to_string(repo_root().join(".github/workflows/ci.yml")).expect("read ci.yml")
+    fs::read_to_string(repo_root().join(".github/workflows/ci.yml"))
+        .expect("read ci.yml")
+        .replace("\r\n", "\n")
 }
 
 fn ci_workflow_yaml(text: &str) -> serde_json::Value {

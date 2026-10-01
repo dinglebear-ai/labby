@@ -1101,9 +1101,9 @@ mod tests {
             if record.state.terminal() {
                 return record;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        panic!("task `{task_id}` did not settle");
+        panic!("task `{task_id}` did not settle within five seconds");
     }
 
     async fn create_agent(store: &AccessStore, owner: &VerifiedIdentity, agent_id: &str) {
