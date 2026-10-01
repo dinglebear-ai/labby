@@ -13,7 +13,7 @@ use tracing::warn;
 
 use crate::error::AuthError;
 use crate::util::{
-    ensure_restrictive_permissions, set_restrictive_permissions, write_secret_file_atomically,
+    create_secret_file_atomically, ensure_restrictive_permissions, set_restrictive_permissions,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,8 +234,18 @@ fn generate_signing_key(path: &Path) -> Result<SigningKey, AuthError> {
     let der = key
         .to_pkcs8_der()
         .map_err(|error| AuthError::Storage(format!("encode signing key DER: {error}")))?;
-    write_secret_file_atomically(path, der.as_bytes())?;
-    Ok(key)
+    if create_secret_file_atomically(path, der.as_bytes())? {
+        Ok(key)
+    } else {
+        // A concurrent initializer published first. Every process must use
+        // that persisted identity rather than its discarded candidate.
+        ensure_restrictive_permissions(path)?;
+        let winner = std::fs::read(path).map_err(|error| {
+            AuthError::Storage(format!("read signing key `{}`: {error}", path.display()))
+        })?;
+        SigningKey::from_pkcs8_der(&winner)
+            .map_err(|error| AuthError::Storage(format!("decode winning signing key: {error}")))
+    }
 }
 
 #[cfg(test)]
@@ -251,6 +261,29 @@ mod tests {
         let first = SigningKeys::load_or_create(&path).unwrap();
         let second = SigningKeys::load_or_create(&path).unwrap();
         assert_eq!(first.key_id, second.key_id);
+    }
+
+    #[test]
+    fn concurrent_fresh_home_initializers_share_persisted_jwks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+        let handles = (0..16)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    SigningKeys::load_or_create(&path).unwrap().jwks().clone()
+                })
+            })
+            .collect::<Vec<_>>();
+        let persisted = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect::<Vec<_>>();
+        let reloaded = SigningKeys::load_or_create(&path).unwrap().jwks().clone();
+        assert!(persisted.iter().all(|jwks| jwks == &reloaded));
     }
 
     #[cfg(unix)]

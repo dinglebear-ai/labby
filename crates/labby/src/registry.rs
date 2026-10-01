@@ -155,6 +155,7 @@ pub struct ToolRegistry {
     dispatch_capabilities: Vec<(&'static str, DispatchCapability)>,
     permanent_tools: crate::mcp::permanent_tools::PermanentToolRegistry,
     tool_projection_mode: crate::mcp::permanent_tools::ToolProjectionMode,
+    proxy_aggregate: bool,
 }
 
 impl ToolRegistry {
@@ -167,7 +168,19 @@ impl ToolRegistry {
             dispatch_capabilities: Vec::new(),
             permanent_tools: crate::mcp::permanent_tools::PermanentToolRegistry::new(),
             tool_projection_mode: crate::mcp::permanent_tools::ToolProjectionMode::Router,
+            proxy_aggregate: false,
         }
+    }
+
+    /// Compose an upstream-only registry for the proxy's private stdio aggregator.
+    pub(crate) const fn proxy_aggregate() -> Self {
+        let mut registry = Self::new();
+        registry.proxy_aggregate = true;
+        registry
+    }
+
+    pub(crate) const fn is_proxy_aggregate(&self) -> bool {
+        self.proxy_aggregate
     }
 
     /// Register a service. Duplicates are ignored (first registration wins).

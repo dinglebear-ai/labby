@@ -357,7 +357,10 @@ async fn q3_execution_timeout_is_typed_and_does_not_duplicate_the_effect() {
 
 #[tokio::test]
 async fn q3_output_limit_returns_literal_truncation_marker() {
+    // This is the output-budget oracle, not the runtime deadline oracle.
+    // Allow the >1 MiB fixture to serialize under the full Windows CI matrix.
     let limits = Limits {
+        timeout_ms: 5_000,
         max_response_bytes: 4_096,
         max_response_tokens: 1_024,
         ..Limits::default()
@@ -373,7 +376,11 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
         .execute(r#"async () => await callTool("forge::forge.large", {})"#)
         .await
         .expect("bounded output response");
-    assert!(!execution.is_error);
+    assert!(
+        !execution.is_error,
+        "output fixture failed: {}",
+        execution.structured
+    );
     assert_eq!(execution.structured["result"]["truncated"], json!(true));
     assert!(
         execution.structured["result"]["original_size"]

@@ -352,12 +352,19 @@ async fn prepared_listener_accepts_no_http_requests_before_router_start() {
 }
 
 async fn oauth_state(temp: &tempfile::TempDir) -> Arc<AuthState> {
+    oauth_state_at(temp, "/custom-mcp").await
+}
+
+async fn oauth_state_at(temp: &tempfile::TempDir, resource_path: &str) -> Arc<AuthState> {
     let config = AuthConfig {
         mode: AuthMode::OAuth,
         public_url: Some(url::Url::parse("https://issuer.example.com").unwrap()),
         sqlite_path: temp.path().join("auth.db"),
         key_path: temp.path().join("auth-jwt.pem"),
         scopes_supported: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+        default_scope: "mcp:read mcp:write".to_string(),
+        resource_path: resource_path.to_string(),
+        enable_dynamic_registration: true,
         disable_static_token_with_oauth: true,
         google: GoogleConfig {
             client_id: "test-client".to_string(),
@@ -456,6 +463,7 @@ async fn oauth_proxy_serves_exact_root_metadata_and_enforces_token_contract() {
             resource: resource.clone(),
             issuer: issuer.clone(),
             required_scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+            host_issuer: false,
         })
         .unwrap();
 
@@ -578,6 +586,140 @@ async fn oauth_proxy_serves_exact_root_metadata_and_enforces_token_contract() {
 }
 
 #[tokio::test]
+async fn self_hosted_oauth_registers_authorizes_and_grants_usable_default_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = oauth_state_at(&temp, "/mcp").await;
+    let resource = url::Url::parse("https://issuer.example.com/mcp").unwrap();
+    let prepared = LocalProxy::prepare(LocalProxyOptions {
+        command: fixture_command(
+            temp.path().to_path_buf(),
+            &temp.path().join("self-hosted.pid"),
+        ),
+        preferences: ProxyPreferences {
+            path: "/mcp".to_string(),
+            ..local_preferences(ProxyAuthMode::Oauth)
+        },
+        bearer_token: None,
+        explicit_env: Vec::new(),
+        inherit_env: vec![OsString::from("PATH")],
+    })
+    .await
+    .unwrap();
+    let proxy = prepared
+        .start(LocalProxyAuthPolicy::Oauth {
+            auth_state: Arc::clone(&state),
+            resource: resource.clone(),
+            issuer: url::Url::parse("https://issuer.example.com/").unwrap(),
+            required_scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+            host_issuer: true,
+        })
+        .unwrap();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
+    for path in [
+        "/.well-known/oauth-authorization-server",
+        "/.well-known/oauth-protected-resource",
+        "/jwks",
+        "/auth/google/callback",
+    ] {
+        let response = client
+            .get(proxy.url().join(path).unwrap())
+            .header(reqwest::header::HOST, resource.authority())
+            .send()
+            .await
+            .unwrap();
+        assert_ne!(response.status(), reqwest::StatusCode::NOT_FOUND, "{path}");
+    }
+    let registration = client
+        .post(proxy.url().join("/register").unwrap())
+        .header(reqwest::header::HOST, resource.authority())
+        .json(&serde_json::json!({
+            "redirect_uris": ["http://127.0.0.1:3030/callback"],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(registration.status(), reqwest::StatusCode::CREATED);
+    let registration: serde_json::Value = registration.json().await.unwrap();
+    let client_id = registration["client_id"].as_str().unwrap();
+    let mut authorization_url = proxy.url().join("/authorize").unwrap();
+    authorization_url.query_pairs_mut().extend_pairs([
+        ("client_id", client_id),
+        ("redirect_uri", "http://127.0.0.1:3030/callback"),
+        ("response_type", "code"),
+        ("state", "downstream-state"),
+        ("resource", resource.as_str()),
+        (
+            "code_challenge",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        ("code_challenge_method", "S256"),
+    ]);
+    let authorization = client
+        .get(authorization_url)
+        .header(reqwest::header::HOST, resource.authority())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authorization.status(), reqwest::StatusCode::OK);
+    let consent = authorization.text().await.unwrap();
+    let provider_url = consent
+        .split("href=\"")
+        .find(|value| value.starts_with("https://accounts.google.com/"))
+        .expect("DCR consent must contain the Google authorization link")
+        .split('"')
+        .next()
+        .unwrap()
+        .replace("&amp;", "&");
+    let provider_url = url::Url::parse(&provider_url).unwrap();
+    let provider_state = provider_url
+        .query_pairs()
+        .find(|(name, _)| name == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let pending = state
+        .store
+        .take_authorization_request(&provider_state)
+        .await
+        .unwrap();
+    assert_eq!(pending.scope, "mcp:read mcp:write");
+    // Google remains external to this test. Sign the verified grant's selected
+    // scope locally to verify that the proxy's actual middleware accepts it.
+    let token = state
+        .signing_keys
+        .issue_access_token(&oauth_claims(
+            resource.as_str(),
+            "https://issuer.example.com",
+            &pending.scope,
+        ))
+        .unwrap();
+    assert_eq!(
+        oauth_request(&proxy, &resource, Some(&token))
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    let service = connect(proxy.url(), Some(&token)).await;
+    let tools = service.peer().list_all_tools().await.unwrap();
+    assert!(!tools.is_empty());
+    for tool in tools {
+        assert_eq!(
+            tool.meta.unwrap().0["securitySchemes"],
+            serde_json::json!([
+                {"type":"oauth2", "scopes":["mcp:read", "mcp:write"]}
+            ])
+        );
+    }
+    proxy.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn local_proxy_honors_a_fixed_port() {
     let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let fixed_port = reservation.local_addr().unwrap().port();
@@ -679,6 +821,8 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
     use tokio::process::Command;
 
     let temp = tempfile::tempdir().unwrap();
+    // An explicit child must bypass even an invalid default configuration.
+    std::fs::write(temp.path().join(".mcp.json"), "invalid JSON").unwrap();
     let pid_file = temp.path().join("cli-child.pid");
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
         .args(["--json", "proxy", "--local", "--auth", "none"])
@@ -693,7 +837,7 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
 
     let stdout = child.stdout.take().unwrap();
     let line = tokio::time::timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(30),
         BufReader::new(stdout).lines().next_line(),
     )
     .await
@@ -716,6 +860,198 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
         .expect("CLI did not stop after Ctrl+C")
         .unwrap();
     assert!(status.success(), "CLI exited with {status}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_discovers_home_mcp_json_and_aggregates_two_servers() {
+    use tokio::process::Command;
+
+    let temp = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "mcpServers": {
+            "alpha": {
+                "command": env!("CARGO_BIN_EXE_stdio-mcp-fixture"),
+                "args": ["--pid-file", temp.path().join("alpha.pid")],
+                "env": {"PROXY_EXPLICIT": "alpha"}
+            },
+            "beta": {
+                "command": env!("CARGO_BIN_EXE_stdio-mcp-fixture"),
+                "args": ["--pid-file", temp.path().join("beta.pid")],
+                "env": {"PROXY_EXPLICIT": "beta"}
+            }
+        }
+    });
+    std::fs::write(temp.path().join(".mcp.json"), config.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy", "--local", "--auth", "none"])
+        .env("LABBY_HOME", temp.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let line = wait_for_readiness_or_exit(&mut child, stdout, "auto-discovered MCP proxy")
+        .await
+        .unwrap();
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let url = url::Url::parse(ready["url"].as_str().unwrap()).unwrap();
+    let service = connect(&url, None).await;
+    let tools = service.peer().list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 2);
+    assert_ne!(tools[0].name, tools[1].name);
+    assert!(tools.iter().any(|tool| tool.name == "alpha::fixture.echo"));
+    assert!(tools.iter().any(|tool| tool.name == "beta::fixture.echo"));
+    assert!(
+        service
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new("mcp_app"))
+            .await
+            .is_err(),
+        "aggregate mode must not execute Labby-owned control tools"
+    );
+    let mut reached = std::collections::BTreeSet::new();
+    for tool in tools {
+        let result = service
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new(tool.name))
+            .await
+            .unwrap();
+        let context: serde_json::Value =
+            serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        reached.insert(
+            context["explicit_env"]
+                .as_str()
+                .expect("fixture response must contain its server marker")
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        reached,
+        std::collections::BTreeSet::from(["alpha".into(), "beta".into()])
+    );
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    let output = wait_for_child_output(child, "auto-discovered proxy shutdown")
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_aggregates_stdio_and_http_with_configured_authorization_header() {
+    use tokio::process::Command;
+
+    ensure_tls_provider();
+    let temp = tempfile::tempdir().unwrap();
+    // This is a real authenticated Streamable HTTP MCP endpoint, backed by a
+    // separate fixture child. Successful discovery/calls require header delivery.
+    let http_proxy = LocalProxy::start(LocalProxyOptions {
+        command: fixture_command(temp.path().to_path_buf(), &temp.path().join("http.pid")),
+        preferences: local_preferences(ProxyAuthMode::Bearer),
+        bearer_token: Some("mixed-http-secret".into()),
+        explicit_env: vec![(OsString::from("PROXY_EXPLICIT"), OsString::from("http"))],
+        inherit_env: vec![OsString::from("PATH")],
+    })
+    .await
+    .unwrap();
+    for token in [None, Some("wrong-secret")] {
+        let mut request = reqwest::Client::new()
+            .post(http_proxy.url().clone())
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(r#"{"jsonrpc":"2.0","id":1,"method":"server/discover"}"#);
+        if let Some(token) = token {
+            request = request.bearer_auth(token);
+        }
+        assert_eq!(
+            request.send().await.unwrap().status(),
+            reqwest::StatusCode::UNAUTHORIZED
+        );
+    }
+    let config = serde_json::json!({"mcpServers": {
+        "local": {
+            "command": env!("CARGO_BIN_EXE_stdio-mcp-fixture"),
+            "args": ["--pid-file", temp.path().join("stdio.pid")],
+            "env": {"PROXY_EXPLICIT": "stdio"}
+        },
+        "remote": {
+            "type": "http",
+            "url": http_proxy.url().as_str(),
+            "headers": {"Authorization": "Bearer mixed-http-secret"}
+        }
+    }});
+    std::fs::write(temp.path().join(".mcp.json"), config.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy", "--local", "--auth", "none"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", temp.path())
+        .env("LABBY_HOME", temp.path())
+        .current_dir(temp.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let line = wait_for_readiness_or_exit(&mut child, stdout, "mixed stdio/HTTP proxy")
+        .await
+        .unwrap();
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let service = connect(
+        &url::Url::parse(ready["url"].as_str().unwrap()).unwrap(),
+        None,
+    )
+    .await;
+    let tools = service.peer().list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 2);
+    let names = tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        names,
+        std::collections::BTreeSet::from(["local::fixture.echo", "remote::fixture.echo"])
+    );
+    for (name, marker) in [
+        ("local::fixture.echo", "stdio"),
+        ("remote::fixture.echo", "http"),
+    ] {
+        let result = service
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new(name))
+            .await
+            .unwrap();
+        let context: serde_json::Value =
+            serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(context["explicit_env"], marker);
+    }
+    service.cancel().await.unwrap();
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    let output = wait_for_child_output(child, "mixed stdio/HTTP proxy shutdown")
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("mixed-http-secret"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("mixed-http-secret"));
+    http_proxy.shutdown().await.unwrap();
 }
 
 #[cfg(unix)]

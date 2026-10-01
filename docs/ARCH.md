@@ -1,7 +1,7 @@
 ---
 title: "Architecture"
 created: "2026-07-30"
-updated: "2026-09-27"
+updated: "2026-09-30"
 ---
 
 # Architecture
@@ -268,8 +268,8 @@ Direct proxy flow:
 2. Bind a Streamable HTTP router to loopback with exact Host/Origin policy.
 3. Apply tailnet, bearer, OAuth, or explicit no-auth policy.
 4. For OAuth, lease the exact public resource through the live daemon.
-5. Publish and supervise one exact Tailscale Serve mapping when selected.
-6. On Ctrl+C or component failure, clean owned HTTP, Serve, lease, and process
+5. Publish and supervise one exact Tailscale Serve or public Funnel mapping when selected.
+6. On Ctrl+C or component failure, clean owned HTTP, Tailscale mapping, lease, and process
    resources without touching aggregate gateway state.
 
 See [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) for the operator

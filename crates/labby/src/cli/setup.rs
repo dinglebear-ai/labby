@@ -790,16 +790,18 @@ fn prompt_proxy_preferences(
     let exposure = prompt_value(
         input,
         output,
-        "Exposure (tailscale/local)",
+        "Exposure (tailscale/funnel/local)",
         match preferences.exposure {
             ProxyExposure::Tailscale => "tailscale",
+            ProxyExposure::Funnel => "funnel",
             ProxyExposure::Local => "local",
         },
     )?;
     preferences.exposure = match exposure.to_ascii_lowercase().as_str() {
         "tailscale" => ProxyExposure::Tailscale,
+        "funnel" => ProxyExposure::Funnel,
         "local" => ProxyExposure::Local,
-        _ => anyhow::bail!("exposure must be `tailscale` or `local`"),
+        _ => anyhow::bail!("exposure must be `tailscale`, `funnel`, or `local`"),
     };
     let auth = prompt_value(
         input,

@@ -2,6 +2,8 @@
 #![allow(clippy::await_holding_lock)]
 
 use labby::proxy::config::ProxyPortPreference;
+#[cfg(unix)]
+use labby::proxy::config::{ProxyAuthMode, ProxyExposure};
 use labby::proxy::tailscale::{
     ServeStatus, TailscaleStatus, build_public_url, select_port_from_candidates,
 };
@@ -69,6 +71,20 @@ fn serve_status_finds_exact_mapping_and_ports_from_both_maps() {
     );
     assert!(status.occupied_ports().contains(&52_177));
     assert!(status.occupied_ports().contains(&53_147));
+}
+
+#[test]
+fn funnel_status_requires_exact_public_flag() {
+    let status = ServeStatus::parse(
+        r#"{"Web":{"devhost.example.ts.net:8443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:38417"}}}},"AllowFunnel":{"devhost.example.ts.net:8443":true}}"#,
+    ).unwrap();
+    assert!(status.is_funnel("devhost.example.ts.net", 8443));
+    assert!(!status.is_funnel("devhost.example.ts.net", 443));
+    assert!(
+        !ServeStatus::parse(SERVE_STATUS)
+            .unwrap()
+            .is_funnel("devhost.example.ts.net", 53147)
+    );
 }
 
 #[test]
@@ -166,15 +182,17 @@ fi
 if [[ "${{1:-}}" == "version" ]]; then printf '%s\n' '1.98.10'; exit 0; fi
 if [[ "${{1:-}} ${{2:-}} ${{3:-}}" == "serve status --json" ]]; then
   if [[ -f "$mapping" ]]; then
-    IFS='|' read -r port backend < "$mapping"
+    IFS='|' read -r port backend mode < "$mapping"
     if [[ -f "$root/drift_backend" ]]; then backend=$(<"$root/drift_backend"); fi
-    printf '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"devhost.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}},"devhost.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}}}\n' "$port" "$backend"
+    funnel_flag=''
+    if [[ "$mode" == funnel ]]; then funnel_flag=$(printf ',"AllowFunnel":{{"devhost.example.ts.net:%s":true}}' "$port"); fi
+    printf '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"devhost.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}},"devhost.example.ts.net:%s":{{"Handlers":{{"/":{{"Proxy":"%s"}}}}}}}}%s}}\n' "$port" "$backend" "$funnel_flag"
   else
     printf '%s\n' '{{"TCP":{{"443":{{"HTTPS":true}}}},"Web":{{"devhost.example.ts.net:443":{{"Handlers":{{"/":{{"Proxy":"http://127.0.0.1:8765"}}}}}}}}}}'
   fi
   exit 0
 fi
-if [[ "${{1:-}}" == "serve" ]]; then
+if [[ "${{1:-}}" == "serve" || "${{1:-}}" == "funnel" ]]; then
   port="${{3#--https=}}"
   if [[ "${{4:-}}" == "off" ]]; then rm -f "$mapping"; exit 0; fi
   backend="${{4:-}}"
@@ -183,7 +201,11 @@ if [[ "${{1:-}}" == "serve" ]]; then
     exit 1
   fi
   if [[ -f "$root/exit_early" ]]; then exit 23; fi
-  printf '%s|%s\n' "$port" "$backend" > "$mapping"
+  if [[ "${{1:-}}" == "funnel" ]]; then
+    printf '%s|%s|funnel\n' "$port" "$backend" > "$mapping"
+  else
+    printf '%s|%s\n' "$port" "$backend" > "$mapping"
+  fi
   trap 'if [[ ! -f "$root/sticky" ]]; then rm -f "$mapping"; fi; exit 0' TERM INT
   while :; do printf 'serve stdout\n'; printf 'serve stderr\n' >&2; sleep 0.02; done
 fi
@@ -207,6 +229,8 @@ exit 2
         TailscaleServeOptions {
             executable: self.executable.clone(),
             local_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 38_417),
+            exposure: ProxyExposure::Tailscale,
+            auth: ProxyAuthMode::Tailnet,
             path: "/mcp".to_string(),
             port: ProxyPortPreference::default(),
             port_range_start: 49_152,
@@ -271,6 +295,77 @@ async fn foreground_serve_is_ready_only_after_exact_mapping_and_cleans_normally(
         status.backend_for("devhost.example.ts.net", 443),
         Some("http://127.0.0.1:8765")
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn funnel_refuses_non_oauth_before_calling_tailscale() {
+    let fake = FakeTailscale::new();
+    for auth in [
+        ProxyAuthMode::Tailnet,
+        ProxyAuthMode::Bearer,
+        ProxyAuthMode::None,
+    ] {
+        let mut options = fake.options(vec![8443]);
+        options.exposure = ProxyExposure::Funnel;
+        options.auth = auth;
+        assert!(
+            TailscaleServePlan::prepare(options.clone())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("requires OAuth")
+        );
+        assert!(
+            TailscaleServe::start(options)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("requires OAuth")
+        );
+    }
+    assert!(fake.invocations().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn foreground_funnel_requires_public_flag_and_cleans_exact_mapping() {
+    let fake = FakeTailscale::new();
+    let mut options = fake.options(vec![8443]);
+    options.exposure = ProxyExposure::Funnel;
+    options.auth = ProxyAuthMode::Oauth;
+    let funnel = TailscaleServe::start(options).await.unwrap();
+    assert_eq!(
+        funnel.public_url().as_str(),
+        "https://devhost.example.ts.net:8443/mcp"
+    );
+    assert_eq!(
+        mapping(&fake.root).as_deref(),
+        Some("8443|http://127.0.0.1:38417|funnel\n")
+    );
+    funnel.shutdown().await.unwrap();
+    assert!(mapping(&fake.root).is_none());
+    let calls = fake.invocations();
+    assert!(calls.contains("funnel --yes --https=8443 http://127.0.0.1:38417"));
+    assert!(!calls.contains("reset"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn funnel_cleanup_refuses_a_mapping_changed_to_serve() {
+    let fake = FakeTailscale::new();
+    let mut options = fake.options(vec![8443]);
+    options.exposure = ProxyExposure::Funnel;
+    options.auth = ProxyAuthMode::Oauth;
+    let funnel = TailscaleServe::start(options).await.unwrap();
+    fake.touch("sticky");
+    fs::write(fake.root.join("mapping"), "8443|http://127.0.0.1:38417\n").unwrap();
+    assert!(funnel.shutdown().await.is_err());
+    assert_eq!(
+        mapping(&fake.root).as_deref(),
+        Some("8443|http://127.0.0.1:38417\n")
+    );
+    assert!(!fake.invocations().contains("funnel --yes --https=8443 off"));
 }
 
 #[cfg(unix)]
