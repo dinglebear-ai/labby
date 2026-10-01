@@ -2,30 +2,14 @@
 
 import type { CSSProperties, ReactNode } from 'react'
 
-/**
- * Settings chrome, measured off the rendered Gateway Console mock's Settings
- * screen (`section[data-screen-label="Settings"]`).
- *
- * The mock's settings body is a plain flex column — no hero card. It opens
- * with a 24px display title plus a 12.5px muted lede, then stacks
- * `--radius-2` cards. Each card is an uppercase header bar over a body of
- * label/description rows separated by hairlines, with the control parked on
- * the row's right edge.
- *
- * Every literal in this file was read off the mock's live DOM, not inferred
- * from a screenshot. Re-measure before changing one.
- */
-
-/** The mock caps its settings column at 760px. */
-export const SETTINGS_MEASURE = 760
 
 const CARD_STYLE: CSSProperties = {
   borderRadius: 'var(--radius-2)',
   border:
     '1px solid color-mix(in srgb, var(--aurora-border-default) 45%, var(--aurora-page-bg))',
   background:
-    'linear-gradient(180deg, var(--aurora-panel-strong-top), var(--aurora-panel-strong))',
-  boxShadow: 'var(--aurora-shadow-medium), inset 0 1px 0 rgba(255,255,255,0.04)',
+    'var(--aurora-panel-medium)',
+  boxShadow: 'var(--aurora-shadow-medium), var(--aurora-highlight-medium)',
   overflow: 'hidden',
 }
 
@@ -33,15 +17,15 @@ const CARD_HEADER_STYLE: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 8,
-  padding: '11px 16px',
+  padding: '16px 20px',
   borderBottom:
     '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
-  background: 'var(--gw0-0_38)',
-  fontSize: 10.5,
+  background: 'var(--aurora-panel-medium)',
+  fontSize: 16,
   lineHeight: 'normal',
   fontWeight: 700,
-  letterSpacing: '0.15em',
-  textTransform: 'uppercase',
+  fontFamily: 'var(--font-display)',
+  textTransform: 'none',
   color: 'var(--aurora-text-muted)',
 }
 
@@ -49,12 +33,11 @@ const ROW_STYLE: CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   gap: 14,
-  padding: '11px 16px',
+  padding: '16px 20px',
   borderTop:
     '1px solid color-mix(in srgb, var(--aurora-border-default) 35%, var(--aurora-page-bg))',
 }
 
-/** Row label: 13px/600 on primary text. */
 export const SETTINGS_LABEL_STYLE: CSSProperties = {
   fontSize: 13,
   lineHeight: 'normal',
@@ -62,32 +45,26 @@ export const SETTINGS_LABEL_STYLE: CSSProperties = {
   color: 'var(--aurora-text-primary)',
 }
 
-/** Row description: 11.5px/1.5 muted, 2px below the label. */
 export const SETTINGS_DESCRIPTION_STYLE: CSSProperties = {
-  margin: '2px 0 0',
-  fontSize: 11.5,
-  lineHeight: 1.5,
+  margin: '6px 0 0',
+  fontSize: 14,
+  lineHeight: 1.55,
   color: 'var(--aurora-text-muted)',
 }
 
-/**
- * Control chrome shared by the mock's segmented buttons and, by extension,
- * every input/select we park on a row's right edge.
- */
 export const SETTINGS_CONTROL_STYLE: CSSProperties = {
-  height: 28,
-  minHeight: 28,
+  height: 36,
+  minHeight: 36,
   padding: '0 10px',
   borderRadius: 8,
   border:
     '1px solid color-mix(in srgb, var(--aurora-border-default) 70%, var(--aurora-page-bg))',
   background: 'var(--aurora-control-surface)',
   fontFamily: 'inherit',
-  fontSize: 11.5,
+  fontSize: 13,
   color: 'var(--aurora-text-primary)',
 }
 
-/** Multi-line controls keep the chrome but drop the fixed height. */
 export const SETTINGS_MULTILINE_CONTROL_STYLE: CSSProperties = {
   ...SETTINGS_CONTROL_STYLE,
   height: undefined,
@@ -95,10 +72,6 @@ export const SETTINGS_MULTILINE_CONTROL_STYLE: CSSProperties = {
   padding: '8px 10px',
 }
 
-/**
- * Read-only scalar values render as an 11px muted `code`. The mock uses a
- * `code` element but leaves the family inherited, so this does too.
- */
 export const SETTINGS_VALUE_STYLE: CSSProperties = {
   flexShrink: 0,
   fontFamily: 'inherit',
@@ -129,7 +102,7 @@ export function SettingsPageHeader({
         {title}
       </h1>
       {description ? (
-        <p style={{ margin: '5px 0 0', fontSize: 12.5, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}>
+        <p style={{ margin: '5px 0 0', fontSize: 14, lineHeight: 'normal', color: 'var(--aurora-text-muted)' }}>
           {description}
         </p>
       ) : null}
@@ -137,13 +110,6 @@ export function SettingsPageHeader({
   )
 }
 
-/**
- * One settings card: uppercase header bar plus a hairline-separated body.
- *
- * `action` is our addition — the mock's settings cards carry no header
- * affordances, but Extract and the per-service editor need one, and the
- * dashboard panels already establish the pattern.
- */
 export function SettingsCard({
   title,
   action,
@@ -160,7 +126,7 @@ export function SettingsCard({
   return (
     <section data-hovercard="1" style={CARD_STYLE}>
       <div style={CARD_HEADER_STYLE}>
-        <div style={{ minWidth: 0 }}>{title}</div>
+        <h2 style={{ minWidth: 0, margin: 0, color: 'var(--aurora-text-primary)' }}>{title}</h2>
         {action ? (
           <>
             <div style={{ flex: 1 }} />
@@ -170,12 +136,10 @@ export function SettingsCard({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
-                // The header bar is uppercase/tracked label type; controls
-                // parked in it must not inherit that.
                 textTransform: 'none',
                 letterSpacing: 'normal',
                 fontWeight: 400,
-                fontSize: 11.5,
+                fontSize: 13,
                 color: 'var(--aurora-text-primary)',
               }}
             >
@@ -189,9 +153,9 @@ export function SettingsCard({
           <p
             style={{
               margin: 0,
-              padding: '11px 16px 3px',
-              fontSize: 11.5,
-              lineHeight: 1.5,
+              padding: '12px 20px 8px',
+              fontSize: 13,
+              lineHeight: 1.55,
               color: 'var(--aurora-text-muted)',
             }}
           >
@@ -204,12 +168,6 @@ export function SettingsCard({
   )
 }
 
-/**
- * A card body row. `layout="inline"` is the mock's shape — label block on the
- * left, compact control on the right. `layout="stacked"` keeps the same
- * hairline and padding but drops the control onto its own full-width line,
- * which is what wide text and list editors need.
- */
 export function SettingsRow({
   label,
   description,
@@ -254,7 +212,7 @@ export function SettingsRow({
   }
 
   return (
-    <div style={ROW_STYLE}>
+    <div className="flex-col items-stretch sm:flex-row sm:items-center" style={{ ...ROW_STYLE, alignItems: undefined }}>
       {labelBlock}
       {control ? <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{control}</div> : null}
       {children}
@@ -262,7 +220,6 @@ export function SettingsRow({
   )
 }
 
-/** A hairline-separated strip for card-level actions or notices. */
 export function SettingsRowStrip({
   children,
   style,
@@ -273,15 +230,10 @@ export function SettingsRowStrip({
   return <div style={{ ...ROW_STYLE, ...style }}>{children}</div>
 }
 
-/** The mock's right-aligned read-only value. */
 export function SettingsValue({ children }: { children: ReactNode }) {
   return <code style={SETTINGS_VALUE_STYLE}>{children}</code>
 }
 
-/**
- * The mock's toggle: a 34x19 pill with a 15px knob that slides 2px → 17px.
- * The knob colour is the page background, which is what the mock hardcodes.
- */
 export function SettingsToggle({
   checked,
   onChange,
@@ -305,6 +257,7 @@ export function SettingsToggle({
     <button
       id={id}
       type="button"
+      className="focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-aurora-accent-primary"
       role="switch"
       aria-checked={checked}
       aria-label={label}
@@ -338,24 +291,23 @@ export function SettingsToggle({
           borderRadius: 999,
           background: 'var(--aurora-page-bg)',
           transition: 'left 160ms',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
+          boxShadow: 'var(--aurora-shadow-medium)',
         }}
       />
     </button>
   )
 }
 
-/** Segmented-button chrome: 28px tall, 8px radius, 11.5px/650. */
 export function settingsSegmentStyle(active: boolean): CSSProperties {
   return {
     display: 'inline-flex',
     alignItems: 'center',
     gap: 6,
-    height: 28,
+    height: 36,
     padding: '0 12px',
     borderRadius: 8,
     fontFamily: 'inherit',
-    fontSize: 11.5,
+    fontSize: 13,
     fontWeight: 650,
     cursor: 'pointer',
     whiteSpace: 'nowrap',
@@ -370,7 +322,6 @@ export function settingsSegmentStyle(active: boolean): CSSProperties {
   }
 }
 
-/** Small uppercase metadata pill — the mock's 9.5px/700/0.08em label scale. */
 export function SettingsMetaPill({
   children,
   tone = 'default',
@@ -393,10 +344,10 @@ export function SettingsMetaPill({
           tone === 'warn'
             ? 'color-mix(in srgb, var(--aurora-warn) 12%, transparent)'
             : 'var(--aurora-control-surface)',
-        fontSize: 9.5,
-        fontWeight: 700,
-        letterSpacing: '0.08em',
-        textTransform: 'uppercase',
+        fontSize: 11,
+        fontWeight: 500,
+        letterSpacing: 'normal',
+        textTransform: 'none',
         color: tone === 'warn' ? 'var(--aurora-warn)' : 'var(--aurora-text-muted)',
         whiteSpace: 'nowrap',
       }}

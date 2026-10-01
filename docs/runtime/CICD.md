@@ -622,6 +622,12 @@ embed an empty asset set; distributable builds must consume the generated
 export so the binary includes the Admin UI. `just web-build` creates the local
 export for full-product source builds and Incus syncs.
 
+The Settings browser test builds a fresh static export with static mock data
+disabled before serving it locally and intercepting API responses. Other
+browser fixtures build with mock data enabled, so their ignored `out/` cannot
+be reused for this adapter test. These checks do not qualify a live gateway or
+provider.
+
 ```bash
 cd apps/web
 pnpm run test:unit

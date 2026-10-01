@@ -60,34 +60,25 @@ through the `artifacts` control-plane service does not restore those products.
 
 ## Quick Start
 
-### Proxy One Stdio MCP Server
+### Install Labby
 
-After installing Labby, configure proxy defaults once and launch a JavaScript
-stdio server without proxy flags:
-
-```bash
-labby config proxy set
-labby doctor proxy
-labby proxy /path/to/dist.js
-```
-
-The built-in zero-flag policy is Tailscale Serve plus tailnet authorization on
-a random high port. Child flags follow the first child token unchanged, and an
-explicit separator is available for unusual commands:
+Download the reviewed installer snapshot over canonical HTTPS, then run it locally:
 
 ```bash
-labby proxy /path/to/dist.js --workspace /srv/data --read-only
-labby proxy -- npx -y @modelcontextprotocol/server-filesystem /srv/data
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSLo labby-install.sh \
+  https://raw.githubusercontent.com/dinglebear-ai/labby/5ee609bb255bebfbd9eef4d805998ac1e084b878/scripts/install.sh
+sh labby-install.sh
 ```
 
-Use `labby proxy --local --auth none ...` for explicit loopback-only
-development. Bearer and OAuth setup, exact-port resource audiences, safe Serve
-ownership, configuration precedence, output modes, and recovery are covered in
-the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
+This initial script is trusted through canonical HTTPS delivery and the explicitly reviewed commit snapshot above; the download does not follow a mutable branch. Its reviewed, embedded SHA-256 pins authenticate the verifier bootstrap; the installer never downloads a replacement checksum to decide which verifier to trust. It uses an installed GitHub CLI **2.102.0 or newer**, or downloads and verifies pinned 2.102.0 into a private temporary directory. It does not change your PATH or install that helper globally. Required system tools are `curl`, `tar`, and `sha256sum` or `shasum`; macOS bootstrap also uses `unzip`.
 
-### Install Labby with `$install-labby`
+Labby release archives still require checksum and provenance verification against the exact repository, release workflow, immutable tag and hosted-runner policy. Releases with `<archive>.sigstore.jsonl` bundles need no GitHub account: verification runs without tokens and with an empty credential store. Older releases without bundles require your own GitHub authentication; the installer stops before downloading their archive if authentication is unavailable. No privileged credential is supplied or shared. Installing a binary does not establish complete onboarding; the subsequent product-owned setup checks remain required.
 
-The first-class guided install path is the checked-in `install-labby` Agent Skill. Install that one skill, then ask a skill-aware agent to run it:
+The recommended local setup uses a native service, loopback listener, generated protected credentials, and a short-lived browser handoff. In Settings, connect your Agent provider, choose a discovered model and complete a starter Agent test, register selected supported clients, then use Discover to add and verify an MCP server. Required failures remain visible and resumable; installation alone is not full readiness. No manual configuration-file edits are needed on this path.
+
+#### Optional agent-assisted guidance
+
+The checked-in `install-labby` skill helps with guided installation, advanced deployments, and repair. It is optional. To add it to a skill-aware agent:
 
 ```bash
 npx skills add https://github.com/dinglebear-ai/labby --skill install-labby
@@ -97,7 +88,7 @@ npx skills add https://github.com/dinglebear-ai/labby --skill install-labby
 $install-labby
 ```
 
-The skill inspects the machine, asks for authentication/listener/deployment choices, drives the verified release installer plus `labby setup`, configures supported persistence and HTTPS exposure, helps register Labby in installed agents, and does not declare success until `labby doctor` plus a live MCP smoke pass. Security-sensitive durable writes remain owned by the Labby binary rather than duplicated in skill prose.
+The skill inspects the selected host, follows binary-owned setup operations, helps with explicitly requested advanced deployment choices, and verifies the same required first-use checks. Built-in Agent configuration and external-client registration are separate steps. Security-sensitive durable writes remain owned by the Labby binary.
 
 See [`skills/install-labby/SKILL.md`](./skills/install-labby/SKILL.md) for the canonical APM orchestration skill and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
 
@@ -115,12 +106,12 @@ That deploys `install-labby`, `using-labby`, `using-codemode`, and `using-snippe
 server (`npx -y @dinglebear/labby mcp`) for Claude Code and Codex; `apm.yml` at
 the repository root is the manifest and `apm outdated -g` reports new
 releases. APM does not install the `labby` binary or provision a gateway host:
-run `$install-labby` (or the verified release installer below) and
-`labby setup` for that.
+use the standalone installer above and `labby setup` for that. The optional
+`$install-labby` skill can guide those steps.
 
 #### Manual Verified Release
 
-Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and an authenticated GitHub CLI (`gh`) build that supports `gh attestation verify`. The installer checks all of these before resolving or downloading any Labby release, so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify (the `gh auth status` probe itself contacts GitHub, so the guarantee is about release downloads, not all network use). Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases, verify `gh attestation verify --help`, then run `gh auth login` (or provide `GH_TOKEN` for headless automation).
+For independent verification of the installer itself, use GitHub CLI **2.102.0 or newer**. Older versions are rejected by Labby's installer and release gates because they lack the corrected signer and source-ref verification policy. Public provenance bundles allow this verification without GitHub login; legacy attestation lookup requires your own `gh auth login` or `GH_TOKEN`.
 
 Linux/macOS:
 
@@ -131,7 +122,10 @@ version=vX.Y.Z
 base="https://github.com/dinglebear-ai/labby/releases/download/$version"
 curl -fSLO "$base/labby-install.sh"
 curl -fSLO "$base/labby-install.sh.sha256"
+# For releases publishing bundles; older releases require authenticated verification.
+curl -fSLO "$base/labby-install.sh.sigstore.jsonl"
 gh attestation verify labby-install.sh \
+  --bundle labby-install.sh.sigstore.jsonl \
   --repo dinglebear-ai/labby \
   --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
   --source-ref "refs/tags/$version" \
@@ -152,10 +146,12 @@ downloads the release archive for the current platform and verifies only the
 same release; it does not require `gh` and does not verify GitHub build
 provenance. Use `labby-install.sh` on Linux or macOS when provenance
 verification matters. Current releases do not publish Windows binaries or
-installers.
+installers. The Windows installer source uses the same reviewed verifier pins,
+protected temporary extraction, and account-free bundle policy; Windows runtime
+qualification is still required before a Windows release claim.
 
 The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
-platform asset, require `gh`, verify the archive's attestation against the
+platform asset, prepare a verified GitHub CLI, verify the archive's attestation against the
 Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
 user PATH. The shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
@@ -227,8 +223,8 @@ labby host update auto status
 labby host update auto disable
 ```
 
-Both modes require Apple Silicon and GitHub CLI (`gh`) for release attestation
-verification. They skip drafts, prereleases, missing platform assets, and versions
+Both modes require Apple Silicon. The installer uses a suitable existing GitHub
+CLI or bootstraps its pinned verifier in a private temporary directory. They skip drafts, prereleases, missing platform assets, and versions
 equal to or older than the installed binary. The installer verifies attestations
 and checksums before atomic replacement. No separate language runtime is required.
 Use `labby host update --automatic --dry-run` to check without installing.
@@ -332,6 +328,31 @@ incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 See [docs/runtime/INCUS.md](./docs/runtime/INCUS.md) for the full Incus
 runbook, bare-metal variant, `/dev/net/tun` Tailscale passthrough, manual
 `claude`/`codex`/`gemini` login checklist, and rollback commands.
+
+### Proxy One Stdio MCP Server
+
+After installing Labby, configure proxy defaults once and launch a JavaScript
+stdio server without proxy flags:
+
+```bash
+labby config proxy set
+labby doctor proxy
+labby proxy /path/to/dist.js
+```
+
+The built-in zero-flag policy is Tailscale Serve plus tailnet authorization on
+a random high port. Child flags follow the first child token unchanged, and an
+explicit separator is available for unusual commands:
+
+```bash
+labby proxy /path/to/dist.js --workspace /srv/data --read-only
+labby proxy -- npx -y @modelcontextprotocol/server-filesystem /srv/data
+```
+
+Use `labby proxy --local --auth none ...` for explicit loopback-only
+development. Bearer and OAuth setup, exact-port resource audiences, safe Serve
+ownership, configuration precedence, output modes, and recovery are covered in
+the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
 ## Core Workflows
 

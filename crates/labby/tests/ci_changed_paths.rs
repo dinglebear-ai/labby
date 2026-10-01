@@ -737,6 +737,10 @@ fn release_workflow_changes_enable_the_release_contract() {
         ".github/workflows/release.yml",
         ".github/workflows/build-incus-image.yml",
         "scripts/ci/resolve-n-minus-one-baseline.py",
+        "scripts/ci/qualify-first-use.py",
+        "scripts/ci/first-use-native-driver.py",
+        "scripts/ci/test_first_use_qualification.py",
+        "scripts/ci/test_first_use_native_driver.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["workflow"], "true", "{path}");

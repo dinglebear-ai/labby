@@ -39,7 +39,9 @@ export function parseFieldInput(field: SettingsFieldSpec, raw: string | boolean)
   if (field.control === 'bool') return Boolean(raw)
   const text = String(raw)
   if (field.control === 'number') {
-    if (text.trim() === '') return null
+    if (text.trim() === '') return field.required || field.backend === 'env'
+      ? invalidFieldInput(text, 'Enter a whole number.')
+      : null
     const parsed = Number(text)
     if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) return invalidFieldInput(text, 'Must be an integer.')
     if (field.min !== null && parsed < field.min) return invalidFieldInput(text, `Must be at least ${field.min}.`)
@@ -47,12 +49,83 @@ export function parseFieldInput(field: SettingsFieldSpec, raw: string | boolean)
     return parsed
   }
   if (field.control === 'string_list') {
-    return text
+    const entries = text
       .split(/\r?\n|,/)
       .map((entry) => entry.trim())
       .filter(Boolean)
+    if (field.required && entries.length === 0) return invalidFieldInput(text, 'Enter at least one value.')
+    if (field.key === 'api.cors_origins' && entries.some((entry) => !isHttpOrigin(entry))) {
+      return invalidFieldInput(text, 'Enter full HTTP or HTTPS origins without a path, credentials, query, or fragment.')
+    }
+    if (field.key === 'mcp.allowed_hosts' && entries.some((entry) => !isAllowedHost(entry))) {
+      return invalidFieldInput(text, 'Enter host names or IP addresses, optionally with a port. Wildcards and URLs are not allowed.')
+    }
+    return entries
   }
+  if (field.control === 'enum' && !field.options.some((option) => option.value === text)) {
+    return invalidFieldInput(text, 'Select one of the available values.')
+  }
+  if (field.control === 'url' && text.trim()) {
+    try {
+      const parsed = new URL(text)
+      if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) {
+        return invalidFieldInput(text, 'Enter an HTTP or HTTPS URL without credentials, query, or fragment.')
+      }
+    } catch {
+      return invalidFieldInput(text, 'Enter a valid HTTP or HTTPS URL.')
+    }
+  }
+  if (['LABBY_MCP_HTTP_HOST', 'mcp.host'].includes(field.key)
+    && (text.trim() || field.key === 'LABBY_MCP_HTTP_HOST')
+    && !isBindHost(text.trim())) {
+    return invalidFieldInput(text, 'Enter an IP address or DNS host name without a port or URL scheme.')
+  }
+  if (field.required && !text.trim()) return invalidFieldInput(text, 'This value is required.')
   return text
+}
+
+function isHttpOrigin(value: string): boolean {
+  try {
+    const parsed = new URL(value)
+    return ['http:', 'https:'].includes(parsed.protocol) && Boolean(parsed.hostname)
+      && !parsed.username && !parsed.password && parsed.pathname === '/'
+      && !parsed.search && !parsed.hash
+  } catch {
+    return false
+  }
+}
+
+function isAllowedHost(value: string): boolean {
+  if (value === '*' || /[\s/@?#\\]/.test(value)) return false
+  try {
+    const parsed = new URL(`http://${value}/`)
+    return Boolean(parsed.hostname) && !parsed.username && !parsed.password && parsed.pathname === '/'
+  } catch {
+    try {
+      const parsed = new URL(`http://[${value}]/`)
+      return Boolean(parsed.hostname) && parsed.pathname === '/'
+    } catch {
+      return false
+    }
+  }
+}
+
+function isBindHost(value: string): boolean {
+  if (!value || /[\s/@?#\\]/.test(value)) return false
+  // URL normalizes an explicit :80 to an empty port; inspect the raw host too.
+  if (value.includes(':') && !value.startsWith('[') && value.split(':').length === 2) return false
+  if (/\]:/.test(value)) return false
+  try {
+    const parsed = new URL(`http://${value}/`)
+    return Boolean(parsed.hostname) && !parsed.port && parsed.pathname === '/'
+  } catch {
+    try {
+      const parsed = new URL(`http://[${value}]/`)
+      return Boolean(parsed.hostname) && parsed.pathname === '/'
+    } catch {
+      return false
+    }
+  }
 }
 
 export function collectFieldInputErrors(

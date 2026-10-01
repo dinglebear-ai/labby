@@ -83,6 +83,11 @@ pub(crate) fn server_url(raw: &str) -> Result<Url> {
 
 fn profile_path(server: &Url) -> Result<PathBuf> {
     let root = crate::installation::InstallationPaths::resolve()?;
+    profile_path_for_root(root.root(), server)
+}
+
+fn profile_path_for_root(root: &Path, server: &Url) -> Result<PathBuf> {
+    let root = crate::installation::InstallationPaths::from_root(root)?;
     let key = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .encode(Sha256::digest(server.as_str().as_bytes()));
     Ok(root.root().join("cli-sessions").join(key))
@@ -439,20 +444,32 @@ pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
         // login profile; preserve their explicit-token/anonymous behavior.
         return Ok(None);
     };
-    let path = profile_path(&server)?;
+    let root = crate::installation::InstallationPaths::resolve()?;
+    token_for_root(root.root(), &server).await
+}
+
+/// Read or refresh this exact authority's grant from the explicitly selected root.
+/// Never consult another installation, select a destination, or initiate login.
+pub(crate) async fn token_for_root(root: &Path, server: &Url) -> Result<Option<String>> {
+    let server = server_url(server.as_str())?;
+    let path = profile_path_for_root(root, &server)?;
+    token_at_profile(&path, &server).await
+}
+
+async fn token_at_profile(path: &Path, server: &Url) -> Result<Option<String>> {
     if !path.try_exists()? {
         return Ok(None);
     }
-    crate::installation::InstallationPaths::from_root(&path)?.prepare_root()?;
-    let _lock = lock_profile(&path).await?;
-    let key = private_key(&path, false)?;
+    crate::installation::InstallationPaths::from_root(path)?.prepare_root()?;
+    let _lock = lock_profile(path).await?;
+    let key = private_key(path, false)?;
     let profile =
-        read_profile(&path)?.context("CLI session profile is missing; run labby auth login")?;
-    let mut config = upstream(&server, &profile.registration)?;
+        read_profile(path)?.context("CLI session profile is missing; run labby auth login")?;
+    let mut config = upstream(server, &profile.registration)?;
     config.name = profile.upstream_name;
     let runtime = build_upstream_oauth_runtime_with_redirect(
         std::slice::from_ref(&config),
-        &auth_config(&path),
+        &auth_config(path),
         Some(&key),
         "http://127.0.0.1/auth/upstream/callback".to_owned(),
     )
@@ -474,6 +491,147 @@ pub(crate) async fn token(server: &Url) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_root_and_exact_origin_never_borrow_another_profile() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let origin = server_url("https://one.example").unwrap();
+        let path = profile_path_for_root(first.path(), &origin).unwrap();
+        crate::installation::InstallationPaths::from_root(&path)
+            .unwrap()
+            .prepare_root()
+            .unwrap();
+        private_key(&path, true).unwrap();
+        publish_profile(
+            &path,
+            &SessionProfile {
+                registration: UpstreamOauthRegistration::Dynamic,
+                upstream_name: "operator-server-isolated".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            token_for_root(second.path(), &origin)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            token_for_root(first.path(), &server_url("https://two.example").unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            token_for_root(Path::new("relative"), &origin)
+                .await
+                .is_err()
+        );
+        assert!(
+            token_for_root(first.path(), &Url::parse("http://one.example").unwrap())
+                .await
+                .is_err()
+        );
+        assert!(!second.path().join("cli-sessions").exists());
+        assert_eq!(
+            read_profile(&path).unwrap().unwrap().upstream_name,
+            "operator-server-isolated"
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_profile_refreshes_expired_grant_and_fails_closed_on_rejection() {
+        use oauth2::{AccessToken, RefreshToken, basic::BasicTokenType};
+        use rmcp::transport::auth::{
+            CredentialStore, OAuthTokenResponse, StoredCredentials, VendorExtraTokenFields,
+        };
+        use wiremock::{
+            Mock, ResponseTemplate,
+            matchers::{body_string_contains, method, path as route},
+        };
+        for approved in [true, false] {
+            let server = wiremock::MockServer::start().await;
+            for (path, body) in [
+                (
+                    "/.well-known/oauth-protected-resource/mcp",
+                    serde_json::json!({"resource":format!("{}/mcp",server.uri()),"authorization_servers":[server.uri()]}),
+                ),
+                (
+                    "/.well-known/oauth-authorization-server",
+                    serde_json::json!({"issuer":server.uri(),"authorization_endpoint":format!("{}/authorize",server.uri()),"token_endpoint":format!("{}/token",server.uri()),"code_challenge_methods_supported":["S256"]}),
+                ),
+            ] {
+                Mock::given(route(path))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                    .mount(&server)
+                    .await;
+            }
+            Mock::given(route("/token")).and(method("POST")).and(body_string_contains("grant_type=refresh_token"))
+                .respond_with(if approved {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token":"fresh-selected-token","refresh_token":"rotated-selected-grant","token_type":"Bearer","expires_in":3600}))
+                } else { ResponseTemplate::new(400).set_body_json(serde_json::json!({"error":"invalid_grant"})) }).expect(1).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let key = private_key(dir.path(), true).unwrap();
+            publish_profile(
+                dir.path(),
+                &SessionProfile {
+                    registration: UpstreamOauthRegistration::Preregistered {
+                        client_id: "selected-client".into(),
+                        client_secret_env: None,
+                    },
+                    upstream_name: "operator-server-selected".into(),
+                },
+            )
+            .unwrap();
+            let key_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&key)
+                .unwrap();
+            let store = labby_auth::sqlite::SqliteStore::open_with_key(
+                dir.path().join("oauth.db"),
+                Some(
+                    labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                        &base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key_bytes),
+                    )
+                    .unwrap(),
+                ),
+            )
+            .await
+            .unwrap();
+            let credentials = labby_auth::upstream::store::SqliteCredentialStore::new(
+                store,
+                labby_auth::upstream::encryption::load_key(&key).unwrap(),
+                "operator-server-selected",
+                SUBJECT,
+            );
+            let mut token = OAuthTokenResponse::new(
+                AccessToken::new("expired-selected-token".into()),
+                BasicTokenType::Bearer,
+                VendorExtraTokenFields::default(),
+            );
+            token.set_expires_in(Some(&Duration::from_secs(1)));
+            token.set_refresh_token(Some(RefreshToken::new("selected-refresh".into())));
+            credentials
+                .save(StoredCredentials::new(
+                    "selected-client".into(),
+                    Some(token),
+                    vec![],
+                    Some(1),
+                ))
+                .await
+                .unwrap();
+            // HTTP is confined to the local fixture; the public selected-root API requires HTTPS.
+            let result = token_at_profile(dir.path(), &Url::parse(&server.uri()).unwrap()).await;
+            if approved {
+                assert_eq!(result.unwrap().as_deref(), Some("fresh-selected-token"));
+            } else {
+                assert!(
+                    result.is_err(),
+                    "rejected refresh must not return stale credentials"
+                );
+            }
+        }
+    }
 
     #[tokio::test]
     async fn logout_clears_only_the_selected_identity_and_is_idempotent() {

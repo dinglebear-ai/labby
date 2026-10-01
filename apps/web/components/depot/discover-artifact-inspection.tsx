@@ -15,6 +15,7 @@ import { artifactKind, artifactTitle } from './discover-model'
 import { discoverKindPresentation, DiscoverPublisherVerifiedIcon } from './discover-kind-presentation'
 import { DiscoverReadme } from './discover-readme'
 import { DiscoverUpstream } from './discover-upstream'
+import { DiscoverMcpActivation } from './discover-mcp-activation'
 
 const readmeUnavailable = {
   absent: 'This revision has no README.md or SKILL.md file.',
@@ -107,6 +108,7 @@ export function DiscoverArtifactInspection({ artifact, previewMode = false, spec
               <p className="mt-[var(--space-2)] text-sm text-aurora-text-muted">{readmeUnavailable[artifact.readme.reason]}</p>
             </section> : null}
             <DiscoverUpstream artifact={artifact} />
+            {!previewMode ? <DiscoverMcpActivation key={`${artifact.providerId}:${artifact.artifactId}:${artifact.currentRevisionId ?? artifact.currentRevision?.id}`} artifact={artifact} /> : null}
             <details key={`${artifact.providerId}:${artifact.artifactId}`} className="rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium">
               <summary className={`${AURORA_MUTED_LABEL} cursor-pointer rounded-aurora-2 p-[var(--space-4)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary`}>Source and revision</summary>
               <div className="space-y-[var(--space-4)] p-[var(--space-4)]">

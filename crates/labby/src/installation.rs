@@ -4,6 +4,9 @@
 //! owns the exclusive lifecycle lock for its entire lifetime; stopped-daemon
 //! setup and recovery commands acquire the same lock before inspecting state.
 
+pub(crate) mod readiness;
+pub(crate) mod secure_file;
+
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};

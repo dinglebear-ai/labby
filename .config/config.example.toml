@@ -149,6 +149,9 @@
 # Full Assistant session lifecycle also requires the provider to expose the ExGPT-style
 # /v1/sessions create, rename, cancel, and close extensions used by this adapter.
 # Set LABBY_PHOENIX_OPENAI_API_KEY there too if the endpoint requires auth.
+# Built-in Agents can use standard OpenAI-compatible providers by selecting
+# LABBY_AGENT_PROVIDER_PROTOCOL=openai in Settings. Omitted or phoenix retains
+# the session extensions; this setting does not change Assistant lifecycle.
 
 # ── Gateway Spawn Guard ───────────────────────────────────────────────────────
 #

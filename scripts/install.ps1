@@ -60,60 +60,182 @@ function Test-LabbyChecksum {
     }
 }
 
+# BEGIN GENERATED GITHUB VERIFIER BOOTSTRAP
+# Generated bootstrap trust code; edit this template and reviewed pins JSON.
+function Get-LabbyPinnedGitHubVerifier {
+    param([string]$Architecture)
+    switch ($Architecture) {
+        'X64' { return @{ Url = 'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_amd64.zip'; Sha256 = 'ae64e556ecc240b200f7eba60d550e4bb60d78e860e69dd88c449405b86067f4' } }
+        'Arm64' { return @{ Url = 'https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_windows_arm64.zip'; Sha256 = '5dcf12aa8525eabd0c46ec414f323ab6cf65229fc2cd46543cc705001bbaf223' } }
+        default { throw "No pinned GitHub verifier is available for architecture $Architecture" }
+    }
+}
+
+function New-LabbyPrivateTemporaryDirectory {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Low')]
+    param()
+    $directory = Join-Path ([IO.Path]::GetTempPath()) "labby-private-$([guid]::NewGuid().ToString('N'))"
+    if (-not $PSCmdlet.ShouldProcess($directory, 'Create protected temporary directory')) {
+        throw 'Private temporary directory creation was declined; installation cannot continue'
+    }
+    New-Item -ItemType Directory -Path $directory | Out-Null
+    try { Protect-LabbyMetadataDirectory -Path $directory } catch {
+        Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
+    return $directory
+}
+
+function Get-LabbyHttpsFile {
+    param([string]$Uri, [string]$OutFile, [long]$MaximumBytes = 25000000)
+    $target = [Uri]$Uri
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    $originalProtocol = [Net.ServicePointManager]::SecurityProtocol
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    try {
+        for ($redirect = 0; $redirect -le 5; $redirect++) {
+            if ($target.Scheme -ne 'https' -or $target.UserInfo -or $target.Fragment) { throw 'HTTPS download target is invalid' }
+            $request = [Net.HttpWebRequest]::Create($target)
+            $request.AllowAutoRedirect = $false
+            $remaining = [int]($deadline - [DateTime]::UtcNow).TotalMilliseconds
+            if ($remaining -le 0) { throw 'HTTPS download exceeded its time limit' }
+            $request.Timeout = $remaining
+            $request.ReadWriteTimeout = 10000
+            $response = $null
+            try {
+                $response = $request.GetResponse()
+                if ([int]$response.StatusCode -in @(301,302,303,307,308)) {
+                    if ($redirect -eq 5 -or -not $response.Headers['Location']) { throw 'HTTPS redirect limit exceeded' }
+                    $target = [Uri]::new($target, $response.Headers['Location'])
+                    continue
+                }
+                if ([int]$response.StatusCode -ne 200 -or $response.ContentLength -gt $MaximumBytes) { throw 'HTTPS download exceeded its limit or returned an invalid status' }
+                $inputStream = $response.GetResponseStream()
+                $outputStream = [IO.File]::Open($OutFile, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+                try {
+                    $buffer = New-Object byte[] 65536
+                    [long]$total = 0
+                    while (($count = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $total += $count
+                        if ($total -gt $MaximumBytes -or [DateTime]::UtcNow -ge $deadline) { throw 'HTTPS download exceeded its size or time limit' }
+                        $outputStream.Write($buffer, 0, $count)
+                    }
+                } finally { $outputStream.Dispose(); $inputStream.Dispose() }
+                return
+            } finally { if ($response) { $response.Dispose() } }
+        }
+    } finally { [Net.ServicePointManager]::SecurityProtocol = $originalProtocol }
+}
+
+function Test-LabbyDownloadNotFound {
+    param([Exception]$Exception)
+    while ($Exception.InnerException) { $Exception = $Exception.InnerException }
+    return $Exception -is [Net.WebException] -and $Exception.Response -and [int]$Exception.Response.StatusCode -eq 404
+}
+
+function Get-LabbyGitHubVerifier {
+    param([string]$TemporaryDirectory)
+    $existing = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue
+    if ($existing -and (Test-LabbyGitHubVerifierVersion -Executable $existing.Source) -and
+        (Test-LabbyGitHubCliCommand -Executable $existing.Source -Arguments @('attestation','verify','--help'))) {
+        return [IO.Path]::GetFullPath($existing.Source)
+    }
+    $pin = Get-LabbyPinnedGitHubVerifier -Architecture ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString())
+    $archive = Join-Path $TemporaryDirectory 'github-verifier.zip'
+    Get-LabbyHttpsFile -Uri $pin.Url -OutFile $archive
+    $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $pin.Sha256) {
+        $trustError = [Security.SecurityException]::new('Pinned verifier checksum FAILED; downloaded code was not executed')
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+    $executable = Join-Path $TemporaryDirectory 'gh.exe'
+    try {
+        $members = @($zip.Entries | Where-Object { $_.FullName -eq 'bin/gh.exe' })
+        if ($members.Count -ne 1 -or $members[0].Length -le 0 -or $members[0].Length -gt 50000000) { throw 'Pinned verifier archive has an invalid executable member' }
+        $unixType = ($members[0].ExternalAttributes -shr 16) -band 0xf000
+        if ($unixType -ne 0 -and $unixType -ne 0x8000) { throw 'Pinned verifier member must be a regular executable' }
+        $inputStream = $members[0].Open()
+        $outputStream = [IO.File]::Open($executable, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $inputStream.CopyTo($outputStream) } finally { $outputStream.Dispose(); $inputStream.Dispose() }
+    } finally { $zip.Dispose() }
+    if (-not (Test-LabbyGitHubVerifierVersion -Executable $executable) -or
+        -not (Test-LabbyGitHubCliCommand -Executable $executable -Arguments @('attestation','verify','--help'))) {
+        throw 'Pinned verifier does not support the required policy'
+    }
+    return [IO.Path]::GetFullPath($executable)
+}
+# END GENERATED GITHUB VERIFIER BOOTSTRAP
+
 function Test-LabbyGitHubCliCommand {
-    param([string[]]$Arguments)
+    param([string[]]$Arguments, [string]$Executable = 'gh')
     # Only the exit code matters. gh's stderr (for example the missing-login
     # hint) stays on the console: redirecting it would turn it into error
     # records under the script-wide Stop preference on Windows PowerShell.
-    & gh @Arguments | Out-Null
+    & $Executable @Arguments | Out-Null
     return $LASTEXITCODE -eq 0
 }
 
+function Test-LabbyGitHubVerifierVersion {
+    param([string]$Executable = 'gh')
+    try { $output = @(& $Executable --version) } catch { return $false }
+    if ($LASTEXITCODE -ne 0 -or $output.Count -eq 0) { return $false }
+    if ($output[0] -notmatch '^gh version ([0-9]+\.[0-9]+\.[0-9]+)(?:\s|$)') { return $false }
+    return [version]$Matches[1] -ge [version]'2.102.0'
+}
+
+function Assert-LabbyGitHubVerifierVersion {
+    if (-not (Test-LabbyGitHubVerifierVersion)) {
+        $trustError = [System.Security.SecurityException]::new('GitHub CLI 2.102.0 or newer is required to verify release provenance; upgrade gh before running the installer')
+        $trustError.Data['LabbyTrustFailure'] = $true
+        throw $trustError
+    }
+}
+
 function Test-LabbyReleasePrerequisite {
-    # Fail fast, before release resolution and before any release download,
-    # when this machine cannot verify the release trust path. Mirrors
-    # require_release_prerequisites in scripts/install.sh. `gh auth status`
-    # itself contacts GitHub, so the guarantee is "before any release
-    # download", not "before any network I/O".
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        $trustError = [System.Security.SecurityException]::new(
-            'GitHub CLI (gh) is required to verify Labby release provenance; install gh before running the installer'
-        )
-        $trustError.Data['LabbyTrustFailure'] = $true
-        throw $trustError
-    }
-    if (-not (Test-LabbyGitHubCliCommand @('attestation', 'verify', '--help'))) {
-        $trustError = [System.Security.SecurityException]::new(
-            'GitHub CLI (gh) with attestation support is required to verify Labby release provenance; upgrade gh before running the installer'
-        )
-        $trustError.Data['LabbyTrustFailure'] = $true
-        throw $trustError
-    }
-    if (-not (Test-LabbyGitHubCliCommand @('auth', 'status', '--hostname', 'github.com'))) {
-        $trustError = [System.Security.SecurityException]::new(
-            "GitHub CLI must be authenticated to fetch Labby release attestations; run 'gh auth login' or set GH_TOKEN before running the installer"
-        )
+    param([string]$TemporaryDirectory)
+    try { return Get-LabbyGitHubVerifier -TemporaryDirectory $TemporaryDirectory } catch {
+        $trustError = [Security.SecurityException]::new('Pinned GitHub verifier could not be prepared; downloaded code was not trusted')
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError
     }
 }
 
 function Test-LabbyReleaseProvenance {
-    param([string]$ArtifactPath, [string]$Repo, [string]$ResolvedVersion)
-    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
-        $trustError = [System.Security.SecurityException]::new('GitHub CLI (gh) is required to verify release provenance')
+    param([string]$ArtifactPath, [string]$Repo, [string]$ResolvedVersion,
+          [string]$Verifier = 'gh', [string]$BundlePath)
+    if (-not (Test-LabbyGitHubVerifierVersion -Executable $Verifier)) {
+        $trustError = [Security.SecurityException]::new('GitHub CLI 2.102.0 or newer is required to verify release provenance')
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError
     }
-    # Pin the trust root: GH_HOST or a gh config default must not redirect
-    # attestation verification to another host.
-    & gh attestation verify $ArtifactPath --hostname github.com --repo $Repo `
-        --signer-workflow "$Repo/.github/workflows/release.yml" `
-        --source-ref "refs/tags/$ResolvedVersion" --deny-self-hosted-runners | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        $trustError = [System.Security.SecurityException]::new("GitHub provenance verification FAILED for $(Split-Path $ArtifactPath -Leaf)")
+    $arguments = @('attestation','verify',$ArtifactPath,'--hostname','github.com','--repo',$Repo,
+        '--signer-workflow',"$Repo/.github/workflows/release.yml",'--source-ref',"refs/tags/$ResolvedVersion",'--deny-self-hosted-runners')
+    $saved = @{}
+    $config = $null
+    try {
+        if ($BundlePath) {
+            $arguments += @('--bundle',$BundlePath)
+            $config = New-LabbyPrivateTemporaryDirectory
+            foreach ($key in @('GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','GH_HOST','GH_CONFIG_DIR')) {
+                $saved[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+                [Environment]::SetEnvironmentVariable($key, $null, 'Process')
+            }
+            [Environment]::SetEnvironmentVariable('GH_HOST','github.com','Process')
+            [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR',$config,'Process')
+        } elseif (-not (Test-LabbyGitHubCliCommand -Executable $Verifier -Arguments @('auth','status','--hostname','github.com'))) {
+            throw 'Legacy release without a provenance bundle requires your own GitHub authentication'
+        }
+        if (-not (Test-LabbyGitHubCliCommand -Executable $Verifier -Arguments $arguments)) { throw 'GitHub provenance verification FAILED' }
+    } catch {
+        $trustError = [Security.SecurityException]::new('GitHub provenance verification FAILED or legacy authentication is unavailable')
         $trustError.Data['LabbyTrustFailure'] = $true
         throw $trustError
+    } finally {
+        foreach ($key in $saved.Keys) { [Environment]::SetEnvironmentVariable($key,$saved[$key],'Process') }
+        if ($config) { Remove-Item -LiteralPath $config -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -352,21 +474,38 @@ function Restore-LabbyPreviousInstall {
 
 function Install-LabbyFromRelease {
     param([string]$InstallDir, [string]$Version, [string]$Repo)
-    Test-LabbyReleasePrerequisite
     $asset = 'lab-x86_64-pc-windows-msvc.zip'
-    $resolved = Resolve-LabbyReleaseVersion -Repo $Repo -RequestedVersion $Version -AssetName $asset
-    Write-Info "resolved binary release to $resolved"
-    $base = "https://github.com/$Repo/releases/download/$resolved"
     $temporary = Join-Path ([System.IO.Path]::GetTempPath()) "labby-install-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $temporary | Out-Null
     try {
+        Protect-LabbyMetadataDirectory -Path $temporary
+        $verifier = Test-LabbyReleasePrerequisite -TemporaryDirectory $temporary
+        $resolved = Resolve-LabbyReleaseVersion -Repo $Repo -RequestedVersion $Version -AssetName $asset
+        Write-Info "resolved binary release to $resolved"
+        $base = "https://github.com/$Repo/releases/download/$resolved"
         $zip = Join-Path $temporary $asset
         $checksum = "$zip.sha256"
+        $bundle = "$zip.sigstore.jsonl"
+        try { Get-LabbyHttpsFile -Uri "$base/$asset.sigstore.jsonl" -OutFile $bundle -MaximumBytes 5000000 } catch {
+            if (Test-LabbyDownloadNotFound -Exception $_.Exception) {
+                Remove-Item -LiteralPath $bundle -Force -ErrorAction SilentlyContinue
+                $bundle = $null
+                if (-not (Test-LabbyGitHubCliCommand -Executable $verifier -Arguments @('auth','status','--hostname','github.com'))) {
+                    $trustError = [Security.SecurityException]::new('Legacy release without a provenance bundle requires your own GitHub authentication; no archive was downloaded')
+                    $trustError.Data['LabbyTrustFailure'] = $true
+                    throw $trustError
+                }
+            } else {
+                $trustError = [Security.SecurityException]::new('Release provenance bundle could not be retrieved; source fallback is forbidden')
+                $trustError.Data['LabbyTrustFailure'] = $true
+                throw $trustError
+            }
+        }
         Invoke-WebRequest -Uri "$base/$asset" -OutFile $zip -UseBasicParsing -TimeoutSec 300
         Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile $checksum -UseBasicParsing -TimeoutSec 300
         Test-LabbyChecksum -ArtifactPath $zip -ChecksumPath $checksum
         Write-Info 'sha256 verified'
-        Test-LabbyReleaseProvenance -ArtifactPath $zip -Repo $Repo -ResolvedVersion $resolved
+        Test-LabbyReleaseProvenance -ArtifactPath $zip -Repo $Repo -ResolvedVersion $resolved -Verifier $verifier -BundlePath $bundle
         Expand-Archive -Path $zip -DestinationPath $temporary -Force
         $binary = Get-ChildItem -Path $temporary -Recurse -Filter 'labby.exe' | Select-Object -First 1
         if (-not $binary) { throw "archive $asset did not contain labby.exe" }

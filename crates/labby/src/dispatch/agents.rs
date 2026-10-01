@@ -10,6 +10,7 @@ use crate::{
         agent_llm::{LlmAgentExecutor, current_harness_digest},
         agent_payloads::{AgentPayloadStore, DEFAULT_MODEL, inline_output},
         error::ToolError,
+        phoenix_openai::OpenAiBackend,
     },
 };
 use labby_auth::VerifiedIdentity;
@@ -103,6 +104,11 @@ const fn destructive_action(
 }
 pub const ACTIONS: &[ActionSpec] = &[
     action(
+        "agents.models.list",
+        "List models available to the configured Agent provider for an authorized owner",
+        &[param("owner_kind"), param("owner_id")],
+    ),
+    action(
         "agents.create",
         "Create an Agent definition",
         &[
@@ -175,7 +181,9 @@ pub const ACTIONS: &[ActionSpec] = &[
 pub(crate) fn required_capability(action: &str) -> Option<Capability> {
     Some(match action {
         "agents.create" => Capability::ScopeCreate,
-        "agents.list" | "agents.get" | "agents.session.status" => Capability::ScopeRead,
+        "agents.list" | "agents.get" | "agents.session.status" | "agents.models.list" => {
+            Capability::ScopeRead
+        }
         "agents.run" | "agents.session.cancel" => Capability::ScopeOperate,
         "agents.update" | "agents.suspend" => Capability::ScopeManage,
         "agents.delete" => Capability::ScopeDelete,
@@ -206,6 +214,51 @@ pub(crate) async fn dispatch(
     }
     let now = now()?;
     match name {
+        "agents.models.list" => {
+            let requested_owner = owner(&params)?;
+            let lease = authorize(
+                &context,
+                name,
+                &requested_owner,
+                "provider-models",
+                Capability::ScopeRead,
+                now,
+            )
+            .await?;
+            let principal = lease.binding().principal_id().to_owned();
+            let readiness_fingerprint = invalidate_agent_readiness_required(
+                &context.store,
+                &principal,
+                crate::installation::readiness::Check::AgentProvider,
+            )
+            .await?;
+            let backend = OpenAiBackend::for_access_store(&context.store)?.ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "unavailable".into(),
+                message: "Agent provider is not configured. Connect an Agent provider in Settings, then retry.".into(),
+            })?;
+            let models = backend
+                .models()
+                .await?
+                .into_iter()
+                .filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_owned))
+                .filter(|id| {
+                    !id.trim().is_empty() && id.len() <= 512 && !id.chars().any(char::is_control)
+                })
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>();
+            if let Some(model) = models.first() {
+                record_verified_agent_readiness(
+                    &context.store,
+                    &principal,
+                    crate::installation::readiness::Check::AgentProvider,
+                    model,
+                    readiness_fingerprint,
+                )
+                .await;
+            }
+            Ok(json!({ "models": models }))
+        }
         "agents.create" => {
             reject_server_assigned(&params)?;
             let requested_owner = owner(&params)?;
@@ -302,7 +355,7 @@ pub(crate) async fn dispatch(
             let prior = load(&context, &params).await?;
             // As with create, keep CAS writes behind a current authority
             // decision. The store still re-authorizes atomically at commit.
-            authorize(
+            let lease = authorize(
                 &context,
                 name,
                 &prior.owner,
@@ -331,6 +384,13 @@ pub(crate) async fn dispatch(
                 )
                 .await
                 .map_err(map_put)?;
+            update_agent_readiness(
+                &context.store,
+                lease.binding().principal_id(),
+                crate::installation::readiness::Check::AgentRun,
+                None,
+            )
+            .await;
             Ok(render(&definition))
         }
         "agents.suspend" | "agents.delete" => {
@@ -340,6 +400,15 @@ pub(crate) async fn dispatch(
             } else {
                 Capability::ScopeManage
             };
+            let lease = authorize(
+                &context,
+                name,
+                &definition.owner,
+                &definition.id,
+                capability,
+                now,
+            )
+            .await?;
             let request = authority_request(
                 &context,
                 name,
@@ -364,6 +433,13 @@ pub(crate) async fn dispatch(
                 )
                 .await
                 .map_err(map)?;
+            update_agent_readiness(
+                &context.store,
+                lease.binding().principal_id(),
+                crate::installation::readiness::Check::AgentRun,
+                None,
+            )
+            .await;
             Ok(json!({"agent_id":definition.id,"state":state_name(state)}))
         }
         "agents.run" => {
@@ -517,6 +593,19 @@ async fn run_agent_session(
     now: u64,
 ) -> Result<Value, ToolError> {
     let run_session_id = run_session_id.to_owned();
+    let readiness_principal = lease.binding().principal_id().to_owned();
+    let readiness_fingerprint = if matches!(run_executor, ConfiguredExecutor::Llm(_)) {
+        Some(
+            invalidate_agent_readiness_required(
+                &run_context.store,
+                &readiness_principal,
+                crate::installation::readiness::Check::AgentRun,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
     run_context
         .store
         .create_agent_session(
@@ -591,6 +680,16 @@ async fn run_agent_session(
     match result {
         Ok(output) => {
             let (text, truncated) = inline_output(run_executor.output(&output.digest)?);
+            if let Some(expected) = readiness_fingerprint.filter(|_| !text.trim().is_empty()) {
+                record_completed_agent_readiness(
+                    &run_context.store,
+                    &readiness_principal,
+                    run_definition,
+                    &run_session_id,
+                    expected,
+                )
+                .await;
+            }
             Ok(json!({
                 "agent_id":run_definition.id,
                 "agent_version":run_definition.revision.version,
@@ -603,6 +702,109 @@ async fn run_agent_session(
             }))
         }
         Err(error) => Err(map_agent_runtime_error(&error)),
+    }
+}
+
+async fn record_completed_agent_readiness(
+    store: &crate::access::AccessStore,
+    principal: &str,
+    definition: &AgentDefinition,
+    session_id: &str,
+    expected: crate::installation::readiness::CheckFingerprint,
+) {
+    let store = store.clone();
+    let principal = principal.to_owned();
+    let agent_id = definition.id.clone();
+    let version = definition.revision.version;
+    let session_id = session_id.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        crate::installation::readiness::record_agent_run_if_unchanged_for_store(
+            &store,
+            &principal,
+            &agent_id,
+            version,
+            &session_id,
+            expected,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(
+            kind = error.kind(),
+            "Completed Agent readiness evidence could not be persisted"
+        ),
+        Err(_) => tracing::warn!("Completed Agent readiness evidence worker failed"),
+    }
+}
+
+// Clear earlier proof before a new provider effect. Failure leaves the effect
+// unattempted, so a readable old journal cannot conceal a failed new test.
+async fn invalidate_agent_readiness_required(
+    store: &crate::access::AccessStore,
+    principal: &str,
+    check: crate::installation::readiness::Check,
+) -> Result<crate::installation::readiness::CheckFingerprint, ToolError> {
+    let store = store.clone();
+    let principal = principal.to_owned();
+    tokio::task::spawn_blocking(move || {
+        crate::installation::readiness::begin_verification_for_store(&store, &principal, check)
+    })
+    .await
+    .map_err(|_| internal())?
+}
+
+async fn record_verified_agent_readiness(
+    store: &crate::access::AccessStore,
+    principal: &str,
+    check: crate::installation::readiness::Check,
+    resource: &str,
+    expected: crate::installation::readiness::CheckFingerprint,
+) {
+    let store = store.clone();
+    let principal = principal.to_owned();
+    let resource = resource.to_owned();
+    match tokio::task::spawn_blocking(move || {
+        crate::installation::readiness::record_verified_if_unchanged_for_store(
+            &store, &principal, check, &resource, expected,
+        )
+    })
+    .await
+    {
+        Ok(Ok(())) => {}
+        _ => tracing::warn!(
+            "Agent provider readiness proof could not be saved or configuration changed"
+        ),
+    }
+}
+
+// Readiness persistence is bounded blocking filesystem work. Its failure must
+// remain visible in diagnostics without changing an already committed run result.
+async fn update_agent_readiness(
+    store: &crate::access::AccessStore,
+    principal: &str,
+    check: crate::installation::readiness::Check,
+    resource: Option<&str>,
+) {
+    let store = store.clone();
+    let principal = principal.to_owned();
+    let resource = resource.map(str::to_owned);
+    let result = tokio::task::spawn_blocking(move || match resource {
+        Some(resource) => crate::installation::readiness::record_verified_for_store(
+            &store, &principal, check, &resource,
+        ),
+        None => {
+            crate::installation::readiness::invalidate_verified_for_store(&store, &principal, check)
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::warn!(
+            kind = error.kind(),
+            "Agent readiness evidence could not be persisted"
+        ),
+        Err(_) => tracing::warn!("Agent readiness evidence worker failed"),
     }
 }
 
@@ -929,7 +1131,7 @@ fn materialize_llm_payload(
     params: Value,
     prior: Option<&AgentDefinition>,
 ) -> Result<Value, ToolError> {
-    materialize_llm_payload_with(store, params, prior, current_harness_digest)
+    materialize_llm_payload_with(store, params, prior, || current_harness_digest(store))
 }
 
 /// Materialize the LLM payload with an explicit harness-digest source so the
@@ -1229,54 +1431,14 @@ pub async fn dispatch_unbound(name: &str, params: Value) -> Result<Value, ToolEr
 pub(crate) mod test_support {
     //! Store-backed fixtures shared by the Agent and Agent Task dispatch tests.
     use super::AgentDispatchContext;
-    use crate::access::{AccessStore, AuthorityCeiling, BootstrapOwnerInput};
-    use labby_auth::{Authenticator, VerifiedIdentity};
+    use crate::access::{AccessStore, AuthorityCeiling};
+    use labby_auth::VerifiedIdentity;
     use serde_json::{Value, json};
 
     /// Principal id the bootstrap flow assigns to the first (platform admin) owner.
     pub(crate) const BOOTSTRAP_PRINCIPAL: &str = "bootstrap-owner";
 
-    pub(crate) fn secure_tempdir() -> tempfile::TempDir {
-        let base = std::env::current_dir().expect("resolve the test working directory");
-        let directory = tempfile::Builder::new()
-            .prefix("labby-agent-dispatch-test-")
-            .tempdir_in(base)
-            .expect("create a fixture outside the symlinked macOS temporary directory");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
-                .expect("restrict fixture permissions");
-        }
-        directory
-    }
-
-    pub(crate) fn browser(subject: &str) -> VerifiedIdentity {
-        VerifiedIdentity::external(
-            Authenticator::BrowserSession,
-            "https://accounts.google.com",
-            subject,
-        )
-        .unwrap()
-    }
-
-    /// Open a fresh access store with one bootstrapped owner (a platform admin
-    /// whose personal owner scope is `personal/bootstrap-owner`).
-    pub(crate) async fn fixture() -> (tempfile::TempDir, AccessStore, VerifiedIdentity) {
-        // The harness digest is derived from the provider URL at create time;
-        // no test connects to this address unless it drives execution.
-        crate::dispatch::phoenix_openai::install_test_base_url("http://127.0.0.1:9/v1");
-        let directory = secure_tempdir();
-        let store = AccessStore::open(directory.path().join("access.db"))
-            .await
-            .unwrap();
-        let owner = browser("owner-subject");
-        store
-            .bootstrap_owner(BootstrapOwnerInput::new(owner.clone(), "Local", "Default").unwrap())
-            .await
-            .unwrap();
-        (directory, store, owner)
-    }
+    pub(crate) use crate::access::test_support::{browser, fixture};
 
     pub(crate) fn agent_context(
         store: &AccessStore,
@@ -1354,9 +1516,119 @@ mod tests {
         assert_eq!(required_capability("agents.bogus"), None);
     }
 
+    #[tokio::test]
+    async fn model_listing_checks_owner_authority_before_contacting_provider() {
+        let (_dir, store, _owner) = fixture().await;
+        let stranger = browser("stranger-subject");
+        let error = dispatch(
+            agent_context(&store, &stranger),
+            "agents.models.list",
+            json!({ "owner_kind": "personal", "owner_id": BOOTSTRAP_PRINCIPAL }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden");
+    }
+
+    #[tokio::test]
+    async fn readiness_proof_survives_denied_updates_and_clears_after_authorized_change() {
+        use crate::installation::readiness::{record_agent_run_for_store, state_for_identity};
+        let (_dir, store, identity) = fixture().await;
+        let context = agent_context(&store, &identity);
+        dispatch(
+            context.clone(),
+            "agents.create",
+            agent_params("readiness-agent"),
+        )
+        .await
+        .unwrap();
+        let definition = store
+            .get_agent_definition("readiness-agent".into())
+            .await
+            .unwrap()
+            .unwrap();
+        let timestamp = now().unwrap();
+        store
+            .create_agent_session(
+                "prior-session".into(),
+                definition.clone(),
+                identity.safe_fingerprint(),
+                "fixture-authority".into(),
+                i64::try_from(timestamp + AGENT_MAX_RUNTIME_MILLIS).unwrap(),
+                i64::try_from(timestamp).unwrap(),
+            )
+            .await
+            .unwrap();
+        store
+            .set_agent_session_status(
+                "readiness-agent".into(),
+                "prior-session".into(),
+                "admitted".into(),
+                "running".into(),
+            )
+            .await
+            .unwrap();
+        store
+            .set_agent_session_status(
+                "readiness-agent".into(),
+                "prior-session".into(),
+                "running".into(),
+                "completed".into(),
+            )
+            .await
+            .unwrap();
+        record_agent_run_for_store(
+            &store,
+            BOOTSTRAP_PRINCIPAL,
+            &definition.id,
+            definition.revision.version,
+            "prior-session",
+        )
+        .unwrap();
+        let stranger = agent_context(&store, &browser("unknown-subject"));
+        assert!(
+            dispatch(
+                stranger,
+                "agents.update",
+                json!({"agent_id":"readiness-agent","instructions":"changed"})
+            )
+            .await
+            .is_err()
+        );
+        let before = state_for_identity(store.clone(), identity.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            before["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|check| check["check"] == "agent_run")
+                .unwrap()["status"],
+            "verified"
+        );
+        dispatch(
+            context,
+            "agents.update",
+            json!({"agent_id":"readiness-agent","instructions":"changed"}),
+        )
+        .await
+        .unwrap();
+        let after = state_for_identity(store, identity).await.unwrap();
+        assert_eq!(
+            after["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|check| check["check"] == "agent_run")
+                .unwrap()["status"],
+            "pending"
+        );
+    }
+
     #[test]
     fn catalog_is_complete_and_unbound_denies() {
-        assert_eq!(ACTIONS.len(), 9);
+        assert_eq!(ACTIONS.len(), 10);
         let create = ACTIONS
             .iter()
             .find(|action| action.name == "agents.create")

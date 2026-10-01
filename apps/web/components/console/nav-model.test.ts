@@ -110,7 +110,7 @@ test('only Skills admits a project-bound session without a durable authority pro
 
 test('every shipped app/(admin) route resolves to a capability instead of locking itself out', () => {
   const routes = shippedAdminRoutes()
-  assert.ok(routes.includes('/projects') && routes.includes('/stash') && routes.includes('/settings/services/example'), `route enumeration must read the real app tree, saw: ${routes.join(', ')}`)
+  assert.ok(routes.includes('/projects') && routes.includes('/stash') && routes.includes('/settings/services') && !routes.includes('/settings/services/example'), `route enumeration must read the real app tree, saw: ${routes.join(', ')}`)
   const unresolved = routes.filter((route) => capabilityForPath(route) === undefined)
   assert.deepEqual(unresolved, [], 'a shipped route with no manifest entry is unreachable for every principal')
   const open = routes.filter((route) => capabilityForPath(route) === null)

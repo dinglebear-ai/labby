@@ -40,12 +40,14 @@ The authority lease issued for `agents.run` and `tasks.queue` covers the full
 request-scoped lease.
 
 Product Agent execution uses the same OpenAI-compatible provider abstraction as
-the Assistant. Configure `LABBY_PHOENIX_OPENAI_BASE_URL` and, when required,
+the Assistant. Select `LABBY_AGENT_PROVIDER_PROTOCOL=openai` for standard
+providers, or `phoenix` for provider session extensions. An omitted value
+preserves legacy Phoenix behavior. Configure `LABBY_PHOENIX_OPENAI_BASE_URL` and, when required,
 `LABBY_PHOENIX_OPENAI_API_KEY` in Labby's private environment file. The base URL
 must be reachable from the Labby process, not merely from the operator's host; a
 loopback URL is therefore valid only for a co-located provider. Embedded URL
 credentials, query strings, and fragments are rejected, and the API key is sent
-separately as bearer authentication. ExGPT-style providers must expose the
+separately as bearer authentication. In `phoenix` mode, ExGPT-style providers must expose the
 session create, cancel, and close extensions in addition to
 `/v1/chat/completions`. Session lifecycle calls use a short bounded timeout,
 and a hard Agent runtime timeout invokes executor cleanup so an abandoned chat

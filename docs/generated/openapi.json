@@ -6503,6 +6503,7 @@
           "action": {
             "type": "string",
             "enum": [
+              "agents.models.list",
               "agents.create",
               "agents.list",
               "agents.get",
@@ -6592,6 +6593,21 @@
             "type": "string"
           },
           "limit": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentsAgentsModelsListParams": {
+        "type": "object",
+        "required": [
+          "owner_kind",
+          "owner_id"
+        ],
+        "properties": {
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
             "type": "string"
           }
         }
@@ -10398,6 +10414,12 @@
             "enum": [
               "help",
               "schema",
+              "mcp.verification.tools",
+              "mcp.verification.call",
+              "clients.session.start",
+              "clients.session.revoke",
+              "readiness.clients.defer",
+              "readiness.state",
               "state",
               "bootstrap",
               "schema.get",
@@ -10420,6 +10442,20 @@
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "SetupClientsSessionStartParams": {
+        "type": "object",
+        "required": [
+          "clients"
+        ],
+        "properties": {
+          "clients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -10450,6 +10486,52 @@
         "properties": {
           "force": {
             "type": "boolean"
+          }
+        }
+      },
+      "SetupMcpVerificationCallParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "expected_url",
+          "tool",
+          "expected_fingerprint",
+          "arguments",
+          "approved"
+        ],
+        "properties": {
+          "approved": {
+            "type": "boolean"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "expected_fingerprint": {
+            "type": "string"
+          },
+          "expected_url": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupMcpVerificationToolsParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "expected_url"
+        ],
+        "properties": {
+          "expected_url": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },

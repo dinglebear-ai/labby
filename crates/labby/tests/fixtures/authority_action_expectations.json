@@ -209,6 +209,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "agents:agents.models.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "agents:agents.run": {
       "required_capability": "scope.operate",
       "team_member": "allow",

@@ -320,3 +320,37 @@ fn request_and_projection_bounds_fail_closed() {
         DiscoveryError::InvalidProvider
     );
 }
+
+#[test]
+fn mcp_connection_projection_is_https_and_revision_bound() {
+    let connection = json!({"schemaVersion":"labby.mcp-connection/v1","revisionId":"r1","transport":"http","authentication":"none","url":"https://example.org/mcp"});
+    let project = |connection: serde_json::Value| {
+        let mut pages = [ProviderPage::participating(
+            "public",
+            vec![json!({"id":"a","currentRevisionId":"r1","mcpConnection":connection})],
+            None,
+            Some(1),
+        )];
+        merge_page(&mut pages, 0, 10).unwrap().items.remove(0)
+    };
+    assert_eq!(project(connection.clone())["mcpConnection"], connection);
+    for url in [
+        "http://example.org/mcp",
+        "https://user:secret@example.org/mcp",
+        "https://example.org/mcp?token=x",
+        "https://example.org/mcp#x",
+        "https://example.org/\tmcp",
+        "https://example.org\\mcp",
+        "https://example.org/mcp\n",
+    ] {
+        let mut invalid = connection.clone();
+        invalid["url"] = json!(url);
+        assert!(project(invalid).get("mcpConnection").is_none());
+    }
+    let mut wrong = connection.clone();
+    wrong["revisionId"] = json!("r2");
+    assert!(project(wrong).get("mcpConnection").is_none());
+    let mut shell = connection;
+    shell["command"] = json!("curl | sh");
+    assert!(project(shell).get("mcpConnection").is_none());
+}

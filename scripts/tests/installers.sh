@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
-trap 'rm -rf "$test_root"' EXIT
+trap 'rc=$?; if [ "$rc" -ne 0 ]; then tail -n 20 "$test_root"/verifier-*/err 2>/dev/null || true; fi; rm -rf "$test_root"' EXIT
 
 fail() {
     echo "FAIL: $*" >&2
@@ -51,15 +51,26 @@ EOF
 #!/bin/sh
 out=
 url=
+write_status=
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o) out=$2; shift 2 ;;
+        -w|--write-out) write_status=1; shift 2 ;;
         -*) shift ;;
         *) url=$1; shift ;;
     esac
 done
 [ -z "${LABBY_TEST_CURL_LOG:-}" ] || printf '%s\n' "$url" >>"$LABBY_TEST_CURL_LOG"
 case "$url" in
+    *.sigstore.jsonl)
+        if [ -n "${LABBY_TEST_BUNDLE_FAILURE:-}" ]; then
+            [ -z "$write_status" ] || printf '%s' "${LABBY_TEST_BUNDLE_HTTP:-000}"
+            exit "$LABBY_TEST_BUNDLE_FAILURE"
+        fi
+        ;;
+esac
+case "$url" in
+    */cli/cli/releases/download/v2.102.0/gh_2.102.0_linux_amd64.tar.gz) source_path="$LABBY_TEST_FIXTURES/verifier.tar.gz" ;;
     */releases\?per_page=20) source_path="$LABBY_TEST_FIXTURES/releases.json" ;;
     */releases/download/*)
         suffix=${url#*/releases/download/}
@@ -67,12 +78,15 @@ case "$url" in
         ;;
     *) exit 22 ;;
 esac
-[ -f "$source_path" ] || exit 22
+[ -f "$source_path" ] || { [ -z "$write_status" ] || printf 404; exit 22; }
 if [ -n "$out" ]; then cp "$source_path" "$out"; else cat "$source_path"; fi
+[ -z "$write_status" ] || printf 200
 EOF
     cat >"$bin/gh" <<'EOF'
 #!/bin/sh
+[ -z "${LABBY_TEST_GH_LOG:-}" ] || printf '%s\n' "$*" >>"$LABBY_TEST_GH_LOG"
 case "$*" in
+  "--version") echo "gh version 2.102.0"; exit 0 ;;
   "attestation verify "*) exit 0 ;;
   "auth status --hostname github.com") exit 0 ;;
   *) exit 64 ;;
@@ -88,6 +102,27 @@ fi
 [ -z "${LABBY_TEST_SYNC_FAIL:-}" ]
 EOF
     chmod 755 "$bin/uname" "$bin/curl" "$bin/gh" "$bin/sync"
+}
+
+test_bundle_transport_failures_never_select_legacy_auth() {
+    local case_root="$test_root/bundle-transport" fixtures="$test_root/bundle-transport/fixtures"
+    local fake_bin="$case_root/bin" home="$case_root/home" http status
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_fake_tools "$fake_bin" "$fixtures"
+    for pair in 403:22 500:22 000:60 000:28 200:18; do
+        http=${pair%:*}; status=${pair#*:}
+        : >"$case_root/curl.log"; : >"$case_root/gh.log"
+        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+            LABBY_TEST_BUNDLE_HTTP="$http" LABBY_TEST_BUNDLE_FAILURE="$status" \
+            LABBY_TEST_CURL_LOG="$case_root/curl.log" LABBY_TEST_GH_LOG="$case_root/gh.log" \
+            >"$case_root/out" 2>"$case_root/err"; then
+            fail "bundle transport $pair accepted"
+        fi
+        assert_contains "$case_root/err" 'refusing authenticated fallback'
+        if grep -q 'auth status' "$case_root/gh.log"; then fail "bundle $pair attempted authentication"; fi
+        if grep -E '/lab-x86_64-unknown-linux-gnu.tar.gz$' "$case_root/curl.log"; then fail "bundle $pair downloaded executable"; fi
+    done
 }
 
 test_installers_share_a_process_level_transaction_lock() {
@@ -159,21 +194,55 @@ test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd() {
     [ "$("$home/bin/labby")" = release-v1 ] || fail "piped root installer was not self-contained"
 }
 
-# A PATH made of every system executable except gh. Removing the fake gh is
+# A PATH containing required system tools, with no ambient gh. Removing the fake gh is
 # not enough: GitHub-hosted runners ship a real /usr/bin/gh, which the
 # installer would find next and then fail one probe later with a different
 # message than the missing-tool one this case verifies.
 make_path_without_gh() {
     local sysbin=$1 dir entry
     mkdir -p "$sysbin"
-    for dir in /usr/bin /bin /usr/sbin /sbin; do
-        [ -d "$dir" ] || continue
-        for entry in "$dir"/*; do
-            [ -x "$entry" ] || continue
-            [ "$(basename "$entry")" != gh ] || continue
-            [ -e "$sysbin/$(basename "$entry")" ] || ln -s "$entry" "$sysbin/"
+    for name in awk basename cat chmod cp curl date dirname env find grep gzip head id install kill ln mkdir mktemp mv ps readlink rm sed shasum sha256sum sleep sort stat sync tail tar tr uname unzip wc; do
+        for dir in /usr/bin /bin /usr/sbin /sbin; do
+            if [ -x "$dir/$name" ]; then ln -s "$dir/$name" "$sysbin/$name"; break; fi
         done
     done
+}
+
+test_pinned_verifier_bootstrap_handles_missing_old_and_corrupt_bytes() {
+    local mode case_root fixtures fake_bin home sysbin digest
+    for mode in missing old corrupt; do
+        case_root="$test_root/verifier-$mode"; fixtures="$case_root/fixtures"; fake_bin="$case_root/fake-bin"; home="$case_root/home"; sysbin="$case_root/sysbin"
+        mkdir -p "$fixtures" "$home" "$case_root/archive/gh_2.102.0_linux_amd64/bin"
+        make_release "$fixtures" v1.0.0 release-v1
+        make_fake_tools "$fake_bin" "$fixtures"
+        { printf '#!/bin/sh\n: >"$HOME/verifier-executed"\n'; tail -n +2 "$fake_bin/gh"; } >"$case_root/archive/gh_2.102.0_linux_amd64/bin/gh"
+        tar -czf "$fixtures/verifier.tar.gz" -C "$case_root/archive" gh_2.102.0_linux_amd64/bin/gh
+        digest=$(shasum -a 256 "$fixtures/verifier.tar.gz" | awk '{print $1}')
+        fixture_installer="$case_root/installer.sh"
+        # Substitute a deterministic fixture digest in a private COPY, never production trust policy.
+        sed "s/bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386/$digest/g" "$repo_root/scripts/install.sh" >"$fixture_installer"
+        printf '{"fixture":"signed"}\n' >"$fixtures/releases/v1.0.0/lab-x86_64-unknown-linux-gnu.tar.gz.sigstore.jsonl"
+        if [ "$mode" = old ]; then
+            printf '#!/bin/sh\ncase "$*" in "--version") echo "gh version 2.101.0";; *) exit 97;; esac\n' >"$fake_bin/gh"
+        else
+            rm "$fake_bin/gh"
+        fi
+        make_path_without_gh "$sysbin"
+        if [ "$mode" = corrupt ]; then
+            printf 'corruption' >>"$fixtures/verifier.tar.gz"
+            mkdir -p "$home/bin"; printf '#!/bin/sh\necho original\n' >"$home/bin/labby"; chmod 755 "$home/bin/labby"
+            if run_installer "$home" "$fixtures" "$fake_bin" PATH="$fake_bin:$sysbin" LABBY_INSTALL_VERSION=v1.0.0 LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then fail "corrupt verifier was accepted"; fi
+            assert_contains "$case_root/err" "Pinned verifier checksum FAILED"
+            [ ! -e "$home/verifier-executed" ] || fail "corrupt downloaded code was executed"
+            [ "$("$home/bin/labby")" = original ] || fail "bad verifier altered installation"
+            ! grep -q '/example/labby/' "$case_root/curl.log" || fail "release downloaded with corrupt verifier"
+        else
+            run_installer "$home" "$fixtures" "$fake_bin" PATH="$fake_bin:$sysbin" LABBY_INSTALL_VERSION=v1.0.0 >"$case_root/out" 2>"$case_root/err" || { cat "$case_root/err" >&2; fail "valid pinned verifier bootstrap failed"; }
+            [ "$("$home/bin/labby")" = release-v1 ] || fail "bootstrap did not install release"
+            assert_contains "$case_root/err" "Bootstrapping pinned GitHub verifier"
+        fi
+    done
+    unset fixture_installer
 }
 
 test_release_install_fails_before_download_without_gh() {
@@ -190,8 +259,8 @@ test_release_install_fails_before_download_without_gh() {
         LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then
         fail "release installer succeeded without GitHub CLI"
     fi
-    assert_contains "$case_root/err" "GitHub CLI (gh) is required to verify Labby release provenance"
-    [ ! -s "$case_root/curl.log" ] || fail "installer started a release download before reporting the missing trust dependency"
+    assert_contains "$case_root/err" "verifier bootstrap failed"
+    ! grep -q "/example/labby/" "$case_root/curl.log" || fail "release download preceded verifier bootstrap"
 }
 
 test_release_install_fails_before_download_without_gh_attestation_support() {
@@ -209,11 +278,11 @@ EOF
         LABBY_TEST_CURL_LOG="$case_root/curl.log" >"$case_root/out" 2>"$case_root/err"; then
         fail "release installer succeeded with a GitHub CLI lacking attestation support"
     fi
-    assert_contains "$case_root/err" "GitHub CLI (gh) with attestation support is required"
-    [ ! -s "$case_root/curl.log" ] || fail "installer started a release download before reporting unsupported GitHub CLI"
+    assert_contains "$case_root/err" "verifier bootstrap failed"
+    ! grep -q "/example/labby/" "$case_root/curl.log" || fail "release download preceded verifier bootstrap"
 }
 
-test_release_install_fails_before_download_without_gh_authentication() {
+test_legacy_release_requires_auth_before_archive_download() {
     local case_root="$test_root/unauthenticated-gh"
     local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
     mkdir -p "$fixtures" "$home"
@@ -222,6 +291,7 @@ test_release_install_fails_before_download_without_gh_authentication() {
     cat >"$fake_bin/gh" <<'EOF'
 #!/bin/sh
 case "$*" in
+  "--version") echo "gh version 2.102.0"; exit 0 ;;
   "attestation verify --help") exit 0 ;;
   "auth status --hostname github.com") exit 1 ;;
   *) exit 64 ;;
@@ -233,7 +303,43 @@ EOF
         fail "release installer succeeded without authenticated GitHub CLI"
     fi
     assert_contains "$case_root/err" "GitHub CLI must be authenticated to fetch Labby release attestations"
-    [ ! -s "$case_root/curl.log" ] || fail "installer downloaded a release before reporting unauthenticated GitHub CLI"
+    if grep -Fv '.sigstore.jsonl' "$case_root/curl.log" | grep -q .; then
+        fail "legacy installer downloaded archive bytes before requiring authentication"
+    fi
+}
+
+test_public_bundle_verification_needs_no_account() {
+    local case_root="$test_root/public-bundle"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_fake_tools "$fake_bin" "$fixtures"
+    printf '%s\n' '{"signed":"fixture"}' >"$fixtures/releases/v1.0.0/lab-x86_64-unknown-linux-gnu.tar.gz.sigstore.jsonl"
+    cat >"$fake_bin/gh" <<'EOF'
+#!/bin/sh
+case "$*" in
+  "--version") echo "gh version 2.102.0"; exit 0 ;;
+  "attestation verify --help") exit 0 ;;
+  "auth "*) exit 99 ;;
+esac
+printf '%s\n' "$*" >>"$LABBY_TEST_GH_LOG"
+case "$*" in
+  "--version") echo "gh version 2.102.0"; exit 0 ;;
+  *"--bundle "*"--repo example/labby"*"--signer-workflow example/labby/.github/workflows/release.yml"*"--source-ref refs/tags/v1.0.0"*"--deny-self-hosted-runners"*) exit "${LABBY_TEST_BUNDLE_FAIL:-0}" ;;
+  *) exit 64 ;;
+esac
+EOF
+    chmod 755 "$fake_bin/gh"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 LABBY_TEST_GH_LOG="$case_root/gh.log" >"$case_root/out" 2>"$case_root/err"
+    assert_contains "$case_root/err" "GitHub provenance verified"
+    assert_contains "$case_root/gh.log" "--bundle"
+    # Invalid published bundles never fall back to authenticated API verification
+    # or replace a previously installed binary.
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 LABBY_TEST_GH_LOG="$case_root/gh.log" LABBY_TEST_BUNDLE_FAIL=1 >"$case_root/failed-out" 2>"$case_root/failed-err"; then
+        fail "invalid public bundle succeeded"
+    fi
+    assert_contains "$case_root/failed-err" "provenance verification FAILED"
+    [ "$("$home/bin/labby")" = release-v1 ] || fail "failed verification changed installed binary"
 }
 
 test_latest_api_failure_never_uses_mutable_latest_download() {
@@ -531,7 +637,7 @@ run_installer() {
         LABBY_INSTALL_REPO="example/labby" \
         LABBY_INSTALL_NO_SETUP=1 \
         "$@" \
-        /bin/sh "$repo_root/scripts/install.sh"
+        /bin/sh "${fixture_installer:-$repo_root/scripts/install.sh}"
 }
 
 test_checksum_mismatch_fails_closed_and_preserves_prior_binary() {
@@ -998,14 +1104,22 @@ SH
 
 test_first_run_setup_forwards_options_and_propagates_failure
 test_failed_journal_retirement_preserves_backups
+if [ "${LABBY_TEST_FUNCTION:-}" = test_pinned_verifier_bootstrap_handles_missing_old_and_corrupt_bytes ]; then
+    test_pinned_verifier_bootstrap_handles_missing_old_and_corrupt_bytes
+    exit
+fi
+
 test_installers_share_a_process_level_transaction_lock
 test_artifact_retention_keeps_only_current_and_rollback
 test_durability_barrier_failure_prevents_activation
 test_launchd_integrates_updates_after_health_check
 test_root_installer_is_self_contained_when_piped_from_arbitrary_cwd
+test_pinned_verifier_bootstrap_handles_missing_old_and_corrupt_bytes
 test_release_install_fails_before_download_without_gh
 test_release_install_fails_before_download_without_gh_attestation_support
-test_release_install_fails_before_download_without_gh_authentication
+test_legacy_release_requires_auth_before_archive_download
+test_bundle_transport_failures_never_select_legacy_auth
+test_public_bundle_verification_needs_no_account
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary
 test_checksum_ignores_sidecar_subject_and_hashes_requested_archive

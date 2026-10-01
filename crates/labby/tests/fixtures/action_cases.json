@@ -6457,5 +6457,238 @@
       "limit": "$fixture.limit"
     }
   }
+},
+{
+    "service": "agents",
+    "action": "agents.models.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "mcp",
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::agents::agents_models_list",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_agents_readonly",
+        "parameters": {
+            "owner_kind": "$fixture.owner_kind",
+            "owner_id": "$fixture.owner_id"
+        }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+},
+{
+    "service": "setup",
+    "action": "clients.session.revoke",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::clients_session_revoke",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_setup_readonly",
+        "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+},
+{
+    "service": "setup",
+    "action": "clients.session.start",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::clients_session_start",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_setup_readonly",
+        "parameters": {
+            "clients": "$fixture.clients"
+        }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+},
+{
+    "service": "setup",
+    "action": "mcp.verification.call",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::mcp_verification_call",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_setup_readonly",
+        "parameters": {
+            "name": "$fixture.name",
+            "expected_url": "$fixture.expected_url",
+            "tool": "$fixture.tool",
+            "expected_fingerprint": "$fixture.expected_fingerprint",
+            "arguments": "$fixture.arguments",
+            "approved": "$fixture.approved"
+        }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+},
+{
+    "service": "setup",
+    "action": "mcp.verification.tools",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::mcp_verification_tools",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_setup_readonly",
+        "parameters": {
+            "name": "$fixture.name",
+            "expected_url": "$fixture.expected_url"
+        }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+},
+{
+    "service": "setup",
+    "action": "readiness.clients.defer",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::readiness_clients_defer",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_setup_readonly",
+        "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+},
+{
+    "service": "setup",
+    "action": "readiness.state",
+    "canonical_action": null,
+    "applicable_surfaces": [
+        "api"
+    ],
+    "applicable_features": [
+        "all",
+        "api-docs",
+        "base",
+        "default",
+        "fs",
+        "gateway-host",
+        "lab-admin",
+        "no-default",
+        "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::readiness_state",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+        "fixture": "isolated_setup_readonly",
+        "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
 }
 ]

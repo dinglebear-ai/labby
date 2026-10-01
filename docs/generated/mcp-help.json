@@ -379,6 +379,28 @@
       "requires_http_subject": false,
       "actions": [
         {
+          "name": "agents.models.list",
+          "description": "List models available to the configured Agent provider for an authorized owner",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "owner_kind",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "owner_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
           "name": "agents.create",
           "description": "Create an Agent definition",
           "destructive": false,

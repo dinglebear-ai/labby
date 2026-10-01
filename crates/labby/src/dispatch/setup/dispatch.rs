@@ -36,6 +36,7 @@ const REDACTED_LOG_ACTIONS: &[&str] = &[
     "draft.set",
     "draft.commit",
     "finalize",
+    "mcp.verification.call",
     "settings.update",
     "settings.env.update",
     "settings.config.update",
@@ -87,11 +88,21 @@ async fn dispatch_inner(
 ) -> Result<Value, ToolError> {
     match action {
         "help" => Ok(help_payload("setup", ACTIONS)),
+        "mcp.verification.tools"
+        | "mcp.verification.call"
+        | "clients.session.start"
+        | "clients.session.revoke" => Err(ToolError::Forbidden {
+            message: "MCP verification requires an authenticated gateway caller context".into(),
+            required_scopes: vec![],
+        }),
         "schema" => {
             let a = crate::dispatch::helpers::require_str(params, "action")?;
             action_schema(ACTIONS, a)
         }
         "state" => run_blocking_setup("state", state_action).await,
+        "readiness.state" | "readiness.clients.defer" => {
+            blocking_params("readiness.state", params, super::readiness::state_action).await
+        }
         "bootstrap" => run_blocking_setup("bootstrap", super::bootstrap_action).await,
         "schema.get" => {
             let params = params.clone();

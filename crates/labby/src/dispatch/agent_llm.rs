@@ -28,8 +28,8 @@ pub(crate) struct LlmAgentExecutor {
     input: String,
 }
 
-pub(crate) fn current_harness_digest() -> Result<String, ToolError> {
-    let backend = OpenAiBackend::from_env().ok_or_else(|| ToolError::Sdk {
+pub(crate) fn current_harness_digest(store: &AccessStore) -> Result<String, ToolError> {
+    let backend = OpenAiBackend::for_access_store(store)?.ok_or_else(|| ToolError::Sdk {
         sdk_kind: "unavailable".into(),
         message: format!(
             "Agent execution requires the shared OpenAI-compatible backend configured with {BASE_URL_ENV}"
@@ -39,8 +39,15 @@ pub(crate) fn current_harness_digest() -> Result<String, ToolError> {
 }
 
 fn harness_digest_for(backend: &OpenAiBackend) -> String {
-    Sha256Digest::of(format!("labby-openai-compatible-v1:{}", backend.base_url()).as_bytes())
-        .to_string()
+    // Preserve the existing Phoenix harness identity for deployed definitions.
+    // Standard OpenAI is a distinct execution protocol and therefore revision.
+    let identity =
+        if backend.protocol() == crate::dispatch::phoenix_openai::ProviderProtocol::Phoenix {
+            format!("labby-openai-compatible-v1:{}", backend.base_url())
+        } else {
+            format!("labby-openai-compatible-v1:openai:{}", backend.base_url())
+        };
+    Sha256Digest::of(identity.as_bytes()).to_string()
 }
 
 impl LlmAgentExecutor {
@@ -52,7 +59,7 @@ impl LlmAgentExecutor {
                 param: "input".into(),
             });
         }
-        let backend = OpenAiBackend::from_env().ok_or_else(|| ToolError::Sdk {
+        let backend = OpenAiBackend::for_access_store(store)?.ok_or_else(|| ToolError::Sdk {
             sdk_kind: "unavailable".into(),
             message: format!(
                 "Agent execution requires the shared OpenAI-compatible backend configured with {BASE_URL_ENV}"
@@ -70,7 +77,7 @@ impl LlmAgentExecutor {
     pub(crate) fn from_task(store: &AccessStore, input_digest: &str) -> Result<Self, ToolError> {
         let payloads = AgentPayloadStore::for_access_store(store);
         let input = payloads.load_task_input(input_digest)?;
-        let backend = OpenAiBackend::from_env().ok_or_else(|| ToolError::Sdk {
+        let backend = OpenAiBackend::for_access_store(store)?.ok_or_else(|| ToolError::Sdk {
             sdk_kind: "unavailable".into(),
             message: format!(
                 "Agent execution requires the shared OpenAI-compatible backend configured with {BASE_URL_ENV}"
@@ -323,30 +330,74 @@ mod tests {
     /// The pinned revision instructions must not share a message with the
     /// caller's run input: input containing an "Agent instructions:" heading
     /// must never be able to override the revision.
+    #[test]
+    fn protocol_fingerprints_preserve_phoenix_and_distinguish_standard() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let phoenix = OpenAiBackend::from_url("https://provider.example/v1", None).unwrap();
+        let standard = OpenAiBackend::from_url_with_protocol(
+            "https://provider.example/v1",
+            None,
+            crate::dispatch::phoenix_openai::ProviderProtocol::OpenAi,
+        )
+        .unwrap();
+        assert_eq!(
+            harness_digest_for(&phoenix),
+            Sha256Digest::of(b"labby-openai-compatible-v1:https://provider.example/v1/")
+                .to_string()
+        );
+        assert_ne!(harness_digest_for(&phoenix), harness_digest_for(&standard));
+    }
+
     #[tokio::test]
     async fn pinned_instructions_travel_as_system_message() {
+        provider_starter_completion(crate::dispatch::phoenix_openai::ProviderProtocol::Phoenix)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn standard_openai_starter_uses_only_standard_endpoint_and_fields() {
+        provider_starter_completion(crate::dispatch::phoenix_openai::ProviderProtocol::OpenAi)
+            .await;
+    }
+
+    async fn provider_starter_completion(
+        protocol: crate::dispatch::phoenix_openai::ProviderProtocol,
+    ) {
         drop(rustls::crypto::ring::default_provider().install_default());
         let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/sessions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .mount(&server)
-            .await;
+        if protocol == crate::dispatch::phoenix_openai::ProviderProtocol::Phoenix {
+            for endpoint in ["/v1/sessions", "/v1/sessions/session-1/close"] {
+                Mock::given(method("POST"))
+                    .and(path(endpoint))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                    .mount(&server)
+                    .await;
+            }
+        }
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .respond_with(
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                if protocol == crate::dispatch::phoenix_openai::ProviderProtocol::OpenAi
+                    && body
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        != std::collections::BTreeSet::from(["messages", "model", "stream"])
+                {
+                    return ResponseTemplate::new(400);
+                }
                 ResponseTemplate::new(200)
-                    .set_body_json(json!({"choices":[{"message":{"content":"done"}}]})),
-            )
+                    .set_body_json(json!({"choices":[{"message":{"content":"done"}}]}))
+            })
             .expect(1)
             .mount(&server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/v1/sessions/session-1/close"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
-            .mount(&server)
-            .await;
-        let backend = OpenAiBackend::from_url(&format!("{}/v1", server.uri()), None).unwrap();
+        let backend =
+            OpenAiBackend::from_url_with_protocol(&format!("{}/v1", server.uri()), None, protocol)
+                .unwrap();
         let (_dir, store, _owner) = crate::dispatch::agents::test_support::fixture().await;
         let payloads = AgentPayloadStore::for_access_store(&store);
         let content_digest = payloads
@@ -434,6 +485,14 @@ mod tests {
         .unwrap();
         assert_eq!(executor.output(&output.digest).unwrap(), "done");
 
+        let requests = server.received_requests().await.unwrap();
+        if protocol == crate::dispatch::phoenix_openai::ProviderProtocol::OpenAi {
+            assert_eq!(
+                requests.len(),
+                1,
+                "standard provider received unexpected session requests"
+            );
+        }
         let chat = server
             .received_requests()
             .await
@@ -442,6 +501,18 @@ mod tests {
             .find(|request| request.url.path() == "/v1/chat/completions")
             .expect("chat completion request");
         let body: Value = serde_json::from_slice(&chat.body).unwrap();
+        if protocol == crate::dispatch::phoenix_openai::ProviderProtocol::OpenAi {
+            assert_eq!(
+                body.as_object()
+                    .unwrap()
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<std::collections::BTreeSet<_>>(),
+                std::collections::BTreeSet::from(["messages", "model", "stream"])
+            );
+        } else {
+            assert_eq!(body["gateway"]["session_id"], "session-1");
+        }
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 2, "{body}");
         assert_eq!(messages[0]["role"], "system");

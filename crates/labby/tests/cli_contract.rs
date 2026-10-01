@@ -769,6 +769,15 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         "doctor auth" | "doctor relay" | "doctor proxy" | "doctor system" | "logs journal" => {
             LeafPlan::Exempt("inspects host services, credentials, network routes, or system logs")
         }
+        "setup clients bridge" => LeafPlan::Exempt(
+            "starts a long-running MCP bridge using protected saved connection credentials",
+        ),
+        "setup clients connect"
+        | "setup clients list"
+        | "setup clients plan"
+        | "setup clients register" => LeafPlan::Exempt(
+            "inspects installed host clients or mutates their configuration using protected credentials",
+        ),
         "setup state"
         | "setup check"
         | "setup repair"

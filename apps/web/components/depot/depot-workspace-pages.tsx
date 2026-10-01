@@ -20,13 +20,16 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { ArtifactComposer } from './artifact-composer'
 import { DevContainersPageContent } from './dev-containers-page-content'
 import {
-  createAgent, deleteAgent, listAgents, runAgent, suspendAgent, updateAgent,
+  createAgent, deleteAgent, listAgentModels, listAgents, runAgent, suspendAgent, updateAgent,
   type AgentRunResult, type AgentView, type OwnerKind,
 } from '@/lib/agent-tasks/client'
+import { agentOwnerChoices, listTeamNames } from '@/lib/agent-tasks/owners'
 import {
   DELETE_AGENT_CONFIRM_LABEL, DELETE_AGENT_TITLE, actionRequiresConfirmation, deleteAgentDescription,
 } from '@/lib/agent-tasks/confirmation'
 import { useCommandCatalog } from '@/lib/hooks/use-command-catalog'
+import { authorityIdentity, useBrowserSession } from '@/lib/auth/session'
+import { listProjects } from '@/lib/projects/client'
 
 const demoArtifacts = [
   ['Skill', 'repo-triage', 'Cluster open PRs and issues, then draft a triage note.', '#review · #github'],
@@ -100,26 +103,64 @@ export function CreatePage() {
 }
 
 export function AgentsPage() {
+  const session = useBrowserSession()
+  const authority = session.status === 'authenticated' ? session.authority : undefined
   const [agents, setAgents] = useState<AgentView[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [selected, setSelected] = useState<AgentView | null>(null)
   const [creating, setCreating] = useState(false)
   const [agentId, setAgentId] = useState('')
-  const [ownerKind, setOwnerKind] = useState<OwnerKind>('personal')
-  const [ownerId, setOwnerId] = useState('')
+  const [ownerSelection, setOwnerSelection] = useState('personal')
   const [instructions, setInstructions] = useState('')
-  const [model, setModel] = useState('chatgpt-browser')
+  const [model, setModel] = useState('')
+  const [models, setModels] = useState<string[]>([])
+  const [modelError, setModelError] = useState<string | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [providerModelCount, setProviderModelCount] = useState<number | null>(null)
+  const [teamNames, setTeamNames] = useState<ReadonlyMap<string, string>>(new Map())
+  const [projectNames, setProjectNames] = useState<ReadonlyMap<string, string>>(new Map())
   const [mutating, setMutating] = useState(false)
+  const [starterTest, setStarterTest] = useState<{ agentId: string; message: string; passed: boolean | null } | null>(null)
+
+  const ownerChoices = agentOwnerChoices(authority, teamNames, projectNames)
+  const selectedOwner = ownerChoices.find((choice) => choice.key === ownerSelection) ?? ownerChoices[0]
+  const selectedOwnerKind = selectedOwner?.kind
+  const selectedOwnerId = selectedOwner?.id
+  const principalId = authority?.principalId
+  const ownerAuthorityId = authorityIdentity(authority)
+
+  useEffect(() => {
+    if (!principalId) return
+    const controller = new AbortController()
+    setTeamNames(new Map())
+    setProjectNames(new Map())
+    void listTeamNames(controller.signal).then((names) => {
+      if (!controller.signal.aborted) setTeamNames(names)
+    }).catch(() => undefined)
+    void listProjects(controller.signal).then((projects) => {
+      if (!controller.signal.aborted) setProjectNames(new Map(projects.map((project) => [project.project_id, project.name])))
+    }).catch(() => undefined)
+    return () => controller.abort()
+  }, [principalId, ownerAuthorityId])
+
+  useEffect(() => {
+    if (!principalId) return
+    const controller = new AbortController()
+    setProviderModelCount(null)
+    void listAgentModels('personal', principalId, controller.signal)
+      .then((available) => {
+        if (!controller.signal.aborted) setProviderModelCount(available.length)
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setProviderModelCount(0)
+      })
+    return () => controller.abort()
+  }, [principalId, ownerAuthorityId])
 
   const applyAgents = (items: AgentView[]) => {
     setAgents(items)
     setLoadError(null)
     setSelected(current => current ? items.find(item => item.agent_id === current.agent_id) ?? null : null)
-    if (!ownerId && items[0]) {
-      const kind = toOwnerKind(items[0].owner_kind)
-      if (kind) setOwnerKind(kind)
-      setOwnerId(items[0].owner_id)
-    }
   }
   const refresh = async () => {
     try { applyAgents(await listAgents()) }
@@ -137,16 +178,56 @@ export function AgentsPage() {
     return () => controller.abort()
   }, [])
 
-  const create = async () => {
+  useEffect(() => {
+    if (!creating || !selectedOwnerKind || !selectedOwnerId) return
+    const controller = new AbortController()
+    setModelsLoading(true)
+    setModelError(null)
+    setModels([])
+    setModel('')
+    void listAgentModels(selectedOwnerKind, selectedOwnerId, controller.signal)
+      .then((available) => {
+        if (controller.signal.aborted) return
+        setModels(available)
+        setModel(available[0] ?? '')
+        if (available.length === 0) setModelError('The configured Agent provider returned no models. Check its model access on the Labby server.')
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) setModelError(errorMessage(error, 'Could not list Agent provider models'))
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setModelsLoading(false)
+      })
+    return () => controller.abort()
+  }, [creating, selectedOwnerKind, selectedOwnerId])
+
+  const create = async (testRun: boolean) => {
     setMutating(true)
     setLoadError(null)
     try {
-      const created = await createAgent({ agentId: agentId.trim(), ownerKind, ownerId: ownerId.trim(), instructions, model })
+      if (!selectedOwner || !models.includes(model)) throw new Error('Choose an available Agent model and workspace.')
+      const created = await createAgent({ agentId: agentId.trim(), ownerKind: selectedOwner.kind, ownerId: selectedOwner.id, instructions, model })
       setCreating(false)
-      setSelected(created)
+      setSelected(testRun ? null : created)
       setAgentId('')
       setInstructions('')
       await refresh()
+      if (testRun) {
+        setStarterTest({ agentId: created.agent_id, passed: null, message: 'Running the first Agent test…' })
+        try {
+          const result = await runAgent(created.agent_id, 'Reply with one short sentence confirming that this Agent can respond.')
+          const passed = result.status === 'completed' && Boolean(result.output?.trim())
+          setStarterTest({
+            agentId: created.agent_id,
+            passed,
+            message: passed
+              ? `Agent test completed. Response: ${result.output!.slice(0, 400)}`
+              : `Agent test returned ${result.status} without a usable response. Open the Agent to retry.`,
+          })
+        } catch (error) {
+          setStarterTest({ agentId: created.agent_id, passed: false, message: errorMessage(error, 'Agent test failed. Open the Agent to retry.') })
+        }
+      }
     } catch (error) {
       setLoadError(errorMessage(error, 'Unable to create Agent'))
     } finally {
@@ -158,37 +239,54 @@ export function AgentsPage() {
   return <>
     <AppHeader breadcrumbs={[{ label: 'Workspace' }, { label: 'Agents' }]} />
     <PageFrame>
-      <ConsoleHero eyebrow="Workspace · Agents" title="Agents" description="Immutable Agent definitions executed through Labby’s shared Assistant LLM provider." pulse={{ color: 'var(--aurora-success)' }} actions={<Button onClick={() => setCreating(true)}><CirclePlus/>New Agent</Button>} stats={[
+      <ConsoleHero eyebrow="Workspace · Agents" title="Agents" description="Immutable Agent definitions executed through the provider configured on the Labby server." pulse={{ color: providerModelCount ? 'var(--aurora-success)' : 'var(--aurora-warn)', label: providerModelCount === null ? 'checking provider' : providerModelCount > 0 ? 'models available' : 'provider not verified' }} actions={<Button onClick={() => setCreating(true)} disabled={ownerChoices.length === 0}><CirclePlus/>New Agent</Button>} stats={[
         {label:'Active',value:active,icon:<Play size={12}/>,tone:'var(--aurora-success)'},
         {label:'Suspended',value:agents.filter(agent=>agent.state==='suspended').length,icon:<Pause size={12}/>},
         {label:'Definitions',value:agents.length,icon:<Bot size={12}/>},
-        {label:'Runtime',value:'Assistant LLM',icon:<CheckCircle2 size={12}/>},
+        {label:'Provider',value:providerModelCount === null ? 'Checking' : providerModelCount > 0 ? 'Models available' : 'Not verified',icon:<CheckCircle2 size={12}/>},
       ]}/>
       {loadError?<InlineError message={loadError}/>:null}
+      {starterTest ? <div role="status" className={`mb-4 rounded-aurora-1 border p-3 text-xs ${starterTest.passed === null ? 'border-aurora-border-default text-aurora-text-muted' : starterTest.passed ? 'border-aurora-success text-aurora-success' : 'border-aurora-error text-aurora-error'}`}><strong>{starterTest.agentId}:</strong> {starterTest.message}</div> : null}
+      {agents.length === 0 && ownerChoices.length > 0 ? <Button variant="outline" className="mb-4" onClick={() => { setAgentId('starter-agent'); setOwnerSelection('personal'); setInstructions('You are a concise personal assistant. Follow the user’s request and state clearly when you cannot complete it.'); setCreating(true) }}>Create a starter Agent</Button> : null}
       <AgentsCollection agents={agents} onSelect={setSelected}/>
     </PageFrame>
     <AgentSessionSheet agent={selected} onOpenChange={open => !open && setSelected(null)} onChanged={refresh} />
     <Dialog open={creating} onOpenChange={setCreating}>
       <DialogContent className="border-aurora-border-strong bg-aurora-panel-medium">
         <DialogTitle>New Agent</DialogTitle>
-        <DialogDescription>Create a pinned LLM Agent definition. Provider identity is captured in the immutable harness digest.</DialogDescription>
+        <DialogDescription>Choose where this Agent belongs, select a model offered by your connected provider, and describe what it should do.</DialogDescription>
         <label className="text-xs font-semibold text-aurora-text-muted">Agent ID<input autoFocus value={agentId} onChange={event=>setAgentId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="release-reviewer"/></label>
-        <div className="grid grid-cols-2 gap-3">
-          <SelectField label="Owner" value={ownerKind} onChange={value=>setOwnerKind(value as OwnerKind)}><option value="personal">Personal</option><option value="team">Team</option><option value="project">Project</option></SelectField>
-          <label className="text-xs text-aurora-text-muted">Owner ID<input value={ownerId} onChange={event=>setOwnerId(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="principal / team / project ID"/></label>
-        </div>
-        <label className="text-xs font-semibold text-aurora-text-muted">Model<input value={model} onChange={event=>setModel(event.target.value)} className="mt-2 h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="chatgpt-browser"/></label>
+        <SelectField label="Workspace" value={selectedOwner?.key ?? ''} onChange={setOwnerSelection}>
+          {ownerChoices.map((choice) => <option key={choice.key} value={choice.key}>{choice.label}</option>)}
+        </SelectField>
+        {ownerChoices.length === 0 ? <p role="alert" className="text-xs text-aurora-error">This session cannot create Agents in an available workspace.</p> : null}
+        <SelectField label="Agent model" value={model} onChange={setModel}>
+          <option value="">{modelsLoading ? 'Checking provider models…' : 'Select a model'}</option>
+          {models.map((available) => <option key={available} value={available}>{available}</option>)}
+        </SelectField>
+        {modelError ? <p role="alert" className="text-xs text-aurora-error">{modelError}</p> : null}
         <label className="text-xs font-semibold text-aurora-text-muted">Instructions<textarea value={instructions} onChange={event=>setInstructions(event.target.value)} rows={7} className="mt-2 w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="Describe the Agent’s role, constraints, and expected output."/></label>
-        <Button onClick={()=>void create()} disabled={mutating||!agentId.trim()||!ownerId.trim()||!instructions.trim()}><CirclePlus/>{mutating?'Creating…':'Create Agent'}</Button>
+        <p className="text-xs text-aurora-text-muted">The test sends one short prompt to your provider and may incur a charge. A saved definition alone does not verify Agent execution.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button onClick={()=>void create(true)} disabled={mutating||modelsLoading||!selectedOwner||!model||!agentId.trim()||!instructions.trim()}><Play/>{mutating?'Working…':'Create and test Agent'}</Button>
+          <Button variant="outline" onClick={()=>void create(false)} disabled={mutating||modelsLoading||!selectedOwner||!model||!agentId.trim()||!instructions.trim()}>Create without test</Button>
+        </div>
       </DialogContent>
     </Dialog>
   </>
 }
 
-function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentView | null; onOpenChange: (open: boolean) => void; onChanged: () => Promise<void> }) {
+function AgentSessionSheet(props: { agent: AgentView | null; onOpenChange: (open: boolean) => void; onChanged: () => Promise<void> }) {
+  if (!props.agent) return null
+  return <AgentSessionSheetContent agent={props.agent} onOpenChange={props.onOpenChange} onChanged={props.onChanged} />
+}
+
+function AgentSessionSheetContent({ agent, onOpenChange, onChanged }: { agent: AgentView; onOpenChange: (open: boolean) => void; onChanged: () => Promise<void> }) {
   const [input, setInput] = useState('')
   const [revisionInstructions, setRevisionInstructions] = useState('')
   const [revisionModel, setRevisionModel] = useState('')
+  const [revisionModels, setRevisionModels] = useState<string[]>([])
+  const [revisionModelsError, setRevisionModelsError] = useState<string | null>(null)
   const [result, setResult] = useState<AgentRunResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -207,6 +305,16 @@ function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentVie
     setConfirmDelete(false)
   }, [agent?.agent_id, agent?.version])
 
+  useEffect(() => {
+    const controller = new AbortController()
+    setRevisionModels([])
+    setRevisionModelsError(null)
+    void listAgentModels(agent.owner_kind as OwnerKind, agent.owner_id, controller.signal)
+      .then(available => { if (!controller.signal.aborted) setRevisionModels(available) })
+      .catch(failure => { if (!controller.signal.aborted) setRevisionModelsError(errorMessage(failure, 'Could not list provider models')) })
+    return () => controller.abort()
+  }, [agent.owner_kind, agent.owner_id])
+
   const run = async () => {
     if (!agent) return
     setBusy(true); setError(null); setResult(null)
@@ -218,6 +326,7 @@ function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentVie
     if (!agent) return
     setBusy(true); setError(null)
     try {
+      if (revisionModel && !revisionModels.includes(revisionModel)) throw new Error('Choose a model offered by the connected provider.')
       await updateAgent({ agentId: agent.agent_id, instructions: revisionInstructions || undefined, model: revisionModel || undefined })
       setRevisionInstructions(''); setRevisionModel('')
       await onChanged()
@@ -264,7 +373,11 @@ function AgentSessionSheet({ agent, onOpenChange, onChanged }: { agent: AgentVie
         </section>
         <section className="space-y-3 border-t border-aurora-border-subtle pt-5">
           <div><h3 className="text-sm font-semibold text-aurora-text-primary">Publish revision</h3><p className="text-xs text-aurora-text-muted">Provide new instructions, a new model, or both. Omitted values inherit from the prior revision.</p></div>
-          <input value={revisionModel} onChange={event=>setRevisionModel(event.target.value)} className="h-10 w-full rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface px-3 text-sm text-aurora-text-primary" placeholder="New model (optional)"/>
+          <SelectField label="New provider model" value={revisionModel} onChange={setRevisionModel}>
+            <option value="">Keep the current model</option>
+            {revisionModels.map(available => <option key={available} value={available}>{available}</option>)}
+          </SelectField>
+          {revisionModelsError ? <p role="alert" className="text-xs text-aurora-error">{revisionModelsError}</p> : null}
           <textarea value={revisionInstructions} onChange={event=>setRevisionInstructions(event.target.value)} rows={5} className="w-full resize-y rounded-aurora-1 border border-aurora-border-default bg-aurora-control-surface p-3 text-sm text-aurora-text-primary" placeholder="New instructions (optional)"/>
           <Button variant="outline" onClick={()=>void publishRevision()} disabled={busy||(!revisionInstructions.trim()&&!revisionModel.trim())}>Publish new revision</Button>
         </section>
@@ -304,7 +417,6 @@ function SelectField({label,value,onChange,children}:{label:string;value:string;
 function StatusDot({status}:{status:string}) { const normalized=status.toLowerCase(); const color=['active','running','succeeded'].includes(normalized)?'bg-aurora-success':['failed','expired'].includes(normalized)?'bg-aurora-error':['suspended','cancelling'].includes(normalized)?'bg-aurora-warn':'bg-aurora-text-muted'; return <span role="img" aria-label={status} title={status} className={'block size-2 rounded-full '+color}/> }
 function InlineError({message}:{message:string}) { return <div role="alert" className="rounded-aurora-1 border border-aurora-error/30 bg-aurora-error/5 p-3 text-sm text-aurora-error">{message}</div> }
 function errorMessage(error:unknown,fallback:string) { return error instanceof Error && error.message ? error.message : fallback }
-function toOwnerKind(value:string):OwnerKind|null { return value==='personal'||value==='team'||value==='project'?value:null }
 
 export function DevContainersPage() { return <><AppHeader breadcrumbs={[{label:'Workspace'},{label:'Dev Containers'}]}/><PageFrame><DevContainersPageContent /></PageFrame></> }
 

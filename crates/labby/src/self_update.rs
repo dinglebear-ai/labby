@@ -505,13 +505,8 @@ fn schedule_for_paths(action: &str, dry_run: bool, home: &Path, binary: &Path) -
         &log_dir.join("auto-update.log"),
         &std::env::var("PATH")?,
     )?;
-    if !Command::new("gh")
-        .arg("--version")
-        .output()
-        .is_ok_and(|o| o.status.success())
-    {
-        bail!("GitHub CLI (gh) is required to verify release attestations");
-    }
+    // The embedded verified installer bootstraps its pinned verifier when the
+    // scheduled update runs, so enabling updates needs no developer CLI.
     fs::create_dir_all(plist.parent().context("Missing LaunchAgents directory")?)?;
     fs::create_dir_all(log_dir)?;
     replace_schedule(&plist, content.as_bytes(), loaded, control)?;

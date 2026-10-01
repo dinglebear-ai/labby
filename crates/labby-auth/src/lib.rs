@@ -47,6 +47,8 @@ pub mod resource_registry;
 pub mod routes;
 #[cfg(feature = "http-axum")]
 pub mod session;
+#[cfg(feature = "http-axum")]
+mod setup_handoff;
 pub mod sqlite;
 pub mod state;
 #[cfg(feature = "http-axum")]
