@@ -1,7 +1,9 @@
 #![cfg(all(feature = "gateway", feature = "proxy-testkit"))]
 #![allow(clippy::await_holding_lock)]
 
-use labby::proxy::config::{ProxyAuthMode, ProxyExposure, ProxyPortPreference};
+use labby::proxy::config::ProxyPortPreference;
+#[cfg(unix)]
+use labby::proxy::config::{ProxyAuthMode, ProxyExposure};
 use labby::proxy::tailscale::{
     ServeStatus, TailscaleStatus, build_public_url, select_port_from_candidates,
 };
