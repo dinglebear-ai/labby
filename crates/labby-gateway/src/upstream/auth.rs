@@ -29,11 +29,24 @@ use labby_runtime::gateway_config::UpstreamConfig;
 /// protects this read on its own: a non-absolute root would otherwise resolve
 /// a `.env` relative to whatever directory the process happened to start in.
 fn dotenv_path() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE");
-    #[cfg(not(windows))]
-    let home = std::env::var_os("HOME");
-    dotenv_path_from(std::env::var_os("LABBY_HOME"), home)
+    dotenv_path_with_home_sources(
+        std::env::var_os("LABBY_HOME"),
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+    )
+}
+
+fn dotenv_path_with_home_sources(
+    labby_home: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    // Match the host's installation selection on every platform. In particular,
+    // HOME can select a different installation than USERPROFILE on Windows.
+    let home = home
+        .filter(|home| !home.is_empty())
+        .or_else(|| user_profile.filter(|profile| !profile.is_empty()));
+    dotenv_path_from(labby_home, home)
 }
 
 fn dotenv_path_from(
@@ -188,6 +201,110 @@ fn websocket_authorization_header_with_dotenv(
 mod tests {
     use super::*;
 
+    #[test]
+    fn file_managed_bearer_uses_home_before_windows_userprofile() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        let profile = directory.path().join("profile");
+        for root in [&home, &profile] {
+            std::fs::create_dir_all(root.join(".labby")).unwrap();
+        }
+        let home_env = home.join(".labby/.env");
+        let profile_env = profile.join(".labby/.env");
+        let name = format!("LABBY_ROOT_BEARER_FIXTURE_{}", std::process::id());
+        assert!(std::env::var_os(&name).is_none());
+        std::fs::write(&home_env, format!("{name}=home-fixture-token\n")).unwrap();
+        std::fs::write(&profile_env, format!("{name}=other-installation-token\n")).unwrap();
+
+        // The host registers names before startup dotenv loading. This key is
+        // file-managed, so reconnect must use the selected installation file.
+        register_external_environment_keys(BTreeSet::new());
+        let selected = dotenv_path_with_home_sources(
+            None,
+            Some(home.into_os_string()),
+            Some(profile.into_os_string()),
+        );
+        assert_eq!(
+            required_bearer_token_from_path(&name, selected.as_deref()).unwrap(),
+            "home-fixture-token",
+            "file-managed credentials must come from the HOME installation"
+        );
+        std::fs::write(&home_env, format!("{name}=replacement-fixture-token\n")).unwrap();
+        assert_eq!(
+            required_bearer_token_from_path(&name, selected.as_deref()).unwrap(),
+            "replacement-fixture-token"
+        );
+        std::fs::remove_file(&home_env).unwrap();
+        assert_eq!(
+            required_bearer_token_from_path(&name, selected.as_deref())
+                .unwrap_err()
+                .kind(),
+            "upstream_credential_missing",
+            "the other installation must not resurrect a removed credential"
+        );
+    }
+
+    #[test]
+    fn dotenv_root_sources_follow_installation_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let explicit = directory.path().join("explicit").into_os_string();
+        let home = directory.path().join("home").into_os_string();
+        let profile = directory.path().join("profile").into_os_string();
+        let cases = [
+            (
+                Some(explicit.clone()),
+                Some(home.clone()),
+                Some(profile.clone()),
+                Some(PathBuf::from(&explicit).join(".env")),
+            ),
+            (
+                Some("".into()),
+                Some(home.clone()),
+                Some(profile.clone()),
+                Some(PathBuf::from(&home).join(".labby/.env")),
+            ),
+            (
+                None,
+                Some(home.clone()),
+                Some(profile.clone()),
+                Some(PathBuf::from(&home).join(".labby/.env")),
+            ),
+            (
+                None,
+                Some(home.clone()),
+                None,
+                Some(PathBuf::from(&home).join(".labby/.env")),
+            ),
+            (
+                None,
+                None,
+                Some(profile.clone()),
+                Some(PathBuf::from(&profile).join(".labby/.env")),
+            ),
+            (
+                None,
+                Some("".into()),
+                Some(profile.clone()),
+                Some(PathBuf::from(&profile).join(".labby/.env")),
+            ),
+            (
+                Some("relative/root".into()),
+                Some(home.clone()),
+                Some(profile.clone()),
+                None,
+            ),
+            (None, Some("relative/home".into()), Some(profile), None),
+            (None, Some("".into()), Some("".into()), None),
+        ];
+        for (explicit, home, profile, expected) in cases {
+            assert_eq!(
+                dotenv_path_with_home_sources(explicit, home, profile),
+                expected,
+                "the selected dotenv must use the host installation precedence"
+            );
+        }
+    }
+
     fn test_upstream_config() -> UpstreamConfig {
         UpstreamConfig {
             display_name: None,
@@ -290,12 +407,15 @@ mod tests {
 
     #[test]
     fn dotenv_path_prefers_explicit_labby_home_over_user_home() {
+        let directory = tempfile::tempdir().unwrap();
+        let explicit = directory.path().join("preview");
+        let home = directory.path().join("home");
         assert_eq!(
             dotenv_path_from(
-                Some("/srv/labby-preview".into()),
-                Some("/Users/operator".into())
+                Some(explicit.clone().into_os_string()),
+                Some(home.into_os_string())
             ),
-            Some(PathBuf::from("/srv/labby-preview/.env"))
+            Some(explicit.join(".env"))
         );
     }
 
@@ -304,8 +424,12 @@ mod tests {
     /// startup validation.
     #[test]
     fn dotenv_path_refuses_a_non_absolute_installation_root() {
+        let directory = tempfile::tempdir().unwrap();
         assert_eq!(
-            dotenv_path_from(Some("relative/root".into()), Some("/Users/operator".into())),
+            dotenv_path_from(
+                Some("relative/root".into()),
+                Some(directory.path().as_os_str().to_owned())
+            ),
             None
         );
         assert_eq!(dotenv_path_from(None, Some("relative/home".into())), None);
@@ -313,9 +437,13 @@ mod tests {
 
     #[test]
     fn dotenv_path_falls_back_to_user_home_installation() {
+        let directory = tempfile::tempdir().unwrap();
         assert_eq!(
-            dotenv_path_from(Some("".into()), Some("/Users/operator".into())),
-            Some(PathBuf::from("/Users/operator/.labby/.env"))
+            dotenv_path_from(
+                Some("".into()),
+                Some(directory.path().as_os_str().to_owned())
+            ),
+            Some(directory.path().join(".labby/.env"))
         );
         assert_eq!(dotenv_path_from(None, None), None);
     }
