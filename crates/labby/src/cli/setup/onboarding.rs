@@ -2693,12 +2693,12 @@ esac
             invoking_user: Some("user".into()),
         };
         assert_eq!(advertised_url(&plan), "http://127.0.0.1:9123");
-        let selected = invoking_installation_root_with(
-            &plan,
-            Some(std::ffi::OsString::from("/private/tmp/labby-preview")),
-        )
-        .unwrap();
-        assert_eq!(selected, PathBuf::from("/private/tmp/labby-preview"));
+        let root = crate::access::test_support::secure_tempdir();
+        let expected_root = root.path().canonicalize().unwrap();
+        let selected =
+            invoking_installation_root_with(&plan, Some(expected_root.as_os_str().to_owned()))
+                .unwrap();
+        assert_eq!(selected, expected_root);
         assert!(invoking_installation_root_with(
             &plan,
             Some(std::ffi::OsString::from("relative-root")),
