@@ -41,6 +41,11 @@ definition. In particular, clearing OAuth tokens, enabling/disabling an
 upstream, and killing restartable upstream processes do not require destructive
 confirmation.
 
+Runtime views include optional `server_name`, `server_version`, and
+`protocol_version` from the connected upstream's negotiated server information.
+These are peer-reported metadata; missing values do not prove the upstream is
+absent. Runtime inspection does not start a connection just to fill them in.
+
 ### Saving An Upstream And Protected Route
 
 `gateway.add` and `gateway.update` accept an optional `protected_route` mutation
@@ -91,6 +96,13 @@ runtime `last_error`, and the action still completes with the view reporting
 failed probe. The action fails only when the transaction cannot run: the
 upstream is unknown or disabled, the gateway runtime is not initialized, the
 configuration changed under the connect gate, or the process cleanup failed.
+
+On Linux, cleanup snapshots registered runtime ownership after scanning
+processes. It excludes another live upstream's PID, process group, and
+descendants even when command fragments overlap, including aggressive cleanup.
+Persisted runtime identities also record process start ticks to fence PID reuse; older
+journal rows retain the PID/PGID fallback until rewritten. Source:
+[gateway runtime](../../crates/labby-gateway/src/gateway/runtime.rs).
 
 OAuth upstreams are projected per calling subject: `gateway.get`,
 `gateway.list`, and `gateway.mcp.list` report that subject's connection,
@@ -375,10 +387,12 @@ MCP `codemode` call shape:
 { "code": "async () => { const matches = await codemode.search(\"github issues\"); const docs = await codemode.describe(matches.results[0].path); return { docs, issues: await codemode.github.search_issues({ q: \"repo:dinglebear-ai/labby gateway\" }) }; }" }
 ```
 
-Execution runs in a short-lived child process with an embedded JavaScript engine.
+Execution runs in a Javy/QuickJS child process. A bounded warm pool reuses
+processes while constructing a fresh JavaScript runtime and working directory
+for every execution; overflow and disabled-pool paths use ephemeral runners.
 The child gets an empty environment, a temporary working directory, no Node/Deno
-host APIs, and no direct access to the Labby runtime. The only host capability is
-the injected `codemode.<upstream>.<tool>()` typed helpers and the escape-hatch
+host APIs, and no direct access to the Labby runtime. Host access uses
+the injected `codemode.<namespace>.<tool>()` typed helpers and the escape-hatch
 `callTool(id, params)` function, which sends each requested call back to the
 parent gateway for normal visibility, scope, destructive-action, and upstream
 exposure checks. `params` must be JSON-serializable.
@@ -494,7 +508,7 @@ already-running service binary.
 
 ### Settings MCP App
 
-Admin-capable MCP Apps hosts receive a synthetic `settings` tool bound to
+When `mcp_apps.settings = true`, admin-capable MCP Apps hosts receive a synthetic `settings` tool bound to
 `ui://lab/settings/editor`. The responsive app reads Labby's canonical settings
 schema and presents section-scoped controls for Code Mode, proxying, surfaces,
 features, and other safe scalar settings. Read-only and advanced values remain
@@ -518,9 +532,11 @@ same shaped response. This does not retain the raw result for audit; use
 `writeArtifact()` for large detailed payloads. The truncate policy is an output
 bound, not redaction, and must not be used to sanitize secrets.
 
-Code Mode execution handles upstream MCP tools only. Lab actions are not callable
-from inside the Code Mode sandbox. Upstream ids use
-`<upstream-name>::<tool-name>`.
+Code Mode resolves configured upstream tools and eligible in-process service
+projections through its caller-filtered catalog. Discover exact IDs rather than
+guessing service actions. Reserved `state`, `git`, and `openapi` providers have
+separate host-enforced authority rules; see [Code Mode](../dev/CODE_MODE.md).
+Upstream IDs use `<upstream-name>::<tool-name>`.
 
 Advertised tools per active mode:
 
@@ -544,7 +560,8 @@ Rules:
 - `codemode` requires a non-empty `code` string
 - `codemode` and `codemode_ui` require `lab` or `lab:admin`; `codemode_read`
   also accepts `lab:read` and rechecks explicit live read-only annotations
-- Lab actions are not supported inside Code Mode `callTool`
+- only catalog-admitted in-process actions are callable; caller-bound services
+  do not gain a context-free execution path through Code Mode
 - gateway action provenance fields (`origin` and `owner`) are reserved in Code Mode and are overwritten by the broker
 - `codemode` enforces `timeout_ms` by killing the child process; tool calls are
   bounded by the run deadline, host-side policy, and a configurable per-run
@@ -562,16 +579,21 @@ Tool-search observability:
   `has_next_cursor`
 - in-process Labby service peer discovery logs `in_process.list_tools.start` and
   `in_process.list_tools.finish` with `process_code_mode_enabled` and
-  `tool_count`; when root code mode is enabled, built-in peers should report
-  `tool_count=0`
+  `tool_count`; internal peers use their own raw projection even when root
+  Code Mode is enabled, with caller filtering applied by the gateway host
 - process-wide enablement changes log `code_mode.process_enablement` with
   `previous_enabled` and `enabled`
 
 ## Validation
 
-- exactly one of `url` or `command` must be set
-- HTTP and Unix-socket transports require an `http://` or `https://` URL;
-  WebSocket requires `ws://` or `wss://`. Stdio requires a command and no URL.
+- select HTTP, WebSocket, stdio, or explicit Unix-socket transport with matching
+  fields; URL/command inference remains supported for legacy entries
+- HTTP uses `http://` or `https://`; WebSocket uses `ws://` or `wss://`;
+  Unix sockets require `socket_path` plus an HTTP(S) URL for request authority
+- the runtime configuration supports WebSocket upstreams, but gateway mutation
+  validation still applies the HTTP-only `validate_gateway_url` check after
+  transport validation. `gateway.add`/`update` therefore reject WebSocket URLs;
+  runtime transport support does not imply those actions accept them
 - bind-all addresses (`0.0.0.0`, `::`) are rejected
 - RFC1918 and other private-network URLs are allowed
 - stdio gateways are allowed. Proposed or persisted enabled stdio specs can
@@ -1185,11 +1207,11 @@ Expected:
 For upstreams configured with `[upstream.oauth]` (see
 [CONFIG.md](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce) and
 [UPSTREAM.md](./UPSTREAM.md#upstream-oauth-authorization_code--pkce)), the
-hosted HTTP gateway mounts the routes below. Start, status, and clear require
-a verified identity with current durable platform management authority and an
-admin token scope; a stale admin scope alone grants no access. They are
-available only on the master gateway. The browser callback instead validates
-the server-stored pending OAuth state and its credential owner.
+hosted HTTP gateway mounts admin-gated routes under `/v1/gateway/oauth`
+(`upstreams`, `probe`, `start`, `status`, `clear`, and `google/revoke`). They
+use ordinary `/v1` authentication and require verified durable platform management authority plus `lab:admin`; cookie-authenticated
+mutations also require CSRF. The callback and result page are public browser
+routes with the state and subject checks below. There is no master-node gate.
 
 The `labby mcp` stdio surface uses the same managers and encrypted credential
 store without requiring the hosted HTTP server. It starts a loopback-only
@@ -1265,8 +1287,9 @@ Callback security invariants (enforced in code, spec-required):
   upstream OAuth runtime is configured.
   It does **not** delete persisted credential rows — `AuthClient`s are rebuilt
   on the next request using whatever credentials are in the store.
-- `clear_credentials` is the only way to invalidate a persisted credential.
-  It evicts the cache entry and deletes the row. Matching peers are detached
+- `clear_credentials` deletes the selected persisted row and evicts its cache
+  entry. Shared-provider revocation and terminal refresh invalidation are other
+  credential lifecycle paths. Matching peers are detached
   immediately and shut down asynchronously; in-flight calls may be interrupted.
   Check operation outcomes before retrying a mutation. Late refresh responses
   cannot restore a deleted or newly authorized credential.
@@ -1284,7 +1307,9 @@ the raw authenticated subject — see [OBSERVABILITY.md](../dev/OBSERVABILITY.md
 for the `actor_key` redaction convention this reuses), the client's
 self-declared MCP client name/version from `server/discover` request metadata,
 the transport (`stdio`, `http`, `in-process`, or `test`), and a connect
-timestamp.
+timestamp. An optional `authorized_client_id` separately records the validated
+OAuth access token's `azp` (authorized-party client ID); static bearer and
+unauthenticated observations do not gain that field from MCP client metadata.
 
 ```json
 { "action": "gateway.clients.list", "params": {} }
@@ -1299,7 +1324,8 @@ Two things this is explicitly **not**:
 - **Not authenticated identity.** `client_name`/`client_version` are
   self-declared by the peer during the MCP handshake and are not verified —
   treat them as a display label, not an identity claim. The redacted subject
-  tag is the only field backed by actual auth state.
+  tag and optional `authorized_client_id` are backed by authentication state;
+  neither makes the self-declared name/version trustworthy.
 
 The registry is bounded (drop-oldest past a fixed entry cap) and truncates
 every peer-controlled string field before storage, since a client is
@@ -1309,6 +1335,8 @@ peer must not be able to grow this list, or any one field in it, unbounded.
 ## Limitations
 
 - Bearer-token changes in an externally supplied process environment require a new process. Gateway credential updates and reload refresh file-managed values; they do not replace external environment overrides.
-- The product HTTP API exposes `/v1/gateway` for gateway management, but it still does not proxy arbitrary upstream MCP tools through `/v1/*`.
+- The HTTP API exposes `/v1/gateway` for management and `/v1/palette/execute`
+  for authenticated, contract-checked upstream execution; it is not a generic
+  URL-selectable upstream proxy.
 - Runtime counts depend on current discovery state; an unreachable upstream can remain configured while reporting zero discovered items.
 - Gateway mutations replace gateway-owned TOML sections using `toml_edit` and preserve supported foreign top-level tables. Formatting or comments inside replaced owned sections may change. Unknown owned fields and foreign top-level scalars are rejected; see [configuration ownership](../runtime/CONFIG.md).

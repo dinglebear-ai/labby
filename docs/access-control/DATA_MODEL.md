@@ -50,7 +50,7 @@ Artifact IDs/revision IDs remain owned by the Artifact subsystem and are stored 
 
 ### access_metadata
 
-The current (schema v7) STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
+The current (schema v9) STRICT singleton table has `singleton = 1` as its constrained primary key plus non-null `schema_version`, `schema_fingerprint`, `global_revision`, `updated_at`, and `bootstrap_generation` columns, with a nullable `bootstrap_identity_fingerprint`. The metadata carries exactly schema identity, the singleton global AccessStore revision, and explicit bootstrap generation/identity state; it is not an open-ended key/value surface. `global_revision` starts at zero and increments monotonically with every authorization-affecting mutation. Bootstrap generation is either zero with no fingerprint or one with a non-empty safe identity fingerprint. SQLite `user_version`, `application_id`, the compiled schema fingerprint, and the recorded schema version must agree before the store is accepted.
 
 Unknown/newer schema versions fail closed.
 
@@ -93,14 +93,17 @@ Constraints:
 
 Verified email, last-seen time, and explicit revocation time are optional future metadata. They are not authorization keys and are not columns in the Milestone 1 v1 schema.
 
+<a id="schema-v7-current"></a>
+
 ### Schema v9 (current)
 
-`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 9`. A fresh
-store is created directly at v9 in one transaction. Supported older stores
-are migrated only by `labby state access migrate` with approval evidence
-(see [MIGRATION.md](./MIGRATION.md)); normal startup never migrates.
-The current `access.db` contains these tables (source file in parentheses when
-not `migrations.rs`):
+`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 9` and
+fingerprint `labby-access-v9-20260918`. A fresh store is created directly at v9
+in one transaction. Existing v1 through v8
+stores are migrated only by `labby state access migrate` with approval
+evidence (see [MIGRATION.md](./MIGRATION.md)); normal startup never migrates.
+The current `access.db` contains these tables (source file in parentheses when not
+`migrations.rs`):
 
 | Area | Tables |
 | --- | --- |
@@ -116,6 +119,9 @@ not `migrations.rs`):
 | Container image state | `dev_container_template_drafts`, `dev_container_template_environment`, `dev_container_image_builds`, `dev_container_published_images`, `dev_container_launch_manifests` |
 | Artifact distribution (`artifact_distribution.rs`) | `artifact_authorities`, `artifact_publisher_policies`, `artifact_source_policies`, `artifact_assignment_distributions`, `artifact_mirrors`, `artifact_subscriptions` |
 | Audit | `access_audit` |
+| Task schedules (v8, `migrations.rs`) | `agent_task_schedules`, `agent_task_schedule_occurrences`, `agent_task_schedule_attempts` |
+| Container images (v8, `migrations.rs`) | `dev_container_template_drafts`, `dev_container_template_environment`, `dev_container_image_builds`, `dev_container_published_images`, `dev_container_launch_manifests` |
+| Local Artifact distribution (v9, `artifact_distribution.rs`) | `artifact_authorities`, `artifact_publisher_policies`, `artifact_source_policies`, `artifact_assignment_distributions`, `artifact_mirrors`, `artifact_subscriptions` |
 
 Team roles are `owner`, `admin`, and `member`. Project roles are `owner`,
 `admin`, `member`, and `viewer`. Column definitions are authoritative in the
@@ -126,9 +132,9 @@ design and do not all match current columns.
 
 Milestone 1 schema v2 contained exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and stores one symbolic named Loadout admitted against desired gateway configuration. Because Gateway and AccessStore are separate stores, existence is revalidated at every use and is not a SQLite referential-integrity guarantee. The metadata table carries schema identity, the singleton global AccessStore revision, and bootstrap generation/safe identity fingerprint.
 
-At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for the current schema.
+At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for v9.
 
-Custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables remain broader future design and require later versioned migrations.
+Custom Roles/Grants, generalized Assignments, paired destinations, and runtime bindings remain broader future design. Local distribution policies, mirrors, and subscriptions are implemented by the v9 tables above; they do not imply the cross-Labby transfer protocol is implemented.
 
 ### organizations
 

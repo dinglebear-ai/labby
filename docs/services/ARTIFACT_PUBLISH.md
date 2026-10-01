@@ -31,8 +31,12 @@ backend responses are never returned.
 
 Success returns an `IngestJobReceipt`. A queued or running ingestion job means
 the archive was accepted for processing; it does not prove that a public
-listing is live. Observe the returned job through Labby's `jobs` service until
+listing is live. Observe the returned job through Labby's authenticated HTTP
+`jobs` service until
 it reaches a terminal state, then read the resulting Artifact publication.
+
+`jobs` is registered as HTTP-context-only; it is not an MCP tool or an
+in-process Code Mode service.
 
 ## Compatibility
 

@@ -1,7 +1,7 @@
 ---
 title: "Labby Plugins"
 created: "2026-07-30"
-updated: "2026-08-18"
+updated: "2026-09-29"
 ---
 
 # Labby Plugins
@@ -41,6 +41,13 @@ install the plugin remotely never need a local binary at all. The plugin ships
 **no Claude Code hooks**. The former SessionStart / ConfigChange setup shims,
 server-environment synchronization, and per-service Claude plugin lifecycle are
 retired. Plugin configuration is client-only and never mutates the Labby host.
+
+The installer skill is the guided orchestration entry point; it delegates
+durable setup and repair to the binary. The checked-in MCP connection always
+injects `Authorization: Bearer ${user_config.api_token}`. Treat it as a bearer
+convenience, not automatic OAuth discovery. For OAuth, register the endpoint
+through the client's native MCP configuration without that static header and
+use its OAuth login flow. The usage plugin contains no MCP registration.
 
 The [implementation workflow skill](../plugins/labby/.apm/skills/implement-in-microsandbox/SKILL.md) guides explicitly authorized tasks through persistent development and retained staging; it does not add a deployment service or mutate production.
 
@@ -90,4 +97,7 @@ configuration surfaces. Capability-affecting host problems are exposed through
 Doctor and the global capability-health warning instead of being hidden behind
 client-plugin hooks or transport-specific guards.
 
-`labby help` and `lab://catalog` are env-aware by default: services with missing required env vars are hidden. Use `LABBY_SHOW_ALL=1` or `labby help --all` to show the full compiled catalog.
+`labby help` is offline and derives from the compiled Clap command graph;
+`labby help --all` expands the command tree. MCP service discovery through
+`lab://catalog` is a separate, environment-aware surface. Do not use CLI help
+as evidence that a running gateway exposes a service.

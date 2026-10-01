@@ -1,7 +1,7 @@
 ---
 title: "Service Onboarding"
 created: "2026-08-18"
-updated: "2026-08-18"
+updated: "2026-09-29"
 ---
 
 # Service Onboarding
@@ -33,12 +33,16 @@ Do not recreate the retired pattern of one built-in SDK module per homelab appli
 ## Verification
 
 ```bash
-cargo check --workspace --all-features
-cargo nextest run --workspace --all-features
-cargo clippy --workspace --all-features --all-targets -- -D warnings
+just check
+just test
+just lint
 just docs-generate
 just docs-check
 ```
+
+Feature changes also require `bash scripts/check-feature-slices.sh`: an all-feature build can hide a broken standalone slice. `just lint` includes module-reachability checks so an unreferenced Rust file cannot silently escape compilation. Run `just rustdoc-check` when introducing public Rust contracts, modules, or examples.
+
+Keep `ActionSpec.requires_admin` independent of `destructive`, and test both gates. Caller-bound services must retain host-resolved identity and authority on direct invocation, not only during catalog listing.
 
 ## Source Documents
 

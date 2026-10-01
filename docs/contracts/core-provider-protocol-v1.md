@@ -13,6 +13,11 @@ provider. It is not MCP, a public HTTP surface, a GraphQL passthrough, or a
 second Code Mode implementation. Labby remains the Code Mode and sandbox
 authority; Core remains the provider catalog, execution, and actor authority.
 
+`implemented-unbundled` describes the Labby adapter and assertion boundary in
+this repository. Core-side framing, admission, cursor/result ownership, and
+execution requirements below are obligations of the counterpart provider;
+the local fixture alone does not establish a qualified Core deployment.
+
 The canonical golden fixture is maintained alongside Core as
 `priv/contracts/core_provider_protocol/v1.json`. Before either implementation
 ships, this repository must carry the same fixture bytes and the conformance

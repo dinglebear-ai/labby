@@ -66,7 +66,10 @@ The implementation spans:
 - `crates/labby/src/cli/gateway/args.rs`
 - `crates/labby/src/cli/gateway/dispatch.rs`
 
-The auth database schema version is 8.
+The broker was introduced in auth schema v8. The current auth database schema
+version is 18 (`crates/labby-auth/src/sqlite/migrations.rs`); the v8 schema and
+rollout references below record the broker's original additive migration, not
+the current database version or a supported downgrade target.
 
 Normative terms **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY**
 are used deliberately.
@@ -171,7 +174,7 @@ flowchart LR
     Inbound --> Broker[Google credential broker]
     Gateway --> Outbound[Outbound OAuth manager]
     Outbound --> Broker
-    Broker --> DB[(auth.db schema v8)]
+    Broker --> DB[(auth.db)]
     Outbound --> AuthClient[rmcp AuthClient]
     AuthClient -->|short-lived Bearer token| GoogleMCP[Google Workspace MCP]
     Broker -->|refresh| GoogleAS[Google authorization server]
@@ -200,7 +203,7 @@ flowchart LR
 
 ### Mandatory controls
 
-- Access and refresh tokens MUST be encrypted at rest when a key is configured.
+- Access and refresh tokens MUST be encrypted at rest. Central Google credential reads and writes require `TOKEN_ENCRYPTION_KEY` and fail closed without it.
 - Provider tokens MUST NOT be serialized into product output.
 - Provider tokens MUST NOT appear in `Debug` output.
 - Full `sub`, email, account selector, token, code, verifier, ID token, client
@@ -619,8 +622,12 @@ pub struct GoogleCredentialBrokerStatus {
 }
 ```
 
-No public model contains tokens, codes, client secrets, raw `sub`, or raw selected
-email. Manual `Debug` implementations redact secret and identity material.
+Serialized operator/status models contain no tokens, codes, client secrets, raw
+`sub`, or raw selected email. Internal storage interfaces such as
+`GoogleProviderCredentialRow` and `GoogleProviderCredentialUpdate` are public
+Rust types containing credential material for trusted in-process consumers;
+they do not derive `Serialize`. Their manual `Debug` implementations redact
+secret and identity material. Rust visibility alone is not a wire contract.
 
 
 ## rmcp Credential Store Contract
@@ -741,10 +748,10 @@ Response contains counts only:
 ### CLI
 
 ```console
-labby server auth login --no-browser google-calendar --open --wait
+labby server auth login google-calendar --wait
 labby server auth status google-calendar --json
 labby server auth logout dedicated-upstream
-labby server auth revoke-google google-calendar --confirm
+labby auth provider google revoke google-calendar --confirm
 ```
 
 Without `--confirm`, shared revoke returns `confirmation_required`.

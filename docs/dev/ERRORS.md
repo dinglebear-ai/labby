@@ -1,7 +1,7 @@
 ---
 title: "Error Contract"
 created: "2026-07-30"
-updated: "2026-09-26"
+updated: "2026-09-29"
 ---
 
 # Error Contract
@@ -68,6 +68,9 @@ the same top-level envelope:
 ```json
 { "kind": "auth_failed", "message": "..." }
 ```
+
+This is an abbreviated example of kind promotion, not a complete wire error;
+real serialization includes the version, origin, recovery, and side-effect fields.
 
 ## Common Subsystem Kinds
 
@@ -203,6 +206,8 @@ so the `oauth_needs_reauth` refinement below is preserved.
 `ApiError` is the local axum wrapper around `ToolError`. Broad mapping rules:
 
 - authentication failure, including `oauth_needs_reauth`: 401;
+- `unknown_action`, `unknown_subaction`, `unknown_instance`, and
+  `oauth_state_invalid`: 400;
 - forbidden scope/action, including `oauth_scope_upgrade_required`: 403;
 - unknown resource: 404;
 - conflict/restart/stale/setup state, including `oauth_account_ambiguous`,
@@ -219,6 +224,25 @@ so the `oauth_needs_reauth` refinement below is preserved.
 
 MCP and CLI retain the same serialized error envelope even when HTTP assigns a
 status code.
+
+The match in `crates/labby/src/api/error.rs` is authoritative: classification in
+the shared recovery vocabulary does not automatically add an HTTP mapping.
+For example, unmapped `permission_denied`, `auth_required`,
+`result_too_large`, `call_budget_exceeded`, and `runner_settlement_timeout`
+currently fall through to 500. Do not infer an HTTP status
+from a kind's wording or retry advice.
+
+### Upstream HTTP errors during lifecycle discovery
+
+The outbound HTTP adapter is a separate boundary from `ApiError`. For a failed
+`server/discover` request, HTTP 401, 403, 429, and 5xx remain transport failures
+and cannot trigger a legacy lifecycle downgrade, even if their JSON body looks
+like a method-not-found error. Other eligible JSON error responses may have
+their ID rebound to that discover request; ordinary RPC errors still require
+the matching request ID. Existing authentication and session-expiry handling
+remains ahead of this fallback. Non-protocol error bodies are reduced to
+sanitized transport diagnostics rather than echoed. See
+`crates/labby-gateway/src/upstream/http_client.rs` and `pool/lifecycle_compat.rs`.
 
 ## Logging And Redaction
 

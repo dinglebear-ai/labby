@@ -94,7 +94,7 @@ When `--json` is active, failures are written to stderr as:
 ```json
 {
   "ok": false,
-  "command": "gateway",
+  "command": "server auth status",
   "error": {
     "contract_version": 1,
     "kind": "oauth_needs_reauth",

@@ -2,16 +2,19 @@
 title: "Public OAuth Callback Relay Operations"
 created: "2026-07-30"
 updated: "2026-09-16"
-status: "deployed"
+status: "deployment-observation"
 ---
 
 # Public OAuth Callback Relay Operations
 
 The public callback-relay cutover described by the original July runbook has
-already occurred. Current SWAG configuration on SQUIRTS routes
+already occurred according to the dated deployment record below. Its SWAG configuration on SQUIRTS routed
 `https://callback.tootie.tv` to the Labby gateway on Dookie at
-`10.1.0.6:40100`. The legacy Python `callback-relay` container is still
-running on SQUIRTS as the explicit rollback target.
+`10.1.0.6:40100`. The legacy Python `callback-relay` container was
+running on SQUIRTS as the explicit rollback target. These are historical
+deployment observations, not facts established by the repository or a current
+health guarantee. Recheck host identity, routing, and rollback availability
+before applying the environment-specific commands below.
 
 The Labby relay is transport-only. It forwards the final OAuth callback request
 to the registered machine target. Codex or the MCP client still owns PKCE,
@@ -20,11 +23,11 @@ to the registered machine target. Codex or the MCP client still owns PKCE,
 > **Point-in-time verification, 2026-09-16:** the deployed SWAG configuration is
 > still pointed at Labby, but a direct SQUIRTS-to-`10.1.0.6:40100` probe could
 > not connect and the public `/healthz` endpoint returned HTTP 502. Treat that
-> as a current infrastructure incident, not as the expected relay contract.
+> as the incident observed on that date, not as the expected relay contract.
 > Re-run the checks below after Dookie/Labby service recovery. The legacy
 > `callback-relay` container was still running at the time of this audit.
 
-## Current Topology
+## Recorded Topology (2026-09-16)
 
 - Public hostname: `callback.tootie.tv`.
 - Reverse proxy: SWAG on SQUIRTS.

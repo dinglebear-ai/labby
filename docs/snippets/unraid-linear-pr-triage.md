@@ -1,7 +1,7 @@
 ---
 title: Unraid Linear PR triage
 created: 2026-09-27
-updated: 2026-09-27
+updated: 2026-09-29
 name: unraid-linear-pr-triage
 description: Bounded, read-only Unraid PR triage with opt-in history and handoffs
 tags: [unraid, linear, github, readonly]
@@ -10,17 +10,28 @@ tools: ["linear-notification-worker::list_issues", "linear-notification-worker::
 
 # Unraid Linear PR triage
 
-Default: assigned U8 started issues, organization-wide open PRs, and all of the
-current GitHub user's open Unraid PRs. History and handoffs require explicit
+Default: assigned U8 started issues, organization-wide open PR matches, and a
+bounded search for the current GitHub user's open Unraid PRs. History and
+handoffs require explicit
 opt-in. The first batch loads issues and identity; the second performs independent
 PR searches and optional handoffs. No writes are made to GitHub or Linear.
 
 Optional inputs: team, assignee, state, org, repos (owner/repo array), chunkSize
 (integer 1 to 4), deep, includeHistory, includeHandoffs, includeReleasePRs.
-Searches fetch at most 100 PRs per query and one 250-issue page. Incomplete
+Searches fetch at most 100 PRs per query and one 250-issue page, retaining at
+most the first 100 issues. Release-like PRs are filtered unless explicitly
+included or matched by an issue identifier in the title. The second phase runs
+in batches of eight and rejects plans above 128 total calls. Incomplete
 upstream pages and bounded output omissions are explicitly reported, never
 represented as proof that an issue has no PR. Output is capped at 16,000 UTF-8
 bytes. Issue matching uses whole identifiers, not substring matches.
+
+The adjacent fixture covers the default 26-issue case with 10 calls. Use
+`unraid-linear-pr-triage.deep.test.json` with `deep=true` for the 36-call case.
+History uses one all-state query per identifier chunk. These fixtures belong
+to this original schema; [v2](unraid-linear-pr-triage-v2.md) has separate
+pagination, result references, and fixtures. See
+[Snippet development and testing](../dev/SNIPPET_TESTING.md).
 
 ```js
 async (input = {}) => {

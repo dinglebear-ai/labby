@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-09-26"
+updated: "2026-09-29"
 ---
 
 # Snippets Service
@@ -22,12 +22,15 @@ preserve omission separately from an explicit empty array. Declarations are
 bounded to 128 unique identifiers of at most 1,024 bytes each; reserved local
 capabilities, malformed identifiers, and duplicate declaration keys are rejected.
 
-For native saved-snippet execution (`snippets.exec` / `snippets.test`), Labby
-intersects a declaration with the caller's existing Code Mode policy before
+For native live saved-snippet execution (`snippets.exec` / `snippets.test` with
+`live: true`), Labby intersects a declaration with the caller's existing Code Mode policy before
 building the catalog. The declaration can narrow authority but never grant it:
 omission keeps the legacy caller scope, `[]` denies all upstream tools, and a
 nonempty list exposes only those exact dependencies. This also keeps one-shot
 snippet runs from cold-probing unrelated gateway upstreams.
+
+Offline fixture tests have no live authority. When a snippet declares tools,
+every fixture rule must also name a tool in that declaration.
 
 Nested `codemode.run()` inherits the already-established execution scope. Trusted
 local saved snippets may compose inside that declared scope; route-scoped callers
@@ -41,7 +44,7 @@ Built-in snippets are read-only through the user-snippet mutation surface. Expli
 
 ## Execution
 
-Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Tool calls are resolved through the live gateway catalog rather than guessed or hard-coded at the host boundary.
+Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Live execution resolves tool calls through the gateway catalog. Offline testing uses exact fixture rules without gateway discovery.
 
 ## Fixture-First Testing
 
@@ -62,11 +65,13 @@ labby snippet test unraid-linear-pr-triage --live
 The CLI reports a failing test with a nonzero exit status. With `--json`, its
 stdout remains the structured test report. Bulk tests retain diagnostics and
 metrics without multiplying full result payloads. A bulk run containing a snippet
-without a fixture fails rather than silently skipping it.
+without a fixture fails rather than silently skipping it. Bulk tests run
+sequentially and are capped at 100 unique snippet names; an empty run fails.
 
 The equivalent shared `snippets.test` parameters are a `name` (or `all: true`),
-an optional input object in `params`, and either a `fixture` object or
-`live: true`. Inline fixtures cannot be combined with `all` or `live`.
+an optional input object in `params`, and optionally a `fixture` object or
+`live: true`. Omit both to load the selected snippet's adjacent fixture. Inline
+fixtures cannot be combined with `all` or `live`.
 Authorization still comes from the shared action catalog.
 
 ### Fixture Contract
@@ -131,6 +136,7 @@ Neither mode changes gateway configuration or repairs upstream failures.
 
 ## Related Docs
 
+- [Snippet development and testing](../dev/SNIPPET_TESTING.md)
 - [Code Mode](../dev/CODE_MODE.md)
 - [Snippet authoring](../snippets/README.md)
 - [Gateway](./GATEWAY.md)

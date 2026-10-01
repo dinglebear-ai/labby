@@ -26,11 +26,11 @@ For substantial changes, capture the user problem, page structure, interaction m
 
 ### 3. Reuse Aurora
 
-Review [design-system-contract.md](./design-system-contract.md) and the nested `apps/web/CLAUDE.md` instructions. Reuse existing tokens, components, density, spacing, typography, surfaces, focus behavior, and motion patterns before creating a new primitive.
+Review [design-system-contract.md](./design-system-contract.md) and the nested `apps/web/AGENTS.md` instructions. Reuse existing tokens, components, density, spacing, typography, surfaces, focus behavior, and motion patterns before creating a new primitive.
 
 ### 4. Use A Mockup When Visual Direction Is Unsettled
 
-Labby has a development-only HTML mockup viewer for rapid visual iteration. Place a self-contained HTML file under:
+Labby has an HTML mockup viewer for development workflows. It is not restricted to debug builds: `api/router.rs` mounts it outside integrated trusted-host mode, with the browser authentication layer when credential auth is configured. Place a self-contained HTML file under:
 
 ```text
 ~/.superpowers/brainstorm/content/

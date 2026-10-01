@@ -178,7 +178,7 @@ Only components relevant to the decision need values, but none may be replaced
 with a caller-controlled timestamp. A mutation changes its affected epochs in
 the same database transaction as its audit event.
 
-Concretely, in AccessStore v7:
+Concretely, introduced in AccessStore v7 and retained in the current v9 schema:
 
 - `principal_epoch` and `project_membership_epoch` are monotonic counters
   maintained by schema triggers (`principal_epochs`,

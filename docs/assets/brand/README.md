@@ -45,9 +45,10 @@ docs/assets/brand/render-social-preview.sh
 
 The script fetches the Manrope variable font, inlines it as a base64 data URI,
 rasterises the template with headless Chrome at 2x, and downsamples to exactly
-1280x640. It needs Chrome (or Chromium) and `curl`, plus either a Python with
-Pillow or `uv` on `PATH`. The font is fetched to a temporary directory and is
-never committed.
+1280x640. It needs Chrome (or Chromium), `curl`, and `sha256sum`, plus either
+Python with Pillow or `uv` on `PATH`. The script calls `sha256sum` directly;
+`shasum` alone is not a substitute. The font is fetched to a temporary
+directory and is never committed.
 
 Set `OUT=` to render somewhere other than `.github/social-preview.png`, and
 `CHROME=` to pick a specific browser binary.
@@ -66,11 +67,13 @@ plausible, passes every check in the script, and gets committed and uploaded
 unnoticed. That is precisely the failure this whole PNG-not-SVG approach exists
 to prevent.
 
-Pillow is pinned too. **Chrome is not** — it is whatever is on `PATH`. So the
-output is byte-identical only for a given Chrome build; the committed PNG was
-rendered with Chrome 151. A different major version may re-rasterise the text
-slightly, which is a visual no-op but changes the file hash. Do not treat a
-hash change after a browser upgrade as a regression.
+The `uv` fallback pins Pillow through `PILLOW_PIN`; a preinstalled Python
+that can import Pillow is used without checking its version. **Chrome is not
+pinned**: it is selected through `CHROME` or `PATH`. Rendering is therefore
+not fully hermetic, and a matching Chrome version alone does not guarantee
+identical bytes across environments. The recorded render used Chrome 151,
+not a currently enforced browser version. Review the image as well as its
+hash after browser, platform, or Pillow changes.
 
 ## Uploading the social preview — this part is manual
 

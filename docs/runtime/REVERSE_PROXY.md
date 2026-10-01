@@ -38,8 +38,11 @@ proxy cannot preserve that authority, `[api].trust_forwarded_headers = true`
 makes the first `X-Forwarded-Host` value authoritative for protected-route and
 route-metadata selection. This is safe only when the Labby listener is not
 directly reachable by clients and every trusted proxy overwrites the inbound
-header. It does not enable trust for `X-Forwarded-Proto` or forwarded client-IP
-headers. Prefer preserving `Host` and leaving the option at its default `false`.
+header. It does not enable trust for `X-Forwarded-Proto`. The public browser
+WebSocket admission path also uses the first `X-Forwarded-For` address when
+this option is enabled; overwrite that header with a proxy-controlled client
+address rather than preserving an untrusted prefix. Other client-IP attribution
+is unchanged. Prefer preserving `Host` and leaving the option at its default `false`.
 
 The built-in authorization, registration, and token rate limits are
 process-local, and Labby attributes clients by the direct peer rather than

@@ -12,7 +12,7 @@ Status: Accepted
 
 ## Context
 
-ADR 0003 established Code Mode as Labby's bounded first-party execution plane and atomic MCP projection as the preferred representation for eligible first-party Labby operations.
+ADR 0003 proposes Code Mode as Labby's bounded first-party execution plane and atomic MCP projection as the preferred representation for eligible first-party Labby operations. ADR 0003 remains `Proposed`; this accepted ADR establishes the additive availability constraint below without changing that broader proposal's status.
 
 PR #736 adds operation-specific atomic tools and exposes the same first-party capabilities to Code Mode through the `lab::*` namespace. Its transitional implementation still inherits the older `CodeModeVisibility::hides_raw_tools()` behavior: synthetic Code Mode visibility can suppress both generic routers and newly projected atomic Labby tools.
 

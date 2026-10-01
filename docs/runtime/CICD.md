@@ -12,8 +12,11 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 ## CI Path Routing
 
-The docs-check job also runs the pure-Python Microsandbox implementation skill receipt tests and its path-routing regression. Every file under plugins/labby/.apm/skills/implement-in-microsandbox/ routes to that job, including scripts, tests, locks, and descriptors. These checks do not claim to launch a microVM on CI.
-
+The docs-check job also runs the pure-Python Microsandbox implementation skill
+receipt tests and its path-routing regression. Every file under
+`plugins/labby/.apm/skills/implement-in-microsandbox/` routes to that job, including
+scripts, tests, locks, and descriptors. These checks do not launch a microVM
+on CI.
 
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
@@ -72,9 +75,15 @@ evidence validators' negative unit tests using repository-root module discovery.
 Those tests supplement, but do not replace, the real-process evidence lane.
 
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
+It deliberately skips that job for fork pull requests. Consequently the
+path-gated compile/test jobs, including the declared `test-fork` fallback,
+do not run on forks in the current graph. `ci-gate` explicitly accepts this
+fork-only `changes=skipped` case. Independent policy, repository-contract,
+protected-docs, and unconditional verification workflows still run; this is
+not full product test coverage for a fork PR.
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
-`palette`, `browser_extension`, `npm`, `incus`, `security`,
+`browser_extension`, `desktop`, `npm`, `incus`, `security`,
 `javascript_advisories`, `release`, `unraid`, and `verification`. Scheduled and manual runs enable every category so periodic/manual
 validation stays broad.
 
@@ -157,7 +166,7 @@ Three rules keep this contract honest:
   fail the build on that mistake.
 - Every declared `changes` output must be emitted by `changed_paths.py`, except
   the runtime-only `gate_key_drift`.
-- `ci-gate` requires `changes` to conclude `success`. A skipped or cancelled
+- Except for the explicit fork-PR skip above, `ci-gate` requires `changes` to conclude `success`. A skipped or cancelled
   `changes` job leaves every gate expression empty, which would skip every
   gated job and turn the whole run vacuously green.
 
@@ -236,8 +245,8 @@ jobs when their changed-path category is enabled:
 | Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
 | Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
 | Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
-| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
-| Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
+| Tests (Linux fork PR fallback) | currently unreachable on forks | declared credentialless nextest job depends on `changes`, which is skipped for fork PRs |
+| Tests (Windows) | manual `run_windows=true` and `rust_test` | native nextest on GitHub-hosted `windows-latest`; aggregated by `ci-gate` when enabled, skipped on ordinary PRs/pushes |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
@@ -266,7 +275,12 @@ unknown-skill errors, and process cleanup. Live trust-policy cases also verify
 that disabled Skills proxying and restrictive allowlists block both native
 skill lookup and direct resource reads without hiding the gateway's own skill.
 
-Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
+Clippy runs with `-D warnings` — zero warnings are permitted. Feature-slice,
+Clippy, Linux test, and focused MCP regression jobs keep job-wide
+`CARGO_BUILD_JOBS` unset. Linux workspace and gateway-only shard execution
+steps explicitly use `2` for unit shards and `4` for other shards after normal
+target warm-up. The root manifest selects the `ring` TLS provider;
+the former `aws-lc-sys` build is not the current rationale for the policy.
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. CI runs an explicit TypeScript check as well as the production
@@ -311,7 +325,7 @@ land the required code/tests and the baseline update together.
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
+  - Native Windows workspace, installer, and desktop jobs require manual `run_windows=true`; enabled workspace/installer failures block `ci-gate`, while desktop Windows remains advisory
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
@@ -347,9 +361,9 @@ protected environment whose deployment-branch policy permits only `main`, plus
 server-enforced least-privilege credentials; a client-side prefix is not an
 authorization boundary.
 
-The reusable fleet policy and repository contract are organization-managed
-workflow calls. Their execution environment is owned by the central workflows
-repository and is outside this repository's local runner selection.
+Fleet policy runs as a local hosted job. The separate repository-contract
+workflow also selects its hosted runner locally and checks out the pinned
+organization-owned implementation for the adapter to execute.
 
 ## Build Matrix
 
@@ -359,14 +373,22 @@ repository and is outside this repository's local runner selection.
 | Linux arm64 | `aarch64-unknown-linux-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
 
-The initial Linux ARM64 artifact receives the native packaged Code Mode smoke,
-checksums, SBOM, and provenance verification. N-1 stateful qualification remains
-on the existing deployment matrix because no prior Linux ARM64 archive is
-available for the initial release; this is not an ARM64 upgrade/rollback claim.
-The shell and npm installers select the matching ARM64 archive.
+Linux ARM64 receives the native packaged Code Mode smoke, checksums, SBOM,
+provenance verification, and a native Unix N-1 stateful upgrade/rollback leg.
+For the first release without an older published ARM64 archive,
+`scripts/ci/resolve_arm64_n_minus_one.py` selects an older published stable
+ancestor tag with a complete Linux x86_64 archive and checksum. The workflow
+builds that source natively for ARM64 and binds its source commit and binary
+digest into the Unix adapter. This bootstrap qualifies state transitions
+against a source-built baseline, not a previously distributed ARM64 binary.
+Once an eligible published ARM64 archive exists, the resolver requires its
+checksum and uses that archive; a missing sidecar fails closed rather than
+reenabling bootstrap. The candidate archive still requires provenance
+verification in either mode. Shell and npm installers select the matching
+ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
-runner. Windows remains covered by required CI tests, but is not a release
+runner. Windows has manually enabled CI tests, but is not a release
 target. Cross-compilation may be useful experimentally, but it is not the
 release support contract.
 
@@ -391,16 +413,19 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
-   required npm/MCP publisher credentials, verifies npm authentication, and resolves both platform N-1
-   baselines before starting frontend or native builds.
+   required npm/MCP publisher credentials, verifies npm authentication, and
+   resolves the published x86_64/macOS N-1 baselines and the ARM64 published
+   or source-bootstrap baseline before starting frontend or native builds.
    The advisory desktop bundle starts after preflight in parallel with the
    CLI builds and upgrade qualification; promotion still waits for its result
    so any successful desktop asset enters the release manifest.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, macOS, Incus,
-   and host-service deployment. All four legs must pass. N-1 is the newest published
+   binding. It then invokes a platform-owned adapter for Unix on x86_64 and
+   ARM64, macOS, Incus, and host-service deployment. All five legs must pass.
+   Except for the explicit
+   first-release ARM64 source bootstrap above, N-1 is the newest published
    (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
@@ -502,7 +527,8 @@ Labby release. Normal `vX.Y.Z` releases never wait for or publish an image.
 Older version releases with an Incus asset remain covered by the reconciler's
 legacy manifest check.
 
-**Tag format:** `vX.Y.Z` — no other formats are accepted.
+**Binary release tag format:** `vX.Y.Z`. Independent Incus publication uses
+the distinct tags described above.
 
 **Version policy:** single version across the entire workspace. `labby` and
 `labby-apis` always share the same version number.
@@ -562,8 +588,9 @@ side or print the private key in a workflow log.
 ## Test Reports
 
 CI uses the `ci` nextest profile in `.config/nextest.toml`. The test job
-uploads `target/nextest/ci/junit.xml` as the `nextest-junit` artifact with
-short retention so failed runs can be inspected without scraping logs.
+uploads `target/nextest/ci/junit.xml` as `nextest-junit-<shard>` for the
+Linux matrix and `nextest-junit` for the fork fallback, so failed runs can be
+inspected without scraping logs.
 
 ## Cargo Deny Advisories
 
@@ -607,4 +634,5 @@ pnpm test:browser
 
 - no telemetry pipeline
 - no background analytics
-- no phone-home behavior in any CI or release step
+- no product analytics collection; CI and release steps explicitly contact
+  dependency, provenance, and publication services

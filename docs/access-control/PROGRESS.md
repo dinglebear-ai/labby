@@ -7,9 +7,10 @@ status: "historical-progress"
 
 # Access Control Progress
 
-> **Historical document.** This progress log stopped at 2026-08-23 and records
-> early milestones (for example "schema v2"). It is not a description of
-> current code. The access store is now at schema v7 (see
+> **Historical document.** This log retains early milestones (for example
+> "schema v2") and later wave/distribution entries. Its frontmatter date does
+> not date every entry. It is not a complete description of
+> current code. The access store is now at schema v9 (see
 > [DATA_MODEL.md](./DATA_MODEL.md#schema-v9-current)); current operator
 > behavior is in [services/ACCESS.md](../services/ACCESS.md).
 

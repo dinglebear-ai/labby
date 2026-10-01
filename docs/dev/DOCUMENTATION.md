@@ -1,7 +1,7 @@
 ---
 title: "Documentation Maintenance"
 created: "2026-09-27"
-updated: "2026-09-28"
+updated: "2026-09-29"
 ---
 
 # Documentation Maintenance
@@ -147,6 +147,40 @@ so a new worktree needs its own explicitly provisioned local setup.
 Keep host addresses, service observations, private notes, and all credentials
 out of tracked instructions. Shared rules must remain portable between checkouts.
 
+
+## Audit the tree before editing
+
+Start by confirming the repository remote and the revision being audited. Use an
+isolated worktree when the checkout contains unrelated work. Inventory Git-owned
+and nonignored new documents before making edits; do not recursively sweep
+ignored worktrees, research caches, or protected history.
+
+| Document class | How to review and update it |
+| --- | --- |
+| Authored product explanations | Compare the owning topic with implementation, manifests, and tests; edit the canonical explanation and affected summaries. |
+| `docs/generated/`, including its README | Follow the [generated source-ownership index](../generated/README.md). Fix the authoritative metadata, Clap definitions, route registry, configuration descriptors, or renderer, then run `just docs-generate`. Never patch the rendered Markdown or JSON directly. |
+| Synchronized package README | Edit the root README and run `node packages/labby-mcp/scripts/sync-readme.js`; do not edit the package copy independently. |
+| Generated native-client skill packages | Edit the canonical `plugins/labby/.apm/skills/` source or owning plugin metadata, then use `scripts/generate-native-plugins.py` and its `--check` mode. Do not independently patch generated copies or the installer skill copy; see [Direct client packages](../PLUGINS.md#direct-client-packages). |
+| Machine-readable contracts and fixtures | Identify the owning schema, producer, and conformance tests. A JSON file is not automatically a generated artifact or an editable prose example. Preserve evidence unless the corresponding contract intentionally changes. |
+| Plans, decisions, archived reports, and dated task records | Preserve recorded intent and evidence. Distinguish proposals, accepted targets, and completed work from currently implemented guarantees; link maintained explanations to current contracts. |
+| Protected `docs/sessions/` and `docs/superpowers/` | Exclude from a general audit, including link audits. Changes require explicitly approved scope and the `protected-docs-approved` label. |
+
+Run the existing documentation gates as a baseline. A fresh generated file can
+still faithfully reproduce an inaccurate source description, and a valid link
+does not prove the linked claim. Review metadata and implementation together.
+For each in-scope document, record its owner, evidence, and disposition: corrected,
+verified unchanged, generated and revalidated, or historical/non-canonical.
+Record exclusions and unresolved questions explicitly in the PR; do not claim
+that excluded history was audited or that every file needed an edit.
+
+The generated index is rendered from the same artifact manifest used to write
+and check the files. Its source links are entrypoints, not independent copies
+of the complete action or configuration inventory. Follow their metadata
+references when a value is wrong. After source corrections, regenerate, inspect
+the output diff, and verify that another generation produces no further change.
+Run `just docs-check` on the final tree, not only the narrower `labby docs check`
+subcommand. Keep audit evidence in the PR rather than adding a dated status
+report to canonical product documentation.
 
 ## Review an existing topic
 

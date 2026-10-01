@@ -1,7 +1,7 @@
 ---
 title: "Technology and Rust Build"
 created: "2026-07-30"
-updated: "2026-09-27"
+updated: "2026-09-29"
 ---
 
 # Technology and Rust Build
@@ -19,10 +19,11 @@ The workspace metadata in the root `Cargo.toml` is authoritative:
 - workspace version shared by the Rust crates
 - AGPL-3.0-only license
 - release binary targets: Linux x86_64 GNU, Linux arm64 GNU, and macOS arm64
-- Windows x86_64 MSVC is covered by required CI tests, not a published release binary target; the release matrix in `.github/workflows/release.yml` is authoritative
+- Windows x86_64 MSVC has CI test lanes enabled by manual `run_windows=true`; ordinary PRs/pushes skip them. It is not a published release binary target; `.github/workflows/ci.yml` and the release matrix in `.github/workflows/release.yml` are authoritative
 
-`rust-toolchain.toml` pins the toolchain used locally and in CI. The matching
-`rust-version` in `Cargo.toml` is the minimum version Cargo will accept.
+`rust-toolchain.toml` pins the toolchain used locally and in CI, including
+`rustfmt`, `clippy`, `rust-analyzer`, and `rust-src` with the minimal profile.
+The matching `rust-version` in `Cargo.toml` is the minimum version Cargo will accept.
 
 ## Core Runtime
 

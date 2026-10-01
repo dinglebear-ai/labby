@@ -46,7 +46,10 @@ installation root, original absolute path, file mode, size, and SHA-256 digest
 for every file. Export walks the entire installation root, including config,
 dotenv secrets, access/auth databases, snippets, gateway state, and other
 future state without relying on a maintained filename allowlist. It excludes
-only `lifecycle.lock`. Absolute `LABBY_AUTH_SQLITE_PATH` and
+`lifecycle.lock`, `browser/browser.db.lock`, and the restore transaction's
+`restore.journal.json`. Recovery also acquires the existing browser storage
+lock so a separate browser writer cannot overlap the offline operation.
+Absolute `LABBY_AUTH_SQLITE_PATH` and
 `LABBY_AUTH_KEY_PATH` files selected by config, dotenv, or process environment
 are included when they live outside the installation root.
 
@@ -60,7 +63,11 @@ verifies the complete bundle before changing live state, stages replacement
 files beside their destinations, atomically renames each file, removes
 post-backup installation-root files, and retains adjacent rollback copies until
 the transaction completes. A failure restores already-changed paths in reverse
-order before the lifecycle lock is released.
+order before the lifecycle lock is released. An incomplete rollback retains
+its journal and reports the residual failure; subsequent recovery reconciles
+that journal. A committed restore can report `maintenance_warning` when
+cleanup fails. Inspect `labby --json state restore ...`'s `committed` field
+before deciding to retry: a cleanup warning does not mean restoration failed.
 
 The bundle contains plaintext credentials and signing material. The built-in
 workflow provides authenticated integrity and filesystem permissions, not encryption. Encrypt

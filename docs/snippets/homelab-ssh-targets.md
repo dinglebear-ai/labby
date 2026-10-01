@@ -37,6 +37,19 @@ Reusable read-only discovery primitive for homelab snippets. It uses the declare
 
 `include_glob_skipped` warnings are explicit because wildcard Include expansion is intentionally left to a future filesystem-aware parser rather than guessed.
 
+This is a simplified alias enumerator, not a complete OpenSSH configuration
+parser. It splits directives on whitespace, resolves relative includes beside
+the containing file, and reads at most 16 config files. `ssh -G` supplies the
+effective configuration for each enumerated alias; discovery can still omit
+aliases that the parser did not find. `key_auth_configured` means identity paths
+or an agent were configured, not that keys were read or authentication worked.
+Use `key_auth_working` for the actual probe result. `partial` reports parser
+warnings; inspect `ssh_unreachable` and each target's failure separately.
+
+The fixed `claude-macpoo` controller and its SSH configuration are deployment
+inputs. Per-command timeouts do not extend the outer Code Mode deadline, and
+`codemode.batch` starts all supplied jobs rather than limiting concurrency.
+
 ```js
 async (o = {}) => {
 	const input = {

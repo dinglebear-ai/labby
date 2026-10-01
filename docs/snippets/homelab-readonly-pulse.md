@@ -31,7 +31,9 @@ inputs:
 # Homelab Read-Only Pulse
 
 Use this snippet for a compact, read-only infrastructure pulse using upstreams
-that are currently discoverable through Labby. It intentionally avoids historical
+recorded in the 2026-09-16 gateway catalog. These are configured external
+upstreams, not built-in Labby services; rediscover their schemas and availability
+on the intended route before execution. It intentionally avoids historical
 alias namespaces such as `rustify`, `rustscale`, `rustifi`, and `unrust`.
 Add optional services only after rediscovering and inspecting their live schemas.
 

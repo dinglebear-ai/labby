@@ -79,6 +79,7 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 ## Supported Sections
 
 - `[output]`: CLI rendering defaults.
+- `[cli]`: non-secret named server/Team contexts and the selected context.
 - `[log]` and `[local_logs]`: tracing and local server-log storage.
 - `[mcp]`: default transport (`stdio`, `http`, or `unix_socket`), HTTP/TCP bind
   host/port, Unix-socket path/mode/ownership and optional Linux peer-credential
@@ -108,20 +109,32 @@ over `config.toml` with mode `0600`, and restarting before running doctor again.
 - `[public_urls]`: canonical external URLs.
 - `[[artifacts.sources]]`: server-owned exact Artifact acquisition
   connections used by durable Skill Library imports.
-- `[phoenix]`: container-local Codex App Server launch boundary for the Phoenix
-  assistant.
+- `[phoenix]`: enablement, provider selection, and launch preferences for the
+  Phoenix assistant.
 
 Top-level gateway timeouts, import mode, tombstones, pending imports, and
 quarantined virtual servers are serialized alongside those sections.
 
+## Notification settings
+
+Settings → Notifications exposes environment-backed fields for the Depot
+failure monitor, local inbox retention, and optional Apprise delivery. There
+is no `[notifications]` TOML section. Changes use the shared settings validation
+and stale-write checks and are marked restart-required. Secret Apprise keys
+are write-only; settings reads return configured/opaque fingerprint markers.
+See [Environment](ENV.md#operator-notifications) for the exact fields and
+[Operations](../OPERATIONS.md#operator-notifications) for the implemented feed
+and its legacy Depot configuration requirement.
+
 ## Phoenix Assistant
 
-Phoenix is disabled by default. Enabling it requires absolute `command`,
-`codex_home`, and `workspace_root` paths in `[phoenix]`. Those paths resolve in
+Phoenix is disabled by default. Its default `provider = "codex_app_server"`
+requires absolute `command`, `codex_home`, and `workspace_root` paths when
+enabled. Those paths resolve in
 the Labby runtime environment and must point to the Codex executable, its
 isolated account/configuration directory, and a container-owned workspace.
 Phoenix starts Codex through `codex app-server --stdio`, performs the versioned
-initialize handshake, and uses `thread/start` or `thread/resume` followed by
+initialize handshake, and uses `thread/start` followed by
 `turn/start`. It forces `approvalPolicy = "never"` and `sandbox = "read-only"`;
 App Server requests that need interactive approval are rejected instead of
 being forwarded to the browser.
@@ -129,16 +142,22 @@ being forwarded to the browser.
 The HTTP surface is `POST /v1/phoenix`. It requires a verified Labby identity,
 uses the browser session CSRF token for session and turn mutations, and maps
 opaque Phoenix session IDs to Codex thread IDs on the server. Codex paths,
-credentials, and thread IDs are never returned to the browser. Phoenix sessions
-survive individual App Server subprocesses through Codex's container-local
-thread store, while the opaque browser-to-thread mapping is process scoped and
-is reset when Labby restarts.
+credentials, and thread IDs are never returned to the browser. Each Codex
+session owns a persistent App Server child. The opaque browser-to-thread
+mapping and session state are process scoped and reset when Labby restarts;
+the current adapter does not restore them through `thread/resume`.
 
 Provision the Codex binary and authenticate the isolated `codex_home` inside
 the Incus container before setting `enabled = true`. Do not point this section
 at a mounted developer home or a remote App Server. The annotated example in
 [../../.config/config.example.toml](../../.config/config.example.toml) uses the
 Codex binary and home already provisioned by the supported Incus image.
+
+The alternative `provider = "openai_compatible"` uses the operator-configured
+`LABBY_PHOENIX_OPENAI_BASE_URL` and optional secret
+`LABBY_PHOENIX_OPENAI_API_KEY`. It does not require Codex launch paths.
+`model` is an optional bounded identifier shared by the provider selection.
+The App Server process and sandbox behavior above applies to the Codex provider.
 
 ## Depot Discovery Configuration
 
@@ -443,6 +462,15 @@ omitted and remove it only when `--clear-project-id` is explicit.
 
 ## Gateway Upstreams
 
+For daemon-backed CLI operations, `labby context add production --server
+https://labby.example.com --use` saves a non-secret destination under `[cli]`.
+Contexts can also retain a Team ID; they do not contain credentials or grant
+Team authority. Invocation `--server` or `--context` wins over environment
+targets, which win over `cli.current_context`. Explicit arguments and contexts
+use their destination-bound saved OAuth session and do not borrow an ambient
+static token. Host-local commands reject explicit remote selectors. See
+[remote CLI usage](ENV.md#remote-gateway-cli-usage) for environment pairing.
+
 An upstream is HTTP, WebSocket, stdio, or a Unix-domain socket. HTTP credentials reference
 environment variable names; secret values never belong in TOML. Stdio commands
 pass through the spawn guard unless the operator explicitly extends or disables
@@ -451,8 +479,9 @@ it. A Unix-socket upstream requires `transport = "unix_socket"`, a `socket_path`
 request path and `Host` authority; a custom `Authorization` header is rejected so
 credentials stay in `bearer_token_env` or `[upstream.oauth]`.
 
-Use `labby server add`, `update`, `remove`, `reload`, and related
-commands rather than editing active gateway state concurrently by hand.
+Use `labby server add`, `labby server set`, `labby server remove`, and
+`labby gateway reload` rather than editing active gateway state concurrently
+by hand.
 
 To recover disconnected upstream MCP servers automatically, enable the
 long-lived reconnect cycle:
@@ -520,8 +549,9 @@ environment controls and the complete table are documented in the
 ## Authentication
 
 `LABBY_AUTH_MODE` selects bearer or OAuth behavior. OAuth deployments also
-require a canonical public URL, Google OIDC credentials, the bootstrap admin
-identity, and the configured signing/encryption material described in
+require a canonical public URL, exactly one complete Google or Authelia OIDC
+provider configuration, the configured administrator identity, and the
+signing/encryption material described in
 [OAUTH.md](./OAUTH.md) and the generated environment reference.
 
 The web-auth bypass is development-only. Do not enable it on a publicly reachable
