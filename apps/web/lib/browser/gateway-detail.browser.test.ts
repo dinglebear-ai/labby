@@ -429,6 +429,7 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   await chart.waitFor({ state: 'visible' })
   assert.equal(summaryRequests.length, 1, 'one selected-chart request returns totals and all four server series')
   const firstBucket = chart.getByRole('button').first()
+  await firstBucket.waitFor({ state: 'visible' })
   assert.equal(await chart.getByRole('button').count(), 24)
   assert.match(await firstBucket.getAttribute('aria-label') ?? '', /10 calls$/)
   assert.match(await firstBucket.getAttribute('title') ?? '', /Other: 3/)

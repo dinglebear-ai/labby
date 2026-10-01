@@ -249,6 +249,9 @@ export function ReorderableOverview({ cards }: { cards: Card[] }) {
   }
   const pointerDown = (event: ReactPointerEvent<HTMLElement>, id: string) => {
     if (event.button !== 0 || pending.current) return
+    // React portal events bubble through the card even when the menu lives
+    // outside its DOM subtree. Capturing those pointers steals menu clicks.
+    if (!event.currentTarget.contains(event.target as Node)) return
     if ((event.target as HTMLElement).closest('button, a, input, select, textarea, [role="button"]')) return
     pending.current = { id, x: event.clientX, y: event.clientY, pointerId: event.pointerId, active: false, target: event.currentTarget }
     pointer.current = { x: event.clientX, y: event.clientY }
