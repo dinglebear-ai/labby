@@ -23,6 +23,30 @@ pub struct CapabilityFamilyObservation {
 }
 
 impl CapabilityFamilyObservation {
+    /// One shared precedence rule: failures retain measurements, while never
+    /// observed families retain absent counts rather than placeholder zeros.
+    pub(crate) fn from_snapshot(
+        counts: Option<(usize, usize)>,
+        available: bool,
+        stale: bool,
+        error: Option<String>,
+    ) -> Self {
+        Self {
+            state: if error.is_some() {
+                CapabilityObservationState::Failed
+            } else if counts.is_none() {
+                CapabilityObservationState::Unknown
+            } else if stale || !available {
+                CapabilityObservationState::Stale
+            } else {
+                CapabilityObservationState::Known
+            },
+            discovered: counts.map(|counts| counts.0),
+            exposed: counts.map(|counts| counts.1),
+            error,
+        }
+    }
+
     pub(crate) fn observed(
         state: CapabilityObservationState,
         discovered: usize,

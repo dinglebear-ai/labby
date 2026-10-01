@@ -519,6 +519,7 @@ impl UpstreamPool {
                 self.subject_connect_errors.write().await.remove(&key);
             }
             Err(error) => {
+                let cache = self.subject_connections.read().await;
                 let mut errors = self.subject_connect_errors.write().await;
                 errors.insert(
                     key.clone(),
@@ -530,14 +531,7 @@ impl UpstreamPool {
                         recorded_at: Instant::now(),
                     },
                 );
-                while errors.len() > SUBJECT_CONN_MAX_ENTRIES {
-                    let oldest = errors
-                        .iter()
-                        .min_by_key(|(_, entry)| entry.recorded_at)
-                        .map(|(key, _)| key.clone());
-                    let Some(oldest) = oldest else { break };
-                    errors.remove(&oldest);
-                }
+                super::subject_tool_observation::prune_subject_connect_errors(&cache, &mut errors);
             }
         }
 
@@ -663,19 +657,16 @@ impl UpstreamPool {
             .collect::<Vec<_>>()
             .await;
 
-        // Drop stale failed-connect diagnostics on the same TTL and keep the
-        // error cache bounded even when subjects never establish a live peer.
+        // Retain failures while their catalog exists; ordinary tool use can
+        // keep a peer warm without a successful discovery. Orphan diagnostics
+        // still expire, and the shared capacity cap bounds cold failures.
         {
+            let cache = self.subject_connections.read().await;
             let mut errors = self.subject_connect_errors.write().await;
-            errors.retain(|_, entry| entry.recorded_at.elapsed() < SUBJECT_CONN_IDLE_TTL);
-            while errors.len() > SUBJECT_CONN_MAX_ENTRIES {
-                let oldest = errors
-                    .iter()
-                    .min_by_key(|(_, entry)| entry.recorded_at)
-                    .map(|(key, _)| key.clone());
-                let Some(oldest) = oldest else { break };
-                errors.remove(&oldest);
-            }
+            errors.retain(|key, entry| {
+                cache.contains_key(key) || entry.recorded_at.elapsed() < SUBJECT_CONN_IDLE_TTL
+            });
+            super::subject_tool_observation::prune_subject_connect_errors(&cache, &mut errors);
         }
 
         // Phase 2: prune orphan single-flight locks. Hold both locks so the

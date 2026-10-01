@@ -31,6 +31,11 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
   const severity = testResult.severity ?? (testResult.success ? 'success' : 'failure')
   const isSuccess = severity === 'success'
   const isWarning = severity === 'warning'
+  const diagnostics = (['tools', 'resources', 'prompts', 'skills'] as const)
+    .flatMap(kind => {
+      const error = testResult.capability_observation?.[kind].error
+      return error ? [{ kind, error }] : []
+    })
 
   return (
     <Sheet open={!!result} onOpenChange={(open) => !open && onClose()}>
@@ -149,6 +154,12 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
             </div>
           )}
         </div>
+
+        {diagnostics.length > 0 && (
+          <ul aria-label="Capability discovery diagnostics" className="mt-4 space-y-2 px-4 text-sm text-aurora-text-muted">
+            {diagnostics.map(({ kind, error }) => <li key={kind}><span className="capitalize">{kind}</span>: {error}</li>)}
+          </ul>
+        )}
 
         <div className="mt-8 px-4 pb-4">
           <Button variant="outline" onClick={onClose} className="w-full">

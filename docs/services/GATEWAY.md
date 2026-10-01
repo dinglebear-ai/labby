@@ -64,6 +64,12 @@ and nullable `discovered` and `exposed` counts:
 | `stale` | A retained observation no longer describes a current connection or catalog. |
 | `failed` | Discovery failed; do not interpret missing counts as an empty catalog. |
 
+A completed initialization that explicitly does not advertise skills is a known
+empty skills observation. While a catalog is retained, a failed refresh keeps
+its previous measurement and failure diagnostic until a successful refresh
+supersedes it. Retained counts do not confer exposure when the transport is
+unavailable.
+
 The older numeric count fields remain for compatibility. Clients that understand
 `capability_observation` use its availability and scope when rendering counts
 and totals, rather than treating a compatibility zero as proof of an empty
@@ -75,6 +81,8 @@ inspect the applicable cached observation without starting discovery. Explicit
 `gateway.status` refresh discovers capabilities with the configured concurrency
 and deadline bounds. OAuth status for a configured upstream observes the same
 runtime credential catalog; temporary onboarding probes remain private.
+Connection tests for OAuth upstreams label that private catalog as credential
+scoped, including when the test discovers no capabilities.
 Discovered tool, resource, and prompt inventories use the same credential scope
 as their counts and retain the configured exposure rules.
 

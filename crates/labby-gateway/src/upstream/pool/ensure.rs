@@ -515,6 +515,22 @@ impl UpstreamPool {
     }
 
     #[cfg(test)]
+    pub(crate) async fn hold_subject_connect_gate_for_tests(
+        &self,
+        name: &str,
+        subject: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.subject_connect_locks
+            .write()
+            .await
+            .entry((name.to_owned(), subject.to_owned()))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+            .lock_owned()
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn register_upstream_config_for_tests(&self, config: &UpstreamConfig) {
         self.upstream_config_fingerprints.insert(
             config.name.clone(),
@@ -641,6 +657,8 @@ impl UpstreamPool {
         };
         self.subject_connect_errors.write().await.remove(&key);
         entry.tools = tools;
+        entry.optional_catalogs.tools_revision =
+            entry.optional_catalogs.tools_revision.saturating_add(1);
         entry.last_used = Instant::now();
         Ok(())
     }

@@ -230,6 +230,7 @@ impl GatewayManager {
             let request_timeout = self.config.read().await.upstream_request_timeout();
             let discovery_timeout =
                 crate::upstream::pool::upstream_discovery_timeout(&config, request_timeout);
+            let fence = pool.subject_tool_observation_fence(upstream, subject).await;
             let result = tokio::time::timeout(discovery_timeout, async {
                 if warm {
                     pool.reprobe_tools_for_upstream_as(&config, Some(subject), None)
@@ -239,8 +240,41 @@ impl GatewayManager {
                         .await
                 }
             })
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("subject tool discovery timed out")));
+            .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(_) => {
+                    let error = "subject tool discovery timed out";
+                    // The timeout drops the RPC future before its normal error
+                    // bookkeeping can run. Publish its failure canonically so
+                    // passive views and cached status preserve the same result.
+                    let current = OauthStatusDiscoverySnapshot {
+                        config_fingerprint: fingerprint.clone(),
+                        lifecycle_epoch: lifecycle_epoch.clone(),
+                        pool_identity,
+                        completed_at: tokio::time::Instant::now(),
+                        summary: None,
+                        observation: Default::default(),
+                        tool_error: None,
+                        error: None,
+                    };
+                    let recorded = self.oauth_status_snapshot_current(upstream, &current).await
+                        && pool
+                            .record_subject_tool_probe_failure(
+                                &config,
+                                subject,
+                                &fence,
+                                lifecycle_epoch.as_ref(),
+                                error,
+                            )
+                            .await;
+                    if recorded {
+                        Err(anyhow::anyhow!(error))
+                    } else {
+                        Ok(false)
+                    }
+                }
+            };
             if result.is_ok() {
                 let configs = std::slice::from_ref(&config);
                 let resources = async {

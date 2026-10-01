@@ -22,6 +22,8 @@ export interface LiveFleetStats {
 }
 
 export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
+  const allSummary = summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools')
+  const activeSummary = summarizeCapabilities(gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status), 'tools')
   const connectedServers = gateways.filter(
     (g) => g.enabled !== false && g.status.connected,
   ).length
@@ -35,9 +37,9 @@ export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
     offlineServers: gateways.filter(
       (g) => g.enabled !== false && !g.status.connected,
     ).length,
-    discoveredTools: summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools').discovered,
-    exposedTools: summarizeCapabilities(gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status), 'tools').exposed,
-    incompleteTools: summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools').incomplete,
+    discoveredTools: allSummary.discovered,
+    exposedTools: activeSummary.exposed,
+    incompleteTools: activeSummary.incomplete,
     warnings: gateways.reduce((sum, g) => sum + g.warnings.length, 0),
   }
 }

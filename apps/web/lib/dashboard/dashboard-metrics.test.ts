@@ -138,3 +138,15 @@ test('fleet totals exclude unavailable observations and identify incomplete cove
  assert.equal(stats.exposedTools,91)
  assert.equal(stats.incompleteTools,1)
 })
+
+test('disabled unknown catalogs do not make the active exposed total incomplete', () => {
+  const disabled = gateway({ enabled: false })
+  const unknown = { state: 'unknown' as const, discovered: null, exposed: null }
+  disabled.status.capability_observation = { scope: 'credential', tools: unknown, resources: unknown, prompts: unknown, skills: unknown }
+  const stats = buildLiveFleetStats([gateway({ discovered: 7, exposed: 5 }), disabled])
+  assert.equal(stats.exposedTools, 5)
+  assert.equal(stats.incompleteTools, 0)
+  assert.equal(stats.discoveredTools, 7)
+  const retained = gateway({ enabled: false, discovered: 3, exposed: 3 })
+  assert.equal(buildLiveFleetStats([retained]).discoveredTools, 3)
+})

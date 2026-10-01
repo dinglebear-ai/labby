@@ -20,6 +20,7 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GatewayFleetMetadata } from './gateway-fleet-metadata'
 import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
+import { useGatewayProbe } from '@/lib/hooks/use-gateway-probe'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer, GatewayImportResult } from '@/lib/types/gateway'
 import { fetchGateway } from '@/lib/hooks/use-gateways'
 import { cn, getErrorMessage } from '@/lib/utils'
@@ -191,10 +192,7 @@ export function GatewayListContent() {
   const [isDiscoveringConfigs, setIsDiscoveringConfigs] = useState(false)
   const [isImportingConfigs, setIsImportingConfigs] = useState(false)
   const [isReloadingVisible, setIsReloadingVisible] = useState(false)
-  const [testResult, setTestResult] = useState<{
-    gateway: Gateway
-    result: Awaited<ReturnType<typeof testGateway>>
-  } | null>(null)
+  const { run: runProbe, close: closeProbe, result: testResult } = useGatewayProbe(testGateway)
 
   useEffect(() => {
     if (!catalogWarmError) return
@@ -458,8 +456,8 @@ export function GatewayListContent() {
 
   const handleTest = async (gateway: Gateway) => {
     try {
-      const result = await testGateway(gateway.id)
-      setTestResult({ gateway, result })
+      const result = await runProbe(gateway)
+      if (!result) return
       if (result.severity === 'warning') {
         toast.warning(result.detail || result.message)
       } else if (result.success) {
@@ -702,7 +700,7 @@ export function GatewayListContent() {
         />
       )}
 
-      <TestResultPanel result={testResult} onClose={() => setTestResult(null)} />
+      <TestResultPanel result={testResult} onClose={closeProbe} />
       <CleanupResultPanel result={cleanupResult} onClose={() => setCleanupResult(null)} />
     </>
   )

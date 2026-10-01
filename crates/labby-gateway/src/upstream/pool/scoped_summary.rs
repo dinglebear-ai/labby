@@ -17,6 +17,8 @@ pub(crate) struct SubjectOptionalCatalogs {
     /// Full resource rows listed over this subject connection. Shared, not
     /// cloned, on every cache hit.
     pub resources: Option<Arc<[Resource]>>,
+    /// Advances only when this peer publishes a successful tools/list.
+    pub tools_revision: u64,
     /// When `resources` was listed; `RESOURCE_SNAPSHOT_MAX_AGE` bounds reuse.
     pub resources_listed_at: Option<Instant>,
     pub prompts: Option<Vec<String>>,
@@ -44,34 +46,15 @@ impl SubjectSummary {
     pub(crate) fn observation(&self) -> crate::gateway::view_models::CapabilityObservation {
         use crate::gateway::view_models::{
             CapabilityFamilyObservation as Family, CapabilityObservation as Observation,
-            CapabilityObservationScope as Scope, CapabilityObservationState as State,
+            CapabilityObservationScope as Scope,
         };
-        let family = |known, stale, error: Option<&String>, discovered, exposed| {
-            let failed = error.is_some();
-            let mut family = if known {
-                Family::observed(
-                    if failed {
-                        State::Failed
-                    } else if stale || !self.connected {
-                        State::Stale
-                    } else {
-                        State::Known
-                    },
-                    discovered,
-                    exposed,
-                )
-            } else {
-                Family {
-                    state: if failed {
-                        State::Failed
-                    } else {
-                        State::Unknown
-                    },
-                    ..Family::default()
-                }
-            };
-            family.error = error.cloned();
-            family
+        let family = |known: bool, stale, error: Option<&String>, discovered, exposed| {
+            Family::from_snapshot(
+                known.then_some((discovered, exposed)),
+                self.connected,
+                stale,
+                error.cloned(),
+            )
         };
         Observation {
             scope: Scope::Credential,
@@ -120,14 +103,18 @@ impl UpstreamPool {
             .await
             .get(&(config.name.clone(), Some(subject.to_owned())))
             .map(|cached| cached.read_snapshot());
+        // Hold one subject snapshot while reading its paired error, matching
+        // refresh/failure publication's subject-then-error lock order.
+        let cache = self.subject_connections.read().await;
         let last_error = self
             .subject_connect_errors
             .read()
             .await
             .get(&key)
-            .filter(|entry| entry.recorded_at.elapsed() < SUBJECT_CONN_IDLE_TTL)
+            .filter(|entry| {
+                cache.contains_key(&key) || entry.recorded_at.elapsed() < SUBJECT_CONN_IDLE_TTL
+            })
             .map(|entry| entry.message.clone());
-        let cache = self.subject_connections.read().await;
         let Some(entry) = cache.get(&key) else {
             return SubjectSummary {
                 last_error,
@@ -170,6 +157,12 @@ impl UpstreamPool {
                         0
                     },
                 )
+            }
+            None if entry.peer.peer_info().is_some()
+                && !super::skills_list::peer_declares_skills(&entry.peer) =>
+            {
+                use crate::gateway::view_models::CapabilityFamilyObservation as Family;
+                Family::from_snapshot(Some((0, 0)), connected, false, None)
             }
             None => Default::default(),
         };
@@ -241,58 +234,6 @@ impl UpstreamPool {
                     .map(|_| super::skills_list::peer_declares_skills(&entry.peer)),
             },
         }
-    }
-
-    pub(crate) async fn cached_subject_inventory(
-        &self,
-        config: &UpstreamConfig,
-        subject: Option<&str>,
-    ) -> (
-        Vec<crate::upstream::types::UpstreamToolExposureRow>,
-        Vec<String>,
-        Vec<String>,
-    ) {
-        let Some(subject) = subject else {
-            return Default::default();
-        };
-        if !self.upstream_config_matches(config) {
-            return Default::default();
-        }
-        let cache = self.subject_connections.read().await;
-        let Some(entry) = cache.get(&(config.name.clone(), subject.to_owned())) else {
-            return Default::default();
-        };
-        let connected = config.enabled
-            && !entry.peer.is_transport_closed()
-            && entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL;
-        let policy = resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
-        let mut tools: Vec<_> = entry
-            .tools
-            .iter()
-            .map(|tool| {
-                let mut tool = tool.clone();
-                crate::gateway::projection::sanitize_upstream_tool_metadata(&mut tool);
-                let matched_by = policy.matched_by(tool.name.as_ref());
-                crate::upstream::types::UpstreamToolExposureRow {
-                    name: tool.name.to_string(),
-                    description: tool.description.as_ref().map(ToString::to_string),
-                    exposed: connected && matched_by.is_some(),
-                    matched_by,
-                }
-            })
-            .collect();
-        tools.sort_by(|a, b| a.name.cmp(&b.name));
-        let mut resources = entry
-            .optional_catalogs
-            .resources
-            .as_ref()
-            .map_or_else(Vec::new, |rows| {
-                rows.iter().map(|row| row.uri.clone()).collect()
-            });
-        resources.sort();
-        let mut prompts = entry.optional_catalogs.prompts.clone().unwrap_or_default();
-        prompts.sort();
-        (tools, resources, prompts)
     }
 
     pub(super) async fn record_subject_optional_failure(

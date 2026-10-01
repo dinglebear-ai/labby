@@ -456,14 +456,23 @@ impl GatewayManager {
         };
         let pool = self.new_base_pool(request_timeout, relay_timeout, false);
         let registry = self.builtin_service_registry();
-        pool.discover_all_for_subject_ephemeral_with_in_process_peers(
-            &[upstream.clone()],
-            SHARED_GATEWAY_OAUTH_SUBJECT,
-            registry.as_ref(),
+        // Bound the future embedded in API/CLI callers and daemon workers.
+        // Discovery and projection keep their existing lifecycle and cancellation.
+        Box::pin(
+            pool.discover_all_for_subject_ephemeral_with_in_process_peers(
+                &[upstream.clone()],
+                SHARED_GATEWAY_OAUTH_SUBJECT,
+                registry.as_ref(),
+            ),
         )
         .await;
 
-        let view = runtime_view(Some(&pool), &upstream.name, None).await;
+        let mut view = Box::pin(runtime_view(Some(&pool), &upstream.name, None)).await;
+        if upstream.oauth.is_some()
+            && let Some(observation) = view.capability_observation.as_mut()
+        {
+            observation.scope = crate::gateway::view_models::CapabilityObservationScope::Credential;
+        }
         pool.drain_for_swap("gateway.test.ephemeral").await;
         Ok(view)
     }
@@ -505,44 +514,37 @@ impl GatewayManager {
         })
     }
 
-    async fn scoped_inventory(
+    async fn scoped_inventory_source(
         &self,
         name: &str,
         scope: &GatewayEnrichmentScope,
     ) -> Result<
         Option<(
-            Vec<crate::upstream::types::UpstreamToolExposureRow>,
-            Vec<String>,
-            Vec<String>,
+            UpstreamConfig,
+            Option<std::sync::Arc<crate::upstream::pool::UpstreamPool>>,
         )>,
         ToolError,
     > {
         scope.ensure_visible(name)?;
         let (cfg, pool) = self.published_config_and_pool().await;
-        let Some(config) = cfg
+        Ok(cfg
             .upstream
             .iter()
             .find(|config| config.name == name && config.oauth.is_some())
-        else {
-            return Ok(None);
-        };
-        Ok(Some(match pool {
-            Some(pool) => {
-                pool.cached_subject_inventory(config, scope.oauth_subject.as_deref())
-                    .await
-            }
-            None => Default::default(),
-        }))
+            .cloned()
+            .map(|config| (config, pool)))
     }
 
-    /// Inspect the caller's cached tool inventory without acquiring a peer.
+    /// Inspect only the caller's cached tool rows; schemas are not returned.
     pub async fn discovered_tools_scoped(
         &self,
         name: &str,
         scope: &GatewayEnrichmentScope,
     ) -> Result<Vec<GatewayToolExposureRowView>, ToolError> {
-        match self.scoped_inventory(name, scope).await? {
-            Some((rows, _, _)) => Ok(rows
+        match self.scoped_inventory_source(name, scope).await? {
+            Some((config, Some(pool))) => Ok(pool
+                .cached_subject_tool_inventory(&config, scope.oauth_subject.as_deref())
+                .await
                 .into_iter()
                 .map(|row| GatewayToolExposureRowView {
                     name: row.name,
@@ -551,30 +553,37 @@ impl GatewayManager {
                     matched_by: row.matched_by,
                 })
                 .collect()),
+            Some((_, None)) => Ok(Vec::new()),
             None => self.discovered_tools(name).await,
         }
     }
 
-    /// Inspect the caller's cached resource inventory without acquiring a peer.
+    /// Inspect only the caller's cached resource inventory without acquiring a peer.
     pub async fn discovered_resources_scoped(
         &self,
         name: &str,
         scope: &GatewayEnrichmentScope,
     ) -> Result<Vec<String>, ToolError> {
-        match self.scoped_inventory(name, scope).await? {
-            Some((_, rows, _)) => Ok(rows),
+        match self.scoped_inventory_source(name, scope).await? {
+            Some((config, Some(pool))) => Ok(pool
+                .cached_subject_resource_inventory(&config, scope.oauth_subject.as_deref())
+                .await),
+            Some((_, None)) => Ok(Vec::new()),
             None => self.discovered_resources(name).await,
         }
     }
 
-    /// Inspect the caller's cached prompt inventory without acquiring a peer.
+    /// Inspect only the caller's cached prompt inventory without acquiring a peer.
     pub async fn discovered_prompts_scoped(
         &self,
         name: &str,
         scope: &GatewayEnrichmentScope,
     ) -> Result<Vec<String>, ToolError> {
-        match self.scoped_inventory(name, scope).await? {
-            Some((_, _, rows)) => Ok(rows),
+        match self.scoped_inventory_source(name, scope).await? {
+            Some((config, Some(pool))) => Ok(pool
+                .cached_subject_prompt_inventory(&config, scope.oauth_subject.as_deref())
+                .await),
+            Some((_, None)) => Ok(Vec::new()),
             None => self.discovered_prompts(name).await,
         }
     }

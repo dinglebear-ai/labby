@@ -1338,6 +1338,7 @@ mod tests {
 
     #[tokio::test]
     #[cfg(feature = "proxy-testkit")]
+    #[allow(clippy::disallowed_methods)] // Mock upstream descriptors, not Labby-owned tools.
     async fn gateway_http_scoped_counts_and_inventory_use_installation_credential() {
         let upstream: UpstreamConfig = serde_json::from_value(json!({
             "name":"warm-oauth", "url":"http://127.0.0.1:9/mcp",

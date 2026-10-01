@@ -61,6 +61,7 @@ import type { GatewaySaveRollback } from './gateway-form-dialog'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { useGateway, useGatewayMutations, useProtectedMcpRoutes } from '@/lib/hooks/use-gateways'
+import { useGatewayProbe } from '@/lib/hooks/use-gateway-probe'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput } from '@/lib/types/gateway'
 import { gatewayLabel } from '@/lib/gateway-label'
 import {
@@ -248,7 +249,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     setVirtualServerSurface,
   } = useGatewayMutations()
 
-  const [isTesting, setIsTesting] = useState(false)
+  const { run: runProbe, close: closeProbe, result: testResult, isTesting } = useGatewayProbe(testGateway, gatewayId)
   const [isReloading, setIsReloading] = useState(false)
   const [isCleaningRuntime, setIsCleaningRuntime] = useState(false)
   const [isAggressiveCleanup, setIsAggressiveCleanup] = useState(false)
@@ -266,7 +267,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [isStartingOauth, setIsStartingOauth] = useState(false)
   const [catalogEditorOpen, setCatalogEditorOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'catalog' | 'activity' | 'routes' | 'runtime' | 'config' | 'settings' | 'warnings' | 'logs'>(searchParams.get('tab') === 'logs' ? 'logs' : 'overview')
-  const [testResult, setTestResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof testGateway>> } | null>(null)
   const [cleanupResult, setCleanupResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof cleanupGateway>> } | null>(null)
   const [hasMounted, setHasMounted] = useState(false)
   const {
@@ -341,10 +341,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
   const handleTest = async () => {
     if (!gateway || !(gateway.enabled ?? true)) return
-    setIsTesting(true)
     try {
-      const result = await testGateway(gateway.id)
-      setTestResult({ gateway, result })
+      const result = await runProbe(gateway)
+      if (!result) return
       if (result.severity === 'warning') {
         toast.warning(result.detail || result.message)
       } else if (result.success) {
@@ -354,8 +353,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       }
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to test server'))
-    } finally {
-      setIsTesting(false)
     }
   }
 
@@ -1212,7 +1209,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   { label: 'Tools · exposed / discovered', value: capabilityLabel(gateway.status, 'tools') },
                   { label: 'Prompts', value: capabilityLabel(gateway.status, 'prompts') },
                   { label: 'Resources', value: capabilityLabel(gateway.status, 'resources') },
-                  { label: 'Skills', value: `${gateway.status.exposed_skill_count ?? 0} / ${gateway.status.discovered_skill_count ?? 0}` },
+                  { label: 'Skills', value: capabilityLabel(gateway.status, 'skills') },
                   { label: 'Most used tool', value: usageMetrics.data?.top_tools[0]?.tool ?? DETAIL_NO_DATA },
                   { label: 'Most problematic', value: usageMetrics.data ? [...usageMetrics.data.top_tools].sort((a, b) => b.failed - a.failed).find((tool) => tool.failed > 0)?.tool ?? 'none' : DETAIL_NO_DATA },
                 ]}/>
@@ -1787,7 +1784,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
       <TestResultPanel
         result={testResult}
-        onClose={() => setTestResult(null)}
+        onClose={closeProbe}
       />
       <CleanupResultPanel
         result={cleanupResult}

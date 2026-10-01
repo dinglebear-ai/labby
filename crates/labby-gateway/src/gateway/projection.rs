@@ -56,7 +56,7 @@ pub(super) fn config_view(
     }
 }
 
-pub(super) fn sanitize_tool_text(input: &str, max_len: usize) -> String {
+pub(crate) fn sanitize_tool_text(input: &str, max_len: usize) -> String {
     let mut sanitized = input.to_string();
     sanitized.retain(|ch| {
         !matches!(

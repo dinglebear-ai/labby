@@ -1418,5 +1418,16 @@ test('scoped catalogs render known zero and unavailable counts without overflow'
   await page.goto(`${baseUrl}/gateway/?id=gw-2`, {waitUntil:'networkidle'})
   assert.match(await page.locator('body').innerText(), /Credential catalog/)
   assert.match(await page.locator('body').innerText(), /Not discovered/)
+  const skillsRow = page.locator('span').filter({ hasText: /^Skills$/ }).first().locator('..')
+  assert.match(await skillsRow.innerText(), /Not discovered/)
+  await page.getByRole('tab', { name: /^Catalog/ }).click()
+  for (const width of [390, 1360]) {
+    await page.setViewportSize({ width, height: 844 })
+    await page.getByRole('button', { name: /tools.*0\/0/i }).waitFor()
+    await page.getByRole('button', { name: /resources.*Not discovered/i }).waitFor()
+    await page.getByRole('button', { name: /prompts.*1\/2 · stale/i }).waitFor()
+    await page.getByRole('button', { name: /skills.*Not discovered/i }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+  }
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
 })

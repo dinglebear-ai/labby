@@ -71,6 +71,10 @@ impl UpstreamPool {
             .write()
             .await
             .remove(&(upstream.to_string(), subject.to_string()));
+        self.subject_connect_errors
+            .write()
+            .await
+            .remove(&(upstream.to_owned(), subject.to_owned()));
         let generic_connection = {
             let matches = self
                 .generic_oauth_subjects

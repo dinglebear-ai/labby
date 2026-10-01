@@ -8,7 +8,6 @@ impl UpstreamPool {
     ) -> crate::gateway::view_models::CapabilityObservation {
         use crate::gateway::view_models::{
             CapabilityFamilyObservation as Family, CapabilityObservation as Observation,
-            CapabilityObservationState as State,
         };
         let listening = self.subscription_resources.read().await.contains_key(name);
         let cached_skills = self
@@ -58,27 +57,18 @@ impl UpstreamPool {
         } else {
             0
         };
+        summary.exposed_skill_count = if connected {
+            summary.exposed_skill_count
+        } else {
+            0
+        };
         let family = |known: bool, stale: bool, error: bool, discovered, exposed| {
-            let state = if error {
-                State::Failed
-            } else if !known {
-                State::Unknown
-            } else if stale || !connected {
-                State::Stale
-            } else {
-                State::Known
-            };
-            let mut family = if known {
-                Family::observed(state, discovered, exposed)
-            } else {
-                Family {
-                    state,
-                    ..Family::default()
-                }
-            };
-            family.error =
-                error.then(|| "Capability discovery failed; refresh to retry.".to_owned());
-            family
+            Family::from_snapshot(
+                known.then_some((discovered, exposed)),
+                connected,
+                stale,
+                error.then(|| "Capability discovery failed; refresh to retry.".to_owned()),
+            )
         };
         let resources_at = catalog.resource_snapshot_listed_at(name);
         Observation {
@@ -147,5 +137,22 @@ mod tests {
         let observed = pool.cached_global_observation("alpha").await;
         assert_eq!(observed.resources.discovered, Some(2));
         assert_eq!(observed.resources.exposed, Some(1));
+    }
+    #[tokio::test]
+    async fn disconnected_global_skills_are_not_exposed() {
+        let pool = static_catalog_pool("alpha").await;
+        {
+            let mut catalog = pool.catalog_write().await;
+            let entry = catalog.get_mut("alpha").unwrap();
+            entry.supports_skills = Some(false);
+            entry.proxy_skills = true;
+            entry.skill_count = 1;
+            entry.skill_names = vec!["cached-skill".into()];
+        }
+        pool.connections.write().await.remove("alpha");
+        let observed = pool.cached_global_observation("alpha").await;
+        assert_eq!(observed.skills.state, State::Stale);
+        assert_eq!(observed.skills.discovered, Some(1));
+        assert_eq!(observed.skills.exposed, Some(0));
     }
 }

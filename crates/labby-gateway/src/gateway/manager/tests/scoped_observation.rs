@@ -352,3 +352,6 @@ async fn oauth_authentication_remains_valid_when_capability_discovery_fails() {
         State::Failed
     );
 }
+
+#[path = "scoped_observation_timeout.rs"]
+mod timeout;

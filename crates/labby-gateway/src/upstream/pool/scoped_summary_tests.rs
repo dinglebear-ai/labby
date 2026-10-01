@@ -116,7 +116,7 @@ async fn observation_distinguishes_unknown_empty_and_private_catalogs() {
         .observation();
     assert_eq!(observed.tools.discovered, Some(91));
     assert_eq!(observed.tools.exposed, Some(91));
-    assert_eq!(observed.skills.discovered, None);
+    assert_eq!(observed.skills.discovered, Some(0));
     assert_eq!(
         pool.cached_subject_summary(&config, Some("bob"))
             .await
@@ -126,16 +126,14 @@ async fn observation_distinguishes_unknown_empty_and_private_catalogs() {
         None
     );
     assert_eq!(
-        pool.cached_subject_inventory(&config, Some("alice"))
+        pool.cached_subject_tool_inventory(&config, Some("alice"))
             .await
-            .0
             .len(),
         91
     );
     assert!(
-        pool.cached_subject_inventory(&config, Some("bob"))
+        pool.cached_subject_tool_inventory(&config, Some("bob"))
             .await
-            .0
             .is_empty()
     );
 }
@@ -189,4 +187,59 @@ async fn summaries_keep_subject_catalogs_isolated_and_empty_known() {
     assert_eq!(missing.summary.discovered_tool_count, 0);
     let absent = pool.cached_subject_summary(&config, None).await;
     assert!(!absent.connected && !absent.tools_known);
+}
+
+#[tokio::test]
+async fn credential_initialization_without_skills_is_known_empty() {
+    use crate::gateway::view_models::CapabilityObservationState as State;
+    let pool = static_catalog_pool("alpha").await;
+    let config = UpstreamConfig {
+        name: "alpha".into(),
+        ..test_upstream_config()
+    };
+    pool.register_upstream_config_for_tests(&config);
+    move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", vec![]).await;
+    let observed = pool
+        .cached_subject_summary(&config, Some("alice"))
+        .await
+        .observation();
+    assert_eq!(observed.skills.state, State::Known);
+    assert_eq!(observed.skills.discovered, Some(0));
+    assert_eq!(observed.skills.exposed, Some(0));
+}
+
+#[tokio::test]
+async fn advertised_credential_skills_remain_unknown_before_listing() {
+    struct AdvertisedSkills;
+    impl rmcp::ServerHandler for AdvertisedSkills {
+        fn get_info(&self) -> rmcp::model::ServerInfo {
+            let mut capabilities = rmcp::model::ServerCapabilities::builder()
+                .enable_tools()
+                .build();
+            let mut extensions = rmcp::model::ExtensionCapabilities::new();
+            extensions.insert(
+                labby_runtime::skills::wire::SKILLS_EXTENSION_KEY.into(),
+                serde_json::Map::new(),
+            );
+            capabilities.extensions = Some(extensions);
+            rmcp::model::ServerInfo::new(capabilities)
+        }
+    }
+    let pool = catalog_pool_with_server("alpha", AdvertisedSkills).await;
+    let config = UpstreamConfig {
+        name: "alpha".into(),
+        ..test_upstream_config()
+    };
+    pool.register_upstream_config_for_tests(&config);
+    move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", vec![]).await;
+    let observed = pool
+        .cached_subject_summary(&config, Some("alice"))
+        .await
+        .observation();
+    assert_eq!(
+        observed.skills.state,
+        crate::gateway::view_models::CapabilityObservationState::Unknown
+    );
+    assert_eq!(observed.skills.discovered, None);
+    assert_eq!(observed.skills.exposed, None);
 }

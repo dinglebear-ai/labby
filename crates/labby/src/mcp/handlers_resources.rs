@@ -5307,8 +5307,8 @@ for (const value of [
 {source}
 const observation = (state, discovered, exposed) => ({{scope:'credential', tools:{{state,discovered,exposed}}, resources:{{state:'unknown'}}, prompts:{{state:'unknown'}}, skills:{{state:'unknown'}}}});
 for (const [state, discovered, exposed, expected] of [
- ['unknown',null,null,'Not discovered'], ['known',0,0,'0 discovered / 0 exposed tools'],
- ['known',91,90,'91 discovered / 90 exposed tools'], ['stale',91,90,'stale'], ['failed',null,null,'Discovery failed']
+ ['unknown',null,null,'Not discovered: tools'], ['known',0,0,'0 discovered / 0 exposed tools'],
+ ['known',91,90,'91 discovered / 90 exposed tools'], ['stale',91,90,'tools (stale)'], ['failed',null,null,'Discovery failed: tools']
 ]) {{
  const text = meta({{capability_observation:observation(state,discovered,exposed)}});
  if (!text.includes(expected) || !text.includes('Credential catalog')) throw new Error(state + ': ' + text);
