@@ -855,6 +855,12 @@ mod tests {
                 },
             )
             .unwrap();
+            let parents = labby_winjob::fs::AncestorGuard::for_file(&path).unwrap();
+            parents.verify_parent_acl().expect("merged env parent ACL");
+            let file = labby_winjob::fs::open_read(&path, false).unwrap();
+            labby_winjob::fs::verify_private_acl(&file).expect("merged env file owner and ACL");
+            drop(file);
+            drop(parents);
             let bytes = crate::installation::secure_file::read_private(&path).unwrap();
             assert_eq!(
                 String::from_utf8(bytes).unwrap(),

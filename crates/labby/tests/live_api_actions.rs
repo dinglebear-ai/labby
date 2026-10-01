@@ -563,7 +563,7 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         let workspace = owned_root.path().join("workspace");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::write(workspace.join("fixture.txt"), b"owned fixture\n").unwrap();
-        let guard = live_labby::LiveLabbyBuilder::new()
+        let mut guard = live_labby::LiveLabbyBuilder::new()
             .env("LABBY_MCP_HTTP_TOKEN", SECRET_CANARY)
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .env("LABBY_E2E_DETERMINISTIC_EXECUTORS", "1")
@@ -818,9 +818,14 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                 )
             })
             .collect::<Vec<_>>();
+        let diagnostics = if insufficient.is_empty() {
+            String::new()
+        } else {
+            guard.diagnostics(Some("API outcomes below declared minimum evidence"))
+        };
         assert!(
             insufficient.is_empty(),
-            "API outcomes below declared minimum evidence: {insufficient:?}"
+            "API outcomes below declared minimum evidence: {insufficient:?}; {diagnostics}"
         );
         // The registered server-logs actions are all valid read-only calls, so
         // exercise its adapter's unknown-action mapping explicitly instead of

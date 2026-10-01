@@ -2120,7 +2120,12 @@ fn agent_provider_saved_values(
     let bytes = match super::secure_file::read_private(&path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(_) => {
+        Err(error) => {
+            tracing::warn!(
+                error_kind = ?error.kind(),
+                raw_os_error = error.raw_os_error(),
+                "protected Agent provider configuration read failed"
+            );
             return Err(ToolError::Sdk {
                 sdk_kind: "provider_configuration_unavailable".into(),
                 message: "The protected Agent provider configuration could not be read".into(),
