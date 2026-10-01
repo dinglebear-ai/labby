@@ -1,3 +1,9 @@
+---
+title: First-use release qualification
+created: 2026-09-30
+updated: 2026-09-30
+---
+
 # First-use release qualification
 
 `scripts/ci/qualify-first-use.py` is a release qualification harness for disposable native machines. It measures from before installer download through authenticated first-use evidence. It is not an installer for an existing workstation, and its unit fixtures do not qualify a release.

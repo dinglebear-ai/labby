@@ -1,3 +1,9 @@
+---
+title: Discover MCP connection metadata
+created: 2026-09-30
+updated: 2026-09-30
+---
+
 # Discover MCP connection metadata
 
 A catalog may attach `mcpConnection` to an artifact list or detail response:

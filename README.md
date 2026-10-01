@@ -62,15 +62,15 @@ through the `artifacts` control-plane service does not restore those products.
 
 ### Install Labby
 
-Download the canonical installer over HTTPS, then run it locally:
+Download the reviewed installer snapshot over canonical HTTPS, then run it locally:
 
 ```bash
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSLo labby-install.sh \
-  https://raw.githubusercontent.com/dinglebear-ai/labby/main/scripts/install.sh
+  https://raw.githubusercontent.com/dinglebear-ai/labby/5ee609bb255bebfbd9eef4d805998ac1e084b878/scripts/install.sh
 sh labby-install.sh
 ```
 
-This initial script is trusted through the canonical repository and HTTPS. Its reviewed, embedded SHA-256 pins authenticate the verifier bootstrap; the installer never downloads a replacement checksum to decide which verifier to trust. It uses an installed GitHub CLI **2.102.0 or newer**, or downloads and verifies pinned 2.102.0 into a private temporary directory. It does not change your PATH or install that helper globally. Required system tools are `curl`, `tar`, and `sha256sum` or `shasum`; macOS bootstrap also uses `unzip`.
+This initial script is trusted through canonical HTTPS delivery and the explicitly reviewed commit snapshot above; the download does not follow a mutable branch. Its reviewed, embedded SHA-256 pins authenticate the verifier bootstrap; the installer never downloads a replacement checksum to decide which verifier to trust. It uses an installed GitHub CLI **2.102.0 or newer**, or downloads and verifies pinned 2.102.0 into a private temporary directory. It does not change your PATH or install that helper globally. Required system tools are `curl`, `tar`, and `sha256sum` or `shasum`; macOS bootstrap also uses `unzip`.
 
 Labby release archives still require checksum and provenance verification against the exact repository, release workflow, immutable tag and hosted-runner policy. Releases with `<archive>.sigstore.jsonl` bundles need no GitHub account: verification runs without tokens and with an empty credential store. Older releases without bundles require your own GitHub authentication; the installer stops before downloading their archive if authentication is unavailable. No privileged credential is supplied or shared. Installing a binary does not establish complete onboarding; the subsequent product-owned setup checks remain required.
 
