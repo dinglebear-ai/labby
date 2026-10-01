@@ -160,8 +160,8 @@ test('authority changes replace the SWR cache and isolate late mutations', async
   const view = await renderClient(React.createElement(AuthBootstrap, null, React.createElement(CacheConsumer)))
   try {
     const first = current!
-    await act(async () => { await first.mutate('/gateways', ['first-project'], false) })
-    assert.deepEqual(first.cache.get('/gateways')?.data, ['first-project'])
+    await act(async () => { await first.mutate('/gateways', [{ capability_observation: { scope: 'credential', tools: { state: 'known', discovered: 91, exposed: 91 } } }], false) })
+    assert.equal(first.cache.get('/gateways')?.data[0].capability_observation.tools.discovered, 91)
     await act(async () => {
       __setBrowserSessionStateForTests({ ...signedIn, projectId: 'second', isAdmin: true })
     })

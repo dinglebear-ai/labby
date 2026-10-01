@@ -1,5 +1,6 @@
 'use client'
 
+import { capabilityDescription, capabilityLabel, capabilityScopeLabel, capabilityValue } from '@/lib/gateway-capabilities'
 import dynamic from 'next/dynamic'
 import {
   useEffect,
@@ -793,21 +794,27 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const exposureStats = [
     {
       label: 'Tools',
+      observationLabel: capabilityLabel(gateway.status, 'tools'),
+      observationDescription: capabilityDescription(gateway.status, 'tools'),
       icon: <Wrench size={13} />,
-      exposed: gateway.status.exposed_tool_count,
-      discovered: gateway.status.discovered_tool_count,
+      exposed: capabilityValue(gateway.status, 'tools').exposed ?? 0,
+      discovered: capabilityValue(gateway.status, 'tools').discovered ?? 0,
     },
     {
       label: 'Resources',
+      observationLabel: capabilityLabel(gateway.status, 'resources'),
+      observationDescription: capabilityDescription(gateway.status, 'resources'),
       icon: <FileText size={13} />,
-      exposed: gateway.status.exposed_resource_count,
-      discovered: gateway.status.discovered_resource_count,
+      exposed: capabilityValue(gateway.status, 'resources').exposed ?? 0,
+      discovered: capabilityValue(gateway.status, 'resources').discovered ?? 0,
     },
     {
       label: 'Prompts',
+      observationLabel: capabilityLabel(gateway.status, 'prompts'),
+      observationDescription: capabilityDescription(gateway.status, 'prompts'),
       icon: <MessageSquare size={13} />,
-      exposed: gateway.status.exposed_prompt_count,
-      discovered: gateway.status.discovered_prompt_count,
+      exposed: capabilityValue(gateway.status, 'prompts').exposed ?? 0,
+      discovered: capabilityValue(gateway.status, 'prompts').discovered ?? 0,
     },
   ]
   const totalExposedPrimitives = exposureStats.reduce((total, stat) => total + stat.exposed, 0)
@@ -1065,6 +1072,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   </HeaderMetaButton>
                   <HeaderMetaDot />
                   <span style={{ fontWeight: 650 }}>{transportLabel}</span>
+                  {capabilityScopeLabel(gateway.status) ? <span>{capabilityScopeLabel(gateway.status)}</span> : null}
                   <HeaderMetaDot />
                   <span
                     style={{ fontVariantNumeric: 'tabular-nums' }}
@@ -1179,9 +1187,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   active={activeTab === 'catalog'}
                   label="Catalog"
                   count={
-                    gateway.discovery.tools.length +
-                    gateway.discovery.resources.length +
-                    gateway.discovery.prompts.length
+                    gateway.status.capability_observation && ['tools', 'resources', 'prompts'].some(kind => capabilityValue(gateway.status, kind as 'tools' | 'resources' | 'prompts').state !== 'known')
+                      ? '…' : ['tools', 'resources', 'prompts'].reduce((sum, kind) => sum + (capabilityValue(gateway.status, kind as 'tools' | 'resources' | 'prompts').discovered ?? 0), 0)
                   }
                 />
                 <DetailTabTrigger value="activity" active={activeTab === 'activity'} label="Activity" count={usage.data?.filtered} />
@@ -1202,9 +1209,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             <div className="space-y-3.5">
               <div style={DETAIL_KV_GRID_STYLE}>
                 <DetailKeyValueCard label="Catalog" rows={[
-                  { label: 'Tools · exposed / discovered', value: `${gateway.discovery.tools.filter((item) => item.exposed).length} / ${gateway.discovery.tools.length}` },
-                  { label: 'Prompts', value: `${gateway.discovery.prompts.filter((item) => item.exposed).length} / ${gateway.discovery.prompts.length}` },
-                  { label: 'Resources', value: `${gateway.discovery.resources.filter((item) => item.exposed).length} / ${gateway.discovery.resources.length}` },
+                  { label: 'Tools · exposed / discovered', value: capabilityLabel(gateway.status, 'tools') },
+                  { label: 'Prompts', value: capabilityLabel(gateway.status, 'prompts') },
+                  { label: 'Resources', value: capabilityLabel(gateway.status, 'resources') },
                   { label: 'Skills', value: `${gateway.status.exposed_skill_count ?? 0} / ${gateway.status.discovered_skill_count ?? 0}` },
                   { label: 'Most used tool', value: usageMetrics.data?.top_tools[0]?.tool ?? DETAIL_NO_DATA },
                   { label: 'Most problematic', value: usageMetrics.data ? [...usageMetrics.data.top_tools].sort((a, b) => b.failed - a.failed).find((tool) => tool.failed > 0)?.tool ?? 'none' : DETAIL_NO_DATA },
@@ -1234,9 +1241,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {([
-                      ['tools', toolsTabLabel, Wrench, gateway.discovery.tools.length],
-                      ['prompts', 'Prompts', MessageSquare, gateway.discovery.prompts.length],
-                      ['resources', 'Resources', FileText, gateway.discovery.resources.length],
+                      ['tools', toolsTabLabel, Wrench, capabilityValue(gateway.status, 'tools').state === 'known' ? capabilityValue(gateway.status, 'tools').discovered : '…'],
+                      ['prompts', 'Prompts', MessageSquare, capabilityValue(gateway.status, 'prompts').state === 'known' ? capabilityValue(gateway.status, 'prompts').discovered : '…'],
+                      ['resources', 'Resources', FileText, capabilityValue(gateway.status, 'resources').state === 'known' ? capabilityValue(gateway.status, 'resources').discovered : '…'],
                       ['ui-resources', 'UI Resources', Braces, gateway.config.proxy_mcp_ui ? 1 : 0],
                     ] as const).map(([value, label, Icon, count]) => (
                       <button
@@ -1309,7 +1316,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     <Wrench className="size-4 text-aurora-text-muted" />
                     <h2 className="text-lg font-semibold">{toolsTabLabel}</h2>
                   </div>
+                  {gateway.status.capability_observation && displayedTools.length === 0 && capabilityValue(gateway.status, 'tools').state !== 'known' ? <p role="status" className="text-xs text-aurora-text-muted">{capabilityLabel(gateway.status, 'tools')}. Refresh discovery to load tools.</p> : null}
                   <ToolExposureTable
+                    emptyLabel={capabilityValue(gateway.status, 'tools').state !== 'known' ? capabilityLabel(gateway.status, 'tools') : capabilityValue(gateway.status, 'tools').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No tools discovered'}
                     tools={displayedTools}
                     exposureLabel={exposureSummary.label}
                     exposeAll={exposeAllTools}
@@ -1342,7 +1351,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   description="Search and manage which upstream resources are exposed through this server."
                   searchPlaceholder="Search resources"
                   manageLabel="Manage resources"
-                  emptyLabel="No resources discovered"
+                  emptyLabel={capabilityValue(gateway.status, 'resources').state !== 'known' ? capabilityLabel(gateway.status, 'resources') : capabilityValue(gateway.status, 'resources').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No resources discovered'}
                   exposureEnabled={resourceExposureEnabled}
                   icon={FileText}
                   items={gateway.discovery.resources.map((resource) => ({
@@ -1376,7 +1385,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   description="Search and manage which upstream prompts are exposed through this server."
                   searchPlaceholder="Search prompts"
                   manageLabel="Manage prompts"
-                  emptyLabel="No prompts discovered"
+                  emptyLabel={capabilityValue(gateway.status, 'prompts').state !== 'known' ? capabilityLabel(gateway.status, 'prompts') : capabilityValue(gateway.status, 'prompts').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No prompts discovered'}
                   exposureEnabled={promptExposureEnabled}
                   icon={MessageSquare}
                   items={gateway.discovery.prompts.map((prompt) => ({

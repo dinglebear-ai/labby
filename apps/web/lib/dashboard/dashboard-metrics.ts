@@ -1,3 +1,4 @@
+import { summarizeCapabilities } from '../gateway-capabilities.ts'
 import type { Gateway } from '@/lib/types/gateway'
 import type { MetricsWindow } from '@/lib/types/metrics'
 
@@ -16,6 +17,7 @@ export interface LiveFleetStats {
   offlineServers: number
   discoveredTools: number
   exposedTools: number
+  incompleteTools?: number
   warnings: number
 }
 
@@ -33,14 +35,9 @@ export function buildLiveFleetStats(gateways: Gateway[]): LiveFleetStats {
     offlineServers: gateways.filter(
       (g) => g.enabled !== false && !g.status.connected,
     ).length,
-    discoveredTools: gateways.reduce(
-      (sum, g) => sum + g.status.discovered_tool_count,
-      0,
-    ),
-    exposedTools: gateways.filter((gateway) => gateway.enabled !== false).reduce(
-      (sum, g) => sum + g.status.exposed_tool_count,
-      0,
-    ),
+    discoveredTools: summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools').discovered,
+    exposedTools: summarizeCapabilities(gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status), 'tools').exposed,
+    incompleteTools: summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools').incomplete,
     warnings: gateways.reduce((sum, g) => sum + g.warnings.length, 0),
   }
 }

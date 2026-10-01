@@ -1304,6 +1304,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_http_list_and_detail_preserve_unknown_credential_observation() {
+        let manager = test_manager();
+        let upstream: UpstreamConfig = serde_json::from_value(json!({
+            "name": "cold-oauth", "url": "http://127.0.0.1:9/mcp",
+            "oauth": {"mode":"authorization_code_pkce", "registration":{"strategy":"preregistered", "client_id":"fixture"}}
+        })).expect("OAuth fixture config");
+        manager.replace_config_for_tests(vec![upstream]).await;
+        for (action, params) in [
+            ("gateway.list", json!({})),
+            ("gateway.server.get", json!({"id":"cold-oauth"})),
+        ] {
+            let response =
+                post_gateway_as_admin(manager.clone(), json!({"action":action,"params":params}))
+                    .await;
+            assert_eq!(response.status(), StatusCode::OK, "{action}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+            let row = if action == "gateway.list" {
+                &payload[0]
+            } else {
+                &payload
+            };
+            let observation = &row["capability_observation"];
+            assert_eq!(observation["scope"], "credential", "{action}: {payload}");
+            assert_eq!(observation["tools"]["state"], "unknown", "{action}");
+            assert!(observation["tools"]["discovered"].is_null(), "{action}");
+            assert!(observation["tools"]["exposed"].is_null(), "{action}");
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn gateway_http_scoped_counts_and_inventory_use_installation_credential() {
+        let upstream: UpstreamConfig = serde_json::from_value(json!({
+            "name":"warm-oauth", "url":"http://127.0.0.1:9/mcp",
+            "expose_tools": (0..90).map(|index| format!("tool-{index}")).collect::<Vec<_>>(),
+            "oauth":{"mode":"authorization_code_pkce","registration":{"strategy":"preregistered","client_id":"fixture"}}
+        })).expect("OAuth config");
+        let pool = Arc::new(labby_gateway::upstream::pool::UpstreamPool::new());
+        for (subject, count) in [
+            (crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT, 91),
+            ("another-person", 7),
+        ] {
+            pool.install_test_subject_tools_for_upstream(
+                &upstream,
+                subject,
+                (0..count)
+                    .map(|index| {
+                        rmcp::model::Tool::new(
+                            format!("tool-{index}"),
+                            "fixture",
+                            Arc::new(serde_json::Map::new()),
+                        )
+                    })
+                    .collect(),
+            )
+            .await;
+        }
+        let runtime = GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        ));
+        manager.replace_config_for_tests(vec![upstream]).await;
+        for (action, params) in [
+            ("gateway.list", json!({})),
+            ("gateway.server.get", json!({"id":"warm-oauth"})),
+            ("gateway.discovered_tools", json!({"name":"warm-oauth"})),
+        ] {
+            let response =
+                post_gateway_as_admin(manager.clone(), json!({"action":action,"params":params}))
+                    .await;
+            assert_eq!(response.status(), StatusCode::OK, "{action}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+            if action == "gateway.discovered_tools" {
+                assert_eq!(
+                    payload.as_array().expect("tools").len(),
+                    91,
+                    "installation inventory must not use another person's catalog"
+                );
+                assert_eq!(
+                    payload
+                        .as_array()
+                        .expect("tools")
+                        .iter()
+                        .filter(|row| row["exposed"] == true)
+                        .count(),
+                    90
+                );
+            } else {
+                let row = if action == "gateway.list" {
+                    &payload[0]
+                } else {
+                    &payload
+                };
+                assert_eq!(
+                    row["capability_observation"]["scope"], "credential",
+                    "{action}"
+                );
+                assert_eq!(
+                    row["capability_observation"]["tools"]["state"], "known",
+                    "{action}"
+                );
+                assert_eq!(
+                    row["capability_observation"]["tools"]["discovered"], 91,
+                    "{action}"
+                );
+                assert_eq!(
+                    row["capability_observation"]["tools"]["exposed"], 90,
+                    "{action}"
+                );
+            }
+            assert!(!payload.to_string().contains("another-person"));
+        }
+    }
+
+    #[tokio::test]
     async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
         let _guard = crate::config::process_code_mode_test_guard();
         let (manager, path) = test_manager_with_path();

@@ -654,6 +654,10 @@ pub(super) async fn server_view_from_upstream(
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
+        capability_observation: Some(match pool {
+            Some(pool) => pool.cached_global_observation(&upstream.name).await,
+            None => Default::default(),
+        }),
         notification_incidents: match pool {
             Some(pool) => pool.notification_incidents(&upstream.name).await,
             None => Default::default(),
@@ -762,6 +766,7 @@ pub(super) fn server_view_from_virtual_server(
     }
 
     ServerView {
+        capability_observation: None,
         notification_incidents: Default::default(),
         id: record.id.clone(),
         name: service.clone(),
@@ -855,6 +860,7 @@ pub(super) async fn runtime_view(
     let Some(pool) = pool else {
         return GatewayRuntimeView {
             name: name.to_string(),
+            capability_observation: Some(Default::default()),
             ..GatewayRuntimeView::default()
         };
     };
@@ -879,6 +885,7 @@ pub(super) async fn runtime_view(
             .unwrap_or(false);
 
     GatewayRuntimeView {
+        capability_observation: Some(pool.cached_global_observation(name).await),
         name: name.to_string(),
         connected,
         tool_count: summary.discovered_tool_count,
@@ -924,6 +931,7 @@ pub(super) async fn scoped_server_view(
         Some(pool) => pool.cached_subject_summary(upstream, subject).await,
         None => Default::default(),
     };
+    view.capability_observation = Some(scoped.observation());
     let summary = scoped.summary;
     view.connected = scoped.connected;
     view.surfaces.mcp.connected = scoped.connected;
@@ -944,10 +952,13 @@ pub(super) async fn scoped_server_view(
             message: message.clone(),
         });
     }
-    if !scoped.tools_known || !scoped.resources_known || !scoped.prompts_known {
+    if !scoped.tools_known
+        || (upstream.proxy_resources && !scoped.resources_known)
+        || (upstream.proxy_prompts && !scoped.prompts_known)
+    {
         view.warnings.push(super::view_models::ServerWarningView {
             code: "catalog_warming".to_owned(),
-            message: "This account's capability catalog has not been fully discovered; counts are provisional.".to_owned(),
+            message: "The credential capability catalog has not been fully discovered; counts are provisional.".to_owned(),
         });
     }
     view
@@ -966,6 +977,7 @@ pub(super) async fn scoped_runtime_view(
         Some(pool) => pool.cached_subject_summary(upstream, subject).await,
         None => Default::default(),
     };
+    view.capability_observation = Some(scoped.observation());
     view.connected = scoped.connected;
     view.tool_count = scoped.summary.discovered_tool_count;
     view.exposed_tool_count = scoped.summary.exposed_tool_count;

@@ -568,6 +568,7 @@ export function useGateways(enabled = true, includeToolInventory = false, warmCa
   const runtimeGateways = runtime.data ?? configured.data
   const toolInventoryRevision = runtimeGateways?.map((gateway) => ({
     id: gateway.id, enabled: gateway.enabled, config: gateway.config,
+    observation: gateway.status.capability_observation,
     count: gateway.status.discovered_tool_count,
     exposedCount: gateway.status.exposed_tool_count,
   }))

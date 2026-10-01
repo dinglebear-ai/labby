@@ -890,7 +890,11 @@ async fn handle_gateway_actions(
         "gateway.server.get" => {
             let params: VirtualServerNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.id)?;
-            to_json(manager.get_server(&params.id).await?)
+            to_json(
+                manager
+                    .get_server_scoped(&params.id, &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.supported_services" => {
             let registry = manager.builtin_service_registry();
@@ -1026,17 +1030,29 @@ async fn handle_gateway_actions(
         "gateway.discovered_tools" => {
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
-            to_json(manager.discovered_tools(&params.name).await?)
+            to_json(
+                manager
+                    .discovered_tools_scoped(&params.name, &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.discovered_resources" => {
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
-            to_json(manager.discovered_resources(&params.name).await?)
+            to_json(
+                manager
+                    .discovered_resources_scoped(&params.name, &enrichment_scope)
+                    .await?,
+            )
         }
         "gateway.discovered_prompts" => {
             let params: GatewayNameParams = parse_params(params_value)?;
             enrichment_scope.ensure_visible(&params.name)?;
-            to_json(manager.discovered_prompts(&params.name).await?)
+            to_json(
+                manager
+                    .discovered_prompts_scoped(&params.name, &enrichment_scope)
+                    .await?,
+            )
         }
         unknown => unknown_action(unknown),
     }

@@ -1440,52 +1440,10 @@ impl UpstreamPool {
     ) -> Option<UpstreamCachedSummary> {
         let catalog = self.catalog.read().await;
         let entry = catalog.get(upstream_name)?;
-        let discovered_tool_count = entry.tools.len();
-        let exposed_tool_count = entry
-            .tools
-            .values()
-            .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
-            .count();
-        let discovered_resource_count = entry.resource_count;
-        // A rejected snapshot leaves `resource_count` describing what the
-        // upstream returned — the exposure editor still shows those rows — but
-        // none of them are retained, listable or routable, so the upstream
-        // exposes nothing until it is re-listed.
-        let exposed_resource_count = if entry.resource_health.is_routable()
-            && !catalog.resource_rows_withheld(upstream_name)
-        {
-            entry.resource_count
-        } else {
-            0
-        };
-        let discovered_prompt_count = entry.prompt_count;
-        let exposed_prompt_count = if entry.prompt_health.is_routable() {
-            entry.prompt_count
-        } else {
-            0
-        };
-        let discovered_skill_count = entry.skill_count;
-        let exposed_skill_count = if entry.proxy_skills && entry.skill_health.is_routable() {
-            entry
-                .skill_names
-                .iter()
-                .filter(|name| entry.skill_exposure_policy.matches(name))
-                .count()
-        } else {
-            0
-        };
-
-        Some(UpstreamCachedSummary {
-            discovered_tool_count,
-            exposed_tool_count,
-            discovered_resource_count,
-            exposed_resource_count,
-            discovered_prompt_count,
-            exposed_prompt_count,
-            discovered_skill_count,
-            exposed_skill_count,
-            supports_skills: entry.supports_skills,
-        })
+        Some(super::helpers::catalog_entry_summary(
+            entry,
+            catalog.resource_rows_withheld(upstream_name),
+        ))
     }
 
     pub async fn upstream_runtime_metadata(

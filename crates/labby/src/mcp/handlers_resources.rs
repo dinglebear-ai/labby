@@ -5296,6 +5296,30 @@ for (const value of [
     }
 
     #[test]
+    fn gateway_status_capabilities_distinguish_unknown_zero_stale_and_scope() {
+        let source = function_source(
+            GATEWAY_STATUS_APP_FALLBACK_HTML,
+            "function meta(item)",
+            "function markup(item)",
+        );
+        run_node(&format!(
+            r#"
+{source}
+const observation = (state, discovered, exposed) => ({{scope:'credential', tools:{{state,discovered,exposed}}, resources:{{state:'unknown'}}, prompts:{{state:'unknown'}}, skills:{{state:'unknown'}}}});
+for (const [state, discovered, exposed, expected] of [
+ ['unknown',null,null,'Not discovered'], ['known',0,0,'0 discovered / 0 exposed tools'],
+ ['known',91,90,'91 discovered / 90 exposed tools'], ['stale',91,90,'stale'], ['failed',null,null,'Discovery failed']
+]) {{
+ const text = meta({{capability_observation:observation(state,discovered,exposed)}});
+ if (!text.includes(expected) || !text.includes('Credential catalog')) throw new Error(state + ': ' + text);
+}}
+if (!meta({{}}).includes('Not discovered')) throw new Error('legacy missing metadata claims an empty catalog');
+if (!meta({{capability_observation:{{scope:'global',tools:{{state:'known',discovered:0,exposed:0}}}}}}).includes('Global catalog')) throw new Error('global scope hidden');
+"#
+        ));
+    }
+
+    #[test]
     fn gateway_status_app_handles_live_status_and_mobile_lifecycle() {
         let descriptor = GATEWAY_STATUS_APP_RESOURCE_DESCRIPTORS
             .iter()
@@ -5308,7 +5332,7 @@ for (const value of [
         for expected in [
             "warning.message",
             "warnings.map",
-            "exposed_tool_count??",
+            "capability_observation",
             "window.openai.toolOutput",
             "observer.disconnect()",
             ".badge.disabled",

@@ -355,7 +355,9 @@ impl UpstreamPool {
         {
             let mut cache = self.subject_connections.write().await;
             if let Some(entry) = cache.get_mut(&key) {
-                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL {
+                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                    && !entry.peer.is_transport_closed()
+                {
                     entry.last_used = Instant::now();
                     let tool = entry
                         .tools
@@ -402,7 +404,9 @@ impl UpstreamPool {
         {
             let mut cache = self.subject_connections.write().await;
             if let Some(entry) = cache.get_mut(&key) {
-                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL {
+                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                    && !entry.peer.is_transport_closed()
+                {
                     entry.last_used = Instant::now();
                     return Ok((entry.peer.clone(), entry.tools.clone()));
                 }
@@ -436,7 +440,9 @@ impl UpstreamPool {
             {
                 let mut cache = self.subject_connections.write().await;
                 if let Some(entry) = cache.get_mut(&key) {
-                    if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL {
+                    if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                        && !entry.peer.is_transport_closed()
+                    {
                         entry.last_used = Instant::now();
                         return Ok((entry.peer.clone(), entry.tools.clone()));
                     }

@@ -1,5 +1,7 @@
 'use client'
 
+import { capabilityLabel } from '@/lib/gateway-capabilities'
+import type { GatewayStatus } from '@/lib/types/gateway'
 import { CheckCircle2, XCircle, Clock, Wrench, FileText, MessageSquare, X } from 'lucide-react'
 import {
   Sheet,
@@ -121,8 +123,8 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
                   <DetailStatCard
                     icon={<Wrench size={11} />}
                     label="Tools"
-                    value={testResult.discovered_tools ?? DETAIL_NO_DATA}
-                    sub="discovered"
+                    value={testResult.capability_observation ? capabilityLabel({ capability_observation: testResult.capability_observation } as GatewayStatus, 'tools') : testResult.discovered_tools ?? DETAIL_NO_DATA}
+                    sub={testResult.capability_observation ? 'exposed / discovered' : 'discovered'}
                   />
                 )}
 
@@ -130,8 +132,8 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
                   <DetailStatCard
                     icon={<FileText size={11} />}
                     label="Resources"
-                    value={testResult.discovered_resources ?? DETAIL_NO_DATA}
-                    sub="discovered"
+                    value={testResult.capability_observation ? capabilityLabel({ capability_observation: testResult.capability_observation } as GatewayStatus, 'resources') : testResult.discovered_resources ?? DETAIL_NO_DATA}
+                    sub={testResult.capability_observation ? 'exposed / discovered' : 'discovered'}
                   />
                 )}
 
@@ -139,8 +141,8 @@ export function TestResultPanel({ result, onClose }: TestResultPanelProps) {
                   <DetailStatCard
                     icon={<MessageSquare size={11} />}
                     label="Prompts"
-                    value={testResult.discovered_prompts ?? DETAIL_NO_DATA}
-                    sub="discovered"
+                    value={testResult.capability_observation ? capabilityLabel({ capability_observation: testResult.capability_observation } as GatewayStatus, 'prompts') : testResult.discovered_prompts ?? DETAIL_NO_DATA}
+                    sub={testResult.capability_observation ? 'exposed / discovered' : 'discovered'}
                   />
                 )}
               </div>

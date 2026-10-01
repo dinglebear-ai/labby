@@ -1,4 +1,5 @@
 import type {
+  CapabilityObservation,
   CreateGatewayInput,
   ExposurePolicy,
   ExposurePolicyPreview,
@@ -41,6 +42,7 @@ export interface BackendServerConfigSummaryView {
 }
 
 export interface BackendServerView {
+  capability_observation?: CapabilityObservation
   notification_incidents?: Record<string, string>
   id: string
   name: string
@@ -90,6 +92,7 @@ export interface BackendGatewayConfigView {
 }
 
 export interface BackendGatewayRuntimeView {
+  capability_observation?: CapabilityObservation
   name: string
   /** The backend's connection verdict; capability counts are not one. */
   connected?: boolean
@@ -109,6 +112,7 @@ export interface BackendGatewayRuntimeView {
 }
 
 export interface BackendGatewayMcpRuntimeView {
+  capability_observation?: CapabilityObservation
   notification_incidents?: Record<string, string>
   name: string
   enabled?: boolean
@@ -488,6 +492,7 @@ export function normalizeServerView(
       connected: view.connected ?? false,
       catalog_warming: catalogWarming,
       ...(lastError ? { last_error: lastError } : {}),
+      capability_observation: runtime?.capability_observation ?? view.capability_observation,
       discovered_tool_count: view.discovered_tool_count ?? tools.length,
       exposed_tool_count: view.exposed_tool_count ?? tools.length,
       discovered_resource_count: view.discovered_resource_count ?? 0,
@@ -594,6 +599,7 @@ export function normalizeGateway(
       healthy: (config.enabled ?? true) && probe.healthy,
       connected: (config.enabled ?? true) && probe.connected,
       ...(humanizedError ? { last_error: humanizedError } : {}),
+      capability_observation: view.runtime.capability_observation,
       discovered_tool_count: view.runtime.tool_count,
       exposed_tool_count: view.runtime.exposed_tool_count ?? tools.filter((tool) => tool.exposed).length,
       discovered_resource_count: view.runtime.resource_count,

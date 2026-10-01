@@ -319,3 +319,22 @@ test('reordering a column updates header and cell positions together', async () 
     else Reflect.deleteProperty(globalThis, 'self')
   }
 })
+
+test('scoped observations distinguish unavailable, stale and known empty catalogs across presentations', () => {
+  const unknown = { state: 'unknown' as const, discovered: null, exposed: null }
+  const row: Gateway = { ...gateway, status: { ...gateway.status, capability_observation: {
+    scope: 'credential', tools: {state:'known',discovered:91,exposed:91},
+    resources: unknown, prompts: {state:'stale',discovered:2,exposed:1}, skills: {state:'known',discovered:0,exposed:0},
+  } } }
+  for (const presentation of ['table','cards','list'] as const) {
+    const markup = renderToStaticMarkup(React.createElement(GatewayTable, {
+      gateways:[row], presentation, density:'comfortable', onEdit:()=>{},onTest:()=>{},onReload:()=>{},
+      onCleanup:()=>{},onClearCleanupHistory:()=>{},onToggleEnabled:()=>{},onDelete:()=>{},
+    }))
+    assert.match(markup,/Credential catalog/)
+    assert.match(markup,/91\/91/)
+    assert.match(markup,/Not discovered/)
+    assert.match(markup,/1\/2 · stale/)
+    assert.match(markup,/0\/0/)
+  }
+})

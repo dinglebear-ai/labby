@@ -643,6 +643,13 @@ impl GatewayManager {
                 |scoped| scoped.connected,
             );
             rows.push(super::types::GatewayMcpRuntimeView {
+                capability_observation: Some(match &scoped {
+                    Some(scoped) => scoped.observation(),
+                    None => match pool.as_deref() {
+                        Some(pool) => pool.cached_global_observation(&upstream.name).await,
+                        None => Default::default(),
+                    },
+                }),
                 notification_incidents,
                 name: upstream.name.clone(),
                 enabled: upstream.enabled,

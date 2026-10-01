@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-30"
+updated: "2026-10-01"
 ---
 
 # Gateway Management
@@ -45,6 +45,45 @@ Runtime views include optional `server_name`, `server_version`, and
 `protocol_version` from the connected upstream's negotiated server information.
 These are peer-reported metadata; missing values do not prove the upstream is
 absent. Runtime inspection does not start a connection just to fill them in.
+
+### Capability Observation
+
+Gateway inspection distinguishes a catalog that has been observed to contain
+zero items from a catalog that has not been discovered. The
+`capability_observation` object accompanies server, runtime, and OAuth status
+views. Its `scope` is `global` for ordinary upstreams or `credential` for an
+OAuth credential scope. It does not disclose the credential subject.
+
+Each family (`tools`, `resources`, `prompts`, and `skills`) carries a `state`
+and nullable `discovered` and `exposed` counts:
+
+| State | Meaning |
+| --- | --- |
+| `known` | The applicable catalog was observed; zero is a valid result. |
+| `unknown` | No applicable observation is available; counts are not confirmed. |
+| `stale` | A retained observation no longer describes a current connection or catalog. |
+| `failed` | Discovery failed; do not interpret missing counts as an empty catalog. |
+
+The older numeric count fields remain for compatibility. Clients that understand
+`capability_observation` use its availability and scope when rendering counts
+and totals, rather than treating a compatibility zero as proof of an empty
+catalog. An incomplete total identifies the families whose counts are unknown,
+stale, or failed.
+
+`gateway.list`, `gateway.server.get`, `gateway.get`, and `gateway.mcp.list`
+inspect the applicable cached observation without starting discovery. Explicit
+`gateway.status` refresh discovers capabilities with the configured concurrency
+and deadline bounds. OAuth status for a configured upstream observes the same
+runtime credential catalog; temporary onboarding probes remain private.
+Discovered tool, resource, and prompt inventories use the same credential scope
+as their counts and retain the configured exposure rules.
+
+Authentication, a live transport, and a known catalog are separate facts.
+Optional resource or prompt discovery failures do not hide working tools.
+Credential replacement or revocation and configuration changes invalidate or
+fence observations; subject-specific catalogs are never published into the
+global catalog. Installation, personal, Team, and protected-route authorization
+continue to select the credential scope before inspection.
 
 ### Saving An Upstream And Protected Route
 

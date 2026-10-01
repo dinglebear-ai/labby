@@ -242,6 +242,8 @@ impl GatewayHeaderRecoveryMetricsView {
 
 #[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayRuntimeView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_observation: Option<crate::gateway::view_models::CapabilityObservation>,
     pub name: String,
     /// Whether the shared upstream pool currently owns a live transport.
     ///
@@ -665,6 +667,8 @@ pub struct GatewayClientView {
 
 #[derive(Debug, Clone, Default, Serialize, JsonSchema, Deserialize)]
 pub struct GatewayMcpRuntimeView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_observation: Option<crate::gateway::view_models::CapabilityObservation>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub notification_incidents: std::collections::HashMap<String, String>,
     pub name: String,

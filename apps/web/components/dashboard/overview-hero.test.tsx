@@ -15,6 +15,7 @@ test('desktop refresh control keeps its recency label visible', () => {
         connectedServers: 0,
         offlineServers: 0,
         discoveredTools: 0,
+        incompleteTools: 0,
         exposedTools: 0,
         warnings: 0,
       }}

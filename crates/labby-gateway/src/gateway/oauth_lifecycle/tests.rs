@@ -7,6 +7,10 @@ use super::{
 
 fn discovery_snapshot(age: std::time::Duration, failed: bool) -> OauthStatusDiscoverySnapshot {
     OauthStatusDiscoverySnapshot {
+        config_fingerprint: String::new(),
+        lifecycle_epoch: None,
+        pool_identity: None,
+        observation: Default::default(),
         completed_at: tokio::time::Instant::now() - age,
         summary: None,
         tool_error: failed.then(|| "unavailable".to_string()),

@@ -620,3 +620,5 @@ fn fixture_protected_route(name: &str) -> ProtectedMcpRouteConfig {
         target: None,
     }
 }
+
+mod scoped_observation;

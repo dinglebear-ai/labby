@@ -1394,3 +1394,29 @@ test('phone table has operable targets and ordered table relationships', { concu
   assert.deepEqual(cells, headers.map((_, index) => String(index + 1)))
   assert.match(await table.ariaSnapshot(), /columnheader/)
 })
+
+test('scoped catalogs render known zero and unavailable counts without overflow', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.addInitScript(() => {
+    const unknown = {state:'unknown',discovered:null,exposed:null}
+    localStorage.setItem('labby.mock.gateway-overrides.v1', JSON.stringify({'gw-2':{
+      capabilityObservation:{scope:'credential',tools:{state:'known',discovered:0,exposed:0},resources:unknown,prompts:{state:'stale',discovered:2,exposed:1},skills:unknown},
+    }}))
+  })
+  await page.goto(`${baseUrl}/gateways/`, {waitUntil:'networkidle'})
+  // The fixture's display name can evolve; the scoped label locates its current-account row.
+  const scopedRow = page.locator('article').filter({hasText:'Credential catalog'}).first()
+  await scopedRow.waitFor()
+  assert.match(await scopedRow.innerText(), /0\/0/)
+  assert.match(await scopedRow.innerText(), /Not discovered/)
+  assert.match(await scopedRow.innerText(), /1\/2 · stale/)
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+  assert.match(await page.locator('body').innerText(), /totals are incomplete/)
+  await page.goto(`${baseUrl}/gateway/?id=gw-2`, {waitUntil:'networkidle'})
+  assert.match(await page.locator('body').innerText(), /Credential catalog/)
+  assert.match(await page.locator('body').innerText(), /Not discovered/)
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+})

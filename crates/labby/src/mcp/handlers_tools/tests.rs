@@ -2893,6 +2893,68 @@ async fn gateway_status_app_returns_only_route_visible_upstreams() {
         .filter_map(|row| row["id"].as_str())
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["visible"]);
+    assert_eq!(rows[0]["capability_observation"]["scope"], "global");
+    assert_eq!(
+        rows[0]["capability_observation"]["tools"]["state"],
+        "unknown"
+    );
+    assert!(rows[0]["capability_observation"]["tools"]["discovered"].is_null());
+    assert!(rows[0]["capability_observation"]["tools"]["exposed"].is_null());
+}
+
+#[tokio::test]
+#[cfg(feature = "proxy-testkit")]
+async fn gateway_status_app_preserves_credential_catalog_scope() {
+    let mut upstream = fixture_oauth_upstream_config("oauth-status");
+    upstream.expose_tools = Some((0..90).map(|index| format!("tool-{index}")).collect());
+    let pool = Arc::new(UpstreamPool::new());
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT,
+        (0..91)
+            .map(|index| {
+                Tool::new(
+                    format!("tool-{index}"),
+                    "fixture",
+                    Arc::new(serde_json::Map::new()),
+                )
+            })
+            .collect(),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("subject-scoped status");
+    let rows = result
+        .structured_content
+        .as_ref()
+        .and_then(|value| value["data"].as_array())
+        .expect("status rows");
+    let observation = &rows[0]["capability_observation"];
+    assert_eq!(observation["scope"], "credential");
+    assert_eq!(observation["tools"]["state"], "known");
+    assert_eq!(observation["tools"]["discovered"], 91);
+    assert_eq!(observation["tools"]["exposed"], 90);
+    assert!(
+        !observation.to_string().contains("reader"),
+        "credential identity must not leak"
+    );
 }
 
 #[tokio::test]

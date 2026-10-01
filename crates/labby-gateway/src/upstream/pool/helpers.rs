@@ -35,6 +35,44 @@ pub struct UpstreamCachedSummary {
     pub supports_skills: Option<bool>,
 }
 
+/// Derive compatibility counts from one held catalog entry and its retained-source state.
+pub(super) fn catalog_entry_summary(
+    entry: &super::super::types::UpstreamEntry,
+    resources_withheld: bool,
+) -> UpstreamCachedSummary {
+    UpstreamCachedSummary {
+        discovered_tool_count: entry.tools.len(),
+        exposed_tool_count: entry
+            .tools
+            .values()
+            .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
+            .count(),
+        discovered_resource_count: entry.resource_count,
+        exposed_resource_count: if entry.resource_health.is_routable() && !resources_withheld {
+            entry.resource_count
+        } else {
+            0
+        },
+        discovered_prompt_count: entry.prompt_count,
+        exposed_prompt_count: if entry.prompt_health.is_routable() {
+            entry.prompt_count
+        } else {
+            0
+        },
+        discovered_skill_count: entry.skill_count,
+        exposed_skill_count: if entry.proxy_skills && entry.skill_health.is_routable() {
+            entry
+                .skill_names
+                .iter()
+                .filter(|name| entry.skill_exposure_policy.matches(name))
+                .count()
+        } else {
+            0
+        },
+        supports_skills: entry.supports_skills,
+    }
+}
+
 // The upstream listing-error prefixes are a cross-crate classification
 // contract, so they live in the dependency-leaf primitives crate: two of the
 // classifiers (the gateway projection and the doctor gateway check) are

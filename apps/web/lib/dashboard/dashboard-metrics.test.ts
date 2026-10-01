@@ -126,3 +126,15 @@ test('disabled servers with retained healthy status are not counted as healthy o
   assert.equal(stats.connectedServers, 1)
   assert.equal(stats.offlineServers, 0)
 })
+
+test('fleet totals exclude unavailable observations and identify incomplete coverage', () => {
+ const unknown = {state:'unknown' as const,discovered:null,exposed:null}
+ const observed = gateway({discovered:0,exposed:0})
+ observed.status.capability_observation = {scope:'credential', tools:{state:'known',discovered:91,exposed:91},resources:unknown,prompts:unknown,skills:unknown}
+ const unavailable = gateway({discovered:999,exposed:999})
+ unavailable.status.capability_observation = {scope:'credential',tools:unknown,resources:unknown,prompts:unknown,skills:unknown}
+ const stats = buildLiveFleetStats([observed, unavailable])
+ assert.equal(stats.discoveredTools,91)
+ assert.equal(stats.exposedTools,91)
+ assert.equal(stats.incompleteTools,1)
+})

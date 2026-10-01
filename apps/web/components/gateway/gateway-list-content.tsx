@@ -1,5 +1,6 @@
 'use client'
 
+import { summarizeCapabilities } from '@/lib/gateway-capabilities'
 import dynamic from 'next/dynamic'
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -97,6 +98,7 @@ type CleanupHistoryEntry = {
 }
 
 interface GatewaySummary {
+  incompleteCapabilities?: number
   enabled: number
   healthy: number
   disconnected: number
@@ -219,9 +221,8 @@ export function GatewayListContent() {
     const operationalStates = items.map((gateway) => describeGatewayOperationalState(gateway))
     const healthy = operationalStates.filter((state) => state.kind === 'healthy').length
     const disconnected = operationalStates.filter((state) => state.kind === 'disconnected').length
-    const sum = (pick: (gateway: Gateway) => number) =>
-      items.reduce((total, gateway) => total + pick(gateway), 0)
-    const tools = sum((gateway) => gateway.status.discovered_tool_count)
+    const capabilities = Object.fromEntries(['tools', 'resources', 'prompts', 'skills'].map(kind => [kind, summarizeCapabilities(items.map(gateway => gateway.status), kind as 'tools' | 'resources' | 'prompts' | 'skills')]))
+    const tools = capabilities.tools.discovered
 
     const serverStates = items.map((gateway) => {
       const base = { id: gateway.id, name: gatewayDisplayName(gateway.name) }
@@ -239,13 +240,14 @@ export function GatewayListContent() {
       disconnected,
       tools,
       totalServers: items.length,
-      exposedTools: sum((gateway) => gateway.status.exposed_tool_count),
-      discoveredPrompts: sum((gateway) => gateway.status.discovered_prompt_count),
-      exposedPrompts: sum((gateway) => gateway.status.exposed_prompt_count),
-      discoveredResources: sum((gateway) => gateway.status.discovered_resource_count),
-      exposedResources: sum((gateway) => gateway.status.exposed_resource_count),
-      discoveredSkills: sum((gateway) => gateway.status.discovered_skill_count ?? 0),
-      exposedSkills: sum((gateway) => gateway.status.exposed_skill_count ?? 0),
+      exposedTools: capabilities.tools.exposed,
+      discoveredPrompts: capabilities.prompts.discovered,
+      exposedPrompts: capabilities.prompts.exposed,
+      discoveredResources: capabilities.resources.discovered,
+      exposedResources: capabilities.resources.exposed,
+      discoveredSkills: capabilities.skills.discovered,
+      exposedSkills: capabilities.skills.exposed,
+      incompleteCapabilities: Object.values(capabilities).reduce((sum, capability) => sum + capability.incomplete, 0),
       serverStates,
     }
   }, [items])
@@ -824,6 +826,7 @@ export function GatewayListView({
       >
         <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-[30px]')}>
           <div>
+            {(summary.incompleteCapabilities ?? 0) > 0 ? <p className="text-xs text-aurora-text-muted" role="status">Capability totals are incomplete; some catalogs have not been discovered or need refresh.</p> : null}
             <GatewayHero
               totalServers={summary.totalServers}
               healthy={summary.healthy}
