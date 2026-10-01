@@ -1563,7 +1563,7 @@ fn legacy_auth_store_with(
     })
 }
 
-fn resolve_auth_with_env(
+pub(crate) fn resolve_auth_with_env(
     config: Option<&AuthFileConfig>,
     env_vars: impl IntoIterator<Item = (String, String)>,
 ) -> Result<auth_config::AuthConfig> {

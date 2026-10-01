@@ -253,10 +253,39 @@ fn require_funnel_oauth(options: &TailscaleServeOptions) -> Result<()> {
     Ok(())
 }
 
+struct ForegroundProcessGuard {
+    #[cfg(unix)]
+    _guard: Option<labby_gateway::upstream::process_guard::ProcessGroupGuard>,
+    #[cfg(windows)]
+    _guard: Option<labby_gateway::upstream::process_guard::JobObjectGuard>,
+}
+
+impl std::fmt::Debug for ForegroundProcessGuard {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ForegroundProcessGuard")
+    }
+}
+
+impl ForegroundProcessGuard {
+    fn arm(child: &Child) -> Self {
+        Self {
+            #[cfg(unix)]
+            _guard: child
+                .id()
+                .map(labby_gateway::upstream::process_guard::ProcessGroupGuard::arm),
+            #[cfg(windows)]
+            _guard: child
+                .id()
+                .map(labby_gateway::upstream::process_guard::JobObjectGuard::arm),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TailscaleServe {
     executable: PathBuf,
     child: Option<Child>,
+    process_guard: Option<ForegroundProcessGuard>,
     stdout_task: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
     stderr_task: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
     dns_name: String,
@@ -471,7 +500,8 @@ impl TailscaleServe {
         } else {
             "serve"
         };
-        let mut child = Command::new(&options.executable)
+        let mut command = Command::new(&options.executable);
+        command
             .arg(verb)
             .arg("--yes")
             .arg(format!("--https={external_port}"))
@@ -479,14 +509,16 @@ impl TailscaleServe {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "failed to start `{}` Serve process",
-                    options.executable.display()
-                )
-            })?;
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().with_context(|| {
+            format!(
+                "failed to start `{}` Serve process",
+                options.executable.display()
+            )
+        })?;
+        let process_guard = ForegroundProcessGuard::arm(&child);
         let stdout_task = child.stdout.take().map(drain_pipe);
         let stderr_task = child.stderr.take().map(drain_pipe);
         let deadline = tokio::time::Instant::now() + options.readiness_timeout;
@@ -496,6 +528,7 @@ impl TailscaleServe {
                 .try_wait()
                 .context("failed to inspect Serve process")?
             {
+                drop(process_guard);
                 let stdout = join_output(stdout_task).await;
                 let stderr = join_output(stderr_task).await;
                 bail!(
@@ -512,6 +545,7 @@ impl TailscaleServe {
                 return Ok(Self {
                     executable: options.executable.clone(),
                     child: Some(child),
+                    process_guard: Some(process_guard),
                     stdout_task,
                     stderr_task,
                     dns_name: dns_name.clone(),
@@ -577,12 +611,10 @@ impl TailscaleServe {
         if let Some(mut child) = self.child.take() {
             terminate_child_with_timeout(&mut child, self.readiness_timeout).await;
         }
-        if let Some(task) = self.stdout_task.take() {
-            drop(task.await);
-        }
-        if let Some(task) = self.stderr_task.take() {
-            drop(task.await);
-        }
+        // The leader may exit while descendants retain its inherited pipes.
+        drop(self.process_guard.take());
+        drop(join_output(self.stdout_task.take()).await);
+        drop(join_output(self.stderr_task.take()).await);
 
         let deadline = tokio::time::Instant::now() + self.readiness_timeout;
         loop {
@@ -671,7 +703,14 @@ fn drain_pipe(
 
 async fn join_output(task: Option<JoinHandle<std::io::Result<Vec<u8>>>>) -> Vec<u8> {
     match task {
-        Some(task) => task.await.ok().and_then(Result::ok).unwrap_or_default(),
+        Some(mut task) => match tokio::time::timeout(Duration::from_millis(250), &mut task).await {
+            Ok(result) => result.ok().and_then(Result::ok).unwrap_or_default(),
+            Err(_) => {
+                task.abort();
+                drop(task.await);
+                Vec::new()
+            }
+        },
         None => Vec::new(),
     }
 }
@@ -681,21 +720,100 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
 {
-    let output = Command::new(executable)
+    run_checked_with_timeout(executable, args, Duration::from_secs(5)).await
+}
+
+async fn read_bounded_output(
+    mut pipe: impl tokio::io::AsyncRead + Unpin,
+    limit: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let count = pipe.read(&mut chunk).await?;
+        if count == 0 {
+            return Ok(output);
+        }
+        if output.len() + count > limit {
+            return Err(std::io::Error::other(
+                "Tailscale helper output exceeded capture limit",
+            ));
+        }
+        output.extend_from_slice(&chunk[..count]);
+    }
+}
+
+async fn run_checked_with_timeout<I, S>(
+    executable: &PathBuf,
+    args: I,
+    timeout: Duration,
+) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut command = Command::new(executable);
+    command
         .args(args)
         .stdin(Stdio::null())
-        .output()
-        .await
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command
+        .spawn()
         .with_context(|| format!("failed to execute `{}`", executable.display()))?;
-    if !output.status.success() {
+    #[cfg(unix)]
+    let process_guard = child
+        .id()
+        .map(labby_gateway::upstream::process_guard::ProcessGroupGuard::arm);
+    #[cfg(windows)]
+    let process_guard = child
+        .id()
+        .map(labby_gateway::upstream::process_guard::JobObjectGuard::arm);
+    let stdout = child
+        .stdout
+        .take()
+        .context("Tailscale helper stdout missing")?;
+    let stderr = child
+        .stderr
+        .take()
+        .context("Tailscale helper stderr missing")?;
+    let result = tokio::time::timeout(timeout, async {
+        tokio::try_join!(
+            child.wait(),
+            read_bounded_output(stdout, 1024 * 1024),
+            read_bounded_output(stderr, 16 * 1024)
+        )
+    })
+    .await;
+    #[cfg(any(unix, windows))]
+    drop(process_guard);
+    let (status, stdout, stderr) = match result {
+        Ok(Ok(output)) => output,
+        error => {
+            drop(child.start_kill());
+            drop(tokio::time::timeout(Duration::from_secs(1), child.wait()).await);
+            return match error {
+                Ok(Err(error)) => Err(error).context("Tailscale helper capture failed"),
+                Err(_) => Err(anyhow::anyhow!(
+                    "Tailscale helper timed out after {}ms",
+                    timeout.as_millis()
+                )),
+                Ok(Ok(_)) => unreachable!(),
+            };
+        }
+    };
+    if !status.success() {
         bail!(
             "`{}` exited with {}: {}",
             executable.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
+            status,
+            String::from_utf8_lossy(&stderr)
         );
     }
-    String::from_utf8(output.stdout).context("Tailscale CLI emitted non-UTF-8 JSON")
+    String::from_utf8(stdout).context("Tailscale CLI emitted non-UTF-8 JSON")
 }
 
 async fn read_serve_status(executable: &PathBuf) -> Result<ServeStatus> {
@@ -744,5 +862,114 @@ async fn terminate_child_with_timeout(child: &mut Child, timeout: Duration) {
     if tokio::time::timeout(timeout, child.wait()).await.is_err() {
         drop(child.start_kill());
         drop(child.wait().await);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod helper_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn foreground_output_drain_aborts_when_pipe_stays_open() {
+        use tokio::io::AsyncWriteExt as _;
+        let (reader, mut writer) = tokio::io::duplex(64);
+        let drain = drain_pipe(reader);
+        tokio::time::timeout(Duration::from_secs(1), join_output(Some(drain)))
+            .await
+            .unwrap();
+        assert!(
+            writer.write_all(b"still open").await.is_err(),
+            "timed out drain must be aborted, not detached"
+        );
+    }
+
+    #[tokio::test]
+    async fn foreground_owner_reaps_descendants_after_leader_exit() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("survived");
+        let script = format!("(sleep 0.5; touch '{}') & exit 23", marker.display());
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .process_group(0);
+        let mut child = command.spawn().unwrap();
+        let guard = ForegroundProcessGuard::arm(&child);
+        let drain = child.stdout.take().map(drain_pipe);
+        assert_eq!(child.wait().await.unwrap().code(), Some(23));
+        drop(guard);
+        tokio::time::timeout(Duration::from_secs(1), join_output(drain))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn helper_timeout_reaps_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("survived");
+        let script = format!("(sleep 0.5; touch '{}') & wait", marker.display());
+        let error = run_checked_with_timeout(
+            &PathBuf::from("/bin/sh"),
+            ["-c", &script],
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!marker.exists(), "helper descendant survived timeout");
+    }
+
+    #[tokio::test]
+    async fn helper_cancellation_reaps_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let marker = temp.path().join("survived");
+        let started = temp.path().join("started");
+        let script = format!(
+            "(touch '{}'; sleep 0.5; touch '{}') & wait",
+            started.display(),
+            marker.display()
+        );
+        let task = tokio::spawn(async move {
+            run_checked_with_timeout(
+                &PathBuf::from("/bin/sh"),
+                ["-c", &script],
+                Duration::from_secs(5),
+            )
+            .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(!marker.exists(), "helper descendant survived cancellation");
+    }
+
+    #[tokio::test]
+    async fn helper_output_is_bounded() {
+        let error = run_checked_with_timeout(
+            &PathBuf::from("/bin/sh"),
+            ["-c", "while :; do printf '%4096s' x; done"],
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("capture limit"));
+        assert_eq!(
+            run_checked(&PathBuf::from("/bin/sh"), ["-c", "printf '{}'"])
+                .await
+                .unwrap(),
+            "{}"
+        );
     }
 }

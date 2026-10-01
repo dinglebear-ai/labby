@@ -87,8 +87,10 @@ built checkout binary, such as `./target/debug/labby`. Keep the child command
    or `tailnet` fails before publication. The longer
    `--print-google-callback` option remains available to reprint the callback
    later without starting the proxy.
-5. In [ChatGPT web developer mode](https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt),
-   create a custom MCP app with the printed URL and OAuth authentication, then
+5. Enable [ChatGPT web developer mode](https://developers.openai.com/api/docs/guides/developer-mode)
+   in **Settings → Security and login**. Open **ChatGPT Plugins**, select the
+   plus button, and create a developer-mode app with the printed URL and OAuth
+   authentication, then
    complete Labby's Google sign-in. On Business, a workspace admin/owner enables
    developer mode and creates the app; Enterprise/Edu admins grant developer
    access. Ask ChatGPT to call `runtime_check`, use `runtime_install` if needed,
@@ -97,14 +99,14 @@ built checkout binary, such as `./target/debug/labby`. Keep the child command
    [manual runtime installer](https://docs.microsandbox.dev/getting-started/quickstart)
    on the host, then repeat `runtime_check`:
 
-   ```console
+   ```bash
    curl -fsSL https://install.microsandbox.dev | sh
    ```
 
-   Full MCP write actions currently require Business or
-   Enterprise/Edu; Pro custom apps are limited to read/fetch actions. ChatGPT
-   agent mode does not use custom apps, so invoke the app in an ordinary chat
-   for VM control.
+   Developer mode supports read and write tools on Plus, Pro, Business,
+   Enterprise, and Education web accounts, subject to confirmation settings and
+   workspace permissions. Select Developer mode and the app in the chat composer
+   before asking it to control a sandbox.
 
 The proxy exposes the Microsandbox MCP tools directly. It does not install a
 coding agent inside a VM, manage task worktrees, or turn a one-off command
@@ -112,10 +114,45 @@ sandbox into a durable worker. Give each task an explicit source transfer,
 agent runtime, resource limit, and cleanup plan.
 
 ChatGPT subscriptions can use custom MCP apps; a Responses API integration is
-not required. OpenAI also offers a [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
-for private connections. It can be associated with a ChatGPT workspace, but
-creating and running it requires Platform tunnel permissions, a tunnel ID, and
-a runtime API key. Funnel is the direct public HTTPS route described here.
+not required.
+
+### Optional: private MCP connection with OpenAI Secure MCP Tunnel
+
+[Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+can connect ChatGPT to a private MCP endpoint. This alternative uses OpenAI
+organization/workspace permissions; the Google OAuth Funnel flow above remains
+available when Google sign-in is required.
+
+1. In [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels),
+   create a tunnel and associate its owning Platform organization and target
+   ChatGPT workspace. Personal accounts use their personal Platform organization.
+   Creating a tunnel requires **Tunnels Read + Manage**; running/selecting it
+   requires **Tunnels Read + Use**.
+2. Download `tunnel-client` from those settings or the
+   [official release](https://github.com/openai/tunnel-client/releases/latest).
+   Start a loopback-only Labby proxy; record its URL:
+
+   ```console
+   npx -y @dinglebear/labby proxy --local --auth none --port 18765 -- npx -y microsandbox-mcp
+   ```
+
+3. Supply the runtime API key as `CONTROL_PLANE_API_KEY`, then configure and run:
+
+   ```console
+   tunnel-client init --sample sample_mcp_stdio_local --profile labby \
+     --tunnel-id tunnel_YOUR_ID --mcp-server-url http://127.0.0.1:18765/mcp
+   tunnel-client doctor --profile labby --explain
+   tunnel-client run --profile labby
+   ```
+
+4. Create the ChatGPT developer-mode app with **Connection → Tunnel**, select
+   the tunnel, and choose **No Authentication** for this private endpoint.
+   Keep both processes running. Never publish this unauthenticated listener.
+
+Tunnel transport does not automatically make an OAuth authorization server
+reachable for browser sign-in. If you select OAuth, its issuer and callback must
+still be reachable. Consult the linked tunnel documentation for permission and
+workspace-association troubleshooting.
 
 ## Zero-flag quickstart
 
@@ -349,9 +386,13 @@ npx -y @dinglebear/labby proxy --funnel --port 8443 --mcp-json /path/to/.mcp.jso
 
 The file can contain up to 16 named stdio servers. Each entry supports
 `command`, `args`, and an `env` object. Paths resolve relative to the file's
-directory. Labby starts an isolated local MCP aggregator and connects to every
+directory unless `--cwd` overrides it. Selected `--inherit-env` values reach
+all servers; each JSON entry overrides those values, and explicit `--env` values
+have the highest priority. Unselected ambient secrets remain scrubbed.
+Labby starts an isolated local MCP aggregator and connects to every
 configured server before public publication. Tools are qualified by upstream
 name, such as `sandbox::runtime_check`, so matching tool names can coexist.
+Native tool names containing `::` are rejected before startup publication.
 Labby-owned control tools are excluded from this aggregate surface. The file
 and any environment secrets must be readable only by the operator. HTTP/SSE entries
 are not supported by this option.

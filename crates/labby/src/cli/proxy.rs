@@ -197,6 +197,241 @@ fn local_runtime_preferences(
     })
 }
 
+#[cfg(feature = "gateway")]
+async fn start_proxy(
+    local_options: crate::proxy::runtime::LocalProxyOptions,
+    prefs: &crate::proxy::config::ProxyPreferences,
+    config: &LabConfig,
+    bearer_token: &Option<String>,
+) -> Result<(
+    crate::proxy::runtime::LocalProxy,
+    Option<crate::proxy::oauth::OAuthLeaseGuard>,
+    Option<crate::proxy::tailscale::TailscaleServe>,
+)> {
+    Ok(
+        if prefs.auth == crate::proxy::config::ProxyAuthMode::Oauth {
+            let mut prepared = Box::pin(crate::proxy::runtime::LocalProxy::prepare(local_options))
+                .await
+                .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error:#}"))?;
+            if prefs.exposure == crate::proxy::config::ProxyExposure::Funnel {
+                let options = tailscale_options(prepared.local_addr(), prefs);
+                let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+                let resource = plan.public_url().clone();
+                let (auth_state, issuer) = Box::pin(crate::proxy::oauth::prepare_self_hosted(
+                    config,
+                    &resource,
+                    &prefs.oauth_scopes,
+                ))
+                .await?;
+                let proxy = prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
+                    auth_state,
+                    resource: resource.clone(),
+                    issuer,
+                    required_scopes: prefs.oauth_scopes.clone(),
+                    host_issuer: true,
+                })?;
+                if let Err(error) =
+                    crate::proxy::oauth::verify_protected_resource_metadata(proxy.url(), &resource)
+                        .await
+                {
+                    let cleanup = proxy.shutdown().await;
+                    return Err(combine_cleanup_errors(
+                        error,
+                        [("LocalProxy", cleanup.err())],
+                    ));
+                }
+                match plan.claim_typed().await {
+                    Ok(funnel) => (proxy, None, Some(funnel)),
+                    Err(error) => {
+                        let cleanup = proxy.shutdown().await;
+                        return Err(combine_cleanup_errors(
+                            anyhow::Error::new(error),
+                            [("LocalProxy", cleanup.err())],
+                        ));
+                    }
+                }
+            } else {
+                let oauth = crate::proxy::oauth::ProxyOauthContext::prepare(config).await?;
+                if prefs.exposure == crate::proxy::config::ProxyExposure::Local {
+                    anyhow::bail!(
+                        "local OAuth exposure is not enabled because the daemon lease API accepts HTTPS resources only; use Tailscale exposure"
+                    );
+                }
+                let owner = crate::proxy::oauth::owner_fingerprint();
+                let mut abandoned_ports = std::collections::BTreeSet::new();
+                let max_attempts = 32_usize;
+                let mut attempt = 0_usize;
+                loop {
+                    attempt += 1;
+                    let mut options = tailscale_options(prepared.local_addr(), prefs);
+                    options.max_attempts = max_attempts;
+                    let plan =
+                        crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+                    if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
+                        continue;
+                    }
+                    let resource = plan.public_url().clone();
+                    let mut lease = crate::proxy::oauth::OAuthLeaseGuard::create(
+                        oauth.gateway.clone(),
+                        resource.as_str(),
+                        prefs.oauth_scopes.clone(),
+                        &owner,
+                        crate::proxy::oauth::OAuthLeaseTiming::proxy_default(),
+                    )
+                    .await?;
+                    let started =
+                        prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
+                            auth_state: std::sync::Arc::clone(&oauth.auth_state),
+                            resource: resource.clone(),
+                            issuer: oauth.issuer.clone(),
+                            required_scopes: prefs.oauth_scopes.clone(),
+                            host_issuer: false,
+                        });
+                    let mut proxy = match started {
+                        Ok(proxy) => proxy,
+                        Err(error) => {
+                            let release = lease.release().await;
+                            return Err(combine_cleanup_errors(
+                                error.context("proxy OAuth router startup failed"),
+                                [("OAuth lease", release.err())],
+                            ));
+                        }
+                    };
+                    match plan.claim_typed().await {
+                        Ok(serve) => {
+                            if let Err(error) =
+                                crate::proxy::oauth::verify_protected_resource_metadata(
+                                    proxy.url(),
+                                    &resource,
+                                )
+                                .await
+                            {
+                                let http_cleanup = proxy.stop_http().await;
+                                let serve_cleanup = serve.shutdown().await;
+                                proxy.stop_child().await;
+                                let lease_cleanup = lease.release().await;
+                                return Err(combine_cleanup_errors(
+                                    error,
+                                    [
+                                        ("LocalProxy HTTP", http_cleanup.err()),
+                                        ("Tailscale publication", serve_cleanup.err()),
+                                        ("OAuth lease", lease_cleanup.err()),
+                                    ],
+                                ));
+                            }
+                            break (proxy, Some(lease), Some(serve));
+                        }
+                        Err(crate::proxy::tailscale::TailscaleClaimError::Collision(error))
+                            if prefs.port.fixed().is_none() && attempt < max_attempts =>
+                        {
+                            let port = resource.port().unwrap_or_default();
+                            abandoned_ports.insert(port);
+                            let rollback = proxy.rollback_to_prepared().await;
+                            let release = lease.release().await;
+                            match rollback {
+                                Ok(next) if release.is_ok() => prepared = next,
+                                Ok(_) => {
+                                    return Err(combine_cleanup_errors(
+                                        error.context("Tailscale collision rollback failed"),
+                                        [("OAuth lease", release.err())],
+                                    ));
+                                }
+                                Err(rollback) => {
+                                    return Err(combine_cleanup_errors(
+                                        error.context("Tailscale collision rollback failed"),
+                                        [
+                                            ("LocalProxy rollback", Some(rollback)),
+                                            ("OAuth lease", release.err()),
+                                        ],
+                                    ));
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let proxy_cleanup = proxy.shutdown().await;
+                            let lease_cleanup = lease.release().await;
+                            return Err(combine_cleanup_errors(
+                                anyhow::Error::new(error),
+                                [
+                                    ("LocalProxy", proxy_cleanup.err()),
+                                    ("OAuth lease", lease_cleanup.err()),
+                                ],
+                            ));
+                        }
+                    }
+                }
+            }
+        } else if prefs.exposure != crate::proxy::config::ProxyExposure::Local {
+            let mut prepared = Box::pin(crate::proxy::runtime::LocalProxy::prepare(local_options))
+                .await
+                .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error:#}"))?;
+            let mut abandoned_ports = std::collections::BTreeSet::new();
+            let max_attempts = 32_usize;
+            let mut attempt = 0_usize;
+            loop {
+                attempt += 1;
+                let mut options = tailscale_options(prepared.local_addr(), prefs);
+                options.max_attempts = max_attempts;
+                let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+                if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
+                    continue;
+                }
+                let resource = plan.public_url().clone();
+                let auth = match prefs.auth {
+                    crate::proxy::config::ProxyAuthMode::Bearer => {
+                        crate::proxy::runtime::LocalProxyAuthPolicy::Bearer {
+                            token: std::sync::Arc::from(
+                                bearer_token
+                                    .as_ref()
+                                    .context("bearer token disappeared before proxy startup")?
+                                    .clone(),
+                            ),
+                            resource: resource.clone(),
+                        }
+                    }
+                    crate::proxy::config::ProxyAuthMode::Tailnet
+                    | crate::proxy::config::ProxyAuthMode::None => {
+                        crate::proxy::runtime::LocalProxyAuthPolicy::None
+                    }
+                    crate::proxy::config::ProxyAuthMode::Oauth => {
+                        unreachable!("OAuth startup is handled in the preceding branch")
+                    }
+                };
+                let proxy = prepared
+                    .start_with_public_resource(auth, Some(resource.clone()))
+                    .context("proxy router startup failed")?;
+                match plan.claim_typed().await {
+                    Ok(serve) => break (proxy, None, Some(serve)),
+                    Err(crate::proxy::tailscale::TailscaleClaimError::Collision(_error))
+                        if prefs.port.fixed().is_none() && attempt < max_attempts =>
+                    {
+                        abandoned_ports.insert(resource.port().unwrap_or_default());
+                        prepared = proxy
+                            .rollback_to_prepared()
+                            .await
+                            .context("Tailscale collision rollback failed")?;
+                    }
+                    Err(error) => {
+                        let cleanup = proxy.shutdown().await;
+                        return Err(combine_cleanup_errors(
+                            anyhow::Error::new(error),
+                            [("LocalProxy", cleanup.err())],
+                        ));
+                    }
+                }
+            }
+        } else {
+            (
+                Box::pin(crate::proxy::runtime::LocalProxy::start(local_options))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("proxy startup failed: {error:#}"))?,
+                None,
+                None,
+            )
+        },
+    )
+}
+
 /// Run the stdio MCP proxy command in the foreground.
 #[cfg(feature = "gateway")]
 pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> Result<ExitCode> {
@@ -206,9 +441,7 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
             && oauth_credentials_absent(config))
     {
         prefs.validate()?;
-        let mut options =
-            tailscale_options(std::net::SocketAddr::from(([127, 0, 0, 1], 1)), &prefs);
-        options.candidate_ports = vec![443, 8443, 10000];
+        let options = tailscale_options(std::net::SocketAddr::from(([127, 0, 0, 1], 1)), &prefs);
         let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
         let mut callback = plan.public_url().clone();
         callback.set_path("/auth/google/callback");
@@ -240,9 +473,23 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
             "no .mcp.json found in Labby home or beside the binary; provide a child command or --mcp-json PATH"
         );
     }
+    let mut explicit_env = parse_explicit_env(&args.env)?;
+    let mut inherit_env = prefs
+        .inherit_env
+        .iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>();
+    inherit_env.extend(args.inherit_env.iter().map(OsString::from));
     let mcp_json = mcp_json_path
         .as_ref()
-        .map(|path| crate::proxy::mcp_json::prepare(path))
+        .map(|path| {
+            crate::proxy::mcp_json::prepare_with_overrides(
+                path,
+                args.cwd.as_deref(),
+                &explicit_env,
+                &inherit_env,
+            )
+        })
         .transpose()?;
     let command = if let Some(prepared) = &mcp_json {
         prepared.command.clone()
@@ -277,12 +524,6 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         None
     };
 
-    let mut inherit_env = prefs
-        .inherit_env
-        .iter()
-        .map(OsString::from)
-        .collect::<Vec<_>>();
-    inherit_env.extend(args.inherit_env.iter().map(OsString::from));
     let command_json = std::iter::once(command.program.to_string_lossy().into_owned())
         .chain(
             command
@@ -303,7 +544,6 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         "starting stdio MCP proxy"
     );
 
-    let mut explicit_env = parse_explicit_env(&args.env)?;
     if let Some(prepared) = &mcp_json {
         explicit_env.extend(prepared.child_env.iter().cloned());
     }
@@ -314,246 +554,8 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         explicit_env,
         inherit_env,
     };
-    let (mut proxy, mut oauth_lease, oauth_tailscale) = if prefs.auth
-        == crate::proxy::config::ProxyAuthMode::Oauth
-    {
-        let mut prepared = crate::proxy::runtime::LocalProxy::prepare(local_options)
-            .await
-            .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error}"))?;
-        if prefs.exposure == crate::proxy::config::ProxyExposure::Funnel {
-            let mut options = tailscale_options(prepared.local_addr(), &prefs);
-            options.candidate_ports = vec![443, 8443, 10000];
-            let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
-            let resource = plan.public_url().clone();
-            let (auth_state, issuer) =
-                crate::proxy::oauth::prepare_self_hosted(config, &resource, &prefs.oauth_scopes)
-                    .await?;
-            let proxy = prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
-                auth_state,
-                resource: resource.clone(),
-                issuer,
-                required_scopes: prefs.oauth_scopes.clone(),
-                host_issuer: true,
-            })?;
-            if let Err(error) =
-                crate::proxy::oauth::verify_protected_resource_metadata(proxy.url(), &resource)
-                    .await
-            {
-                let cleanup = proxy.shutdown().await;
-                return Err(combine_cleanup_errors(
-                    error,
-                    [("LocalProxy", cleanup.err())],
-                ));
-            }
-            match plan.claim_typed().await {
-                Ok(funnel) => (proxy, None, Some(funnel)),
-                Err(error) => {
-                    let cleanup = proxy.shutdown().await;
-                    return Err(combine_cleanup_errors(
-                        anyhow::Error::new(error),
-                        [("LocalProxy", cleanup.err())],
-                    ));
-                }
-            }
-        } else {
-            let oauth = crate::proxy::oauth::ProxyOauthContext::prepare(config).await?;
-            if prefs.exposure == crate::proxy::config::ProxyExposure::Local {
-                anyhow::bail!(
-                    "local OAuth exposure is not enabled because the daemon lease API accepts HTTPS resources only; use Tailscale exposure"
-                );
-            }
-            let owner = crate::proxy::oauth::owner_fingerprint();
-            let mut abandoned_ports = std::collections::BTreeSet::new();
-            let max_attempts = 32_usize;
-            let mut attempt = 0_usize;
-            loop {
-                attempt += 1;
-                let plan = if prefs.exposure != crate::proxy::config::ProxyExposure::Local {
-                    let mut options = tailscale_options(prepared.local_addr(), &prefs);
-                    options.max_attempts = max_attempts;
-                    if prefs.exposure == crate::proxy::config::ProxyExposure::Funnel {
-                        options.candidate_ports = [8443, 10000, 443]
-                            .into_iter()
-                            .filter(|port| !abandoned_ports.contains(port))
-                            .collect();
-                        if options.candidate_ports.is_empty() {
-                            anyhow::bail!(
-                                "all Tailscale Funnel ports collided during proxy startup"
-                            );
-                        }
-                    }
-                    let plan =
-                        crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
-                    if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
-                        continue;
-                    }
-                    Some(plan)
-                } else {
-                    None
-                };
-                let resource = plan.as_ref().map_or_else(
-                    || prepared.local_url().clone(),
-                    |plan| plan.public_url().clone(),
-                );
-                let mut lease = crate::proxy::oauth::OAuthLeaseGuard::create(
-                    oauth.gateway.clone(),
-                    resource.as_str(),
-                    prefs.oauth_scopes.clone(),
-                    &owner,
-                    crate::proxy::oauth::OAuthLeaseTiming::proxy_default(),
-                )
-                .await?;
-                let started = prepared.start(crate::proxy::runtime::LocalProxyAuthPolicy::Oauth {
-                    auth_state: std::sync::Arc::clone(&oauth.auth_state),
-                    resource: resource.clone(),
-                    issuer: oauth.issuer.clone(),
-                    required_scopes: prefs.oauth_scopes.clone(),
-                    host_issuer: false,
-                });
-                let mut proxy = match started {
-                    Ok(proxy) => proxy,
-                    Err(error) => {
-                        let release = lease.release().await;
-                        return Err(combine_cleanup_errors(
-                            error.context("proxy OAuth router startup failed"),
-                            [("OAuth lease", release.err())],
-                        ));
-                    }
-                };
-                let Some(plan) = plan else {
-                    unreachable!("local OAuth exposure is rejected before lease creation")
-                };
-                match plan.claim_typed().await {
-                    Ok(serve) => {
-                        if let Err(error) = crate::proxy::oauth::verify_protected_resource_metadata(
-                            proxy.url(),
-                            &resource,
-                        )
-                        .await
-                        {
-                            let http_cleanup = proxy.stop_http().await;
-                            let serve_cleanup = serve.shutdown().await;
-                            proxy.stop_child().await;
-                            let lease_cleanup = lease.release().await;
-                            return Err(combine_cleanup_errors(
-                                error,
-                                [
-                                    ("LocalProxy HTTP", http_cleanup.err()),
-                                    ("Tailscale publication", serve_cleanup.err()),
-                                    ("OAuth lease", lease_cleanup.err()),
-                                ],
-                            ));
-                        }
-                        break (proxy, Some(lease), Some(serve));
-                    }
-                    Err(crate::proxy::tailscale::TailscaleClaimError::Collision(error))
-                        if prefs.port.fixed().is_none() && attempt < max_attempts =>
-                    {
-                        let port = resource.port().unwrap_or_default();
-                        abandoned_ports.insert(port);
-                        let rollback = proxy.rollback_to_prepared().await;
-                        let release = lease.release().await;
-                        match rollback {
-                            Ok(next) if release.is_ok() => prepared = next,
-                            Ok(_) => {
-                                return Err(combine_cleanup_errors(
-                                    error.context("Tailscale collision rollback failed"),
-                                    [("OAuth lease", release.err())],
-                                ));
-                            }
-                            Err(rollback) => {
-                                return Err(combine_cleanup_errors(
-                                    error.context("Tailscale collision rollback failed"),
-                                    [
-                                        ("LocalProxy rollback", Some(rollback)),
-                                        ("OAuth lease", release.err()),
-                                    ],
-                                ));
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        let proxy_cleanup = proxy.shutdown().await;
-                        let lease_cleanup = lease.release().await;
-                        return Err(combine_cleanup_errors(
-                            anyhow::Error::new(error),
-                            [
-                                ("LocalProxy", proxy_cleanup.err()),
-                                ("OAuth lease", lease_cleanup.err()),
-                            ],
-                        ));
-                    }
-                }
-            }
-        }
-    } else if prefs.exposure != crate::proxy::config::ProxyExposure::Local {
-        let mut prepared = crate::proxy::runtime::LocalProxy::prepare(local_options)
-            .await
-            .map_err(|error| anyhow::anyhow!("proxy preparation failed: {error}"))?;
-        let mut abandoned_ports = std::collections::BTreeSet::new();
-        let max_attempts = 32_usize;
-        let mut attempt = 0_usize;
-        loop {
-            attempt += 1;
-            let mut options = tailscale_options(prepared.local_addr(), &prefs);
-            options.max_attempts = max_attempts;
-            let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
-            if abandoned_ports.contains(&plan.external_port()) && attempt < max_attempts {
-                continue;
-            }
-            let resource = plan.public_url().clone();
-            let auth = match prefs.auth {
-                crate::proxy::config::ProxyAuthMode::Bearer => {
-                    crate::proxy::runtime::LocalProxyAuthPolicy::Bearer {
-                        token: std::sync::Arc::from(
-                            bearer_token
-                                .as_ref()
-                                .context("bearer token disappeared before proxy startup")?
-                                .clone(),
-                        ),
-                        resource: resource.clone(),
-                    }
-                }
-                crate::proxy::config::ProxyAuthMode::Tailnet
-                | crate::proxy::config::ProxyAuthMode::None => {
-                    crate::proxy::runtime::LocalProxyAuthPolicy::None
-                }
-                crate::proxy::config::ProxyAuthMode::Oauth => {
-                    unreachable!("OAuth startup is handled in the preceding branch")
-                }
-            };
-            let proxy = prepared
-                .start_with_public_resource(auth, Some(resource.clone()))
-                .context("proxy router startup failed")?;
-            match plan.claim_typed().await {
-                Ok(serve) => break (proxy, None, Some(serve)),
-                Err(crate::proxy::tailscale::TailscaleClaimError::Collision(_error))
-                    if prefs.port.fixed().is_none() && attempt < max_attempts =>
-                {
-                    abandoned_ports.insert(resource.port().unwrap_or_default());
-                    prepared = proxy
-                        .rollback_to_prepared()
-                        .await
-                        .context("Tailscale collision rollback failed")?;
-                }
-                Err(error) => {
-                    let cleanup = proxy.shutdown().await;
-                    return Err(combine_cleanup_errors(
-                        anyhow::Error::new(error),
-                        [("LocalProxy", cleanup.err())],
-                    ));
-                }
-            }
-        }
-    } else {
-        (
-            crate::proxy::runtime::LocalProxy::start(local_options)
-                .await
-                .map_err(|error| anyhow::anyhow!("proxy startup failed: {error}"))?,
-            None,
-            None,
-        )
-    };
+    let (mut proxy, mut oauth_lease, oauth_tailscale) =
+        Box::pin(start_proxy(local_options, &prefs, config, &bearer_token)).await?;
 
     // Install Tokio's process-wide Ctrl+C handler before publishing readiness.
     // `ctrl_c()` installs the handler on its first poll, so constructing it only
@@ -604,7 +606,7 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
             println!("MCP proxy ready");
             println!();
             println!("  Server   configured upstream command");
-            println!("  URL      configured public endpoint");
+            println!("  URL      {public_url}");
             println!(
                 "  Exposure {}",
                 if tailscale.is_some() {
@@ -909,8 +911,10 @@ mod tests {
         assert!(!oauth_credentials_absent_with(&config, |name| {
             (name == "LABBY_GOOGLE_CLIENT_ID").then(|| "partial-client".to_string())
         }));
-        let mut auth = crate::config::AuthFileConfig::default();
-        auth.google_client_secret = Some("partial-secret".to_string());
+        let auth = crate::config::AuthFileConfig {
+            google_client_secret: Some("partial-secret".to_string()),
+            ..Default::default()
+        };
         config.auth = Some(auth);
         assert!(!oauth_credentials_absent_with(&config, |_| None));
         config.auth.as_mut().unwrap().google_client_secret = None;

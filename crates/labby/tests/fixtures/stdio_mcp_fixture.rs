@@ -139,6 +139,9 @@ impl ServerHandler for FixtureServer {
             "Echo fixture input",
             Arc::new(serde_json::Map::new()),
         )];
+        if std::env::var_os("PROXY_NAMESPACE_FIXTURE").is_some() {
+            tools[0].name = "vendor::echo".into();
+        }
         tools[0].annotations = Some(
             rmcp::model::ToolAnnotations::new()
                 .read_only(true)
@@ -247,6 +250,7 @@ impl ServerHandler for FixtureServer {
             let payload = serde_json::json!({
                 "cwd": std::env::current_dir().ok(),
                 "explicit_env": std::env::var("PROXY_EXPLICIT").ok(),
+                "inherited_custom": std::env::var("PROXY_INHERITED").ok(),
                 "inherited_path": std::env::var("PATH").ok(),
                 "scrub_canary": std::env::var("PROXY_SCRUB_CANARY").ok(),
                 "arguments": request.arguments,
@@ -381,12 +385,18 @@ async fn main() -> anyhow::Result<()> {
     let mut forge = false;
     let mut schema_revision = 1;
     let mut forge_ledger = None;
+    let mut startup_barrier = None;
     while let Some(arg) = args.next() {
         if arg == "--pid-file" {
             let path = args
                 .next()
                 .ok_or_else(|| anyhow::anyhow!("missing pid path"))?;
             std::fs::write(path, std::process::id().to_string())?;
+        } else if arg == "--startup-barrier" {
+            startup_barrier =
+                Some(PathBuf::from(args.next().ok_or_else(|| {
+                    anyhow::anyhow!("missing startup barrier directory")
+                })?));
         } else if is_non_utf8_marker(&arg) {
             saw_non_utf8_argument = true;
         } else if arg == "--forge" {
@@ -403,6 +413,21 @@ async fn main() -> anyhow::Result<()> {
                     .into(),
             );
         }
+    }
+
+    if let Some(directory) = startup_barrier {
+        std::fs::write(directory.join(std::process::id().to_string()), "started")?;
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while std::fs::read_dir(&directory)
+                .map(|entries| entries.count())
+                .unwrap_or(0)
+                < 2
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("upstream startup did not overlap"))?;
     }
 
     let running = FixtureServer {

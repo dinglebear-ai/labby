@@ -352,12 +352,18 @@ async fn prepared_listener_accepts_no_http_requests_before_router_start() {
 }
 
 async fn oauth_state(temp: &tempfile::TempDir) -> Arc<AuthState> {
+    oauth_state_at(temp, "/custom-mcp").await
+}
+
+async fn oauth_state_at(temp: &tempfile::TempDir, resource_path: &str) -> Arc<AuthState> {
     let config = AuthConfig {
         mode: AuthMode::OAuth,
         public_url: Some(url::Url::parse("https://issuer.example.com").unwrap()),
         sqlite_path: temp.path().join("auth.db"),
         key_path: temp.path().join("auth-jwt.pem"),
         scopes_supported: vec!["mcp:read".to_string(), "mcp:write".to_string()],
+        default_scope: "mcp:read mcp:write".to_string(),
+        resource_path: resource_path.to_string(),
         enable_dynamic_registration: true,
         disable_static_token_with_oauth: true,
         google: GoogleConfig {
@@ -580,16 +586,19 @@ async fn oauth_proxy_serves_exact_root_metadata_and_enforces_token_contract() {
 }
 
 #[tokio::test]
-async fn self_hosted_oauth_mounts_discovery_registration_and_google_callback() {
+async fn self_hosted_oauth_registers_authorizes_and_grants_usable_default_scope() {
     let temp = tempfile::tempdir().unwrap();
-    let state = oauth_state(&temp).await;
-    let resource = url::Url::parse("https://issuer.example.com/custom-mcp").unwrap();
+    let state = oauth_state_at(&temp, "/mcp").await;
+    let resource = url::Url::parse("https://issuer.example.com/mcp").unwrap();
     let prepared = LocalProxy::prepare(LocalProxyOptions {
         command: fixture_command(
             temp.path().to_path_buf(),
             &temp.path().join("self-hosted.pid"),
         ),
-        preferences: local_preferences(ProxyAuthMode::Oauth),
+        preferences: ProxyPreferences {
+            path: "/mcp".to_string(),
+            ..local_preferences(ProxyAuthMode::Oauth)
+        },
         bearer_token: None,
         explicit_env: Vec::new(),
         inherit_env: vec![OsString::from("PATH")],
@@ -598,14 +607,17 @@ async fn self_hosted_oauth_mounts_discovery_registration_and_google_callback() {
     .unwrap();
     let proxy = prepared
         .start(LocalProxyAuthPolicy::Oauth {
-            auth_state: state,
+            auth_state: Arc::clone(&state),
             resource: resource.clone(),
             issuer: url::Url::parse("https://issuer.example.com/").unwrap(),
             required_scopes: vec!["mcp:read".to_string(), "mcp:write".to_string()],
             host_issuer: true,
         })
         .unwrap();
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap();
     for path in [
         "/.well-known/oauth-authorization-server",
         "/.well-known/oauth-protected-resource",
@@ -623,11 +635,87 @@ async fn self_hosted_oauth_mounts_discovery_registration_and_google_callback() {
     let registration = client
         .post(proxy.url().join("/register").unwrap())
         .header(reqwest::header::HOST, resource.authority())
-        .json(&serde_json::json!({}))
+        .json(&serde_json::json!({
+            "redirect_uris": ["http://127.0.0.1:3030/callback"],
+            "token_endpoint_auth_method": "none",
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"]
+        }))
         .send()
         .await
         .unwrap();
-    assert_ne!(registration.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(registration.status(), reqwest::StatusCode::CREATED);
+    let registration: serde_json::Value = registration.json().await.unwrap();
+    let client_id = registration["client_id"].as_str().unwrap();
+    let mut authorization_url = proxy.url().join("/authorize").unwrap();
+    authorization_url.query_pairs_mut().extend_pairs([
+        ("client_id", client_id),
+        ("redirect_uri", "http://127.0.0.1:3030/callback"),
+        ("response_type", "code"),
+        ("state", "downstream-state"),
+        ("resource", resource.as_str()),
+        (
+            "code_challenge",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+        ("code_challenge_method", "S256"),
+    ]);
+    let authorization = client
+        .get(authorization_url)
+        .header(reqwest::header::HOST, resource.authority())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(authorization.status(), reqwest::StatusCode::OK);
+    let consent = authorization.text().await.unwrap();
+    let provider_url = consent
+        .split("href=\"")
+        .find(|value| value.starts_with("https://accounts.google.com/"))
+        .expect("DCR consent must contain the Google authorization link")
+        .split('"')
+        .next()
+        .unwrap()
+        .replace("&amp;", "&");
+    let provider_url = url::Url::parse(&provider_url).unwrap();
+    let provider_state = provider_url
+        .query_pairs()
+        .find(|(name, _)| name == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    let pending = state
+        .store
+        .take_authorization_request(&provider_state)
+        .await
+        .unwrap();
+    assert_eq!(pending.scope, "mcp:read mcp:write");
+    // Google remains external to this test. Sign the verified grant's selected
+    // scope locally to verify that the proxy's actual middleware accepts it.
+    let token = state
+        .signing_keys
+        .issue_access_token(&oauth_claims(
+            resource.as_str(),
+            "https://issuer.example.com",
+            &pending.scope,
+        ))
+        .unwrap();
+    assert_eq!(
+        oauth_request(&proxy, &resource, Some(&token))
+            .await
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    let service = connect(proxy.url(), Some(&token)).await;
+    let tools = service.peer().list_all_tools().await.unwrap();
+    assert!(!tools.is_empty());
+    for tool in tools {
+        assert_eq!(
+            tool.meta.unwrap().0["securitySchemes"],
+            serde_json::json!([
+                {"type":"oauth2", "scopes":["mcp:read", "mcp:write"]}
+            ])
+        );
+    }
     proxy.shutdown().await.unwrap();
 }
 
@@ -835,7 +923,7 @@ async fn cli_discovers_home_mcp_json_and_aggregates_two_servers() {
         reached.insert(
             context["explicit_env"]
                 .as_str()
-                .unwrap_or_else(|| panic!("missing fixture server marker: {context}"))
+                .expect("fixture response must contain its server marker")
                 .to_string(),
         );
     }

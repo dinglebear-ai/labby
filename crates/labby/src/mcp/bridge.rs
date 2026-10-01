@@ -96,6 +96,7 @@ impl ClientHandler for BridgeClientHandler {
 pub struct BridgeServerHandler {
     _service: Option<RunningService<RoleClient, BridgeClientHandler>>,
     peer: Peer<RoleClient>,
+    tool_security_schemes: Option<serde_json::Value>,
 }
 
 impl BridgeServerHandler {
@@ -104,7 +105,15 @@ impl BridgeServerHandler {
         Self {
             _service: Some(service),
             peer,
+            tool_security_schemes: None,
         }
+    }
+
+    /// Project tools against the authentication policy of the outer proxy.
+    #[cfg(feature = "gateway")]
+    pub(crate) fn with_tool_security_schemes(mut self, schemes: Option<serde_json::Value>) -> Self {
+        self.tool_security_schemes = schemes;
+        self
     }
 
     /// Build a transparent bridge over a peer whose connection ownership is
@@ -114,6 +123,7 @@ impl BridgeServerHandler {
         Self {
             _service: None,
             peer,
+            tool_security_schemes: None,
         }
     }
 }
@@ -357,7 +367,21 @@ impl ServerHandler for BridgeServerHandler {
             )
             .await?
         {
-            ServerResult::ListToolsResult(result) => Ok(result),
+            ServerResult::ListToolsResult(mut result) => {
+                if let Some(schemes) = &self.tool_security_schemes {
+                    result.tools = result
+                        .tools
+                        .into_iter()
+                        .map(|tool| {
+                            crate::mcp::permanent_tools::with_security_schemes(
+                                tool,
+                                schemes.clone(),
+                            )
+                        })
+                        .collect();
+                }
+                Ok(result)
+            }
             _ => Err(unexpected_response("list_tools")),
         }
     }

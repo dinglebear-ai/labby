@@ -495,8 +495,12 @@ where
 
 /// Durably publish a secret through a restricted same-directory temporary
 /// file so the final path is never observable with default permissions or
-/// partially written contents.
-pub(crate) fn write_secret_file_atomically(path: &Path, contents: &[u8]) -> Result<(), AuthError> {
+/// partially written contents. Returns false when another initializer won;
+/// an existing final file is never replaced.
+pub(crate) fn create_secret_file_atomically(
+    path: &Path,
+    contents: &[u8],
+) -> Result<bool, AuthError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -538,9 +542,18 @@ pub(crate) fn write_secret_file_atomically(path: &Path, contents: &[u8]) -> Resu
                 ))
             })?;
             drop(file);
-            std::fs::rename(&temporary, path).map_err(|error| {
-                AuthError::Storage(format!("publish secret `{}`: {error}", path.display()))
-            })?;
+            // Linking a fully written same-directory file publishes atomically
+            // without replacing a concurrent initializer's winning key.
+            let created = match std::fs::hard_link(&temporary, path) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                Err(error) => {
+                    return Err(AuthError::Storage(format!(
+                        "publish secret `{}`: {error}",
+                        path.display()
+                    )));
+                }
+            };
             ensure_restrictive_permissions(path)?;
             if let Ok(directory) = std::fs::File::open(parent) {
                 directory.sync_all().map_err(|error| {
@@ -550,12 +563,10 @@ pub(crate) fn write_secret_file_atomically(path: &Path, contents: &[u8]) -> Resu
                     ))
                 })?;
             }
-            Ok(())
+            Ok(created)
         })();
 
-        if publish.is_err() {
-            drop(std::fs::remove_file(&temporary));
-        }
+        drop(std::fs::remove_file(&temporary));
         return publish;
     }
 
@@ -613,7 +624,7 @@ mod restricted_lock_tests {
     fn macos_system_temp_alias_supports_secret_and_lock_creation() {
         let dir = tempfile::tempdir_in("/tmp").unwrap();
         let secret = dir.path().join("secret.pem");
-        write_secret_file_atomically(&secret, b"private key").unwrap();
+        create_secret_file_atomically(&secret, b"private key").unwrap();
         assert_eq!(std::fs::read(&secret).unwrap(), b"private key");
         let lock = open_restricted_lock_file(&dir.path().join("config.lock")).unwrap();
         assert!(lock.metadata().unwrap().is_file());

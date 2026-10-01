@@ -2222,13 +2222,29 @@ async fn build_gateway_runtime(
         if std::env::var_os("LABBY_MCP_PROXY_AGGREGATE").as_deref()
             == Some(std::ffi::OsStr::new("1"))
         {
-            for upstream in &config.upstream {
-                anyhow::ensure!(
-                    pool.ensure_tools_for_upstream(upstream, None, None).await?,
-                    "proxy MCP upstream `{}` did not expose tools",
-                    upstream.name
-                );
-            }
+            use futures::{StreamExt as _, TryStreamExt as _};
+            // Cold package runners are independent; bound fanout while requiring
+            // every configured server to finish before advertising the aggregate.
+            futures::stream::iter(config.upstream.iter().map(|upstream| {
+                let pool = pool.clone();
+                async move {
+                    pool.ensure_tools_for_upstream(upstream, None, None)
+                        .await
+                        .with_context(|| {
+                            format!("proxy MCP upstream `{}` failed discovery", upstream.name)
+                        })?;
+                    let tools = pool.healthy_tools_for_upstream(&upstream.name).await;
+                    anyhow::ensure!(!tools.is_empty(), "proxy MCP upstream `{}` did not expose tools", upstream.name);
+                    for tool in tools {
+                        anyhow::ensure!(!tool.tool.name.contains("::"),
+                            "proxy MCP upstream `{}` exposes tool `{}` with unsupported namespace separator `::`", upstream.name, tool.tool.name);
+                    }
+                    anyhow::Ok(())
+                }
+            }))
+            .buffer_unordered(4)
+            .try_collect::<Vec<_>>()
+            .await?;
         }
         tracing::info!(
             subsystem = "gateway_client",

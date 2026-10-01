@@ -368,8 +368,20 @@ impl PreparedLocalProxy {
             .with_json_response(false)
             .with_cancellation_token(cancellation.clone());
         let session_manager = Arc::new(NeverSessionManager::default());
+        let tool_security_schemes = match &auth {
+            LocalProxyAuthPolicy::Oauth {
+                required_scopes, ..
+            } => Some(serde_json::json!([
+                {"type":"oauth2", "scopes":required_scopes}
+            ])),
+            LocalProxyAuthPolicy::None => Some(serde_json::json!([{"type":"noauth"}])),
+            LocalProxyAuthPolicy::Bearer { .. } => None,
+        };
         let mcp_service = StreamableHttpService::new(
-            move || Ok(BridgeServerHandler::from_peer(peer.clone())),
+            move || {
+                Ok(BridgeServerHandler::from_peer(peer.clone())
+                    .with_tool_security_schemes(tool_security_schemes.clone()))
+            },
             session_manager,
             service_config,
         );
@@ -447,10 +459,13 @@ impl PreparedLocalProxy {
     ) -> Result<LocalProxy> {
         let shutdown = cancellation.clone();
         let server_task = tokio::spawn(async move {
-            axum::serve(listener, router)
-                .with_graceful_shutdown(shutdown.cancelled_owned())
-                .await
-                .context("proxy HTTP server failed")
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+            .context("proxy HTTP server failed")
         });
 
         Ok(LocalProxy {

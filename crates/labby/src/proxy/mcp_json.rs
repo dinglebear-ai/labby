@@ -82,6 +82,31 @@ pub fn discover(home: &Path, executable: &Path) -> Result<Option<PathBuf>> {
 }
 
 pub fn prepare(path: &Path) -> Result<PreparedMcpJson> {
+    prepare_with_overrides(path, None, &[], &[])
+}
+
+pub fn prepare_with_overrides(
+    path: &Path,
+    cwd: Option<&Path>,
+    explicit_env: &[(OsString, OsString)],
+    inherit_env: &[OsString],
+) -> Result<PreparedMcpJson> {
+    let to_text = |value: &OsString| {
+        value
+            .to_str()
+            .map(str::to_owned)
+            .context("aggregate MCP environment names and values must be UTF-8")
+    };
+    let mut inherited = BTreeMap::new();
+    for name in inherit_env {
+        if let Some(value) = std::env::var_os(name) {
+            inherited.insert(to_text(name)?, to_text(&value)?);
+        }
+    }
+    let explicit = explicit_env
+        .iter()
+        .map(|(name, value)| Ok((to_text(name)?, to_text(value)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let path = path
         .canonicalize()
         .with_context(|| format!("open MCP configuration {}", path.display()))?;
@@ -98,7 +123,11 @@ pub fn prepare(path: &Path) -> Result<PreparedMcpJson> {
     let count = file.servers.len();
     let mut upstream = Vec::with_capacity(count);
     let mut extra_stdio_commands = Vec::with_capacity(count);
-    for (name, entry) in file.servers {
+    for (name, mut entry) in file.servers {
+        let mut environment = inherited.clone();
+        environment.extend(entry.env);
+        environment.extend(explicit.clone());
+        entry.env = environment;
         if name.is_empty()
             || name.len() > 64
             || !name
@@ -154,13 +183,24 @@ pub fn prepare(path: &Path) -> Result<PreparedMcpJson> {
             .context("protect isolated MCP aggregator configuration")?;
     }
     let executable = std::env::current_exe().context("locate current Labby executable")?;
-    let cwd: PathBuf = path
-        .parent()
-        .context("MCP configuration has no parent directory")?
-        .to_path_buf();
+    let cwd = cwd.map_or_else(
+        || {
+            path.parent()
+                .context("MCP configuration has no parent directory")
+                .map(Path::to_path_buf)
+        },
+        |cwd| {
+            cwd.canonicalize()
+                .context("resolve aggregate MCP working directory")
+        },
+    )?;
+    anyhow::ensure!(
+        cwd.is_dir(),
+        "aggregate MCP working directory is not a directory"
+    );
     let command = ProxyCommand {
         program: executable.into_os_string(),
-        args: vec![OsString::from("mcp")],
+        args: vec![OsString::from("--quiet"), OsString::from("mcp")],
         cwd,
         display: format!("labby mcp ({count} servers from {})", path.display()),
     };
