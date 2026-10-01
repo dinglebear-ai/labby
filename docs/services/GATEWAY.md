@@ -41,6 +41,29 @@ definition. In particular, clearing OAuth tokens, enabling/disabling an
 upstream, and killing restartable upstream processes do not require destructive
 confirmation.
 
+### Saving An Upstream And Protected Route
+
+`gateway.add` and `gateway.update` accept an optional `protected_route` mutation
+alongside the upstream `spec` or `patch`. The backend validates both drafts,
+then commits configuration, credentials, and runtime reconciliation under one
+configuration lease. A validation failure changes neither resource. A failed
+reconciliation restores the previous configuration, including private OAuth
+registration and scopes; browser read responses still expose only
+`oauth_enabled`.
+
+Use `{ "operation": "upsert", "route": { ... } }` to add a route or update an
+existing route of that name. Include `name` to address an existing route with a
+different replacement name. Use `{ "operation": "remove", "name": "route" }`
+to remove one. Omitting `protected_route` leaves route policy unchanged; upstream
+renames still update existing upstream references.
+
+Combined saves currently support installation routes only. A selected Team or
+a Team-qualified route returns `invalid_param` before any write; use the
+separately scoped `gateway.protected_route.*` workflow for Team route changes.
+Ordinary gateway edits with an unchanged route omit the nested mutation and
+remain available with a Team selected. Startup-mounted `gateway_subset` routes
+continue to require staged route actions and a restart.
+
 ### Restarting An Upstream Connection
 
 `gateway.mcp.restart` replaces one enabled upstream's live connection without

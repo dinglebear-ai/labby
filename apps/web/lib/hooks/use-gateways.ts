@@ -19,6 +19,7 @@ import {
 import { previewExposurePolicy as sharedPreviewExposurePolicy } from '@/lib/api/exposure-policy-matcher'
 import type {
   Gateway,
+  GatewayProtectedRouteChange,
   CreateGatewayInput,
   UpdateGatewayInput,
   ExposurePolicy,
@@ -257,6 +258,43 @@ function mockProtectedRouteStateRows(): ProtectedMcpRoute[] {
   })
 }
 
+// Preview saves validate both drafts before publishing either mock resource.
+function mockRoutesAfterSave(
+  change?: GatewayProtectedRouteChange,
+  rename?: { from: string; to: string },
+  newUpstream?: string,
+): ProtectedMcpRoute[] {
+  const routes = mockProtectedRoutes.map(route => rename && route.upstream === rename.from
+    ? { ...route, upstream: rename.to }
+    : route)
+  if (!change) return routes
+  if (mockProtectedRoutesHaveRestartDebt()) throw new Error('Protected route changes are staged for restart')
+  const name = change.operation === 'remove' ? change.name : change.name ?? change.route.name
+  if (name.trim().startsWith('team:') || (change.operation === 'upsert' && change.route.name.trim().startsWith('team:'))) {
+    throw new Error('Use the separately scoped protected-route workflow for Team routes')
+  }
+  const existing = routes.find(route => route.name === name)
+  if (mockRouteIsSubset(existing) || (change.operation === 'upsert' && mockRouteIsSubset(change.route))) {
+    throw new Error('Gateway subset protected routes require staged changes')
+  }
+  if (change.operation === 'remove') {
+    if (!existing) throw new Error('Protected route not found')
+    return routes.filter(route => route.name !== name)
+  }
+  if (change.name && !existing) throw new Error('Protected route not found')
+  const route = change.route
+  const upstreams = new Set(getMockGatewaysFallback().map(item => item.name).filter(name => name !== rename?.from))
+  if (newUpstream) upstreams.add(newUpstream)
+  if (rename) upstreams.add(rename.to)
+  if (route.upstream && !upstreams.has(route.upstream)) throw new Error('Protected route upstream is not configured')
+  if (route.name !== name && routes.some(item => item.name === route.name)) throw new Error('Protected route name already exists')
+  if (routes.some(item => item.name !== name && item.enabled && route.enabled
+    && item.public_host === route.public_host && item.public_path === route.public_path)) {
+    throw new Error('Protected route path is already assigned')
+  }
+  return [...routes.filter(item => item.name !== name), route]
+}
+
 // Simulate network delay for mock data
 const mockDelay = (ms: number = 500) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -303,14 +341,14 @@ const hydrateGatewayToolInventory = async (gateways: Gateway[]): Promise<Gateway
     upstreamMcpGateways(await loadGatewayToolInventory(gatewayApi, gateways)),
   )
 
-const fetchGateway = async (id: string): Promise<Gateway> => {
+export const fetchGateway = async (id: string, signal?: AbortSignal): Promise<Gateway> => {
   if (USE_MOCK_DATA) {
-    await mockDelay()
+    await abortableMockDelay(500, signal)
     const gateway = getMockGatewayFallback(id)
     if (!gateway) throw new Error('Gateway not found')
     return gateway
   }
-  return gatewayApi.get(id)
+  return gatewayApi.get(id, signal)
 }
 
 const fetchExposurePolicy = async (id: string): Promise<ExposurePolicy> => {
@@ -617,6 +655,7 @@ export function useGatewayMutations() {
   const createGateway = useCallback(async (input: CreateGatewayInput): Promise<Gateway> => {
     if (USE_MOCK_DATA) {
       await mockDelay()
+      const routes = mockRoutesAfterSave(input.protected_route, undefined, input.name)
       const newGateway: Gateway = {
         id: `gw-${Date.now()}`,
         name: input.name,
@@ -636,11 +675,13 @@ export function useGatewayMutations() {
         warnings: [],
         // created_at / updated_at come from the backend; omit in mock paths.
       }
+      mockProtectedRoutes = routes
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
       await mutate(GATEWAYS_KEY, (current: Gateway[] = []) => [...current, newGateway], false)
       return newGateway
     }
     const gateway = await gatewayApi.create(input)
-    await refreshGatewayCache(gateway.id)
+    await refreshGatewayCache(gateway.id, input.protected_route ? [PROTECTED_MCP_ROUTES_KEY] : [])
     return gateway
   }, [mutate, refreshGatewayCache])
 
@@ -721,8 +762,10 @@ export function useGatewayMutations() {
   const updateGateway = useCallback(async (id: string, input: UpdateGatewayInput): Promise<Gateway> => {
     if (USE_MOCK_DATA) {
       await mockDelay()
-      const gateway = mockGateways.find(g => g.id === id)
+      const gateway = getMockGatewayFallback(id)
       if (!gateway) throw new Error('Gateway not found')
+      const routes = mockRoutesAfterSave(input.protected_route,
+        input.name && input.name !== gateway.name ? { from: gateway.name, to: input.name } : undefined)
       const updated = {
         ...gateway,
         ...input,
@@ -741,6 +784,8 @@ export function useGatewayMutations() {
           proxyResources: input.config.proxy_resources,
         })
       }
+      mockProtectedRoutes = routes
+      await mutate(PROTECTED_MCP_ROUTES_KEY)
       await mutate(gatewayKey(id), updated, false)
       await mutate(GATEWAYS_KEY)
       return updated
@@ -750,7 +795,7 @@ export function useGatewayMutations() {
     // usable until the form's complete transaction navigates to the new ID.
     await mutate(gatewayKey(id), gateway, false)
     if (gateway.id !== id) await mutate(gatewayKey(gateway.id), gateway, false)
-    await refreshGatewayCache(gateway.id)
+    await refreshGatewayCache(gateway.id, input.protected_route ? [PROTECTED_MCP_ROUTES_KEY] : [])
     return gateway
   }, [mutate, refreshGatewayCache])
 

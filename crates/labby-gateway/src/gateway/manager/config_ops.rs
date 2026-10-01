@@ -10,7 +10,9 @@ use crate::gateway::config::{
     update_upstream, validate_bearer_token_env_name, validate_code_mode,
 };
 use crate::gateway::config_mutation::read_env_values;
-use crate::gateway::params::{GatewayEnrichmentScope, GatewayUpdatePatch};
+use crate::gateway::params::{
+    GatewayEnrichmentScope, GatewayProtectedRouteMutation, GatewayUpdatePatch,
+};
 use crate::gateway::projection::*;
 use crate::gateway::types::{
     GatewayCatalogDiff, GatewayRuntimeView, GatewayView, ServiceConfigView,
@@ -143,11 +145,31 @@ impl GatewayManager {
 
     pub(crate) async fn add_scoped(
         &self,
+        spec: UpstreamConfig,
+        bearer_token_value: Option<String>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        enrichment_scope: GatewayEnrichmentScope,
+    ) -> Result<GatewayView, ToolError> {
+        self.add_scoped_with_route(
+            spec,
+            bearer_token_value,
+            origin,
+            owner,
+            enrichment_scope,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn add_scoped_with_route(
+        &self,
         mut spec: UpstreamConfig,
         bearer_token_value: Option<String>,
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
         enrichment_scope: GatewayEnrichmentScope,
+        protected_route: Option<GatewayProtectedRouteMutation>,
     ) -> Result<GatewayView, ToolError> {
         let started = Instant::now();
         let spec_name = spec.name.clone();
@@ -177,6 +199,10 @@ impl GatewayManager {
                 insert_upstream(&mut cfg, spec.clone())?;
                 None
             };
+
+            if let Some(change) = protected_route.as_ref() {
+                self.apply_protected_route_save(&mut cfg, change).await?;
+            }
 
             // Log only after validation (inside insert_upstream) has passed so
             // spec.name is confirmed well-formed before it enters any log sink.
@@ -360,6 +386,19 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayView, ToolError> {
+        self.update_with_route(name, patch, bearer_token_value, origin, owner, None)
+            .await
+    }
+
+    pub(crate) async fn update_with_route(
+        &self,
+        name: &str,
+        patch: GatewayUpdatePatch,
+        bearer_token_value: Option<String>,
+        origin: Option<&str>,
+        owner: Option<UpstreamRuntimeOwner>,
+        protected_route: Option<GatewayProtectedRouteMutation>,
+    ) -> Result<GatewayView, ToolError> {
         let started = Instant::now();
         let mut patch = patch;
         let updated_name = patch.name.clone().unwrap_or_else(|| name.to_string());
@@ -420,6 +459,9 @@ impl GatewayManager {
             update_upstream(&mut cfg, name, patch)?;
             None
         };
+        if let Some(change) = protected_route.as_ref() {
+            self.apply_protected_route_save(&mut cfg, change).await?;
+        }
         // State-setting is idempotent only when both durable and currently
         // published configuration already match. Never skip a credential change
         // or reconciliation of externally changed state. The mutation lease is held.

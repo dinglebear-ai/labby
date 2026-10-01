@@ -393,14 +393,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     const previous = gateway
     const saved = await updateGateway(gateway.id, input as UpdateGatewayInput)
     return {
-      rollback: async () => {
-        await updateGateway(saved.id, {
-          name: previous.name,
-          display_name: previous.display_name ?? null,
-          transport: previous.transport,
-          config: previous.config,
-        })
-      },
       commit: () => {
         if (saved.id === previous.id) return
         const params = new URLSearchParams(searchParams.toString())

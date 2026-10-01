@@ -1518,6 +1518,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Write-only: raw bearer token to store securely. Never returned on reads. If bearer_token_env is omitted from the spec, a default env var name is derived from the gateway name.",
             },
+            ParamSpec {
+                name: "protected_route",
+                ty: "json",
+                required: false,
+                description: "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead.",
+            },
         ],
     },
     ActionSpec {
@@ -1544,6 +1550,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: false,
                 description: "Write-only: raw bearer token to store securely. Never returned on reads. Requires bearer_token_env in patch or existing config.",
+            },
+            ParamSpec {
+                name: "protected_route",
+                ty: "json",
+                required: false,
+                description: "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead.",
             },
         ],
     },

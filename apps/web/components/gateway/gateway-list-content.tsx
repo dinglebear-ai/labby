@@ -20,7 +20,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { GatewayFleetMetadata } from './gateway-fleet-metadata'
 import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer, GatewayImportResult } from '@/lib/types/gateway'
-import { gatewayApi } from '@/lib/api/gateway-client'
+import { fetchGateway } from '@/lib/hooks/use-gateways'
 import { cn, getErrorMessage } from '@/lib/utils'
 import {
   AURORA_PAGE_FRAME,
@@ -440,7 +440,7 @@ export function GatewayListContent() {
     setEditError(null)
     setFormOpen(false)
     try {
-      const fullGateway = await gatewayApi.get(gateway.id, controller.signal)
+      const fullGateway = await fetchGateway(gateway.id, controller.signal)
       if (controller.signal.aborted || editRequest.current !== controller) return
       setEditingGateway(fullGateway)
       setFormOpen(true)
@@ -616,23 +616,13 @@ export function GatewayListContent() {
       const previous = editingGateway
       const saved = await updateGateway(editingGateway.id, input as UpdateGatewayInput)
       return {
-        rollback: async () => {
-          await updateGateway(saved.id, {
-            name: previous.name,
-            display_name: previous.display_name ?? null,
-            transport: previous.transport,
-            config: previous.config,
-          })
-        },
         commit: () => {
           if (saved.id !== previous.id) void invalidateGatewayDetail(previous.id)
         },
       }
     } else {
-      const created = await createGateway(input as CreateGatewayInput)
-      return async () => {
-        await removeGateway(created.id)
-      }
+      await createGateway(input as CreateGatewayInput)
+      return {}
     }
   }
 

@@ -1346,3 +1346,241 @@ async fn token_only_update_detaches_preexisting_live_peer() {
     );
     current.drain_for_swap("test.token_rotation").await;
 }
+
+#[tokio::test]
+async fn atomic_route_validation_failure_preserves_private_oauth_spec() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("private-oauth");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "synthetic-private-client".into(),
+            client_secret_env: Some("SYNTHETIC_CLIENT_SECRET".into()),
+        },
+        scopes: Some(vec!["synthetic.read".into()]),
+        credential: Default::default(),
+        additional_endpoint_origins: vec![],
+        prefer_client_metadata_document: None,
+    });
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager
+        .seed_config_unchecked_for_tests(initial.clone())
+        .await;
+    let mut invalid_route = fixture_protected_route("invalid-route");
+    invalid_route.public_path = "not-an-absolute-path".into();
+    let error = crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.update",
+        serde_json::json!({
+            "name": "private-oauth", "patch": { "oauth": null },
+            "protected_route": { "operation": "upsert", "route": invalid_route }
+        }),
+    )
+    .await
+    .expect_err("route validation must reject the entire save");
+    assert_eq!(error.kind(), "invalid_param");
+    for cfg in [
+        load_gateway_config(&path).expect("durable"),
+        manager.current_config().await,
+    ] {
+        assert_eq!(
+            serde_json::to_value(cfg.upstream[0].oauth.as_ref()).unwrap(),
+            serde_json::to_value(initial.upstream[0].oauth.as_ref()).unwrap()
+        );
+        assert!(cfg.protected_mcp_routes.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn atomic_route_reconcile_failure_restores_private_oauth_and_route_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("private-oauth");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "synthetic-private-client".into(),
+            client_secret_env: Some("SYNTHETIC_CLIENT_SECRET".into()),
+        },
+        scopes: Some(vec!["synthetic.read".into()]),
+        credential: Default::default(),
+        additional_endpoint_origins: vec![],
+        prefer_client_metadata_document: None,
+    });
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let store = Arc::new(FaultAfterPersistStore::new(path.clone()));
+    let manager =
+        GatewayManager::with_store(path.clone(), GatewayRuntimeHandle::default(), store.clone());
+    manager
+        .seed_config_unchecked_for_tests(initial.clone())
+        .await;
+    store.fail_next_reload();
+    crate::gateway::dispatch::dispatch_with_manager(&manager, "gateway.update", serde_json::json!({
+        "name": "private-oauth", "patch": { "oauth": null },
+        "protected_route": { "operation": "upsert", "route": fixture_protected_route("new-route") }
+    })).await.expect_err("reconcile failure must reject the entire save");
+    for cfg in [
+        load_gateway_config(&path).expect("durable"),
+        manager.current_config().await,
+    ] {
+        assert_eq!(
+            serde_json::to_value(cfg.upstream[0].oauth.as_ref()).unwrap(),
+            serde_json::to_value(initial.upstream[0].oauth.as_ref()).unwrap()
+        );
+        assert!(cfg.protected_mcp_routes.is_empty());
+    }
+    assert!(
+        manager
+            .resolve_protected_route("mcp.example.com", "/syslog")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn atomic_route_add_validation_failure_does_not_install_gateway_or_credential() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    crate::gateway::config::write_gateway_config(&path, &GatewayConfig::default())
+        .expect("seed disk");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut route = fixture_protected_route("invalid-route");
+    route.public_path = "/v1/reserved".into();
+    crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.add",
+        serde_json::json!({
+            "spec": fixture_http_upstream("new-gateway"), "bearer_token_value": "synthetic-token",
+            "protected_route": { "operation": "upsert", "route": route }
+        }),
+    )
+    .await
+    .expect_err("invalid route must precede credential persistence");
+    assert!(
+        load_gateway_config(&path)
+            .expect("durable")
+            .upstream
+            .is_empty()
+    );
+    assert!(manager.current_config().await.upstream.is_empty());
+    assert!(!path.with_file_name(".env").exists());
+}
+
+#[tokio::test]
+async fn atomic_route_save_commits_rename_and_route_then_remove_without_disclosing_oauth() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let mut upstream = fixture_http_upstream("before");
+    upstream.oauth = Some(UpstreamOauthConfig {
+        registration: UpstreamOauthRegistration::Preregistered {
+            client_id: "synthetic-private-client".into(),
+            client_secret_env: None,
+        },
+        mode: UpstreamOauthMode::AuthorizationCodePkce,
+        scopes: Some(vec!["synthetic.read".into()]),
+        credential: Default::default(),
+        additional_endpoint_origins: vec![],
+        prefer_client_metadata_document: None,
+    });
+    let initial = GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    };
+    crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager.seed_config_unchecked_for_tests(initial).await;
+    let mut route = fixture_protected_route("published");
+    route.upstream = Some("after".into());
+    route.backend_url.clear();
+    let saved = crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.update",
+        serde_json::json!({
+            "name": "before", "patch": { "name": "after" },
+            "protected_route": { "operation": "upsert", "route": route }
+        }),
+    )
+    .await
+    .expect("atomic save");
+    assert_eq!(saved["config"]["name"], "after");
+    assert_eq!(saved["config"]["oauth_enabled"], true);
+    assert!(saved["config"].get("oauth").is_none());
+    assert!(!saved.to_string().contains("synthetic-private-client"));
+    let durable = load_gateway_config(&path).expect("durable");
+    assert_eq!(durable.upstream[0].name, "after");
+    assert_eq!(
+        durable.protected_mcp_routes[0].upstream.as_deref(),
+        Some("after")
+    );
+    assert!(
+        manager
+            .resolve_protected_route("mcp.example.com", "/syslog")
+            .await
+            .is_some()
+    );
+    crate::gateway::dispatch::dispatch_with_manager(
+        &manager,
+        "gateway.update",
+        serde_json::json!({
+            "name": "after", "patch": { "oauth": null },
+            "protected_route": { "operation": "remove", "name": "published" }
+        }),
+    )
+    .await
+    .expect("atomic remove route and clear OAuth");
+    let durable = load_gateway_config(&path).expect("durable");
+    assert!(durable.upstream[0].oauth.is_none());
+    assert!(durable.protected_mcp_routes.is_empty());
+    assert!(
+        manager
+            .resolve_protected_route("mcp.example.com", "/syslog")
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn atomic_route_save_rejects_team_qualified_routes_before_gateway_write() {
+    for (existing_name, replacement_name) in [
+        (None, "team:alpha:route"),
+        (None, " team:alpha:route "),
+        (Some("installation-route"), " team:alpha:renamed "),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let initial = GatewayConfig {
+            upstream: vec![fixture_http_upstream("installation")],
+            protected_mcp_routes: vec![fixture_protected_route("installation-route")],
+            ..GatewayConfig::default()
+        };
+        crate::gateway::config::write_gateway_config(&path, &initial).expect("seed disk");
+        let initial = load_gateway_config(&path).expect("canonical seed");
+        let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+        manager
+            .seed_config_unchecked_for_tests(initial.clone())
+            .await;
+        let mut replacement = fixture_protected_route(replacement_name);
+        replacement.public_path = "/team-attempt".into();
+        crate::gateway::dispatch::dispatch_with_manager(&manager, "gateway.update", serde_json::json!({
+            "name": "installation", "patch": { "display_name": "must-not-commit" },
+            "protected_route": { "operation": "upsert", "name": existing_name, "route": replacement }
+        })).await.expect_err("installation action must not bypass Team policy after route-name normalization");
+        let persisted = load_gateway_config(&path).expect("durable");
+        assert!(persisted.upstream[0].display_name.is_none());
+        assert_eq!(persisted.protected_mcp_routes, initial.protected_mcp_routes);
+        assert_eq!(
+            manager.current_config().await.protected_mcp_routes,
+            initial.protected_mcp_routes
+        );
+    }
+}

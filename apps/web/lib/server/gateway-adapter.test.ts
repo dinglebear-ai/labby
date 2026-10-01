@@ -1176,3 +1176,13 @@ test('gatewayInputToSpec carries a display name without changing the ID', () => 
   const unlabelled = gatewayInputToSpec({ name: 'asana', transport: 'http', config: { url: 'https://mcp.asana.com/v2/mcp' } })
   assert.equal('display_name' in unlabelled, false)
 })
+
+
+test('gateway saves send protected route changes with the write-only OAuth patch in one request', () => {
+  const protected_route = { operation: 'remove' as const, name: 'old-route' }
+  const patch = buildGatewayUpdatePayload('private-oauth', { config: { oauth: null }, protected_route })
+  assert.equal(patch.protected_route, protected_route)
+  assert.equal((patch.patch as Record<string, unknown>).oauth, null)
+  const add = buildGatewayCreatePayload({ name: 'new', transport: 'http', config: { url: 'https://example.test/mcp' }, protected_route })
+  assert.equal(add.protected_route, protected_route)
+})

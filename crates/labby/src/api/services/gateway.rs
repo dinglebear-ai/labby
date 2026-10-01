@@ -1502,6 +1502,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn atomic_gateway_save_api_rejects_selected_team_before_effects() {
+        let (manager, path) = test_manager_with_path();
+        let app = gateway_routes_with_auth_context(manager.clone(), admin_auth_context()).await;
+        let response = app.oneshot(Request::builder().method("POST").uri("/")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-labby-team-id", "alpha")
+            .body(Body::from(json!({"action":"gateway.add","params":{
+                "spec":{"name":"must-not-install","url":"https://example.test/mcp"},
+                "protected_route":{"operation":"upsert","route":{
+                    "name":"route","enabled":true,"public_host":"mcp.example.test","public_path":"/route",
+                    "backend_url":"https://example.test/mcp","backend_mcp_path":"/mcp","scopes":["mcp:read"]
+                }}
+            }}).to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["kind"], "invalid_param", "{error}");
+        assert!(error["message"].as_str().unwrap().contains("Team"));
+        assert!(manager.current_config().await.upstream.is_empty());
+        assert!(!path.exists());
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
     async fn gateway_add_update_remove_reload_routes_exist() {
         let manager = test_manager();
         let app = test_app_with_auth_context(manager, admin_auth_context()).await;

@@ -1,5 +1,5 @@
 export type GatewaySaveRollback = (() => Promise<void>) | {
-  rollback: () => Promise<void>
+  rollback?: () => Promise<void>
   commit?: () => void
 }
 
@@ -11,13 +11,12 @@ export class GatewaySaveCompensationError extends Error {
 }
 
 /**
- * Apply the gateway write and its protected-route write as one UI transaction.
- * The backend write supplies compensation because the two resources currently
- * have separate API actions.
+ * Commit UI navigation after the backend-owned atomic save completes.
+ * Optional compensation remains available to callers coordinating other writes.
  */
 export async function runGatewaySaveTransaction(
   saveGateway: () => Promise<GatewaySaveRollback | void>,
-  applyProtectedRoute: () => Promise<void>,
+  applyProtectedRoute: () => Promise<void> = async () => {},
 ): Promise<void> {
   const saved = await saveGateway()
   const rollback = typeof saved === 'function' ? saved : saved?.rollback

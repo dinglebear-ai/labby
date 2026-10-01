@@ -5,7 +5,7 @@ import { installTestDom } from '../../lib/testing/dom-install.ts'
 process.env.NEXT_PUBLIC_PROTECTED_MCP_HOST = 'mcp.example.test'
 
 for (const routeFails of [false, true]) {
-  test(`renamed detail ${routeFails ? 'compensates the returned identity on route failure' : 'navigates only after the route commits'}`, async () => {
+  test(`renamed detail ${routeFails ? 'preserves identity and private OAuth on atomic route failure' : 'navigates only after the route commits'}`, async () => {
     const window = installTestDom()
     Object.defineProperty(globalThis, 'self', { configurable: true, value: window })
     for (const key of ['NodeFilter', 'HTMLInputElement', 'InputEvent'] as const) {
@@ -24,8 +24,10 @@ for (const routeFails of [false, true]) {
     const requests: Array<{ action: string; params: Record<string, unknown> }> = []
     const navigations: string[] = []
     let currentId = 'old-id'
+    const originalOAuth = { client_id: 'synthetic-private-client', scopes: ['synthetic.read'] }
+    let privateOAuth: typeof originalOAuth | null = originalOAuth
     const backendView = () => ({
-      config: { name: currentId, display_name: 'Original label', url: 'https://example.test/mcp', args: [], proxy_resources: true, proxy_prompts: true, proxy_mcp_ui: true },
+      config: { name: currentId, oauth_enabled: Boolean(privateOAuth), display_name: 'Original label', url: 'https://example.test/mcp', args: [], proxy_resources: true, proxy_prompts: true, proxy_mcp_ui: true },
       runtime: { name: currentId, connected: true, tool_count: 0, resource_count: 0, prompt_count: 0 },
     })
     const originalFetch = globalThis.fetch
@@ -40,13 +42,14 @@ for (const routeFails of [false, true]) {
       } else if (action === 'gateway.get') result = backendView()
       else if (action === 'gateway.update') {
         assert.equal(params.name, currentId, 'writes must address the ID currently accepted by the backend')
-        currentId = params.patch.name
-        result = backendView()
-      } else if (action === 'gateway.protected_route.add') {
-        assert.equal(params.route.upstream, 'new-id')
-        assert.deepEqual(navigations, [], 'navigation must wait for the protected-route write')
+        assert.equal(params.protected_route.operation, 'upsert')
+        assert.equal(params.protected_route.route.upstream, 'new-id')
+        assert.equal(params.patch.oauth, null)
+        assert.deepEqual(navigations, [], 'navigation must wait for the atomic save')
         if (routeFails) return new Response(JSON.stringify({ message: 'Route write failed' }), { status: 503 })
-        result = params.route
+        currentId = params.patch.name
+        privateOAuth = null
+        result = backendView()
       } else if (action === 'gateway.usage.metrics') {
         result = { window_total_calls: 0, total_calls: 0, error_calls: 0,
           avg_elapsed_ms: 0, p50_elapsed_ms: 0, p95_elapsed_ms: 0, p99_elapsed_ms: 0,
@@ -85,17 +88,22 @@ for (const routeFails of [false, true]) {
       await wait(() => assert.ok(document.querySelector('[aria-label="Edit server"]')))
       await act(async () => (document.querySelector('[aria-label="Edit server"]') as HTMLElement).click())
       await wait(() => assert.ok(document.querySelector('#name')))
+      const auth = [...document.querySelectorAll<HTMLElement>('[role="combobox"]')].find(item => item.textContent?.includes('OAuth (MCP)'))!
+      await act(async () => auth.dispatchEvent(new window.PointerEvent('pointerdown', { bubbles: true, button: 0, pointerType: 'mouse' }) as unknown as Event))
+      const noAuth = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.trim() === 'No auth')!
+      await act(async () => {
+        noAuth.dispatchEvent(new window.PointerEvent('pointerup', { bubbles: true, button: 0, pointerType: 'mouse' }) as unknown as Event)
+        noAuth.click()
+      })
       await setInput('#name', 'new-id')
       await setInput('#protected-public-path', '/named/mcp')
       const save = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Save changes')
       assert.ok(save)
       await act(async () => save.click())
       if (routeFails) {
-        await wait(() => assert.equal(requests.filter(row => row.action === 'gateway.update').length, 2))
-        const writes = requests.filter(row => row.action === 'gateway.update')
-        assert.equal(writes[1].params.name, 'new-id')
-        assert.equal((writes[1].params.patch as Record<string, unknown>).name, 'old-id')
-        assert.equal((writes[1].params.patch as Record<string, unknown>).display_name, 'Original label')
+        await wait(() => assert.match(document.body.textContent ?? '', /Route write failed/))
+        assert.equal(requests.filter(row => row.action === 'gateway.update').length, 1)
+        assert.deepEqual(privateOAuth, originalOAuth)
         assert.deepEqual(navigations, [])
         assert.equal(currentId, 'old-id')
       } else {
@@ -106,6 +114,7 @@ for (const routeFails of [false, true]) {
         assert.equal(url.searchParams.get('tab'), 'settings')
         assert.equal(currentId, 'new-id')
       }
+      assert.equal(requests.some(row => row.action === 'gateway.protected_route.add'), false)
       assert.doesNotMatch(view.container.textContent ?? '', /Failed to load server/)
     } finally {
       await view.unmount()

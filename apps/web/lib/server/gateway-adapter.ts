@@ -731,7 +731,7 @@ export function buildGatewayCreatePayload(input: CreateGatewayInput) {
     },
   })
 
-  const payload: Record<string, unknown> = { spec }
+  const payload: Record<string, unknown> = { spec, ...(input.protected_route ? { protected_route: input.protected_route } : {}) }
   const bearerTokenValue = input.config.bearer_token_value?.trim()
   if (bearerTokenValue) {
     payload.bearer_token_value = bearerTokenValue
@@ -843,6 +843,7 @@ export function buildGatewayUpdatePayload(
   const payload: Record<string, unknown> = {
     name: id,
     patch,
+    ...(input.protected_route ? { protected_route: input.protected_route } : {}),
   }
   const bearerTokenValue = input.config?.bearer_token_value?.trim()
   if (bearerTokenValue) {

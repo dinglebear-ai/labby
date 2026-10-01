@@ -943,12 +943,13 @@ async fn handle_gateway_actions(
             let params: GatewayAddParams = parse_params(params_value)?;
             to_json(
                 manager
-                    .add_scoped(
+                    .add_scoped_with_route(
                         params.spec,
                         params.bearer_token_value,
                         params.origin.as_deref(),
                         params.owner.map(Into::into),
                         enrichment_scope,
+                        params.protected_route,
                     )
                     .await?,
             )
@@ -958,12 +959,13 @@ async fn handle_gateway_actions(
             enrichment_scope.ensure_visible(&params.name)?;
             to_json(
                 manager
-                    .update(
+                    .update_with_route(
                         &params.name,
                         params.patch,
                         params.bearer_token_value,
                         params.origin.as_deref(),
                         params.owner.map(Into::into),
+                        params.protected_route,
                     )
                     .await?,
             )

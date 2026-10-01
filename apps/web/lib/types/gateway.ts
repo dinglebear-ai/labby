@@ -198,12 +198,18 @@ export interface GatewayImportResult {
   errors: GatewayImportError[]
 }
 
+/** Applied atomically with the upstream configuration, including private OAuth state. */
+export type GatewayProtectedRouteChange =
+  | { operation: 'upsert'; name?: string; route: ProtectedMcpRouteInput }
+  | { operation: 'remove'; name: string }
+
 export interface CreateGatewayInput {
   name: string
   /** Optional free-form label; `name` stays the stable identifier. */
   display_name?: string | null
   transport: TransportType
   config: GatewayWriteConfig
+  protected_route?: GatewayProtectedRouteChange
 }
 
 export interface UpdateGatewayInput {
@@ -212,6 +218,7 @@ export interface UpdateGatewayInput {
   display_name?: string | null
   transport?: TransportType
   config?: Partial<GatewayWriteConfig>
+  protected_route?: GatewayProtectedRouteChange
 }
 
 export interface TestGatewayResult {
