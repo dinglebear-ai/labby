@@ -1,4 +1,4 @@
-//! An isolated Labby MCP aggregator for an explicitly selected `.mcp.json`.
+//! Configuration discovery and an isolated Labby MCP aggregator.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -54,6 +54,31 @@ pub struct PreparedMcpJson {
     _home: tempfile::TempDir,
     pub command: ProxyCommand,
     pub child_env: Vec<(OsString, OsString)>,
+}
+
+/// Find the first default configuration without masking inspection failures.
+/// The effective Labby home takes precedence over the native executable directory.
+pub fn discover(home: &Path, executable: &Path) -> Result<Option<PathBuf>> {
+    let executable_dir = executable
+        .parent()
+        .context("Labby executable has no parent directory")?;
+    for directory in [home, executable_dir] {
+        let candidate = directory.join(".mcp.json");
+        match std::fs::metadata(&candidate) {
+            Ok(metadata) => {
+                if !metadata.is_file() {
+                    bail!("MCP configuration {} is not a file", candidate.display());
+                }
+                return Ok(Some(candidate));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect MCP configuration {}", candidate.display()));
+            }
+        }
+    }
+    Ok(None)
 }
 
 pub fn prepare(path: &Path) -> Result<PreparedMcpJson> {
@@ -159,4 +184,41 @@ pub fn prepare(path: &Path) -> Result<PreparedMcpJson> {
         command,
         child_env,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovery_prefers_home_then_executable_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("labby");
+        assert!(discover(&home, &executable).unwrap().is_none());
+        let beside_binary = bin.join(".mcp.json");
+        std::fs::write(&beside_binary, "{}").unwrap();
+        assert_eq!(discover(&home, &executable).unwrap(), Some(beside_binary));
+        let in_home = home.join(".mcp.json");
+        std::fs::write(&in_home, "invalid JSON").unwrap();
+        let selected = discover(&home, &executable).unwrap().unwrap();
+        assert_eq!(selected, in_home);
+        assert!(
+            prepare(&selected).is_err(),
+            "invalid home config must not fall back"
+        );
+    }
+
+    #[test]
+    fn discovery_rejects_a_directory_instead_of_falling_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join(".mcp.json")).unwrap();
+        std::fs::write(temp.path().join(".mcp.json"), "{}").unwrap();
+        let error = discover(&home, &temp.path().join("labby")).unwrap_err();
+        assert!(error.to_string().contains("not a file"));
+    }
 }

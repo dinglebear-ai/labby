@@ -404,7 +404,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let mcp_app_callback_visible = code_mode_read_scope_allowed(auth);
         #[cfg(feature = "gateway")]
-        if mcp_app_model_visible || mcp_app_callback_visible {
+        if !self.registry.is_proxy_aggregate()
+            && (mcp_app_model_visible || mcp_app_callback_visible)
+        {
             descriptors.push(self.registry.permanent_tools().mcp_app_tool(
                 mcp_apps_config.manager && mcp_app_model_visible,
                 mcp_app_model_visible,
@@ -436,7 +438,8 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if settings_app_visible
+        if !self.registry.is_proxy_aggregate()
+            && settings_app_visible
             && (!matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
                 || project_shadow.allows_builtin_service("setup", SystemTime::now()) == Some(true))
         {
@@ -491,12 +494,17 @@ impl LabMcpServer {
                 if hide_raw_tools && !tool_execute_scope_allowed(auth) && ut.destructive {
                     continue;
                 }
-                let tool_name = ut.tool.name.as_ref();
+                let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
+                    &self.registry,
+                    &ut.upstream_name,
+                    ut.tool.clone(),
+                );
+                let tool_name = descriptor.name.as_ref();
                 if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
                     project_shadow_checked_tool_count += 1;
                     if project_shadow.allows_upstream_tool(
                         ut.upstream_name.as_ref(),
-                        tool_name,
+                        ut.tool.name.as_ref(),
                         SystemTime::now(),
                     ) != Some(true)
                     {
@@ -517,7 +525,7 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                descriptors.push(crate::mcp::permanent_tools::with_labby_security(ut.tool));
+                descriptors.push(descriptor);
                 upstream_tool_count += 1;
             }
             if !hide_raw_tools

@@ -322,7 +322,17 @@ does not run the local stdio-proxy preflight.
 
 ## Multiple MCP servers
 
-Pass a `.mcp.json` containing stdio entries instead of a child command:
+Save a `.mcp.json` containing stdio entries in `~/.labby` (or the configured
+`LABBY_HOME`), then run `npx -y @dinglebear/labby proxy` with your saved proxy
+defaults. If no file is present there, Labby looks beside its native executable.
+For the npm launcher, that means the downloaded binary's directory, not the
+Node wrapper's directory. The Labby home file wins when both exist.
+
+An explicit child command bypasses discovery. `--mcp-json PATH` selects a
+specific file instead. An unreadable or invalid selected file fails startup;
+Labby does not silently try another configuration.
+
+Example `.mcp.json`:
 
 ```json
 {
@@ -340,9 +350,11 @@ npx -y @dinglebear/labby proxy --funnel --port 8443 --mcp-json /path/to/.mcp.jso
 The file can contain up to 16 named stdio servers. Each entry supports
 `command`, `args`, and an `env` object. Paths resolve relative to the file's
 directory. Labby starts an isolated local MCP aggregator and connects to every
-configured server before public publication. Tools are namespaced by upstream
-name. The file and any environment secrets must be readable only by the
-operator. HTTP/SSE entries are not supported by this option.
+configured server before public publication. Tools are qualified by upstream
+name, such as `sandbox::runtime_check`, so matching tool names can coexist.
+Labby-owned control tools are excluded from this aggregate surface. The file
+and any environment secrets must be readable only by the operator. HTTP/SSE entries
+are not supported by this option.
 
 ## OAuth resource lifecycle
 

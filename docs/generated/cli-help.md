@@ -8129,7 +8129,7 @@ Usage: labby proxy [OPTIONS] [COMMAND]...
 
 Arguments:
   [COMMAND]...
-          Child program or script followed by its arguments
+          Child program and arguments; otherwise discover .mcp.json in Labby home or beside the binary
 
 Options:
       --json

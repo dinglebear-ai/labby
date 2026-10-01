@@ -394,7 +394,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         == Some(std::ffi::OsStr::new("1"))
         && matches!(transport, Transport::Stdio)
     {
-        ToolRegistry::new()
+        ToolRegistry::proxy_aggregate()
     } else {
         filter_registry(registry, &args.services)?
     };

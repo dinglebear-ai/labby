@@ -139,6 +139,12 @@ impl ServerHandler for FixtureServer {
             "Echo fixture input",
             Arc::new(serde_json::Map::new()),
         )];
+        tools[0].annotations = Some(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false)
+                .idempotent(true),
+        );
         if self.forge {
             let object = |properties: serde_json::Map<String, serde_json::Value>| {
                 Arc::new(serde_json::Map::from_iter([

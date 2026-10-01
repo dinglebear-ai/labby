@@ -279,6 +279,19 @@ pub(crate) fn is_reserved_non_upstream_tool_name(name: &str) -> bool {
     )
 }
 
+/// Keep proxy aggregation's names identical on the wire and in the peer contract.
+#[cfg(feature = "gateway")]
+pub(crate) fn proxy_upstream_descriptor(
+    registry: &crate::registry::ToolRegistry,
+    upstream: &str,
+    mut tool: Tool,
+) -> Tool {
+    if registry.is_proxy_aggregate() {
+        tool.name = format!("{upstream}::{}", tool.name).into();
+    }
+    with_labby_security(tool)
+}
+
 #[must_use]
 pub(crate) fn code_mode_read_annotations() -> ToolAnnotations {
     ToolAnnotations::new()

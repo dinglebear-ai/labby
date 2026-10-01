@@ -63,8 +63,8 @@ pub struct ProxyArgs {
     #[arg(long = "inherit-env", value_name = "NAME")]
     pub inherit_env: Vec<String>,
 
-    /// Child program or script followed by its arguments.
-    #[arg(required_unless_present_any = ["funnel", "print_google_callback", "mcp_json"], trailing_var_arg = true)]
+    /// Child program and arguments; otherwise discover .mcp.json in Labby home or beside the binary.
+    #[arg(trailing_var_arg = true)]
     pub command: Vec<OsString>,
 }
 
@@ -201,7 +201,10 @@ fn local_runtime_preferences(
 #[cfg(feature = "gateway")]
 pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> Result<ExitCode> {
     let prefs = args.resolve_preferences(config);
-    if args.print_google_callback || (args.funnel && oauth_credentials_absent(config)) {
+    if args.print_google_callback
+        || (prefs.exposure == crate::proxy::config::ProxyExposure::Funnel
+            && oauth_credentials_absent(config))
+    {
         prefs.validate()?;
         let mut options =
             tailscale_options(std::net::SocketAddr::from(([127, 0, 0, 1], 1)), &prefs);
@@ -221,11 +224,23 @@ pub async fn run(args: ProxyArgs, config: &LabConfig, format: OutputFormat) -> R
         )?;
         return Ok(ExitCode::SUCCESS);
     }
-    if args.command.is_empty() && args.mcp_json.is_none() {
-        anyhow::bail!("provide a child command or --mcp-json to start the Funnel proxy");
+    let mcp_json_path = if args.command.is_empty() {
+        match &args.mcp_json {
+            Some(path) => Some(path.clone()),
+            None => crate::proxy::mcp_json::discover(
+                crate::installation::InstallationPaths::resolve()?.root(),
+                &std::env::current_exe().context("locate Labby executable")?,
+            )?,
+        }
+    } else {
+        None
+    };
+    if args.command.is_empty() && mcp_json_path.is_none() {
+        anyhow::bail!(
+            "no .mcp.json found in Labby home or beside the binary; provide a child command or --mcp-json PATH"
+        );
     }
-    let mcp_json = args
-        .mcp_json
+    let mcp_json = mcp_json_path
         .as_ref()
         .map(|path| crate::proxy::mcp_json::prepare(path))
         .transpose()?;
@@ -789,9 +804,10 @@ mod tests {
     }
 
     #[test]
-    fn proxy_requires_command() {
-        let error = TestCli::try_parse_from(["proxy"]).expect_err("proxy should require a command");
-        assert!(error.to_string().contains("required"));
+    fn proxy_accepts_no_command_for_config_discovery() {
+        let args = parse(["proxy"]);
+        assert!(args.command.is_empty());
+        assert!(args.mcp_json.is_none());
     }
 
     #[test]

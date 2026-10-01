@@ -733,6 +733,8 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
     use tokio::process::Command;
 
     let temp = tempfile::tempdir().unwrap();
+    // An explicit child must bypass even an invalid default configuration.
+    std::fs::write(temp.path().join(".mcp.json"), "invalid JSON").unwrap();
     let pid_file = temp.path().join("cli-child.pid");
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
         .args(["--json", "proxy", "--local", "--auth", "none"])
@@ -770,6 +772,90 @@ async fn cli_prints_real_url_serves_tools_and_stops_cleanly_on_sigint() {
         .expect("CLI did not stop after Ctrl+C")
         .unwrap();
     assert!(status.success(), "CLI exited with {status}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_discovers_home_mcp_json_and_aggregates_two_servers() {
+    use tokio::process::Command;
+
+    let temp = tempfile::tempdir().unwrap();
+    let config = serde_json::json!({
+        "mcpServers": {
+            "alpha": {
+                "command": env!("CARGO_BIN_EXE_stdio-mcp-fixture"),
+                "args": ["--pid-file", temp.path().join("alpha.pid")],
+                "env": {"PROXY_EXPLICIT": "alpha"}
+            },
+            "beta": {
+                "command": env!("CARGO_BIN_EXE_stdio-mcp-fixture"),
+                "args": ["--pid-file", temp.path().join("beta.pid")],
+                "env": {"PROXY_EXPLICIT": "beta"}
+            }
+        }
+    });
+    std::fs::write(temp.path().join(".mcp.json"), config.to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .args(["--json", "proxy", "--local", "--auth", "none"])
+        .env("LABBY_HOME", temp.path())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let line = wait_for_readiness_or_exit(&mut child, stdout, "auto-discovered MCP proxy")
+        .await
+        .unwrap();
+    let ready: serde_json::Value = serde_json::from_str(&line).unwrap();
+    let url = url::Url::parse(ready["url"].as_str().unwrap()).unwrap();
+    let service = connect(&url, None).await;
+    let tools = service.peer().list_all_tools().await.unwrap();
+    assert_eq!(tools.len(), 2);
+    assert_ne!(tools[0].name, tools[1].name);
+    assert!(tools.iter().any(|tool| tool.name == "alpha::fixture.echo"));
+    assert!(tools.iter().any(|tool| tool.name == "beta::fixture.echo"));
+    assert!(
+        service
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new("mcp_app"))
+            .await
+            .is_err(),
+        "aggregate mode must not execute Labby-owned control tools"
+    );
+    let mut reached = std::collections::BTreeSet::new();
+    for tool in tools {
+        let result = service
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new(tool.name))
+            .await
+            .unwrap();
+        let context: serde_json::Value =
+            serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        reached.insert(
+            context["explicit_env"]
+                .as_str()
+                .unwrap_or_else(|| panic!("missing fixture server marker: {context}"))
+                .to_string(),
+        );
+    }
+    assert_eq!(
+        reached,
+        std::collections::BTreeSet::from(["alpha".into(), "beta".into()])
+    );
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(i32::try_from(child.id().unwrap()).unwrap()),
+        nix::sys::signal::Signal::SIGINT,
+    )
+    .unwrap();
+    let output = wait_for_child_output(child, "auto-discovered proxy shutdown")
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[cfg(unix)]
