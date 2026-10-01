@@ -930,6 +930,9 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             .build()?
     };
 
+    // Heap-poll HTTP startup below the nested resource-relay callchain. Keeping
+    // its concrete discovery future inline exhausts ordinary debug test stacks.
+    // Dropping the box retains the same lifecycle cancellation semantics.
     // Wrap in BodyCappedHttpClient so both the OAuth and non-OAuth paths
     // enforce the streaming response-size cap (P-H4).
     let capped =
@@ -961,20 +964,23 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             OrderedRelayNotificationTransport::new(worker, notification_interceptor.clone());
         let service = match lifecycle {
             LifecycleAttempt::Modern => UpstreamClientService::Direct(
-                handler
-                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                Box::pin(
+                    handler.serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
                         worker,
                         lifecycle.mode(),
-                    )
-                    .await?,
+                    ),
+                )
+                .await?,
             ),
             LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
-                VersionedClientHandler::new(handler, legacy_protocol_version())
-                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                Box::pin(
+                    VersionedClientHandler::new(handler, legacy_protocol_version())
+                        .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
                         worker,
                         lifecycle.mode(),
-                    )
-                    .await?,
+                    ),
+                )
+                .await?,
             ),
         };
         let peer = service.peer().clone();
@@ -1003,18 +1009,28 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
     let worker = WorkerTransport::spawn(worker);
     let worker = OrderedRelayNotificationTransport::new(worker, notification_interceptor);
-    let service = match lifecycle {
-        LifecycleAttempt::Modern => UpstreamClientService::Direct(
-            handler
-                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
+    let service =
+        match lifecycle {
+            LifecycleAttempt::Modern => UpstreamClientService::Direct(
+                Box::pin(
+                    handler.serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    ),
+                )
                 .await?,
-        ),
-        LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
-            VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
+            ),
+            LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+                Box::pin(
+                    VersionedClientHandler::new(handler, legacy_protocol_version())
+                        .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    ),
+                )
                 .await?,
-        ),
-    };
+            ),
+        };
     let peer = service.peer().clone();
     let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
         .await

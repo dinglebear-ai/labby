@@ -219,15 +219,10 @@ impl ProductCodeModeArtifactSearchProvider {
         })
     }
 
-    async fn personal_skills_with_providers(
-        &self,
-        query: &str,
-        limit: usize,
+    fn personal_skill_context(
         caller: &CodeModeCaller,
         scope: &ToolScope,
-        config: &CodeModeSearchConfig,
-        depot_providers: &[(String, String)],
-    ) -> Result<ArtifactSearchResult, ToolError> {
+    ) -> Option<crate::skills::facade::SkillRegistryContext> {
         let context = match caller.without_authority() {
             CodeModeCaller::ScopedSkills {
                 skill_context_token,
@@ -242,20 +237,38 @@ impl ProductCodeModeArtifactSearchProvider {
             )),
             _ => None,
         };
-        let Some(context) = context else {
+        context.map(|context| context.narrowed_to_upstreams(scope.allowed_namespaces()))
+    }
+
+    async fn personal_skills_with_providers(
+        &self,
+        query: &str,
+        limit: usize,
+        caller: &CodeModeCaller,
+        scope: &ToolScope,
+        config: &CodeModeSearchConfig,
+        depot_providers: &[(String, String)],
+    ) -> Result<ArtifactSearchResult, ToolError> {
+        let Some(context) = Self::personal_skill_context(caller, scope) else {
             return Ok(ArtifactSearchResult::default());
         };
-        let context = context.narrowed_to_upstreams(scope.allowed_namespaces());
         let context = context
             .without_depot_skill_upstreams(depot_providers, &config.depot_skill_upstreams)
             .await;
         let listing = search_visible_skills_bounded(&context, query, limit).await;
+        Ok(Self::project_skill_listing(listing, limit))
+    }
+
+    fn project_skill_listing(
+        listing: labby_runtime::skills::SkillsListResult,
+        limit: usize,
+    ) -> ArtifactSearchResult {
         let incomplete = listing.meta.as_ref().is_some_and(|meta| {
             meta.contains_key("unreachableUpstreams")
                 || meta.contains_key("truncated")
                 || meta.contains_key("incompleteSearchUpstreams")
         });
-        Ok(ArtifactSearchResult {
+        ArtifactSearchResult {
             entries: listing
                 .skills
                 .into_iter()
@@ -281,7 +294,7 @@ impl ProductCodeModeArtifactSearchProvider {
             } else {
                 Vec::new()
             },
-        })
+        }
     }
 
     fn personal_artifacts(
@@ -601,6 +614,27 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
             } else {
                 None
             };
+            // Keep ready snapshot matches even when the federated source exhausts
+            // its grace period. The shared projection retains caller visibility.
+            let ready_skills = if config
+                .sources
+                .contains(&CodeModeSearchSource::PersonalLabby)
+                && kinds.contains(&CodeModeCatalogKind::Skill)
+            {
+                Self::personal_skill_context(caller, scope)
+                    .map(|context| {
+                        Self::project_skill_listing(
+                            crate::skills::facade::search_first_party_skills(
+                                &context, query, limit,
+                            ),
+                            limit,
+                        )
+                        .entries
+                    })
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let search_personal_skills = async {
                 if !config
                     .sources
@@ -733,6 +767,9 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
             .await;
             let mut source_buckets = Vec::new();
             let mut personal_buckets = Vec::new();
+            if !ready_skills.is_empty() {
+                personal_buckets.push(ready_skills);
+            }
             let mut incomplete_sources = Vec::new();
             match personal_skills {
                 Ok(Some(result)) => {
@@ -1309,6 +1346,86 @@ mod tests {
             .unwrap();
         assert!(hits.entries.iter().any(|hit| hit.name == "using-labby"));
         assert_eq!(hits.incomplete_sources, ["personal_labby"]);
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn ready_first_party_skill_survives_stalled_proxy_source() {
+        use crate::skills::aggregate::ToolAccess;
+        use crate::skills::facade::{
+            SkillCallerScope, SkillRegistryContext, register_code_mode_skill_context,
+        };
+        use labby_gateway::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+        use labby_gateway::upstream::pool::UpstreamPool;
+        use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let runtime = GatewayRuntimeHandle::default();
+        runtime.swap(Some(Arc::new(UpstreamPool::new()))).await;
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(GatewayManager::new(
+            temp.path().join("config.toml"),
+            runtime,
+        ));
+        let upstream: UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name":"stalled", "url":format!("http://{address}/mcp"), "proxy_skills":true
+        }))
+        .unwrap();
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                upstream: vec![upstream],
+                ..Default::default()
+            })
+            .await;
+        let guard = register_code_mode_skill_context(SkillRegistryContext::with_manager(
+            manager,
+            SkillCallerScope::root(Some("reader".into()), ToolAccess::CodeModeOnly),
+        ));
+        let caller = CodeModeCaller::ScopedSkills {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                ..Default::default()
+            },
+            sub: Some("reader".into()),
+            skill_context_token: guard.token().into(),
+        };
+        let provider = ProductCodeModeArtifactSearchProvider {
+            depot: Arc::new(Manager::default()),
+            artifacts: Arc::new(ArtifactStore::new(temp.path().join("artifacts")).unwrap()),
+        };
+        let config = CodeModeSearchConfig {
+            sources: [
+                CodeModeSearchSource::PersonalLabby,
+                CodeModeSearchSource::PublicDepot,
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            provider.search(
+                "using-labby",
+                5,
+                &[CodeModeCatalogKind::Skill],
+                &config,
+                &caller,
+                CodeModeSurface::Mcp,
+                &ToolScope::default(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            result
+                .entries
+                .iter()
+                .any(|entry| entry.name == "using-labby"),
+            "ready authorized first-party matches must survive stalled proxy search"
+        );
+        assert!(result.incomplete_sources.contains(&"personal_labby".into()));
     }
 
     #[tokio::test]

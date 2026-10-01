@@ -380,14 +380,9 @@ pub(crate) async fn list_visible_skills(context: &SkillRegistryContext) -> Skill
     list_visible_skills_bounded(context, None).await
 }
 
-/// List caller-visible Skills while optionally bounding each proxied provider
-/// before federation. Product paths that already own a small result budget
-/// (notably query-driven Code Mode search) must pass it here rather than
-/// truncating the fully materialized federated catalog afterward.
-pub(crate) async fn list_visible_skills_bounded(
-    context: &SkillRegistryContext,
-    provider_max_items: Option<usize>,
-) -> SkillsListResult {
+/// Project the captured first-party generation with the caller's visibility.
+/// This snapshot-only seam never consults an upstream or the live pool.
+pub(crate) fn first_party_skill_listing(context: &SkillRegistryContext) -> SkillsListResult {
     let discovered = context.first_party.providers.discover();
     let mut artifact_entries_filtered = 0usize;
     let mut first_party_skills = Vec::with_capacity(discovered.len());
@@ -398,7 +393,7 @@ pub(crate) async fn list_visible_skills_bounded(
             artifact_entries_filtered += 1;
         }
     }
-    let mut listing = SkillsListResult {
+    let listing = SkillsListResult {
         result_type: Default::default(),
         skills: first_party_skills,
         next_cursor: None,
@@ -422,6 +417,19 @@ pub(crate) async fn list_visible_skills_bounded(
         artifact_entries_filtered,
         "filtered first-party Artifact Skills"
     );
+
+    listing
+}
+
+/// List caller-visible Skills while optionally bounding each proxied provider
+/// before federation. Product paths that already own a small result budget
+/// (notably query-driven Code Mode search) must pass it here rather than
+/// truncating the fully materialized federated catalog afterward.
+pub(crate) async fn list_visible_skills_bounded(
+    context: &SkillRegistryContext,
+    provider_max_items: Option<usize>,
+) -> SkillsListResult {
+    let mut listing = first_party_skill_listing(context);
 
     #[cfg(feature = "gateway")]
     {
@@ -451,18 +459,15 @@ pub(crate) async fn list_visible_skills_bounded(
     listing
 }
 
-/// Query caller-visible Skills without letting non-matching entries from a
-/// paginated upstream consume the result budget.
+/// Match already-authorized first-party metadata independently of remote search.
 #[cfg(feature = "gateway")]
-pub(crate) async fn search_visible_skills_bounded(
+pub(crate) fn search_first_party_skills(
     context: &SkillRegistryContext,
     query: &str,
     limit: usize,
 ) -> SkillsListResult {
     let limit = limit.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
-    let mut first_party = context.clone();
-    first_party.manager = None;
-    let mut listing = list_visible_skills_bounded(&first_party, None).await;
+    let mut listing = first_party_skill_listing(context);
     let normalized = query.trim().to_ascii_lowercase();
     listing.skills.retain(|entry| {
         entry.uri.to_ascii_lowercase().contains(&normalized)
@@ -473,6 +478,20 @@ pub(crate) async fn search_visible_skills_bounded(
                 .any(|value| value.to_ascii_lowercase().contains(&normalized))
     });
     listing.skills.truncate(limit);
+
+    listing
+}
+
+/// Query caller-visible Skills without letting non-matching entries from a
+/// paginated upstream consume the result budget.
+#[cfg(feature = "gateway")]
+pub(crate) async fn search_visible_skills_bounded(
+    context: &SkillRegistryContext,
+    query: &str,
+    limit: usize,
+) -> SkillsListResult {
+    let limit = limit.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
+    let mut listing = search_first_party_skills(context, query, limit);
 
     let proxied = proxied_skill_search(context, query, limit).await;
     let mut first_party = std::mem::take(&mut listing.skills).into_iter();

@@ -177,6 +177,13 @@ disclosure uses explicit retrieval APIs instead. Resource helpers point to
 `codemode.getSkill(uri)`. `codemode.describe(...)` stays metadata-only
 and returns the namespace/name/helper/tags needed to continue without guessing.
 
+Code Mode initializes Skill hints from the caller-authorized first-party
+catalog generation. Bootstrap does not refresh upstream Skill catalogs.
+Query-driven `codemode.search()` and explicit `codemode.listSkills()`,
+`codemode.getSkill()`, and `codemode.readSkill()` retain remote discovery and
+access checks. Ready local search results survive an incomplete remote source;
+coverage reports identify which sources did not finish.
+
 Catalog membership is discovery metadata, not authorization. Tool execution is
 still checked against the current `ToolScope` at dispatch time, and a
 `kinds` search filter only narrows results. It never grants a capability.

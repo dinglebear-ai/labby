@@ -183,9 +183,9 @@ pub fn to_json<T: serde::Serialize>(v: T) -> Result<Value, ToolError> {
     })
 }
 
-/// Rough char-based token estimator for dispatch telemetry logs.
+/// Rough byte-based token estimator for dispatch telemetry logs.
 ///
-/// Uses the conventional ~4-chars-per-token heuristic — cheap, dependency-free,
+/// Uses the conventional ~4-bytes-per-token heuristic — cheap, dependency-free,
 /// and accurate enough for capacity/cost tracking; do NOT use for LLM budget
 /// enforcement. Lives in this shared dispatch leaf so the MCP, HTTP, and CLI
 /// surfaces can all attribute tokens without crossing the `api -> mcp` boundary.
@@ -194,16 +194,37 @@ pub fn estimate_tokens(s: &str) -> usize {
     s.len().div_ceil(4)
 }
 
+/// Count compact JSON bytes without retaining a second serialized payload.
+fn serialized_json_bytes<T: serde::Serialize>(value: &T) -> usize {
+    #[derive(Default)]
+    struct Counter(usize);
+    impl std::io::Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 = self.0.saturating_add(bytes.len());
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter::default();
+    if serde_json::to_writer(&mut counter, value).is_ok() {
+        counter.0
+    } else {
+        0
+    }
+}
+
 /// Token estimate for a JSON value, computed against its serialized form.
 #[must_use]
 pub fn estimate_tokens_value(value: &Value) -> usize {
-    estimate_tokens(&serde_json::to_string(value).unwrap_or_default())
+    serialized_json_bytes(value).div_ceil(4)
 }
 
 /// Token estimate for an MCP arguments map (`request.arguments`).
 #[must_use]
 pub fn estimate_tokens_args(arguments: &serde_json::Map<String, Value>) -> usize {
-    estimate_tokens(&serde_json::to_string(arguments).unwrap_or_default())
+    serialized_json_bytes(arguments).div_ceil(4)
 }
 
 /// Extract a required string parameter from a JSON object.
@@ -338,3 +359,38 @@ pub fn create_db_file_0600(path: &std::path::PathBuf) {
 
 #[cfg(test)]
 mod test_home;
+
+#[cfg(test)]
+mod telemetry_count_tests {
+    use super::*;
+
+    #[test]
+    fn compact_byte_estimates_preserve_escaped_unicode_and_large_payloads() {
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!({"unicode": "é👋", "escape": "\n\t\"\\", "nested": [true, 0, -1.5]}),
+            serde_json::json!({"body": "é\"".repeat(1024 * 1024)}),
+        ] {
+            let compact = serde_json::to_string(&value).unwrap();
+            assert_eq!(serialized_json_bytes(&value), compact.len());
+            assert_eq!(estimate_tokens_value(&value), compact.len().div_ceil(4));
+            if let Some(arguments) = value.as_object() {
+                assert_eq!(estimate_tokens_args(arguments), compact.len().div_ceil(4));
+            }
+        }
+    }
+
+    #[test]
+    fn failed_serialization_discards_partial_count() {
+        struct Fails;
+        impl serde::Serialize for Fails {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                use serde::ser::SerializeSeq as _;
+                let mut sequence = serializer.serialize_seq(Some(2))?;
+                sequence.serialize_element("partial output")?;
+                Err(serde::ser::Error::custom("test failure"))
+            }
+        }
+        assert_eq!(serialized_json_bytes(&Fails), 0);
+    }
+}
