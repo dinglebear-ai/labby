@@ -9,6 +9,22 @@
 
 use std::path::PathBuf;
 
+/// Compare environment names using the host's environment semantics.
+#[must_use]
+pub fn environment_names_equal(left: &str, right: &str) -> bool {
+    environment_names_equal_with_case(left, right, cfg!(windows))
+}
+
+/// Compare environment names with explicit platform semantics for deterministic callers.
+#[must_use]
+pub fn environment_names_equal_with_case(left: &str, right: &str, case_insensitive: bool) -> bool {
+    if case_insensitive {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
 /// Match captured environment names using the host's environment semantics.
 #[must_use]
 pub fn environment_keys_contain(keys: &std::collections::BTreeSet<String>, name: &str) -> bool {
@@ -21,7 +37,10 @@ fn environment_keys_contain_with_case(
     case_insensitive: bool,
 ) -> bool {
     keys.contains(name)
-        || (case_insensitive && keys.iter().any(|key| key.eq_ignore_ascii_case(name)))
+        || (case_insensitive
+            && keys
+                .iter()
+                .any(|key| environment_names_equal_with_case(key, name, case_insensitive)))
 }
 
 /// Resolve the lab home directory: `$LABBY_HOME` if set and non-empty, else
@@ -64,6 +83,34 @@ pub fn env_non_empty(name: &str) -> Option<String> {
 #[cfg(test)]
 mod environment_tests {
     use super::*;
+
+    #[test]
+    fn environment_name_equality_matches_platform_case_rules() {
+        assert!(environment_names_equal_with_case(
+            "Labby_Token",
+            "LABBY_TOKEN",
+            true
+        ));
+        assert!(!environment_names_equal_with_case(
+            "Labby_Token",
+            "LABBY_TOKEN",
+            false
+        ));
+        assert!(environment_names_equal_with_case(
+            "Labby_Token",
+            "Labby_Token",
+            false
+        ));
+        assert!(!environment_names_equal_with_case(
+            "Labby_Token",
+            "OTHER_TOKEN",
+            true
+        ));
+        assert_eq!(
+            environment_names_equal("Labby_Token", "LABBY_TOKEN"),
+            cfg!(windows)
+        );
+    }
 
     #[test]
     fn windows_environment_provenance_keeps_mixed_case_external_overrides() {

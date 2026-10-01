@@ -15,6 +15,29 @@ use crate::upstream::types::UpstreamRuntimeOwner;
 
 use super::{ConfigMutationGuard, GatewayManager};
 
+fn credential_changed_upstreams(
+    previous: &GatewayConfig,
+    candidate: &GatewayConfig,
+    env_name: &str,
+    case_insensitive: bool,
+) -> Vec<String> {
+    candidate
+        .upstream
+        .iter()
+        .chain(previous.upstream.iter())
+        .filter(|upstream| {
+            upstream.bearer_token_env.as_deref().is_some_and(|name| {
+                labby_runtime::helpers::environment_names_equal_with_case(
+                    name,
+                    env_name,
+                    case_insensitive,
+                )
+            })
+        })
+        .map(|upstream| upstream.name.clone())
+        .collect()
+}
+
 /// Longest a caller waits for the gateway configuration-mutation lease before
 /// failing as `service_unavailable`. The longest legitimate holder observed is
 /// `gateway.add` of a stdio upstream whose child never answers the handshake:
@@ -369,13 +392,7 @@ impl GatewayManager {
             None => None,
         };
         let credentials_changed = credential.as_ref().map_or_else(Vec::new, |(env_name, _)| {
-            candidate
-                .upstream
-                .iter()
-                .chain(previous.upstream.iter())
-                .filter(|upstream| upstream.bearer_token_env.as_deref() == Some(env_name.as_str()))
-                .map(|upstream| upstream.name.clone())
-                .collect::<Vec<_>>()
+            credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
         });
         let commit_result = async {
             if let Some((env_name, token_value)) = credential.as_ref() {
@@ -704,5 +721,32 @@ mod mutation_lock_tests {
         let path = dir.path().join("config.toml.mutation.lock");
         let file = open_config_mutation_lock(&path).unwrap();
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+    }
+}
+
+#[cfg(test)]
+mod credential_name_tests {
+    use super::*;
+
+    #[test]
+    fn credential_reload_marks_all_windows_alias_upstreams_changed() {
+        let candidate: GatewayConfig = serde_json::from_value(serde_json::json!({"upstream":[
+            {"name":"selected","url":"https://fixture.invalid/mcp","bearer_token_env":"LABBY_TOKEN"},
+            {"name":"sibling","url":"https://fixture.invalid/mcp","bearer_token_env":"Labby_Token"},
+            {"name":"unrelated","url":"https://fixture.invalid/mcp","bearer_token_env":"OTHER_TOKEN"}
+        ]})).unwrap();
+        let previous: GatewayConfig = serde_json::from_value(serde_json::json!({"upstream":[
+            {"name":"removed-alias","url":"https://fixture.invalid/mcp","bearer_token_env":"labby_token"}
+        ]})).unwrap();
+        assert_eq!(
+            credential_changed_upstreams(&previous, &candidate, "LABBY_TOKEN", true),
+            vec!["selected", "sibling", "removed-alias"],
+            "new, sibling, and prior aliases must rebuild peers after a Windows credential change"
+        );
+        assert_eq!(
+            credential_changed_upstreams(&previous, &candidate, "LABBY_TOKEN", false),
+            vec!["selected"],
+            "Unix credential changes remain case-sensitive"
+        );
     }
 }

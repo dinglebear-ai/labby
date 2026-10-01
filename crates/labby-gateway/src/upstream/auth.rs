@@ -121,9 +121,25 @@ fn configured_bearer_token_from_sources(
 }
 
 fn configured_bearer_token_from_dotenv_path(env_name: &str, path: &Path) -> Option<String> {
+    configured_bearer_token_from_dotenv_path_with_case(env_name, path, cfg!(windows))
+}
+
+// Explicit platform mode keeps the parser regression deterministic on every host.
+fn configured_bearer_token_from_dotenv_path_with_case(
+    env_name: &str,
+    path: &Path,
+    case_insensitive: bool,
+) -> Option<String> {
     dotenvy::from_path_iter(path).ok().and_then(|iter| {
         iter.filter_map(Result::ok)
-            .find_map(|(key, value)| (key == env_name).then_some(value))
+            .find_map(|(key, value)| {
+                labby_runtime::helpers::environment_names_equal_with_case(
+                    &key,
+                    env_name,
+                    case_insensitive,
+                )
+                .then_some(value)
+            })
             .and_then(|value| normalize_bearer_token(&value))
     })
 }
@@ -198,6 +214,48 @@ mod tests {
             imported_from: None,
             priority: 1.0,
         }
+    }
+
+    #[test]
+    fn file_managed_dotenv_bearer_honors_windows_name_aliases() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(".env");
+        std::fs::write(
+            &path,
+            "Labby_Token=\"Bearer first-secret\"\nLABBY_TOKEN=second-secret\n",
+        )
+        .unwrap();
+        assert_eq!(
+            configured_bearer_token_from_dotenv_path_with_case("LABBY_TOKEN", &path, true),
+            Some("first-secret".into()),
+            "Windows aliases retain first assignment precedence"
+        );
+        assert_eq!(
+            configured_bearer_token_from_dotenv_path_with_case("LABBY_TOKEN", &path, false),
+            Some("second-secret".into()),
+            "Unix environment names remain exact"
+        );
+        std::fs::write(&path, "Labby_Token=\"Bearer replacement-secret\"\n").unwrap();
+        assert_eq!(
+            configured_bearer_token_from_dotenv_path_with_case("LABBY_TOKEN", &path, true),
+            Some("replacement-secret".into()),
+            "reload reads the current file-managed alias"
+        );
+        assert_eq!(
+            configured_bearer_token_from_dotenv_path_with_case("LABBY_TOKEN", &path, false),
+            None
+        );
+        std::fs::write(&path, "Labby_Token=\nLABBY_TOKEN=stale-secret\n").unwrap();
+        assert_eq!(
+            configured_bearer_token_from_dotenv_path_with_case("LABBY_TOKEN", &path, true),
+            None,
+            "an explicitly empty highest-precedence alias cannot resurrect a lower assignment"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            configured_bearer_token_from_dotenv_path_with_case("LABBY_TOKEN", &path, true),
+            None
+        );
     }
 
     #[test]
