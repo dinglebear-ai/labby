@@ -518,6 +518,13 @@ fn write_atomically(
         source: e,
     })?;
     set_secure_perms(tmp.path())?;
+    #[cfg(windows)]
+    labby_winjob::fs::set_created_owner(tmp.path(), tmp.as_file(), false).map_err(|error| {
+        MergeError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: WriteFailReason::from_io(&error),
+        }
+    })?;
     {
         let file = tmp.as_file_mut();
         for line in lines {
@@ -696,6 +703,14 @@ fn copy_file_contents(src: &Path, dest_path: &Path) -> std::io::Result<()> {
         }
         return Err(std::io::Error::other(error.to_string()));
     }
+    #[cfg(windows)]
+    if !dest_existed {
+        if let Err(error) = labby_winjob::fs::set_created_owner(dest_path, &dest, false) {
+            drop(dest);
+            drop(fs::remove_file(dest_path));
+            return Err(error);
+        }
+    }
     let copied = std::io::copy(&mut src, &mut dest).map(|_| ());
     if copied.is_err() && !dest_existed {
         drop(dest);
@@ -824,6 +839,34 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn merged_env_and_backup_support_protected_current_user_reads() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let path = directory.path().join(".env");
+        for value in ["first", "second"] {
+            let outcome = merge(
+                &path,
+                MergeRequest {
+                    entries: vec![EnvEntry::new("LABBY_LOG", value)],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let bytes = crate::installation::secure_file::read_private(&path).unwrap();
+            assert_eq!(
+                String::from_utf8(bytes).unwrap(),
+                format!("LABBY_LOG={value}\n")
+            );
+            if let Some(backup) = outcome.backup_path {
+                assert_eq!(
+                    crate::installation::secure_file::read_private(&backup).unwrap(),
+                    b"LABBY_LOG=first\n"
+                );
+            }
+        }
     }
 
     #[test]
