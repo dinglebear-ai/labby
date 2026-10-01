@@ -3371,12 +3371,20 @@ mod tests {
         assert_eq!(pruned, vec![PathBuf::from("a")]);
     }
 
-    /// Auth resolution needs an installation root, and these tests must not
-    /// depend on the process environment, so they name one explicitly.
-    const TEST_HOME: &str = "/labby-config-test-home";
-
+    /// Auth resolution needs an absolute installation root. Supply it explicitly
+    /// without reading HOME or changing the process environment.
     fn with_test_home(vars: impl IntoIterator<Item = (String, String)>) -> Vec<(String, String)> {
-        let mut env = vec![("HOME".to_string(), TEST_HOME.to_string())];
+        // Resolution only constructs paths; it never creates or opens this root.
+        // Use the platform's absolute temp directory instead of Unix-only syntax.
+        let home = std::env::temp_dir().join("labby-config-test-home");
+        assert!(
+            home.is_absolute(),
+            "the OAuth fixture HOME must be absolute"
+        );
+        let mut env = vec![(
+            "HOME".to_string(),
+            home.to_str().expect("UTF-8 fixture HOME").to_owned(),
+        )];
         env.extend(vars);
         env
     }
