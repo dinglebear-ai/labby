@@ -50,7 +50,7 @@ struct AgentRunEvidence {
     session_id: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
     verified_at: u64,
@@ -66,6 +66,8 @@ struct Evidence {
 #[serde(deny_unknown_fields)]
 struct Journal {
     checks: BTreeMap<Check, Evidence>,
+    #[serde(default)]
+    attempts: BTreeMap<Check, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, JsonSchema)]
@@ -255,22 +257,114 @@ fn read(root: &Path, subject: &str) -> Result<Journal, ToolError> {
     }
 }
 
-/// Opaque pre-operation configuration identity. Never contains credentials.
+/// Opaque configuration and attempt identity, scoped to one principal/check.
 #[derive(Clone)]
 pub(crate) struct CheckFingerprint {
     check: Check,
     digest: String,
+    attempt: String,
+    previous: Option<Evidence>,
 }
 
-pub(crate) fn capture_configuration_for_store(
+pub(crate) fn begin_verification_for_store(
     store: &crate::access::AccessStore,
+    subject: &str,
     check: Check,
 ) -> Result<CheckFingerprint, ToolError> {
+    begin_verification_at(&store.storage_dir(), subject, check)
+}
+
+fn begin_verification_at(
+    root: &Path,
+    subject: &str,
+    check: Check,
+) -> Result<CheckFingerprint, ToolError> {
+    let _lock = journal_lock(root, subject)?;
+    let digest = configuration_digest(root, check)?;
+    let mut journal = read(root, subject)?;
+    let previous = if check == Check::CatalogSearch {
+        journal.checks.get(&check).cloned()
+    } else {
+        journal.checks.remove(&check)
+    };
+    let attempt = uuid::Uuid::new_v4().to_string();
+    journal.attempts.insert(check, attempt.clone());
+    save(root, subject, &journal)?;
     Ok(CheckFingerprint {
         check,
-        digest: configuration_digest(&store.storage_dir(), check)?,
+        digest,
+        attempt,
+        previous,
     })
 }
+
+/// A healthy empty search can retain earlier real-result qualification. It
+/// never creates new evidence or refreshes its timestamp/expiry.
+pub(crate) fn preserve_catalog_verification_for_store(
+    store: &crate::access::AccessStore,
+    subject: &str,
+    expected: CheckFingerprint,
+) -> Result<(), ToolError> {
+    preserve_catalog_verification_at(&store.storage_dir(), subject, expected)
+}
+
+fn preserve_catalog_verification_at(
+    root: &Path,
+    subject: &str,
+    expected: CheckFingerprint,
+) -> Result<(), ToolError> {
+    if expected.check != Check::CatalogSearch {
+        return Err(failure("not a catalog verification"));
+    }
+    let _lock = journal_lock(root, subject)?;
+    let mut journal = read(root, subject)?;
+    if journal.attempts.get(&expected.check) != Some(&expected.attempt) {
+        return Err(failure("A newer verification superseded this check"));
+    }
+    if configuration_digest(root, expected.check)? != expected.digest {
+        return Err(failure("Configuration changed during verification"));
+    }
+    if let Some(previous) = expected
+        .previous
+        .filter(|e| e.configuration_digest == expected.digest)
+    {
+        journal.checks.insert(expected.check, previous);
+        save(root, subject, &journal)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn fail_verification_for_store(
+    store: &crate::access::AccessStore,
+    subject: &str,
+    expected: CheckFingerprint,
+) -> Result<(), ToolError> {
+    fail_verification_at(&store.storage_dir(), subject, expected)
+}
+
+fn fail_verification_at(
+    root: &Path,
+    subject: &str,
+    expected: CheckFingerprint,
+) -> Result<(), ToolError> {
+    let _lock = journal_lock(root, subject)?;
+    let mut journal = read(root, subject)?;
+    // An older failure cannot erase a newer successful attempt either.
+    if journal.attempts.get(&expected.check) == Some(&expected.attempt) {
+        journal.checks.remove(&expected.check);
+        save(root, subject, &journal)?;
+    }
+    Ok(())
+}
+
+fn save(root: &Path, subject: &str, journal: &Journal) -> Result<(), ToolError> {
+    let path = root
+        .join("first-use")
+        .join(format!("{}.json", subject_key(subject)?));
+    super::secure_file::replace_journal(&path, &serde_json::to_vec(journal).map_err(failure)?)
+        .map_err(failure)
+}
+
 pub(crate) fn configuration_digest_for_store(
     store: &crate::access::AccessStore,
     check: Check,
@@ -292,6 +386,7 @@ pub(crate) fn record_verified_with_expected_digest_for_store(
         now()?,
         None,
         Some(expected_digest),
+        None,
     )
 }
 pub(crate) fn record_verified_if_unchanged_for_store(
@@ -314,6 +409,7 @@ pub(crate) fn record_verified_if_unchanged_for_store(
         now()?,
         None,
         Some(&expected.digest),
+        Some(&expected.attempt),
     )
 }
 pub(crate) fn record_agent_run_if_unchanged_for_store(
@@ -345,6 +441,7 @@ pub(crate) fn record_agent_run_if_unchanged_for_store(
             session_id: session_id.into(),
         }),
         Some(&expected.digest),
+        Some(&expected.attempt),
     )
 }
 
@@ -386,6 +483,7 @@ pub(crate) fn record_agent_run_for_store(
             version,
             session_id: session_id.into(),
         }),
+        None,
         None,
     )
 }
@@ -510,9 +608,11 @@ async fn current_state(
 fn invalidate_at(root: &Path, subject: &str, check: Check) -> Result<(), ToolError> {
     let _lock = journal_lock(root, subject)?;
     let mut journal = read(root, subject)?;
-    if journal.checks.remove(&check).is_none() {
-        return Ok(());
-    }
+    journal.checks.remove(&check);
+    // Invalidation must also fence effects already in flight, even with no receipt.
+    journal
+        .attempts
+        .insert(check, uuid::Uuid::new_v4().to_string());
     let path = root
         .join("first-use")
         .join(format!("{}.json", subject_key(subject)?));
@@ -527,9 +627,19 @@ fn record_at(
     resource_id: &str,
     verified_at: u64,
 ) -> Result<(), ToolError> {
-    record_evidence_at(root, subject, check, resource_id, verified_at, None, None)
+    record_evidence_at(
+        root,
+        subject,
+        check,
+        resource_id,
+        verified_at,
+        None,
+        None,
+        None,
+    )
 }
 
+#[allow(clippy::too_many_arguments)] // Optional operation fencing accompanies legacy receipt writers.
 fn record_evidence_at(
     root: &Path,
     subject: &str,
@@ -538,6 +648,7 @@ fn record_evidence_at(
     verified_at: u64,
     agent_run: Option<AgentRunEvidence>,
     expected_digest: Option<&str>,
+    expected_attempt: Option<&str>,
 ) -> Result<(), ToolError> {
     if resource_id.trim().is_empty() || resource_id.len() > 512 {
         return Err(ToolError::InvalidParam {
@@ -553,6 +664,11 @@ fn record_evidence_at(
         ));
     }
     let mut journal = read(root, subject)?;
+    if expected_attempt
+        .is_some_and(|attempt| journal.attempts.get(&check).map(String::as_str) != Some(attempt))
+    {
+        return Err(failure("A newer verification superseded this check"));
+    }
     journal.checks.insert(
         check,
         Evidence {
@@ -623,6 +739,125 @@ pub(crate) fn state_action(_params: &Value) -> Result<Value, ToolError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn complete_attempt(
+        root: &Path,
+        subject: &str,
+        expected: CheckFingerprint,
+        at: u64,
+    ) -> Result<(), ToolError> {
+        record_evidence_at(
+            root,
+            subject,
+            expected.check,
+            "real-result",
+            at,
+            None,
+            Some(&expected.digest),
+            Some(&expected.attempt),
+        )
+    }
+
+    #[test]
+    fn newer_failed_attempt_fences_older_success_and_survives_reload() {
+        let root = tempfile::tempdir().unwrap();
+        let old = begin_verification_at(root.path(), "user", Check::AgentProvider).unwrap();
+        let latest = begin_verification_at(root.path(), "user", Check::AgentProvider).unwrap();
+        fail_verification_at(root.path(), "user", latest).unwrap();
+        assert!(complete_attempt(root.path(), "user", old, 10).is_err());
+        assert_eq!(
+            snapshot_at(root.path(), "user", 11).unwrap().checks[1].status,
+            CheckStatus::Pending
+        );
+        let latest = begin_verification_at(root.path(), "user", Check::AgentProvider).unwrap();
+        complete_attempt(root.path(), "user", latest, 12).unwrap();
+        assert_eq!(
+            snapshot_at(root.path(), "user", 13).unwrap().checks[1].status,
+            CheckStatus::Verified
+        );
+    }
+
+    #[test]
+    fn invalidation_fences_inflight_and_attempts_are_principal_and_check_scoped() {
+        let root = tempfile::tempdir().unwrap();
+        let doomed = begin_verification_at(root.path(), "user", Check::AgentRun).unwrap();
+        let unrelated = begin_verification_at(root.path(), "other", Check::AgentRun).unwrap();
+        let provider = begin_verification_at(root.path(), "user", Check::AgentProvider).unwrap();
+        invalidate_at(root.path(), "user", Check::AgentRun).unwrap();
+        assert!(complete_attempt(root.path(), "user", doomed, 10).is_err());
+        complete_attempt(root.path(), "other", unrelated, 10).unwrap();
+        complete_attempt(root.path(), "user", provider, 10).unwrap();
+    }
+
+    #[test]
+    fn healthy_empty_catalog_preserves_real_receipt_without_minting_or_extending_it() {
+        let root = tempfile::tempdir().unwrap();
+        let first = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        preserve_catalog_verification_at(root.path(), "user", first).unwrap();
+        assert_eq!(
+            snapshot_at(root.path(), "user", 11).unwrap().checks[4].status,
+            CheckStatus::Pending
+        );
+        record_at(root.path(), "user", Check::CatalogSearch, "public", 10).unwrap();
+        let old = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        let latest = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        preserve_catalog_verification_at(root.path(), "user", latest).unwrap();
+        assert!(preserve_catalog_verification_at(root.path(), "user", old).is_err());
+        let state = snapshot_at(root.path(), "user", 11).unwrap();
+        assert_eq!(state.checks[4].status, CheckStatus::Verified);
+        assert_eq!(state.checks[4].verified_at, Some(10));
+        assert_eq!(
+            snapshot_at(root.path(), "user", 11 + MAX_AGE_SECONDS)
+                .unwrap()
+                .checks[4]
+                .status,
+            CheckStatus::NeedsRecheck
+        );
+        let failure = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        fail_verification_at(root.path(), "user", failure).unwrap();
+        assert_eq!(
+            snapshot_at(root.path(), "user", 11).unwrap().checks[4].status,
+            CheckStatus::Pending
+        );
+    }
+
+    #[test]
+    fn older_catalog_failure_cannot_clear_newer_success_and_changed_configuration_is_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let old = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        let latest = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        complete_attempt(root.path(), "user", latest, 10).unwrap();
+        fail_verification_at(root.path(), "user", old).unwrap();
+        assert_eq!(
+            snapshot_at(root.path(), "user", 11).unwrap().checks[4].status,
+            CheckStatus::Verified
+        );
+        let changed = begin_verification_at(root.path(), "user", Check::CatalogSearch).unwrap();
+        std::fs::write(root.path().join("config.toml"), "[depot]\nenabled=false\n").unwrap();
+        assert!(preserve_catalog_verification_at(root.path(), "user", changed.clone()).is_err());
+        assert!(complete_attempt(root.path(), "user", changed, 12).is_err());
+    }
+
+    #[test]
+    fn legacy_journal_without_attempts_remains_readable() {
+        let root = tempfile::tempdir().unwrap();
+        record_at(root.path(), "user", Check::AgentProvider, "model", 10).unwrap();
+        let mut value = serde_json::to_value(read(root.path(), "user").unwrap()).unwrap();
+        value.as_object_mut().unwrap().remove("attempts");
+        let path = root
+            .path()
+            .join("first-use")
+            .join(format!("{}.json", subject_key("user").unwrap()));
+        super::super::secure_file::replace_journal(&path, &serde_json::to_vec(&value).unwrap())
+            .unwrap();
+        assert_eq!(
+            snapshot_at(root.path(), "user", 11).unwrap().checks[1].status,
+            CheckStatus::Verified
+        );
+        let latest = begin_verification_at(root.path(), "user", Check::AgentProvider).unwrap();
+        complete_attempt(root.path(), "user", latest, 12).unwrap();
+        assert!(!read(root.path(), "user").unwrap().attempts.is_empty());
+    }
 
     #[tokio::test]
     async fn authenticated_identity_owns_its_state_and_unknown_identity_is_denied() {
@@ -866,7 +1101,8 @@ mod tests {
                 "server::time",
                 12,
                 None,
-                Some(&before)
+                Some(&before),
+                None,
             )
             .is_err()
         );
@@ -885,6 +1121,7 @@ mod tests {
             12,
             None,
             Some(&current),
+            None,
         )
         .unwrap();
         assert_eq!(

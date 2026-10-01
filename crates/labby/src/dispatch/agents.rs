@@ -748,8 +748,7 @@ async fn invalidate_agent_readiness_required(
     let store = store.clone();
     let principal = principal.to_owned();
     tokio::task::spawn_blocking(move || {
-        crate::installation::readiness::invalidate_verified_for_store(&store, &principal, check)?;
-        crate::installation::readiness::capture_configuration_for_store(&store, check)
+        crate::installation::readiness::begin_verification_for_store(&store, &principal, check)
     })
     .await
     .map_err(|_| internal())?

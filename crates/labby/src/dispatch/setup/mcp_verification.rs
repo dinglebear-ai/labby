@@ -196,16 +196,10 @@ pub(crate) async fn call(
     if tool_name.is_empty() || tool_name.len() > 256 {
         return Err(invalid("Select a supported tool"));
     }
-    let journal = store.clone();
-    let subject = principal_id.clone();
-    tokio::task::spawn_blocking(move || {
-        readiness::invalidate_verified_for_store(&journal, &subject, Check::McpToolCall)
-    })
-    .await
-    .map_err(|_| unavailable())??;
     let capture_store = store.clone();
+    let subject = principal_id.clone();
     let fingerprint = tokio::task::spawn_blocking(move || {
-        readiness::capture_configuration_for_store(&capture_store, Check::McpToolCall)
+        readiness::begin_verification_for_store(&capture_store, &subject, Check::McpToolCall)
     })
     .await
     .map_err(|_| unavailable())??;

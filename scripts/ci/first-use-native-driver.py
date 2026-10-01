@@ -9,6 +9,7 @@ import json
 import os
 import math
 import re
+import signal
 import tempfile
 from pathlib import Path
 import shlex
@@ -214,6 +215,30 @@ def advertised_tools(gateway: Gateway) -> list[dict]:
                 pass
 
 
+def run_selected_client(argv: list[str], directory: str, timeout: float = 60) -> None:
+    process = subprocess.Popen(argv, cwd=directory, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, start_new_session=True)
+    def interrupted(_signal, _frame):
+        raise qualification.QualificationError('selected client stage was terminated')
+    previous_handler = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        try:
+            code = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise qualification.QualificationError('selected client timed out; its process group was stopped') from None
+    finally:
+        # The outer harness first sends SIGTERM, allowing cleanup of this
+        # separate client group before it forcibly stops a stuck stage.
+        signal.signal(signal.SIGTERM, previous_handler)
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.wait()
+    if code:
+        raise qualification.QualificationError(f'selected client exited with status {code}')
+
+
 def external_clients(gateway: Gateway, tool: str, arguments: dict):
     selected = json.loads(required("LABBY_QUALIFICATION_SELECTED_CLIENTS"))
     if not selected:
@@ -251,7 +276,7 @@ def external_clients(gateway: Gateway, tool: str, arguments: dict):
             help_result = subprocess.run(help_command, capture_output=True, text=True, timeout=10, check=True)
             if any(flag not in help_result.stdout for flag in flags):
                 raise qualification.QualificationError("installed selected client does not support the reviewed bounded driver flags")
-            subprocess.run(argv, cwd=directory, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=True)
+            run_selected_client(argv, directory)
     state = gateway.action("setup", "readiness.state", {})
     evidence = next((check for check in state.get("checks", []) if check.get("check") == "selected_clients"), {})
     if evidence.get("status") != "verified":
@@ -271,7 +296,7 @@ def mcp(gateway: Gateway):
         params["bearer_token_value"] = required("LABBY_QUALIFICATION_MCP_TOKEN")
     gateway.action("gateway", "gateway.add", params)
     gateway.action("gateway", "gateway.test", {"name": name, "confirm": True})
-    tools = gateway.action("setup", "setup.mcp.verification.tools", {"name": name, "expected_url": metadata["url"]})
+    tools = gateway.action("setup", "mcp.verification.tools", {"name": name, "expected_url": metadata["url"]})
     tool = required("LABBY_QUALIFICATION_TOOL")
     if tool not in [entry.get("name") for entry in tools.get("tools", [])]:
         raise qualification.QualificationError("approved tool is not an exposed eligible verification tool")
@@ -282,7 +307,7 @@ def mcp(gateway: Gateway):
     fingerprint = reviewed[0].get("reviewFingerprint") if len(reviewed) == 1 else None
     if not isinstance(fingerprint, str) or not fingerprint:
         raise qualification.QualificationError("tool review returned no stable approval fingerprint")
-    result = gateway.action("setup", "setup.mcp.verification.call", {"name": name, "expected_url": metadata["url"], "expected_fingerprint": fingerprint, "tool": tool, "arguments": arguments, "approved": True})
+    result = gateway.action("setup", "mcp.verification.call", {"name": name, "expected_url": metadata["url"], "expected_fingerprint": fingerprint, "tool": tool, "arguments": arguments, "approved": True})
     if result.get("verified") is not True or result.get("server") != name or result.get("tool") != tool:
         raise qualification.QualificationError("approved MCP tool did not earn real verification evidence")
     external_clients(gateway, tool, arguments)

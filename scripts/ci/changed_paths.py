@@ -134,6 +134,10 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/generate-verifier-bootstrap.py",
             "scripts/ci/test_release_provenance_bundles.py",
             "scripts/ci/test_verifier_bootstrap.py",
+            "scripts/ci/qualify-first-use.py",
+            "scripts/ci/first-use-native-driver.py",
+            "scripts/ci/test_first_use_qualification.py",
+            "scripts/ci/test_first_use_native_driver.py",
             "scripts/ci/check_node_toolchain_sync.py",
             "scripts/ci/js-advisory-policy.json",
             "scripts/ci/js_advisory_gate.py",
@@ -337,6 +341,10 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
                 "scripts/ci/generate-verifier-bootstrap.py",
                 "scripts/ci/test_release_provenance_bundles.py",
                 "scripts/ci/test_verifier_bootstrap.py",
+                "scripts/ci/qualify-first-use.py",
+                "scripts/ci/first-use-native-driver.py",
+                "scripts/ci/test_first_use_qualification.py",
+                "scripts/ci/test_first_use_native_driver.py",
             },
         ):
             result["release"] = True

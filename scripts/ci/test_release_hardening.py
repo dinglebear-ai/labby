@@ -194,6 +194,19 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("needs.changes.outputs.workflow", release_contract["if"])
         self.assertIn("scripts.ci.test_release_hardening", str(release_contract["steps"]))
 
+    def test_first_use_harness_changes_run_their_release_contract_suites(self) -> None:
+        from scripts.ci.changed_paths import classify
+        ci = yaml.load(self.text(".github/workflows/ci.yml"), Loader=yaml.BaseLoader)
+        commands = "\n".join(step.get("run", "") for step in ci["jobs"]["release-contract"]["steps"])
+        for suite in ("test_first_use_qualification", "test_first_use_native_driver"):
+            self.assertIn("scripts.ci." + suite, commands)
+        for name in ("qualify-first-use.py", "first-use-native-driver.py", "test_first_use_qualification.py", "test_first_use_native_driver.py"):
+            with self.subTest(path=name):
+                gates = classify("pull_request", ["scripts/ci/" + name])
+                self.assertTrue(gates["workflow"])
+                self.assertTrue(gates["release"])
+                self.assertFalse(gates["rust_compile"])
+
     def test_release_preflight_checks_baselines_and_credentials_before_builds(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         preflight = str(release["jobs"]["preflight"]["steps"])

@@ -338,11 +338,23 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     let otherlive = crate::live_gateway::detect_bound_bearer_target(&base, other)
         .await
         .unwrap();
-    assert!(
-        otherlive
-            .connect_service_with_evidence((), Some(&proofs["claude-code"]))
+    let other_client = otherlive
+        .connect_service_with_evidence((), Some(&proofs["claude-code"]))
+        .await
+        .unwrap();
+    other_client
+        .peer()
+        .call_tool(CallToolRequestParams::new("success"))
+        .await
+        .unwrap();
+    drop(other_client.cancel().await);
+    // Another authenticated principal may use its own authority, but possession
+    // of this owner's observation proof cannot complete the owner's readiness.
+    assert_eq!(
+        crate::dispatch::setup::readiness::state_for_identity(store.clone(), identity.clone())
             .await
-            .is_err()
+            .unwrap()["checks"][3]["status"],
+        "pending"
     );
     let client = claude_live
         .connect_service_with_evidence((), Some(&proofs["claude-code"]))
@@ -411,11 +423,16 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     )
     .await
     .unwrap();
-    assert!(
-        live.connect_service_with_evidence((), Some(&proofs["codex"]))
-            .await
-            .is_err()
-    );
+    let old_client = codex_live
+        .connect_service_with_evidence((), Some(&proofs["codex"]))
+        .await
+        .unwrap();
+    old_client
+        .peer()
+        .call_tool(CallToolRequestParams::new("success"))
+        .await
+        .unwrap();
+    drop(old_client.cancel().await);
     assert_eq!(
         crate::dispatch::setup::readiness::state_for_identity(store, identity)
             .await

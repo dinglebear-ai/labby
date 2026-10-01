@@ -298,10 +298,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_observation_actions_require_authenticated_http_context() {
+    fn first_use_actions_require_authenticated_http_context() {
         let registry = crate::registry::build_docs_registry();
         let actions = build_action_catalog(registry.services());
-        for name in ["clients.session.start", "clients.session.revoke"] {
+        for name in [
+            "clients.session.start",
+            "clients.session.revoke",
+            "readiness.state",
+            "readiness.clients.defer",
+            "mcp.verification.tools",
+            "mcp.verification.call",
+        ] {
             let action = actions
                 .iter()
                 .find(|row| row.service == "setup" && row.action == name)
@@ -310,6 +317,10 @@ mod tests {
             assert!(!action.surface_availability.mcp);
             assert!(action.requires_http_subject);
             assert!(action.auth_posture.contains("CSRF"));
+            if name.starts_with("mcp.verification.") {
+                assert!(action.requires_admin);
+                assert!(action.auth_posture.contains("lab:admin"));
+            }
         }
     }
 
@@ -558,7 +569,11 @@ mod tests {
 
 fn auth_posture(service: &str, action: &str, requires_admin: bool) -> String {
     if service == "setup" && crate::catalog::http_only_action(service, action) {
-        "HTTP-only authenticated personal identity; browser sessions require CSRF, observation proof grants no access".to_string()
+        if requires_admin {
+            "HTTP-only authenticated identity with lab:admin and installation gateway authority; browser mutations require CSRF".to_string()
+        } else {
+            "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access".to_string()
+        }
     } else if service == "fs" && action == "fs.preview" {
         "HTTP-only admin/browser session path; intentionally unavailable on MCP".to_string()
     } else if service == "gateway" && action == "gateway.oauth.authorize" {

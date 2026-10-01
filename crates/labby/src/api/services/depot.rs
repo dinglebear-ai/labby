@@ -174,13 +174,23 @@ async fn discover(
     })
     .map(Json)
     .map_err(map_discovery_error);
-    let result = access
+    match access
         .finish(&state, &authority, auth, identity, result)
-        .await?;
-    if let Some(readiness) = readiness {
-        readiness.finish(&result.0).await?;
+        .await
+    {
+        Ok(result) => {
+            if let Some(readiness) = readiness {
+                readiness.finish(&result.0).await?;
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            if let Some(readiness) = readiness {
+                readiness.fail().await?;
+            }
+            Err(error)
+        }
     }
-    Ok(result)
 }
 
 #[derive(Deserialize)]

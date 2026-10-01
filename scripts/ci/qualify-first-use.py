@@ -88,7 +88,20 @@ def command(argv: list[str], environment: dict[str, str], deadline: float) -> No
     try:
         code = process.wait(timeout=remaining)
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
+        # Give a driver a bounded opportunity to stop any owned client groups
+        # before forcibly stopping the stage and remaining descendants.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait()
         raise QualificationError("qualification stage timed out") from None
     if code:

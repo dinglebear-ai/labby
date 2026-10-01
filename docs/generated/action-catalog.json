@@ -8802,7 +8802,7 @@
       "web_ui": false
     },
     "requires_http_subject": true,
-    "auth_posture": "HTTP-only authenticated personal identity; browser sessions require CSRF, observation proof grants no access",
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -8832,7 +8832,7 @@
       "web_ui": false
     },
     "requires_http_subject": true,
-    "auth_posture": "HTTP-only authenticated personal identity; browser sessions require CSRF, observation proof grants no access",
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9064,12 +9064,12 @@
     "returns": "McpVerificationResult",
     "surface_availability": {
       "cli": false,
-      "mcp": true,
+      "mcp": false,
       "api": true,
       "web_ui": false
     },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated identity with lab:admin and installation gateway authority; browser mutations require CSRF",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9102,12 +9102,12 @@
     "returns": "McpVerificationTools",
     "surface_availability": {
       "cli": false,
-      "mcp": true,
+      "mcp": false,
       "api": true,
       "web_ui": false
     },
-    "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated identity with lab:admin and installation gateway authority; browser mutations require CSRF",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9169,12 +9169,12 @@
     "returns": "ReadinessState",
     "surface_availability": {
       "cli": false,
-      "mcp": true,
+      "mcp": false,
       "api": true,
       "web_ui": false
     },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9192,12 +9192,12 @@
     "returns": "ReadinessState",
     "surface_availability": {
       "cli": false,
-      "mcp": true,
+      "mcp": false,
       "api": true,
       "web_ui": false
     },
-    "requires_http_subject": false,
-    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },

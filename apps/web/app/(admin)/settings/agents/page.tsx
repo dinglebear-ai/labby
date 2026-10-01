@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ArrowUpRight, CheckCircle2, CircleAlert, Loader2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -22,6 +22,25 @@ export default function AgentProviderSettingsPage(): React.ReactElement {
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<string>()
   const [checkFailed, setCheckFailed] = useState(false)
+
+  const probe = useRef<{ generation: number; controller?: AbortController }>({ generation: 0 })
+
+  function invalidateProbe(): void {
+    probe.current.generation++
+    probe.current.controller?.abort()
+    setChecking(false)
+    setCheckResult(undefined)
+    setCheckFailed(false)
+  }
+
+  useEffect(() => {
+    invalidateProbe()
+    const activeProbe = probe.current
+    return () => {
+      activeProbe.generation++
+      activeProbe.controller?.abort()
+    }
+  }, [principalId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -47,19 +66,26 @@ export default function AgentProviderSettingsPage(): React.ReactElement {
 
   async function checkProvider(): Promise<void> {
     if (!principalId) return
+    const generation = ++probe.current.generation
+    probe.current.controller?.abort()
+    const controller = new AbortController()
+    probe.current.controller = controller
+    const current = () => generation === probe.current.generation && !controller.signal.aborted
     setChecking(true)
     setCheckResult(undefined)
     setCheckFailed(false)
     try {
-      const models = await listAgentModels('personal', principalId)
+      const models = await listAgentModels('personal', principalId, controller.signal)
+      if (!current()) return
       setCheckResult(models.length > 0
         ? `The running Labby server reached the Agent provider and listed ${models.length} available model${models.length === 1 ? '' : 's'}. Select one when creating an Agent.`
         : 'The running Labby server reached the Agent provider, but it returned no available models.')
     } catch (reason) {
+      if (!current() || isAbortError(reason)) return
       setCheckFailed(true)
       setCheckResult(reason instanceof Error ? reason.message : 'Could not check the Agent provider from the Labby server.')
     } finally {
-      setChecking(false)
+      if (current()) setChecking(false)
     }
   }
 
@@ -73,7 +99,7 @@ export default function AgentProviderSettingsPage(): React.ReactElement {
         section="agents"
         state={settings}
         fields={fieldsForSection(schema.fields, 'agents')}
-        onSaved={setSettings}
+        onSaved={(next) => { invalidateProbe(); setSettings(next) }}
       />
       <div className="space-y-4 rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-5 sm:p-6">
         <h2 className="text-sm font-semibold text-aurora-text-primary">Check available models</h2>

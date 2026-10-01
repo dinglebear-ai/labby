@@ -35,12 +35,12 @@ export async function activateCatalogMcp(input: CreateGatewayInput, onSaved: (ga
 
 export type FirstUseTool = { name: string; description: string; reviewFingerprint: string; inputSchema: { properties?: Record<string, import('@/components/depot/operation-form').OperationProperty>; required?: string[] } }
 export async function listFirstUseTools(name: string, expectedUrl: string, signal?: AbortSignal): Promise<FirstUseTool[]> {
-  const result = await verificationAction<{ tools: FirstUseTool[] }>('setup.mcp.verification.tools', { name, expected_url: expectedUrl }, signal)
+  const result = await verificationAction<{ tools: FirstUseTool[] }>('mcp.verification.tools', { name, expected_url: expectedUrl }, signal)
   if (!Array.isArray(result.tools) || result.tools.length > 20 || result.tools.some(tool => typeof tool.name !== 'string' || typeof tool.description !== 'string' || typeof tool.reviewFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(tool.reviewFingerprint))) throw new Error('Labby returned an invalid verification tool list.')
   return result.tools
 }
 export async function verifyFirstUseTool(name: string, expectedUrl: string, tool: string, fingerprint: string, arguments_: Record<string, unknown> = {}) {
-  const result = await verificationAction<{ verified: boolean; server: string; tool: string }>('setup.mcp.verification.call', { name, expected_url: expectedUrl, tool, expected_fingerprint: fingerprint, arguments: arguments_, approved: true })
+  const result = await verificationAction<{ verified: boolean; server: string; tool: string }>('mcp.verification.call', { name, expected_url: expectedUrl, tool, expected_fingerprint: fingerprint, arguments: arguments_, approved: true })
   if (result.verified !== true || result.server !== name || result.tool !== tool) throw new Error('The tool call did not return verified first-use evidence.')
   return result
 }

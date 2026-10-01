@@ -249,11 +249,11 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `draft.set` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | mcp, api, web |
 | `setup` | `finalize` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
-| `setup` | `mcp.verification.call` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string`<br>`tool*: string`<br>`expected_fingerprint*: string`<br>`arguments*: object`<br>`approved*: boolean` | `McpVerificationResult` | mcp, api |
-| `setup` | `mcp.verification.tools` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string` | `McpVerificationTools` | mcp, api |
+| `setup` | `mcp.verification.call` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string`<br>`tool*: string`<br>`expected_fingerprint*: string`<br>`arguments*: object`<br>`approved*: boolean` | `McpVerificationResult` | api |
+| `setup` | `mcp.verification.tools` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string` | `McpVerificationTools` | api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
-| `setup` | `readiness.clients.defer` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | mcp, api |
-| `setup` | `readiness.state` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | mcp, api |
+| `setup` | `readiness.clients.defer` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | api |
+| `setup` | `readiness.state` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | api |
 | `setup` | `repair` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
 | `setup` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `transport` | `-` | `-` | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |

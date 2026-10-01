@@ -6562,7 +6562,6 @@
     "action": "mcp.verification.call",
     "canonical_action": null,
     "applicable_surfaces": [
-        "mcp",
         "api"
     ],
     "applicable_features": [
@@ -6601,7 +6600,6 @@
     "action": "mcp.verification.tools",
     "canonical_action": null,
     "applicable_surfaces": [
-        "mcp",
         "api"
     ],
     "applicable_features": [
@@ -6636,7 +6634,6 @@
     "action": "readiness.clients.defer",
     "canonical_action": null,
     "applicable_surfaces": [
-        "mcp",
         "api"
     ],
     "applicable_features": [
@@ -6668,7 +6665,6 @@
     "action": "readiness.state",
     "canonical_action": null,
     "applicable_surfaces": [
-        "mcp",
         "api"
     ],
     "applicable_features": [

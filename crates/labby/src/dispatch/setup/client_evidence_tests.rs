@@ -269,11 +269,84 @@ async fn actual_http_tool_completion_records_client_use_but_listing_and_errors_d
         .await
         .unwrap();
     assert_eq!(no_auth.status(), reqwest::StatusCode::UNAUTHORIZED);
-    revoke(store, identity).await.unwrap();
-    assert!(
-        live.connect_service_with_evidence((), Some(&issued.sessions["codex"]))
+    // A new selection can be issued before any replacement descriptor is
+    // published. The old authenticated client must remain usable throughout.
+    start(
+        store.clone(),
+        identity.clone(),
+        json!({"clients":["claude-code"]}),
+    )
+    .await
+    .unwrap();
+    for proof in [
+        issued.sessions["codex"].as_str(),
+        "unknown-proof",
+        "0000000000000000000000000000000000000000000000000000000000000000",
+    ] {
+        let client = live
+            .connect_service_with_evidence((), Some(proof))
             .await
-            .is_err()
+            .unwrap();
+        client
+            .peer()
+            .call_tool(CallToolRequestParams::new("success"))
+            .await
+            .unwrap();
+        drop(client.cancel().await);
+        assert_eq!(
+            readiness::state_for_identity(store.clone(), identity.clone())
+                .await
+                .unwrap()["checks"][3]["status"],
+            "pending"
+        );
+    }
+    let fresh: Issued = serde_json::from_value(
+        start(
+            store.clone(),
+            identity.clone(),
+            json!({"clients":["codex"]}),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    labby_runtime::secure_atomic_file::write_secure_atomic(
+        &store.storage_dir().join("config.toml"),
+        b"[mcp]\nport = 19876\n",
+    )
+    .unwrap();
+    let client = live
+        .connect_service_with_evidence((), Some(&fresh.sessions["codex"]))
+        .await
+        .unwrap();
+    client
+        .peer()
+        .call_tool(CallToolRequestParams::new("success"))
+        .await
+        .unwrap();
+    drop(client.cancel().await);
+    assert_eq!(
+        readiness::state_for_identity(store.clone(), identity.clone())
+            .await
+            .unwrap()["checks"][3]["status"],
+        "pending"
+    );
+    revoke(store.clone(), identity.clone()).await.unwrap();
+    let client = live
+        .connect_service_with_evidence((), Some(&fresh.sessions["codex"]))
+        .await
+        .unwrap();
+    client
+        .peer()
+        .call_tool(CallToolRequestParams::new("success"))
+        .await
+        .unwrap();
+    drop(client.cancel().await);
+    assert_eq!(
+        readiness::state_for_identity(store, identity)
+            .await
+            .unwrap()["checks"][3]["status"],
+        "pending"
     );
     stop.cancel();
     server.await.unwrap();

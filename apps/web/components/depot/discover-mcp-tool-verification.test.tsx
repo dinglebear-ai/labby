@@ -11,8 +11,8 @@ for (const success of [true, false]) test(`first-tool ${success ? 'success' : 'f
   let calls = 0
   globalThis.fetch = async (_url, init) => {
     const request = JSON.parse(String(init?.body))
-    if (request.action === 'setup.mcp.verification.tools') return Response.json({ tools: [{ name: 'version', description: 'Read the server version.', reviewFingerprint: 'a'.repeat(64) }] })
-    assert.equal(request.action, 'setup.mcp.verification.call')
+    if (request.action === 'mcp.verification.tools') return Response.json({ tools: [{ name: 'version', description: 'Read the server version.', reviewFingerprint: 'a'.repeat(64) }] })
+    assert.equal(request.action, 'mcp.verification.call')
     assert.deepEqual(request.params, { name: 'server', expected_url: 'https://example.org/mcp', tool: 'version', expected_fingerprint: 'a'.repeat(64), arguments: {}, approved: true })
     calls++
     return success ? Response.json({ verified: true, server: 'server', tool: 'version' }) : Response.json({ message: 'Tool check failed' }, { status: 502 })
@@ -34,7 +34,8 @@ test('required enum inputs are populated and invalid inputs cannot authorize a c
   let calls = 0
   globalThis.fetch = async (_url, init) => {
     const request = JSON.parse(String(init?.body))
-    if (request.action === 'setup.mcp.verification.tools') return Response.json({ tools: [{ name: 'time', description: 'Read current time.', reviewFingerprint: 'a'.repeat(64), inputSchema: { properties: { timezone: { type: 'string', description: 'Timezone used for the returned time.', enum: ['UTC', 'America/New_York'] } }, required: ['timezone'] } }] })
+    if (request.action === 'mcp.verification.tools') return Response.json({ tools: [{ name: 'time', description: 'Read current time.', reviewFingerprint: 'a'.repeat(64), inputSchema: { properties: { timezone: { type: 'string', description: 'Timezone used for the returned time.', enum: ['UTC', 'America/New_York'] } }, required: ['timezone'] } }] })
+    assert.equal(request.action, 'mcp.verification.call')
     calls++
     assert.deepEqual(request.params.arguments, { timezone: 'UTC' })
     return Response.json({ verified: true, server: 'server', tool: 'time' })

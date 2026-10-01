@@ -247,6 +247,97 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn mcp_verification_http_payloads_reach_authenticated_operations() {
+        use axum::{Router, body::Body, http::Request};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let root = directory.path().canonicalize().unwrap();
+        let runtime =
+            Arc::new(crate::access::AccessRuntime::initialize(root.join("access.db")).await);
+        let identity = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "tester@example.com",
+        )
+        .unwrap();
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity.clone(), "Local", "Default")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                root.join("config.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let state = AppState::new()
+            .with_access_runtime(runtime)
+            .with_gateway_manager(manager);
+        let mut context = auth(&["lab:admin"]).0;
+        context.issuer = "https://accounts.google.com".into();
+        context.csrf_token = Some("fixture-csrf".into());
+        let router = Router::new()
+            .route("/v1/setup", post(handle))
+            .with_state(state)
+            .layer(Extension(identity))
+            .layer(Extension(context));
+        for action in ["mcp.verification.tools", "mcp.verification.call"] {
+            for prefix in ["", "setup."] {
+                let payload = serde_json::json!({"action":format!("{prefix}{action}"), "params":{
+                    "name":"invalid:name", "expected_url":"https://example.org/mcp",
+                    "tool":"version", "expected_fingerprint":"a".repeat(64), "arguments":{}, "approved":true
+                }});
+                let mut payload = payload;
+                if action.ends_with("tools") {
+                    for key in ["tool", "expected_fingerprint", "arguments", "approved"] {
+                        payload["params"].as_object_mut().unwrap().remove(key);
+                    }
+                }
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/setup")
+                            .header("content-type", "application/json")
+                            .header("x-csrf-token", "fixture-csrf")
+                            .body(Body::from(payload.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(!response.status().is_success());
+                let bytes = axum::body::to_bytes(response.into_body(), 16384)
+                    .await
+                    .unwrap();
+                let body = String::from_utf8(bytes.to_vec()).unwrap();
+                if prefix.is_empty() {
+                    assert!(
+                        body.contains("Server identity exceeds its supported bounds"),
+                        "{action}: {body}"
+                    );
+                } else {
+                    assert!(
+                        body.contains("Unknown action") || body.contains("unknown_action"),
+                        "{action}: {body}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn credential_bootstrap_and_proxy_configuration_are_local_only() {
         assert!(local_only_action("bootstrap"));

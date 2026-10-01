@@ -3,6 +3,8 @@
 import importlib.util
 import json
 import os
+import sys
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -40,6 +42,33 @@ class FakeGateway:
 
 
 class DriverTests(unittest.TestCase):
+    def test_client_timeout_stops_delayed_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'child-ran'
+            started = Path(directory) / 'child-started'
+            child = 'import time; from pathlib import Path; Path(' + repr(str(started)) + ').write_text("started"); time.sleep(1); Path(' + repr(str(marker)) + ').write_text("unexpected")'
+            parent = 'import subprocess, sys, time; subprocess.Popen([sys.executable, "-c", ' + repr(child) + ']); time.sleep(30)'
+            with self.assertRaises(driver.qualification.QualificationError):
+                driver.run_selected_client([sys.executable, '-c', parent], directory, timeout=0.5)
+            self.assertTrue(started.exists(), 'the descendant fixture never started')
+            time.sleep(1.1)
+            self.assertFalse(marker.exists(), 'a descendant survived the client timeout')
+
+    def test_outer_qualification_timeout_stops_client_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'child-ran'
+            started = Path(directory) / 'child-started'
+            child = 'import time; from pathlib import Path; Path(' + repr(str(started)) + ').write_text("started"); time.sleep(1); Path(' + repr(str(marker)) + ').write_text("unexpected")'
+            parent = 'import subprocess, sys, time; subprocess.Popen([sys.executable, "-c", ' + repr(child) + ']); time.sleep(30)'
+            stage = ('import importlib.util; spec=importlib.util.spec_from_file_location("driver", ' + repr(driver.__file__) + '); '
+                     'module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); '
+                     'module.run_selected_client(' + repr([sys.executable, '-c', parent]) + ', ' + repr(directory) + ', timeout=30)')
+            with self.assertRaises(driver.qualification.QualificationError):
+                driver.qualification.command([sys.executable, '-c', stage], os.environ.copy(), time.monotonic() + 0.5)
+            self.assertTrue(started.exists(), 'the descendant fixture never started')
+            time.sleep(1.1)
+            self.assertFalse(marker.exists(), 'a client descendant survived the outer deadline')
+
     def test_agent_uses_settings_and_current_identity_and_real_run(self):
         gateway = FakeGateway()
         with patch.dict(os.environ, {"LABBY_QUALIFICATION_PROVIDER_URL": "https://provider.example.com/v1", "LABBY_QUALIFICATION_PROVIDER_KEY": "protected", "LABBY_QUALIFICATION_MODEL": "verified-model"}):
@@ -62,7 +91,7 @@ class DriverTests(unittest.TestCase):
             with patch.dict(os.environ, env):
                 driver.discover(gateway)
                 driver.mcp(gateway)
-            self.assertEqual([call[0] for call in gateway.calls], ["/v1/depot/discover", "gateway.add", "gateway.test", "setup.mcp.verification.tools", "setup.mcp.verification.call"])
+            self.assertEqual([call[0] for call in gateway.calls], ["/v1/depot/discover", "gateway.add", "gateway.test", "mcp.verification.tools", "mcp.verification.call"])
             self.assertFalse(gateway.calls[1][1]["spec"]["proxy_resources"])
             self.assertTrue(gateway.calls[-1][1]["approved"])
             self.assertEqual(gateway.calls[-1][1]["expected_fingerprint"], "review")
@@ -76,17 +105,17 @@ class DriverTests(unittest.TestCase):
         environment = {"LABBY_QUALIFICATION_SELECTED_CLIENTS": '["codex","claude-code"]', "LABBY_QUALIFICATION_CODEX_MODEL": "chosen-codex", "LABBY_QUALIFICATION_CLAUDE_MODEL": "chosen-claude"}
         help_text = "--sandbox --strict-config --ephemeral --skip-git-repo-check --model --config --print --tools --allowedTools --permission-mode --no-session-persistence --max-budget-usd"
         exposed = [{"name": "version", "annotations": {"readOnlyHint": True, "destructiveHint": False}}]
-        with patch.dict(os.environ, environment), patch.object(driver, "advertised_tools", return_value=exposed), patch.object(driver.subprocess, "run", side_effect=lambda argv, **kwargs: SimpleNamespace(stdout=json.dumps([{"name": "lab"}, {"name": "other-server"}]) if argv[:3] == ["codex", "mcp", "list"] else help_text)) as process:
+        with patch.dict(os.environ, environment), patch.object(driver, "advertised_tools", return_value=exposed), patch.object(driver.subprocess, "run", side_effect=lambda argv, **kwargs: SimpleNamespace(stdout=json.dumps([{"name": "lab"}, {"name": "other-server"}]) if argv[:3] == ["codex", "mcp", "list"] else help_text)), patch.object(driver, 'run_selected_client') as process:
             with self.assertRaises(driver.qualification.QualificationError):
                 driver.external_clients(gateway, "version", {})
-            commands = [call.args[0] for call in process.call_args_list if call.args[0][:3] != ["codex", "mcp", "list"]]
-            self.assertEqual(commands[1][0], "codex")
-            self.assertIn("read-only", commands[1])
-            self.assertIn('mcp_servers."other-server".enabled=false', commands[1])
-            self.assertIn('mcp_servers.lab.enabled_tools=["version"]', commands[1])
-            self.assertEqual(commands[3][0], "claude")
-            self.assertIn("mcp__lab__version", commands[3])
-            self.assertIn("dontAsk", commands[3])
+            commands = [call.args[0] for call in process.call_args_list]
+            self.assertEqual(commands[0][0], "codex")
+            self.assertIn("read-only", commands[0])
+            self.assertIn('mcp_servers."other-server".enabled=false', commands[0])
+            self.assertIn('mcp_servers.lab.enabled_tools=["version"]', commands[0])
+            self.assertEqual(commands[1][0], "claude")
+            self.assertIn("mcp__lab__version", commands[1])
+            self.assertIn("dontAsk", commands[1])
             self.assertTrue(all(not any("dangerously" in value for value in command) for command in commands))
             gateway.clients_verified = True
             driver.external_clients(gateway, "version", {})

@@ -220,7 +220,7 @@ fn validate_observation(
         .ok_or_else(failure)?;
     // The header grants no authority. A recognized, otherwise current proof
     // may end observation without revoking the independently authenticated
-    // client's access. Unknown, revoked and cross-principal proofs still fail.
+    // client's access. Invalid proofs never establish an observation binding.
     if row.expires <= now()? {
         return Ok(None);
     }
@@ -251,7 +251,7 @@ pub async fn middleware(
         return axum::http::StatusCode::FORBIDDEN.into_response();
     }
     let Ok(token) = token.to_str().map(str::to_owned) else {
-        return axum::http::StatusCode::FORBIDDEN.into_response();
+        return next.run(request).await;
     };
     let result = async {
         let store = state.access_runtime.store().await.map_err(|_| failure())?;
@@ -272,7 +272,10 @@ pub async fn middleware(
             }
             next.run(request).await
         }
-        Err(_) => axum::http::StatusCode::FORBIDDEN.into_response(),
+        // Observation is supplemental: primary authentication has already run.
+        // Rotation, revocation, config changes and unavailable journals cannot
+        // revoke that authority. Invalid proofs simply produce no evidence.
+        Err(_) => next.run(request).await,
     }
 }
 pub(crate) fn binding_from_extensions(extensions: &rmcp::model::Extensions) -> Option<Binding> {

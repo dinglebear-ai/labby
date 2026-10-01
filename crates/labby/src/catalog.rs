@@ -88,7 +88,16 @@ pub struct ParamEntry {
 
 /// Actions implemented only by authenticated HTTP adapters, never MCP discovery.
 pub(crate) fn http_only_action(service: &str, action: &str) -> bool {
-    (service == "setup" && matches!(action, "clients.session.start" | "clients.session.revoke"))
+    (service == "setup"
+        && matches!(
+            action,
+            "clients.session.start"
+                | "clients.session.revoke"
+                | "readiness.state"
+                | "readiness.clients.defer"
+                | "mcp.verification.tools"
+                | "mcp.verification.call"
+        ))
         || (service == "fs" && action == "fs.preview")
 }
 
@@ -156,6 +165,42 @@ pub fn actions_for(catalog: &Catalog, service: &str, transport: Transport) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_catalog_excludes_http_only_first_use_actions_but_retains_settings() {
+        let registry = crate::registry::build_docs_registry();
+        let catalog = build_catalog(&registry);
+        let setup = catalog
+            .services
+            .iter()
+            .find(|service| service.name == "setup")
+            .expect("setup is registered");
+        for action in [
+            "clients.session.start",
+            "clients.session.revoke",
+            "readiness.state",
+            "readiness.clients.defer",
+            "mcp.verification.tools",
+            "mcp.verification.call",
+        ] {
+            assert!(
+                !setup.actions.iter().any(|entry| entry.name == action),
+                "HTTP-only {action} must not be advertised as callable by MCP"
+            );
+        }
+        assert!(
+            setup
+                .actions
+                .iter()
+                .any(|entry| entry.name == "settings.schema")
+        );
+        assert!(
+            setup
+                .actions
+                .iter()
+                .any(|entry| entry.name == "settings.state")
+        );
+    }
 
     #[test]
     fn catalog_hides_oauth_upstreams_on_stdio() {
