@@ -28,6 +28,8 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::Mutex;
 
+static NEXT_CATALOG_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 use super::skills_list::UpstreamSkills;
 use labby_runtime::skills::{ValidatedSkill, parse_skill_resource_uri};
 
@@ -161,6 +163,7 @@ impl SkillsFetchState {
 /// A cached catalog snapshot plus the bookkeeping that governs its lifetime.
 #[derive(Debug, Clone)]
 pub(super) struct CachedSkills {
+    pub(super) revision: u64,
     pub(super) skills: Arc<UpstreamSkills>,
     pub(super) direct: BTreeMap<String, CachedDirectSkill>,
     pub(super) direct_resource_index: BTreeMap<String, String>,
@@ -186,6 +189,7 @@ impl CachedSkills {
         let now = Instant::now();
         let ttl = clamp_ttl(skills.ttl_ms);
         Self {
+            revision: NEXT_CATALOG_REVISION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             skills: Arc::new(skills),
             direct: BTreeMap::new(),
             direct_resource_index: BTreeMap::new(),
@@ -213,6 +217,7 @@ impl CachedSkills {
     /// the listed catalog.
     pub(super) fn read_snapshot(&self) -> Self {
         Self {
+            revision: self.revision,
             skills: Arc::clone(&self.skills),
             direct: BTreeMap::new(),
             direct_resource_index: BTreeMap::new(),

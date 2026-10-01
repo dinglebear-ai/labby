@@ -20,6 +20,13 @@ use crate::pool::RunnerPool;
 use crate::types::{CatalogDescriptor, CodeModeCaller, CodeModeSurface, ToolScope, UiLink};
 use labby_runtime::CodeModeConfig;
 
+/// Bounded search hits and the configured sources that could not be searched.
+#[derive(Debug, Default, Clone)]
+pub struct ArtifactSearchResult {
+    pub entries: Vec<CatalogDescriptor>,
+    pub incomplete_sources: Vec<String>,
+}
+
 /// A rendered Code Mode discovery catalog: the descriptors the sandbox's
 /// `search`/`describe`/proxy read, plus their pre-serialized JSON form.
 ///
@@ -433,8 +440,8 @@ pub trait CodeModeHost: Send + Sync {
         _caller: &CodeModeCaller,
         _surface: CodeModeSurface,
         _scope: &ToolScope,
-    ) -> impl Future<Output = Result<Vec<CatalogDescriptor>, ToolError>> + Send {
-        std::future::ready(Ok(Vec::new()))
+    ) -> impl Future<Output = Result<ArtifactSearchResult, ToolError>> + Send {
+        std::future::ready(Ok(ArtifactSearchResult::default()))
     }
 
     /// Code Mode configuration (timeouts, log/response caps).
