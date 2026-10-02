@@ -1,4 +1,5 @@
 //! Built-in examples must retain bounded dependencies and real offline scenarios.
+#![cfg(feature = "gateway")]
 use labby_codemode::snippet::{harness::SnippetFixture, store};
 use serde_json::Value;
 use std::path::PathBuf;

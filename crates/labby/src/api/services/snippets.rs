@@ -269,7 +269,7 @@ mod tests {
             StepJournalStore,
             receipts::{SnippetExecutionReceipt, SnippetReceiptOwner},
         };
-        use labby_gateway::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+        use labby_gateway::gateway::manager::GatewayRuntimeHandle;
         use sha2::{Digest, Sha256};
         use std::sync::Arc;
         let home = tempfile::tempdir().unwrap();
@@ -318,7 +318,7 @@ mod tests {
             .await
             .unwrap();
         let manager = Arc::new(
-            GatewayManager::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
                 home.path().join("config.toml"),
                 GatewayRuntimeHandle::default(),
             )

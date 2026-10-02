@@ -46,7 +46,14 @@ async fn new_manager(home: &Path) -> GatewayManager {
     let store = StepJournalStore::open(home.join("journal.db"))
         .await
         .unwrap();
-    GatewayManager::new(home.join("config.toml"), GatewayRuntimeHandle::default())
+    GatewayManager::with_store(
+        home.join("config.toml"),
+        GatewayRuntimeHandle::default(),
+        Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(
+            Arc::new(std::sync::RwLock::new(labby::config::LabConfig::default())),
+            home.join("config.toml"),
+        )),
+    )
         .with_step_journal(Arc::new(store))
         .with_code_mode_runner_spawn(RunnerSpawn {
             program: env!("CARGO_BIN_EXE_labby").into(),
