@@ -26,10 +26,12 @@ pub(super) async fn run(
             "ChatGPT setup selects Google OAuth and a loopback proxy; omit --host, --server-url, --auth, and --oauth"
         );
     }
-    let public_port = args.port.unwrap_or(443);
-    if !matches!(public_port, 443 | 8443 | 10000) {
-        bail!("Tailscale Funnel supports public HTTPS ports 443, 8443, and 10000");
-    }
+    let public_port = match args.port {
+        None | Some(443) => 443,
+        Some(8443) => 8443,
+        Some(10000) => 10000,
+        Some(_) => bail!("Tailscale Funnel supports public HTTPS ports 443, 8443, and 10000"),
+    };
     if !args.dry_run {
         ensure_dependencies(interactive, args.skip_deps, args.no_browser)?;
     }

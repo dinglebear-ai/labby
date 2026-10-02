@@ -96,6 +96,7 @@ fn chatgpt_preview_derives_callback_without_installing_or_publishing() {
     assert_eq!(json["service_installed"], false);
     assert_eq!(json["public_url"], "https://test.example.ts.net");
     assert!(!stdout.contains("test-secret-never-print"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("test-secret-never-print"));
     assert!(
         String::from_utf8_lossy(&output.stderr)
             .contains("https://test.example.ts.net/auth/google/callback")
