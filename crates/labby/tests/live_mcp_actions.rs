@@ -207,6 +207,24 @@ async fn assert_mcp_transition_readback(
             );
             true
         }
+        "snippets:snippets.replay" => {
+            let run: serde_json::Value = serde_json::from_str(mutation_text).expect("replay JSON");
+            assert_eq!(run["receipt_status"], "persisted", "replay receipt: {run}");
+            let id = run["execution_id"]
+                .as_str()
+                .expect("replay execution identifier");
+            let (ok, text) = read(
+                "snippets",
+                "snippets.receipt",
+                serde_json::json!({"execution_id":id}),
+            )
+            .await;
+            assert!(
+                ok && text.contains(id),
+                "{key} retained replay readback: {text}"
+            );
+            true
+        }
         "snippets:snippets.create" => {
             let (ok, text) = read(
                 "snippets",
@@ -578,7 +596,31 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     let mut consumed = BTreeSet::new();
     for intent in expected {
         prepare_mcp_transition(&runner, intent).await;
-        let params = action_scenarios::fixture_params(intent)
+        let fixture_runner = &runner;
+        let prepared = action_scenarios::prepare_snippet_receipt_case(
+            &intent.action,
+            |action, params| async move {
+                let result = fixture_runner
+                    .call(
+                        "snippets",
+                        action,
+                        params.as_object().cloned().expect("snippet fixture params"),
+                    )
+                    .await
+                    .expect("snippet fixture transport");
+                let text = result_text(&result);
+                assert_ne!(
+                    result.is_error,
+                    Some(true),
+                    "{action} receipt fixture failed: {text}"
+                );
+                serde_json::from_str(&text).expect("snippet fixture JSON")
+            },
+        )
+        .await;
+        let prepared_case = prepared.is_some();
+        let params = prepared
+            .unwrap_or_else(|| action_scenarios::fixture_params(intent))
             .as_object()
             .cloned()
             .expect("fixture params are an object");
@@ -597,6 +639,11 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             "{} reflected the bearer secret",
             intent.key()
         );
+        if prepared_case && result.is_error != Some(true) {
+            let value: serde_json::Value =
+                serde_json::from_str(&text).expect("snippet action JSON");
+            action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
+        }
         let succeeded = result.is_error != Some(true);
         let transition_observed = succeeded
             && matches!(
