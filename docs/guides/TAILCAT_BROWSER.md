@@ -6,10 +6,11 @@ the browser key, origin, session generation and current route policy. Depot is
 not an authorization server and does not receive the native bearer or browser
 private key.
 
-This integration is under development. Native authority tests, the full Depot gate and the real Chromium
-LiveView profile have passed. The browser profile proves HTTP refusal and
-disconnect handling; a successful browser → Labby → Microsandbox VM run and
-final review remain outstanding. It is not a published setup feature.
+This integration is under development. Its configuration and process lifecycle,
+browser transport package, and Go/WASM bridge have focused regression coverage.
+That coverage does not qualify an installed native controller, the Depot
+integration, or a successful browser → Labby → network-disabled Microsandbox VM
+run. Live acceptance and final review remain required before publication.
 
 ## Prerequisites
 
