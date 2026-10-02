@@ -20,6 +20,7 @@ pub(crate) struct OpenAiBackend {
     http: Client,
     base_url: Url,
     api_key: Option<String>,
+    session_api: bool,
 }
 
 /// One chat turn. Pinned Agent instructions travel as `System` and caller
@@ -29,12 +30,14 @@ pub(crate) struct OpenAiBackend {
 pub(crate) enum ChatMessage<'a> {
     System(&'a str),
     User(&'a str),
+    Assistant(&'a str),
 }
 
 impl ChatMessage<'_> {
     fn to_value(self) -> Value {
         match self {
             Self::System(content) => json!({"role": "system", "content": content}),
+            Self::Assistant(content) => json!({"role": "assistant", "content": content}),
             Self::User(content) => json!({"role": "user", "content": content}),
         }
     }
@@ -106,11 +109,22 @@ impl OpenAiBackend {
         Ok(Self {
             http,
             base_url,
+            session_api: true,
             api_key: api_key.and_then(|value| {
                 let value = value.trim();
                 (!value.is_empty()).then(|| value.to_owned())
             }),
         })
+    }
+
+    pub(crate) fn standard(base_url: &str, api_key: Option<String>) -> Result<Self, ToolError> {
+        let mut backend = Self::from_url(base_url, api_key)?;
+        backend.session_api = false;
+        Ok(backend)
+    }
+
+    pub(crate) fn uses_session_api(&self) -> bool {
+        self.session_api
     }
 
     pub(crate) fn base_url(&self) -> &Url {
@@ -127,6 +141,9 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn create_session(&self, session_id: &str) -> Result<(), ToolError> {
+        if !self.session_api {
+            return Ok(());
+        }
         self.send_session_json(
             reqwest::Method::POST,
             "sessions",
@@ -137,6 +154,9 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn close_session(&self, session_id: &str) -> Result<(), ToolError> {
+        if !self.session_api {
+            return Ok(());
+        }
         let path = format!("sessions/{}/close", encode_path_segment(session_id));
         self.send_session_json(reqwest::Method::POST, &path, Some(json!({})))
             .await?;
@@ -148,6 +168,9 @@ impl OpenAiBackend {
         session_id: &str,
         title: &str,
     ) -> Result<(), ToolError> {
+        if !self.session_api {
+            return Ok(());
+        }
         let path = format!("sessions/{}/title", encode_path_segment(session_id));
         self.send_session_json(reqwest::Method::PUT, &path, Some(json!({"title": title})))
             .await?;
@@ -155,6 +178,9 @@ impl OpenAiBackend {
     }
 
     pub(crate) async fn cancel_session(&self, session_id: &str) -> Result<(), ToolError> {
+        if !self.session_api {
+            return Ok(());
+        }
         let path = format!("sessions/{}/cancel", encode_path_segment(session_id));
         self.send_session_json(reqwest::Method::POST, &path, Some(json!({})))
             .await?;
@@ -167,26 +193,39 @@ impl OpenAiBackend {
         model: &str,
         messages: &[ChatMessage<'_>],
     ) -> Result<String, ToolError> {
+        self.chat_with_usage(session_id, model, messages, None)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    pub(crate) async fn chat_with_usage(
+        &self,
+        session_id: &str,
+        model: &str,
+        messages: &[ChatMessage<'_>],
+        effort: Option<&str>,
+    ) -> Result<(String, Value), ToolError> {
         let messages = messages
             .iter()
             .map(|message| message.to_value())
             .collect::<Vec<_>>();
+        let mut body = json!({"model":model,"stream":false,"messages":messages});
+        if !self.session_api {
+            if let Some(effort) = effort {
+                body["reasoning_effort"] = json!(effort);
+            }
+        }
+        if self.session_api {
+            body["gateway"] = json!({"session_id":session_id});
+        }
         let value = self
-            .send_json(
-                reqwest::Method::POST,
-                "chat/completions",
-                Some(json!({
-                    "model": model,
-                    "stream": false,
-                    "messages": messages,
-                    "gateway": {"session_id": session_id}
-                })),
-            )
+            .send_json(reqwest::Method::POST, "chat/completions", Some(body))
             .await?;
+        let usage = value.get("usage").cloned().unwrap_or(Value::Null);
         value
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
-            .map(str::to_owned)
+            .map(|text|(text.to_owned(),usage))
             .ok_or_else(|| protocol("OpenAI-compatible completion response did not contain choices[0].message.content"))
     }
 
@@ -334,6 +373,43 @@ fn unavailable(message: impl Into<String>) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn standard_provider_never_requires_gateway_session_endpoints() {
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_partial_json, method, path},
+        };
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .and(body_partial_json(json!({"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"reply"},{"role":"user","content":"next"}]})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"choices":[{"message":{"content":"done"}}]})))
+            .expect(1).mount(&server).await;
+        let backend = OpenAiBackend::standard(&format!("{}/v1", server.uri()), None).unwrap();
+        backend.create_session("test").await.unwrap();
+        assert_eq!(
+            backend
+                .chat(
+                    "test",
+                    "model",
+                    &[
+                        ChatMessage::User("first"),
+                        ChatMessage::Assistant("reply"),
+                        ChatMessage::User("next")
+                    ]
+                )
+                .await
+                .unwrap(),
+            "done"
+        );
+        backend.rename_session("test", "title").await.unwrap();
+        backend.close_session("test").await.unwrap();
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(body.get("gateway").is_none());
+    }
 
     #[test]
     fn validates_and_normalizes_openai_base_urls() {

@@ -149,5 +149,53 @@ if args[0] == "build":
         self.assertIn("JavaScript", result.stderr)
 
 
+class HostSyncArtifactTests(unittest.TestCase):
+    """Exercise the real recipe with inert build/install/service boundaries."""
+
+    def test_host_sync_installs_the_artifact_cargo_built(self) -> None:
+        for target_mode, stale_default in [("relative", True), ("absolute", True), ("relative", False)]:
+            with self.subTest(target_mode=target_mode, stale_default=stale_default), tempfile.TemporaryDirectory(prefix="labby host sync ", dir="/private/tmp" if Path("/private/tmp").is_dir() else None) as directory:
+                root = Path(directory)
+                shutil.copyfile(ROOT / "Justfile", root / "Justfile")
+                tools = root / "tools"
+                tools.mkdir()
+                custom = root / "custom output"
+                target = str(custom) if target_mode == "absolute" else custom.name
+                if stale_default:
+                    old = root / "target/release-fast/labby"
+                    old.parent.mkdir(parents=True)
+                    old.write_text("old artifact")
+                    old.chmod(0o755)
+                cargo = tools / "cargo"
+                cargo.write_text('''#!/usr/bin/env python3
+import os, pathlib
+binary = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "release-fast/labby"
+binary.parent.mkdir(parents=True, exist_ok=True)
+binary.write_text("new artifact")
+binary.chmod(0o755)
+''')
+                sudo = tools / "sudo"
+                sudo.write_text('''#!/usr/bin/env python3
+import os, pathlib, sys
+args = sys.argv[1:]
+if args[0] == "install":
+    pathlib.Path(os.environ["TEST_INSTALLED"]).write_bytes(pathlib.Path(args[-2]).read_bytes())
+elif args[0] not in ("mkdir", "/usr/local/bin/labby"):
+    sys.exit(99)
+''')
+                systemctl = tools / "systemctl"
+                systemctl.write_text("#!/usr/bin/env bash\nexit 0\n")
+                for command in (cargo, sudo, systemctl):
+                    command.chmod(0o755)
+                installed = root / "installed"
+                result = subprocess.run(
+                    ["just", "--justfile", str(root / "Justfile"), "--working-directory", str(root), "--no-deps", "host-sync"],
+                    env={**os.environ, "PATH": f"{tools}{os.pathsep}{os.environ['PATH']}", "CARGO_TARGET_DIR": target, "TEST_INSTALLED": str(installed)},
+                    text=True, capture_output=True, timeout=15, check=False,
+                )
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual("new artifact", installed.read_text())
+
+
 if __name__ == "__main__":
     unittest.main()

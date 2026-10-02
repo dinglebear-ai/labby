@@ -9,10 +9,12 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::api::error::ApiError;
+use crate::api::services::gateway::require_platform_authority;
 use crate::api::state::AppState;
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
 use crate::dispatch::redact::redact_url;
+use labby_auth::VerifiedIdentity;
 
 pub fn gateway_routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
     use crate::api::route_registry::RouteGroup;
@@ -201,14 +203,24 @@ struct UpstreamEntry {
 async fn upstreams(
     State(state): State<AppState>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<Vec<UpstreamEntry>>, ApiError> {
     require_master(&state)?;
     require_admin_scope(&auth, "upstreams")?;
+    let authority = require_platform_authority(
+        &state,
+        Some(&auth),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.oauth.upstreams",
+    )
+    .await?;
     let manager = state
         .gateway_manager
         .clone()
         .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
+    authority.validate_before_external_effect().await?;
     let configs = manager.oauth_upstream_configs().await;
+    authority.validate_before_external_effect().await?;
     Ok(Json(
         configs
             .into_iter()
@@ -302,11 +314,19 @@ fn append_public_path(base: &url::Url, path: &str) -> Result<url::Url, ToolError
 async fn probe(
     State(state): State<AppState>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(body): Json<ProbeRequest>,
 ) -> Result<Json<crate::dispatch::gateway::oauth::ProbeResult>, ApiError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
     require_admin_scope(&auth, "probe")?;
+    let authority = require_platform_authority(
+        &state,
+        Some(&auth),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.oauth.probe",
+    )
+    .await?;
     if body.confirm != Some(true) {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
@@ -317,6 +337,7 @@ async fn probe(
         .gateway_manager
         .clone()
         .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
+    authority.validate_before_external_effect().await?;
     let result = crate::dispatch::gateway::oauth::probe_for_upstream(
         &manager,
         &body.url,
@@ -344,17 +365,26 @@ async fn probe(
         oauth_discovered = result.oauth_discovered,
         "upstream oauth probe completed"
     );
+    authority.validate_before_external_effect().await?;
     Ok(Json(result))
 }
 
 async fn start(
     State(state): State<AppState>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(body): Json<StartRequest>,
 ) -> Result<Json<StartResponse>, ApiError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
     require_admin_scope(&auth, "start")?;
+    let authority = require_platform_authority(
+        &state,
+        Some(&auth),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.oauth.start",
+    )
+    .await?;
     let manager = state
         .gateway_manager
         .clone()
@@ -368,6 +398,7 @@ async fn start(
             "upstream OAuth not configured (missing SQLite store)",
         )));
     }
+    authority.validate_before_external_effect().await?;
     let begin = crate::dispatch::gateway::oauth::begin_authorization(
         &manager,
         &body.upstream,
@@ -396,6 +427,7 @@ async fn start(
         upstream = %body.upstream,
         "upstream oauth authorization started"
     );
+    authority.validate_before_external_effect().await?;
     Ok(Json(StartResponse {
         authorization_url: begin.authorization_url,
     }))
@@ -405,14 +437,23 @@ async fn status(
     State(state): State<AppState>,
     Query(query): Query<StatusQuery>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    identity: Option<Extension<VerifiedIdentity>>,
 ) -> Result<Json<crate::dispatch::gateway::oauth::UpstreamOauthStatusView>, ApiError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
     require_admin_scope(&auth, "status")?;
+    let authority = require_platform_authority(
+        &state,
+        Some(&auth),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.oauth.status",
+    )
+    .await?;
     let manager = state
         .gateway_manager
         .clone()
         .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
+    authority.validate_before_external_effect().await?;
     let status = crate::dispatch::gateway::oauth::status(
         &manager,
         &query.upstream,
@@ -441,6 +482,7 @@ async fn status(
         upstream = %query.upstream,
         "upstream oauth status retrieved"
     );
+    authority.validate_before_external_effect().await?;
     Ok(Json(status))
 }
 
@@ -448,6 +490,7 @@ async fn clear(
     State(state): State<AppState>,
     Query(query): Query<ClearQuery>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    identity: Option<Extension<VerifiedIdentity>>,
 ) -> impl IntoResponse {
     let started = std::time::Instant::now();
     if let Err(error) = require_master(&state) {
@@ -456,6 +499,17 @@ async fn clear(
     if let Err(error) = require_admin_scope(&auth, "clear") {
         return ApiError::new(error).into_response();
     }
+    let authority = match require_platform_authority(
+        &state,
+        Some(&auth),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.oauth.clear",
+    )
+    .await
+    {
+        Ok(authority) => authority,
+        Err(error) => return ApiError::new(error).into_response(),
+    };
     let manager = match state.gateway_manager.clone() {
         Some(manager) => manager,
         None => {
@@ -463,6 +517,9 @@ async fn clear(
                 .into_response();
         }
     };
+    if let Err(error) = authority.validate_before_external_effect().await {
+        return ApiError::new(error).into_response();
+    }
     if let Err(error) = crate::dispatch::gateway::oauth::clear(
         &manager,
         &query.upstream,
@@ -492,17 +549,28 @@ async fn clear(
         upstream = %query.upstream,
         "upstream oauth credentials cleared"
     );
+    if let Err(error) = authority.validate_before_external_effect().await {
+        return ApiError::new(error).into_response();
+    }
     (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response()
 }
 
 async fn revoke_google(
     State(state): State<AppState>,
     Extension(auth): Extension<crate::api::oauth::AuthContext>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(body): Json<GoogleRevokeRequest>,
 ) -> Result<Json<labby_auth::types::GoogleProviderInvalidation>, ApiError> {
     let started = std::time::Instant::now();
     require_master(&state)?;
     require_admin_scope(&auth, "google_revoke")?;
+    let authority = require_platform_authority(
+        &state,
+        Some(&auth),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.oauth.google_revoke",
+    )
+    .await?;
     if body.confirm != Some(true) {
         return Err(ApiError::new(ToolError::Sdk {
             sdk_kind: "confirmation_required".to_string(),
@@ -513,12 +581,14 @@ async fn revoke_google(
         .gateway_manager
         .clone()
         .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
+    authority.validate_before_external_effect().await?;
     let invalidation = crate::dispatch::gateway::oauth::revoke_google(&manager, &body.upstream)
         .await
         .inspect_err(|error| {
             log_google_revoke_failure(&auth, &body.upstream, started, error.kind());
         })?;
     log_google_revoke_success(&auth, &body.upstream, started, &invalidation);
+    authority.validate_before_external_effect().await?;
     Ok(Json(invalidation))
 }
 
@@ -1177,13 +1247,43 @@ mod tests {
         assert!(owner.is_none());
     }
 
-    #[tokio::test]
-    async fn clear_does_not_require_explicit_confirmation() {
-        let state = AppState::new();
+    async fn authorized_oauth_test_app() -> (tempfile::TempDir, axum::Router) {
+        let dir = tempfile::Builder::new()
+            .prefix("oauth-api-authority-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let auth = test_auth_context();
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            &auth.sub,
+        )
+        .unwrap();
+        let runtime =
+            Arc::new(crate::access::AccessRuntime::initialize(dir.path().join("access.db")).await);
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity.clone(), "Local", "Default")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let state = AppState::new().with_access_runtime(runtime);
         let app = gateway_routes(state.clone())
             .router
-            .layer(Extension(test_auth_context()))
+            .layer(Extension(auth))
+            .layer(Extension(identity))
             .with_state(state);
+        (dir, app)
+    }
+
+    #[tokio::test]
+    async fn clear_does_not_require_explicit_confirmation() {
+        let (_dir, app) = authorized_oauth_test_app().await;
 
         let response = app
             .oneshot(
@@ -1208,11 +1308,7 @@ mod tests {
 
     #[tokio::test]
     async fn probe_requires_explicit_confirmation() {
-        let state = AppState::new();
-        let app = gateway_routes(state.clone())
-            .router
-            .layer(Extension(test_auth_context()))
-            .with_state(state);
+        let (_dir, app) = authorized_oauth_test_app().await;
 
         let response = app
             .oneshot(

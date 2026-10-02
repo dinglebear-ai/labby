@@ -444,10 +444,15 @@ export function useGateways(enabled = true, includeToolInventory = false) {
     { revalidateOnFocus: false, shouldRetryOnError: false },
   )
   const runtimeGateways = runtime.data ?? configured.data
-  const toolInventoryRevision = runtimeGateways?.map((gateway) => gateway.id)
+  const toolInventoryRevision = runtimeGateways?.map((gateway) => ({
+    id: gateway.id, enabled: gateway.enabled, config: gateway.config,
+    count: gateway.status.discovered_tool_count,
+    exposedCount: gateway.status.exposed_tool_count,
+  }))
+  const toolInventoryCacheId = runtimeGateways ? JSON.stringify(toolInventoryRevision) : undefined
   const toolInventory = useSWR<Gateway[]>(
     enabled && includeToolInventory && runtimeGateways
-      ? ['/gateways/tool-inventory', JSON.stringify(toolInventoryRevision)]
+      ? ['/gateways/tool-inventory', toolInventoryCacheId]
       : null,
     () => hydrateGatewayToolInventory(runtimeGateways ?? []),
     { revalidateOnFocus: false, shouldRetryOnError: false },
@@ -475,6 +480,7 @@ export function useGateways(enabled = true, includeToolInventory = false) {
       if (document.visibilityState === 'hidden') return
       void mutate(GATEWAYS_KEY)
       if (runtimeCacheId) void mutate(['/gateways/runtime', runtimeCacheId])
+      if (includeToolInventory && toolInventoryCacheId) void mutate(['/gateways/tool-inventory', toolInventoryCacheId])
     }
     const interval = window.setInterval(refreshCatalogView, 5_000)
     document.addEventListener('visibilitychange', refreshCatalogView)
@@ -482,7 +488,7 @@ export function useGateways(enabled = true, includeToolInventory = false) {
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', refreshCatalogView)
     }
-  }, [enabled, runtimeCacheId, mutate])
+  }, [enabled, includeToolInventory, runtimeCacheId, toolInventoryCacheId, mutate])
 
   useEffect(() => {
     if (!enabled || USE_MOCK_DATA || catalogWarm.isLoading || catalogWarm.error) return
@@ -495,6 +501,8 @@ export function useGateways(enabled = true, includeToolInventory = false) {
     data: gateways,
     error: configured.error,
     runtimeError: runtime.error,
+    toolInventoryError: toolInventory.error,
+    retryToolInventory: toolInventory.mutate,
     catalogWarmError: catalogWarm.error,
     retryCatalogWarm: catalogWarm.mutate,
     isLoading: configured.isLoading || (includeToolInventory && toolInventory.isLoading),
@@ -503,9 +511,9 @@ export function useGateways(enabled = true, includeToolInventory = false) {
 }
 
 export function useGateway(id: string | null) {
+  const { mutate } = useSWRConfig()
   const fallbackGateway = USE_MOCK_DATA && id ? getMockGatewayFallback(id) : undefined
-
-  return useSWR<Gateway>(
+  const result = useSWR<Gateway>(
     id ? gatewayKey(id) : null,
     id ? () => fetchGateway(id) : null,
     {
@@ -514,6 +522,17 @@ export function useGateway(id: string | null) {
       revalidateOnMount: !USE_MOCK_DATA || fallbackGateway === undefined,
     }
   )
+  const previousIdentity = useRef<{ requested: string | null; resolved?: string }>({ requested: id })
+  useEffect(() => {
+    const previous = previousIdentity.current
+    // Retire the temporary alias after navigation, while the SWR provider is
+    // still mounted. Provider disposal can precede child unmount effects.
+    if (previous.requested && previous.requested !== id && previous.resolved && previous.resolved !== previous.requested) {
+      void mutate(gatewayKey(previous.requested), undefined, false)
+    }
+    previousIdentity.current = { requested: id, resolved: result.data?.id }
+  }, [id, result.data?.id, mutate])
+  return result
 }
 
 export function useExposurePolicy(id: string | null) {
@@ -585,6 +604,7 @@ export function useProtectedMcpRoutes() {
 // Mutation hooks
 export function useGatewayMutations() {
   const { mutate } = useSWRConfig()
+  const invalidateGatewayDetail = useCallback((id: string) => mutate(gatewayKey(id), undefined, false), [mutate])
   const refreshGatewayCache = useCallback(async (id?: string, extraKeys: string[] = []) => {
     const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
     await Promise.all([
@@ -726,7 +746,11 @@ export function useGatewayMutations() {
       return updated
     }
     const gateway = await gatewayApi.update(id, input)
-    await refreshGatewayCache(id)
+    // A successful rename removes the old backend ID. Keep its mounted view
+    // usable until the form's complete transaction navigates to the new ID.
+    await mutate(gatewayKey(id), gateway, false)
+    if (gateway.id !== id) await mutate(gatewayKey(gateway.id), gateway, false)
+    await refreshGatewayCache(gateway.id)
     return gateway
   }, [mutate, refreshGatewayCache])
 
@@ -1386,6 +1410,7 @@ export function useGatewayMutations() {
     clearImportTombstone,
     restoreImportTombstone,
     updateGateway,
+    invalidateGatewayDetail,
     removeGateway,
     removeVirtualServer,
     testGateway,

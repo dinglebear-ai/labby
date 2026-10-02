@@ -2872,11 +2872,15 @@ pub fn env_key_set_outside_dotenv(key: &str) -> bool {
 pub fn load_dotenv() -> Result<()> {
     // Names only, never values: the settings surface uses this to tell an
     // externally managed variable from one `.env` supplied.
-    PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
+    let external_keys = PROCESS_ENV_KEYS_BEFORE_DOTENV.get_or_init(|| {
         std::env::vars_os()
             .filter_map(|(key, _)| key.into_string().ok())
             .collect()
     });
+    #[cfg(feature = "gateway")]
+    labby_gateway::upstream::auth::register_external_environment_keys(external_keys.clone());
+    #[cfg(not(feature = "gateway"))]
+    let _ = external_keys;
     // Candidates are ordered from authoritative installation state to the
     // implicit development fallback. dotenvy preserves values loaded by an
     // earlier candidate. An explicit LABBY_HOME excludes the CWD fallback.
@@ -5947,5 +5951,72 @@ services = ["removed-service"]
                     .is_err()
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod gateway_bearer_reload_tests {
+    #[test]
+    fn dotenv_bearer_reload_preserves_external_env_authority() {
+        #[cfg(target_os = "macos")]
+        let dir = tempfile::tempdir_in("/private/tmp").unwrap();
+        #[cfg(not(target_os = "macos"))]
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=original-file\nLABBY_DOTENV_RELOAD_EXTERNAL=ignored-file\n").unwrap();
+        // A subprocess exercises the real startup loader without modifying the
+        // environment of ordinary cargo-test threads or other test managers.
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "config::gateway_bearer_reload_tests::startup_dotenv_reload_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("LABBY_HOME", dir.path())
+            .env("LABBY_DOTENV_RELOAD_EXTERNAL", "external-authority")
+            .env_remove("LABBY_DOTENV_RELOAD_MANAGED")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated startup regression failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "child fixture must actually execute"
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for dotenv_bearer_reload_preserves_external_env_authority"]
+    fn startup_dotenv_reload_child() {
+        super::load_dotenv().unwrap();
+        assert_eq!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
+                .as_deref(),
+            Some("original-file")
+        );
+        let path = super::dotenv_path().unwrap();
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=replacement-file\nLABBY_DOTENV_RELOAD_EXTERNAL=replacement-file\n").unwrap();
+        assert_eq!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
+                .as_deref(),
+            Some("replacement-file"),
+            "initial dotenv process snapshot must not mask changed installation credentials"
+        );
+        assert_eq!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_EXTERNAL")
+                .as_deref(),
+            Some("external-authority")
+        );
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_EXTERNAL=replacement-file\n").unwrap();
+        assert!(
+            labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
+                .is_none(),
+            "deleting a file-managed key must not resurrect its startup snapshot"
+        );
     }
 }

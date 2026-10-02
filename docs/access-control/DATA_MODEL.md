@@ -1,13 +1,13 @@
 ---
 title: "Access Control Data Model"
 created: "2026-08-22"
-updated: "2026-09-16"
+updated: "2026-09-30"
 status: "mixed-current-and-design"
 ---
 
 # Access Control Data Model
 
-> The [Schema v7 (current)](#schema-v7-current) section describes the
+> The [Schema v9 (current)](#schema-v9-current) section describes the
 > implemented store. Most other entity sections are the broader design.
 
 ## Storage direction
@@ -93,14 +93,14 @@ Constraints:
 
 Verified email, last-seen time, and explicit revocation time are optional future metadata. They are not authorization keys and are not columns in the Milestone 1 v1 schema.
 
-### Schema v7 (current)
+### Schema v9 (current)
 
-`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 7`. A fresh
-store is created directly at v7 in one transaction. Existing v1 through v6
-stores are migrated only by `labby state access migrate` with approval
-evidence (see [MIGRATION.md](./MIGRATION.md)); normal startup never migrates.
-The v7 `access.db` contains these tables (source file in parentheses when not
-`migrations.rs`):
+`crates/labby/src/access/migrations.rs` defines `SCHEMA_VERSION = 9`. A fresh
+store is created directly at v9 in one transaction. Supported older stores
+are migrated only by `labby state access migrate` with approval evidence
+(see [MIGRATION.md](./MIGRATION.md)); normal startup never migrates.
+The current `access.db` contains these tables (source file in parentheses when
+not `migrations.rs`):
 
 | Area | Tables |
 | --- | --- |
@@ -112,18 +112,21 @@ The v7 `access.db` contains these tables (source file in parentheses when not
 | Agents and tasks | `agent_definitions`, `agent_definition_audit`, `agent_sessions`, `agent_tasks`, `agent_task_audit` |
 | Bootstrap and product credentials (`credential_schema.rs`) | `access_installations`, `access_tombstones`, `bootstrap_proofs`, `project_credentials`, `credential_idempotency` |
 | Dev containers (`dev_container.rs`) | `dev_container_templates`, `dev_container_instances`, `dev_container_ledger`, `dev_container_owner_quotas` |
+| Recurring tasks | `agent_task_schedules`, `agent_task_schedule_occurrences`, `agent_task_schedule_attempts` |
+| Container image state | `dev_container_template_drafts`, `dev_container_template_environment`, `dev_container_image_builds`, `dev_container_published_images`, `dev_container_launch_manifests` |
+| Artifact distribution (`artifact_distribution.rs`) | `artifact_authorities`, `artifact_publisher_policies`, `artifact_source_policies`, `artifact_assignment_distributions`, `artifact_mirrors`, `artifact_subscriptions` |
 | Audit | `access_audit` |
 
 Team roles are `owner`, `admin`, and `member`. Project roles are `owner`,
 `admin`, `member`, and `viewer`. Column definitions are authoritative in the
 source files above; the entity sections later in this document are the broader
-design and do not all match v7 columns.
+design and do not all match current columns.
 
 #### Historical: Milestone 1 schema subset
 
 Milestone 1 schema v2 contained exactly `access_metadata`, `organizations`, `principals`, `principal_links`, `projects`, `project_memberships`, `project_loadouts`, and `access_audit`. `principal_links` stores both canonical external issuer/subject links and stable local-credential links with an exactly-one-kind constraint. Project membership is direct Principal membership only and persists exactly the fixed `owner`, `admin`, `member`, or `viewer` role. `project_loadouts` has one Organization-qualified row per Project and stores one symbolic named Loadout admitted against desired gateway configuration. Because Gateway and AccessStore are separate stores, existence is revalidated at every use and is not a SQLite referential-integrity guarantee. The metadata table carries schema identity, the singleton global AccessStore revision, and bootstrap generation/safe identity fingerprint.
 
-At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for v7.
+At that milestone, fresh stores created the v2 schema directly and a canonical v1 store migrated to v2. Malformed and unknown/newer schemas fail closed; migration does not silently repair them. That rule still holds for the current schema.
 
 Custom Roles/Grants, generalized Assignments, distribution, destinations, mirrors, runtime bindings, and their tables remain broader future design and require later versioned migrations.
 

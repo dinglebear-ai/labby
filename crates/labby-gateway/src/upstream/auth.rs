@@ -1,4 +1,15 @@
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static EXTERNAL_ENVIRONMENT_KEYS: OnceLock<BTreeSet<String>> = OnceLock::new();
+
+/// Register the environment authority captured by the host before loading dotenv.
+/// Names only: file-managed credentials are read from the selected installation
+/// on each reconnect; genuine external overrides retain process lifetime authority.
+pub fn register_external_environment_keys(keys: BTreeSet<String>) {
+    drop(EXTERNAL_ENVIRONMENT_KEYS.set(keys));
+}
 
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -83,6 +94,13 @@ fn configured_bearer_token_with_dotenv(
     env_name: &str,
     dotenv_path: Option<&Path>,
 ) -> Option<String> {
+    if EXTERNAL_ENVIRONMENT_KEYS
+        .get()
+        .is_some_and(|keys| !keys.contains(env_name))
+    {
+        return dotenv_path
+            .and_then(|path| configured_bearer_token_from_dotenv_path(env_name, path));
+    }
     configured_bearer_token_from_sources(env_name, dotenv_path, std::env::var(env_name))
 }
 

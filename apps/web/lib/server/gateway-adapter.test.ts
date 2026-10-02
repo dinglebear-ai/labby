@@ -14,6 +14,24 @@ import {
 } from './gateway-adapter.ts'
 import { EXPOSE_NONE_PATTERN } from '../api/tool-exposure-draft.ts'
 
+test('explicit OAuth null clears the spec, while omission preserves it', () => {
+  assert.equal(buildGatewayPatch({ config: { oauth: null } }).oauth, null)
+  assert.equal('oauth' in buildGatewayPatch({ config: {} }), false)
+})
+
+test('runtime connection state is authoritative even when cached capability counts disagree', () => {
+  assert.deepEqual(probeStatusFromRuntime({
+    name: 'empty', connected: true, tool_count: 0, resource_count: 0, prompt_count: 0,
+  }), { connected: true, healthy: true })
+  const disconnected = probeStatusFromRuntime({
+    name: 'cached', connected: false, tool_count: 3, resource_count: 0, prompt_count: 0,
+    last_error: 'Upstream disconnected',
+  })
+  assert.deepEqual(disconnected, {
+    connected: false, healthy: false, last_error: 'Upstream disconnected',
+  })
+})
+
 test('normalizeGateway maps backend views into UI gateway shape', () => {
   const gateway = normalizeGateway(
     {

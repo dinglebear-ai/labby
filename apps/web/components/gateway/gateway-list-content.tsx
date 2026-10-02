@@ -1,7 +1,7 @@
 'use client'
 
 import dynamic from 'next/dynamic'
-import { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Download,
@@ -19,7 +19,8 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GatewayFleetMetadata } from './gateway-fleet-metadata'
 import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
-import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer } from '@/lib/types/gateway'
+import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer, GatewayImportResult } from '@/lib/types/gateway'
+import { gatewayApi } from '@/lib/api/gateway-client'
 import { cn, getErrorMessage } from '@/lib/utils'
 import {
   AURORA_PAGE_FRAME,
@@ -57,6 +58,11 @@ import { describeGatewayOperationalState } from '@/lib/gateway-operational-state
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
 const BULK_RELOAD_CONCURRENCY = 4
+const IMPORT_SKIP_LABELS = {
+  already_configured: 'already configured',
+  conflict: 'configuration conflicts with an existing server',
+  tombstoned: 'previously removed; restore it to import again',
+} as const
 type GatewayLayout = CollectionViewMode
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
@@ -155,11 +161,11 @@ export interface GatewayListViewProps {
 
 export function GatewayListContent() {
   const [primaryView, setPrimaryView] = useState<GatewayPrimaryLens | 'tools'>(DEFAULT_GATEWAY_LENS)
-  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm } = useGateways(
+  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm, toolInventoryError, retryToolInventory } = useGateways(
     true,
     primaryView === 'tools',
   )
-  const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
+  const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, invalidateGatewayDetail, enableGateway, disableGateway } =
     useGatewayMutations()
 
   const batchActions = gatewayBatchActions({ enable: enableGateway, disable: disableGateway, reload: reloadGateway })
@@ -174,6 +180,11 @@ export function GatewayListContent() {
 
   const [formOpen, setFormOpen] = useState(false)
   const [editingGateway, setEditingGateway] = useState<Gateway | null>(null)
+  const editRequest = useRef<AbortController | null>(null)
+  const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [importResult, setImportResult] = useState<GatewayImportResult | null>(null)
+  useEffect(() => () => editRequest.current?.abort(), [])
   const [discoveredConfigs, setDiscoveredConfigs] = useState<DiscoveredMcpServer[] | null>(null)
   const [isDiscoveringConfigs, setIsDiscoveringConfigs] = useState(false)
   const [isImportingConfigs, setIsImportingConfigs] = useState(false)
@@ -363,6 +374,9 @@ export function GatewayListContent() {
   }
 
   const handleCreate = () => {
+    editRequest.current?.abort()
+    setLoadingEditId(null)
+    setEditError(null)
     setEditingGateway(null)
     setFormOpen(true)
   }
@@ -385,10 +399,18 @@ export function GatewayListContent() {
     setIsImportingConfigs(true)
     try {
       const result = await importExternalConfigs(names)
-      const importedNames = result.imported.map((item) => item.config.name)
-      toast.success(`${importedNames.length} servers imported disabled`)
-      const refreshed = await discoverExternalConfigs()
-      setDiscoveredConfigs(refreshed)
+      setImportResult(result)
+      const message = `${result.imported.length} imported, ${result.skipped.length} skipped, ${result.errors.length} failed`
+      if (result.errors.length) {
+        if (result.imported.length) toast.warning(message)
+        else toast.error(message)
+      } else if (result.skipped.length || !result.imported.length) toast.info(message)
+      else toast.success(`${result.imported.length} servers imported disabled`)
+      try {
+        setDiscoveredConfigs(await discoverExternalConfigs())
+      } catch (requestError) {
+        toast.error(getErrorMessage(requestError, 'Import finished, but scanning configs again failed'))
+      }
     } catch (requestError) {
       toast.error(getErrorMessage(requestError, 'Failed to import MCP configs'))
     } finally {
@@ -410,9 +432,26 @@ export function GatewayListContent() {
     }
   }
 
-  const handleEdit = (gateway: Gateway) => {
-    setEditingGateway(gateway)
-    setFormOpen(true)
+  const handleEdit = async (gateway: Gateway) => {
+    editRequest.current?.abort()
+    const controller = new AbortController()
+    editRequest.current = controller
+    setLoadingEditId(gateway.id)
+    setEditError(null)
+    setFormOpen(false)
+    try {
+      const fullGateway = await gatewayApi.get(gateway.id, controller.signal)
+      if (controller.signal.aborted || editRequest.current !== controller) return
+      setEditingGateway(fullGateway)
+      setFormOpen(true)
+    } catch (error) {
+      if (controller.signal.aborted || editRequest.current !== controller) return
+      const message = getErrorMessage(error, 'Failed to load server configuration for editing')
+      setEditError(message)
+      toast.error(message)
+    } finally {
+      if (editRequest.current === controller) setLoadingEditId(null)
+    }
   }
 
   const handleTest = async (gateway: Gateway) => {
@@ -575,13 +614,19 @@ export function GatewayListContent() {
   ): Promise<GatewaySaveRollback> => {
     if (editingGateway) {
       const previous = editingGateway
-      await updateGateway(editingGateway.id, input as UpdateGatewayInput)
-      return async () => {
-        await updateGateway(previous.id, {
-          name: previous.name,
-          transport: previous.transport,
-          config: previous.config,
-        })
+      const saved = await updateGateway(editingGateway.id, input as UpdateGatewayInput)
+      return {
+        rollback: async () => {
+          await updateGateway(saved.id, {
+            name: previous.name,
+            display_name: previous.display_name ?? null,
+            transport: previous.transport,
+            config: previous.config,
+          })
+        },
+        commit: () => {
+          if (saved.id !== previous.id) void invalidateGatewayDetail(previous.id)
+        },
       }
     } else {
       const created = await createGateway(input as CreateGatewayInput)
@@ -595,6 +640,24 @@ export function GatewayListContent() {
 
   return (
     <>
+      {loadingEditId ? <p role="status" className="px-4 py-2 text-sm text-aurora-text-muted">Loading configuration for {loadingEditId}…</p> : null}
+      {editError ? <p role="alert" className="px-4 py-2 text-sm text-destructive">{editError}</p> : null}
+      {primaryView === 'tools' && (toolInventoryError || items.some(item => item.warnings.some(warning => warning.code === 'tool_inventory_unavailable'))) ? (
+        <div role="status" className="flex items-center gap-3 px-4 py-2 text-sm text-aurora-text-muted">
+          Tool inventory is incomplete. <Button variant="outline" size="sm" onClick={() => void retryToolInventory()}>Retry tool inventory</Button>
+        </div>
+      ) : null}
+      {importResult ? (
+        <section aria-label="MCP config import results" className={cn(AURORA_STRONG_PANEL, 'm-4 p-4 space-y-2')}>
+          <div className="flex items-center justify-between gap-3">
+            <p role="status" className="text-sm font-medium">{importResult.imported.length} imported, {importResult.skipped.length} skipped, {importResult.errors.length} failed</p>
+            <Button variant="ghost" size="sm" onClick={() => setImportResult(null)}>Dismiss import results</Button>
+          </div>
+          {importResult.imported.length ? <p className="text-sm text-aurora-text-muted">Imported disabled: {importResult.imported.map(item => item.config.name).join(', ')}</p> : null}
+          {importResult.errors.map((item, index) => <p key={`error-${index}`} className="text-sm text-destructive">{item.name}: {item.message}</p>)}
+          {importResult.skipped.map((item, index) => <p key={`skip-${index}`} className="text-sm text-aurora-text-muted">{item.name}: skipped — {IMPORT_SKIP_LABELS[item.reason] ?? item.reason}</p>)}
+        </section>
+      ) : null}
       <GatewayListView
         summary={summary}
         showToolsView={showToolsView}
