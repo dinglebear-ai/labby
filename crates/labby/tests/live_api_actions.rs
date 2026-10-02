@@ -349,6 +349,23 @@ async fn prepare_authority_action(
     intent: &action_matrix::CaseIntent,
     mut params: serde_json::Value,
 ) -> serde_json::Value {
+    if let Some(prepared) = action_scenarios::prepare_snippet_receipt_case(
+        &intent.action,
+        |action, params| async move {
+            let (status, bytes) =
+                post_action(client, base, "/v1/snippets", action, params, true).await;
+            assert!(
+                status.is_success(),
+                "{action} receipt fixture failed: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+            serde_json::from_slice(&bytes).expect("snippet fixture JSON")
+        },
+    )
+    .await
+    {
+        return prepared;
+    }
     let action_id = intent.action.replace('.', "-");
     if intent.service == "access" {
         if intent.action == "access.team_invitation.create" {
@@ -698,6 +715,16 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             assert!(status.is_success() || status.is_client_error() || status.is_server_error());
             let value: serde_json::Value = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|error| panic!("{} non-JSON HTTP envelope: {error}", intent.key()));
+            if status.is_success() {
+                action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
+                if intent.action == "snippets.replay" {
+                    let id = value["execution_id"].as_str().expect("replay execution identifier");
+                    let (read_status, bytes) = post_action(&client, &guard.connection().base_url, "/v1/snippets", "snippets.receipt", serde_json::json!({"execution_id":id}), true).await;
+                    assert!(read_status.is_success(), "replay receipt readback failed");
+                    let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("replay receipt JSON");
+                    assert_eq!(receipt["execution_id"], id, "replay durable state readback");
+                }
+            }
             if status.is_success() {
                 successes.insert(intent.service.clone());
             } else {

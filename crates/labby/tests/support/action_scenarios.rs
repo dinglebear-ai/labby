@@ -387,6 +387,78 @@ pub(crate) fn action_request(intent: &CaseIntent) -> Value {
     json!({"action": intent.action, "params": fixture_params(intent)})
 }
 
+/// Seed a real receipt and artifact in the transport runner's disposable home.
+/// Replay uses a fresh preview, never a fabricated fingerprint or weakened gate.
+pub(crate) async fn prepare_snippet_receipt_case<F, Fut>(action: &str, mut call: F) -> Option<Value>
+where
+    F: FnMut(&'static str, Value) -> Fut,
+    Fut: std::future::Future<Output = Value>,
+{
+    if !matches!(
+        action,
+        "snippets.artifact"
+            | "snippets.history"
+            | "snippets.preview"
+            | "snippets.receipt"
+            | "snippets.replay"
+    ) {
+        return None;
+    }
+    let name = format!("matrix-{}", action.replace('.', "-"));
+    let body = format!(
+        "---\nname: {name}\ndescription: Owned receipt matrix fixture\ntools: []\n---\n```js\nasync () => {{ await writeArtifact('report.txt', 'matrix-owned artifact', {{contentType:'text/plain'}}); return {{ok:true}}; }}\n```\n"
+    );
+    call("snippets.create", json!({"name":name,"body":body})).await;
+    if action == "snippets.preview" {
+        return Some(json!({"name":name,"params":{}}));
+    }
+    let run = call("snippets.exec", json!({"name":name,"params":{}})).await;
+    assert_eq!(
+        run["receipt_status"], "persisted",
+        "matrix seed must retain a real receipt: {run}"
+    );
+    let id = run["execution_id"]
+        .as_str()
+        .expect("seed execution identifier");
+    Some(match action {
+        "snippets.history" => json!({"name":name}),
+        "snippets.receipt" => json!({"execution_id":id}),
+        "snippets.artifact" => json!({"execution_id":id,"path":"report.txt"}),
+        "snippets.replay" => {
+            let preview = call("snippets.preview", json!({"execution_id":id,"params":{}})).await;
+            assert_eq!(
+                preview["can_execute"], true,
+                "seed replay preview: {preview}"
+            );
+            json!({"execution_id":id,"params":{},"expected_preview_fingerprint":preview["preview_fingerprint"],"acknowledged_drift":preview["drift"].as_array().expect("preview drift").iter().map(|entry|entry["field"].clone()).collect::<Vec<_>>()})
+        }
+        _ => unreachable!(),
+    })
+}
+
+pub(crate) fn assert_snippet_receipt_case(action: &str, value: &Value) {
+    match action {
+        "snippets.artifact" => {
+            assert_eq!(value["path"], "report.txt");
+            assert_eq!(value["content_base64"], "bWF0cml4LW93bmVkIGFydGlmYWN0");
+        }
+        "snippets.history" => {
+            assert_eq!(value["receipt_status"], "persisted");
+            assert_eq!(
+                value["receipts"].as_array().expect("receipt history").len(),
+                1
+            );
+        }
+        "snippets.preview" => assert_eq!(value["can_execute"], true),
+        "snippets.receipt" => assert!(value["execution_id"].as_str().is_some()),
+        "snippets.replay" => {
+            assert_eq!(value["receipt_status"], "persisted");
+            assert_eq!(value["result"]["ok"], true);
+        }
+        _ => {}
+    }
+}
+
 pub(crate) fn fixture_params(intent: &CaseIntent) -> Value {
     let all = fixtures();
     let fixture = all.get(&intent.service).expect("service fixture");
