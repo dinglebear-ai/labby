@@ -282,7 +282,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     ) -> Result<String, ToolError> {
         let Some(host) = self.host else {
             return Ok(if local_providers_allowed(caller, scope) {
-                super::preamble::generate_local_provider_js()
+                format!(
+                    "{}\n{}",
+                    super::preamble::generate_local_provider_js(),
+                    crate::sandbox::javascript()
+                )
             } else {
                 String::new()
             });
@@ -338,7 +342,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 }
             })?;
         let local_provider_js = if local_providers_allowed(caller, scope) {
-            super::preamble::generate_local_provider_js()
+            format!(
+                "{}\n{}",
+                super::preamble::generate_local_provider_js(),
+                crate::sandbox::javascript()
+            )
         } else {
             String::new()
         };
