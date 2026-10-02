@@ -172,9 +172,15 @@ jobs:
               continue
             fi
             gh release download "$tag" --dir "$directory/assets"
+            # GitHub resolves this file at the immutable release tag. The
+            # observer requires its raw digest to match the historical manifest
+            # before applying schema-default normalization.
+            gh api "repos/$GITHUB_REPOSITORY/contents/server.json?ref=$tag" \
+              --jq '.content' | base64 --decode >"$directory/server.json"
             python3 scripts/ci/observe-release.py \
               --manifest "$directory/assets/release-manifest.json" \
-              --assets "$directory/assets" --output "$directory/observed.json"
+              --assets "$directory/assets" --output "$directory/observed.json" --historical \
+              --mcp-source "$directory/server.json"
             if ! scripts/ci/reconcile-release.py \
               --manifest "$directory/assets/release-manifest.json" \
               --observed "$directory/observed.json" >"$directory/reconciliation.json"; then
