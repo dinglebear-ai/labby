@@ -298,6 +298,15 @@ The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
 script with its declared shell and runs ShellCheck at warning severity. Analyzer
 setup, parse failures, warnings, and errors all fail the stable `ci-gate`.
 
+Live E2E precompiles the all-feature CLI and every shard/coverage test target
+under a separate 20-minute build cap. Qualification uses those artifacts with
+an explicit 1,800-second harness deadline and unchanged 900-second shard caps.
+The qualification step allows 31 minutes, including cleanup and coverage
+report generation; the 60-minute job cap leaves setup and evidence-upload
+margin outside both bounded phases. The aggregate deadline is stricter than
+the local harness default and applies to every hosted tier. A failed or timed-out shard fails the run;
+this budget separation does not waive any declared shard or evidence check.
+
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
 [MCP_CONFORMANCE.md](../surfaces/MCP_CONFORMANCE.md).
