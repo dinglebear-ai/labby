@@ -269,13 +269,15 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.artifact` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`path*: string` | `SnippetArtifactResponse` | mcp, api |
 | `snippets` | `snippets.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean`<br>`expected_digest: string` | `SnippetInfo` | cli, mcp, api |
-| `snippets` | `snippets.exec` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object` | `CodeModeExecutionResponse` | cli, mcp, api |
+| `snippets` | `snippets.exec` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object`<br>`expected_preview_fingerprint: string` | `CodeModeExecutionResponse` | cli, mcp, api |
 | `snippets` | `snippets.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ResolvedSnippet` | cli, mcp, api |
 | `snippets` | `snippets.history` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`limit: integer`<br>`cursor: string` | `SnippetReceiptHistory` | mcp, api |
 | `snippets` | `snippets.list` | false | false | false |  | `transport` | `-` | `-` |  | `SnippetList` | cli, mcp, api |
+| `snippets` | `snippets.preview` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`execution_id: string`<br>`params: object` | `SnippetPreview` | mcp, api |
 | `snippets` | `snippets.promote` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`name*: string`<br>`description: string`<br>`force: boolean`<br>`shadow_builtin: boolean` | `SnippetPromotionResult` | mcp, api |
 | `snippets` | `snippets.receipt` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string` | `SnippetExecutionReceipt` | mcp, api |
 | `snippets` | `snippets.remove` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
+| `snippets` | `snippets.replay` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`params*: object`<br>`expected_preview_fingerprint*: string`<br>`acknowledged_drift*: array` | `CodeModeExecutionResponse` | mcp, api |
 | `snippets` | `snippets.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `fixture: object`<br>`live: boolean`<br>`name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
 | `snippets` | `snippets.validate` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
 | `sources` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |

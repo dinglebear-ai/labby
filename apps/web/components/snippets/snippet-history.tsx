@@ -6,12 +6,12 @@ import { snippetsApi } from '@/lib/api/snippets-client'
 import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import type { SnippetExecutionReceipt } from '@/lib/types/snippets'
 
-export function SnippetHistory({ name, revision }: { name: string; revision: number }) {
+export function SnippetHistory({ name, revision, onReplay }: { name: string; revision: number; onReplay?: (receipt:SnippetExecutionReceipt)=>void }) {
   const epoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
-  return <HistoryScope key={`${name}:${epoch}:${revision}`} name={name} revision={revision} epoch={epoch} />
+  return <HistoryScope key={`${name}:${epoch}:${revision}`} name={name} revision={revision} epoch={epoch} onReplay={onReplay} />
 }
 
-function HistoryScope({ name, revision, epoch }: { name: string; revision: number; epoch: number }) {
+function HistoryScope({ name, revision, epoch, onReplay }: { name: string; revision: number; epoch: number; onReplay?: (receipt:SnippetExecutionReceipt)=>void }) {
   const [receipts, setReceipts] = useState<SnippetExecutionReceipt[]>([])
   const [cursor, setCursor] = useState<string | null>(null)
   const [detail, setDetail] = useState<SnippetExecutionReceipt | null>(null)
@@ -69,6 +69,7 @@ function HistoryScope({ name, revision, epoch }: { name: string; revision: numbe
     {loading ? <p role="status" className="text-xs text-aurora-text-muted">Loading history…</p> : disabled ? <p className="text-xs text-aurora-text-muted">Persistent receipts are disabled on this gateway.</p> : receipts.length === 0 ? <p className="text-xs text-aurora-text-muted">No retained runs for this snippet in the current workspace.</p> : <div className="grid gap-2">{receipts.map((receipt) => <Button key={receipt.execution_id} type="button" variant="outline" className="h-auto justify-start whitespace-normal text-left" aria-pressed={selectedId === receipt.execution_id} onClick={() => setSelectedId(receipt.execution_id)}><span className="grid gap-1"><span>{new Date(receipt.created_at_ms).toLocaleString()} · {receipt.status} · {receipt.elapsed_ms} ms</span><span className="break-all text-xs text-aurora-text-muted">{receipt.tool_calls} calls · {receipt.execution_id}</span></span></Button>)}</div>}
     {cursor ? <Button type="button" size="sm" variant="outline" disabled={loading} onClick={() => { setSelectedId(undefined); setPage(cursor) }}>Next history page</Button> : null}
     {detail ? <div className="grid gap-3 rounded-aurora-2 border border-aurora-border-subtle p-3 text-xs">
+      {onReplay ? <Button size="sm" variant="outline" onClick={()=>onReplay(detail)}>Preview replay</Button> : null}
       <p className="break-all">{detail.execution_id} · {detail.status} · {detail.elapsed_ms} ms{detail.error_kind ? ` · ${detail.error_kind}` : ''}</p>
       <dl className="grid min-w-0 gap-1 text-aurora-text-muted"><dt>Runtime</dt><dd>{detail.runtime_version} · {detail.surface}</dd><dt>Snippet digest</dt><dd className="break-all">{detail.snippet_digest}</dd><dt>Input digest</dt><dd className="break-all">{detail.input_digest}</dd></dl>
       <div><h4 className="mb-2 font-semibold">Tool calls</h4>{detail.calls.map((call, index) => <p key={index} className={call.ok ? 'text-aurora-text-muted' : 'text-aurora-error'}>{index + 1}. {call.tool} · {call.ok ? 'succeeded' : `failed${call.error_kind ? ` (${call.error_kind})` : ''}`} · {call.elapsed_ms} ms</p>)}{detail.omitted_calls > 0 ? <p>{detail.omitted_calls} additional calls omitted.</p> : null}</div>

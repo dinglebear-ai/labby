@@ -21,3 +21,9 @@ test('complex tool schemas retain advanced JSON rather than inventing fields', (
   assert.equal(guidedSchemaSupported({ ...schema, properties: { complex: { oneOf: [{ type: 'string' }, { type: 'integer' }] } } }), false)
   assert.equal(objectSchema({ type: 'array' }), undefined)
 })
+
+test('declared required inputs can be compiled without sample data while supplied nested paths are checked',()=>{
+ assert.equal(mappedParameterError(schema,{query:'$input.query',count:1},{},{query:{ty:'string',required:true}}),undefined)
+ assert.equal(mappedParameterError(schema,{query:'$input.settings.query',count:1},{settings:{query:'hello'}}),undefined)
+ assert.match(mappedParameterError(schema,{query:'$input.settings.missing',count:1},{settings:{query:'hello'}})!,/Unknown snippet input/)
+})

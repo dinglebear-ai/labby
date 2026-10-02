@@ -61,6 +61,10 @@ pub struct SnippetExecutionReceipt {
     pub input_digest: String,
     pub effective_scope_fingerprint: String,
     pub runtime_version: String,
+    /// Bounded, caller-visible descriptor digests captured at execution start.
+    /// Missing evidence (including older receipts) remains explicitly unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_schema_digests: Option<std::collections::BTreeMap<String, Option<String>>>,
     pub surface: String,
     pub created_at_ms: i64,
     pub elapsed_ms: u128,

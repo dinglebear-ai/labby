@@ -12,6 +12,8 @@ import type {
   SnippetRemoveResult,
   SnippetTestResult,
   SnippetValidation,
+  SnippetPreview,
+  SnippetDriftField,
 } from '@/lib/types/snippets'
 
 export class SnippetsApiError extends Error implements ServiceActionError {
@@ -40,6 +42,12 @@ async function snippetsAction<T>(action: string, params: object, signal?: AbortS
 }
 
 export const snippetsApi = {
+  preview(params: { name?: string; execution_id?: string; params?: Record<string, unknown> }, signal?: AbortSignal): Promise<SnippetPreview> {
+    return snippetsAction('snippets.preview', params, signal)
+  },
+  replay(executionId: string, params: Record<string, unknown>, fingerprint: string, acknowledgedDrift: SnippetDriftField[], signal?: AbortSignal): Promise<CodeModeExecutionResponse> {
+    return snippetsAction('snippets.replay', {execution_id: executionId, params, expected_preview_fingerprint: fingerprint, acknowledged_drift: acknowledgedDrift}, signal)
+  },
   artifact(executionId: string, path: string, signal?: AbortSignal): Promise<SnippetArtifactResponse> {
     return snippetsAction<SnippetArtifactResponse>('snippets.artifact', { execution_id: executionId, path }, signal)
   },
@@ -98,8 +106,9 @@ export const snippetsApi = {
     name: string,
     params: Record<string, unknown> = {},
     signal?: AbortSignal,
+    expectedPreviewFingerprint?: string,
   ): Promise<CodeModeExecutionResponse> {
-    return snippetsAction<CodeModeExecutionResponse>('snippets.exec', { name, params }, signal)
+    return snippetsAction<CodeModeExecutionResponse>('snippets.exec', { name, params, ...(expectedPreviewFingerprint ? {expected_preview_fingerprint: expectedPreviewFingerprint} : {}) }, signal)
   },
 
   remove(name: string, signal?: AbortSignal): Promise<SnippetRemoveResult> {

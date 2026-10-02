@@ -24,6 +24,7 @@ pub(super) fn receipt(id: &str, time: i64) -> SnippetExecutionReceipt {
         input_digest: "sha256:input".into(),
         effective_scope_fingerprint: "scope-a".into(),
         runtime_version: "test/1".into(),
+        tool_schema_digests: None,
         surface: "api".into(),
         created_at_ms: time,
         elapsed_ms: 12,
@@ -36,6 +37,14 @@ pub(super) fn receipt(id: &str, time: i64) -> SnippetExecutionReceipt {
         omitted_calls: 0,
         artifacts: vec![],
     }
+}
+
+#[test]
+fn older_receipt_without_schema_evidence_remains_explicitly_unverifiable() {
+    let mut value = serde_json::to_value(receipt("legacy", 0)).unwrap();
+    value.as_object_mut().unwrap().remove("tool_schema_digests");
+    let decoded: SnippetExecutionReceipt = serde_json::from_value(value).unwrap();
+    assert!(decoded.tool_schema_digests.is_none());
 }
 #[tokio::test]
 async fn durable_receipts_survive_reopen_and_enforce_all_owner_axes() {
