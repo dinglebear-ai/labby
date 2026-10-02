@@ -144,6 +144,27 @@ impl LiveIdentity {
         .await
     }
 
+    /// Executable snippet runtime behind a raw, explicitly scoped MCP route.
+    /// The owner credential has the same complete transport ceiling as the
+    /// authority harness, while this Loadout publishes only Gateway and Snippets.
+    pub(crate) async fn bootstrap_snippet_receipt_harness(subject: &str) -> Result<Self, String> {
+        let mut config = policy(AUTHORITY_SCOPES).replacen(
+            "services = [\"gateway\"]",
+            "services = [\"gateway\", \"snippets\"]\nexpose_code_mode = false",
+            1,
+        );
+        config.push_str("\n[code_mode]\nenabled = true\n");
+        Self::bootstrap_with_policy_issuer_and_loadout(
+            subject,
+            300,
+            &config,
+            PUBLIC_HOST,
+            LOADOUT_ID,
+            AUTHORITY_SCOPES,
+        )
+        .await
+    }
+
     /// Bootstrap a two-principal authority harness.
     ///
     /// The product credential minted by the bootstrap proof is the
