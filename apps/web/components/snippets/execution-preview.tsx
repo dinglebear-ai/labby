@@ -128,7 +128,9 @@ export function ExecutionPreview({
   }, [name, executionId, params, snippet])
   let input: Record<string, unknown> = {}
   try {
-    input = JSON.parse(params)
+    const parsed: unknown = JSON.parse(params)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+      input = parsed as Record<string, unknown>
   } catch {
     /* Keep invalid JSON editable. */
   }

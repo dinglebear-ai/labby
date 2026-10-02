@@ -119,6 +119,21 @@ test('replay previews current safe defaults, requires drift acknowledgment, and 
         acknowledged_drift: ['input'],
       },
     )
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype, 'value',
+      )!.set!.call(field, 'null')
+      // React retains the first test window's event constructors.
+      const propsKey = Object.keys(field).find((key) => key.startsWith('__reactProps$'))!
+      const props = (field as unknown as Record<string, {
+        onChange: (event: { target: { value: string } }) => void
+      }>)[propsKey]
+      props.onChange({ target: { value: 'null' } })
+    })
+    await waitFor(() =>
+      assert.match(document.body.textContent ?? '', /Inputs must be a JSON object/),
+    )
+    assert.ok(document.body.querySelector('#preview-inputs'))
   } finally {
     await view.unmount()
   }

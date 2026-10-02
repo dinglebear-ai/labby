@@ -156,7 +156,7 @@ impl OpenAiBackend {
             protocol,
             http,
             base_url,
-            session_api: true,
+            session_api: protocol == ProviderProtocol::Phoenix,
             api_key: api_key.and_then(|value| {
                 let value = value.trim();
                 (!value.is_empty()).then(|| value.to_owned())
