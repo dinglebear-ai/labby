@@ -559,7 +559,11 @@ run_first_run_setup() {
 
     if [ -n "$SETUP_ROLE" ]; then
         set -- setup --role "$SETUP_ROLE" --yes
-        [ -z "$SETUP_DEPLOYMENT" ] || set -- "$@" --deployment "$SETUP_DEPLOYMENT"
+        if [ "$SETUP_ROLE" = "server" ]; then
+            set -- "$@" --deployment "${SETUP_DEPLOYMENT:-native}"
+        elif [ -n "$SETUP_DEPLOYMENT" ]; then
+            set -- "$@" --deployment "$SETUP_DEPLOYMENT"
+        fi
         [ -z "$SETUP_HOST" ] || set -- "$@" --host "$SETUP_HOST"
         [ -z "$SETUP_PORT" ] || set -- "$@" --port "$SETUP_PORT"
         [ -z "$SETUP_SERVER_URL" ] || set -- "$@" --server-url "$SETUP_SERVER_URL"

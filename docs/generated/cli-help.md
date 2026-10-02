@@ -6043,35 +6043,41 @@ Options:
           Suppress console logs, but always report command errors
 
       --skip-deps
-          Skip runtime dependency installation and only converge user/service state
+          Skip dependency installation offers for ChatGPT setup, or runtime installation when provisioning
 
       --no-input
           Never prompt for missing input or confirmation
 
       --role <ROLE>
-          Configure this machine as a Labby server or as a client of another server
+          Configure server authentication or a client; server service installation requires --deployment
 
           [possible values: server, client]
 
-      --advanced
-          Ask about deployment, listen address, port, and authentication instead of using local defaults
+      --chatgpt
+          Connect ChatGPT to local Microsandbox sandboxes through Google OAuth and Tailscale Funnel
 
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
-      --deployment <DEPLOYMENT>
-          Server deployment backend. Native is the fastest path; Incus is isolated
-
-          [possible values: native, incus]
+      --advanced
+          Ask about deployment, listen address, port, and authentication instead of using local defaults
 
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
 
-      --host <HOST>
-          Server listen address. Defaults to 127.0.0.1
+      --config-only
+          Prepare server authentication in LABBY_HOME without installing or starting a service
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --deployment <DEPLOYMENT>
+          Install a managed server explicitly: native service or isolated Incus container
+
+          [possible values: native, incus]
+
+      --host <HOST>
+          Server listen address. Defaults to 127.0.0.1
 
       --port <PORT>
           Server listen or published port. Fresh local setup uses 8765 when available, otherwise an available port

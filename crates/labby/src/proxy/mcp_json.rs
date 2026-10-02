@@ -135,8 +135,11 @@ pub fn prepare_with_overrides(
     if file.servers.is_empty() {
         bail!(".mcp.json contains no MCP servers");
     }
-    if file.servers.len() > 16 {
-        bail!(".mcp.json may contain at most 16 MCP servers");
+    if file.servers.len() > super::config::MAX_MCP_SERVERS {
+        bail!(
+            ".mcp.json may contain at most {} MCP servers",
+            super::config::MAX_MCP_SERVERS
+        );
     }
     let count = file.servers.len();
     let mut upstream = Vec::with_capacity(count);
