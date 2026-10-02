@@ -1,4 +1,7 @@
 ---
+title: "Repository status GitHub pulse"
+created: "2026-10-02"
+updated: "2026-10-02"
 name: repo-status-gh-pulse
 description: Audit local checkout, branches and worktrees, merge conflicts, patch risks, and GitHub PR checks with conservative readiness classifications.
 tags: [repo, git, github, ci, readonly]
