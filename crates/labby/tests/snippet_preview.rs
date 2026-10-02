@@ -99,7 +99,7 @@ fn run(home: &Path) {
         .unwrap();
     runtime.block_on(async {
         let store=StepJournalStore::open(home.join("journal.db")).await.unwrap();
-        let manager=GatewayManager::new(home.join("config.toml"),GatewayRuntimeHandle::default())
+        let manager=GatewayManager::with_store(home.join("config.toml"),GatewayRuntimeHandle::default(), Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(Arc::new(std::sync::RwLock::new(labby::config::LabConfig::default())),home.join("config.toml"))))
             .with_step_journal(Arc::new(store)).with_code_mode_runner_spawn(RunnerSpawn {program:env!("CARGO_BIN_EXE_labby").into(),args:vec!["internal".into(),"code-mode-runner".into()]});
         let alice=context("alice");
         let secret="ephemeral-preview-secret-must-not-be-stored-90b76";
