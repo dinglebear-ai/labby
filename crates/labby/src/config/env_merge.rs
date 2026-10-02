@@ -902,6 +902,25 @@ mod tests {
     }
 
     #[test]
+    fn remove_key_preserves_comments_exports_and_unrelated_current_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let raw = "# operator note\nexport\tTOKEN=one\nTOKEN=two\nexport=literal-key\nTOKEN_SUFFIX=keep\nOTHER=new writer\n";
+        fs::write(&path, raw).unwrap();
+        let outcome = remove_key(&path, "TOKEN").unwrap();
+        assert_eq!(outcome.written, 1);
+        assert_eq!(
+            fs::read_to_string(outcome.backup_path.unwrap()).unwrap(),
+            raw
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# operator note\nexport=literal-key\nTOKEN_SUFFIX=keep\nOTHER=new writer\n"
+        );
+        assert_eq!(remove_key(&path, "TOKEN").unwrap().written, 0);
+    }
+
+    #[test]
     fn idempotent_no_change_skips_backup() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_initial(dir.path(), ".env", "FOO=bar\n");

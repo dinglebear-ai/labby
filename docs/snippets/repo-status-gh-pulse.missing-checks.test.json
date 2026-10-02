@@ -1,0 +1,92 @@
+{
+  "calls": [
+    {
+      "tool": "claude-macpoo::Bash",
+      "match": {},
+      "result": {
+        "stdout": "{\"root\": \"/fixture\", \"generated_at\": \"2026-10-01T12:00:00Z\", \"default_base\": \"origin/main\", \"current_branch\": \"feature\", \"remote\": \"git@github.com:example/repo.git\", \"branches_total\": 1, \"branches_truncated\": false, \"command_failures\": [], \"worktrees\": [{\"branch\": \"feature\", \"dirty\": false, \"exists\": true, \"locked\": false}], \"branches\": [{\"name\": \"feature\", \"head\": \"abc\", \"base\": \"origin/main\", \"stale_evidence\": {\"merged_into_base\": false}, \"risk_signals\": {}, \"limited\": false}]}"
+      }
+    },
+    {
+      "tool": "github::search_pull_requests",
+      "match": {},
+      "result": {
+        "items": [
+          {
+            "number": 1,
+            "html_url": "https://github.com/example/repo/pull/1"
+          }
+        ],
+        "total_count": 1
+      }
+    },
+    {
+      "tool": "github::pull_request_read",
+      "match": {
+        "method": "get"
+      },
+      "result": {
+        "head": {
+          "ref": "feature",
+          "sha": "abc"
+        },
+        "base": {
+          "ref": "main"
+        },
+        "draft": false,
+        "mergeable": true
+      }
+    },
+    {
+      "tool": "github::pull_request_read",
+      "match": {
+        "method": "get_check_runs"
+      },
+      "result": {
+        "check_runs": [],
+        "total_count": 0
+      }
+    },
+    {
+      "tool": "github::pull_request_read",
+      "match": {
+        "method": "get_reviews"
+      },
+      "result": []
+    },
+    {
+      "tool": "github::pull_request_read",
+      "match": {
+        "method": "get_review_comments"
+      },
+      "result": {
+        "threads": []
+      }
+    },
+    {
+      "tool": "github-actions::actions_list",
+      "match": {},
+      "result": {
+        "workflow_runs": [
+          {
+            "head_sha": "different",
+            "status": "completed",
+            "conclusion": "success"
+          }
+        ],
+        "total_count": 1
+      }
+    }
+  ],
+  "expect": {
+    "/branches/0/status": "needs_work",
+    "/coverage/tests_run": false,
+    "/merge_order": [],
+    "/branches/0/pr/workflow_runs": []
+  },
+  "budgets": {
+    "tool_calls": 7,
+    "output_bytes": 16000,
+    "wall_clock_ms": 20000
+  }
+}
