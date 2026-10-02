@@ -107,6 +107,13 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.5.0](https://github.com/dinglebear-ai/labby/compare/v2.4.0...v2.5.0) (2026-10-02)
+
+
+### Added
+
+* **setup:** guide ChatGPT sandbox onboarding ([#861](https://github.com/dinglebear-ai/labby/issues/861)) ([e2c4ba5](https://github.com/dinglebear-ai/labby/commit/e2c4ba53fa372c3673b7223a8ad9bd64c4e2e9af))
+
 ## [2.4.0](https://github.com/dinglebear-ai/labby/compare/v2.3.2...v2.4.0) (2026-10-02)
 
 
