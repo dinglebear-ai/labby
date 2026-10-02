@@ -127,6 +127,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/lifecycle-scripts.json",
             "scripts/ci/check-lifecycle-scripts.sh",
             "scripts/ci/test_release_hardening.py",
+            "scripts/ci/test_release_observer.py",
             "scripts/ci/resolve-n-minus-one-baseline.py",
             "scripts/ci/github-verifier-bootstrap.sh.in",
             "scripts/ci/github-verifier-bootstrap.ps1.in",
@@ -323,6 +324,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
                 "scripts/ci/lifecycle-scripts.json",
                 "scripts/ci/check-lifecycle-scripts.sh",
                 "scripts/ci/test_release_hardening.py",
+                "scripts/ci/test_release_observer.py",
             },
         )
         if fail_closed:
