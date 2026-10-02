@@ -6,6 +6,7 @@
 //! lab-5dtw9); v1 never reads them to resume or replay work.
 
 pub mod notebook;
+pub mod receipts;
 pub mod store;
 
 pub use notebook::{CallSummary, Notebook, NotebookCell, project_notebook};

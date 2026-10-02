@@ -70,6 +70,32 @@ fn oversized_typescript_is_omitted_whole() {
 }
 
 #[test]
+fn describe_exposes_only_visible_bounded_input_schema() {
+    let schema = serde_json::json!({"type":"object","properties":{"count":{"type":"integer","minimum":1}},"required":["count"]});
+    let mut entry = tool("github", "search", "search");
+    entry.schema = Some(schema.clone());
+    assert_eq!(
+        describe_visible_tool(&[entry.clone()], &ToolScope::default(), "github::search")
+            .unwrap()
+            .input_schema,
+        Some(schema)
+    );
+    let denied = ToolScope::scoped_namespaces(vec!["other".into()], Vec::new());
+    assert_eq!(
+        describe_visible_tool(&[entry.clone()], &denied, "github::search")
+            .unwrap_err()
+            .kind(),
+        "unknown_tool"
+    );
+    entry.schema = Some(serde_json::json!({"description":"x".repeat(65*1024)}));
+    let response =
+        describe_visible_tool(&[entry], &ToolScope::default(), "github::search").unwrap();
+    assert!(response.input_schema.is_none());
+    assert_eq!(response.input_schema_omitted, Some("size_limit"));
+    assert!(serde_json::to_vec(&response).unwrap().len() <= DESCRIBE_RESPONSE_MAX_BYTES);
+}
+
+#[test]
 fn api_surface_is_not_trusted_local() {
     let caller = CodeModeCaller::Scoped {
         capabilities: CodeModeCallerCapabilities::default(),

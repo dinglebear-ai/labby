@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Quick repository context pass using filesystem, Octocode, GitHub, and time
 tags: [repo, triage, research]
+tools: ["time::get_current_time", "filesystem::read_text_file", "octocode::localSearch", "github::search_issues", "github::get_file_contents"]
 inputs:
   repo_path:
     type: string

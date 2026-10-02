@@ -6,6 +6,8 @@ use std::path::PathBuf;
 #[derive(JsonSchema)]
 struct SnippetListSchema {
     snippets: Vec<labby_codemode::snippet::store::SnippetInfo>,
+    diagnostics: Vec<labby_codemode::snippet::store::SnippetDiagnostic>,
+    diagnostics_omitted: usize,
 }
 
 #[allow(dead_code)]
@@ -52,6 +54,7 @@ struct SnippetTestSingleSchema {
     name: String,
     passed: bool,
     response: labby_codemode::CodeModeExecutionResponse,
+    receipt_status: String,
 }
 
 #[allow(dead_code)]
@@ -90,6 +93,14 @@ struct AgentErrorEnvelopeSchema {
     prompt: Option<String>,
     resource: Option<String>,
     cause: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+struct SnippetExecutionResponseSchema {
+    #[serde(flatten)]
+    response: labby_codemode::CodeModeExecutionResponse,
+    receipt_status: String,
 }
 
 pub const ACTIONS: &[ActionSpec] = &[
@@ -147,9 +158,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         destructive: false,
         requires_admin: true,
         returns: "CodeModeExecutionResponse",
-        output_schema: Some(
-            labby_primitives::action::schema_for::<labby_codemode::CodeModeExecutionResponse>,
-        ),
+        output_schema: Some(labby_primitives::action::schema_for::<SnippetExecutionResponseSchema>),
         params: &[
             ParamSpec {
                 name: "name",
@@ -162,6 +171,80 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "object",
                 required: false,
                 description: "Input object passed to the snippet async function",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "snippets.receipt",
+        description: "Read bounded execution metadata in the original caller and route scope",
+        destructive: false,
+        requires_admin: true,
+        returns: "SnippetExecutionReceipt",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_gateway::codemode_journal::receipts::SnippetExecutionReceipt,
+            >,
+        ),
+        params: &[ParamSpec {
+            name: "execution_id",
+            ty: "string",
+            required: true,
+            description: "Saved snippet execution identifier",
+        }],
+    },
+    ActionSpec {
+        name: "snippets.history",
+        description: "List bounded execution receipts in the current caller and route scope",
+        destructive: false,
+        requires_admin: true,
+        returns: "SnippetReceiptHistory",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<
+                labby_gateway::codemode_journal::receipts::SnippetReceiptHistory,
+            >,
+        ),
+        params: &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: false,
+                description: "Filter by snippet name",
+            },
+            ParamSpec {
+                name: "limit",
+                ty: "integer",
+                required: false,
+                description: "Page size: 1 to 50, default 20",
+            },
+            ParamSpec {
+                name: "cursor",
+                ty: "string",
+                required: false,
+                description: "Opaque continuation for the same caller, route and filter",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "snippets.artifact",
+        description: "Read an authorized receipt artifact, with size, digest and containment verification",
+        destructive: false,
+        requires_admin: true,
+        returns: "SnippetArtifactResponse",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::history::SnippetArtifactResponse>,
+        ),
+        params: &[
+            ParamSpec {
+                name: "execution_id",
+                ty: "string",
+                required: true,
+                description: "Saved snippet execution identifier",
+            },
+            ParamSpec {
+                name: "path",
+                ty: "string",
+                required: true,
+                description: "Exact relative artifact path from the authorized receipt",
             },
         ],
     },
@@ -198,6 +281,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "boolean",
                 required: false,
                 description: "Overwrite an existing user snippet",
+            },
+            ParamSpec {
+                name: "expected_digest",
+                ty: "string",
+                required: false,
+                description: "Reject a stale edit unless the current user snippet has this content_digest",
             },
         ],
     },

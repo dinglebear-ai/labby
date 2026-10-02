@@ -49,8 +49,7 @@ impl RequestSignals {
             if name.eq_ignore_ascii_case("host") && value == "local.internal" {
                 self.expected_host.store(true, Ordering::SeqCst);
             } else if name.eq_ignore_ascii_case("authorization")
-                && value.starts_with("Bearer ")
-                && value.len() > "Bearer ".len()
+                && value == "Bearer unix-fixture-token"
             {
                 self.bearer_header.store(true, Ordering::SeqCst);
             } else if name.eq_ignore_ascii_case("x-labby-test") && value == "present" {
@@ -221,11 +220,6 @@ async fn serve_unix_mcp(listener: UnixListener, signals: RequestSignals) -> io::
 }
 
 async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
-    assert!(
-        std::env::var("HOME").is_ok_and(|home| !home.trim().is_empty()),
-        "HOME is required for the bearer-token integration assertion"
-    );
-
     let signals = RequestSignals::new();
     let server = tokio::spawn(serve_unix_mcp(listener, signals.clone()));
 
@@ -234,7 +228,7 @@ async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
     config.transport = Some(UpstreamTransport::UnixSocket);
     config.socket_path = Some(socket_path.to_string());
     config.url = Some("http://local.internal/mcp".to_string());
-    config.bearer_token_env = Some("HOME".to_string());
+    config.bearer_token_env = Some("LABBY_UNIX_FIXTURE_BEARER".to_string());
     config
         .headers
         .insert("x-labby-test".to_string(), "present".to_string());
@@ -274,6 +268,11 @@ async fn exercise_unix_socket(socket_path: &str, listener: UnixListener) {
 
 #[tokio::test]
 async fn filesystem_unix_socket_upstream_preserves_http_behavior() {
+    if crate::upstream::test_isolation::run(
+        "upstream::pool::connect_unix_tests::filesystem_unix_socket_upstream_preserves_http_behavior",
+        &[("LABBY_UNIX_FIXTURE_BEARER", "unix-fixture-token")],
+    ).await { return; }
+
     let tempdir = tempfile::tempdir().expect("tempdir");
     let socket_path = tempdir.path().join("mcp.sock");
     let listener = UnixListener::bind(&socket_path).expect("bind filesystem Unix socket");
@@ -347,6 +346,11 @@ async fn dead_unix_socket_degrades_without_poisoning_healthy_discovery() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn abstract_unix_socket_upstream_discovers_and_calls_tool() {
+    if crate::upstream::test_isolation::run(
+        "upstream::pool::connect_unix_tests::abstract_unix_socket_upstream_discovers_and_calls_tool",
+        &[("LABBY_UNIX_FIXTURE_BEARER", "unix-fixture-token")],
+    ).await { return; }
+
     let sequence = ABSTRACT_SOCKET_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let socket_path = format!("@labby-uds-{}-{sequence}", std::process::id());
     let name = socket_path.as_bytes().strip_prefix(b"@").unwrap();

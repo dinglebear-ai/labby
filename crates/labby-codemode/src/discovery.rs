@@ -14,6 +14,7 @@ pub const SIGNATURE_MAX_BYTES: usize = 8 * 1_024;
 pub const TAGS_MAX: usize = 32;
 pub const TAG_MAX_BYTES: usize = 256;
 pub const DTS_MAX_BYTES: usize = 64 * 1_024;
+const INPUT_SCHEMA_MAX_BYTES: usize = 64 * 1_024;
 pub const SEARCH_RESPONSE_MAX_BYTES: usize = 256 * 1_024;
 pub const DESCRIBE_RESPONSE_MAX_BYTES: usize = 128 * 1_024;
 
@@ -58,6 +59,11 @@ pub struct CodeModeDescribeResponse {
     pub typescript: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub typescript_omitted: Option<&'static str>,
+    /// Visible tool's authoritative input schema, when it fits the response budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_schema_omitted: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -218,7 +224,14 @@ pub fn describe_visible_catalog(
     } else {
         (None, Some("size_limit"))
     };
-    let response = CodeModeDescribeResponse {
+    let (input_schema, input_schema_omitted) = match &entry.schema {
+        Some(schema) if serialized_len(schema)? <= INPUT_SCHEMA_MAX_BYTES => {
+            (Some(schema.clone()), None)
+        }
+        Some(_) => (None, Some("size_limit")),
+        None => (None, None),
+    };
+    let mut response = CodeModeDescribeResponse {
         path: entry.discovery_path(),
         id: entry.id.clone(),
         kind: entry.kind,
@@ -231,7 +244,13 @@ pub fn describe_visible_catalog(
         safety: entry.safety,
         typescript,
         typescript_omitted,
+        input_schema,
+        input_schema_omitted,
     };
+    if serialized_len(&response)? > DESCRIBE_RESPONSE_MAX_BYTES && response.input_schema.is_some() {
+        response.input_schema = None;
+        response.input_schema_omitted = Some("size_limit");
+    }
     if serialized_len(&response)? > DESCRIBE_RESPONSE_MAX_BYTES {
         return Err(ToolError::Sdk {
             sdk_kind: "response_too_large".into(),

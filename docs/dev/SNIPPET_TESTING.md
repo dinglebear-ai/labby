@@ -85,6 +85,29 @@ consumed, and `times` defaults to one. Omit `match` to accept any parameters for
 that exact tool. This is a response-matching contract, not automatic validation
 against a live upstream's input schema.
 
+`params` supplies fixture input defaults; explicit CLI/API caller parameters
+override matching keys before production input validation and default merging.
+This lets required-input examples remain runnable with an adjacent fixture.
+
+`snippets` uses rules with `name`, optional `match`, `result` or `error`, and
+`times` for synthetic child invocations. `artifacts` uses rules with exact
+relative `path`, optional `content_type`, required literal content fragments in
+`contains`, and `times`. For example:
+
+~~~json
+{
+  "params": {"alias": "fixture-host"},
+  "snippets": [{"name": "docker-host-inventory", "match": {"alias": "fixture-host"}, "result": {"ok": true}}],
+  "artifacts": [{"path": "report/inventory.json", "content_type": "application/json", "contains": ["fixture-host"]}]
+}
+~~~
+
+All three rule families share consumption checks and the invocation budget.
+Nested calls appear in traces as `snippet::<name>` and artifact writes as
+`artifact::write`. Unexpected writes or content mismatches fail even when the
+workflow catches the error. Artifact content is bounded to 512 KiB; a fixture
+may provide at most 64 fragments per artifact and 64 input keys.
+
 A rule can provide an `error` object with `kind` and `message` instead of a
 non-null result. Expected failures can be asserted, including `"/ok": false`.
 Unexpected or over-budget calls fail the test even when the snippet catches
@@ -114,11 +137,14 @@ gateway and runs with an explicit deny-all, read-only scope. Escaping to the
 real global tool bridge is denied and reported. Local providers, artifact
 writes, resources, and nested snippet execution cannot reach live state.
 
-This first harness surface supports snippets using `callTool` and
-`codemode.batch`. Synthetic discovery, generated helper methods,
-`codemode.run`, resources, artifact fixtures, automatic recording, and live
-schema-contract testing are not implemented. Unsupported fixture behavior
-fails instead of silently reaching a real service.
+The harness supports `callTool`, native `codemode.batch`, synthetic nested
+`codemode.run` results, and checked synthetic `writeArtifact` writes. Nested
+fixtures supply responses rather than executing the child snippet; test child
+workflows separately. Artifact content stays in memory and the returned receipt
+contains `mode: "mock"`; no artifact file is created. Synthetic discovery,
+generated helper methods, resources, automatic recording, and live schema
+contract testing remain unsupported. Unsupported behavior fails instead of
+reaching a real service.
 
 The report includes elapsed time, attempted call count, raw output bytes,
 a bytes/4 token estimate, and peak overlapping synthetic calls. Its synthetic
@@ -208,3 +234,30 @@ python3 crates/labby-codemode/tests/snippet_harness_acceptance.py target/debug/e
 The product integration suite runs the v2 triage fixture matrix in CI as well.
 
 Fixtures also support `absent`, a list of JSON Pointers that must not exist. A present field containing `null` fails this assertion.
+
+All ten shipped executable built-ins are covered by adjacent offline fixtures.
+Run `cargo test -p labby --all-features --test builtin_snippet_fixtures` to enforce
+dependency declarations, fixture presence, production runner execution, input
+override precedence, and the synthetic artifact filesystem boundary.
+
+### Failure-path evidence
+
+The built-in fixture integration suite also runs mixed parallel successes and a
+synthetic timeout rejection through native `codemode.batch`, preserving the
+success indices and the rejection's `kind` and `message`. Synthetic fixture
+errors use the same JSON-message decoder as live tool errors. An undeclared
+response rule remains an unexpected mock call even when other batch jobs
+succeed or the workflow catches the rejection.
+
+The suite separately exercises a genuinely unresolved JavaScript promise under
+a short production-runner deadline. Artifact scenarios test exactly 512 KiB of
+UTF-8 content, the first value above that limit, and an unexpected escaping path.
+These artifact checks validate the synthetic harness; real artifact storage and
+filesystem containment are tested by the artifact runtime and service suites.
+
+`cargo test -p labby-codemode --lib runner_drive::cancellation_tests` exercises
+the actual runner protocol and broker: aborting an execution after its host call
+starts must drop the pending host future and reap its owned subprocess. This
+establishes local cancellation cleanup, not a remote upstream cancellation
+acknowledgement. Fixture response rules alone cannot establish cancellation or
+real upstream timeout behavior.

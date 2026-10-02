@@ -224,7 +224,7 @@ impl StepJournalStore {
         });
     }
 
-    async fn with_conn<T, F>(&self, op: F) -> Result<T, ToolError>
+    pub(super) async fn with_conn<T, F>(&self, op: F) -> Result<T, ToolError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, ToolError> + Send + 'static,
@@ -249,6 +249,9 @@ fn open_connections(path: &Path, count: usize) -> Result<Vec<Connection>, ToolEr
     } else {
         initialize_database(path)?;
     }
+    let receipt_conn = open_validated_connection(path)?;
+    super::receipts::initialize(&receipt_conn)?;
+    drop(receipt_conn);
     (0..count)
         .map(|_| open_validated_connection(path))
         .collect()

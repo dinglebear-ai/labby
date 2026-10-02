@@ -10761,6 +10761,9 @@
               "snippets.list",
               "snippets.get",
               "snippets.exec",
+              "snippets.receipt",
+              "snippets.history",
+              "snippets.artifact",
               "snippets.create",
               "snippets.promote",
               "snippets.validate",
@@ -10784,6 +10787,21 @@
           }
         }
       },
+      "SnippetsSnippetsArtifactParams": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "path"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsSnippetsCreateParams": {
         "type": "object",
         "required": [
@@ -10795,6 +10813,9 @@
             "type": "string"
           },
           "description": {
+            "type": "string"
+          },
+          "expected_digest": {
             "type": "string"
           },
           "force": {
@@ -10830,6 +10851,20 @@
           }
         }
       },
+      "SnippetsSnippetsHistoryParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsSnippetsPromoteParams": {
         "type": "object",
         "required": [
@@ -10851,6 +10886,17 @@
           },
           "shadow_builtin": {
             "type": "boolean"
+          }
+        }
+      },
+      "SnippetsSnippetsReceiptParams": {
+        "type": "object",
+        "required": [
+          "execution_id"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
           }
         }
       },

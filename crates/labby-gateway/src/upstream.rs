@@ -24,3 +24,6 @@ pub mod tool_error;
 pub mod transport;
 #[allow(dead_code)]
 pub mod types;
+
+#[cfg(test)]
+mod test_isolation;

@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-09-29"
+updated: "2026-10-02"
 ---
 
 # Snippets Service
@@ -12,7 +12,7 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 
 ## Read-Only Discovery
 
-`snippets.list`, `help`, and `schema` are discovery operations. Built-in snippets are loaded from the checked-in snippet directory and user snippets are resolved from the Labby home.
+`snippets.list`, `help`, and `schema` are discovery operations. Built-in snippets are loaded from the checked-in snippet directory and user snippets are resolved from the Labby home. `snippets.list` returns `snippets` and bounded per-file `diagnostics`; invalid user files continue to block the corresponding built-in because execution never silently falls back. The UI shows only effective entries with override provenance. Listing caches validation and metadata by content digest, and detects edits by reading the current bytes. The LRU cache retains at most 128 entries and 8 MiB of charged metadata; entries above 2 MiB are not cached. Charges include keys, strings, collections, JSON and errors. See [performance measurements](../dev/SNIPPET_PERFORMANCE.md) for the reproducible listing and batch benchmark.
 
 ## Tool Declaration Scope
 
@@ -41,6 +41,78 @@ still cannot use nested snippet resolution to widen their authority.
 Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Promotion and removal are destructive actions.
 
 Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a promoted user snippet may replace a built-in name.
+
+## Inputs And Concurrent Edits
+
+Declared inputs reject unknown keys and enforce their types. Explicit `null`
+requires `nullable: true`, including on required inputs. Omitted optional inputs
+without defaults retain the existing null sentinel. Required nullable inputs
+still must be supplied or have a default.
+
+Resolved source and list metadata include `content_digest`, the SHA-256 hex digest
+of exact source bytes. An edit through `snippets.create` may supply
+`expected_digest` alongside `force: true`; the write fails with `conflict` when
+that digest no longer matches the current user file. The UI captures the digest
+when opening the editor. Cross-process file locks serialize cooperating writers;
+non-overwriting creates also use filesystem no-clobber publication. Atomic writes
+use unique temporary files and preserve the effective legacy `.js` path.
+Lock acquisition waits at most 1.5 seconds. Contention returns `conflict` with
+`existing_id: snippet-write-lock`, `side_effects: none_expected`, and conditional
+retry guidance. A later attempt still rechecks `expected_digest` under the lock;
+stale edits remain a separate conflict requiring reload.
+
+## Execution Receipts
+
+Saved live execution returns an `execution_id` and `receipt_status`:
+`persisted`, `disabled`, or `unavailable`. A telemetry failure does not change the
+execution result and must never cause a mutation to be replayed.
+`snippets.receipt` accepts `execution_id` and requires admin authority plus the
+original owner, route and caller-capability fingerprint. There is no admin
+cross-owner bypass. Receipt reads use the existing Code Mode journal database;
+when journaling is disabled or unavailable, lookup reports `journal_unavailable`.
+
+Receipts retain exact snippet and merged-input digests, the effective tool scope,
+Labby runtime version/engine, surface, timestamps, status, wall time, final-result
+digest/byte count, and bounded tool-call identities, parameter digests and
+artifact references. They contain no raw source, parameters, logs or results.
+The first 32 calls are retained with explicit total and omitted counts; artifact
+references are bounded to 16. Receipts identify output rather than providing a
+full-result replay store. Artifact bytes retain their existing authorization and
+retention lifecycle.
+
+The journal retains at most 1,000 receipts globally and 100 per owner/route,
+with a seven-day lookup window and 64 KiB per receipt. Expired, evicted and
+out-of-scope identities return the same `unknown_execution` error. A `started`
+receipt means completion was not recorded (for example cancellation or an
+interrupted process); it is not evidence that execution is still running.
+Completion persistence and step flushing are independently bounded and
+fail-open. Existing step-journal databases gain an additive, validated receipt
+table without altering existing step rows.
+
+`snippets.history` lists receipts in exactly the same authority, with an optional
+snippet `name` filter, `limit` of 1–50 (default 20), and an opaque `cursor`.
+Ordering is descending creation time and execution ID. Cursors are bound to the
+owner, route, capability fingerprint and name filter; they cannot be reused in
+another scope. Disabled recording returns an explicit empty `disabled` state.
+The UI shows persisted history, call failures and timings, supports pagination,
+and refreshes after execution. Authority changes abort and discard prior reads.
+
+`snippets.artifact` reads an exact reference using `execution_id` and `path` after
+authorizing its receipt. It returns bounded base64 bytes and verified metadata;
+downloads are capped at 8 MiB with a five-second read deadline. The kernel rejects
+traversal and symlinks, requires a regular file, and checks its size and SHA-256
+before returning any bytes. Unix reads walk components through directory handles
+with `NOFOLLOW`; other platforms repeat ancestor checks around opening and still
+require exact digest equality. Pruned, changed or inaccessible artifacts return
+`artifact_unavailable`. Older receipts without the broker storage identity remain
+readable as metadata but cannot download files. UI links fetch through this action
+and download blobs rather than exposing filesystem paths or rendering HTML.
+
+The builder uses the visible tool's bounded input schema from the authenticated
+describe endpoint to render typed fields, required controls, enum choices and
+snippet-input selectors. Unsupported or oversized schemas retain the advanced
+JSON editor. All mappings still pass backend tool validation at execution. See
+[snippet UI](../dev/SNIPPET_UI.md) for interaction and verification details.
 
 ## Execution
 
@@ -116,9 +188,13 @@ data; there is no automatic fixture recorder in this implementation.
 
 Mock tests use the production snippet parser, input merger, and isolated
 QuickJS subprocess. They have no gateway host, live tool credentials, local
-providers, or resource access. The supported mock surface is `callTool()` plus
-`codemode.batch()`; discovery, generated tool helpers, nested snippets, and
-other helpers are not emulated. Mock fixtures are not a substitute for checking
+providers, or resource access. The supported mock surface is `callTool()`, `codemode.batch()`, explicitly
+fixture-backed `codemode.run()` results and synthetic `writeArtifact()` receipts.
+Fixture `params` supply baseline inputs overridden by caller params. Nested
+response rules test composition, not a child's implementation; child workflows
+need their own fixtures. Artifact rules check exact paths, content types and
+content fragments without writing files. Discovery and generated tool helpers
+remain unavailable. Mock fixtures are not a substitute for checking
 parameters against the current live catalog.
 
 Defaults are 20,000 milliseconds, 40 calls, and 16,000 raw UTF-8 output bytes.

@@ -43,6 +43,7 @@ async fn run(args: &[String]) -> Result<bool, Box<dyn Error>> {
     validate_snippet_body(&name, &body)?;
     let metadata = frontmatter(&body)?;
     let snippet = ResolvedSnippet {
+        content_digest: None,
         name,
         description: metadata.as_ref().map(|m| m.description.clone()),
         tags: metadata

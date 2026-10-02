@@ -41,8 +41,12 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { SafeMarkdown } from '@/components/markdown/safe-markdown'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
+import { SnippetHistory } from './snippet-history'
+import { ToolParameterForm } from './tool-parameter-form'
+import { mappedParameterError, type ParameterSchema } from './tool-parameter-model'
+import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { snippetsApi } from '@/lib/api/snippets-client'
-import type { ResolvedSnippet, SnippetInfo, SnippetInputSpec } from '@/lib/types/snippets'
+import type { ResolvedSnippet, SnippetInfo, SnippetInputSpec, SnippetListResponse } from '@/lib/types/snippets'
 import {
   buildSnippetParams,
   collectSnippetTags,
@@ -215,6 +219,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
 function actionResultFailed(result: unknown): boolean {
   if (!isObject(result)) return false
   if (typeof result.valid === 'boolean') return !result.valid
+  if (typeof result.all_ok === 'boolean') return !result.all_ok
+  if (isObject(result.result) && result.result.all_ok === false) return true
   if (typeof result.passed === 'boolean') return !result.passed
   if (Array.isArray(result.results)) {
     return result.results.some((entry) => isObject(entry) && entry.passed === false)
@@ -228,7 +234,16 @@ function inputEntries(snippet: SnippetInfo | null): Array<[string, SnippetInputS
 }
 
 export function SnippetsPageContent() {
+  const authorityEpoch = React.useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   const [snippets, setSnippets] = React.useState<SnippetInfo[]>([])
+  const [overriddenNames, setOverriddenNames] = React.useState<string[]>([])
+  const [diagnosticsOmitted, setDiagnosticsOmitted] = React.useState(0)
+  const [diagnostics, setDiagnostics] = React.useState<SnippetListResponse['diagnostics']>([])
+  const [fixtureJson, setFixtureJson] = React.useState<Record<string, string>>({})
+  const [historyRevision, setHistoryRevision] = React.useState(0)
+  const [toolSchemas, setToolSchemas] = React.useState<Record<string, ParameterSchema>>({})
+  const [toolMappings, setToolMappings] = React.useState<Record<string, string>>({})
+  const [editDigest, setEditDigest] = React.useState<string | undefined>()
   const [selectedKey, setSelectedKey] = React.useState<string | null>(null)
   const [selectedDetail, setSelectedDetail] = React.useState<ResolvedSnippet | null>(null)
   const [detailError, setDetailError] = React.useState<string | null>(null)
@@ -258,10 +273,16 @@ export function SnippetsPageContent() {
   const [removeConfirmKey, setRemoveConfirmKey] = React.useState<string | null>(null)
   const [removing, setRemoving] = React.useState(false)
 
+  React.useEffect(() => { setToolSchemas({}) }, [authorityEpoch])
+
   const reload = React.useCallback(async () => {
     setLoading(true)
     try {
-      const next = await snippetsApi.list()
+      const response = await snippetsApi.listDetails()
+      const next = response.snippets.filter((snippet) => !snippet.shadowed)
+      setDiagnostics(response.diagnostics ?? [])
+      setDiagnosticsOmitted(response.diagnostics_omitted ?? 0)
+      setOverriddenNames(response.snippets.filter((snippet) => snippet.shadowed).map((snippet) => snippet.name))
       setSnippets(next)
       setSelectedKey((current) => {
         if (current && next.some((snippet) => snippetKey(snippet) === current)) return current
@@ -279,8 +300,12 @@ export function SnippetsPageContent() {
     const controller = new AbortController()
     setLoading(true)
     snippetsApi
-      .list(controller.signal)
-      .then((next) => {
+      .listDetails(controller.signal)
+      .then((response) => {
+        const next = response.snippets.filter((snippet) => !snippet.shadowed)
+        setDiagnostics(response.diagnostics ?? [])
+        setDiagnosticsOmitted(response.diagnostics_omitted ?? 0)
+        setOverriddenNames(response.snippets.filter((snippet) => snippet.shadowed).map((snippet) => snippet.name))
         setSnippets(next)
         setSelectedKey(next[0] ? snippetKey(next[0]) : null)
         setError(null)
@@ -328,7 +353,7 @@ export function SnippetsPageContent() {
     () => snippets.find((snippet) => snippetKey(snippet) === selectedKey) ?? null,
     [selectedKey, snippets],
   )
-  const selectedDetailLoaded = selectedDetail?.name === selected?.name
+  const selectedDetailLoaded = selectedDetail?.name === selected?.name && selectedDetail?.source === selected?.source
   const parsed = React.useMemo(
     () => parseSnippetBody(selectedDetailLoaded ? selectedDetail?.body : null),
     [selectedDetail, selectedDetailLoaded],
@@ -347,6 +372,8 @@ export function SnippetsPageContent() {
       setActionState({ kind: actionResultFailed(result) ? 'error' : 'success', label, detail })
     } catch (err) {
       setActionState({ kind: 'error', label, detail: errorMessage(err) })
+    } finally {
+      if (label === 'Execute' || label === 'Test') setHistoryRevision((value) => value + 1)
     }
   }
 
@@ -374,6 +401,8 @@ export function SnippetsPageContent() {
     setCreateStep(0)
     setCreateIntent('inspect')
     setCreateTools('')
+    setToolMappings({})
+    setToolSchemas({})
     setCreateInputJson('{}')
     setExpertCreate(false)
     setCreateName('')
@@ -388,6 +417,11 @@ export function SnippetsPageContent() {
     try {
       const parsed = JSON.parse(createInputJson) as unknown
       if (!isObject(parsed) || Array.isArray(parsed)) throw new Error('Inputs must be a JSON object.')
+      for (const name of Object.keys(parsed)) {
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(name)) {
+          throw new Error(`Input name "${name}" must contain 1–128 letters, digits, underscores, or hyphens.`)
+        }
+      }
       exampleInput = parsed
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Inputs must be valid JSON.')
@@ -396,14 +430,41 @@ export function SnippetsPageContent() {
     setCreateError(null)
     const safeName = createName.trim() || 'my-workflow'
     const description = createDescription.trim() || 'Reusable Labby workflow'
-    const calls = tools.map((tool, index) =>
-      `    callTool(${JSON.stringify(tool)}, input), // ${index + 1}. Verify this tool's input schema`,
-    )
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(safeName)) {
+      setCreateError('Workflow name must contain lowercase letters, digits, underscores, or hyphens and start with a letter or digit.')
+      return
+    }
+    if (/[\r\n]/.test(description) || description.startsWith('"') || description.endsWith('"')) {
+      setCreateError('Description must fit on one line and cannot start or end with a double quote.')
+      return
+    }
+    let calls: string[]
+    try {
+      calls = tools.map((tool) => {
+        const mapping = JSON.parse(toolMappings[tool] ?? '{}') as unknown
+        if (!isObject(mapping) || Array.isArray(mapping)) throw new Error(`Parameters for ${tool} must be a JSON object.`)
+        const schemaError = toolSchemas[tool] ? mappedParameterError(toolSchemas[tool], mapping, exampleInput) : undefined
+        if (schemaError) throw new Error(`${tool}: ${schemaError}`)
+        const entries = Object.entries(mapping).map(([key, value]) => {
+          const expression = typeof value === 'string' && value.startsWith('$input.')
+            ? `input[${JSON.stringify(value.slice(7))}]`
+            : JSON.stringify(value)
+          if (typeof value === 'string' && value.startsWith('$input.') && !Object.prototype.hasOwnProperty.call(exampleInput, value.slice(7))) {
+            throw new Error(`Unknown snippet input ${value.slice(7)} in ${tool}.`)
+          }
+          return `${key === '__proto__' ? `[${JSON.stringify(key)}]` : JSON.stringify(key)}: ${expression}`
+        })
+        return `callTool(${JSON.stringify(tool)}, { ${entries.join(', ')} })`
+      })
+    } catch (err) {
+      setCreateError(errorMessage(err))
+      return
+    }
     const execution = calls.length === 0
       ? '  const results = [{ ok: true, message: "Add a tool to run this against live data." }];'
       : createIntent === 'fanout'
-        ? `  const results = await Promise.all([\n${calls.join('\n')}\n  ]);`
-        : `  const results = [];\n${tools.map((tool) => `  results.push(await callTool(${JSON.stringify(tool)}, input));`).join('\n')}`
+        ? `  const results = await codemode.batch([\n${calls.map((call) => `    () => ${call},`).join('\n')}\n  ]);`
+        : `  const results = [];\n${calls.map((call) => `  results.push(await ${call});`).join('\n')}`
     const body = [
       '---',
       `name: ${safeName}`,
@@ -416,9 +477,10 @@ export function SnippetsPageContent() {
           `    type: ${typeof value === 'boolean' ? 'boolean' : typeof value === 'number' ? (Number.isInteger(value) ? 'integer' : 'number') : typeof value === 'string' ? 'string' : 'json'}`,
           `    default: ${JSON.stringify(value)}`,
           '    required: false',
+          ...(value === null ? ['    nullable: true'] : []),
         ]),
       ] : []),
-      ...(tools.length ? ['tools:', ...tools.map((tool) => `  - ${tool}`)] : []),
+      ...(tools.length ? ['tools:', ...tools.map((tool) => `  - ${JSON.stringify(tool)}`)] : []),
       '---',
       '',
       `# ${safeName}`,
@@ -479,6 +541,7 @@ export function SnippetsPageContent() {
       setActionState({ kind: 'error', label: 'Edit', detail: 'Wait for the snippet source to finish loading.' })
       return
     }
+    setEditDigest(selectedDetail.content_digest ?? undefined)
     setEditDescription(selectedDetail.description ?? '')
     setEditBody(selectedDetail.body)
     setEditError(null)
@@ -501,6 +564,7 @@ export function SnippetsPageContent() {
         body: editBody,
         ...(editDescription.trim() ? { description: editDescription.trim() } : {}),
         force: true,
+        expected_digest: editDigest,
       })
       await reload()
       setSelectedKey(snippetKey(updated))
@@ -594,6 +658,11 @@ export function SnippetsPageContent() {
             footer={<LibraryTabs active="snippets" attached counts={loading || error ? {} : { snippets: snippets.length }} />}
           />
 
+          {diagnostics?.length || diagnosticsOmitted > 0 ? <div role="alert" className="rounded-aurora-2 border border-aurora-border-subtle p-3 text-sm text-aurora-error">
+            <strong>Some snippet files could not be loaded</strong>
+            {diagnostics?.map((diagnostic, index) => <p key={index}>{diagnostic.path}: {diagnostic.message}</p>)}
+            {diagnosticsOmitted > 0 ? <p>{diagnosticsOmitted} additional diagnostics omitted. Fix the reported files and refresh to inspect more.</p> : null}
+          </div> : null}
           <section style={CARD}>
             {/* Filter row: search, tag pills, right-aligned count. */}
             <div style={FILTER_ROW}>
@@ -897,6 +966,7 @@ export function SnippetsPageContent() {
                               {tag}
                             </span>
                           ))}
+                          <span className="text-xs text-aurora-text-muted">{snippet.source} · {snippet.path}{snippet.source === 'user' && overriddenNames.includes(snippet.name) ? ' · overrides built-in' : ''}</span>
                           <div style={{ flex: '1 1 0%' }} />
                           <DetailButton
                             label="Validate"
@@ -906,6 +976,18 @@ export function SnippetsPageContent() {
                             onClick={() =>
                               void runAction('Validate', () => snippetsApi.validate(snippet.name))
                             }
+                          />
+                          <DetailButton
+                            label="Test offline"
+                            icon={<FlaskConical size={11} />}
+                            busy={running === 'Test offline'}
+                            disabled={running !== null}
+                            onClick={() => withParams(snippet, 'Test offline', (params) => {
+                              const raw = fixtureJson[key]?.trim()
+                              const fixture: unknown = raw ? JSON.parse(raw) : undefined
+                              if (fixture !== undefined && (!isObject(fixture) || Array.isArray(fixture))) throw new Error('Fixture must be a JSON object.')
+                              return snippetsApi.testOffline(snippet.name, params, fixture as Record<string, unknown> | undefined)
+                            })}
                           />
                           <DetailButton
                             label="Test live"
@@ -1028,6 +1110,7 @@ export function SnippetsPageContent() {
                                       <span style={{ fontSize: 10.5, color: 'var(--aurora-text-muted)' }}>
                                         {spec.ty}
                                         {spec.required ? ' *' : ''}
+                                        {spec.nullable ? ' · null allowed' : ''}
                                       </span>
                                       <input
                                         aria-label={name}
@@ -1060,6 +1143,12 @@ export function SnippetsPageContent() {
                             )}
                           </div>
 
+                          <div className="grid gap-2">
+                            <Label htmlFor={`fixture-${key}`}>Offline fixture (JSON, optional)</Label>
+                            <Textarea id={`fixture-${key}`} value={fixtureJson[key] ?? ''} onChange={(event) => setFixtureJson((current) => ({ ...current, [key]: event.target.value }))} className="min-h-28 font-mono text-xs" placeholder="Leave blank to use this snippet's adjacent .test.json fixture" />
+                            <p className="text-xs text-aurora-text-muted">Offline tests use mocked responses and report assertions and budgets. They never call live tools.</p>
+                          </div>
+                          <SnippetHistory key={snippetKey(snippet)} name={snippet.name} revision={historyRevision} />
                           {/* Deliberate addition: the mock has no tutorial region,
                               but built-in snippets ship rendered walkthroughs and
                               dropping them would lose real functionality. */}
@@ -1159,20 +1248,20 @@ export function SnippetsPageContent() {
       </div>
       <Dialog open={createOpen} onOpenChange={(open) => { setCreateOpen(open); if (!open) resetCreate() }}>
         <DialogContent className="max-w-3xl">
-          <DialogHeader>
+          <DialogHeader className="shrink-0">
             <DialogTitle className="flex items-center gap-2"><WandSparkles className="size-5 text-cyan-400" /> Build a snippet</DialogTitle>
             <DialogDescription>
               Turn an intent into a reusable workflow. You can inspect and edit every generated line before saving.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex gap-2" aria-label="Builder progress">
+          <div className="flex shrink-0 gap-2" aria-label="Builder progress">
             {['Choose a pattern', 'Name and tools', 'Review and run'].map((label, index) => (
               <div key={label} className={`flex-1 rounded-aurora-1 border px-3 py-2 text-xs ${index === createStep ? 'border-aurora-accent-primary/60 bg-aurora-accent-primary/10 text-aurora-accent-primary' : index < createStep ? 'border-aurora-success/30 text-aurora-success' : 'border-aurora-border-subtle text-aurora-text-muted'}`}>
                 <span className="mr-2 font-mono">{index + 1}</span>{label}
               </div>
             ))}
           </div>
-          <div className="grid min-h-[330px] gap-4 py-3">
+          <div className="grid min-h-0 flex-1 gap-4 overflow-y-auto py-3">
             {createStep === 0 ? (
               <div className="grid grid-cols-2 gap-3">
                 {([
@@ -1196,8 +1285,9 @@ export function SnippetsPageContent() {
                 <div className="grid gap-2">
                   <Label htmlFor="snippet-tools">Selected tools</Label>
                   <Textarea id="snippet-tools" value={createTools} onChange={(event) => setCreateTools(event.target.value)} placeholder={'One exact tool id per line, for example:\ntime::get_current_time\ngithub::search_issues'} className="min-h-28 font-mono text-xs" />
-                  <p className="text-xs text-aurora-text-muted">Use tool ids from the Tools catalog. The generated draft passes the snippet input object to each tool, so review its schema before running.</p>
+                  <p className="text-xs text-aurora-text-muted">Use exact tool ids from the Tools catalog. Configure parameters for each tool below; verify them against its schema.</p>
                 </div>
+                {[...new Set(createTools.split(/[\n,]+/).map((tool) => tool.trim()).filter(Boolean))].map((tool, index) => <ToolParameterForm key={`${tool}:${authorityEpoch}`} tool={tool} index={index} value={toolMappings[tool] ?? '{}'} inputs={(() => { try { const parsed = JSON.parse(createInputJson); return isObject(parsed) && !Array.isArray(parsed) ? parsed : {} } catch { return {} } })()} onChange={(value) => setToolMappings((current) => ({ ...current, [tool]: value }))} onSchema={(schema) => setToolSchemas((current) => ({ ...current, [tool]: schema }))} />)}
                 <div className="grid gap-2">
                   <Label htmlFor="snippet-inputs">Example inputs</Label>
                   <Textarea id="snippet-inputs" value={createInputJson} onChange={(event) => setCreateInputJson(event.target.value)} placeholder={'{"query":"unhealthy services","limit":10}'} className="min-h-20 font-mono text-xs" />
@@ -1212,7 +1302,7 @@ export function SnippetsPageContent() {
             )}
             {createError ? <p className="text-sm text-aurora-error">{createError}</p> : null}
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             {createStep > 0 ? <Button variant="outline" onClick={() => setCreateStep((step) => step - 1)} disabled={creating}><ChevronLeft className="size-4" /> Back</Button> : <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>}
             <div className="flex-1" />
             {createStep === 0 ? <Button onClick={() => setCreateStep(1)}>Use this pattern <ChevronRight className="size-4" /></Button> : createStep === 1 ? <Button onClick={applyBuilderDraft} disabled={!createName.trim()}>Build draft <ChevronRight className="size-4" /></Button> : <><Button variant="outline" onClick={() => void createSnippet(false)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />} Validate and save</Button><Button onClick={() => void createSnippet(true)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />} Save and run</Button></>}

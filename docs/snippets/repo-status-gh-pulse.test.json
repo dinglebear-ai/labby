@@ -1,0 +1,38 @@
+{
+  "calls": [
+    {
+      "tool": "github::search_pull_requests",
+      "result": {
+        "total_count": 1,
+        "items": [
+          {
+            "number": 17,
+            "title": "Fixture improvement",
+            "state": "open",
+            "draft": false,
+            "html_url": "https://github.com/dinglebear-ai/labby/pull/17",
+            "user": {
+              "login": "fixture-user"
+            }
+          }
+        ]
+      },
+      "match": {
+        "owner": "dinglebear-ai",
+        "repo": "labby",
+        "query": "is:open"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": false,
+    "/status": "degraded",
+    "/workflow_runs/status": "shell_only",
+    "/open_prs/ok": true
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 1,
+    "output_bytes": 16000
+  }
+}

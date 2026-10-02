@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Axon fan-out research workflows for briefs and smoke tests
 tags: [axon, research, docs]
+tools: ["Axon::axon"]
 inputs:
   topic:
     type: string

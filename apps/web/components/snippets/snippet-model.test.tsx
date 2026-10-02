@@ -164,3 +164,8 @@ test('buildSnippetParams coerces typed inputs and skips blanks', () => {
   const badBool = buildSnippetParams(inputs, { verbose: 'maybe' })
   assert.equal(badBool.ok, false)
 })
+
+test('nullable inputs accept explicit JSON null across declared types', () => {
+  assert.deepEqual(buildSnippetParams({ host: { ty: 'string', nullable: true }, count: { ty: 'integer', nullable: true } }, { host: 'null', count: 'null' }), { ok: true, params: { host: null, count: null } })
+  assert.deepEqual(buildSnippetParams({ host: { ty: 'string' } }, { host: 'null' }), { ok: true, params: { host: 'null' } })
+})

@@ -5,6 +5,9 @@ import type {
   CreateSnippetInput,
   ResolvedSnippet,
   SnippetInfo,
+  SnippetArtifactResponse,
+  SnippetHistoryResponse,
+  SnippetExecutionReceipt,
   SnippetListResponse,
   SnippetRemoveResult,
   SnippetTestResult,
@@ -37,6 +40,31 @@ async function snippetsAction<T>(action: string, params: object, signal?: AbortS
 }
 
 export const snippetsApi = {
+  artifact(executionId: string, path: string, signal?: AbortSignal): Promise<SnippetArtifactResponse> {
+    return snippetsAction<SnippetArtifactResponse>('snippets.artifact', { execution_id: executionId, path }, signal)
+  },
+
+  history(params: { name?: string; limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<SnippetHistoryResponse> {
+    return snippetsAction<SnippetHistoryResponse>('snippets.history', params, signal)
+  },
+
+  receipt(executionId: string, signal?: AbortSignal): Promise<SnippetExecutionReceipt> {
+    return snippetsAction<SnippetExecutionReceipt>('snippets.receipt', { execution_id: executionId }, signal)
+  },
+
+  listDetails(signal?: AbortSignal): Promise<SnippetListResponse> {
+    return snippetsAction<SnippetListResponse>('snippets.list', {}, signal)
+  },
+
+  testOffline(
+    name: string,
+    params: Record<string, unknown> = {},
+    fixture?: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<SnippetTestResult> {
+    return snippetsAction<SnippetTestResult>('snippets.test', { name, params, ...(fixture ? { fixture } : {}) }, signal)
+  },
+
   async list(signal?: AbortSignal): Promise<SnippetInfo[]> {
     const response = await snippetsAction<SnippetListResponse>('snippets.list', {}, signal)
     return response.snippets

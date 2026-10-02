@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Read-only GitHub PR pulse plus explicit shell parity for workflow runs
 tags: [repo, github, ci, readonly]
+tools: ["github::search_pull_requests"]
 inputs:
   owner:
     type: string

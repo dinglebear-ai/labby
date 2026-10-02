@@ -1,0 +1,46 @@
+{
+  "calls": [
+    {
+      "tool": "claude-macpoo::Bash",
+      "result": {
+        "stdout": "fixture-controller\nfixture-user\nDarwin\n/fixture/workspace\n"
+      },
+      "match": {
+        "command": "hostname; whoami; uname -s; pwd"
+      }
+    },
+    {
+      "tool": "claude-macpoo::Bash",
+      "result": {
+        "stdout": "hostname=fixture-host\nuser=fixture-user\nplatform=Linux\ndocker_path=/usr/bin/docker\ndocker_version=27.0\ntimeout_path=/usr/bin/timeout\n"
+      }
+    },
+    {
+      "tool": "claude-macpoo::Bash",
+      "result": {
+        "stdout": "abcdef0123456789\n"
+      }
+    },
+    {
+      "tool": "claude-macpoo::Bash",
+      "error": {
+        "kind": "fixture_failure",
+        "message": "Docker inspect denied in fixture"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": false,
+    "/host/hostname": "fixture-host",
+    "/errors/0/stage": "inspect_logs",
+    "/summary/containers": 0
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 4,
+    "output_bytes": 16000
+  },
+  "params": {
+    "alias": "fixture-host"
+  }
+}

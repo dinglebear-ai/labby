@@ -155,8 +155,8 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
     const headings = Array.from(view.container.querySelectorAll('h1')).map((node) => node.textContent)
     assert.ok(headings.includes('Homelab Pulse'))
   })
-  assert.deepEqual(requests.slice(0, 2).map((request) => request.action), ['snippets.list', 'snippets.get'])
-  assert.deepEqual(requests[1]?.params, { name: 'homelab-readonly-pulse' })
+  assert.deepEqual(requests.filter((request) => request.action !== 'snippets.history').slice(0, 2).map((request) => request.action), ['snippets.list', 'snippets.get'])
+  assert.deepEqual(requests.find((request) => request.action === 'snippets.get')?.params, { name: 'homelab-readonly-pulse' })
   assert.equal(view.container.querySelector('script'), null)
   assert.equal(view.container.querySelector('img'), null)
   for (const link of view.container.querySelectorAll('a')) {
@@ -174,6 +174,14 @@ test('snippets page renders fetched snippets and typed inputs', async () => {
   })
   await waitFor(() => assert.match(view.container.textContent ?? '', /Test failed/))
   assert.equal(requests.find((request) => request.action === 'snippets.test')?.params?.live, true)
+  const offline = Array.from(view.container.querySelectorAll('button')).find((button) => button.textContent?.trim() === 'Test offline')
+  assert.ok(offline)
+  await act(async () => offline.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  await waitFor(() => assert.equal(requests.filter((request) => request.action === 'snippets.test').length, 2))
+  const offlineParams = requests.filter((request) => request.action === 'snippets.test')[1].params
+  assert.equal(offlineParams?.live, undefined)
+  assert.equal(offlineParams?.fixture, undefined)
+
 
   await view.unmount()
 })
@@ -289,7 +297,7 @@ test('new snippet opens a guided intent-first builder with progressive disclosur
     assert.ok(next)
     await act(async () => next.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     await waitFor(() => assert.match(document.body.textContent ?? '', /Selected tools/))
-    assert.match(document.body.textContent ?? '', /Use tool ids from the Tools catalog/)
+    assert.match(document.body.textContent ?? '', /Use exact tool ids from the Tools catalog/)
   } finally {
     await view.unmount()
   }
@@ -310,6 +318,7 @@ test('user snippets can be validated and overwritten from the editor', async () 
     source: 'user',
     path: '/home/u/.labby/snippets/beta-sweep.md',
     shadowed: false,
+    content_digest: 'snapshot-digest',
   }
   globalThis.fetch = (async (_input, init) => {
     const payload = JSON.parse(String(init?.body ?? '{}')) as { action?: string; params?: Record<string, unknown> }
@@ -382,6 +391,7 @@ test('user snippets can be validated and overwritten from the editor', async () 
       body: 'async () => ({ ok: true })',
       description: 'Beta sweep',
       force: true,
+      expected_digest: 'snapshot-digest',
     })
   } finally {
     await view.unmount()
@@ -678,4 +688,98 @@ test('removing the last snippet still reports the success somewhere visible', as
   } finally {
     await view.unmount()
   }
+})
+
+test('effective snippet rows hide shadowed builtins and surface invalid-file diagnostics', async () => {
+  installTestDom()
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  const user = { name: 'shared', description: 'Effective user override', source: 'user', path: '/user/shared.md', shadowed: false, tags: [] }
+  globalThis.fetch = (async (_input, init) => {
+    const payload = JSON.parse(String(init?.body ?? '{}'))
+    return new Response(JSON.stringify(payload.action === 'snippets.list' ? {
+      snippets: [{ ...user, source: 'builtin', path: '/builtin/shared.md', shadowed: true }, user, { ...user, name: 'invalid', source: 'builtin', path: '/builtin/invalid.md', shadowed: true }],
+      diagnostics_omitted: 7,
+      diagnostics: [{ name: 'invalid', path: '/user/invalid.md', source: 'user', message: 'Invalid syntax' }],
+    } : { ...user, body: 'async () => ({ ok: true })' }), { headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  const view = await renderClient(<SidebarProvider><SnippetsPageContent /></SidebarProvider>)
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /1 of 1 snippets/))
+    assert.match(view.container.textContent ?? '', /overrides built-in/)
+    assert.match(view.container.textContent ?? '', /7 additional diagnostics omitted/)
+    assert.match(view.container.textContent ?? '', /\/user\/invalid.md: Invalid syntax/)
+    assert.doesNotMatch(view.container.textContent ?? '', /\/builtin\/shared.md/)
+  } finally { await view.unmount() }
+})
+
+test('fanout builder maps each tool independently and preserves batch statuses', async () => {
+  const window = installTestDom()
+  for (const name of ['NodeFilter', 'HTMLInputElement', 'HTMLTextAreaElement'] as const) Object.defineProperty(globalThis, name, { value: window[name], configurable: true })
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  globalThis.fetch = (async () => new Response(JSON.stringify({ snippets: [] }), { headers: { 'content-type': 'application/json' } })) as typeof fetch
+  const view = await renderClient(<SidebarProvider><SnippetsPageContent /></SidebarProvider>)
+  const click = async (text: string) => {
+    const button = Array.from(document.body.querySelectorAll('button')).find((entry) => entry.textContent?.includes(text))
+    assert.ok(button, text)
+    await act(async () => button.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+  }
+  const type = async (selector: string, value: string) => {
+    const field = document.body.querySelector<HTMLInputElement | HTMLTextAreaElement>(selector)
+    assert.ok(field, selector)
+    const prototype = field.tagName === 'INPUT' ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(prototype, 'value')!.set!.call(field, value)
+      // React's event module retains the first test window; invoke the current
+      // controlled-field handler to avoid cross-window constructor mismatches.
+      const propsKey = Object.keys(field).find((key) => key.startsWith('__reactProps$'))!
+      const props = (field as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[propsKey]
+      props.onChange({ target: { value } })
+    })
+  }
+  try {
+    const add = view.container.querySelector('button[aria-label="New snippet"]')!
+    await act(async () => add.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    await click('Gather in parallel')
+    await click('Use this pattern')
+    await type('#snippet-name', 'fanout-check')
+    await type('#snippet-tools', 'first::search\nsecond::status')
+    await type('#snippet-inputs', '{"bad key":"hello"}')
+    await click('Build draft')
+    assert.match(document.body.textContent ?? '', /Input name "bad key" must contain/)
+    await type('#snippet-inputs', '{"query":"hello"}')
+    await type('#tool-mapping-0', '{')
+    await click('Build draft')
+    assert.match(document.body.textContent ?? '', /JSON/)
+    await type('#tool-mapping-0', '{"q":"$input.missing"}')
+    await click('Build draft')
+    assert.match(document.body.textContent ?? '', /Unknown snippet input missing/)
+    await type('#tool-mapping-0', '{"q":"$input.toString"}')
+    await click('Build draft')
+    assert.match(document.body.textContent ?? '', /Unknown snippet input toString/)
+    await type('#tool-mapping-0', '{"q":"$input.query"}')
+    await type('#tool-mapping-1', '{"verbose":true,"__proto__":{"polluted":true}}')
+    await click('Build draft')
+    const draft = document.body.textContent ?? ''
+    assert.match(draft, /inputs:\s+query:/)
+    assert.doesNotMatch(draft, /"query":\s+type:/)
+    assert.match(draft, /await codemode.batch/)
+    assert.match(draft, /\(\) => callTool\("first::search", \{ "q": input\["query"\] \}\)/)
+    assert.match(draft, /\(\) => callTool\("second::status", \{ "verbose": true, \["__proto__"\]: \{"polluted":true\} \}\)/)
+    assert.doesNotMatch(draft, /Promise.all/)
+    const body = document.body.querySelector('pre')!.textContent!
+    const code = body.match(/```js\n([\s\S]*?)\n```/)![1]
+    const calls: Array<{ tool: string; params: Record<string, unknown> }> = []
+    const execute = new Function('callTool', 'codemode', `return (${code})`)(
+      async (tool: string, params: Record<string, unknown>) => { calls.push({ tool, params }); return { ok: true } },
+      { batch: async (jobs: Array<() => Promise<unknown>>) => { for (const job of jobs) await job(); return { all_ok: true, ok: [], failed: [] } } },
+    )
+    await execute({ query: 'hello' })
+    const statusParams = calls[1].params
+    assert.equal(Object.getPrototypeOf(statusParams), Object.prototype)
+    assert.ok(Object.prototype.hasOwnProperty.call(statusParams, '__proto__'))
+    assert.deepEqual(statusParams.__proto__, { polluted: true })
+    assert.equal(statusParams.polluted, undefined)
+  } finally { await view.unmount() }
 })
