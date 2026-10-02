@@ -95,16 +95,16 @@ async fn run_owned(
                 Err(err) => eprintln!("MSB startup timeout: {err}"),
                 _ => {}
             }
-            let cleaned =
+            let (cleaned, identity) =
                 match tokio::time::timeout(Duration::from_secs(5), Sandbox::get(&name)).await {
-                    Ok(Ok(handle)) => matches!(
-                        tokio::time::timeout(Duration::from_secs(5), handle.destroy()).await,
-                        Ok(Ok(()))
-                    ),
-                    _ => false,
+                    Ok(Ok(handle)) => {
+                        let (cleaned, identity) = cleanup_startup(handle).await;
+                        (cleaned, Some(identity))
+                    }
+                    _ => (false, None),
                 };
             if !cleaned {
-                super::recovery::quarantine(name.clone(), permit, None).await;
+                super::recovery::quarantine(name.clone(), permit, identity).await;
             }
             return Err(error(
                 "sandbox_start_failed",
@@ -139,6 +139,17 @@ async fn run_owned(
     result["network"] = json!("disabled");
     result["projected_files"] = json!(request.files.keys().collect::<Vec<_>>());
     Ok(result)
+}
+
+pub(super) async fn cleanup_startup(
+    handle: microsandbox::sandbox::SandboxHandle,
+) -> (bool, microsandbox::sandbox::SandboxId) {
+    let identity = handle.id();
+    let cleaned = matches!(
+        tokio::time::timeout(Duration::from_secs(5), handle.destroy()).await,
+        Ok(Ok(()))
+    );
+    (cleaned, identity)
 }
 
 async fn execute(sb: &Sandbox, request: &SandboxRun) -> Result<Value, ToolError> {

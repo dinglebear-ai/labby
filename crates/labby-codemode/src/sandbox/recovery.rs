@@ -74,6 +74,33 @@ pub(super) async fn reconcile() -> Result<(), ToolError> {
 
 async fn reconcile_inner() -> Result<(), ToolError> {
     let _serial = RECOVERY.lock().await;
+    let known = ledger()
+        .lock()
+        .await
+        .iter()
+        .filter_map(|(name, record)| {
+            record
+                .identity
+                .clone()
+                .map(|identity| (name.clone(), identity))
+        })
+        .collect::<Vec<_>>();
+    for (name, identity) in known {
+        if matches!(
+            Sandbox::get(&name).await,
+            Err(MicrosandboxError::SandboxNotFound(_))
+        ) {
+            let mut records = ledger().lock().await;
+            if records
+                .get(&name)
+                .is_some_and(|record| record.identity.as_ref() == Some(&identity))
+            {
+                // This identity was observed after creation: absence proves
+                // terminal removal, unlike an uncertain startup record.
+                drop(records.remove(&name));
+            }
+        }
+    }
     let mut cursor = None;
     for _ in 0..16 {
         let page = Sandbox::list_with(|list| {
@@ -227,7 +254,52 @@ mod tests {
             reconcile().await.expect("absent startup inventory");
             let uncertain_retained = pool.available_permits() == 0;
             drop(ledger().lock().await.remove(&uncertain_name));
+            quarantine(
+                quarantine_name.clone(),
+                pool.clone()
+                    .acquire_owned()
+                    .await
+                    .expect("late cleanup permit"),
+                Some(quarantined.id()),
+            )
+            .await;
+            reconcile().await.expect("known absent cleanup recovery");
+            let late_cleanup_recovered = pool.available_permits() == 1;
+            let startup_name = name();
+            let original = create(&startup_name).create().await.expect("startup guest");
+            let original_handle = Sandbox::get(&startup_name)
+                .await
+                .expect("observed startup identity");
+            let original_id = original_handle.id();
+            original.destroy().await.expect("remove original");
+            drop(original);
+            let replacement = create(&startup_name)
+                .create()
+                .await
+                .expect("replacement guest");
+            let (cleaned, startup_identity) =
+                crate::sandbox::sdk::cleanup_startup(original_handle).await;
+            quarantine(
+                startup_name.clone(),
+                pool.clone().acquire_owned().await.expect("startup permit"),
+                Some(startup_identity.clone()),
+            )
+            .await;
+            let startup_replacement_rejected = reconcile().await.is_err();
+            let startup_replacement_preserved = Sandbox::get(&startup_name).await.is_ok();
+            replacement
+                .destroy()
+                .await
+                .expect("replacement test cleanup");
+            reconcile()
+                .await
+                .expect("removed startup identity capacity recovery");
+            assert!(!cleaned);
+            assert_eq!(startup_identity, original_id);
+            assert!(startup_replacement_rejected);
+            assert!(startup_replacement_preserved);
             assert!(uncertain_retained);
+            assert!(late_cleanup_recovered);
             assert!(replacement_rejected);
             assert!(replacement_preserved);
             reclaimed.expect("quarantine recovery");

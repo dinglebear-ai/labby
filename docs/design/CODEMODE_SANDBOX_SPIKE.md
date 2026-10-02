@@ -75,8 +75,10 @@ name is recorded in the quarantine ledger. Live, unprovable, malformed, and lega
 owners are preserved. SDK handles fence removal against identity replacement. Quarantine records also
 retain a known original SDK identity; a mismatch preserves the replacement
 guest and the counted permit.
-A counted admission permit is released only after successful removal and an
-absence check. Uncertain startup records absent from the inventory remain
+A counted admission permit is released after successful removal and an
+absence check, or confirmed absence of a previously observed SDK identity.
+Startup cleanup retains the identity as soon as a lookup observes it, even when
+destruction fails; a same-name replacement remains protected. Uncertain startup records absent from the inventory remain
 quarantined until process restart: absence cannot disprove delayed creation. A 60-second guest lifetime bounds
 runtime survival, but is not proof of persisted-state removal.
 
@@ -133,7 +135,8 @@ been run for this spike.
 Recovery qualification used a reaped disposable host process as the dead-owner
 fixture. It verified stale guest removal, live-owner preservation, confirmed
 quarantine capacity recovery, retention of an absent uncertain startup
-record, and preservation of a guest whose identity mismatches quarantine. A separate subprocess test created a guest, killed and reaped its SDK owner,
+record, capacity recovery after a known guest disappears, and preservation of a
+guest whose identity mismatches quarantine, including startup cleanup failure. A separate subprocess test created a guest, killed and reaped its SDK owner,
 and verified recovery removed the persisted guest. A further subprocess test observed a guest in `Created` or `Starting`, killed
 its owner, and verified recovery removed its persisted state. These tests use the
 SDK-owning process fixture. Process panic and immediate gateway startup recovery
