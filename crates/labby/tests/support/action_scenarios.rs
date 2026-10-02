@@ -392,7 +392,7 @@ pub(crate) fn action_request(intent: &CaseIntent) -> Value {
 pub(crate) async fn prepare_snippet_receipt_case<F, Fut>(action: &str, mut call: F) -> Option<Value>
 where
     F: FnMut(&'static str, Value) -> Fut,
-    Fut: std::future::Future<Output = Value>,
+    Fut: Future<Output = Value>,
 {
     if !matches!(
         action,
