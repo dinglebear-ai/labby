@@ -54,11 +54,11 @@ async fn new_manager(home: &Path) -> GatewayManager {
             home.join("config.toml"),
         )),
     )
-        .with_step_journal(Arc::new(store))
-        .with_code_mode_runner_spawn(RunnerSpawn {
-            program: env!("CARGO_BIN_EXE_labby").into(),
-            args: vec!["internal".into(), "code-mode-runner".into()],
-        })
+    .with_step_journal(Arc::new(store))
+    .with_code_mode_runner_spawn(RunnerSpawn {
+        program: env!("CARGO_BIN_EXE_labby").into(),
+        args: vec!["internal".into(), "code-mode-runner".into()],
+    })
 }
 fn dispatch_scoped<'a>(
     manager: &'a GatewayManager,
