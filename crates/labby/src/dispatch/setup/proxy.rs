@@ -44,6 +44,93 @@ pub struct ProxySetupOutcome {
     pub auth: ProxyAuthMode,
 }
 
+/// Add the qualified Microsandbox adapter without replacing other servers or
+/// an operator's existing Microsandbox definition. Serialize concurrent writes
+/// through the shared host configuration lock and keep the document private.
+#[cfg(any(feature = "gateway", test))]
+pub(crate) fn configure_microsandbox_at(path: &Path) -> anyhow::Result<()> {
+    let lock = crate::config::host_write::HostConfigLock::acquire(path)?;
+    let raw = lock.read_raw()?;
+    let mut document: serde_json::Value = if raw.trim().is_empty() {
+        serde_json::json!({"mcpServers": {}})
+    } else {
+        serde_json::from_str(&raw)
+            .map_err(|_| anyhow::anyhow!("invalid .mcp.json; repair it before sandbox setup"))?
+    };
+    let servers = document
+        .get_mut("mcpServers")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| anyhow::anyhow!(".mcp.json must contain an mcpServers object"))?;
+    if servers.contains_key("microsandbox") {
+        return Ok(());
+    }
+    servers.insert(
+        "microsandbox".into(),
+        serde_json::json!({
+            "command": "npx", "args": ["-y", "microsandbox-mcp@0.7.6"]
+        }),
+    );
+    lock.write(&serde_json::to_string_pretty(&document)?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod sandbox_configuration_tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_setup_preserves_other_servers_and_custom_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".mcp.json");
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"other":{"command":"other"}},"custom":"retain"}"#,
+        )
+        .unwrap();
+        configure_microsandbox_at(&path).unwrap();
+        let first = std::fs::read(&path).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(document["mcpServers"]["other"]["command"], "other");
+        assert_eq!(document["custom"], "retain");
+        configure_microsandbox_at(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        std::fs::write(
+            &path,
+            r#"{"mcpServers":{"microsandbox":{"command":"custom-runtime"}}}"#,
+        )
+        .unwrap();
+        configure_microsandbox_at(&path).unwrap();
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("custom-runtime")
+        );
+    }
+
+    #[test]
+    fn malformed_configuration_is_never_replaced() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".mcp.json");
+        for raw in ["invalid", "{}", r#"{"mcpServers":[]}"#] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(configure_microsandbox_at(&path).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_configuration_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".mcp.json");
+        let target = temp.path().join("unrelated");
+        std::fs::write(&target, "retain").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(configure_microsandbox_at(&path).is_err());
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "retain");
+    }
+}
+
 pub fn configure(request: ProxySetupRequest) -> Result<ProxySetupOutcome, ToolError> {
     let home = super::client::lab_home();
     configure_at(&home.join("config.toml"), &home.join(".env"), request)

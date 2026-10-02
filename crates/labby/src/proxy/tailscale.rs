@@ -338,7 +338,7 @@ impl TailscaleServePlan {
         } else if !options.candidate_ports.is_empty() {
             options.candidate_ports.clone()
         } else if options.exposure == ProxyExposure::Funnel {
-            vec![8443, 10000, 443]
+            vec![443, 8443, 10000]
         } else {
             random_candidates(
                 options.port_range_start,
@@ -438,7 +438,7 @@ impl TailscaleServe {
         } else if !options.candidate_ports.is_empty() {
             options.candidate_ports.clone()
         } else if options.exposure == ProxyExposure::Funnel {
-            vec![8443, 10000, 443]
+            vec![443, 8443, 10000]
         } else {
             random_candidates(
                 options.port_range_start,
