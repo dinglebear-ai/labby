@@ -77,6 +77,10 @@ Those tests supplement, but do not replace, the real-process evidence lane.
 The shared Linux Rust setup installs `libcap-ng-dev` and probes `libcap-ng`
 through pkg-config so all-feature Microsandbox SDK links have their native
 capability library before compilation.
+The independent Incus builder installs the same development library in its
+custom setup command. Its image package floor includes `libcap-ng0` so the
+all-feature CLI can load the capability library during image smoke and normal
+provisioning.
 
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 It deliberately skips that job for fork pull requests. Consequently the
