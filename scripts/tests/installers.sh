@@ -1090,7 +1090,7 @@ SH
         LABBY_SETUP_AUTH=oauth LABBY_SETUP_OAUTH=google \
         LABBY_SETUP_DESKTOP=0 LABBY_SETUP_NO_BROWSER=1 \
         LABBY_TEST_SETUP_ARGS="$case_root/args" > "$case_root/out" 2>&1
-    printf '%s\n' setup --role server --yes --public-url https://labby.example.com \
+    printf '%s\n' setup --role server --yes --deployment native --public-url https://labby.example.com \
         --auth oauth --oauth google --no-desktop --no-browser > "$case_root/expected"
     cmp "$case_root/expected" "$case_root/args" || fail 'setup options were not preserved'
     if run_installer "$case_home" "$fixtures" "$fake_bin" \
