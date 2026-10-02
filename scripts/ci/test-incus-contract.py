@@ -21,6 +21,49 @@ class IncusContract(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text()
 
+    def test_smoke_forwarding_preserves_existing_rules_and_cleans_only_owned_rules(self):
+        source = self.text("scripts/ci/smoke-incus-image.sh")
+        functions = source[source.index("ensure_smoke_forwarding() {"):source.index("default_storage_pool() {")]
+        for mode, expected in (("absent", 0), ("existing", 0), ("new", 4), ("partial", 3), ("cleanup-failure", 4)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                log = pathlib.Path(directory) / "calls"
+                harness = """set -eu
+GITHUB_ACTIONS=true
+SMOKE_FORWARD_BRIDGE=''
+SMOKE_FORWARD_COMMENT=labby-incus-smoke-fixture
+SMOKE_FORWARD_OUTBOUND=0
+SMOKE_FORWARD_RETURN=0
+have() { return 0; }
+log() { :; }
+die() { exit 1; }
+incus_cmd() {
+    if [[ "$1" == profile ]]; then printf 'incusbr0\n'; else printf 'true\n'; fi
+}
+sudo_cmd() {
+    shift
+    [[ "$1" == -w && "$2" == 5 ]] || return 99
+    shift 2
+    if [[ "$1" == -L ]]; then [[ "$MODE" != absent ]]; return; fi
+    if [[ "$1" == -C ]]; then [[ "$MODE" == existing ]]; return; fi
+    printf '%s\n' "$*" >> "$CALL_LOG"
+    if [[ "$MODE" == partial && "$1" == -I && "$3" == -o ]]; then return 1; fi
+    if [[ "$MODE" == cleanup-failure && "$1" == -D ]]; then return 1; fi
+}
+""" + functions + """
+if ensure_smoke_forwarding; then setup=0; else setup=$?; fi
+if cleanup_smoke_forwarding; then cleanup=0; else cleanup=$?; fi
+printf '%s %s\n' "$setup" "$cleanup"
+"""
+                env = dict(os.environ, MODE=mode, CALL_LOG=str(log))
+                result = subprocess.run(["bash", "-c", harness], env=env, text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = log.read_text().splitlines() if log.exists() else []
+                self.assertEqual(len(calls), expected, calls)
+                self.assertTrue(all("DOCKER-USER" in call and "incusbr0" in call and "--comment labby-incus-smoke-fixture" in call for call in calls))
+                deletes = [call for call in calls if " -D " in " " + call + " "]
+                self.assertEqual(len(deletes), 1 if mode == "partial" else 2 if mode in {"new", "cleanup-failure"} else 0)
+                self.assertEqual(result.stdout.strip(), "1 0" if mode == "partial" else "0 1" if mode == "cleanup-failure" else "0 0")
+
     def test_bootstrap_copies_backups_when_private_parent_is_initially_absent(self):
         bootstrap = self.text("scripts/incus-bootstrap.sh")
         commands = [line.strip() for line in bootstrap.splitlines()
