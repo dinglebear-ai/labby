@@ -19,3 +19,4 @@ out/
 out
 public/_docs/
 .DS_Store
+worktrees/

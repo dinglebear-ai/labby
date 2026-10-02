@@ -12,7 +12,11 @@ keywords = ["homelab", "mcp", "sandbox", "javascript", "codemode"]
 categories = ["development-tools"]
 publish = false
 
+[features]
+microsandbox-sdk = ["dep:microsandbox"]
+
 [dependencies]
+microsandbox = { version = "=0.7.3", optional = true, default-features = false, features = ["local", "net"] }
 labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
 labby-openapi = { path = "../labby-openapi" }
@@ -43,6 +47,7 @@ anyhow = "1"
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = [
+  "fs",
   "signal",
   "process",
   "user",

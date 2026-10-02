@@ -8,6 +8,7 @@ Feature invariant status: clean.
 | --- | --- | --- | --- | --- | --- | --- |
 | labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd`<br>`skills` |
 | labby | `api-docs` | HelperInternal | false | true | - | `dep:utoipa` |
+| labby | `codemode-microsandbox` | IntentionalException | false | false | - | `gateway`<br>`labby-codemode/microsandbox-sdk` |
 | labby | `default` | AggregateDefault | false | false | - | `gateway-host` |
 | labby | `fs` | ProductSlice | false | true | - | `dep:walkdir`<br>`dep:globset` |
 | labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`web-ui`<br>`skills` |
@@ -25,7 +26,7 @@ Feature invariant status: clean.
 | labby-auth | `http-axum` | ExtractedCrate | true | true | - | `dep:axum`<br>`dep:tower` |
 | labby-auth | `testkit` | ExtractedCrate | false | false | - |  |
 | labby-auth | `upstream-oauth-rmcp` | ExtractedCrate | true | true | - | `dep:rmcp-client`<br>`dep:oauth2`<br>`dep:anyhow`<br>`dep:labby-runtime` |
-| labby-codemode | `no_features` | ExtractedCrate | true | true | - |  |
+| labby-codemode | `microsandbox-sdk` | ExtractedCrate | false | false | - | `dep:microsandbox` |
 | labby-gateway | `skills` | ExtractedCrate | false | false | - |  |
 | labby-gateway | `testkit` | ExtractedCrate | false | false | - |  |
 | labby-web | `default` | AggregateDefault | true | true | - |  |

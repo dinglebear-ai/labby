@@ -2008,13 +2008,16 @@ impl LabMcpServer {
                 }
                 #[cfg(not(feature = "gateway"))]
                 unreachable!("Depot publishing is gateway-only")
-            } else if cfg!(feature = "gateway")
-                && service == "snippets"
-                && matches!(
-                    action.as_str(),
-                    "snippets.exec" | "snippets.test" | "snippets.promote"
-                )
-            {
+            } else if cfg!(feature = "gateway") && service == "snippets" && {
+                #[cfg(feature = "gateway")]
+                {
+                    crate::dispatch::snippets::dispatch::requires_execution_context(&action)
+                }
+                #[cfg(not(feature = "gateway"))]
+                {
+                    false
+                }
+            } {
                 #[cfg(feature = "gateway")]
                 return self
                     .call_snippets_contextual_impl(

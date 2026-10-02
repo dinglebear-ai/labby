@@ -144,6 +144,32 @@ impl LiveIdentity {
         .await
     }
 
+    /// Executable snippet runtime behind a raw, explicitly scoped MCP route.
+    /// The owner credential has the same complete transport ceiling as the
+    /// authority harness, while this Loadout publishes only Gateway and Snippets.
+    /// This is an operator service route: Project-bound routes intentionally
+    /// admit only exact published asset execution, not native snippet dispatch.
+    pub(crate) async fn bootstrap_snippet_receipt_harness(subject: &str) -> Result<Self, String> {
+        let mut config = policy(AUTHORITY_SCOPES).replacen(
+            "services = [\"gateway\"]",
+            "services = [\"gateway\", \"snippets\"]\nexpose_code_mode = false",
+            1,
+        );
+        // Keep the credential's verified route/resource/Loadout binding, but do
+        // not opt native operator tools into the Project AssetUse execution seam.
+        config = config.replacen(&format!("project_id = \"{PROJECT_ID}\"\n"), "", 1);
+        config.push_str("\n[code_mode]\nenabled = true\n");
+        Self::bootstrap_with_policy_issuer_and_loadout(
+            subject,
+            300,
+            &config,
+            PUBLIC_HOST,
+            LOADOUT_ID,
+            AUTHORITY_SCOPES,
+        )
+        .await
+    }
+
     /// Bootstrap a two-principal authority harness.
     ///
     /// The product credential minted by the bootstrap proof is the
@@ -230,10 +256,7 @@ impl LiveIdentity {
         let retained_evidence = std::env::temp_dir()
             .join("labby-live-e2e-evidence")
             .join(format!("{}.json", guard.identity().run_id));
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = identity_http_client(std::time::Duration::from_secs(10))?;
         let base = guard.connection().base_url.clone();
         let consumed = client
             .post(format!("{base}/auth/bootstrap/consume"))
@@ -606,10 +629,7 @@ impl LiveIdentity {
         );
         let digest = hex::encode(Sha256::digest(wire.as_bytes()));
         let expires_at = identity.expires_at.saturating_sub(1);
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .map_err(|e| e.to_string())?;
+        let client = identity_http_client(std::time::Duration::from_secs(10))?;
         let response = client
             .post(format!("{base}/v1/access/credentials"))
             .bearer_auth(source_credential)
@@ -869,6 +889,17 @@ fn installation_command(root: &Path) -> Command {
     command
 }
 
+// Bound both response headers and bodies; a stalled auth handler must let the
+// live test fail and enter its owned daemon/credential cleanup path.
+fn identity_http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(timeout)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 async fn introspect_with(
     client: &reqwest::Client,
     base: &str,
@@ -977,6 +1008,35 @@ fn synchronous_cleanup_request(base: &str, proof: &str, prepare_id: &str) -> Res
 #[cfg(test)]
 mod diagnostic_tests {
     use super::identity_failure_class;
+
+    #[tokio::test]
+    async fn identity_http_client_times_out_when_server_never_sends_headers() {
+        // Nextest runs this independently of LiveLabbyGuard startup, which
+        // normally installs the same provider before constructing HTTP clients.
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = super::identity_http_client(std::time::Duration::from_millis(100)).unwrap();
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client
+                .get(format!("http://{address}/auth/bootstrap/consume"))
+                .send(),
+        )
+        .await;
+        server.abort();
+        let error = response
+            .expect("client must settle before outer deadline")
+            .unwrap_err();
+        assert!(
+            error.is_timeout(),
+            "stalled headers must hit the request deadline"
+        );
+    }
 
     #[test]
     fn backend_diagnostics_classify_without_reflecting_server_secrets() {

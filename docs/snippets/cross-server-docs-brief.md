@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Build a compact docs brief from Context7, web search, GitHub, Axon, and time
 tags: [docs, research, cross-server]
+tools: ["time::get_current_time", "context7::resolve-library-id", "context7::query-docs", "searxng::searxng_web_search", "cloudflare-docs::search_cloudflare_documentation", "github::search_repositories", "Axon::axon"]
 inputs:
   topic:
     type: string
@@ -21,6 +22,21 @@ inputs:
     default: /websites/rs_tokio_tokio
     required: false
     description: Concrete Context7 library id
+  library_question:
+    type: string
+    default: spawn blocking task
+    required: false
+    description: Context7 discovery and documentation question
+  cloudflare_query:
+    type: string
+    default: workers durable objects
+    required: false
+    description: Cloudflare documentation query
+  github_repo_query:
+    type: string
+    default: modelcontextprotocol rust sdk
+    required: false
+    description: GitHub repository search query
   max_results:
     type: integer
     default: 3

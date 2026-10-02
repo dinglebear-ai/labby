@@ -10,8 +10,8 @@ jobs:
   conformance:
     name: Required lifecycle implementation conformance
     runs-on: ubuntu-24.04
-    # Setup/build, five-minute execution, evidence validation, and upload margin.
-    timeout-minutes: 25
+    # Twenty-minute cold build, bounded execution/replay, and setup/upload margin.
+    timeout-minutes: 35
     env:
       LABBY_CONFORMANCE_EVIDENCE_DIR: ${{ github.workspace }}/verification-conformance-evidence
       # Required conformance cannot turn an unavailable or incomplete case into a pass.
@@ -32,7 +32,7 @@ jobs:
           git rev-parse HEAD > "$LABBY_CONFORMANCE_EVIDENCE_DIR/source-revision.txt"
           printf '%s' "$source_status" > "$LABBY_CONFORMANCE_EVIDENCE_DIR/source-dirty.txt"
       - name: Build product and conformance target (separate build budget)
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           cargo build -p labby --all-features --bin labby --locked
           cargo test -p labby --all-features --test lifecycle_conformance --no-run --locked

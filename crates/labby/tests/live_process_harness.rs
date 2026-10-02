@@ -65,6 +65,14 @@ fn outer_supervisor_kills_wedged_cleanup_before_post_deadline_mutation() {
         "a watchdog-killed shard must fail qualification: {status}"
     );
     assert!(started.elapsed() < Duration::from_secs(8));
+    let progress: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(owned_root.join("artifacts/progress.json"))
+            .expect("safe progress survives the failed shard"),
+    )
+    .expect("valid progress JSON");
+    assert_eq!(progress["state"], "running");
+    assert_eq!(progress["shard"], "wedged-cleanup-selftest");
+    assert_eq!(progress["last_test"], "");
     let marker = owned_root.join("post-deadline-mutation");
     assert!(!marker.exists());
     thread::sleep(Duration::from_secs(2));

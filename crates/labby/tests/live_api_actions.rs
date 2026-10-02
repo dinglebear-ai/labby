@@ -349,6 +349,50 @@ async fn prepare_authority_action(
     intent: &action_matrix::CaseIntent,
     mut params: serde_json::Value,
 ) -> serde_json::Value {
+    if matches!(
+        intent.action.as_str(),
+        "snippets.preview" | "snippets.replay"
+    ) {
+        // This runner starts in raw mode for its unreachable upstream fixtures.
+        // Guarded previews require enabled Code Mode even for tools: [].
+        let (status, bytes) = post_action(
+            client,
+            base,
+            "/v1/gateway",
+            "gateway.code_mode.set",
+            serde_json::json!({"enabled":true}),
+            true,
+        )
+        .await;
+        assert!(
+            status.is_success(),
+            "enable receipt preview fixture: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let config: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("Code Mode configuration JSON");
+        assert_eq!(
+            config["enabled"], true,
+            "receipt preview fixture must enable execution"
+        );
+    }
+    if let Some(prepared) = action_scenarios::prepare_snippet_receipt_case(
+        &intent.action,
+        |action, params| async move {
+            let (status, bytes) =
+                post_action(client, base, "/v1/snippets", action, params, true).await;
+            assert!(
+                status.is_success(),
+                "{action} receipt fixture failed: {}",
+                String::from_utf8_lossy(&bytes)
+            );
+            serde_json::from_slice(&bytes).expect("snippet fixture JSON")
+        },
+    )
+    .await
+    {
+        return prepared;
+    }
     let action_id = intent.action.replace('.', "-");
     if intent.service == "access" {
         if intent.action == "access.team_invitation.create" {
@@ -610,6 +654,12 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
         for intent in action_matrix::compiled_intents()
             .filter(|intent| intent.applicable_surfaces.contains(&Surface::Api))
         {
+            let prior_code_mode = if matches!(intent.action.as_str(), "snippets.preview" | "snippets.replay") {
+                let (status, bytes) = post_action(&client, &guard.connection().base_url, "/v1/gateway", "gateway.code_mode.get", serde_json::json!({}), true).await;
+                assert!(status.is_success(), "read receipt fixture Code Mode state");
+                let config: serde_json::Value = serde_json::from_slice(&bytes).expect("Code Mode configuration JSON");
+                Some(config["enabled"].as_bool().expect("Code Mode enabled flag"))
+            } else { None };
             ensure_action_fixture(&client, &guard.connection().base_url, intent).await;
             let fixture = &fixtures[&intent.service];
             let Some(path) = &fixture.api_path else {
@@ -699,6 +749,18 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             let value: serde_json::Value = serde_json::from_slice(&bytes)
                 .unwrap_or_else(|error| panic!("{} non-JSON HTTP envelope: {error}", intent.key()));
             if status.is_success() {
+                action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
+                if intent.action == "snippets.replay" {
+                    let run = action_scenarios::snippet_response_data("snippets.replay", &value);
+                    let id = run["execution_id"].as_str().expect("replay execution identifier");
+                    let (read_status, bytes) = post_action(&client, &guard.connection().base_url, "/v1/snippets", "snippets.receipt", serde_json::json!({"execution_id":id}), true).await;
+                    assert!(read_status.is_success(), "replay receipt readback failed");
+                    let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("replay receipt JSON");
+                    let receipt = action_scenarios::snippet_response_data("snippets.receipt", &receipt);
+                    assert_eq!(receipt["execution_id"], id, "replay durable state readback");
+                }
+            }
+            if status.is_success() {
                 successes.insert(intent.service.clone());
             } else {
                 let rendered = value.to_string();
@@ -726,6 +788,12 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                     intent.key()
                 );
                 structured_errors.insert(intent.service.clone());
+            }
+            if let Some(enabled) = prior_code_mode {
+                let (restore_status, bytes) = post_action(&client, &guard.connection().base_url, "/v1/gateway", "gateway.code_mode.set", serde_json::json!({"enabled":enabled}), true).await;
+                assert!(restore_status.is_success(), "restore receipt fixture Code Mode state");
+                let config: serde_json::Value = serde_json::from_slice(&bytes).expect("restored Code Mode JSON");
+                assert_eq!(config["enabled"], enabled, "receipt fixture must preserve raw-mode state");
             }
             assert!(observed.insert(intent.key(), status).is_none());
             let error = value.get("error").unwrap_or(&value);

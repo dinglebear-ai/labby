@@ -10,7 +10,9 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+mod evaluate;
 mod offline;
+use evaluate::evaluate;
 #[cfg(test)]
 mod tests;
 const WRAPPER: &str = include_str!("harness.js");
@@ -50,6 +52,43 @@ const fn one() -> usize {
     1
 }
 
+/// Synthetic nested snippet invocation; never resolves a real snippet.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureSnippet {
+    /// Exact snippet name.
+    pub name: String,
+    /// Top-level input subset to match.
+    #[serde(default)]
+    pub r#match: Option<Value>,
+    /// Synthetic nested output.
+    #[serde(default)]
+    pub result: Value,
+    /// Synthetic rejection.
+    #[serde(default)]
+    pub error: Option<FixtureError>,
+    /// Required consumption count.
+    #[serde(default = "one")]
+    pub times: usize,
+}
+
+/// Expected artifact write; data remains in memory and no file is created.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FixtureArtifact {
+    /// Exact relative artifact path.
+    pub path: String,
+    /// Expected content type, when supplied.
+    #[serde(default)]
+    pub content_type: Option<String>,
+    /// Required literal content fragments.
+    #[serde(default)]
+    pub contains: Vec<String>,
+    /// Required consumption count.
+    #[serde(default = "one")]
+    pub times: usize,
+}
+
 /// Resource budgets enforced against raw execution results.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -75,6 +114,15 @@ impl Default for FixtureBudgets {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SnippetFixture {
+    /// Fixture input defaults; explicit caller parameters take precedence.
+    #[serde(default)]
+    pub params: BTreeMap<String, Value>,
+    /// Synthetic nested snippet results, never real resolution.
+    #[serde(default)]
+    pub snippets: Vec<FixtureSnippet>,
+    /// Expected writes with synthetic receipts and no filesystem access.
+    #[serde(default)]
+    pub artifacts: Vec<FixtureArtifact>,
     /// Synthetic tool responses.
     #[serde(default)]
     pub calls: Vec<FixtureCall>,
@@ -171,7 +219,7 @@ impl SnippetFixture {
         if size > MAX_FIXTURE_BYTES {
             return Err(invalid("fixture exceeds 512 KiB"));
         }
-        if self.calls.len() > 512
+        if self.calls.len() + self.snippets.len() + self.artifacts.len() > 512
             || self.expect.len() > 64
             || self.absent.len() > 64
             || self.ignore_paths.len() > 64
@@ -223,6 +271,42 @@ impl SnippetFixture {
                 ));
             }
         }
+        for rule in &self.snippets {
+            super::store::validate_snippet_name(&rule.name)?;
+            if rule.r#match.as_ref().is_some_and(|v| !v.is_object())
+                || rule.times == 0
+                || rule.times > 512
+                || (rule.error.is_some() && !rule.result.is_null())
+            {
+                return Err(invalid("invalid synthetic snippet rule"));
+            }
+            count += rule.times;
+        }
+        for rule in &self.artifacts {
+            if rule.path.is_empty()
+                || rule.path.len() > 1024
+                || rule.path.starts_with('/')
+                || rule.path.contains('\\')
+                || rule
+                    .path
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+                || rule.contains.len() > 64
+                || rule.contains.iter().any(|part| part.len() > 16_000)
+                || rule.times == 0
+                || rule.times > 512
+                || rule
+                    .content_type
+                    .as_ref()
+                    .is_some_and(|value| value.len() > 256)
+            {
+                return Err(invalid("invalid synthetic artifact rule"));
+            }
+            count += rule.times;
+        }
+        if count > 512 || self.params.len() > 64 {
+            return Err(invalid("fixture exceeds invocation or input limit"));
+        }
         for pointer in self
             .expect
             .keys()
@@ -264,7 +348,7 @@ struct RawReport {
 }
 
 /// Execute synthetic calls in the production QuickJS subprocess, without a gateway.
-/// Only callTool and codemode.batch are mocked. The host scope denies global
+/// Tool calls, nested snippets, and artifact writes use explicit synthetic rules. The host scope denies global
 /// bridge escapes, local providers, resources and artifact writes.
 pub async fn run_fixture(
     snippet: &ResolvedSnippet,
@@ -293,7 +377,13 @@ pub async fn run_fixture_with_source_limit(
         }
     }
     let code = code_for_snippet(snippet)?;
-    let input = merge_snippet_input(snippet, input)?;
+    let mut fixture_input = serde_json::Map::from_iter(fixture.params.clone());
+    match input {
+        Value::Null => {}
+        Value::Object(caller_input) => fixture_input.extend(caller_input),
+        _ => return Err(invalid("snippet input must be an object")),
+    }
+    let input = merge_snippet_input(snippet, Value::Object(fixture_input))?;
     // Match live invocation admission before fixture data is embedded in the
     // larger isolated test wrapper.
     wrap_snippet_with_input_bounded(&code, &input, max_source_bytes.min(crate::MAX_SOURCE_BYTES))?;
@@ -334,92 +424,4 @@ pub async fn run_fixture_with_source_limit(
     )
     .map_err(|e| invalid(format!("invalid fixture runner response: {e}")))?;
     evaluate(&snippet.name, raw, fixture, elapsed_ms, escaped)
-}
-
-fn evaluate(
-    name: &str,
-    mut raw: RawReport,
-    fixture: &SnippetFixture,
-    elapsed: u64,
-    escaped: bool,
-) -> Result<SnippetFixtureReport, ToolError> {
-    let mut failures = Vec::new();
-    if let Some(exception) = raw.exception {
-        failures.push(format!("snippet exception: {exception}"));
-    }
-    if escaped {
-        failures.push("snippet attempted to use the real host bridge".into());
-    }
-    if raw.unexpected > 0 {
-        failures.push(format!(
-            "{} unexpected or over-budget calls",
-            raw.unexpected
-        ));
-    }
-    if !raw.unused.is_empty() {
-        failures.push(format!(
-            "{} fixture rules were not fully consumed",
-            raw.unused.len()
-        ));
-    }
-    if raw.result.get("ok").and_then(Value::as_bool) == Some(false)
-        && fixture.expect.get("/ok") != Some(&Value::Bool(false))
-    {
-        failures.push("snippet returned ok: false".into());
-    }
-    let bytes = serde_json::to_vec(&raw.result)
-        .map_err(|e| invalid(e.to_string()))?
-        .len();
-    if bytes > fixture.budgets.output_bytes {
-        failures.push("output_bytes budget exceeded".into());
-    }
-    if elapsed > fixture.budgets.wall_clock_ms {
-        failures.push("wall_clock_ms budget exceeded".into());
-    }
-    if raw.attempted > fixture.budgets.tool_calls {
-        failures.push("tool_calls budget exceeded".into());
-    }
-    for (pointer, expected) in &fixture.expect {
-        if raw.result.pointer(pointer) != Some(expected) {
-            failures.push(format!("assertion failed at {pointer}"));
-        }
-    }
-    for pointer in &fixture.absent {
-        if raw.result.pointer(pointer).is_some() {
-            failures.push(format!("expected absent path at {pointer}"));
-        }
-    }
-    if let Some(snapshot) = &fixture.snapshot {
-        let mut expected = snapshot.clone();
-        let mut actual = raw.result.clone();
-        for pointer in &fixture.ignore_paths {
-            if let Some(v) = expected.pointer_mut(pointer) {
-                *v = Value::Null;
-            }
-            if let Some(v) = actual.pointer_mut(pointer) {
-                *v = Value::Null;
-            }
-        }
-        if actual != expected {
-            failures.push("normalized snapshot mismatch".into());
-        }
-    }
-    let trace_truncated = raw.calls.len() > 32;
-    raw.calls.truncate(32);
-    Ok(SnippetFixtureReport {
-        name: name.into(),
-        mode: "mock".into(),
-        passed: failures.is_empty(),
-        failures,
-        metrics: FixtureMetrics {
-            wall_clock_ms: elapsed,
-            tool_calls: raw.attempted,
-            output_bytes: bytes,
-            estimated_tokens: bytes.div_ceil(4),
-            max_in_flight: raw.max_in_flight,
-        },
-        calls: raw.calls,
-        trace_truncated,
-        result: (bytes <= fixture.budgets.output_bytes).then_some(raw.result),
-    })
 }

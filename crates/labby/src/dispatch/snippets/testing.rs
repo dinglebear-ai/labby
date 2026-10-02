@@ -1,5 +1,6 @@
 //! Fixture-first snippet testing shared by CLI, MCP and HTTP.
-use super::dispatch::{execute_snippet_outcome, snippet_test_result};
+use super::dispatch::{SnippetDispatchContext, snippet_test_result};
+use super::execution::execute_snippet_outcome;
 use super::store::{builtin_snippet_dir, list_snippets, resolve_snippet};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
@@ -57,6 +58,7 @@ pub(super) async fn test(
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
     source_limit_override: Option<usize>,
+    context: Option<&SnippetDispatchContext>,
 ) -> Result<Value, ToolError> {
     let params: TestParams = serde_json::from_value(params).map_err(|e| invalid(e.to_string()))?;
     params.validate()?;
@@ -69,6 +71,7 @@ pub(super) async fn test(
             caller,
             surface,
             source_limit_override,
+            context,
         )
         .await;
     }
@@ -91,6 +94,7 @@ pub(super) async fn test(
             caller,
             surface,
             source_limit_override,
+            context,
         )
         .await
         {
@@ -117,6 +121,7 @@ async fn test_one(
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
     source_limit_override: Option<usize>,
+    context: Option<&SnippetDispatchContext>,
 ) -> Result<Value, ToolError> {
     if !params.live {
         let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
@@ -151,9 +156,16 @@ async fn test_one(
         return serde_json::to_value(report).map_err(|error| invalid(error.to_string()));
     }
     let started = Instant::now();
-    let outcome =
-        execute_snippet_outcome(manager, name, params.params.clone(), scope, caller, surface)
-            .await?;
+    let outcome = execute_snippet_outcome(
+        manager,
+        name,
+        params.params.clone(),
+        scope,
+        caller,
+        surface,
+        context,
+    )
+    .await?;
     let elapsed = started.elapsed().as_millis();
     let bytes = serde_json::to_vec(&outcome.raw_response.result)
         .map_err(|error| invalid(error.to_string()))?

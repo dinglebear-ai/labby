@@ -201,8 +201,19 @@ fn websocket_authorization_header_with_dotenv(
 mod tests {
     use super::*;
 
-    #[test]
-    fn file_managed_bearer_uses_home_before_windows_userprofile() {
+    #[tokio::test]
+    async fn file_managed_bearer_uses_home_before_windows_userprofile() {
+        // Registering external authority is process-wide and cannot be reset.
+        // Keep it in an exact-filter child so parallel transport tests retain
+        // their own genuine external credentials.
+        if crate::upstream::test_isolation::run(
+            "upstream::auth::tests::file_managed_bearer_uses_home_before_windows_userprofile",
+            &[],
+        )
+        .await
+        {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let home = directory.path().join("home");
         let profile = directory.path().join("profile");

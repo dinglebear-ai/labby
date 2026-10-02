@@ -114,10 +114,7 @@ async fn handle(
         req,
         crate::dispatch::snippets::ACTIONS,
         move |action, params| async move {
-            if matches!(
-                action.as_str(),
-                "snippets.exec" | "snippets.test" | "snippets.promote"
-            ) {
+            if crate::dispatch::snippets::dispatch::requires_execution_context(&action) {
                 let manager = manager
                     .as_ref()
                     .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
@@ -221,6 +218,11 @@ mod tests {
             "snippets.remove",
             "snippets.test",
             "snippets.validate",
+            "snippets.preview",
+            "snippets.replay",
+            "snippets.receipt",
+            "snippets.history",
+            "snippets.artifact",
         ] {
             let response = post_snippets(
                 app.clone(),
@@ -258,6 +260,106 @@ mod tests {
         .await;
 
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn receipt_http_adapter_preserves_authenticated_owner_for_admins() {
+        use labby_gateway::codemode_journal::{
+            StepJournalStore,
+            receipts::{SnippetExecutionReceipt, SnippetReceiptOwner},
+        };
+        use labby_gateway::gateway::manager::GatewayRuntimeHandle;
+        use sha2::{Digest, Sha256};
+        use std::sync::Arc;
+        let home = tempfile::tempdir().unwrap();
+        let store = StepJournalStore::open(home.path().join("journal.db"))
+            .await
+            .unwrap();
+        let auth = admin_auth_context();
+        let owner_value = json!({"actor":auth.actor_key,"subject":auth.sub,"trusted_local":false});
+        let owner_digest = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(serde_json::to_vec(&owner_value).unwrap()))
+        );
+        let scope = labby_codemode::ToolScope::default().fingerprint();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        store
+            .record_snippet_receipt(
+                SnippetExecutionReceipt {
+                    execution_id: "http-owned".into(),
+                    snippet_name: "demo".into(),
+                    snippet_digest: "source".into(),
+                    input_digest: "input".into(),
+                    effective_scope_fingerprint: scope.clone(),
+                    runtime_version: "test".into(),
+                    tool_schema_digests: None,
+                    surface: "api".into(),
+                    created_at_ms: now,
+                    elapsed_ms: 0,
+                    status: "failed".into(),
+                    error_kind: Some("synthetic".into()),
+                    result_digest: None,
+                    result_bytes: None,
+                    calls: vec![],
+                    tool_calls: 0,
+                    omitted_calls: 0,
+                    artifacts: vec![],
+                },
+                SnippetReceiptOwner {
+                    owner_key: owner_digest,
+                    route_scope: "root".into(),
+                    capability_fingerprint: scope,
+                },
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                home.path().join("config.toml"),
+                GatewayRuntimeHandle::default(),
+            )
+            .with_step_journal(Arc::new(store)),
+        );
+        let state = AppState::from_registry(crate::registry::build_default_registry())
+            .with_gateway_manager(manager);
+        let owner_app = super::routes(state.clone())
+            .router
+            .layer(Extension(auth.clone()))
+            .with_state(state.clone());
+        let result = post_snippets(
+            owner_app,
+            json!({"action":"snippets.receipt","params":{"execution_id":"http-owned"}}),
+        )
+        .await;
+        assert_eq!(
+            result.status(),
+            StatusCode::OK,
+            "authenticated receipt owner must survive HTTP adaptation"
+        );
+        let body = axum::body::to_bytes(result.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("http-owned"));
+        let mut other = auth;
+        other.sub = "different-admin".into();
+        let other_app = super::routes(state.clone())
+            .router
+            .layer(Extension(other))
+            .with_state(state);
+        let result = post_snippets(
+            other_app,
+            json!({"action":"snippets.receipt","params":{"execution_id":"http-owned"}}),
+        )
+        .await;
+        assert_eq!(
+            result.status(),
+            StatusCode::NOT_FOUND,
+            "admin cannot cross receipt owners"
+        );
     }
 
     #[tokio::test]

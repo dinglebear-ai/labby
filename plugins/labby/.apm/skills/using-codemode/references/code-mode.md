@@ -173,6 +173,37 @@ with `unknown` intersections.
 
 ## Resources, Snippets, And Steps
 
+Unscoped admin/trusted-local callers can discover Labby-owned JSON resources with
+`codemode.listResources("labby")`: `lab://gateway/servers`,
+`lab://gateway/status`, `lab://gateway/limits`, and `lab://capabilities`.
+Read these with `codemode.readResource(uri)` and parse `contents[].text` inside
+the sandbox. Namespace/tool-scoped runs cannot access these operator views.
+
+`writeArtifact(relativePath, stringContent, { contentType })` writes on the gateway
+host under `$LABBY_HOME/code-mode-artifacts/<run>/<relativePath>`. Eligible
+unscoped admin/trusted-local writes return an opaque `artifact_id` in the receipt.
+Keep this ID, rather than relying on its host path. The same authenticated owner
+can retrieve it in a later execution with `codemode.readArtifact(id, options)`,
+inspect metadata with `codemode.artifactInfo(id)`, or list their outputs with
+`codemode.listArtifacts({ limit: 25, cursor })`. Listing returns `artifacts`,
+`next_cursor`, and `incomplete`; follow the cursor and report incomplete coverage.
+
+Reads return `content`, `metadata`, `offset`, `next_offset`, and `done`. Offset
+and length count UTF-8 bytes; a read returns up to 1 MiB, ending at a character
+boundary. Follow `next_offset` until `done`, and join chunks inside the sandbox
+before parsing a large JSON artifact. Integrity is checked against the write
+receipt on every read. Retrieval works on `codemode_read` for eligible owners,
+but writes do not. Old files without ownership metadata and restricted writes
+are not available through these helpers.
+
+Artifacts are retained outputs, not permanent storage. Source defaults are
+8 MiB per file, 200 run directories, and 4 GiB total storage, with configuration
+and environment overrides. Old inactive runs are pruned on artifact writes.
+`artifactInfo` reports retention settings and `lab://gateway/limits` reports
+effective budgets. Paths must be relative; overwrites and the reserved
+`.labby-artifact-metadata` directory are rejected. JavaScript variables do not
+persist between executions.
+
 - `codemode.listResources(upstream)` returns `{ resources: [...] }` for one
   visible upstream. Pass a returned `resources[].uri` unchanged to
   `codemode.readResource(uri)`; resource URIs are not tool IDs.
@@ -406,3 +437,13 @@ discovery and the call share the same scoped run.
 3. Prefer `codemode.batch` when independent calls may partially fail; use
    `Promise.allSettled` for custom settlement handling.
 4. Return a compact result object rather than raw large payloads.
+
+Large upstream tool responses may be automatically preserved as JSON artifacts
+while the full value remains available inside the sandbox. Look for artifact
+receipts in the execution response. A truncated final result may include
+`preserved_result_artifact_id`; use `codemode.readArtifact(id, {offset, length})`
+to retrieve the original JSON without replaying tool calls. Automatic storage
+requires an unscoped admin/trusted-local caller, is disabled for read-only runs,
+and obeys artifact size and retention limits. Operators can set
+`LABBY_CODE_MODE_AUTO_ARTIFACT_THRESHOLD_BYTES` (default 24576; zero disables).
+An absent receipt does not imply the omitted response was saved.
