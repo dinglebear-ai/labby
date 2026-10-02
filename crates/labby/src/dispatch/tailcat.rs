@@ -14,5 +14,7 @@ pub(crate) mod client;
 #[cfg(all(feature = "tailcat", unix))]
 pub(crate) mod manager;
 pub(crate) use authorization::RequestAuthority;
+#[cfg(all(test, feature = "tailcat", unix))]
+mod acceptance;
 #[cfg(all(test, unix))]
 pub(crate) mod testing;

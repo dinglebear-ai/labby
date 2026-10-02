@@ -28,6 +28,18 @@ pub(super) async fn fixture_with_manager() -> (
     ApprovedPairing,
     labby_gateway::gateway::manager::GatewayManager,
 ) {
+    fixture_with_upstream(None).await
+}
+
+pub(super) async fn fixture_with_upstream(
+    upstream: Option<crate::config::UpstreamConfig>,
+) -> (
+    tempfile::TempDir,
+    Arc<AccessRuntime>,
+    Arc<AccessCredentialAdapter>,
+    ApprovedPairing,
+    labby_gateway::gateway::manager::GatewayManager,
+) {
     let directory = tempfile::Builder::new()
         .prefix("tailcat-authority-")
         .tempdir_in(if cfg!(target_os = "macos") {
@@ -59,10 +71,20 @@ loadout = "sandbox"
         ..Default::default()
     };
     let config = LabConfig {
+        upstream: upstream.into_iter().collect(),
         loadouts: vec![loadout.clone()],
         protected_mcp_routes: vec![route.clone()],
         ..Default::default()
     };
+    // Live acceptance reloads through the durable config owner; memory-only
+    // seeding is sufficient for authority tests, but cannot survive reload.
+    if !config.upstream.is_empty() {
+        std::fs::write(
+            directory.path().join("gateway.toml"),
+            toml::to_string(&config.to_gateway_config()).unwrap(),
+        )
+        .unwrap();
+    }
     let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
         directory.path().join("gateway.toml"),
         Default::default(),
