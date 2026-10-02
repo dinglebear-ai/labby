@@ -1260,13 +1260,24 @@ mod tests {
             Err(ToolExecutionResolutionError::Unavailable)
         ));
         assert_eq!(delayed_calls.load(Ordering::SeqCst), 5);
-        for _ in 0..100 {
-            if pool.usage_row_count_for_tests().await >= 5 {
-                break;
+        // The initial success and config/access/service changes reach the pool's
+        // checked apply before the outer authorization rejects their results.
+        // Tool/safety catalog changes are rejected inside checked apply, so only
+        // four usage rows are scheduled. Wait for SQLite before the pool ABA
+        // checks; scheduler yields cannot drain its asynchronous worker.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let count = pool.usage_row_count_for_tests().await;
+                assert!(count <= 4, "stale tool/safety result recorded usage");
+                if count == 4 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::task::yield_now().await;
-        }
-        let usage_before_pool_aba = pool.usage_row_count_for_tests().await;
+        })
+        .await
+        .expect("all four checked-apply usage writes must settle before pool ABA");
+        let usage_before_pool_aba = 4;
 
         let (pool_task, pool_started, pool_release) = start_delayed_call(
             Arc::clone(&runtime),

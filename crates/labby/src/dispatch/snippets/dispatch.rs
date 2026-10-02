@@ -3,16 +3,17 @@ use serde_json::{Value, json};
 
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::code_mode::{
-    CodeModeBroker, CodeModeCaller, CodeModeSourceLookup, CodeModeSurface, ToolScope,
+    CodeModeCaller, CodeModeSourceLookup, CodeModeSurface, ToolScope,
 };
 use crate::dispatch::helpers::{action_schema, help_payload, lab_home, require_str, to_json};
-use labby_codemode::{CodeModeExecutionResponse, MAX_SOURCE_BYTES};
+use labby_codemode::CodeModeExecutionResponse;
 
 use super::catalog::ACTIONS;
+use super::execution::{execute_snippet_outcome, receipt_owner};
 use super::store::{
-    builtin_snippet_dir, code_for_snippet, create_promoted_user_snippet, create_user_snippet,
-    list_snippets, merge_snippet_input, remove_user_snippet, resolve_snippet,
-    validate_snippet_body, validate_snippet_name, wrap_snippet_with_input_bounded,
+    builtin_snippet_dir, code_for_snippet, create_promoted_user_snippet,
+    create_user_snippet_checked, list_snippets_with_diagnostics, remove_user_snippet,
+    resolve_snippet, validate_snippet_body, validate_snippet_name,
 };
 
 #[derive(Debug, Deserialize)]
@@ -22,6 +23,7 @@ struct CreateParams {
     description: Option<String>,
     #[serde(default)]
     force: bool,
+    expected_digest: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +31,7 @@ struct ExecParams {
     name: Option<String>,
     #[serde(default)]
     params: Value,
+    expected_preview_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,6 +70,7 @@ pub struct SnippetDispatchContext {
 pub(super) struct SnippetExecutionOutcome {
     pub(super) raw_response: CodeModeExecutionResponse,
     pub(super) display_response: CodeModeExecutionResponse,
+    pub(super) receipt_status: String,
 }
 
 impl SnippetDispatchContext {
@@ -87,6 +91,22 @@ impl SnippetDispatchContext {
 pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     let manager = crate::dispatch::gateway::current_gateway_manager();
     dispatch_inner(manager.as_deref(), action, params, None, None).await
+}
+
+/// Every operation that executes or accesses owner-scoped records must retain
+/// the surface's actual caller, route and capability ceiling.
+pub fn requires_execution_context(action: &str) -> bool {
+    matches!(
+        action,
+        "snippets.exec"
+            | "snippets.test"
+            | "snippets.promote"
+            | "snippets.preview"
+            | "snippets.replay"
+            | "snippets.receipt"
+            | "snippets.history"
+            | "snippets.artifact"
+    )
 }
 
 /// CLI mock tests have already loaded configuration but intentionally have no
@@ -141,9 +161,33 @@ async fn dispatch_inner(
             let a = require_str(&params, "action")?;
             action_schema(ACTIONS, a)
         }
-        "snippets.list" => {
-            let snippets = list_snippets(&lab_home(), &builtin_snippet_dir())?;
-            to_json(json!({ "snippets": snippets }))
+        "snippets.list" => to_json(list_snippets_with_diagnostics(
+            &lab_home(),
+            &builtin_snippet_dir(),
+        )?),
+        "snippets.history" | "snippets.artifact" => {
+            super::history::dispatch(manager, action, params, dispatch_context).await
+        }
+        "snippets.preview" | "snippets.replay" => {
+            super::preview::dispatch(manager, action, params, dispatch_context).await
+        }
+        "snippets.receipt" => {
+            let id = require_str(&params, "execution_id")?;
+            let manager = manager.ok_or_else(|| {
+                ToolError::internal_message("snippet receipt lookup requires a gateway")
+            })?;
+            let context = dispatch_context.unwrap_or_else(SnippetDispatchContext::trusted_local);
+            if !context.is_admin || !context.execution_caller.is_admin() {
+                return Err(ToolError::Forbidden {
+                    message: "snippet receipt lookup requires lab:admin".into(),
+                    required_scopes: vec!["lab:admin".into()],
+                });
+            }
+            to_json(
+                manager
+                    .snippet_receipt(&id, receipt_owner(&context))
+                    .await?,
+            )
         }
         "snippets.get" => {
             let name = require_str(&params, "name")?;
@@ -151,12 +195,13 @@ async fn dispatch_inner(
         }
         "snippets.create" => {
             let params: CreateParams = parse_params(params)?;
-            to_json(create_user_snippet(
+            to_json(create_user_snippet_checked(
                 &lab_home(),
                 &params.name,
                 &params.body,
                 params.description.as_deref(),
                 params.force,
+                params.expected_digest.as_deref(),
             )?)
         }
         "snippets.promote" => {
@@ -180,6 +225,16 @@ async fn dispatch_inner(
             let Some(name) = params.name else {
                 return Err(missing_param("missing required parameter `name`", "name"));
             };
+            if let Some(expected) = params.expected_preview_fingerprint {
+                return super::preview::guarded_exec(
+                    manager,
+                    &name,
+                    params.params,
+                    dispatch_context,
+                    &expected,
+                )
+                .await;
+            }
             let outcome = execute_snippet_outcome(
                 manager,
                 &name,
@@ -187,9 +242,12 @@ async fn dispatch_inner(
                 &execution_scope,
                 &execution_caller,
                 execution_surface,
+                dispatch_context.as_ref(),
             )
             .await?;
-            to_json(outcome.display_response)
+            let mut response = to_json(outcome.display_response)?;
+            response["receipt_status"] = json!(outcome.receipt_status);
+            Ok(response)
         }
         "snippets.test" => {
             super::testing::test(
@@ -199,6 +257,7 @@ async fn dispatch_inner(
                 &execution_caller,
                 execution_surface,
                 source_limit_override,
+                dispatch_context.as_ref(),
             )
             .await
         }
@@ -306,71 +365,8 @@ pub(super) fn snippet_test_result(
         "name": name,
         "passed": passed,
         "response": outcome.display_response,
+        "receipt_status": outcome.receipt_status,
     }))
-}
-
-fn snippet_execution_scope(
-    snippet: &super::store::ResolvedSnippet,
-    caller_scope: &ToolScope,
-) -> ToolScope {
-    snippet
-        .tools
-        .as_ref()
-        .map(|declared| declared.intersect(caller_scope))
-        .unwrap_or_else(|| caller_scope.clone())
-}
-
-pub(super) async fn execute_snippet_outcome(
-    manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
-    name: &str,
-    input: Value,
-    caller_scope: &ToolScope,
-    caller: &CodeModeCaller,
-    surface: CodeModeSurface,
-) -> Result<SnippetExecutionOutcome, ToolError> {
-    let owned_manager;
-    let manager = if let Some(manager) = manager {
-        manager
-    } else {
-        owned_manager = crate::dispatch::gateway::require_gateway_manager()?;
-        owned_manager.as_ref()
-    };
-    let broker = CodeModeBroker::new(Some(manager));
-    let config = manager.code_mode_config().await;
-    let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
-    let code = code_for_snippet(&snippet)?;
-    let input = merge_snippet_input(&snippet, input)?;
-    let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
-    let code = wrap_snippet_with_input_bounded(&code, &input, max_source_bytes)?;
-    // Saved snippet source stays entirely on the execution plane. When the
-    // snippet declares exact upstream dependencies, use that declaration to
-    // narrow the caller/route authority instead of cold-probing every configured
-    // upstream. Snippets without declarations inherit the caller scope exactly.
-    let scope = snippet_execution_scope(&snippet, caller_scope);
-    let outcome = broker
-        .execute_with_raw_response(
-            &code,
-            caller.clone(),
-            surface,
-            config,
-            scope,
-            // Saved-snippet dispatch does not mint a durable execution id on
-            // this path; `None` keeps `record_step` write-free here.
-            None,
-        )
-        .await
-        // Contract-preserving path: `into_tool_error` collapses to bare
-        // kind + message, losing evidence/safety/original_kind and the refined
-        // recovery metadata. `into_contract_tool_error` carries the full
-        // CodeModeCallError contract through the dispatch ToolError so MCP,
-        // HTTP, and CLI envelopes render the same fidelity as the direct Code
-        // Mode MCP path (`code_mode_error_envelope`). The executed-calls trace
-        // remains dispatch-internal and is intentionally not serialized here.
-        .map_err(labby_codemode::CodeModeExecutionError::into_contract_tool_error)?;
-    Ok(SnippetExecutionOutcome {
-        raw_response: outcome.raw_response,
-        display_response: outcome.display_response,
-    })
 }
 
 fn parse_params<T: serde::de::DeserializeOwned>(params: Value) -> Result<T, ToolError> {
@@ -388,176 +384,5 @@ fn missing_param(message: &str, param: &str) -> ToolError {
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::{Value, json};
-
-    use super::*;
-    use crate::config::CodeModeResultShapePolicy;
-    use labby_codemode::CodeModeResultShapeMetadata;
-
-    fn response(result: Option<Value>) -> CodeModeExecutionResponse {
-        CodeModeExecutionResponse {
-            execution_id: None,
-            result,
-            result_shaping: None,
-            ui: None,
-            calls: vec![],
-            logs: vec![],
-            artifacts: vec![],
-        }
-    }
-
-    fn shaped_display_response() -> CodeModeExecutionResponse {
-        CodeModeExecutionResponse {
-            execution_id: None,
-            result: Some(json!("[code mode result truncated]\n{}")),
-            result_shaping: Some(CodeModeResultShapeMetadata {
-                policy: CodeModeResultShapePolicy::Truncate,
-                changed: true,
-                truncated: true,
-                original_size_bytes: 5000,
-                shaped_size_bytes: 256,
-                warning: None,
-            }),
-            ui: None,
-            calls: vec![],
-            logs: vec![],
-            artifacts: vec![],
-        }
-    }
-
-    fn resolved_snippet_with_tools(
-        tools: Option<Vec<&str>>,
-    ) -> crate::dispatch::snippets::store::ResolvedSnippet {
-        use std::collections::BTreeMap;
-        use std::path::PathBuf;
-
-        use crate::dispatch::snippets::store::{ResolvedSnippet, SnippetSource};
-        use labby_codemode::snippet::tool_declarations::SnippetToolDeclarations;
-
-        ResolvedSnippet {
-            tools: tools.map(|tools| {
-                SnippetToolDeclarations::try_from(
-                    tools.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>(),
-                )
-                .expect("valid exact tool declarations")
-            }),
-            name: "scoped".to_string(),
-            description: None,
-            tags: Vec::new(),
-            inputs: BTreeMap::new(),
-            source: SnippetSource::User,
-            path: PathBuf::from("scoped.md"),
-            body: "async () => ({ ok: true })".to_string(),
-        }
-    }
-
-    #[test]
-    fn saved_snippet_tool_declarations_narrow_but_never_widen_route_authority() {
-        let snippet = resolved_snippet_with_tools(Some(vec!["alpha::tool1", "beta::tool2"]));
-        let caller_scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
-
-        let scope = snippet_execution_scope(&snippet, &caller_scope);
-
-        assert!(scope.is_scoped());
-        assert!(scope.allows("alpha", "tool1"));
-        assert!(
-            !scope.allows("alpha", "other_tool"),
-            "an exact snippet declaration must deny undeclared siblings on an allowed upstream"
-        );
-        assert!(
-            !scope.allows("beta", "tool2"),
-            "a snippet declaration must never restore an upstream removed by the route"
-        );
-    }
-
-    #[test]
-    fn saved_snippet_without_declarations_inherits_route_scope_exactly() {
-        let snippet = resolved_snippet_with_tools(None);
-        let caller_scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new());
-
-        let scope = snippet_execution_scope(&snippet, &caller_scope);
-
-        assert_eq!(scope, caller_scope);
-        assert!(scope.allows("alpha", "other_tool"));
-        assert!(!scope.allows("beta", "tool2"));
-    }
-
-    #[test]
-    fn trusted_local_saved_snippet_retains_declared_exact_tool_scope() {
-        let snippet =
-            resolved_snippet_with_tools(Some(vec!["claude-macpoo::Bash", "claude-macpoo::Read"]));
-
-        let scope = snippet_execution_scope(&snippet, &ToolScope::default());
-
-        assert!(scope.is_scoped());
-        assert!(scope.allows("claude-macpoo", "Bash"));
-        assert!(scope.allows("claude-macpoo", "Read"));
-        assert!(!scope.allows("github", "search_issues"));
-    }
-
-    #[test]
-    fn saved_snippet_invocation_checks_final_wrapped_source_size() {
-        let code = "async () => ({ ok: true })";
-        let input = json!({ "payload": "x".repeat(256) });
-
-        let error = wrap_snippet_with_input_bounded(code, &input, 128)
-            .expect_err("serialized params must count toward the runtime source limit");
-
-        assert_eq!(error.kind(), "invalid_param");
-        let message = format!("{error}");
-        assert!(message.contains("saved snippet invocation"));
-        assert!(message.contains("128"));
-    }
-
-    #[test]
-    fn snippets_test_uses_raw_result_for_pass_fail_and_returns_shaped_display() {
-        let pass = snippet_test_result(
-            "shape-pass".to_string(),
-            SnippetExecutionOutcome {
-                raw_response: response(Some(json!({"ok": true, "payload": "x".repeat(5000)}))),
-                display_response: shaped_display_response(),
-            },
-        )
-        .expect("passing snippet result");
-        assert_eq!(pass["passed"], json!(true));
-        assert_eq!(
-            pass["response"],
-            serde_json::to_value(shaped_display_response()).expect("display response serializes")
-        );
-
-        let fail = snippet_test_result(
-            "shape-fail".to_string(),
-            SnippetExecutionOutcome {
-                raw_response: response(Some(json!({"ok": false, "payload": "x".repeat(5000)}))),
-                display_response: shaped_display_response(),
-            },
-        )
-        .expect("failing snippet result");
-        assert_eq!(fail["passed"], json!(false));
-        assert_eq!(
-            fail["response"],
-            serde_json::to_value(shaped_display_response()).expect("display response serializes")
-        );
-    }
-
-    #[test]
-    fn snippets_test_fails_when_a_batched_upstream_call_failed() {
-        let mut response = response(Some(json!({
-            "requested": 1,
-            "succeeded": 0,
-            "failed": 1,
-            "all_ok": false
-        })));
-        response.calls.push(labby_codemode::CodeModeExecutedCall {
-            id: "team-depot::depot.skills.search".into(),
-            ok: false,
-            elapsed_ms: 0,
-            start_ms: Some(0),
-            params: Some(json!({})),
-            error_kind: Some("unknown_upstream".into()),
-            ui: None,
-        });
-        assert!(!snippet_response_passed(&response));
-    }
-}
+#[path = "dispatch_tests.rs"]
+mod tests;

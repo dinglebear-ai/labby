@@ -12,11 +12,16 @@ use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
 
 use crate::error::ToolError;
-use crate::util::{env_non_empty, lab_home, redact_home};
+use crate::util::{lab_home, redact_home};
 use labby_runtime::path_safety::reject_existing_symlink_ancestors;
 use labby_runtime::path_safety::reject_path_traversal;
 
 const DEFAULT_CONTENT_TYPE: &str = "text/plain";
+mod config;
+pub use config::install_artifact_config_defaults;
+pub(crate) use config::{artifact_max_bytes, artifact_max_store_bytes, artifact_retention_runs};
+mod read;
+pub use read::read_receipted_artifact;
 
 /// Upper bound on the `content_type` metadata string.
 ///
@@ -25,31 +30,6 @@ const DEFAULT_CONTENT_TYPE: &str = "text/plain";
 /// the execution response and the truncation marker. So it gets a context-bound
 /// cap; a snippet can't bloat the response with a megabyte `contentType`.
 const MAX_CONTENT_TYPE_BYTES: usize = 256;
-
-/// Default per-artifact content cap, in MiB.
-///
-/// This is NOT a context guard — artifact content is written to disk and only
-/// the small receipt is returned to the model. It is a resource bound that keeps
-/// a single write comfortably under the runner's 64 MiB JS heap (see
-/// `runner.rs`), so an oversized artifact fails as a clean `invalid_param`
-/// instead of an opaque QuickJS out-of-memory trap. Override with
-/// `LABBY_CODE_MODE_ARTIFACT_MAX_MIB` (keep it below ~64 to preserve the clean
-/// error boundary).
-const DEFAULT_ARTIFACT_MAX_MIB: usize = 8;
-
-/// Default number of per-run artifact directories retained under
-/// `$LABBY_HOME/code-mode-artifacts/`. Old run directories are pruned on the first
-/// artifact write of a run (never on search / no-write runs) so the on-disk
-/// store stays bounded. Override with `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS`;
-/// set it to `0` to disable *count* pruning.
-const DEFAULT_ARTIFACT_RETENTION_RUNS: usize = 200;
-
-/// Default total-store byte budget, in MiB. Now that a single artifact can be
-/// several MiB, the run-count cap alone no longer bounds disk usage, so pruning
-/// also drops the oldest inactive run directories until the whole store fits
-/// this budget. Override with `LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB`; set it to
-/// `0` to disable *byte* pruning.
-const DEFAULT_ARTIFACT_MAX_STORE_MIB: u64 = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CodeModeArtifactWrite {
@@ -68,11 +48,33 @@ pub(crate) struct CodeModeArtifactWrite {
 /// execution response regardless of their visibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeModeArtifactReceipt {
+    /// Opaque retrieval identifier; absent on legacy or restricted writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) artifact_id: Option<String>,
     pub(crate) path: String,
     pub(crate) absolute_path: String,
     pub(crate) content_type: String,
     pub(crate) bytes: usize,
     pub(crate) sha256: String,
+}
+
+impl CodeModeArtifactReceipt {
+    /// Opaque storage identity derived from the broker-minted receipt. Authorize
+    /// the execution before using it to resolve retained artifact bytes.
+    #[must_use]
+    pub fn storage_run_id(&self) -> Option<String> {
+        let suffix = format!("/{}", self.path);
+        let absolute = self.absolute_path.replace('\\', "/");
+        let parent = absolute.strip_suffix(&suffix)?;
+        let (store, id) = parent.rsplit_once('/')?;
+        if !store.ends_with("/code-mode-artifacts")
+            || id.is_empty()
+            || !id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+        Some(id.to_owned())
+    }
 }
 
 fn artifact_store_root() -> PathBuf {
@@ -82,125 +84,6 @@ fn artifact_store_root() -> PathBuf {
 #[must_use]
 pub(crate) fn code_mode_artifact_root(run_id: &str) -> PathBuf {
     artifact_store_root().join(run_id)
-}
-
-/// Host-supplied `config.toml` fallbacks for the three artifact knobs below,
-/// seeded once by [`install_artifact_config_defaults`] (called by the gateway
-/// host adapter at config load time — this crate is host-neutral and never
-/// reads `config.toml` itself). Consulted only when the corresponding env var
-/// is absent.
-static ARTIFACT_RETENTION_RUNS_CONFIG_DEFAULT: OnceLock<Option<usize>> = OnceLock::new();
-static ARTIFACT_MAX_MIB_CONFIG_DEFAULT: OnceLock<Option<usize>> = OnceLock::new();
-static ARTIFACT_MAX_STORE_MIB_CONFIG_DEFAULT: OnceLock<Option<u64>> = OnceLock::new();
-
-/// Seed the `config.toml` fallbacks for artifact retention/size knobs. Safe to
-/// call more than once (e.g. on every host-side config reload); only the
-/// first call's values take effect, since each knob is itself resolved once
-/// per process on first use.
-pub fn install_artifact_config_defaults(
-    retention_runs: Option<usize>,
-    max_mib: Option<usize>,
-    max_store_mib: Option<u64>,
-) {
-    let _ = ARTIFACT_RETENTION_RUNS_CONFIG_DEFAULT.set(retention_runs);
-    let _ = ARTIFACT_MAX_MIB_CONFIG_DEFAULT.set(max_mib);
-    let _ = ARTIFACT_MAX_STORE_MIB_CONFIG_DEFAULT.set(max_store_mib);
-}
-
-/// Resolve the per-run artifact retention cap from the environment, falling back
-/// to `config.toml` then [`DEFAULT_ARTIFACT_RETENTION_RUNS`]. `0` disables pruning.
-#[must_use]
-pub(crate) fn artifact_retention_runs() -> usize {
-    // Absent/blank → config.toml, then default silently. Present-but-unparseable
-    // → warn and fall back, so a fat-fingered value (e.g. `5O`) isn't silently
-    // ignored.
-    let Some(raw) = env_non_empty("LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS") else {
-        return ARTIFACT_RETENTION_RUNS_CONFIG_DEFAULT
-            .get()
-            .copied()
-            .flatten()
-            .unwrap_or(DEFAULT_ARTIFACT_RETENTION_RUNS);
-    };
-    match raw.trim().parse::<usize>() {
-        Ok(value) => value,
-        Err(_) => {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "code_mode",
-                action = "codemode",
-                value = %raw,
-                default = DEFAULT_ARTIFACT_RETENTION_RUNS,
-                "ignoring unparseable LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS; using default"
-            );
-            DEFAULT_ARTIFACT_RETENTION_RUNS
-        }
-    }
-}
-
-/// Resolve the per-artifact content cap (in bytes) from the environment,
-/// falling back to [`DEFAULT_ARTIFACT_MAX_MIB`]. The env value is expressed in
-/// MiB for ergonomics (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB=16`).
-#[must_use]
-pub(crate) fn artifact_max_bytes() -> usize {
-    let config_default_bytes = ARTIFACT_MAX_MIB_CONFIG_DEFAULT
-        .get()
-        .copied()
-        .flatten()
-        .filter(|mib| *mib > 0)
-        .map(|mib| mib.saturating_mul(1024 * 1024));
-    let default_bytes = config_default_bytes.unwrap_or(DEFAULT_ARTIFACT_MAX_MIB * 1024 * 1024);
-    // Absent/blank → config.toml, then default silently. Present-but-unparseable
-    // or `0` → warn and fall back (a 0 MiB cap would reject every write).
-    let Some(raw) = env_non_empty("LABBY_CODE_MODE_ARTIFACT_MAX_MIB") else {
-        return default_bytes;
-    };
-    match raw.trim().parse::<usize>() {
-        Ok(mib) if mib > 0 => mib.saturating_mul(1024 * 1024),
-        _ => {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "code_mode",
-                action = "codemode",
-                value = %raw,
-                default_mib = DEFAULT_ARTIFACT_MAX_MIB,
-                "ignoring invalid LABBY_CODE_MODE_ARTIFACT_MAX_MIB; using default"
-            );
-            default_bytes
-        }
-    }
-}
-
-/// Resolve the total-store byte budget from the environment, falling back to
-/// [`DEFAULT_ARTIFACT_MAX_STORE_MIB`]. The env value is in MiB
-/// (`LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB=8192`); `0` disables byte pruning.
-#[must_use]
-pub(crate) fn artifact_max_store_bytes() -> u64 {
-    let config_default_bytes = ARTIFACT_MAX_STORE_MIB_CONFIG_DEFAULT
-        .get()
-        .copied()
-        .flatten()
-        .map(|mib| mib.saturating_mul(1024 * 1024));
-    let default_bytes =
-        config_default_bytes.unwrap_or(DEFAULT_ARTIFACT_MAX_STORE_MIB * 1024 * 1024);
-    let Some(raw) = env_non_empty("LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB") else {
-        return default_bytes;
-    };
-    match raw.trim().parse::<u64>() {
-        // `0` is meaningful here (disable byte pruning), unlike the per-artifact
-        // cap where 0 is nonsense.
-        Ok(mib) => mib.saturating_mul(1024 * 1024),
-        Err(_) => {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "code_mode",
-                action = "codemode",
-                value = %raw,
-                default_mib = DEFAULT_ARTIFACT_MAX_STORE_MIB,
-                "ignoring unparseable LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB; using default"
-            );
-            default_bytes
-        }
-    }
 }
 
 /// Best-effort recursive byte size of a directory. Symlinks are not followed
@@ -430,6 +313,12 @@ pub(crate) async fn write_code_mode_artifact(
     max_bytes: usize,
 ) -> Result<CodeModeArtifactReceipt, ToolError> {
     let rel_path = normalize_artifact_path(&request.path)?;
+    if rel_path.split('/').next() == Some(crate::artifact_access::METADATA_DIR) {
+        return Err(ToolError::InvalidParam {
+            message: "artifact path uses a reserved metadata directory".into(),
+            param: "path".into(),
+        });
+    }
     let content_type = normalize_content_type(request.content_type.as_deref())?;
     let bytes = request.content.as_bytes();
     if bytes.len() > max_bytes {
@@ -486,6 +375,7 @@ pub(crate) async fn write_code_mode_artifact(
     let sha256 = Sha256::digest(bytes);
 
     Ok(CodeModeArtifactReceipt {
+        artifact_id: None,
         path: rel_path,
         absolute_path: redact_home(&destination.display().to_string()),
         content_type,

@@ -1,0 +1,95 @@
+{
+  "calls": [],
+  "snippets": [
+    {
+      "name": "homelab-ssh-targets",
+      "match": {
+        "extra_hosts": [],
+        "ssh_config": ""
+      },
+      "result": {
+        "ok": true,
+        "partial": false,
+        "controller": {
+          "hostname": "fixture-controller",
+          "user": "fixture-user",
+          "home": "/fixture/home"
+        },
+        "discovery": {
+          "configured_aliases": 1,
+          "ssh_unreachable": 0
+        },
+        "targets": [
+          {
+            "alias": "fixture-host",
+            "ssh_reachable": true,
+            "key_auth_working": true,
+            "remote": {
+              "hostname": "fixture-host",
+              "user": "fixture-user",
+              "platform": "Linux",
+              "docker_path": "/usr/bin/docker",
+              "docker_version": "27.0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "docker-host-inventory",
+      "match": {
+        "alias": "fixture-host",
+        "log_lines": 20,
+        "check_updates": true
+      },
+      "result": {
+        "ok": true,
+        "errors": [],
+        "host": {
+          "hostname": "fixture-host"
+        },
+        "containers": [
+          {
+            "name": "gateway",
+            "state": {
+              "status": "running"
+            }
+          }
+        ],
+        "summary": {
+          "containers": 1,
+          "container_states": {
+            "running": 1
+          },
+          "image_update_states": {
+            "up_to_date": 1
+          },
+          "updates_available": 0
+        }
+      }
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "homelab/docker-inventory.json",
+      "content_type": "application/json",
+      "contains": [
+        "fixture-host",
+        "gateway",
+        "labby.homelab.docker_inventory.v1"
+      ]
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/partial": false,
+    "/summary/containers": 1,
+    "/devices/0/container_count": 1,
+    "/artifact/mode": "mock"
+  },
+  "budgets": {
+    "tool_calls": 3,
+    "wall_clock_ms": 20000,
+    "output_bytes": 16000
+  }
+}

@@ -243,6 +243,60 @@ async fn code_mode_resource_read_rejects_tool_ids_before_connecting() {
 }
 
 #[tokio::test]
+async fn code_mode_local_resources_enforce_scope_and_report_limits() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
+    let listing = CodeModeHost::list_resources(
+        &manager,
+        "labby".into(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+    )
+    .await
+    .expect("local resource listing");
+    assert!(
+        listing["resources"]
+            .as_array()
+            .expect("resources")
+            .iter()
+            .any(|r| r["uri"] == "lab://gateway/limits")
+    );
+    let read = CodeModeHost::read_resource(
+        &manager,
+        "lab://gateway/limits".into(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default().read_only(),
+    )
+    .await
+    .expect("local limits");
+    let limits: serde_json::Value =
+        serde_json::from_str(read["contents"][0]["text"].as_str().expect("text")).expect("json");
+    assert_eq!(
+        limits["max_response_bytes"],
+        manager.code_mode_config().await.max_response_bytes
+    );
+    assert!(
+        limits["storage"]["max_calls_per_run"]
+            .as_u64()
+            .expect("effective calls")
+            > 0
+    );
+    let scope = ToolScope::scoped_namespaces(vec!["alpha".into()], vec![]);
+    let denied = CodeModeHost::read_resource(
+        &manager,
+        "lab://gateway/servers".into(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &scope,
+    )
+    .await
+    .expect_err("scoped operator reads denied");
+    assert_eq!(denied.kind(), "forbidden");
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
 async fn code_mode_host_resource_read_connects_a_cold_upstream() {
     let mut upstream = fixture_http_upstream("alpha");
     upstream.proxy_resources = true;

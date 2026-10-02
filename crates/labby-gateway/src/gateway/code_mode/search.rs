@@ -850,6 +850,7 @@ mod tests {
 
         let tool = CatalogDescriptor::tool("fixture", "query", "Query data", None, None);
         let snippet = CatalogDescriptor::snippet(&SnippetInfo {
+            content_digest: None,
             tools: None,
             name: "summarize".to_string(),
             description: Some("Summarize results".to_string()),

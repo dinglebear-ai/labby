@@ -114,7 +114,7 @@ drop cancellation, output overflow, owned-guest recovery, process-crash recovery
 `lo` interface, and no GitHub token in its environment. The successful receipt
 confirmed cleanup. A subsequent CLI inventory contained no `labby-workload-`
 guests. Cancellation signaling on invocation drop also has a focused unit test;
-process crash and startup-race recovery remain unqualified.
+process crashes after creation and during observed SDK startup were tested with disposable owner subprocesses.
 
 The CLI image inventory can list a digest derived from a cached tag without
 having the SDK's digest-specific cache metadata. Explicitly preparing the

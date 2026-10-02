@@ -520,7 +520,9 @@ install_from_release() {
             [ -s "$tmp/$asset.sigstore.jsonl" ] || fail "empty release provenance bundle for $asset"
             provenance_bundle="$tmp/$asset.sigstore.jsonl"
             ;;
-        22:404)
+        # macOS curl can report HTTP errors as CURLE_RECV_ERROR (56).
+        # Only a definitive 404 permits authenticated legacy verification.
+        22:404|56:404)
             "$GH_VERIFIER" auth status --hostname github.com >/dev/null 2>&1 ||
                 fail "This older release has no public provenance bundle; GitHub CLI must be authenticated to fetch Labby release attestations"
             ;;

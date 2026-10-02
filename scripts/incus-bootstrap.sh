@@ -21,6 +21,9 @@ TAILSCALE_HOSTNAME=""
 TAILSCALE_INSTALL_VERSION="1.102.3"
 TAILSCALE_INSTALL_SHA256="805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e"
 TAILSCALE_INSTALL_URL="https://raw.githubusercontent.com/tailscale/tailscale/53a0d659afa51835dd7a9283873cca44261454f8/scripts/installer.sh"
+CHEZMOI_INSTALL_VERSION="2.72.1"
+CHEZMOI_INSTALL_SHA256="75de125a45a82b53c16546db7057052e98c11866ded27c4b6f95a51f59432e7b"
+CHEZMOI_INSTALL_URL="https://raw.githubusercontent.com/twpayne/chezmoi/f901167e4685db90da56d6a2a19df642cb3e0247/assets/scripts/install.sh"
 ALLOW_SOURCE_FALLBACK=0
 APPLY_BACKUP_CONFIG=1
 TRANSACTION_DIR=""
@@ -812,6 +815,29 @@ elif ! incus exec "$NAME" -- sh -c "command -v tailscale >/dev/null 2>&1"; then
     run incus exec "$NAME" -- env TAILSCALE_VERSION="$TAILSCALE_INSTALL_VERSION" sh /tmp/labby-tailscale-install.sh
     run incus exec "$NAME" -- rm -f /tmp/labby-tailscale-install.sh
     incus exec "$NAME" -- tailscale version | grep -F "$TAILSCALE_INSTALL_VERSION" >/dev/null
+fi
+# Historical binaries also embed get.chezmoi.io, whose bytes have changed.
+# Install the reviewed version on the shared PATH before their user-space
+# dependency probe; retain checksum verification before executing any bytes.
+if [ "$DRY_RUN" -eq 1 ]; then
+    say "+ download $(quote "$CHEZMOI_INSTALL_URL"), verify sha256 $(quote "$CHEZMOI_INSTALL_SHA256"), then install ChezMoi $(quote "$CHEZMOI_INSTALL_VERSION")"
+elif ! incus exec "$NAME" -- sh -c "command -v chezmoi >/dev/null 2>&1"; then
+    run incus exec "$NAME" -- apt-get update
+    run incus exec "$NAME" -- apt-get install -y --no-install-recommends ca-certificates curl
+    chezmoi_installer="$TRANSACTION_DIR/chezmoi-install.sh"
+    curl -fsSL --connect-timeout 10 --max-time 300 -o "$chezmoi_installer" "$CHEZMOI_INSTALL_URL"
+    printf '%s  %s\n' "$CHEZMOI_INSTALL_SHA256" "$chezmoi_installer" | sha256sum --check --strict
+    if incus exec "$NAME" -- test -e /usr/local/bin/chezmoi; then
+        incus file pull "$NAME/usr/local/bin/chezmoi" "$TRANSACTION_DIR/chezmoi.previous"
+        record_rollback "incus file push $(quote "$TRANSACTION_DIR/chezmoi.previous") $(quote "$NAME/usr/local/bin/chezmoi")"
+    else
+        record_rollback "incus exec $(quote "$NAME") -- rm -f /usr/local/bin/chezmoi"
+    fi
+    record_rollback "incus exec $(quote "$NAME") -- rm -f /tmp/labby-chezmoi-install.sh"
+    run incus file push "$chezmoi_installer" "$NAME/tmp/labby-chezmoi-install.sh"
+    run incus exec "$NAME" -- sh /tmp/labby-chezmoi-install.sh -t "v$CHEZMOI_INSTALL_VERSION" -b /usr/local/bin
+    run incus exec "$NAME" -- rm -f /tmp/labby-chezmoi-install.sh
+    incus exec "$NAME" -- chezmoi --version | grep -F "$CHEZMOI_INSTALL_VERSION" >/dev/null
 fi
 run incus exec "$NAME" -- labby setup --provision --yes
 checkpoint provision

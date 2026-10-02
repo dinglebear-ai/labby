@@ -427,6 +427,25 @@ limits, not an assertion that saved source must fit in the invoking LLM context.
 When provided, it must be a simple ASCII `type/subtype` media type, up to 256
 bytes after trimming surrounding ASCII spaces.
 
+Unscoped admin/trusted-local writes are enrolled with an opaque `artifact_id` in
+the receipt. Use `codemode.readArtifact(id, { offset, length })` in later runs,
+`codemode.artifactInfo(id)` for metadata/retention, and
+`codemode.listArtifacts({ limit, cursor })` for owner-filtered pagination.
+Read offsets are UTF-8 byte offsets. Reads return at most 1 MiB in `content`,
+with `next_offset` and `done`; aggregate chunks in the sandbox before parsing
+large JSON. Each read verifies the entire file against its persisted size and
+SHA-256. Metadata is stored separately in a reserved per-run directory and
+pruned with the run. Legacy/restricted writes have no retrieval enrollment.
+Subjectless remote callers and namespace/tool-scoped callers fail closed.
+
+The same unscoped operator audience can use `codemode.listResources("labby")`
+and `codemode.readResource(uri)` for `lab://gateway/servers`,
+`lab://gateway/status`, `lab://gateway/limits`, and `lab://capabilities`.
+Status, limits, and capability overview are also advertised on the root MCP
+resource surface for admins. Effective limits include environment-resolved
+call, result, and artifact budgets. Server instructions include a nonblocking
+snapshot of current execution limits; read the resource to refresh that snapshot.
+
 Snippet execution is admin/trusted-local only. Route-scoped Code Mode catalogs do
 not expose user snippets, and host-side snippet resolution repeats the permission
 check because discovery is not a security boundary.
@@ -1101,3 +1120,24 @@ Loose JavaScript snippets are normalized before execution. Already-formed
 function expressions pass through, while statement blocks such as
 `const x = await callTool(...); x.items` are wrapped as `async () => { ... }` and
 the trailing expression is returned.
+
+### Automatic response artifacts
+
+Successful upstream tool responses larger than 24 KiB are automatically preserved
+as JSON artifacts for unscoped admin/trusted-local callers. The full tool value
+still reaches the sandbox when it fits the tool-result limit. Final results that
+would otherwise be truncated are also preserved before truncation; the marker
+includes `preserved_result_artifact_id` and chunk-reading guidance. Automatic
+receipts appear alongside explicit `writeArtifact()` receipts.
+
+Set `LABBY_CODE_MODE_AUTO_ARTIFACT_THRESHOLD_BYTES` to change the upstream
+threshold, or `0` to disable all automatic response preservation. Read-only and
+restricted runs never write automatic artifacts. The existing artifact size,
+retention, ownership, and integrity rules apply. Persistence is best effort,
+bounded to 500 ms per write and the runner deadline for upstream results. It
+stores complete JSON, so operators should disable it where response persistence
+is undesirable. Values above the artifact cap are not saved. In particular, the
+default artifact and tool-result caps are both 8 MiB; responses exceeding the
+tool-result cap require a larger operator-configured artifact cap to be preserved.
+Storage failures never turn a successful upstream call into a failure; a
+`result_too_large` error explicitly says when its complete response was not saved.

@@ -2,6 +2,12 @@
 unmaintained = "all"
 yanked = "deny"
 ignore = [
+    # owner: jmagar (explicitly approved 2026-10-02)
+    # path: optional microsandbox 0.7.3 -> microsandbox-filesystem 0.7.3 -> bincode 2.0.1
+    # reason: upstream SDK requires this snapshot serializer; latest 0.7.6 still uses it.
+    #         This advisory is maintenance status, not a reported vulnerability.
+    # re-review: 2026-11-02; remove when upstream replaces bincode or the SDK is removed.
+    { id = "RUSTSEC-2025-0141", reason = "Approved optional Microsandbox filesystem snapshot dependency on bincode 2.0.1; upstream 0.7.6 retains it; re-review 2026-11-02 and remove with upstream migration or SDK removal" },
     # owner: jmagar
     # reason: RSA remains transitively required to verify Google OIDC RS256 ID tokens. Lab's own
     #         access-token signing uses Ed25519 and performs no production RSA private-key operation;

@@ -37,13 +37,15 @@ runs:
         # compiled a line of code. Tauri v2 needs 4.1 specifically, so a 4.0
         # fallback here would have installed the wrong library rather than
         # fixing anything.
-        packages="build-essential lld pkg-config libssl-dev libdbus-1-dev"
+        packages="build-essential lld pkg-config libssl-dev libdbus-1-dev libcap-ng-dev"
         need_install=false
         command -v cc >/dev/null 2>&1 || need_install=true
         command -v ld.lld >/dev/null 2>&1 || need_install=true
         command -v pkg-config >/dev/null 2>&1 || need_install=true
         pkg-config --exists openssl 2>/dev/null || need_install=true
         pkg-config --exists dbus-1 2>/dev/null || need_install=true
+        # Optional Microsandbox SDK all-feature builds link cap-ng on Linux.
+        pkg-config --exists libcap-ng 2>/dev/null || need_install=true
         if [ "$need_install" = false ]; then
           exit 0
         fi

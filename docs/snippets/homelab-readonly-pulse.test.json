@@ -1,0 +1,94 @@
+{
+  "calls": [
+    {
+      "tool": "time::get_current_time",
+      "result": {
+        "datetime": "2026-10-01T12:00:00-04:00"
+      }
+    },
+    {
+      "tool": "dozzle::list_hosts",
+      "result": [
+        {
+          "name": "fixture-host",
+          "available": true,
+          "type": "docker",
+          "dockerVersion": "27.0",
+          "nCPU": 4,
+          "memTotal": 4096
+        }
+      ]
+    },
+    {
+      "tool": "dozzle::list_containers",
+      "result": [
+        {
+          "name": "gateway",
+          "image": "labby:fixture",
+          "state": "running",
+          "host": "fixture-host"
+        },
+        {
+          "name": "worker",
+          "image": "worker:fixture",
+          "state": "exited",
+          "host": "fixture-host"
+        }
+      ]
+    },
+    {
+      "tool": "cortex::cortex",
+      "result": {
+        "count": 1,
+        "logs": [
+          {
+            "timestamp": "2026-10-01T16:00:00Z",
+            "hostname": "fixture-host",
+            "app_name": "labby",
+            "severity": "info",
+            "message": "ready"
+          }
+        ]
+      },
+      "match": {
+        "action": "search"
+      }
+    },
+    {
+      "tool": "synapse::scout",
+      "result": {
+        "nodes": [
+          {
+            "name": "fixture-host",
+            "online": true
+          }
+        ]
+      },
+      "match": {
+        "action": "nodes"
+      }
+    },
+    {
+      "tool": "synapse::flux",
+      "result": {
+        "status": "healthy"
+      },
+      "match": {
+        "action": "host",
+        "subaction": "status"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/summary/docker_hosts": 1,
+    "/summary/docker_containers": 2,
+    "/summary/docker_container_states/running": 1,
+    "/summary/recent_log_count": 1
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 6,
+    "output_bytes": 16000
+  }
+}

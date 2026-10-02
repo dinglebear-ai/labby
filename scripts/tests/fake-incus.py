@@ -55,11 +55,13 @@ elif args[:3] == ["profile", "add", state["name"]]: state["container_profiles"].
 elif args[:3] == ["profile", "remove", state["name"]]: state["container_profiles"].remove(args[3]); save()
 elif args[:2] == ["file", "pull"]:
     source, destination = args[2], pathlib.Path(args[3])
-    value = state["binary"] if source.endswith("/usr/local/bin/labby") else state["netplan"]
+    value = state.get("chezmoi") if source.endswith("/usr/local/bin/chezmoi") else state["binary"] if source.endswith("/usr/local/bin/labby") else state["netplan"]
     destination.write_text(value)
 elif args[:2] == ["file", "push"]:
     source, destination = pathlib.Path(args[2]), args[3]
-    if destination.endswith("/usr/local/bin/labby"): state["binary"] = source.read_text()
+    if destination.endswith("/usr/local/bin/chezmoi"): state["chezmoi"] = source.read_text()
+    elif destination.endswith("/tmp/labby-chezmoi-install.sh"): state["chezmoi_installer"] = source.read_text()
+    elif destination.endswith("/usr/local/bin/labby"): state["binary"] = source.read_text()
     elif destination.endswith("/etc/netplan/10-lxc.yaml"): state["netplan"] = source.read_text()
     elif ".labby-upload-" in destination: state["upload"] = source.read_text()
     save()
@@ -89,10 +91,18 @@ elif args and args[0] == "exec":
         save()
     elif cmd[:2] == ["test", "-e"]:
         target = cmd[2]
-        exists = state["binary"] is not None if target.endswith("/labby") else state["owned"] is not None
+        exists = state.get("chezmoi") is not None if target.endswith("/chezmoi") else state["binary"] is not None if target.endswith("/labby") else state["owned"] is not None
         if not exists: fail()
     elif cmd[:2] in (["test", "-x"], ["test", "-c"]): pass
+    elif cmd[:2] == ["sh", "/tmp/labby-chezmoi-install.sh"]:
+        if cmd[2:] != ["-t", "v2.72.1", "-b", "/usr/local/bin"]: fail()
+        if state.get("chezmoi_installer") != "reviewed-fixture": fail()
+        state["chezmoi"] = "2.72.1"; save()
+        if os.environ.get("FAKE_INCUS_CHEZMOI_FAILURE") == "install": fail()
+    elif cmd[:2] == ["chezmoi", "--version"]:
+        out("chezmoi version " + ("wrong-version" if os.environ.get("FAKE_INCUS_CHEZMOI_FAILURE") == "version" else state["chezmoi"]))
     elif cmd[:2] == ["labby", "setup"]:
+        if os.environ.get("FAKE_INCUS_REQUIRE_CHEZMOI_PIN") and state.get("chezmoi") != "2.72.1": fail()
         if "|provisioned" not in (state["owned"] or ""): state["owned"] = (state["owned"] or "") + "|provisioned"
         state["services"].setdefault("labby.service", {})["enabled"] = "enabled"
         save()
@@ -105,7 +115,9 @@ elif args and args[0] == "exec":
     elif cmd[:2] == ["tailscale", "down"]: state["tailscale"] = False; save()
     elif cmd[:2] == ["resolvectl", "status"]: pass
     elif cmd[:2] == ["rm", "-f"]:
-        if cmd[-1] == "/run/labby-ts-authkey": state["ts_key"] = False
+        if cmd[-1] == "/usr/local/bin/chezmoi": state["chezmoi"] = None
+        elif cmd[-1] == "/tmp/labby-chezmoi-install.sh": state["chezmoi_installer"] = None
+        elif cmd[-1] == "/run/labby-ts-authkey": state["ts_key"] = False
         elif cmd[-1].endswith("10-lxc.yaml"): state["netplan"] = ""
         elif cmd[-1].endswith("/labby"): state["binary"] = None
         save()
@@ -119,6 +131,8 @@ elif args and args[0] == "exec":
         sys.stdin.read(); state["netplan"] = "managed-netplan"; state["services"]["systemd-networkd"] = {"active":"active","enabled":"enabled"}; state["services"]["systemd-resolved"] = {"active":"active","enabled":"enabled"}; save()
     elif cmd[:2] == ["sh", "-c"] or cmd[:2] == ["sh", "-lc"]:
         shell = cmd[2]
+        if "command -v chezmoi" in shell:
+            if os.environ.get("FAKE_INCUS_MISSING_CHEZMOI") or not state.get("chezmoi"): fail()
         if "systemctl start labby.service" in shell and "ActiveState" in shell:
             state["services"]["labby.service"]["active"] = "failed" if state.get("labby_failed_on_start") else "active"
             save()

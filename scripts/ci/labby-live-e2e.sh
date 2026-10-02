@@ -276,6 +276,7 @@ run_shard() {
 }
 start_owned_shard() {
   shard="$1"; group_seq=$((group_seq + 1)); group_token="$run_id-group-$group_seq"
+  printf 'live E2E shard starting: %s\n' "$shard"
   LABBY_E2E_GROUP_TOKEN="$group_token" run_shard "$shard" & last_pid="$!"
   active_pids+=("$last_pid"); owned_groups+=("$last_pid"); register_group "$last_pid" "$group_token"
 }
@@ -284,7 +285,18 @@ wait_owned_shard() {
   case "$limit" in *[!0-9]*|'') return 64;; esac
   shard_deadline=$((SECONDS + limit))
   [ "$shard_deadline" -le "$run_deadline" ] || shard_deadline="$run_deadline"
-  while group_alive "$pid" && [ "$SECONDS" -lt "$shard_deadline" ]; do sleep 0.05; done
+  next_progress=0
+  while group_alive "$pid" && [ "$SECONDS" -lt "$shard_deadline" ]; do
+    if [ "$SECONDS" -ge "$next_progress" ]; then
+      # Retain only a validated test identifier, never raw output that could
+      # contain a bootstrap proof, credential, request body, or secret canary.
+      last_test="$(awk '$1 == "test" && $2 ~ /^[A-Za-z0-9_:]+$/ && $3 == "..." { name=$2 } END { print name }' "$run_root/$shard.log" 2>/dev/null || true)"
+      printf 'live E2E shard running: %s; last test: %s\n' "$shard" "${last_test:-compiling-or-starting}"
+      printf '{"schema_version":1,"state":"running","shard":"%s","last_test":"%s"}\n' "$shard" "$last_test" >"$run_root/artifacts/progress.json"
+      next_progress=$((SECONDS + 30))
+    fi
+    sleep 0.05
+  done
   if group_alive "$pid"; then
     primary=1
     terminate_children || return 70

@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Read-only homelab pulse across time, Docker, Cortex, and Synapse
 tags: [homelab, readonly, ops]
+tools: ["time::get_current_time", "dozzle::list_hosts", "dozzle::list_containers", "cortex::cortex", "synapse::scout", "synapse::flux"]
 inputs:
   timezone:
     type: string

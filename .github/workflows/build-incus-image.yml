@@ -42,7 +42,7 @@ jobs:
       setup-command: |
         set -euo pipefail
         sudo apt-get update
-        sudo apt-get install -y debootstrap gpg incus rsync shellcheck squashfs-tools uidmap
+        sudo apt-get install -y debootstrap gpg incus libcap-ng-dev rsync shellcheck squashfs-tools uidmap
         rustup toolchain install 1.97.1 --profile minimal --target x86_64-unknown-linux-gnu
         rustup default 1.97.1
         corepack enable

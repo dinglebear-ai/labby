@@ -99,6 +99,7 @@ mod prompt_discovery;
 mod protected_routes;
 mod publication;
 mod resource_discovery;
+mod snippet_receipts;
 #[cfg(test)]
 mod tests;
 mod usage;
