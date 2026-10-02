@@ -25,5 +25,10 @@
     "tool_calls": 2,
     "output_bytes": 16000,
     "wall_clock_ms": 20000
+  },
+  "params": {
+    "root": "/fixture",
+    "skill_dir": "/fixture/skills/repo-status",
+    "check_mergeability": false
   }
 }
