@@ -57,6 +57,7 @@ impl Bridge {
         validated: ValidatedBridgeConfig,
         timeout: Duration,
     ) -> Result<Self, BridgeError> {
+        crate::ensure_platform_supported()?;
         if timeout.is_zero() || timeout > Duration::from_secs(30) {
             return Err(BridgeError::InvalidConfig);
         }
@@ -187,6 +188,7 @@ impl Bridge {
             .lock()
             .expect("child ownership lock poisoned")
             .take();
+        let owned_guard = self.guard.take();
         if let Some(mut child) = owned_child {
             let graceful = tokio::time::timeout(Duration::from_secs(2), async {
                 if let Some(input) = self.stdin.as_mut() {
@@ -198,7 +200,7 @@ impl Bridge {
                 child.wait().await
             })
             .await;
-            self.guard.take();
+            drop(owned_guard);
             if !matches!(graceful, Ok(Ok(_))) {
                 drop(child.start_kill());
                 drop(tokio::time::timeout(Duration::from_secs(2), child.wait()).await);

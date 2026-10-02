@@ -186,3 +186,24 @@ async fn unresponsive_stop_is_forced_and_reaped() {
     assert_dead(pid).await;
     assert_eq!(bridge.status(), BridgeStatus::Stopped);
 }
+
+#[tokio::test]
+async fn cancelling_stop_cleans_descendants_while_bridge_is_retained() {
+    let output = tempfile::tempdir().unwrap();
+    let descendant_file = output.path().join("descendant");
+    let script = format!(
+        "read start\nsleep 30 &\necho $! > '{}'\necho '{{\"version\":1,\"type\":\"ready\",\"address\":\"tcpSecret\",\"port\":1}}'\nwait",
+        descendant_file.display()
+    );
+    let (_dir, c) = fixture(&script);
+    let mut bridge = Bridge::start(c.validate().unwrap()).await.unwrap();
+    let descendant = pid_from(&descendant_file).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), bridge.stop())
+            .await
+            .is_err()
+    );
+    assert_dead(descendant).await;
+    bridge.stop().await.unwrap();
+    assert_eq!(bridge.status(), BridgeStatus::Stopped);
+}

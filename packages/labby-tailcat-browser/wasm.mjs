@@ -77,8 +77,8 @@ export function loadTailcat({baseURL, wasmSha256, runtimeSha256}) {
         globalThis.onTailcatReady = () => { controller.signal.removeEventListener('abort', abort); resolve(); };
         go.run(instance).then(() => reject(Error('Tailcat runtime exited')), () => reject(Error('Tailcat runtime failed')));
       });
-      if (typeof globalThis.tailcatDial !== 'function' || typeof globalThis.tailcatIdentity !== 'function') throw Error('Tailcat exports unavailable');
-      return {dial: globalThis.tailcatDial, identity: globalThis.tailcatIdentity};
+      if (typeof globalThis.tailcatIdentity !== 'function' || typeof globalThis.tailcatSession !== 'function') throw Error('Tailcat exports unavailable');
+      return {identity: globalThis.tailcatIdentity, createSession: globalThis.tailcatSession};
     } catch (error) {
       script?.remove();
       // A running Go instance cannot safely restart in the same page.

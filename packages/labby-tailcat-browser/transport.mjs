@@ -4,15 +4,18 @@ const safeHeader=value=>typeof value==='string'&&/^[\x21-\x7e]+$/.test(value);
 
 /** One browser's transient MCP session. Does not grant native authority. */
 export class TailcatClient {
- static async connect(capability,{dial=globalThis.tailcatDial,signal}={}){
+ static async connect(capability,{dial,createSession=globalThis.tailcatSession,signal}={}){
   if(signal?.aborted||!capability||!safeHeader(capability.grant)||!safeHeader(capability.generation)
    ||!capability.peer?.privateKey||!Number.isFinite(capability.expiresAt)||capability.expiresAt<=Date.now()
    ||capability.expiresAt>Date.now()+15*60000||capability.port!==1||!/^tcp[A-Za-z0-9_-]+$/.test(capability.address))throw Error('Invalid or expired pairing');
   const url=new URL(capability.derpMapURL);if(url.protocol!=='https:'||url.username||url.password||url.hash)throw Error('Invalid relay map');
-  if(typeof dial!=='function')throw Error('Tailcat WASM is unavailable');
-  return new TailcatClient(capability,dial);
+  if(typeof dial==='function')return new TailcatClient(capability,dial);
+  if(typeof createSession!=='function')throw Error('Tailcat WASM is unavailable');
+  const owner=await createSession({addr:capability.address,derpMapURL:capability.derpMapURL,privateKey:capability.peer.privateKey});
+  if(signal?.aborted){owner.close();throw Error('Operation cancelled')}
+  return new TailcatClient(capability,()=>owner.dial(),owner);
  }
- constructor(capability,dial){this.capability=capability;this.dial=dial;this.session=null;this.nextId=1;this.active=new Set();this.closed=false;this.pending=0;this.lifetime=new AbortController();}
+ constructor(capability,dial,owner){this.owner=owner;this.capability=capability;this.dial=dial;this.session=null;this.nextId=1;this.active=new Set();this.closed=false;this.pending=0;this.lifetime=new AbortController();}
  async request(method,params={}, {signal}={}){
   if(this.closed||this.capability.expiresAt<=Date.now()||signal?.aborted)throw Error('Connection closed or expired');
   if(this.pending>=8)throw Error('Connection capacity exceeded');
@@ -47,5 +50,5 @@ export class TailcatClient {
    if(conn){this.active.delete(conn);conn.close()}this.pending--;
   }
  }
- close(){if(this.closed)return;this.closed=true;this.lifetime.abort();for(const c of this.active)c.close();this.active.clear();this.session=null;this.capability=null;}
+ close(){if(this.closed)return;this.closed=true;this.lifetime.abort();for(const c of this.active)c.close();this.active.clear();this.session=null;this.capability=null;this.owner?.close();this.owner=null;}
 }

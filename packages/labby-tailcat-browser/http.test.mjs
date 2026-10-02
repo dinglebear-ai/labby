@@ -26,3 +26,9 @@ test('oversize, conflicting length, invalid chunks and incomplete EOF reject',()
  ])assert.throws(()=>new HttpDecoder().push(bytes(input)));
  const d=new HttpDecoder();d.push(bytes('HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n{}'));assert.throws(()=>d.finish());
 });
+test('SSE progress batching is independent of TCP boundaries',()=>{
+ const events=Array.from({length:9},(_,i)=>`data: ${JSON.stringify({jsonrpc:'2.0',method:'notifications/progress',params:{progress:i}})}\n\n`).join('');
+ const bytes=new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: ${new TextEncoder().encode(events).length}\r\n\r\n${events}`);
+ const grouped=new HttpDecoder();grouped.push(bytes);assert.equal(grouped.takeMessages().length,9);
+ const split=new HttpDecoder();let count=0;for(const byte of bytes){split.push(Uint8Array.of(byte));count+=split.takeMessages().length}assert.equal(count,9);
+});

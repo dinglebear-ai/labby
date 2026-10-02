@@ -11,6 +11,7 @@ From the Labby repository root, using the Go version in
 
 ```sh
 bash scripts/build-tailcat-bridge.sh /absolute/owned/build-directory
+bash scripts/test-tailcat-bridge.sh
 cargo test -p labby-tailcat
 cargo clippy -p labby-tailcat --all-targets -- -D warnings
 ```
@@ -45,8 +46,10 @@ tool restriction remain prerequisites for the product integration.
   graceful/forced/repeated stop and descendant cleanup.
 - Go tests use a disposable DERP fixture and TLS map. An unapproved peer reaches
   no backend; an approved peer completes a round trip; stop closes its stream.
+  Go WASM tests verify Promise executor and closed-stream callback release.
 - `integration/browser-fixture.mjs` tests the portable JS client and actual Go
   WASM against a synthetic MCP backend through the public test relay. It is
   explicitly a fixture, not a production pairing endpoint or VM qualification.
+  Eight overlapping MCP requests share one Tailcat client and DERP identity.
 - Native pairing, product listener, Depot LiveView and Microsandbox acceptance
   are described in the approved implementation plan and are not wired yet.

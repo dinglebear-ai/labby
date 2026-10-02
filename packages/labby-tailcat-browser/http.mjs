@@ -9,7 +9,7 @@ const index=(bytes,text)=>{
 
 /** Incremental response parser for the restricted JSON/SSE MCP endpoint. */
 export class HttpDecoder {
- constructor(){this.buffer=new Uint8Array();this.headers=null;this.status=0;this.done=false;this.messages=[];this.body=[];this.bodyBytes=0;this.remaining=null;this.chunkRemaining=null;this.trailers=false;this.sse='';this.text=new TextDecoder('utf-8',{fatal:true});}
+ constructor(){this.buffer=new Uint8Array();this.headers=null;this.status=0;this.done=false;this.messages=[];this.messageBytes=0;this.body=[];this.bodyBytes=0;this.remaining=null;this.chunkRemaining=null;this.trailers=false;this.sse='';this.text=new TextDecoder('utf-8',{fatal:true});}
  push(bytes){
   if(this.done){if(bytes.length)throw failure();return}
   if(this.buffer.length+bytes.length>MAX+HEADER_MAX)throw failure();
@@ -45,7 +45,7 @@ export class HttpDecoder {
   if(this.streaming){
    this.sse+=this.text.decode(bytes,{stream:true});if(encoder.encode(this.sse).length>MAX)throw failure();
    this.sse=this.sse.replace(/\r\n/g,'\n');
-   for(;;){const end=this.sse.indexOf('\n\n');if(end<0)break;const event=this.sse.slice(0,end);this.sse=this.sse.slice(end+2);const data=event.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).replace(/^ /,'')).join('\n');if(data)this.messages.push(JSON.parse(data));if(this.messages.length>8)throw failure();}
+   for(;;){const end=this.sse.indexOf('\n\n');if(end<0)break;const event=this.sse.slice(0,end);this.sse=this.sse.slice(end+2);const data=event.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).replace(/^ /,'')).join('\n');if(data){this.messageBytes+=encoder.encode(data).length;if(this.messageBytes>MAX)throw failure();this.messages.push(JSON.parse(data));}}
   }else{this.bodyBytes+=bytes.length;if(this.bodyBytes>MAX)throw failure();if(bytes.length)this.body.push(bytes);}
  }
  complete(){
@@ -54,5 +54,5 @@ export class HttpDecoder {
   this.done=true;
  }
  finish(){if(this.done)return;if(!this.headers||this.headers['transfer-encoding']||this.remaining!==null&&this.remaining!==0)throw failure();this.complete();}
- takeMessages(){const messages=this.messages;this.messages=[];return messages;}
+ takeMessages(){const messages=this.messages;this.messages=[];this.messageBytes=0;return messages;}
 }

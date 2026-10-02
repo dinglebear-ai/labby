@@ -35,3 +35,8 @@ test('wrong response ID rejects without replay',async()=>{
  const c=await TailcatClient.connect(cap,{dial:async()=>{calls++;return {write:async()=>{},close:()=>{},read:async()=>new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${body}`)}}});
  await assert.rejects(c.request('tools/call',{name:'fixture'}),/response ID/);assert.equal(calls,1);c.close();
 });
+test('one WASM session owns concurrent streams and closes once',async()=>{
+ let sessions=0,dials=0,closes=0;
+ const factory=async()=>{sessions++;return {dial:async()=>{dials++;let id;return {write:async bytes=>{id=JSON.parse(new TextDecoder().decode(bytes).split('\r\n\r\n')[1]).id},read:async()=>{const body=JSON.stringify({jsonrpc:'2.0',id,result:{}});return new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${body}`)},close:()=>{}}},close:()=>{closes++}}};
+ const c=await TailcatClient.connect(cap,{createSession:factory});await Promise.all(Array.from({length:8},()=>c.request('tools/list')));c.close();c.close();assert.equal(sessions,1);assert.equal(dials,8);assert.equal(closes,1);
+});

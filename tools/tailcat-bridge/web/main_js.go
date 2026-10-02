@@ -2,9 +2,8 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 // The tailcat web app is the WebAssembly (js/wasm) build of tailcat
-// for browsers. It exposes two global JavaScript functions,
-// tailcatListen and tailcatDial, that app.js uses to implement
-// file sharing. The browser reaches DERP relays over WebSockets,
+// for browsers. Labby exposes session identity and a shared session
+// client for independently cancellable MCP TCP streams. The browser reaches DERP relays over WebSockets,
 // which tailscale.com's derphttp package does automatically under
 // GOOS=js.
 package main
@@ -15,13 +14,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
+	"sync"
+	"sync/atomic"
 	"syscall/js"
 	"time"
 
 	"github.com/tailscale/tailcat"
-	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
@@ -34,162 +33,11 @@ func main() {
 		}
 		return map[string]any{"privateKey": string(j), "publicKey": pk.Private.Public().String()}
 	}))
-	js.Global().Set("tailcatListen", js.FuncOf(tailcatListen))
-	js.Global().Set("tailcatDial", js.FuncOf(tailcatDial))
+	js.Global().Set("tailcatSession", js.FuncOf(tailcatSession))
 	if f := js.Global().Get("onTailcatReady"); f.Type() == js.TypeFunction {
 		f.Invoke()
 	}
 	select {}
-}
-
-// tailcatListen starts a tailcat server in the browser.
-//
-// It takes one options object argument:
-//
-//	{
-//	  derpMapURL: string,      // absolute URL of the JSON DERP map (required)
-//	  privateKey: string,      // optional tailcat.PrivateKey JSON; ephemeral if empty
-//	  verbose: bool,           // optional; log to the console
-//	  onConnection: (conn) => {}, // called with a conn object per incoming connection
-//	}
-//
-// It returns a Promise that resolves to:
-//
-//	{
-//	  addr: string,           // the "tc..." address to share
-//	  privateKeyJSON: string, // the key (with its DERP region pinned), for persistence
-//	  close: () => {},
-//	}
-func tailcatListen(this js.Value, args []js.Value) any {
-	if len(args) != 1 || args[0].Type() != js.TypeObject {
-		return rejectedPromise(errors.New("tailcatListen requires an options object"))
-	}
-	opts := args[0]
-	onConnection := opts.Get("onConnection")
-	derpMapURL := optString(opts, "derpMapURL")
-	keyJSON := optString(opts, "privateKey")
-	logf := optLogf(opts)
-	return makePromise(func() (any, error) {
-		if onConnection.Type() != js.TypeFunction {
-			return nil, errors.New("onConnection function is required")
-		}
-		if derpMapURL == "" {
-			return nil, errors.New("derpMapURL is required")
-		}
-		pk := &tailcat.PrivateKey{}
-		if keyJSON != "" {
-			if err := json.Unmarshal([]byte(keyJSON), pk); err != nil {
-				return nil, fmt.Errorf("parsing privateKey: %w", err)
-			}
-		} else {
-			pk = tailcat.NewPrivateKey()
-			pk.Public.RegionID = -1 // auto-select
-		}
-		if pk.Public.PresharedKey.IsZero() {
-			// Migrate private keys saved by versions predating WireGuard PSKs.
-			// The returned privateKeyJSON persists the new address capability.
-			pk.Public.PresharedKey = tailcat.NewPresharedKey()
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		ci := pk.Public
-		if err := ci.Expand(ctx, tailcat.ExpandForServer, tailcat.DERPMapURL(derpMapURL)); err != nil {
-			return nil, fmt.Errorf("Expand: %w", err)
-		}
-		reg := ci.Region[0]
-		if keyJSON == "" {
-			// Pin the picked region so a persisted key keeps the
-			// same address across page loads.
-			pk.Public.RegionID = reg.RegionID
-		}
-		addr := pk.Public.Addr()
-		keyOut, err := json.Marshal(pk)
-		if err != nil {
-			return nil, err
-		}
-
-		srv := &tailcat.Server{Key: pk.Private, PresharedKey: pk.Public.PresharedKey, Logf: logf, Region: reg}
-		srv.OnTCP = func(port uint16) (handler func(net.Conn)) {
-			// Like the CLI's default mode, accept a connection on
-			// any port and hand it to the page.
-			return func(c net.Conn) {
-				onConnection.Invoke(makeJSConn(c, port, nil))
-			}
-		}
-		if err := srv.Start(); err != nil {
-			srv.Close()
-			return nil, fmt.Errorf("Server.Start: %w", err)
-		}
-		return map[string]any{
-			"addr":           string(addr),
-			"privateKeyJSON": string(keyOut),
-			"close": js.FuncOf(func(this js.Value, args []js.Value) any {
-				srv.Close()
-				return nil
-			}),
-		}, nil
-	})
-}
-
-// tailcatDial connects to a tailcat server and dials one TCP stream
-// over the tunnel.
-//
-// It takes one options object argument:
-//
-//	{
-//	  addr: string,       // the server's "tc..." address (required)
-//	  derpMapURL: string, // optional absolute URL of the JSON DERP map
-//	  privateKey: string, // optional tailcat.PrivateKey JSON; ephemeral if empty
-//	  port: number,       // optional TCP port; defaults to 1 like the CLI
-//	  verbose: bool,
-//	}
-//
-// It returns a Promise that resolves to a conn object (see makeJSConn).
-func tailcatDial(this js.Value, args []js.Value) any {
-	if len(args) != 1 || args[0].Type() != js.TypeObject {
-		return rejectedPromise(errors.New("tailcatDial requires an options object"))
-	}
-	opts := args[0]
-	addr := optString(opts, "addr")
-	derpMapURL := optString(opts, "derpMapURL")
-	keyJSON := optString(opts, "privateKey")
-	logf := optLogf(opts)
-	port := uint16(1)
-	if p := opts.Get("port"); p.Type() == js.TypeNumber {
-		port = uint16(p.Int())
-	}
-	return makePromise(func() (any, error) {
-		if addr == "" {
-			return nil, errors.New("addr is required")
-		}
-		priv := key.NewNode()
-		if keyJSON != "" {
-			var pk tailcat.PrivateKey
-			if err := json.Unmarshal([]byte(keyJSON), &pk); err != nil {
-				return nil, fmt.Errorf("parsing privateKey: %w", err)
-			}
-			priv = pk.Private
-		}
-		cl := &tailcat.Client{
-			Server:     tailcat.Addr(addr),
-			Key:        priv,
-			Logf:       logf,
-			DERPMapURL: derpMapURL,
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer cancel()
-		if err := pingUntil(ctx, cl); err != nil {
-			cl.Close()
-			return nil, err
-		}
-		c, err := cl.DialTCPPort(ctx, port)
-		if err != nil {
-			cl.Close()
-			return nil, fmt.Errorf("DialTCPPort: %w", err)
-		}
-		return makeJSConn(c, port, func() { cl.Close() }), nil
-	})
 }
 
 // pingUntil retries the meow/meowed handshake until it succeeds or
@@ -224,9 +72,17 @@ func pingUntil(ctx context.Context, cl *tailcat.Client) error {
 // rather than filling browser memory.
 func makeJSConn(c net.Conn, port uint16, onClose func()) js.Value {
 	buf := make([]byte, 64<<10)
-	return js.ValueOf(map[string]any{
+	obj := js.ValueOf(map[string]any{})
+	var callbacks []js.Func
+	var once sync.Once
+	add := func(f func(js.Value, []js.Value) any) js.Func {
+		h := managedFunction(f)
+		callbacks = append(callbacks, h)
+		return h
+	}
+	values := map[string]any{
 		"port": int(port),
-		"read": js.FuncOf(func(this js.Value, args []js.Value) any {
+		"read": add(func(this js.Value, args []js.Value) any {
 			return makePromise(func() (any, error) {
 				n, err := c.Read(buf)
 				if n > 0 {
@@ -240,7 +96,7 @@ func makeJSConn(c net.Conn, port uint16, onClose func()) js.Value {
 				return nil, err
 			})
 		}),
-		"write": js.FuncOf(func(this js.Value, args []js.Value) any {
+		"write": add(func(this js.Value, args []js.Value) any {
 			if len(args) != 1 {
 				return rejectedPromise(errors.New("write requires a Uint8Array"))
 			}
@@ -253,7 +109,7 @@ func makeJSConn(c net.Conn, port uint16, onClose func()) js.Value {
 				return js.Undefined(), nil
 			})
 		}),
-		"closeWrite": js.FuncOf(func(this js.Value, args []js.Value) any {
+		"closeWrite": add(func(this js.Value, args []js.Value) any {
 			return makePromise(func() (any, error) {
 				cw, ok := c.(interface{ CloseWrite() error })
 				if !ok {
@@ -265,14 +121,28 @@ func makeJSConn(c net.Conn, port uint16, onClose func()) js.Value {
 				return js.Undefined(), nil
 			})
 		}),
-		"close": js.FuncOf(func(this js.Value, args []js.Value) any {
-			c.Close()
-			if onClose != nil {
-				onClose()
-			}
+		"close": add(func(this js.Value, args []js.Value) any {
+			once.Do(func() {
+				c.Close()
+				if onClose != nil {
+					onClose()
+				}
+				for _, name := range []string{"read", "write", "closeWrite"} {
+					obj.Set(name, closedOperation)
+				}
+				obj.Set("close", closedNoop)
+				for _, callback := range callbacks {
+					releaseFunction(callback)
+				}
+				callbacks = nil
+			})
 			return nil
 		}),
-	})
+	}
+	for name, value := range values {
+		obj.Set(name, value)
+	}
+	return obj
 }
 
 func optString(v js.Value, name string) string {
@@ -282,18 +152,11 @@ func optString(v js.Value, name string) string {
 	return ""
 }
 
-func optLogf(v js.Value) logger.Logf {
-	if v.Get("verbose").Truthy() {
-		return log.Printf
-	}
-	return logger.Discard
-}
-
 // makePromise runs f on a new goroutine and returns a JavaScript
 // Promise of its result, rejected with a JavaScript Error if f
 // returns an error.
 func makePromise(f func() (any, error)) js.Value {
-	handler := js.FuncOf(func(this js.Value, args []js.Value) any {
+	handler := managedFunction(func(this js.Value, args []js.Value) any {
 		resolve, reject := args[0], args[1]
 		go func() {
 			if res, err := f(); err == nil {
@@ -304,9 +167,83 @@ func makePromise(f func() (any, error)) js.Value {
 		}()
 		return nil
 	})
-	return js.Global().Get("Promise").New(handler)
+	promise := js.Global().Get("Promise").New(handler)
+	releaseFunction(handler) // Promise invokes its executor synchronously.
+	return promise
 }
 
 func rejectedPromise(err error) js.Value {
 	return js.Global().Get("Promise").Call("reject", js.Global().Get("Error").New(err.Error()))
+}
+
+// Permanent stubs keep close idempotent after releasing per-stream callbacks.
+var closedNoop = js.FuncOf(func(js.Value, []js.Value) any { return nil })
+var closedOperation = js.FuncOf(func(js.Value, []js.Value) any { return rejectedPromise(errors.New("connection closed")) })
+var liveCallbacks atomic.Int64
+
+func managedFunction(f func(js.Value, []js.Value) any) js.Func {
+	liveCallbacks.Add(1)
+	return js.FuncOf(f)
+}
+func releaseFunction(f js.Func) { f.Release(); liveCallbacks.Add(-1) }
+
+// One pairing owns one DERP identity and multiple independent TCP streams.
+func tailcatSession(this js.Value, args []js.Value) any {
+	if len(args) != 1 || args[0].Type() != js.TypeObject {
+		return rejectedPromise(errors.New("session options required"))
+	}
+	opts := args[0]
+	return makePromise(func() (any, error) {
+		var pk tailcat.PrivateKey
+		if json.Unmarshal([]byte(optString(opts, "privateKey")), &pk) != nil || pk.Private.IsZero() {
+			return nil, errors.New("invalid session identity")
+		}
+		addr := optString(opts, "addr")
+		if addr == "" {
+			return nil, errors.New("session address required")
+		}
+		cl := &tailcat.Client{Server: tailcat.Addr(addr), Key: pk.Private, DERPMapURL: optString(opts, "derpMapURL"), Logf: logger.Discard}
+		lifetime, cancel := context.WithCancel(context.Background())
+		obj := js.ValueOf(map[string]any{})
+		var initialize sync.Once
+		var initErr error
+		var closeOnce sync.Once
+		var callbacks []js.Func
+		dial := managedFunction(func(js.Value, []js.Value) any {
+			return makePromise(func() (any, error) {
+				ctx, end := context.WithTimeout(lifetime, 30*time.Second)
+				defer end()
+				initialize.Do(func() { initErr = pingUntil(ctx, cl) })
+				if initErr != nil {
+					return nil, errors.New("session handshake failed")
+				}
+				c, err := cl.DialTCPPort(ctx, 1)
+				if err != nil {
+					return nil, errors.New("session stream failed")
+				}
+				if lifetime.Err() != nil {
+					c.Close()
+					return nil, errors.New("session closed")
+				}
+				return makeJSConn(c, 1, nil), nil
+			})
+		})
+		closing := managedFunction(func(js.Value, []js.Value) any {
+			closeOnce.Do(func() {
+				cancel()
+				cl.Close()
+				obj.Set("dial", closedOperation)
+				obj.Set("close", closedNoop)
+				for _, f := range callbacks {
+					releaseFunction(f)
+				}
+				callbacks = nil
+			})
+			return nil
+		})
+		callbacks = []js.Func{dial, closing}
+		obj.Set("dial", dial)
+		obj.Set("close", closing)
+		return obj, nil
+	})
 }
