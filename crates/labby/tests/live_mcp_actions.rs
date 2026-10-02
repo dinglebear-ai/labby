@@ -599,8 +599,9 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     let expected_count = expected.len();
 
     // Root raw mode intentionally disables Code Mode. Guarded execution uses
-    // a separate owned admin route that exposes native Snippets while its
-    // runtime is enabled; the same credential and route own every receipt.
+    // a separate owned admin operator route that exposes native Snippets while
+    // its runtime is enabled. It does not opt into Project asset execution;
+    // the same verified credential and route own every receipt.
     let snippet_identity =
         live_identity::LiveIdentity::bootstrap_snippet_receipt_harness("mcp-matrix-snippet-replay")
             .await

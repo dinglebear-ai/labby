@@ -147,12 +147,17 @@ impl LiveIdentity {
     /// Executable snippet runtime behind a raw, explicitly scoped MCP route.
     /// The owner credential has the same complete transport ceiling as the
     /// authority harness, while this Loadout publishes only Gateway and Snippets.
+    /// This is an operator service route: Project-bound routes intentionally
+    /// admit only exact published asset execution, not native snippet dispatch.
     pub(crate) async fn bootstrap_snippet_receipt_harness(subject: &str) -> Result<Self, String> {
         let mut config = policy(AUTHORITY_SCOPES).replacen(
             "services = [\"gateway\"]",
             "services = [\"gateway\", \"snippets\"]\nexpose_code_mode = false",
             1,
         );
+        // Keep the credential's verified route/resource/Loadout binding, but do
+        // not opt native operator tools into the Project AssetUse execution seam.
+        config = config.replacen(&format!("project_id = \"{PROJECT_ID}\"\n"), "", 1);
         config.push_str("\n[code_mode]\nenabled = true\n");
         Self::bootstrap_with_policy_issuer_and_loadout(
             subject,
