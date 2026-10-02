@@ -29,6 +29,7 @@ pub mod error {
     pub use labby_runtime::error::ToolError;
 }
 
+mod artifact_access;
 mod artifacts;
 mod broker;
 mod config;
@@ -73,6 +74,18 @@ mod tests_ts_signatures;
 
 pub use artifacts::install_artifact_config_defaults;
 pub use artifacts::read_receipted_artifact;
+
+/// Effective host-neutral call and artifact budgets, after environment overrides.
+#[must_use]
+pub fn effective_storage_limits() -> serde_json::Value {
+    serde_json::json!({
+        "max_calls_per_run": config::max_calltool_per_run(),
+        "calltool_result_max_bytes": config::calltool_result_max_bytes(),
+        "artifact_max_bytes": artifacts::artifact_max_bytes(),
+        "artifact_retention_runs": artifacts::artifact_retention_runs(),
+        "artifact_max_store_bytes": artifacts::artifact_max_store_bytes(),
+    })
+}
 pub use broker::CodeModeBroker;
 pub(crate) use broker::lab_action_unknown_tool_hint;
 pub use config::{MAX_SOURCE_BYTES, SERVICE, install_call_budget_config_defaults};
@@ -121,3 +134,5 @@ pub use types::{
     namespaced_tool_id, split_namespaced_id,
 };
 pub use util::serialized_catalog_size;
+
+mod response_artifacts;

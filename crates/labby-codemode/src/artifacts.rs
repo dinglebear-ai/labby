@@ -48,6 +48,9 @@ pub(crate) struct CodeModeArtifactWrite {
 /// execution response regardless of their visibility.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CodeModeArtifactReceipt {
+    /// Opaque retrieval identifier; absent on legacy or restricted writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) artifact_id: Option<String>,
     pub(crate) path: String,
     pub(crate) absolute_path: String,
     pub(crate) content_type: String,
@@ -310,6 +313,12 @@ pub(crate) async fn write_code_mode_artifact(
     max_bytes: usize,
 ) -> Result<CodeModeArtifactReceipt, ToolError> {
     let rel_path = normalize_artifact_path(&request.path)?;
+    if rel_path.split('/').next() == Some(crate::artifact_access::METADATA_DIR) {
+        return Err(ToolError::InvalidParam {
+            message: "artifact path uses a reserved metadata directory".into(),
+            param: "path".into(),
+        });
+    }
     let content_type = normalize_content_type(request.content_type.as_deref())?;
     let bytes = request.content.as_bytes();
     if bytes.len() > max_bytes {
@@ -366,6 +375,7 @@ pub(crate) async fn write_code_mode_artifact(
     let sha256 = Sha256::digest(bytes);
 
     Ok(CodeModeArtifactReceipt {
+        artifact_id: None,
         path: rel_path,
         absolute_path: redact_home(&destination.display().to_string()),
         content_type,

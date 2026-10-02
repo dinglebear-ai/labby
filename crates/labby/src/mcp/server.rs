@@ -617,6 +617,17 @@ impl ServerHandler for LabMcpServer {
                     .to_string(),
             );
         }
+        #[cfg(feature = "gateway")]
+        if let Some(manager) = &self.gateway_manager {
+            let instructions = info.instructions.get_or_insert_with(String::new);
+            instructions.push_str("\n\nCode Mode is a gateway to connected tools, skills, resources, prompts, subagents, and reusable snippets. Search by intent before assuming a capability is unavailable. Load using-codemode and using-snippets when relevant. Use returned IDs, helpers, and schemas; never guess parameters. Discovery, description, and execution can share one run when the script can construct valid arguments from discovered metadata.\n\nBatch independent calls with codemode.batch(), with bounded concurrency; await dependencies in order. Use codemode_read for inspection and codemode for authorized changes. Process large intermediate data inside the sandbox and return only useful summaries, coverage, pagination, and errors. JavaScript state does not persist between executions.\n\nDiscover upstream resources with codemode.listResources(upstream), then codemode.readResource(uri), preserving returned URIs. Parse, filter, and aggregate resources inside the sandbox. Unscoped admin/trusted-local callers can discover Labby operator resources with codemode.listResources('labby'): gateway servers, status, limits, and capability overview.\n\nPersist large string outputs with writeArtifact(relativePath, content, {contentType}). Keep its receipt. Eligible unscoped admin/trusted-local writes return artifact_id; use codemode.readArtifact(id), codemode.artifactInfo(id), and codemode.listArtifacts({limit, cursor}) in later runs. Artifacts belong to their creating caller and are subject to retention; legacy/restricted writes are not enrolled for retrieval. writeArtifact is unavailable on codemode_read.\n\nAvailability does not grant permission. Follow the user's scope. Inspect recovery guidance and side_effects before retrying; a timeout does not undo writes. Verify uncertain outcomes before repeating mutations. Keep secrets out of logs, outputs, and artifacts.");
+            if let Some(config) = manager.code_mode_config_snapshot() {
+                let storage = labby_codemode::effective_storage_limits();
+                instructions.push_str(&format!("\n\nCurrent Code Mode limits: {} milliseconds per run, {} upstream calls, {} response bytes and approximately {} response tokens for the complete envelope. Limits are ceilings, not targets. Individual tool results, snippets, and artifacts have separate budgets. Unscoped admin/trusted-local callers can read lab://gateway/limits for current effective settings.", config.timeout_ms, storage["max_calls_per_run"], config.max_response_bytes, config.max_response_tokens));
+            } else {
+                instructions.push_str("\n\nCurrent limits are available to unscoped admin/trusted-local callers at lab://gateway/limits; the configuration is being updated, so no numeric snapshot is advertised.");
+            }
+        }
         info
     }
 
@@ -1512,6 +1523,29 @@ mod tests {
         assert!(instructions.contains("resources/read"));
         assert!(instructions.contains("codemode.listSkills()"));
         assert!(instructions.contains("skill://labby/using-labby/SKILL.md"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn server_instructions_include_runtime_limits_and_artifact_helpers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
+            temp.path().join("config.toml"),
+            Default::default(),
+        );
+        let mut config = crate::config::LabConfig::default();
+        config.code_mode.timeout_ms = 180000;
+        config.code_mode.max_response_bytes = 65536;
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let mut server = stateless_test_server(Default::default());
+        server.gateway_manager = Some(std::sync::Arc::new(manager));
+        let instructions = server.get_info().instructions.expect("instructions");
+        assert!(instructions.contains("180000 milliseconds"));
+        assert!(instructions.contains("65536 response bytes"));
+        assert!(instructions.contains("codemode.readArtifact(id)"));
+        assert!(instructions.contains("codemode.listResources('labby')"));
     }
 
     #[test]
