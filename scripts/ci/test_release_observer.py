@@ -12,7 +12,7 @@ import hashlib
 ROOT = Path(__file__).resolve().parents[2]
 
 class HistoricalObserverTests(unittest.TestCase):
-    def observe(self, historical=False, incus=False, bad_checksum=False):
+    def observe(self, historical=False, incus=False, bad_checksum=False, bad_sbom=False, missing_sums=False):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             assets = work / 'assets'
@@ -28,6 +28,11 @@ class HistoricalObserverTests(unittest.TestCase):
                 dist['incus'] = {'asset': image.name, 'sha256': digest}
                 (assets / 'image.tar.xz.sha256').write_text(('0'*64 if bad_checksum else digest)+'  image.tar.xz\n')
             (assets / 'image.spdx.json').write_text(json.dumps({'spdxVersion':'SPDX-2.3','SPDXID':'SPDXRef-DOCUMENT','packages':[]}))
+            if incus and not missing_sums:
+                sbom_digest = hashlib.sha256((assets / 'image.spdx.json').read_bytes()).hexdigest()
+                (assets / 'SHA256SUMS').write_text(f"{digest}  image.tar.xz\n{sbom_digest}  image.spdx.json\n")
+                if bad_sbom:
+                    (assets / 'image.spdx.json').write_text(json.dumps({'spdxVersion':'SPDX-2.3','SPDXID':'SPDXRef-DOCUMENT','packages':[{'name':'replaced'}]}))
             (assets / 'surprise.txt').write_text('unexpected')
             manifest = work / 'manifest.json'
             manifest.write_text(json.dumps({'tag':'v1.0.0','repository':'a/b','subjects':[], 'distributions':dist}))
@@ -56,6 +61,14 @@ class HistoricalObserverTests(unittest.TestCase):
     def test_wrong_checksum_remains_failure(self):
         result,_ = self.observe(incus=True,bad_checksum=True)
         self.assertIn('image.tar.xz.sha256',result['unexpected_assets'])
+
+    def test_replaced_sbom_remains_failure(self):
+        result,_ = self.observe(incus=True,bad_sbom=True)
+        self.assertIn('image.spdx.json',result['unexpected_assets'])
+
+    def test_unbound_sbom_remains_failure(self):
+        result,_ = self.observe(incus=True,missing_sums=True)
+        self.assertIn('image.spdx.json',result['unexpected_assets'])
 
 class LegacyManifestTests(unittest.TestCase):
     def test_default_omission_matches_bound_legacy_source(self):

@@ -44,10 +44,22 @@ if "incus" in dist:
         if fields == [dist["incus"]["sha256"], dist["incus"]["asset"]]:
             known_assets.add(checksum_name)
     image_sbom = args.assets / "image.spdx.json"
-    if image_sbom.is_file():
+    checksum_list = args.assets / "SHA256SUMS"
+    if image_sbom.is_file() and checksum_list.is_file():
         try:
+            checksums = {}
+            for line in checksum_list.read_text().splitlines():
+                digest, filename = line.split(maxsplit=1)
+                filename = filename.lstrip("*")
+                if filename in checksums:
+                    raise ValueError("duplicate checksum subject")
+                checksums[filename] = digest
+            bound_digest = checksums.get("image.spdx.json")
+            image_bound = checksums.get(dist["incus"]["asset"]) == dist["incus"]["sha256"]
             legacy_sbom = json.loads(image_sbom.read_text())
-            if (legacy_sbom.get("spdxVersion") == "SPDX-2.3"
+            if (image_bound
+                    and bound_digest == hashlib.sha256(image_sbom.read_bytes()).hexdigest()
+                    and legacy_sbom.get("spdxVersion") == "SPDX-2.3"
                     and legacy_sbom.get("SPDXID") == "SPDXRef-DOCUMENT"
                     and isinstance(legacy_sbom.get("packages"), list)):
                 known_assets.add("image.spdx.json")
