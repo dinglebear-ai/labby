@@ -313,7 +313,7 @@ jobs:
       - name: Test CI policy helpers
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_ci_platform_policy.py scripts/ci/test_protected_doc_guard.py scripts/ci/test_release_hardening.py scripts/ci/test_multi_user_migration_rehearsal.py
+          python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_ci_platform_policy.py scripts/ci/test_protected_doc_guard.py scripts/ci/test_release_hardening.py scripts/ci/test_release_observer.py scripts/ci/test_multi_user_migration_rehearsal.py
           python3 -m unittest scripts/ci/test_default_web_build.py
 
   lifecycle-static-analysis:
@@ -1337,7 +1337,7 @@ jobs:
       - name: Exercise release qualification contracts before tagging
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 -m unittest scripts.ci.test_release_hardening scripts.ci.test_verifier_bootstrap scripts.ci.test_release_provenance_bundles scripts.ci.test_first_use_qualification scripts.ci.test_first_use_native_driver
+          python3 -m unittest scripts.ci.test_release_hardening scripts.ci.test_release_observer scripts.ci.test_verifier_bootstrap scripts.ci.test_release_provenance_bundles scripts.ci.test_first_use_qualification scripts.ci.test_first_use_native_driver
 
   incus-contract:
     name: Incus source contract

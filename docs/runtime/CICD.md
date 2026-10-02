@@ -529,6 +529,17 @@ the distinct tags described above.
 **Version policy:** single version across the entire workspace. `labby` and
 `labby-apis` always share the same version number.
 
+Historical reconciliation verifies the immutable npm version rather than requiring
+its mutable `latest` tag to remain on every old release. Candidate promotion still
+verifies the requested dist-tag. Legacy manifests declaring an Incus distribution
+recognize its checksum sidecar only when it agrees with the manifest digest, and
+recognize the exact legacy SPDX image sidecar format. Other unexpected assets
+remain failures; this does not add an attestation claim for legacy sidecars.
+For historical MCP raw hashes, the observer fetches `server.json` at the immutable
+release tag, verifies that its raw digest matches the manifest expectation, and
+then compares the entire normalized registry object. Different metadata or an
+unbound source still fails; the immutable release manifest is never rewritten.
+
 ## Artifact Distribution
 
 - **Surface:** GitHub Releases

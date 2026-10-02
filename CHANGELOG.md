@@ -107,6 +107,55 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.5.0](https://github.com/dinglebear-ai/labby/compare/v2.4.0...v2.5.0) (2026-10-02)
+
+
+### Added
+
+* **setup:** guide ChatGPT sandbox onboarding ([#861](https://github.com/dinglebear-ai/labby/issues/861)) ([e2c4ba5](https://github.com/dinglebear-ai/labby/commit/e2c4ba53fa372c3673b7223a8ad9bd64c4e2e9af))
+
+## [2.4.0](https://github.com/dinglebear-ai/labby/compare/v2.3.2...v2.4.0) (2026-10-02)
+
+
+### Added
+
+* **codemode:** search configurable Personal and Depot artifacts ([#831](https://github.com/dinglebear-ai/labby/issues/831)) ([04cd11b](https://github.com/dinglebear-ai/labby/commit/04cd11b478ef4404ee5736a15d42820d0de24708))
+* consolidate owned Labby PRs and preserved worktree changes ([#841](https://github.com/dinglebear-ai/labby/issues/841)) ([f7ecd48](https://github.com/dinglebear-ai/labby/commit/f7ecd48759f67652cf99fd48b343e3007266ddf0))
+* **gateway:** choose SSH host for stdio upstreams ([456d69a](https://github.com/dinglebear-ai/labby/commit/456d69a0df5e4f5c0e9697e330f53c9c55244fd9))
+* **gateway:** durable task acknowledgement and opaque routing IDs ([#771](https://github.com/dinglebear-ai/labby/issues/771)) ([#848](https://github.com/dinglebear-ai/labby/issues/848)) ([138ef90](https://github.com/dinglebear-ai/labby/commit/138ef902dc1842daf883a6e7710b140fbfaf53c0))
+* **mcp:** surface app runtime and catalog diagnostics ([f049d2a](https://github.com/dinglebear-ai/labby/commit/f049d2ac66b4425a0cd86e96871da14eb692db33))
+* **proxy:** host OAuth for Funnel and aggregate MCP configurations ([#854](https://github.com/dinglebear-ai/labby/issues/854)) ([5b9cf0e](https://github.com/dinglebear-ai/labby/commit/5b9cf0e366a8644c7867c783d71974df07544518))
+* **setup:** unify verified first use and revamp Settings ([#855](https://github.com/dinglebear-ai/labby/issues/855)) ([25e1bbd](https://github.com/dinglebear-ai/labby/commit/25e1bbdc66a84824be807ecf87e18c5f837f0834))
+* **skills:** consolidate Labby Code Mode guidance into four skills ([93e1073](https://github.com/dinglebear-ai/labby/commit/93e1073d6446a35b3fe43aa73192f766fe185ffd))
+* **stash:** save context documents in repo folders ([#851](https://github.com/dinglebear-ai/labby/issues/851)) ([a3aa1e2](https://github.com/dinglebear-ai/labby/commit/a3aa1e2fac6019f3de4774157df6876c9c2aa832))
+* **ui:** improve mobile layouts and collection view controls ([#822](https://github.com/dinglebear-ai/labby/issues/822)) ([acfa185](https://github.com/dinglebear-ai/labby/commit/acfa1850eb0e5c3057f9ba6abbc12808d9397951))
+
+
+### Fixed
+
+* **access:** validate current store on one snapshot ([dde6ff7](https://github.com/dinglebear-ai/labby/commit/dde6ff7ffa1e798959bb015ceb1d79e493573362))
+* address PR 845 review findings ([#846](https://github.com/dinglebear-ai/labby/issues/846)) ([b42818f](https://github.com/dinglebear-ai/labby/commit/b42818f256968466c7d85828aa42c1cd8523efad))
+* **auth:** retain OAuth state until issuer validation ([fdfbd54](https://github.com/dinglebear-ai/labby/commit/fdfbd546919c85a80927d57ab5b0aa212f0e7aeb))
+* **auth:** return RFC 7591 client registration responses ([#840](https://github.com/dinglebear-ai/labby/issues/840)) ([dee3c5e](https://github.com/dinglebear-ai/labby/commit/dee3c5e360b39d604a6dcbe2642c687e75505aed))
+* **build:** include web assets in default source builds ([#835](https://github.com/dinglebear-ai/labby/issues/835)) ([154c483](https://github.com/dinglebear-ai/labby/commit/154c483165a0acabaf005a7dd5e4ec2c72746bf2))
+* **ci:** synchronize stdio environment probe and align kache ([#856](https://github.com/dinglebear-ai/labby/issues/856)) ([b6013c0](https://github.com/dinglebear-ai/labby/commit/b6013c0a0e1267ccd76529427b0c82aaf40a8f55))
+* **codemode:** bound skill catalog enrichment ([#816](https://github.com/dinglebear-ai/labby/issues/816)) ([95983b2](https://github.com/dinglebear-ai/labby/commit/95983b29930da4c3bbd956cfa49414fef52cf64e))
+* **codemode:** preserve describe schema diagnostics ([9b1fdd2](https://github.com/dinglebear-ai/labby/commit/9b1fdd2e3b3753782409d2fdd2ccf202a6e68724))
+* **depot:** accept additive artifact kind schema ([#832](https://github.com/dinglebear-ai/labby/issues/832)) ([cc7855a](https://github.com/dinglebear-ai/labby/commit/cc7855a404c5d224520a9d26aad5f2855a02cf09))
+* **gateway:** preserve configuration, authority and credential lifecycle ([#852](https://github.com/dinglebear-ai/labby/issues/852)) ([455ae91](https://github.com/dinglebear-ai/labby/commit/455ae9175edcb2a053e522dfd3118cc3b676e86c))
+* **gateway:** unify scoped capability observation and presentation ([#858](https://github.com/dinglebear-ai/labby/issues/858)) ([ac092ed](https://github.com/dinglebear-ai/labby/commit/ac092ed79ebf8e388fd590e9bbd044d8e4be5efa))
+* improve overview freshness, client attribution, and mobile gateway views ([#849](https://github.com/dinglebear-ai/labby/issues/849)) ([cbe130e](https://github.com/dinglebear-ai/labby/commit/cbe130ece7da372f824f19af343e27510a4541af))
+* preserve notification drafts, fence refresh races, and deduplicate bulk snippets ([#847](https://github.com/dinglebear-ai/labby/issues/847)) ([e756673](https://github.com/dinglebear-ai/labby/commit/e756673f450b2b3f354ff891f887a7c0a5d49333))
+* **release:** reconcile historical publication contracts ([#860](https://github.com/dinglebear-ai/labby/issues/860)) ([4978d6c](https://github.com/dinglebear-ai/labby/commit/4978d6c4a83e243f06bb3217b836b008da4772a1))
+* **skills:** bound discovery work and narrow Code Mode federation ([#817](https://github.com/dinglebear-ai/labby/issues/817)) ([347cfd6](https://github.com/dinglebear-ai/labby/commit/347cfd6c03e7138c5b646bbde9b68c58c7df0ad3))
+* **ui:** keep overview hero action labels visible ([#844](https://github.com/dinglebear-ai/labby/issues/844)) ([a83abfd](https://github.com/dinglebear-ai/labby/commit/a83abfdfe9156e39bdf11d57088b7b58e45cbe12))
+
+
+### Changed
+
+* organize Labby paths and generate native skill packages ([#845](https://github.com/dinglebear-ai/labby/issues/845)) ([880d75d](https://github.com/dinglebear-ai/labby/commit/880d75dada98532662d6e4ff3a66ba8a7eaad806))
+* **skills:** bound search and reuse validated catalogs ([#853](https://github.com/dinglebear-ai/labby/issues/853)) ([e09ef88](https://github.com/dinglebear-ai/labby/commit/e09ef88ed51e8d093d44b4dd589e19485f6eb4b1))
+
 ## [2.3.2](https://github.com/dinglebear-ai/labby/compare/v2.3.1...v2.3.2) (2026-09-24)
 
 

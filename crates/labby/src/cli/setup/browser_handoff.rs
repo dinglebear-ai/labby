@@ -85,6 +85,16 @@ pub(super) async fn open(server: &str, bearer: &str) -> Result<()> {
     }
     Ok(())
 }
+/// Best-effort browser launch; always retain the printed manual URL.
+pub(super) fn open_url(url: &str) {
+    if !browser_command(url)
+        .status()
+        .is_ok_and(|status| status.success())
+    {
+        eprintln!("Open this URL in your browser: {url}");
+    }
+}
+
 fn browser_command(url: &str) -> Command {
     #[cfg(target_os = "macos")]
     let mut command = Command::new("open");

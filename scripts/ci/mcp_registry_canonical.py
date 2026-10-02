@@ -34,6 +34,13 @@ def manifest_sha256(manifest: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def matches_legacy_manifest(source: dict, served: dict, expected_digest: str) -> bool:
+    """Bind legacy raw hashes to the exact source before schema normalization."""
+    raw = json.dumps(source, sort_keys=True, separators=(",", ":"))
+    return (hashlib.sha256(raw.encode()).hexdigest() == expected_digest
+            and manifest_sha256(source) == manifest_sha256(served))
+
+
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         raise SystemExit("usage: mcp_registry_canonical.py <server.json>")

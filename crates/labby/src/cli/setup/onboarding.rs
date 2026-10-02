@@ -78,10 +78,58 @@ struct PreserveDefaults {
     public_url: bool,
 }
 
-pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
-    let interactive = crate::cli::helpers::interactive_allowed() && !args.yes;
+pub(super) async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
+    let interactive = crate::cli::helpers::interactive_allowed() && !args.yes && !format.is_json();
+    if interactive && args.role.is_none() && !args.chatgpt {
+        match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("How would you like to use Labby?")
+            .items([
+                "Connect ChatGPT to local sandboxes",
+                "Connect to an existing Labby gateway",
+                "Install a managed Labby gateway",
+            ])
+            .default(0)
+            .interact()?
+        {
+            0 => args.chatgpt = true,
+            1 => args.role = Some(SetupRoleArg::Client),
+            _ => {
+                args.role = Some(SetupRoleArg::Server);
+                args.deployment = Some(SetupDeploymentArg::Native);
+            }
+        }
+    }
+    if args.chatgpt {
+        #[cfg(feature = "gateway")]
+        return super::chatgpt::run(args, interactive, format).await;
+        #[cfg(not(feature = "gateway"))]
+        bail!("ChatGPT sandbox setup requires a gateway-enabled Labby build");
+    }
+    if args.skip_deps {
+        bail!("--skip-deps is only valid with --provision or ChatGPT sandbox setup");
+    }
+    run_standard(args, interactive, format).await
+}
+
+pub(super) async fn run_standard(
+    mut args: SetupArgs,
+    interactive: bool,
+    format: OutputFormat,
+) -> Result<ExitCode> {
+    // Explicit server configuration is service-free unless a deployment is selected.
+    if args.role == Some(SetupRoleArg::Server) && args.deployment.is_none() {
+        if args.desktop {
+            bail!("--desktop with --role server requires an explicit --deployment");
+        }
+        args.config_only = true;
+    }
     if interactive {
         print_banner();
+    }
+    if args.config_only {
+        let outcome = configure_only(&args, interactive)?;
+        print(&outcome, format)?;
+        return Ok(ExitCode::SUCCESS);
     }
     let plan = collect_plan(&args, interactive)?;
     if args.dry_run {
@@ -115,6 +163,30 @@ pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCod
         return Ok(ExitCode::SUCCESS);
     }
     apply(plan, format).await
+}
+
+/// Service-free OAuth/bearer configuration, rendered by the calling adapter.
+pub(super) fn configure_only(args: &SetupArgs, interactive: bool) -> Result<serde_json::Value> {
+    if args.role != Some(SetupRoleArg::Server) {
+        bail!("--config-only requires --role server");
+    }
+    if !args.clients.is_empty() {
+        bail!(
+            "configuration-only setup does not register external clients; use client setup or an explicit server deployment"
+        );
+    }
+    let mut plan = collect_plan(args, interactive)?;
+    let paths = crate::installation::InstallationPaths::resolve()?;
+    resolve_existing_native_defaults(&mut plan, paths.root())?;
+    let mut outcome = redacted_plan(&plan);
+    outcome["config_only"] = json!(true);
+    outcome["env_path"] = json!(paths.root().join(".env"));
+    outcome["service_installed"] = json!(false);
+    outcome["dry_run"] = json!(args.dry_run);
+    if !args.dry_run {
+        configure_server_env(&paths.root().join(".env"), &plan)?;
+    }
+    Ok(outcome)
 }
 
 pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result<ExitCode> {
@@ -269,7 +341,7 @@ fn invoking_home_for(
     ambient_home.context("could not determine the invoking user's home directory")
 }
 
-fn installed_client_program(program: &str) -> bool {
+pub(super) fn installed_client_program(program: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|directory| {
             let candidate = directory.join(program);
@@ -350,8 +422,9 @@ fn collect_server_plan(
     invoking_user: Option<String>,
 ) -> Result<SetupPlan> {
     let advanced = interactive && args.advanced;
-    let incus_ready =
-        cfg!(all(target_os = "linux", target_arch = "x86_64")) && command_ok("incus", &["version"]);
+    let incus_ready = !args.config_only
+        && cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        && command_ok("incus", &["version"]);
     let deployment = match args.deployment {
         Some(value) => value,
         None if advanced && incus_ready => match Select::with_theme(theme)
@@ -371,7 +444,7 @@ fn collect_server_plan(
 
     let host = match args.host.as_deref() {
         Some(value) => validate_host(value)?,
-        None if advanced => validate_host(
+        None if advanced && !args.config_only => validate_host(
             &Input::<String>::with_theme(theme)
                 .with_prompt("Listen address")
                 .default(DEFAULT_HOST.to_string())
@@ -382,7 +455,7 @@ fn collect_server_plan(
     let port = match args.port {
         Some(port) if port > 0 => port,
         Some(_) => bail!("port must be between 1 and 65535"),
-        None if advanced => Input::<u16>::with_theme(theme)
+        None if advanced && !args.config_only => Input::<u16>::with_theme(theme)
             .with_prompt("Port")
             .default(DEFAULT_PORT)
             .validate_with(|value: &u16| {
@@ -394,6 +467,7 @@ fn collect_server_plan(
             })
             .interact_text()?,
         None if !advanced
+            && !args.config_only
             && matches!(deployment, SetupDeploymentArg::Native)
             && host == DEFAULT_HOST =>
         {
@@ -474,6 +548,11 @@ fn collect_server_plan(
             )?;
             if interactive {
                 print_google_oauth_setup_guidance(&public_url);
+                if !args.no_browser && !args.dry_run {
+                    super::browser_handoff::open_url(
+                        "https://console.cloud.google.com/auth/clients",
+                    );
+                }
             }
             let client_id = prompt_required(
                 "Google client ID",
@@ -547,7 +626,7 @@ fn collect_server_plan(
         }
     };
 
-    let install_desktop = desktop_choice(args, interactive, theme)?;
+    let install_desktop = !args.config_only && desktop_choice(args, interactive, theme)?;
     Ok(SetupPlan {
         preserve: PreserveDefaults {
             host: !advanced && args.host.is_none(),
@@ -566,7 +645,11 @@ fn collect_server_plan(
         client_auth: None,
         client_bearer_token: None,
         install_desktop,
-        selected_clients: collect_selected_clients(args, interactive, theme)?,
+        selected_clients: if args.config_only {
+            Vec::new()
+        } else {
+            collect_selected_clients(args, interactive, theme)?
+        },
         no_browser: args.no_browser,
         invoking_home,
         invoking_user,
@@ -737,7 +820,7 @@ fn google_callback_url(public_url: &str) -> String {
 fn print_google_oauth_setup_guidance(public_url: &str) {
     let callback_url = google_callback_url(public_url);
     eprintln!(
-        "\nGoogle OAuth setup\n  1. In Google Auth Platform, create an OAuth client of type Web application.\n  2. Add this exact Authorized redirect URI:\n     {callback_url}\n  3. Copy the Client ID and Client secret back into this setup flow.\n\nChatGPT web: Labby must use OAuth and a publicly reachable HTTPS public URL. Bearer-only mode cannot be used for the Labby ChatGPT web connection.\n"
+        "\nGoogle OAuth setup\n  Google Cloud: https://console.cloud.google.com/auth/clients\n  1. In Google Auth Platform, create an OAuth client of type Web application.\n  2. Add this exact Authorized redirect URI:\n     {callback_url}\n  3. Copy the Client ID and Client secret back into this setup flow.\n\nChatGPT web: Labby must use OAuth and a publicly reachable HTTPS public URL. Bearer-only mode cannot be used for the Labby ChatGPT web connection.\n"
     );
 }
 
@@ -1685,7 +1768,6 @@ fn resolve_existing_native_defaults(plan: &mut SetupPlan, root: &Path) -> Result
     Ok(())
 }
 
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>> {
     // The access store requires an owner-only state directory. Environment
     // merges protect individual files but create new parents with the umask.

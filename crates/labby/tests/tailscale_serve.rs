@@ -181,6 +181,7 @@ if [[ "${{1:-}} ${{2:-}}" == "status --json" ]]; then
 fi
 if [[ "${{1:-}}" == "version" ]]; then printf '%s\n' '1.98.10'; exit 0; fi
 if [[ "${{1:-}} ${{2:-}} ${{3:-}}" == "serve status --json" ]]; then
+  if [[ -f "$root/free_standard_https" ]]; then printf '%s\n' '{{}}'; exit 0; fi
   if [[ -f "$mapping" ]]; then
     IFS='|' read -r port backend mode < "$mapping"
     if [[ -f "$root/drift_backend" ]]; then backend=$(<"$root/drift_backend"); fi
@@ -325,6 +326,26 @@ async fn funnel_refuses_non_oauth_before_calling_tailscale() {
         );
     }
     assert!(fake.invocations().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn default_funnel_plan_prefers_standard_https_without_publishing() {
+    let fake = FakeTailscale::new();
+    let mut options = fake.options(Vec::new());
+    options.exposure = ProxyExposure::Funnel;
+    options.auth = ProxyAuthMode::Oauth;
+    let occupied_plan = TailscaleServePlan::prepare(options.clone()).await.unwrap();
+    assert_eq!(occupied_plan.external_port(), 8443);
+    fake.touch("free_standard_https");
+    let plan = TailscaleServePlan::prepare(options).await.unwrap();
+    assert_eq!(plan.external_port(), 443);
+    assert_eq!(
+        plan.public_url().as_str(),
+        "https://devhost.example.ts.net/mcp"
+    );
+    assert!(mapping(&fake.root).is_none());
+    assert!(!fake.invocations().contains("funnel --yes"));
 }
 
 #[cfg(unix)]
