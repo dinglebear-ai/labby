@@ -57,7 +57,7 @@ pub(super) async fn start_control(
         .clone()
         .ok_or_else(|| anyhow::anyhow!("configure an approved HTTPS tailcat.derp_map_url"))?;
     let state_dir = labby_runtime::lab_home().join("tailcat");
-    crate::dispatch::setup::secure_file::create_private_dir(&state_dir)
+    crate::installation::secure_file::create_private_dir(&state_dir)
         .context("initialize private Tailcat helper state directory")?;
     // Verify artifact and map before publishing even the private control socket.
     // Actual startup validates another immutable snapshot against this digest.

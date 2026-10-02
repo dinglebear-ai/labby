@@ -161,7 +161,7 @@ async fn pair(args: PairArgs, client: &LocalClient, format: OutputFormat) -> Res
         .to_owned();
     let bytes = serde_json::to_vec(&delivery)?;
     if let Err(error) =
-        crate::dispatch::setup::secure_file::publish_private_artifact(&args.output, &bytes)
+        crate::installation::secure_file::publish_private_artifact(&args.output, &bytes)
     {
         let cleanup = client
             .call(Action::Stop, Some(serde_json::json!({"id":id})))

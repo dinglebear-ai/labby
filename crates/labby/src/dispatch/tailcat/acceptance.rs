@@ -129,7 +129,7 @@ loadout = "sandbox"
         .await
         .unwrap();
     let credential = directory.path().join("source-credential");
-    crate::dispatch::setup::secure_file::publish_private_artifact(
+    crate::installation::secure_file::publish_private_artifact(
         &credential,
         format!(
             "lby_pc_v1_source_{}",
