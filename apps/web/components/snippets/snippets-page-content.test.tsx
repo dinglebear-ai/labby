@@ -297,7 +297,7 @@ test('new snippet opens a guided intent-first builder with progressive disclosur
     assert.ok(next)
     await act(async () => next.dispatchEvent(new MouseEvent('click', { bubbles: true })))
     await waitFor(() => assert.match(document.body.textContent ?? '', /Selected tools/))
-    assert.match(document.body.textContent ?? '', /Use exact tool ids from the Tools catalog/)
+    assert.match(document.body.textContent ?? '', /Search the current authorized catalog/)
   } finally {
     await view.unmount()
   }
@@ -718,7 +718,7 @@ test('fanout builder maps each tool independently and preserves batch statuses',
   for (const name of ['NodeFilter', 'HTMLInputElement', 'HTMLTextAreaElement'] as const) Object.defineProperty(globalThis, name, { value: window[name], configurable: true })
   const { SidebarProvider } = await import('@/components/ui/sidebar')
   const { SnippetsPageContent } = await import('./snippets-page-content')
-  globalThis.fetch = (async () => new Response(JSON.stringify({ snippets: [] }), { headers: { 'content-type': 'application/json' } })) as typeof fetch
+  globalThis.fetch = (async (url, init) => { const body=JSON.parse(String(init?.body??'{}'));const tool=String(body.query??'first::search');return new Response(JSON.stringify(String(url).includes('/tools/search')?{results:[{path:tool.replace('::','.'),id:tool,kind:'tool',namespace:tool.split('::')[0],name:tool.split('::')[1],description:'A tool',signature:'()',tags:[],score:1}],total:1,truncated:false}:String(url).includes('/tools/describe')?{path:body.target.replace('::','.'),id:body.target,namespace:'tool',name:'run',description:'Tool',helper:'tool.run',signature:'()',tags:[]}:{snippets:[]}),{headers:{'content-type':'application/json'}}) }) as typeof fetch
   const view = await renderClient(<SidebarProvider><SnippetsPageContent /></SidebarProvider>)
   const click = async (text: string) => {
     const button = Array.from(document.body.querySelectorAll('button')).find((entry) => entry.textContent?.includes(text))
@@ -744,7 +744,12 @@ test('fanout builder maps each tool independently and preserves batch statuses',
     await click('Gather in parallel')
     await click('Use this pattern')
     await type('#snippet-name', 'fanout-check')
-    await type('#snippet-tools', 'first::search\nsecond::status')
+    await type('#workflow-tool-search','first::search')
+    await waitFor(()=>assert.match(document.body.textContent??'',/Add first::search/))
+    await click('Add first::search')
+    await type('#workflow-tool-search','second::status')
+    await waitFor(()=>assert.match(document.body.textContent??'',/Add second::status/))
+    await click('Add second::status')
     await type('#snippet-inputs', '{"bad key":"hello"}')
     await click('Build draft')
     assert.match(document.body.textContent ?? '', /Input name "bad key" must contain/)
@@ -761,25 +766,38 @@ test('fanout builder maps each tool independently and preserves batch statuses',
     await type('#tool-mapping-0', '{"q":"$input.query"}')
     await type('#tool-mapping-1', '{"verbose":true,"__proto__":{"polluted":true}}')
     await click('Build draft')
+    assert.match(document.body.textContent??'',/Unsafe mapping key/)
+    await type('#tool-mapping-1','{"verbose":true}')
+    await click('Build draft')
     const draft = document.body.textContent ?? ''
     assert.match(draft, /inputs:\s+query:/)
     assert.doesNotMatch(draft, /"query":\s+type:/)
     assert.match(draft, /await codemode.batch/)
-    assert.match(draft, /\(\) => callTool\("first::search", \{ "q": input\["query"\] \}\)/)
-    assert.match(draft, /\(\) => callTool\("second::status", \{ "verbose": true, \["__proto__"\]: \{"polluted":true\} \}\)/)
+    assert.match(draft, /first::search/)
+    assert.match(draft, /second::status/)
     assert.doesNotMatch(draft, /Promise.all/)
-    const body = document.body.querySelector('pre')!.textContent!
+    const body = Array.from(document.body.querySelectorAll('pre')).find(item=>item.textContent?.includes('```js'))!.textContent!
     const code = body.match(/```js\n([\s\S]*?)\n```/)![1]
     const calls: Array<{ tool: string; params: Record<string, unknown> }> = []
-    const execute = new Function('callTool', 'codemode', `return (${code})`)(
+    const execute = new Function('input', 'callTool', 'codemode', `return (${code})`)(
+      {query:'hello'},
       async (tool: string, params: Record<string, unknown>) => { calls.push({ tool, params }); return { ok: true } },
-      { batch: async (jobs: Array<() => Promise<unknown>>) => { for (const job of jobs) await job(); return { all_ok: true, ok: [], failed: [] } } },
+      { batch: async (jobs: Array<() => Promise<unknown>>) => { const ok=[];for(let i=0;i<jobs.length;i++)ok.push({i,value:await jobs[i]()});return {all_ok:true,ok,failed:[]} } },
     )
     await execute({ query: 'hello' })
     const statusParams = calls[1].params
     assert.equal(Object.getPrototypeOf(statusParams), Object.prototype)
-    assert.ok(Object.prototype.hasOwnProperty.call(statusParams, '__proto__'))
-    assert.deepEqual(statusParams.__proto__, { polluted: true })
-    assert.equal(statusParams.polluted, undefined)
+    assert.deepEqual(statusParams,{verbose:true})
   } finally { await view.unmount() }
+})
+
+test('guided edits preserve required nullable typed contracts and optimistic digest without sample secrets',async()=>{
+ const window=installTestDom();for(const name of ['NodeFilter','HTMLInputElement','HTMLTextAreaElement'] as const)Object.defineProperty(globalThis,name,{value:window[name],configurable:true})
+ const {SidebarProvider}=await import('@/components/ui/sidebar');const {SnippetsPageContent}=await import('./snippets-page-content');const {generateWorkflowCode}=await import('./workflow-model')
+ const inputs={ratio:{ty:'number',required:true,nullable:false,description:'Current ratio'},flag:{ty:'boolean',required:false,default:false},token:{ty:'string',required:true}}
+ const snippet={name:'editable',source:'user',path:'/user/editable.md',description:'Editable workflow',tags:[],shadowed:false,content_digest:'source-digest',inputs,body:generateWorkflowCode({version:1,steps:[{id:'run',tool:'host::status',dependsOn:[],mapping:{ratio:'$input.ratio',token:'$input.token'}}]})}
+ let created:Record<string,unknown>|undefined
+ globalThis.fetch=(async(url,init)=>{const payload=JSON.parse(String(init?.body??'{}'));if(payload.action==='snippets.create')created=payload.params;return new Response(JSON.stringify(String(url).includes('/tools/describe')?{path:'host.status',id:'host::status',namespace:'host',name:'status',description:'Status',helper:'host.status',signature:'()',tags:[],input_schema:{type:'object',required:['ratio','token'],properties:{ratio:{type:'number'},token:{type:'string',writeOnly:true}}}}:payload.action==='snippets.list'?{snippets:[snippet]}:payload.action==='snippets.history'?{receipts:[],receipt_status:'persisted',next_cursor:null}:payload.action==='snippets.validate'?{valid:true}:snippet),{headers:{'content-type':'application/json'}})}) as typeof fetch
+ const view=await renderClient(<SidebarProvider><SnippetsPageContent/></SidebarProvider>);const click=async(text:string)=>{const button=Array.from(document.body.querySelectorAll('button')).find(button=>button.textContent?.trim()===text);assert.ok(button,text);await act(async()=>button.click())}
+ try{await waitFor(()=>assert.ok(Array.from(document.body.querySelectorAll('button')).some(button=>button.textContent==='Edit workflow')));await click('Edit workflow');await waitFor(()=>assert.ok(document.body.querySelector('[aria-label="Value source for host::status ratio"]')));await click('Build draft');await waitFor(()=>assert.match(document.body.textContent??'',/Runnable draft/));const body=Array.from(document.body.querySelectorAll('pre')).find(pre=>pre.textContent?.includes('```js'))!.textContent!;assert.match(body,/ratio:\n    type: number\n    required: true\n    nullable: false\n    description: Current ratio/);assert.match(body,/flag:\n    type: boolean\n    required: false\n    default: false/);assert.match(body,/token:\n    type: string\n    required: true/);await click('Validate and save');await waitFor(()=>assert.ok(created));assert.equal(created!.expected_digest,'source-digest');assert.equal(created!.force,true)}finally{await view.unmount()}
 })

@@ -31,6 +31,7 @@ struct ExecParams {
     name: Option<String>,
     #[serde(default)]
     params: Value,
+    expected_preview_fingerprint: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +93,22 @@ pub async fn dispatch(action: &str, params: Value) -> Result<Value, ToolError> {
     dispatch_inner(manager.as_deref(), action, params, None, None).await
 }
 
+/// Every operation that executes or accesses owner-scoped records must retain
+/// the surface's actual caller, route and capability ceiling.
+pub fn requires_execution_context(action: &str) -> bool {
+    matches!(
+        action,
+        "snippets.exec"
+            | "snippets.test"
+            | "snippets.promote"
+            | "snippets.preview"
+            | "snippets.replay"
+            | "snippets.receipt"
+            | "snippets.history"
+            | "snippets.artifact"
+    )
+}
+
 /// CLI mock tests have already loaded configuration but intentionally have no
 /// gateway manager or upstream connections. Carry its source ceiling explicitly.
 pub async fn dispatch_with_source_limit(
@@ -151,6 +168,9 @@ async fn dispatch_inner(
         "snippets.history" | "snippets.artifact" => {
             super::history::dispatch(manager, action, params, dispatch_context).await
         }
+        "snippets.preview" | "snippets.replay" => {
+            super::preview::dispatch(manager, action, params, dispatch_context).await
+        }
         "snippets.receipt" => {
             let id = require_str(&params, "execution_id")?;
             let manager = manager.ok_or_else(|| {
@@ -205,6 +225,16 @@ async fn dispatch_inner(
             let Some(name) = params.name else {
                 return Err(missing_param("missing required parameter `name`", "name"));
             };
+            if let Some(expected) = params.expected_preview_fingerprint {
+                return super::preview::guarded_exec(
+                    manager,
+                    &name,
+                    params.params,
+                    dispatch_context,
+                    &expected,
+                )
+                .await;
+            }
             let outcome = execute_snippet_outcome(
                 manager,
                 &name,

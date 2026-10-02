@@ -123,6 +123,7 @@ export interface SnippetExecutionReceipt {
   input_digest: string
   effective_scope_fingerprint: string
   runtime_version: string
+  tool_schema_digests?: Record<string,string|null>
   surface: string
   created_at_ms: number
   elapsed_ms: number
@@ -148,4 +149,14 @@ export interface SnippetArtifactResponse {
   bytes: number
   content_type: string
   content_base64: string
+}
+
+export type SnippetDriftField = 'snippet' | 'input' | 'effective_scope' | 'runtime' | 'tool_schema'
+export interface SnippetPreview {
+ name: string; execution_id?: string; mode: 'metadata'; dynamic_unknown: true
+ coverage: 'declared_tools_only' | 'unrestricted_dynamic'; can_execute: boolean
+ input_summary: {keys: string[]; provided_keys: string[]; defaulted_keys: string[]}
+ declared_tools: Array<{id: string; status: 'allowed' | 'denied' | 'unavailable'; annotations: {read_only?: boolean; destructive?: boolean} | null; schema_digest: string | null; parameters: 'unresolved'}>
+ fingerprints: {snippet_digest: string; input_digest: string; effective_scope_fingerprint: string; runtime_version: string; tool_schema_digest: string}
+ preview_fingerprint: string; drift: Array<{field: SnippetDriftField; status: 'changed' | 'unverifiable'}>; warnings: string[]
 }

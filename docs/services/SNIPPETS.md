@@ -114,6 +114,53 @@ snippet-input selectors. Unsupported or oversized schemas retain the advanced
 JSON editor. All mappings still pass backend tool validation at execution. See
 [snippet UI](../dev/SNIPPET_UI.md) for interaction and verification details.
 
+## Dependency-Aware Builder
+
+The builder models named steps with separate parameter mappings and optional
+explicit dependencies. A mapping can contain JSON constants, a declared input
+reference (`$input.query`), or another step's output
+(`$steps.lookup.items.0.id`, or `$steps.lookup` for the complete output). Output
+references infer dependencies automatically.
+Independent steps execute in deterministic waves using deferred `codemode.batch`
+jobs. Each step retains its `succeeded`, `failed`, or `skipped` status; a failed
+prerequisite skips its descendants while unrelated branches continue. The
+generated result includes ordered step evidence plus `ok` and `all_ok` flags.
+
+Schema suggestions use compatible, unambiguous input/output fields. They remain
+editable and do not invent output fields when a tool lacks an output schema.
+Advanced JSON and JavaScript authoring remain available. Missing references,
+unsafe property paths, duplicate step IDs and dependency cycles are rejected
+before code generation. Runtime output selectors use own-property checks, and
+missing output data fails that step rather than passing an undefined parameter.
+
+## Execution Preview And Explicit Replay
+
+`snippets.preview` accepts a snippet `name` or an owner-scoped historical
+`execution_id`, plus fresh caller-supplied `params`. It merges declared input
+defaults and reads bounded, caller-visible tool metadata without evaluating the
+snippet or invoking its tools. It returns tool availability, safety annotations,
+input-key provenance, fingerprints and explicit coverage limits. Arbitrary
+JavaScript branches, dynamic calls and runtime parameter values are unresolved;
+a metadata preview is not a simulation. The builder can additionally show its
+known static mappings, masking sensitive values and marking output references
+that resolve only during execution.
+
+The preview fingerprint binds source, merged input, effective scope, runtime
+configuration, metadata and caller authority. `snippets.exec` accepts an optional
+`expected_preview_fingerprint`; a stale preview fails before execution. The
+guard and runner use the same prepared source/input snapshot. Tool invocation
+still revalidates current authority and metadata: upstream contracts can change
+after preparation, so the preview does not freeze an external server.
+
+`snippets.replay` starts a new execution of the current snippet. It requires the
+historical `execution_id`, fresh `params`, the current preview fingerprint and
+`acknowledged_drift` matching every changed or unverifiable field. It compares
+snippet, input, effective scope, runtime and tool-schema evidence. Older receipts
+without schema evidence remain readable and report that comparison as
+unverifiable. Receipts retain optional bounded schema digests, never raw input
+or tool parameters. Replay neither resumes a journal nor reconstructs historical
+input; it never runs automatically to recover an incomplete receipt.
+
 ## Execution
 
 Snippet code must evaluate to an async arrow function and executes inside the same bounded Javy/QuickJS Code Mode runtime used by gateway Code Mode. Live execution resolves tool calls through the gateway catalog. Offline testing uses exact fixture rules without gateway discovery.

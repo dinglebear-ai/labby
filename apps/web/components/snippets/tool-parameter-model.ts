@@ -1,3 +1,5 @@
+import { ownPath } from './workflow-selectors'
+import type { SnippetInputSpec } from '@/lib/types/snippets'
 export interface ParameterSchema {
   type?: string | string[]
   title?: string
@@ -52,7 +54,7 @@ function valueError(schema: ParameterSchema, value: unknown): string | undefined
 }
 
 /** Validate supported top-level constraints; backend remains authoritative. */
-export function mappedParameterError(schema: ParameterSchema, mapping: Record<string, unknown>, inputs: Record<string, unknown>): string | undefined {
+export function mappedParameterError(schema: ParameterSchema, mapping: Record<string, unknown>, inputs: Record<string, unknown>, declaredInputs:Record<string,SnippetInputSpec> = {}): string | undefined {
   for (const required of schema.required ?? []) {
     if (!Object.prototype.hasOwnProperty.call(mapping, required)) return `Required parameter "${required}" is missing.`
   }
@@ -62,8 +64,13 @@ export function mappedParameterError(schema: ParameterSchema, mapping: Record<st
       if (schema.additionalProperties === false) return `Unknown parameter "${name}".`
       continue
     }
-    if (typeof value === 'string' && value.startsWith('$input.') && !Object.prototype.hasOwnProperty.call(inputs, value.slice(7))) return `Unknown snippet input "${value.slice(7)}".`
-    const resolved = typeof value === 'string' && value.startsWith('$input.') ? inputs[value.slice(7)] : value
+    if (typeof value === 'string' && value.startsWith('$steps.')) continue
+    let resolved=value
+    if(typeof value==='string'&&value.startsWith('$input.')){
+      const path=value.slice(7).split('.')
+      if(!Object.prototype.hasOwnProperty.call(inputs,path[0])&&Object.prototype.hasOwnProperty.call(declaredInputs,path[0]))continue
+      try{resolved=ownPath(inputs,path)}catch{return `Unknown snippet input "${value.slice(7)}".`}
+    }
     const error = valueError(property, resolved)
     if (error) return `Parameter "${name}" ${error}.`
   }

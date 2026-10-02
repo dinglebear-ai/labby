@@ -9,18 +9,15 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::dispatch::{SnippetDispatchContext, SnippetExecutionOutcome};
-use super::store::{
-    builtin_snippet_dir, code_for_snippet, merge_snippet_input, resolve_snippet,
-    wrap_snippet_with_input_bounded,
-};
+use super::preview::{PreparedSnippet, prepare};
+use super::store::wrap_snippet_with_input_bounded;
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::code_mode::{
     CodeModeBroker, CodeModeCaller, CodeModeSurface, JournalOwner, ToolScope,
 };
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::dispatch::helpers::lab_home;
 
-fn digest(bytes: &[u8]) -> String {
+pub(super) fn digest(bytes: &[u8]) -> String {
     format!(
         "sha256:{}",
         Sha256::digest(bytes)
@@ -29,7 +26,7 @@ fn digest(bytes: &[u8]) -> String {
             .collect::<String>()
     )
 }
-fn value_digest(value: &Value) -> String {
+pub(super) fn value_digest(value: &Value) -> String {
     digest(&serde_json::to_vec(value).expect("JSON Value serialization is infallible"))
 }
 
@@ -105,35 +102,52 @@ pub(super) async fn execute_snippet_outcome(
         owned_manager = crate::dispatch::gateway::require_gateway_manager()?;
         owned_manager.as_ref()
     };
-    let broker = CodeModeBroker::new(Some(manager));
-    let mut config = manager.code_mode_config().await;
-    let return_trace_params = config.trace_params;
-    // Capture argument digests for the receipt, then restore the response policy.
-    config.trace_params = true;
-    let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
-    let code = code_for_snippet(&snippet)?;
-    let input = merge_snippet_input(&snippet, input)?;
-    let wrapped = wrap_snippet_with_input_bounded(
-        &code,
-        &input,
-        config.max_source_bytes.min(MAX_SOURCE_BYTES),
-    )?;
-    let scope = snippet_execution_scope(&snippet, caller_scope);
     let mut fallback = SnippetDispatchContext::trusted_local();
     fallback.execution_caller = caller.clone();
     fallback.execution_surface = surface;
     fallback.execution_scope = caller_scope.clone();
     fallback.capability_filter_fingerprint = caller_scope.fingerprint();
     let context = context.unwrap_or(&fallback);
+    let prepared = prepare(manager, name, input, context, None).await?;
+    execute_prepared_outcome(manager, prepared, context).await
+}
+
+pub(super) async fn execute_prepared_outcome(
+    manager: &GatewayManager,
+    prepared: PreparedSnippet,
+    context: &SnippetDispatchContext,
+) -> Result<SnippetExecutionOutcome, ToolError> {
+    let broker = CodeModeBroker::new(Some(manager));
+    let PreparedSnippet {
+        snippet,
+        code,
+        input,
+        scope,
+        mut config,
+        schema_digests,
+        preview,
+    } = prepared;
+    let name = snippet.name.as_str();
+    let caller = &context.execution_caller;
+    let surface = context.execution_surface;
+    let return_trace_params = config.trace_params;
+    // Capture argument digests for the receipt, then restore the response policy.
+    config.trace_params = true;
+    let wrapped = wrap_snippet_with_input_bounded(
+        &code,
+        &input,
+        config.max_source_bytes.min(MAX_SOURCE_BYTES),
+    )?;
     let owner = receipt_owner(context);
     let execution_id = format!("snippet_{}", uuid::Uuid::new_v4());
     let mut receipt = SnippetExecutionReceipt {
         execution_id: execution_id.clone(),
         snippet_name: name.to_owned(),
-        snippet_digest: digest(snippet.body.as_bytes()),
-        input_digest: value_digest(&input),
-        effective_scope_fingerprint: scope.fingerprint(),
-        runtime_version: format!("labby/{} (javy/quickjs)", env!("CARGO_PKG_VERSION")),
+        snippet_digest: preview.fingerprints.snippet_digest,
+        input_digest: preview.fingerprints.input_digest,
+        effective_scope_fingerprint: preview.fingerprints.effective_scope_fingerprint,
+        runtime_version: preview.fingerprints.runtime_version,
+        tool_schema_digests: schema_digests,
         surface: match surface {
             CodeModeSurface::Cli => "cli",
             CodeModeSurface::Mcp => "mcp",

@@ -4,6 +4,31 @@ fn tool(namespace: &str, name: &str, description: &str) -> CatalogDescriptor {
     CatalogDescriptor::tool(namespace, name, description, None, None)
 }
 
+#[test]
+fn describe_projects_real_bounded_output_schema_without_inventing_missing_fields() {
+    let mut entry = tool("alpha", "read", "read");
+    entry.output_schema =
+        Some(serde_json::json!({"type":"object","properties":{"count":{"type":"integer"}}}));
+    let response =
+        describe_visible_tool(&[entry.clone()], &ToolScope::default(), "alpha::read").unwrap();
+    assert_eq!(response.output_schema, entry.output_schema);
+    assert!(response.output_schema_omitted.is_none());
+    entry.output_schema =
+        Some(serde_json::json!({"description":"x".repeat(DESCRIBE_RESPONSE_MAX_BYTES)}));
+    let response = describe_visible_tool(&[entry], &ToolScope::default(), "alpha::read").unwrap();
+    assert!(response.output_schema.is_none());
+    assert_eq!(response.output_schema_omitted, Some("size_limit"));
+    assert!(serde_json::to_vec(&response).unwrap().len() <= DESCRIBE_RESPONSE_MAX_BYTES);
+    let absent = describe_visible_tool(
+        &[tool("alpha", "read", "read")],
+        &ToolScope::default(),
+        "alpha::read",
+    )
+    .unwrap();
+    assert!(absent.output_schema.is_none());
+    assert!(absent.output_schema_omitted.is_none());
+}
+
 fn capability(kind: CodeModeCatalogKind, namespace: &str, name: &str) -> CatalogDescriptor {
     let mut entry = tool(namespace, name, "catalog capability");
     entry.kind = kind;

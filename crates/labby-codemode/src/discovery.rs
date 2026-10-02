@@ -64,6 +64,11 @@ pub struct CodeModeDescribeResponse {
     pub input_schema: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema_omitted: Option<&'static str>,
+    /// Visible tool's actual output schema, when it fits the response budget.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema_omitted: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -246,7 +251,24 @@ pub fn describe_visible_catalog(
         typescript_omitted,
         input_schema,
         input_schema_omitted,
+        output_schema: entry
+            .output_schema
+            .as_ref()
+            .filter(|schema| {
+                serialized_len(schema).is_ok_and(|size| size <= INPUT_SCHEMA_MAX_BYTES)
+            })
+            .cloned(),
+        output_schema_omitted: entry
+            .output_schema
+            .as_ref()
+            .filter(|schema| serialized_len(schema).is_ok_and(|size| size > INPUT_SCHEMA_MAX_BYTES))
+            .map(|_| "size_limit"),
     };
+    if serialized_len(&response)? > DESCRIBE_RESPONSE_MAX_BYTES && response.output_schema.is_some()
+    {
+        response.output_schema = None;
+        response.output_schema_omitted = Some("size_limit");
+    }
     if serialized_len(&response)? > DESCRIBE_RESPONSE_MAX_BYTES && response.input_schema.is_some() {
         response.input_schema = None;
         response.input_schema_omitted = Some("size_limit");
