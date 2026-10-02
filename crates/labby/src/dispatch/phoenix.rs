@@ -1622,7 +1622,7 @@ impl PhoenixRuntime {
         let state = self.login.clone();
         let expiry_id = id.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+            tokio::time::sleep(Duration::from_mins(15)).await;
             let mut state = state.lock().await;
             if state.as_ref().is_some_and(|flow| flow.id == expiry_id) {
                 *state = None;
