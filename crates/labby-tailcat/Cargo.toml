@@ -1,0 +1,24 @@
+[package]
+name = "labby-tailcat"
+description = "Native lifecycle supervisor for the restricted Labby Tailcat bridge."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+labby-gateway = { path = "../labby-gateway" }
+tokio = { workspace = true, features = ["process"] }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+url.workspace = true
+tempfile.workspace = true
+process-wrap = { version = "9.1.0", default-features = false, features = ["tokio1", "process-group"] }
+
+libc = "0.2"
+
+[lints]
+workspace = true

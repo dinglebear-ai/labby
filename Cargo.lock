@@ -3369,6 +3369,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "labby-tailcat"
+version = "2.3.2"
+dependencies = [
+ "labby-gateway",
+ "libc",
+ "process-wrap 9.1.0",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "labby-web"
 version = "2.5.0"
 dependencies = [
