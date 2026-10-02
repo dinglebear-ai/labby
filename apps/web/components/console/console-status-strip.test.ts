@@ -5,7 +5,14 @@ import React from 'react'
 import { GatewayApiError } from '@/lib/api/gateway-client'
 import { Window } from 'happy-dom'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
-import { classifyStatusFailure, deriveConsoleStatus, upstreamMetricColor, useConsoleStatus } from './console-status-strip'
+import { classifyStatusFailure, deriveConsoleAttention, deriveConsoleStatus, upstreamMetricColor, useConsoleStatus } from './console-status-strip'
+
+test('console attention excludes idle credential caches but retains actual failures', () => {
+  assert.deepEqual(deriveConsoleAttention([
+    { name: 'unchecked', connected: false, capability_observation: { scope: 'credential', tools: { state: 'unknown', discovered: null, exposed: null }, resources: { state: 'unknown', discovered: null, exposed: null }, prompts: { state: 'unknown', discovered: null, exposed: null }, skills: { state: 'unknown', discovered: null, exposed: null } } },
+    { name: 'down', connected: false },
+  ]), ['down'])
+})
 
 test('console status derives connected upstream, session, and exposed-tool counts', () => {
   const snapshot = deriveConsoleStatus(

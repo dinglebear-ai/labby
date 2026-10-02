@@ -477,3 +477,24 @@ test('performServiceAction does not retry from a refresh invalidated by successf
     globalThis.fetch = originalFetch
   }
 })
+
+
+test('safeFanout bounds active loaders while preserving order and per-item errors', async () => {
+  let active = 0
+  let maximum = 0
+  const results = await safeFanout(Array.from({ length: 12 }, (_, index) => index), async (item) => {
+    active += 1
+    maximum = Math.max(maximum, active)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      if (item === 5) throw new Error('one unavailable row')
+      return item * 10
+    } finally {
+      active -= 1
+    }
+  }, 2)
+  assert.equal(maximum, 2)
+  assert.deepEqual(results.map(result => result.item), Array.from({ length: 12 }, (_, index) => index))
+  assert.equal(results[5].ok, false)
+  assert.equal(results[11].ok && results[11].value, 110)
+})

@@ -638,18 +638,24 @@ impl GatewayManager {
                 || summary.exposed_prompt_count > 0
                 || summary.exposed_skill_count > 0;
             let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
+            let (transport_available, capability_observation) = match &scoped {
+                Some(scoped) => (Some(scoped.connected), scoped.observation()),
+                None => match pool.as_deref() {
+                    Some(pool) => pool.cached_global_status_observation(&upstream.name).await,
+                    None => (None, Default::default()),
+                },
+            };
             let connected = scoped.as_ref().map_or_else(
-                || upstream.enabled && last_error.is_none() && (exposing_capabilities || health_ok),
+                || {
+                    upstream.enabled
+                        && transport_available != Some(false)
+                        && last_error.is_none()
+                        && (exposing_capabilities || health_ok)
+                },
                 |scoped| scoped.connected,
             );
             rows.push(super::types::GatewayMcpRuntimeView {
-                capability_observation: Some(match &scoped {
-                    Some(scoped) => scoped.observation(),
-                    None => match pool.as_deref() {
-                        Some(pool) => pool.cached_global_observation(&upstream.name).await,
-                        None => Default::default(),
-                    },
-                }),
+                capability_observation: Some(capability_observation),
                 notification_incidents,
                 name: upstream.name.clone(),
                 enabled: upstream.enabled,

@@ -101,3 +101,42 @@ test('healthy connected state remains clean', () => {
   assert.equal(state.label, 'Healthy')
   assert.equal(state.needsAttention, false)
 })
+
+const credentialObservation = (state: 'unknown' | 'stale' | 'failed') => ({
+  scope: 'credential' as const,
+  tools: { state }, resources: { state }, prompts: { state }, skills: { state },
+})
+
+test('unobserved credential connections are not failed server incidents', () => {
+  const state = describeGatewayOperationalState({
+    ...base,
+    status: { ...base.status, connected: false, healthy: false, capability_observation: credentialObservation('unknown') },
+  })
+  assert.equal(state.kind, 'idle')
+  assert.equal(state.connectionLabel, 'Not checked')
+  assert.equal(state.needsAttention, false)
+})
+
+test('idle credential snapshots remain distinct from failed acquisition', () => {
+  const idle = describeGatewayOperationalState({
+    ...base,
+    status: { ...base.status, connected: false, healthy: false, capability_observation: credentialObservation('stale') },
+  })
+  assert.equal(idle.kind, 'idle')
+  assert.equal(idle.connectionLabel, 'Idle')
+  const failed = describeGatewayOperationalState({
+    ...base,
+    status: { ...base.status, connected: false, healthy: false, capability_observation: credentialObservation('failed') },
+  })
+  assert.equal(failed.kind, 'disconnected')
+  assert.equal(failed.needsAttention, true)
+})
+
+test('credential observation never suppresses recorded errors or runtime incidents', () => {
+  for (const status of [{ last_error: 'Authorization failed' }, { likely_stale_count: 1 }]) {
+    assert.equal(describeGatewayOperationalState({
+      ...base,
+      status: { ...base.status, connected: false, healthy: false, capability_observation: credentialObservation('unknown'), ...status },
+    }).needsAttention, true)
+  }
+})

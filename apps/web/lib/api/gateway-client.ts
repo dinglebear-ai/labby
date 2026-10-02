@@ -43,6 +43,7 @@ import {
 } from '../server/gateway-adapter.ts'
 import { testResultFromProbe } from '../server/gateway-test-result.ts'
 import { gatewayActionUrl } from './gateway-config'
+import { getBrowserSessionContextIdentity, getBrowserSessionEpoch } from '../auth/session-store'
 import { confirmGatewayParams } from './gateway-request'
 import { EXPOSE_NONE_PATTERN, stripExposeNonePattern } from './tool-exposure-draft'
 import { synthesizeLabGateway } from './gateway-list-model'
@@ -522,13 +523,26 @@ export const gatewayApi = {
   },
 
   async hydrateToolInventory(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
+    const context = getBrowserSessionContextIdentity()
+    const epoch = getBrowserSessionEpoch()
+    const url = gatewayActionUrl()
+    // A bounded queue may outlive the caller that created its row snapshot.
+    // Never start its remaining rows under a replacement owner or target.
+    const assertCurrent = () => {
+      signal?.throwIfAborted()
+      if (context !== getBrowserSessionContextIdentity() || epoch !== getBrowserSessionEpoch() || url !== gatewayActionUrl()) {
+        throw new DOMException('Authority or gateway context changed', 'AbortError')
+      }
+    }
     const results = await safeFanout(
       gateways,
       async (gateway) => {
+        assertCurrent()
         if (gateway.source === 'in_process') return gateway.discovery.tools
         const tools = await gatewayAction<Array<string | BackendGatewayToolRow>>(
           'gateway.discovered_tools', { name: gateway.id }, signal,
         )
+        assertCurrent()
         let policy = gateway.config.expose_tools
         // Older backends omit exposure, including on structured rows. A fleet
         // summary omits policy, so read full config before interpreting them.
@@ -550,7 +564,10 @@ export const gatewayApi = {
           }
         })
       },
+      4,
     )
+
+    assertCurrent()
 
     return results.map((result) => {
       if (result.ok) {

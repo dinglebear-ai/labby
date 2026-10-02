@@ -68,7 +68,7 @@ import {
 
 type SortKey = 'name' | 'connection' | 'endpoint' | 'exposed' | 'uptime'
 type SortDirection = 'asc' | 'desc'
-type StatusGroupId = 'attention' | 'discovering' | 'healthy' | 'disabled'
+type StatusGroupId = 'idle' | 'attention' | 'discovering' | 'healthy' | 'disabled'
 
 const GATEWAY_TABLE_BADGE =
   'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
@@ -347,6 +347,7 @@ export function GatewayTable({
     const discovering = sortedGateways.filter(
       (gateway) => describeGatewayOperationalState(gateway).kind === 'discovering',
     )
+    const idle = sortedGateways.filter((gateway) => describeGatewayOperationalState(gateway).kind === 'idle')
     const healthy = sortedGateways.filter(
       (gateway) => describeGatewayOperationalState(gateway).kind === 'healthy',
     )
@@ -354,6 +355,7 @@ export function GatewayTable({
 
     return [
       { id: 'attention' as const, label: 'Needs attention', tone: 'text-aurora-warn', rows: attention },
+      { id: 'idle' as const, label: 'Not checked or idle', tone: 'text-aurora-text-muted', rows: idle },
       { id: 'discovering' as const, label: 'Discovering', tone: 'text-aurora-accent-strong', rows: discovering },
       { id: 'healthy' as const, label: 'Healthy', tone: 'text-aurora-success', rows: healthy },
       { id: 'disabled' as const, label: 'Disabled', tone: 'text-aurora-text-muted', rows: disabled },
@@ -467,7 +469,7 @@ export function GatewayTable({
 
   const statusRailClass = (gateway: Gateway) => {
     const state = describeGatewayOperationalState(gateway)
-    if (state.kind === 'disabled') return GW_EMPTY_RAIL
+    if (state.kind === 'disabled' || state.kind === 'idle') return GW_EMPTY_RAIL
     if (state.kind === 'healthy') return 'bg-aurora-accent-strong'
     if (state.kind === 'discovering') return 'bg-aurora-accent-primary'
     if (state.kind === 'disconnected') return 'bg-aurora-error'
@@ -482,8 +484,7 @@ export function GatewayTable({
     const showsCommandLine = gateway.transport === 'stdio'
     const isDisabled = !(gateway.enabled ?? true)
     const operational = describeGatewayOperationalState(gateway)
-    const statusTone = gatewayStatusTone(operational.kind)
-    const connectionTone = gatewayConnectionTone(!isDisabled, gateway.status.connected)
+    const connectionTone = gatewayConnectionTone(!isDisabled, gateway.status.connected, operational)
     const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
     const cleanupBadge = cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned')
     const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
@@ -602,7 +603,7 @@ export function GatewayTable({
             </button>
             <Link
               href={gatewayDetailHref(gateway.id)}
-              title={gateway.display_name?.trim() ? `${statusTone.label} · ${operational.reason} · ID: ${gateway.name}` : `${gateway.name} · ${statusTone.label} · ${operational.reason}`}
+              title={gateway.display_name?.trim() ? `${operational.label} · ${operational.reason} · ID: ${gateway.name}` : `${gateway.name} · ${operational.label} · ${operational.reason}`}
               className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
             >
               {displayName}
@@ -852,9 +853,9 @@ export function GatewayTable({
                       >
                         {displayName}
                       </Link>
-                      <span title={`${statusTone.label}. ${operational.reason}`} className={cn('inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2 text-[10px] font-semibold', statusTone.text)}>
+                      <span title={`${operational.label}. ${operational.reason}`} className={cn('inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2 text-[10px] font-semibold', statusTone.text)}>
                         <span className={cn('size-1.5 rounded-full', statusTone.dot)} aria-hidden="true" />
-                        {statusTone.label}
+                        {operational.label}
                       </span>
                       <WarningsPill warnings={gateway.warnings} gatewayName={gateway.name} staleCount={gateway.status.likely_stale_count}/>
                     </div>

@@ -1,3 +1,4 @@
+import type { GatewayOperationalInput } from './gateway-operational-state'
 import { parseStdioCommandLine } from '@/lib/stdio-command'
 import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
 import type { CreateGatewayInput } from '@/lib/types/gateway'
@@ -393,7 +394,7 @@ export type GatewayConnection = {
 /** Minimal structural shape needed to describe a gateway's connection state. */
 export type GatewayConnectionInput = {
   enabled?: boolean
-  status: { healthy: boolean; connected: boolean; last_error?: string; catalog_warming?: boolean; likely_stale_count?: number }
+  status: GatewayOperationalInput['status']
   warnings?: ReadonlyArray<{ code: string; message: string }>
 }
 
@@ -415,6 +416,7 @@ function mentionsAuth(gateway: GatewayConnectionInput): boolean {
 export function describeGatewayConnection(gateway: GatewayConnectionInput): GatewayConnection {
   const operational = describeGatewayOperationalState(gateway)
 
+  if (operational.kind === 'idle') return { label: operational.label.toLowerCase(), tone: 'muted' }
   if (operational.kind === 'disabled') return { label: 'disabled', tone: 'muted' }
   if (operational.kind === 'disconnected') {
     return mentionsAuth(gateway)

@@ -10,6 +10,28 @@ import { GatewayApiError, gatewayAction, gatewayApi } from '@/lib/api/gateway-cl
 import { isAbortError } from '@/lib/api/service-action-client'
 import type { GatewayNotification } from '@/lib/notification-acknowledgements'
 import type { BackendGatewayMcpRuntimeView } from '@/lib/server/gateway-adapter'
+import { describeGatewayOperationalState, type GatewayOperationalInput } from '@/lib/gateway-operational-state'
+
+export function deriveConsoleAttention(
+  runtime: readonly BackendGatewayMcpRuntimeView[],
+  gateways: readonly (GatewayOperationalInput & { name: string })[] = [],
+): string[] {
+  const byName = new Map(gateways.map(gateway => [gateway.name, gateway]))
+  return runtime.filter(row => {
+    const gateway = byName.get(row.name)
+    return describeGatewayOperationalState({
+      enabled: row.enabled,
+      warnings: gateway?.warnings,
+      status: {
+        ...gateway?.status,
+        connected: row.connected === true,
+        healthy: gateway?.status.healthy ?? row.connected === true,
+        likely_stale_count: row.likely_stale_count,
+        capability_observation: row.capability_observation,
+      },
+    }).needsAttention
+  }).map(row => row.name)
+}
 
 export interface GatewayClientView {
   subject?: string | null
@@ -79,7 +101,7 @@ async function loadConsoleStatus(signal: AbortSignal): Promise<ConsoleStatusStat
   if (clientsResult.status === 'rejected' && !isAbortError(clientsResult.reason)) snapshot.sessionsUnavailable = failureReason(clientsResult.reason)
   const alerts = gatewayResult.status === 'fulfilled' ? gatewayResult.value.flatMap(gateway => (gateway.warnings ?? []).map(warning => ({ key: `gateway:${gateway.name}:warning:${warning.code}`, fingerprint: warning.occurrence_id ?? `${warning.code}:${warning.message}`, gatewayName: gateway.name, message: warning.message }))) : undefined
   if (alerts) for (const runtime of runtimeResult.value) if ((runtime.likely_stale_count ?? 0) > 0) alerts.push({ key: `gateway:${runtime.name}:stale`, fingerprint: runtime.notification_incidents?.stale ?? String(runtime.likely_stale_count), gatewayName: runtime.name, message: `${runtime.likely_stale_count} likely stale processes` })
-  return { kind: 'ready', snapshot, alerts, disconnectedOccurrences: Object.fromEntries(runtimeResult.value.flatMap(row => row.notification_incidents?.tools ? [[row.name, row.notification_incidents.tools]] : [])), attention: runtimeResult.value.filter(row => row.enabled !== false && row.connected !== true).map(row => row.name) }
+  return { kind: 'ready', snapshot, alerts, disconnectedOccurrences: Object.fromEntries(runtimeResult.value.flatMap(row => row.notification_incidents?.tools ? [[row.name, row.notification_incidents.tools]] : [])), attention: deriveConsoleAttention(runtimeResult.value, gatewayResult.status === 'fulfilled' ? gatewayResult.value : undefined) }
 }
 
 function Metric({
