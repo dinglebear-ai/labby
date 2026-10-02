@@ -33,7 +33,7 @@ const web=http.createServer(async(req,res)=>{try{
   const ready=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('helper deadline')),30000);events.once('line',line=>{clearTimeout(timer);resolve(JSON.parse(line))});bridge.once('exit',()=>{clearTimeout(timer);reject(Error('helper exited'))})});
   bridge.stdin.write(JSON.stringify({version:1,type:'start',target:`127.0.0.1:${backend.address().port}`,peer:publicKey,derpMapURL:'https://tailcat.dev/derpmap.json'})+'\n');
   const event=await ready;if(event.type!=='ready')throw Error('helper failed');
-  res.setHeader('Content-Type','application/json');res.end(JSON.stringify({...event,grant:'fixture-only',generation:'fixture-generation',expiresAt:Date.now()+60000,derpMapURL:'https://tailcat.dev/derpmap.json'}));return;
+  res.setHeader('Content-Type','application/json');res.end(JSON.stringify({...event,origin:'https://fixture.example',grant:'fixture-only',generation:'fixture-generation',expiresAt:Date.now()+60000,derpMapURL:'https://tailcat.dev/derpmap.json'}));return;
  }
  if(req.url==='/tailcat.wasm'){res.setHeader('Content-Type','application/wasm');res.end(wasm);return}
  if(req.url==='/wasm_exec.js'){res.setHeader('Content-Type','text/javascript');res.end(runtime);return}

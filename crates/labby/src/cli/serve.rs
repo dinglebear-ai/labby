@@ -1,5 +1,9 @@
 //! `labby serve` — start the MCP server.
 
+#[cfg(all(feature = "tailcat", unix))]
+#[path = "serve/tailcat.rs"]
+mod tailcat;
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -328,6 +332,9 @@ async fn initialize_selected_file_stash_runtime(
 }
 
 async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
+    if config.tailcat.enabled && !cfg!(all(feature = "tailcat", unix)) {
+        anyhow::bail!("Tailcat requires a macOS/Linux build with the tailcat feature");
+    }
     if args.auto_update {
         crate::self_update::require_macos()?;
         if matches!(args.transport, Some(Transport::Stdio)) || args.command.is_some() {
@@ -1448,6 +1455,14 @@ async fn run_http(
     let mut effective_mcp_config = mcp_config.clone();
     effective_mcp_config.host = Some(host.to_string());
     effective_mcp_config.port = Some(port);
+    #[cfg(all(feature = "tailcat", unix))]
+    let _tailcat_control = tailcat::start_control(
+        &state,
+        auth_state.as_ref(),
+        &effective_mcp_config,
+        notifier.clone(),
+    )
+    .await?;
     #[cfg(feature = "gateway")]
     let router = build_http_router(
         state,
@@ -2874,6 +2889,14 @@ fn build_protected_mcp_routers(
         routers.insert(route.name, router);
     }
     Ok(Some(routers))
+}
+
+#[cfg(all(test, feature = "tailcat", unix))]
+pub(crate) fn tailcat_test_projection(
+    state: &AppState,
+) -> Result<std::collections::HashMap<String, axum::Router>> {
+    build_protected_mcp_routers(state, &state.config.mcp, PeerNotifier::default())?
+        .ok_or_else(|| anyhow::anyhow!("test projection missing"))
 }
 
 /// Build the allowed hosts list for DNS rebinding protection.

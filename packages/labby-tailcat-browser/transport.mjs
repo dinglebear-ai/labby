@@ -8,6 +8,7 @@ export class TailcatClient {
   if(signal?.aborted||!capability||!safeHeader(capability.grant)||!safeHeader(capability.generation)
    ||!capability.peer?.privateKey||!Number.isFinite(capability.expiresAt)||capability.expiresAt<=Date.now()
    ||capability.expiresAt>Date.now()+15*60000||capability.port!==1||!/^tcp[A-Za-z0-9_-]+$/.test(capability.address))throw Error('Invalid or expired pairing');
+  const origin=new URL(capability.origin);if(origin.protocol!=='https:'||origin.origin!==capability.origin)throw Error('Invalid pairing origin');
   const url=new URL(capability.derpMapURL);if(url.protocol!=='https:'||url.username||url.password||url.hash)throw Error('Invalid relay map');
   if(typeof dial==='function')return new TailcatClient(capability,dial);
   if(typeof createSession!=='function')throw Error('Tailcat WASM is unavailable');
@@ -33,7 +34,7 @@ export class TailcatClient {
    try{conn=await wait(dialing)}catch(e){abandoned=true;throw e}
    this.active.add(conn);
    const session=this.session?`Mcp-Session-Id: ${this.session}\r\n`:'';
-   await wait(conn.write(encoder.encode(`POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${this.capability.grant}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAccept-Encoding: identity\r\nMCP-Protocol-Version: 2025-03-26\r\n${session}Content-Length: ${encoder.encode(body).length}\r\nConnection: close\r\n\r\n${body}`)));
+   await wait(conn.write(encoder.encode(`POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer ${this.capability.grant}\r\nOrigin: ${this.capability.origin}\r\nLabby-Tailcat-Generation: ${this.capability.generation}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nAccept-Encoding: identity\r\nMCP-Protocol-Version: 2025-03-26\r\n${session}Content-Length: ${encoder.encode(body).length}\r\nConnection: close\r\n\r\n${body}`)));
    const decoder=new HttpDecoder();
    for(;;){
     const chunk=await wait(conn.read());if(chunk===null)decoder.finish();else decoder.push(chunk);

@@ -118,6 +118,17 @@ issue the credential and evaluate scopes and resource constraints; the transport
 adapter additionally enforces the approved upstream/tool subset below all
 surfaces. `lab:admin` is never implied by being a Depot operator.
 
+The browser receives a context-encrypted transport envelope, rather than the
+underlying project credential. `labby-auth` seals that credential with the
+existing native encryption key and binds installation, principal, peer key,
+HTTPS UI origin, resource, upstream, generation and expiry as authenticated
+context. Only the dedicated listener opens this envelope. Its bearer format is
+not accepted as a product credential by ordinary HTTP/MCP authentication.
+Opening it does not authorize an operation: the listener still revalidates
+current source and child authority and delegates to the existing protected MCP
+route. Envelope issuance and the restricted listener are implemented. Complete
+Microsandbox browser acceptance and final integration review remain pending.
+
 Do not forward Depot's own bearer token to Labby. No browser-held native admin
 credential. A copied connection address must be insufficient without the allowed
 peer identity and valid local grant. Relaunching Tailcat must not widen access.

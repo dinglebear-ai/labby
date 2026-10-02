@@ -83,3 +83,6 @@ pub struct ActionRequest {
 pub use error::{ApiError, ToolError};
 #[allow(unused_imports)]
 pub use state::AppState;
+
+#[cfg(all(feature = "gateway", any(feature = "tailcat", test)))]
+pub(crate) mod tailcat;

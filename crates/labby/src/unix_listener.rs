@@ -199,6 +199,26 @@ pub(super) fn resolve_config(
     })
 }
 
+/// Private native control uses filesystem and kernel UID checks, with no
+/// platform-admin identity injection. macOS getpeereid supports this gate too.
+#[cfg(feature = "tailcat")]
+pub(crate) fn private_control_config(path: PathBuf) -> Result<UnixListenerConfig> {
+    let preferences = McpPreferences {
+        socket_path: Some(path),
+        socket_mode: Some("0600".into()),
+        ..Default::default()
+    };
+    let mut config = resolve_config(&preferences, &|_| None)?;
+    if config.abstract_socket {
+        anyhow::bail!("native control requires a filesystem socket")
+    }
+    config.peer_policy = PeerPolicy {
+        uid: Some(Uid::effective().as_raw()),
+        gid: None,
+    };
+    Ok(config)
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub(super) struct PeerCredentials {
     pub(super) pid: Option<i32>,

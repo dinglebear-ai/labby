@@ -64,6 +64,10 @@ The [access owner bootstrap workflow](./services/ACCESS.md#owner-bootstrap)
 has browser and direct-local proof flows. Its HTTP routes are not a separate
 registered multi-surface service.
 
+## Experimental connections
+
+- [Tailcat browser connection](./guides/TAILCAT_BROWSER.md) — opt-in native pairing and authenticated Depot setup; full VM acceptance remains pending.
+
 ## Public Surfaces
 
 - [CLI](./surfaces/CLI.md) — command grammar, output modes, confirmation behavior, and operator commands.

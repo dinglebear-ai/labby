@@ -3078,6 +3078,7 @@ dependencies = [
  "labby-openapi",
  "labby-primitives",
  "labby-runtime",
+ "labby-tailcat",
  "labby-web",
  "labby-winjob",
  "landlock",

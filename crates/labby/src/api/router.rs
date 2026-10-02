@@ -11,6 +11,9 @@ mod platform_admin_elevation;
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
 
+#[cfg(all(feature = "gateway", any(feature = "tailcat", test)))]
+pub(crate) use protected_mcp_route::protected_mcp_route_entry;
+
 #[cfg(feature = "gateway")]
 use protected_mcp_route::protected_mcp_intercept;
 #[cfg(all(test, feature = "gateway"))]

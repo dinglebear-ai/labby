@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {TailcatClient} from './transport.mjs';
-const cap={address:'tcpExample',port:1,peer:{privateKey:'memory-only'},grant:'session-token',generation:'g1',expiresAt:Date.now()+60000,derpMapURL:'https://tailcat.dev/derpmap.json'};
+const cap={origin:'https://depot.example',address:'tcpExample',port:1,peer:{privateKey:'memory-only'},grant:'session-token',generation:'g1',expiresAt:Date.now()+60000,derpMapURL:'https://tailcat.dev/derpmap.json'};
 test('expired/missing grants reject before dial',async()=>{
  let calls=0;const dial=async()=>{calls++;throw Error('dialed')};
  await assert.rejects(TailcatClient.connect({...cap,grant:''},{dial}));
@@ -39,4 +39,22 @@ test('one WASM session owns concurrent streams and closes once',async()=>{
  let sessions=0,dials=0,closes=0;
  const factory=async()=>{sessions++;return {dial:async()=>{dials++;let id;return {write:async bytes=>{id=JSON.parse(new TextDecoder().decode(bytes).split('\r\n\r\n')[1]).id},read:async()=>{const body=JSON.stringify({jsonrpc:'2.0',id,result:{}});return new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${body}`)},close:()=>{}}},close:()=>{closes++}}};
  const c=await TailcatClient.connect(cap,{createSession:factory});await Promise.all(Array.from({length:8},()=>c.request('tools/list')));c.close();c.close();assert.equal(sessions,1);assert.equal(dials,8);assert.equal(closes,1);
+});
+test('pairing origin and generation accompany every MCP request',async()=>{
+ let write;
+ const body=JSON.stringify({jsonrpc:'2.0',id:1,result:{}});
+ const c=await TailcatClient.connect({...cap,origin:'https://depot.example'},{dial:async()=>({
+  write:async bytes=>{write=new TextDecoder().decode(bytes)},close:()=>{},
+  read:async()=>new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${body}`)
+ })});
+ await c.request('tools/list');c.close();
+ assert.match(write,/\r\nOrigin: https:\/\/depot.example\r\n/);
+ assert.match(write,/\r\nLabby-Tailcat-Generation: g1\r\n/);
+});
+test('unsafe or absent origins reject before starting transport',async()=>{
+ let calls=0;const dial=async()=>{calls++;throw Error('dialed')};
+ for(const origin of [undefined,'http://depot.example','https://depot.example/path','https://user@depot.example','https://depot.example?query','https://depot.example\r\nX: bad']) {
+  await assert.rejects(TailcatClient.connect({...cap,origin},{dial}));
+ }
+ assert.equal(calls,0);
 });
