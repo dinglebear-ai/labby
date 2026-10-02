@@ -1534,7 +1534,7 @@ mod tests {
             Default::default(),
         );
         let mut config = crate::config::LabConfig::default();
-        config.code_mode.timeout_ms = 180000;
+        config.code_mode.timeout_ms = 180_000;
         config.code_mode.max_response_bytes = 65536;
         manager
             .seed_config_unchecked_for_tests(config.to_gateway_config())
