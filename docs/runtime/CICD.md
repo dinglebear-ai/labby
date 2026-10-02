@@ -74,6 +74,10 @@ The unconditional workflow-policy job also runs the conformance and incident
 evidence validators' negative unit tests using repository-root module discovery.
 Those tests supplement, but do not replace, the real-process evidence lane.
 
+The shared Linux Rust setup installs `libcap-ng-dev` and probes `libcap-ng`
+through pkg-config so all-feature Microsandbox SDK links have their native
+capability library before compilation.
+
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 It deliberately skips that job for fork pull requests. Consequently the
 path-gated compile/test jobs, including the declared `test-fork` fallback,
