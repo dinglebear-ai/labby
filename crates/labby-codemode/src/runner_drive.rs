@@ -1119,7 +1119,11 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 }
             }
         }
-        let dispatched = if matches!(local.provider, LocalProviderName::Openapi) {
+        let dispatched = if matches!(local.provider, LocalProviderName::Sandbox) {
+            // Disposable workloads have their own admission/lifecycle; never hold
+            // the shared filesystem/git provider lock during guest execution.
+            crate::sandbox::dispatch(&local.method, params).await
+        } else if matches!(local.provider, LocalProviderName::Openapi) {
             // NO LOCAL_PROVIDER_LOCK — openapi has no shared mutable local state,
             // and must not serialize behind slow state/git ops. It still
             // participates in the reserved local-provider decision/record spine.
@@ -1310,7 +1314,7 @@ async fn dispatch_local_provider_stub(
         // `Openapi` is dispatched BEFORE the lock in `enqueue_local_provider_call`
         // and never reaches this stub. This arm is defensive only — a routing bug
         // returns a scrubbed internal error rather than silently sharing the lock.
-        LocalProviderName::Openapi => Err(ToolError::Sdk {
+        LocalProviderName::Openapi | LocalProviderName::Sandbox => Err(ToolError::Sdk {
             sdk_kind: "internal_error".to_string(),
             message: "openapi provider must not be dispatched via the local-provider stub"
                 .to_string(),

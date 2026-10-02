@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-09-30"
+updated: "2026-10-02"
 ---
 
 # Code Mode
@@ -1027,6 +1027,15 @@ run, so isolation holds by construction.
     (default `100`).
   - `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` — cap on simultaneous ephemeral overflow
     runners (default `8`).
+
+### Experimental disposable workloads
+
+The optional `codemode-microsandbox` product feature adds
+`codemode.sandbox.run()` for operator-profiled guest workloads. It uses the
+local Rust SDK, inline file projection, bounded resources, and the existing
+unscoped local-provider authorization. This is separate from runner isolation.
+See the [sandbox spike](../design/CODEMODE_SANDBOX_SPIKE.md) for setup, verified
+behavior, and production gaps. It is disabled by default.
 
 ### Microsandbox runner isolation (opt in)
 
