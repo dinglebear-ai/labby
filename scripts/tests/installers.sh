@@ -110,7 +110,7 @@ test_bundle_transport_failures_never_select_legacy_auth() {
     mkdir -p "$fixtures" "$home"
     make_release "$fixtures" v1.0.0 release-v1
     make_fake_tools "$fake_bin" "$fixtures"
-    for pair in 403:22 500:22 000:60 000:28 200:18; do
+    for pair in 403:22 500:22 000:60 000:28 200:18 403:56 000:56; do
         http=${pair%:*}; status=${pair#*:}
         : >"$case_root/curl.log"; : >"$case_root/gh.log"
         if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
@@ -306,6 +306,20 @@ EOF
     if grep -Fv '.sigstore.jsonl' "$case_root/curl.log" | grep -q .; then
         fail "legacy installer downloaded archive bytes before requiring authentication"
     fi
+}
+
+test_macos_legacy_404_still_requires_attestation() {
+    local case_root="$test_root/macos-legacy-404"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/bin" home="$case_root/home"
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_fake_tools "$fake_bin" "$fixtures"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 \
+        LABBY_TEST_BUNDLE_HTTP=404 LABBY_TEST_BUNDLE_FAILURE=56 \
+        LABBY_TEST_GH_LOG="$case_root/gh.log" >"$case_root/out" 2>"$case_root/err"
+    assert_contains "$case_root/gh.log" 'auth status --hostname github.com'
+    assert_contains "$case_root/gh.log" 'attestation verify'
+    assert_contains "$case_root/gh.log" '--source-ref refs/tags/v1.0.0'
 }
 
 test_public_bundle_verification_needs_no_account() {
@@ -1119,6 +1133,7 @@ test_release_install_fails_before_download_without_gh
 test_release_install_fails_before_download_without_gh_attestation_support
 test_legacy_release_requires_auth_before_archive_download
 test_bundle_transport_failures_never_select_legacy_auth
+test_macos_legacy_404_still_requires_attestation
 test_public_bundle_verification_needs_no_account
 test_latest_api_failure_never_uses_mutable_latest_download
 test_release_failure_matrix_preserves_existing_binary

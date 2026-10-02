@@ -426,7 +426,14 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
    releases stayed drafts or never received assets are skipped; if no release
-   qualifies, the leg fails closed. The authenticated check is a bearer
+   qualifies, the leg fails closed. Historical Incus baselines may embed mutable
+   dependency installer URLs; bootstrap prepares the checksum-verified pinned
+   Tailscale and ChezMoi versions before running their provisioning plans.
+   ChezMoi installation and its temporary installer participate in bootstrap
+   rollback. The archive installer accepts curl exit 22 or macOS exit 56 only
+   with an exact HTTP 404 for a missing public bundle, then still requires
+   authenticated GitHub attestation verification before activation.
+   The authenticated check is a bearer
    `help` call on the gateway: from v1.16, a bearer-mode install with no access
    store answers gateway admin actions with setup-required until an owner
    bootstraps through OAuth. Each adapter must install N-1 and seed
