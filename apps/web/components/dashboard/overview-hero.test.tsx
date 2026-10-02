@@ -122,3 +122,18 @@ test('overview labels sampled tokens and never turns unavailable token telemetry
     }
   }
 })
+
+
+test('partial catalog keeps metric values compact with a separate disclosure', () => {
+  const html = renderToStaticMarkup(<OverviewHero
+    gateways={[]} live={{ totalServers: 1, connectedServers: 1, offlineServers: 0, discoveredTools: 1024, exposedTools: 1002, incompleteTools: 1, warnings: 0 }}
+    metrics={undefined} activeWindow="1h" onWindowChange={() => {}} onRefresh={() => {}} loadedAt={null}
+  />)
+  assert.match(html, />1002</)
+  assert.doesNotMatch(html, /1002\+|· incomplete/)
+  assert.match(html, /role="status"[^>]*title="Tools, prompts and resources show observed exposed counts/)
+  assert.match(html, /Partial catalog/)
+  assert.match(html, /color:var\(--aurora-accent-pink\)/)
+  assert.match(html, /color:var\(--aurora-success\)/)
+  assert.match(html, /color:var\(--aurora-accent-strong\)/)
+})

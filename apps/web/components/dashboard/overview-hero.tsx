@@ -34,7 +34,7 @@ import type { Gateway } from '@/lib/types/gateway'
  * the stat strip and the per-server fleet-health squares.
  */
 
-type Tone = 'default' | 'success' | 'warning' | 'error' | 'info'
+type Tone = 'default' | 'success' | 'warning' | 'error' | 'info' | 'secondary' | 'tertiary'
 
 const TONE_COLOR: Record<Tone, string> = {
   default: 'var(--aurora-text-primary)',
@@ -42,6 +42,8 @@ const TONE_COLOR: Record<Tone, string> = {
   warning: 'var(--aurora-warn)',
   error: 'var(--aurora-error)',
   info: 'var(--aurora-accent-strong)',
+  secondary: 'var(--aurora-accent-pink)',
+  tertiary: 'var(--axon-orange)',
 }
 
 type HeroStat = {
@@ -242,20 +244,18 @@ export function OverviewHero({
   const activeStatuses = gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status)
   const promptSummary = summarizeCapabilities(activeStatuses, 'prompts')
   const resourceSummary = summarizeCapabilities(activeStatuses, 'resources')
-  const totalLabel = (value: number, incomplete: number) => incomplete ? `${value}+ · incomplete` : value
-  // The reference stat strip: Connected · Offline · Tools · Prompts · Resources ·
-  // Upstream calls · Failed · Tokens · P95 latency. Only Failed carries a tone;
-  // every other value renders in primary text.
+  const partialCatalog = (live.incompleteTools ?? 0) > 0 || promptSummary.incomplete > 0 || resourceSummary.incomplete > 0
   const usageHref = `/usage/?window=${activeWindow}`
   const stats: HeroStat[] = [
-    { label: 'Connected', value: live.connectedServers, icon: Cable, href: '/gateways/' },
-    { label: 'Offline', value: live.offlineServers, icon: PlugZap, href: '/gateways/' },
-    { label: 'Tools', value: totalLabel(live.exposedTools, live.incompleteTools ?? 0), icon: Wrench, href: '/tools/' },
-    { label: 'Prompts', value: totalLabel(promptSummary.exposed, promptSummary.incomplete), icon: MessageSquare, href: '/gateways/' },
-    { label: 'Resources', value: totalLabel(resourceSummary.exposed, resourceSummary.incomplete), icon: FileText, href: '/gateways/' },
+    { label: 'Connected', value: live.connectedServers, tone: 'success', icon: Cable, href: '/gateways/' },
+    { label: 'Offline', value: live.offlineServers, tone: live.offlineServers > 0 ? 'warning' : 'success', icon: PlugZap, href: '/gateways/' },
+    { label: 'Tools', value: live.exposedTools, tone: 'secondary', icon: Wrench, href: '/tools/' },
+    { label: 'Prompts', value: promptSummary.exposed, tone: 'info', icon: MessageSquare, href: '/gateways/' },
+    { label: 'Resources', value: resourceSummary.exposed, tone: 'info', icon: FileText, href: '/gateways/' },
     {
       label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',
+      tone: metrics ? 'info' : 'default',
       icon: Activity,
       href: usageHref,
     },
@@ -263,18 +263,20 @@ export function OverviewHero({
       label: 'Failed',
       value: metrics ? formatCompactNumber(metrics.tool_calls.failed) : '—',
       icon: AlertTriangle,
-      tone: metrics && metrics.tool_calls.failed > 0 ? 'error' : 'default',
+      tone: metrics && metrics.tool_calls.failed > 0 ? 'error' : metrics ? 'success' : 'default',
       href: `${usageHref}&outcome=failed`,
     },
     {
       label: 'Tokens (sample)',
       value: metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.total) : '—',
+      tone: metrics?.collected.tokens ? 'tertiary' : 'default',
       icon: Coins,
       href: `${usageHref}&focus=tokens`,
     },
     {
       label: 'P95 latency',
       value: metrics ? `${Math.round(metrics.latency.p95)}ms` : '—',
+      tone: metrics ? 'info' : 'default',
       icon: Gauge,
       href: `${usageHref}&focus=latency`,
     },
@@ -537,6 +539,12 @@ export function OverviewHero({
             <StatCell key={stat.label} stat={stat} isLast={index === stats.length - 1} />
           ))}
         </div>
+
+        {partialCatalog ? (
+          <p role="status" className="px-3 text-xs text-aurora-warn" title="Tools, prompts and resources show observed exposed counts. Some server catalogs have not been discovered or need refresh.">
+            Partial catalog <span className="text-aurora-text-muted">· Counts reflect discovered servers</span>
+          </p>
+        ) : null}
 
         <Link
           href="/gateways"
