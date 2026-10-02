@@ -1,4 +1,5 @@
 //! Exact builder-generator output executes in the product QuickJS fixture runner.
+#![cfg(feature = "gateway")]
 use labby_codemode::snippet::store;
 use serde_json::{Value, json};
 use std::time::Duration;
