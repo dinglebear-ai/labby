@@ -48,6 +48,7 @@ mod runner_backend;
 mod runner_drive;
 mod runner_exe;
 mod runner_io;
+pub mod sandbox;
 mod schema;
 mod shape;
 pub mod snippet;
