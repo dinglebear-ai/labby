@@ -3,6 +3,11 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import http from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import os from 'node:os'
+import { publishPreviewExport, exportPath } from './preview-export.ts'
 
 import { chromium } from 'playwright'
 
@@ -12,6 +17,12 @@ let previewServer: ChildProcess | null = null
 let previewServerReady: Promise<void> | null = null
 let buildReady: Promise<void> | null = null
 let previewStderr = ''
+let previewRoot: string | null = null
+
+async function snapshotPreviewExport() {
+  previewRoot ??= await mkdtemp(path.join(os.tmpdir(), 'labby-browser-preview-'))
+  await publishPreviewExport(path.join(fileURLToPath(APP_DIR), 'out'), exportPath(previewRoot))
+}
 
 function buildApplication(buildId?: string) {
   return new Promise<void>((resolve, reject) => {
@@ -31,7 +42,7 @@ function buildApplication(buildId?: string) {
     child.stderr?.on('data', (chunk) => { output += String(chunk) })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
-      if (code === 0) resolve()
+      if (code === 0) snapshotPreviewExport().then(resolve, reject)
       else reject(new Error(`Gateway Admin build failed (${code ?? signal}):\n${output.slice(-12_000)}`))
     })
   })
@@ -52,7 +63,7 @@ async function allocatePort(): Promise<number> {
 function buildApplicationOnce() {
   if (buildReady) return buildReady
   if (process.env.GATEWAY_ADMIN_BROWSER_SKIP_BUILD === 'true') {
-    buildReady = Promise.resolve()
+    buildReady = snapshotPreviewExport()
     return buildReady
   }
   buildReady = buildApplication()
@@ -97,7 +108,7 @@ async function startPreviewServer() {
     baseUrl = `http://127.0.0.1:${port}`
     previewServer = spawn(
       'python3',
-      ['-m', 'http.server', String(port), '--directory', 'out', '--bind', '127.0.0.1'],
+      ['-m', 'http.server', String(port), '--directory', exportPath(previewRoot!), '--bind', '127.0.0.1'],
       { cwd: APP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
     )
     previewServer.stdout?.on('data', (chunk) => { previewStderr += String(chunk) })
@@ -112,6 +123,7 @@ async function startPreviewServer() {
 
 test.after(async () => {
   if (!previewServer) {
+    if (previewRoot) await rm(previewRoot, { recursive: true, force: true })
     return
   }
 
@@ -125,6 +137,7 @@ test.after(async () => {
     previewServer.kill('SIGKILL')
     await once(previewServer, 'exit').catch(() => undefined)
   }
+  if (previewRoot) await rm(previewRoot, { recursive: true, force: true })
 })
 
 test('Stash repo folders support filtering and moving with a stable URI on mobile', { concurrency: false }, async (t) => {
@@ -1433,4 +1446,68 @@ test('scoped catalogs render known zero and unavailable counts without overflow'
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
   }
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+})
+
+test('Snippets show persisted history and schema forms enforce required tool mappings', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true }); t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  const snippet = { name: 'pulse', source: 'user', path: '/user/pulse.md', description: 'Pulse workflow', tags: [], shadowed: false, content_digest: 'digest', body: 'async () => ({ok:true})' }
+  const receipt = { execution_id: 'run-ui-1', snippet_name: 'pulse', snippet_digest: 'digest', input_digest: 'input', effective_scope_fingerprint: 'scope', runtime_version: '3.0.0', surface: 'api', created_at_ms: 100, elapsed_ms: 17, status: 'failed', error_kind: 'tool_error', result_digest: null, result_bytes: null, tool_calls: 1, omitted_calls: 0, calls: [{ tool: 'host::status', ok: false, elapsed_ms: 8, params_digest: null, error_kind: 'timeout' }], artifacts: [{ path: 'runs/run-ui-1/output.json', sha256: 'hash', bytes: 2, content_type: 'application/json' }] }
+  let historyCalls = 0
+  const executions: Array<{action:string;params:Record<string,unknown>}> = []
+  await page.route('**/v1/snippets', async route => {
+    const { action,params } = route.request().postDataJSON()
+    if(action==='snippets.exec'||action==='snippets.replay')executions.push({action,params})
+    if (action === 'snippets.artifact') { await route.fulfill({ status: 404, json: { message: 'Artifact is no longer retained', code: 'artifact_unavailable' } }); return }
+    const value = action === 'snippets.list' ? { snippets: [snippet] } : action === 'snippets.get' ? snippet : action === 'snippets.history' ? (historyCalls++, { receipts: [receipt], next_cursor: null, receipt_status: 'persisted' }) : action === 'snippets.receipt' ? receipt : action === 'snippets.preview' ? {name:'pulse',mode:'metadata',dynamic_unknown:true,coverage:'declared_tools_only',can_execute:true,input_summary:{keys:[],provided_keys:[],defaulted_keys:[]},declared_tools:[],fingerprints:{},preview_fingerprint:'guard',drift:[],warnings:[]} : { result: { ok: true }, execution_id: 'run-ui-2', receipt_status: 'persisted' }
+    await route.fulfill({ json: value })
+  })
+  await page.route('**/v1/gateway/codemode/tools/search', async route=>route.fulfill({json:{results:[{path:'host.status',id:'host::status',kind:'tool',namespace:'host',name:'status',description:'Host status',signature:'()',tags:[],score:1}],total:1,truncated:false}}))
+  await page.route('**/v1/gateway/codemode/tools/describe', async route => route.fulfill({ json: { path: 'host.status', id: 'host::status', namespace: 'host', name: 'status', description: 'Host status', helper: 'host.status', signature: '()', tags: [], input_schema: { type: 'object', required: ['host'], properties: { host: { type: 'string' }, verbose: { type: 'boolean' } } } } }))
+  await page.goto(`${baseUrl}/snippets/`, { waitUntil: 'networkidle' })
+  await page.getByRole('button').filter({ hasText: 'run-ui-1' }).click()
+  await page.getByText('1. host::status · failed (timeout) · 8 ms', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Download artifact', exact: true }).click()
+  await page.getByText('Artifact is no longer retained', { exact: true }).waitFor()
+  await page.getByRole('button',{name:'Preview replay',exact:true}).click()
+  await page.getByRole('button',{name:'Run now',exact:true}).waitFor()
+  await page.getByText('Starts a new run of the whole workflow; it does not resume the earlier run.',{exact:false}).waitFor()
+  assert.equal(executions.length,0,'preview must never execute')
+  const replayHistoryRefresh=page.waitForResponse(response=>response.url().endsWith('/v1/snippets')&&response.request().postDataJSON()?.action==='snippets.history')
+  await page.getByRole('button',{name:'Run now',exact:true}).click()
+  await replayHistoryRefresh
+  await page.waitForFunction(()=>!document.querySelector('#preview-inputs'))
+  assert.equal(executions[0].action,'snippets.replay')
+  assert.equal(executions[0].params.expected_preview_fingerprint,'guard')
+  const beforeExecute = historyCalls
+  await page.getByRole('button', { name: 'Execute', exact: true }).click()
+  const executionHistoryRefresh=page.waitForResponse(response=>response.url().endsWith('/v1/snippets')&&response.request().postDataJSON()?.action==='snippets.history')
+  await page.getByRole('button',{name:'Run now',exact:true}).click()
+  await executionHistoryRefresh
+  await page.waitForFunction(() => document.querySelector('[aria-label="Run history for pulse"]')?.textContent?.includes('run-ui-1'))
+  assert.ok(historyCalls > beforeExecute, 'execution must refresh persisted history')
+  await page.getByRole('button', { name: 'New snippet', exact: true }).click()
+  await page.getByRole('button', { name: 'Gather in parallel' }).click()
+  await page.getByRole('button', { name: 'Use this pattern' }).click()
+  await page.getByLabel('Workflow name', { exact: true }).fill('guided-pulse')
+  await page.getByLabel('Find a tool', { exact: true }).fill('host')
+  await page.getByRole('button',{name:'Add host::status · Host status',exact:true}).click()
+  await page.getByLabel('host *', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Build draft', exact: true }).click()
+  await page.getByText('step-1: Required parameter "host" is missing.', { exact: true }).waitFor()
+  await page.getByRole('button',{name:'Declare input for host',exact:true}).click()
+  await page.getByRole('button',{name:'Build draft',exact:true}).click()
+  await page.getByText('Runnable draft',{exact:true}).waitFor()
+  assert.match(await page.locator('pre').last().innerText(),/host:\n    type: string\n    required: true/)
+  assert.doesNotMatch(await page.locator('pre').last().innerText(),/host:\n    type: string\n    required: true\n    default:/)
+  await page.getByRole('button',{name:'Back',exact:true}).click()
+  await page.getByLabel('Example inputs', { exact: true }).fill('{"hostInput":"node-a"}')
+  await page.getByRole('combobox', { name: 'Value source for host::status host', exact: true }).click()
+  await page.getByRole('option', { name: 'Snippet input: hostInput', exact: true }).click()
+  await page.getByRole('button', { name: 'Build draft', exact: true }).click()
+  await page.getByText('Runnable draft', { exact: true }).waitFor()
+  assert.match(await page.locator('pre').last().innerText(), /"host":"\$input.hostInput"/)
+  assert.match(await page.locator('pre').last().innerText(), /codemode.batch/)
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth > document.documentElement.clientWidth),false)
 })

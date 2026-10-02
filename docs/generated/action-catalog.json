@@ -9583,6 +9583,44 @@
   },
   {
     "service": "snippets",
+    "action": "snippets.artifact",
+    "description": "Read an authorized receipt artifact, with size, digest and containment verification",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": true,
+        "description": "Saved snippet execution identifier"
+      },
+      {
+        "name": "path",
+        "ty": "string",
+        "required": true,
+        "description": "Exact relative artifact path from the authorized receipt"
+      }
+    ],
+    "returns": "SnippetArtifactResponse",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
     "action": "snippets.create",
     "description": "Create a user snippet under LABBY_HOME/snippets",
     "destructive": false,
@@ -9617,6 +9655,12 @@
         "ty": "boolean",
         "required": false,
         "description": "Overwrite an existing user snippet"
+      },
+      {
+        "name": "expected_digest",
+        "ty": "string",
+        "required": false,
+        "description": "Reject a stale edit unless the current user snippet has this content_digest"
       }
     ],
     "returns": "SnippetInfo",
@@ -9655,6 +9699,12 @@
         "ty": "object",
         "required": false,
         "description": "Input object passed to the snippet async function"
+      },
+      {
+        "name": "expected_preview_fingerprint",
+        "ty": "string",
+        "required": false,
+        "description": "Optional current preview fingerprint; stale source, input, scope, runtime or tool metadata fails before execution"
       }
     ],
     "returns": "CodeModeExecutionResponse",
@@ -9703,6 +9753,50 @@
   },
   {
     "service": "snippets",
+    "action": "snippets.history",
+    "description": "List bounded execution receipts in the current caller and route scope",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": false,
+        "description": "Filter by snippet name"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size: 1 to 50, default 20"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque continuation for the same caller, route and filter"
+      }
+    ],
+    "returns": "SnippetReceiptHistory",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
     "action": "snippets.list",
     "description": "List built-in and user executable Code Mode snippets",
     "destructive": false,
@@ -9721,6 +9815,50 @@
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
+    "action": "snippets.preview",
+    "description": "Inspect current snippet metadata and owner-scoped replay drift without executing JavaScript or upstream tools",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": false,
+        "description": "Snippet name; mutually exclusive with execution_id"
+      },
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": false,
+        "description": "Owner-scoped historical execution for replay comparison"
+      },
+      {
+        "name": "params",
+        "ty": "object",
+        "required": false,
+        "description": "Ephemeral caller-supplied inputs; never recovered from receipts"
+      }
+    ],
+    "returns": "SnippetPreview",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9782,6 +9920,38 @@
   },
   {
     "service": "snippets",
+    "action": "snippets.receipt",
+    "description": "Read bounded execution metadata in the original caller and route scope",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": true,
+        "description": "Saved snippet execution identifier"
+      }
+    ],
+    "returns": "SnippetExecutionReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
     "action": "snippets.remove",
     "description": "Remove a user snippet",
     "destructive": true,
@@ -9803,6 +9973,56 @@
     "returns": "SnippetRemoveResult",
     "surface_availability": {
       "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
+    "action": "snippets.replay",
+    "description": "Explicitly rerun the current snippet with new inputs after guarding its preview and acknowledging all drift",
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner-scoped historical execution"
+      },
+      {
+        "name": "params",
+        "ty": "object",
+        "required": true,
+        "description": "Required caller-supplied inputs; receipts contain no input payloads"
+      },
+      {
+        "name": "expected_preview_fingerprint",
+        "ty": "string",
+        "required": true,
+        "description": "Fingerprint of the current replay preview"
+      },
+      {
+        "name": "acknowledged_drift",
+        "ty": "array",
+        "required": true,
+        "description": "Exact set of current changed or unverifiable drift field names"
+      }
+    ],
+    "returns": "CodeModeExecutionResponse",
+    "surface_availability": {
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false

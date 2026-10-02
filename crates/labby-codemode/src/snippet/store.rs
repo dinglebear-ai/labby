@@ -5,8 +5,24 @@ use std::path::{Path, PathBuf};
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+mod cache;
+mod types;
+pub use types::*;
+mod inputs;
+mod validation;
+pub use inputs::merge_snippet_input;
+use inputs::parse_inputs_block;
+pub use validation::{frontmatter, validate_snippet_body, validate_snippet_code};
+use validation::{
+    has_frontmatter, render_user_snippet_body, snippet_metadata_fields,
+    validate_snippet_body_structure,
+};
+mod publication;
+#[cfg(test)]
+mod publication_tests;
+#[cfg(test)]
+mod reliability_tests;
+
 use serde_json::{Map, Value};
 
 use super::tool_declarations::{self, SnippetToolDeclarations};
@@ -54,124 +70,6 @@ pub fn wrap_snippet_with_input_bounded(
         });
     }
     Ok(wrapped)
-}
-
-/// Origin of a reusable Code Mode snippet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SnippetSource {
-    /// Snippet shipped with Labby.
-    Builtin,
-    /// Operator-created snippet stored under the Labby home directory.
-    User,
-}
-
-/// Discovery metadata for a built-in or user Code Mode snippet.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SnippetInfo {
-    /// Optional exact-tool declaration used to scope native saved-snippet execution.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<SnippetToolDeclarations>,
-    /// Stable snippet name.
-    pub name: String,
-    /// Optional human-readable description.
-    pub description: Option<String>,
-    /// Search/discovery tags.
-    pub tags: Vec<String>,
-    /// Named input specifications.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub inputs: BTreeMap<String, SnippetInputSpec>,
-    /// Snippet origin.
-    pub source: SnippetSource,
-    /// Source file path.
-    pub path: PathBuf,
-    /// Whether this entry is shadowed by a user snippet with the same name.
-    pub shadowed: bool,
-}
-
-/// Fully resolved snippet including its source body.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ResolvedSnippet {
-    /// Optional declaration; an empty list expresses deny-all upstream access.
-    /// Host saved-snippet execution intersects this with the caller policy.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<SnippetToolDeclarations>,
-    /// Stable snippet name.
-    pub name: String,
-    /// Optional human-readable description.
-    pub description: Option<String>,
-    /// Search/discovery tags.
-    pub tags: Vec<String>,
-    /// Named input specifications.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub inputs: BTreeMap<String, SnippetInputSpec>,
-    /// Snippet origin.
-    pub source: SnippetSource,
-    /// Source file path.
-    pub path: PathBuf,
-    /// Complete snippet file contents.
-    pub body: String,
-}
-
-/// Parsed YAML frontmatter from a Markdown snippet.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnippetFrontmatter {
-    /// Optional exact-tool declaration, distinct from omitted metadata.
-    pub tools: Option<SnippetToolDeclarations>,
-    /// Declared snippet name.
-    pub name: String,
-    /// Declared human-readable description.
-    pub description: String,
-    /// Declared discovery tags.
-    pub tags: Vec<String>,
-    /// Declared named inputs.
-    pub inputs: BTreeMap<String, SnippetInputSpec>,
-}
-
-/// Validation/default specification for one snippet input.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct SnippetInputSpec {
-    /// Expected input value type.
-    pub ty: SnippetInputType,
-    /// Whether callers must provide the input when no default exists.
-    #[serde(default)]
-    pub required: bool,
-    /// Optional JSON default value.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub default: Option<Value>,
-    /// Optional human-readable input description.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-/// Supported validation types for declared snippet inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SnippetInputType {
-    /// JSON string.
-    String,
-    /// Integer-valued JSON number.
-    Integer,
-    /// Any JSON number.
-    Number,
-    /// JSON boolean.
-    Boolean,
-    /// JSON object.
-    Object,
-    /// JSON array.
-    Array,
-    /// Any JSON value.
-    Json,
-}
-
-/// Result returned after removing a user snippet.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct SnippetRemoveResult {
-    /// Snippet name requested for removal.
-    pub name: String,
-    /// Whether a user snippet file was removed.
-    pub removed: bool,
 }
 
 /// Return the per-user snippet directory under the Labby home.
@@ -279,26 +177,28 @@ pub fn create_user_snippet(
     description: Option<&str>,
     force: bool,
 ) -> Result<SnippetInfo, ToolError> {
+    create_user_snippet_checked(lab_home, name, body, description, force, None)
+}
+
+/// Create or replace a snippet, optionally requiring the previous source digest.
+/// The digest is checked under the same cross-process lock as publication.
+pub fn create_user_snippet_checked(
+    lab_home: &Path,
+    name: &str,
+    body: &str,
+    description: Option<&str>,
+    force: bool,
+    expected_digest: Option<&str>,
+) -> Result<SnippetInfo, ToolError> {
     validate_snippet_name(name)?;
     validate_snippet_body(name, body)?;
     let dir = user_snippet_dir(lab_home);
     fs::create_dir_all(&dir).map_err(|e| io_error("create snippets directory", &dir, e))?;
-    let path = dir.join(format!("{name}.md"));
-    // Fast-path rejection for a friendly early error; the authoritative
-    // no-overwrite guard is re-checked under the write lock inside
-    // `atomic_write_snippet` so two concurrent non-`force` creates of the same
-    // name cannot both pass this check and race to overwrite.
-    if path.exists() && !force {
-        return Err(ToolError::Conflict {
-            message: format!("user snippet `{name}` already exists"),
-            existing_id: name.to_string(),
-        });
-    }
     let body = render_user_snippet_body(name, body, description)?;
-    atomic_write_snippet(&path, &body, force)?;
-    let (description, tags, inputs, tools) =
-        snippet_metadata_fields(frontmatter(&body).ok().flatten());
+    let path = publication::publish(&dir, name, &body, force, expected_digest)?;
+    let (description, tags, inputs, tools) = snippet_metadata_fields(frontmatter(&body)?);
     Ok(SnippetInfo {
+        content_digest: Some(cache::digest(&body)),
         tools,
         name: name.to_string(),
         description,
@@ -340,10 +240,32 @@ pub fn create_promoted_user_snippet(
 
 /// List user and built-in snippets, marking built-ins shadowed by user overrides.
 pub fn list_snippets(lab_home: &Path, builtin_dir: &Path) -> Result<Vec<SnippetInfo>, ToolError> {
+    Ok(list_snippets_with_diagnostics(lab_home, builtin_dir)?.snippets)
+}
+
+/// List snippets with failures; invalid user overrides still shadow built-ins.
+pub fn list_snippets_with_diagnostics(
+    lab_home: &Path,
+    builtin_dir: &Path,
+) -> Result<SnippetList, ToolError> {
     let mut snippets = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut diagnostics_omitted = 0;
     let user_dir = user_snippet_dir(lab_home);
-    let user_names = collect_snippets(&user_dir, SnippetSource::User, &mut snippets)?;
-    collect_snippets(builtin_dir, SnippetSource::Builtin, &mut snippets)?;
+    let user_names = collect_snippets(
+        &user_dir,
+        SnippetSource::User,
+        &mut snippets,
+        &mut diagnostics,
+        &mut diagnostics_omitted,
+    )?;
+    collect_snippets(
+        builtin_dir,
+        SnippetSource::Builtin,
+        &mut snippets,
+        &mut diagnostics,
+        &mut diagnostics_omitted,
+    )?;
 
     for snippet in &mut snippets {
         snippet.shadowed =
@@ -354,7 +276,11 @@ pub fn list_snippets(lab_home: &Path, builtin_dir: &Path) -> Result<Vec<SnippetI
             .cmp(&b.name)
             .then_with(|| source_rank(a.source).cmp(&source_rank(b.source)))
     });
-    Ok(snippets)
+    Ok(SnippetList {
+        snippets,
+        diagnostics,
+        diagnostics_omitted,
+    })
 }
 
 /// Resolve a snippet by name, preferring a user override over the built-in copy.
@@ -391,6 +317,11 @@ pub fn remove_user_snippet(
 ) -> Result<SnippetRemoveResult, ToolError> {
     validate_snippet_name(name)?;
     let user_dir = user_snippet_dir(lab_home);
+    let _lock = if user_dir.exists() {
+        Some(publication::lock(&user_dir)?)
+    } else {
+        None
+    };
     if let Some(path) = find_snippet_file(&user_dir, name) {
         fs::remove_file(&path).map_err(|e| io_error("remove snippet", &path, e))?;
         return Ok(SnippetRemoveResult {
@@ -414,6 +345,8 @@ fn collect_snippets(
     dir: &Path,
     source: SnippetSource,
     out: &mut Vec<SnippetInfo>,
+    diagnostics: &mut Vec<SnippetDiagnostic>,
+    diagnostics_omitted: &mut usize,
 ) -> Result<std::collections::HashSet<String>, ToolError> {
     let mut names = std::collections::HashSet::new();
     if !dir.exists() {
@@ -433,19 +366,46 @@ fn collect_snippets(
             continue;
         }
         names.insert(stem.to_string());
-        let body = match read_snippet_body(&path) {
-            Ok(body) => body,
-            Err(_) => continue,
+        // Discovery must describe the same effective extension as resolution.
+        if find_snippet_file(dir, stem).as_deref() != Some(path.as_path()) {
+            if diagnostics.len() < 128 {
+                diagnostics.push(SnippetDiagnostic {
+                    name: stem.to_string(),
+                    path,
+                    source,
+                    message:
+                        "inactive duplicate snippet extension; resolution uses the preferred extension"
+                            .into(),
+                });
+            } else {
+                *diagnostics_omitted += 1;
+            }
+            continue;
+        }
+        let metadata =
+            read_snippet_body(&path).and_then(|body| cache::metadata(stem, &body, source));
+        let (description, tags, inputs, tools, content_digest) = match metadata {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                if diagnostics.len() < 128 {
+                    diagnostics.push(SnippetDiagnostic {
+                        name: stem.to_string(),
+                        path,
+                        source,
+                        // List is public discovery: never expose source excerpts or raw I/O errors.
+                        message: format!(
+                            "snippet could not be loaded ({}); use admin validation for details",
+                            error.kind()
+                        ),
+                    });
+                } else {
+                    *diagnostics_omitted += 1;
+                }
+                continue;
+            }
         };
-        if source == SnippetSource::Builtin && frontmatter(&body).ok().flatten().is_none() {
-            continue;
-        }
-        if validate_snippet_body(stem, &body).is_err() {
-            continue;
-        }
-        let (description, tags, inputs, tools) =
-            snippet_metadata_fields(frontmatter(&body).ok().flatten());
         out.push(SnippetInfo {
+            content_digest: Some(content_digest),
             tools,
             name: stem.to_string(),
             description,
@@ -505,6 +465,7 @@ fn read_resolved(
     let (description, tags, inputs, tools) =
         snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
     Ok(ResolvedSnippet {
+        content_digest: Some(cache::digest(&body)),
         tools,
         name: name.to_string(),
         description,
@@ -530,982 +491,5 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> ToolError {
     }
 }
 
-fn snippet_metadata_fields(
-    metadata: Option<SnippetFrontmatter>,
-) -> (
-    Option<String>,
-    Vec<String>,
-    BTreeMap<String, SnippetInputSpec>,
-    Option<SnippetToolDeclarations>,
-) {
-    metadata
-        .map(|metadata| {
-            (
-                Some(metadata.description),
-                metadata.tags,
-                metadata.inputs,
-                metadata.tools,
-            )
-        })
-        .unwrap_or_default()
-}
-
-fn validate_snippet_body_structure(name: &str, body: &str) -> Result<(), ToolError> {
-    if body.len() > MAX_SNIPPET_FILE_BYTES {
-        return Err(ToolError::InvalidParam {
-            message: format!("snippet file exceeds {MAX_SNIPPET_FILE_BYTES} bytes"),
-            param: "body".to_string(),
-        });
-    }
-    if let Some(metadata) = frontmatter(body)? {
-        if metadata.name != name {
-            return Err(ToolError::InvalidParam {
-                message: format!(
-                    "frontmatter name `{}` does not match snippet name `{name}`",
-                    metadata.name
-                ),
-                param: "name".to_string(),
-            });
-        }
-    }
-    let code = if has_frontmatter(body) || body.contains("```") {
-        extract_javascript_block(body)?
-    } else {
-        body.trim().to_string()
-    };
-    if code.len() > MAX_SNIPPET_CODE_BYTES {
-        return Err(ToolError::InvalidParam {
-            message: format!("snippet code exceeds {MAX_SNIPPET_CODE_BYTES} bytes"),
-            param: "body".to_string(),
-        });
-    }
-    Ok(())
-}
-
-/// Validate snippet source size, syntax, and frontmatter/name consistency.
-pub fn validate_snippet_body(name: &str, body: &str) -> Result<(), ToolError> {
-    validate_snippet_body_structure(name, body)?;
-    let code = if has_frontmatter(body) || body.contains("```") {
-        extract_javascript_block(body)?
-    } else {
-        body.trim().to_string()
-    };
-    validate_snippet_code(&code)
-}
-
-/// Validate executable snippet JavaScript against the Code Mode source-size contract.
-pub fn validate_snippet_code(code: &str) -> Result<(), ToolError> {
-    let code = normalize_snippet_code(code);
-    if code.is_empty() {
-        return Err(ToolError::InvalidParam {
-            message: "snippet code is empty".to_string(),
-            param: "body".to_string(),
-        });
-    }
-    if !(code.starts_with("async ") && code.contains("=>")) {
-        return Err(ToolError::InvalidParam {
-            message:
-                "snippet code must be an async arrow function, e.g. async () => ({ ok: true })"
-                    .to_string(),
-            param: "body".to_string(),
-        });
-    }
-
-    // Parse the exact expression with the same QuickJS/Javy engine used by
-    // Code Mode, but never evaluate it. `compile_to_bytecode` declares a
-    // module and serializes bytecode only, so catalog discovery and explicit
-    // validation cannot execute snippet side effects. This closes the gap
-    // where a string could satisfy the cheap `async`/`=>` envelope check but
-    // still fail only when a real Code Mode execution tried to parse it.
-    let mut config = javy::Config::default();
-    config.memory_limit(64 * 1024 * 1024);
-    let runtime = javy::Runtime::new(config).map_err(|error| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("unable to initialize JavaScript validator: {error}"),
-    })?;
-    // Keep generated delimiters on their own lines. A valid snippet may end
-    // in a // comment, which must not consume the validator's closing `);`.
-    let source = format!("export default (\n{code}\n);");
-    runtime
-        .compile_to_bytecode("snippet-validation.js", &source)
-        .map_err(|error| {
-            let mut message = error.to_string();
-            if message.len() > 1024 {
-                let mut end = 1024;
-                while !message.is_char_boundary(end) {
-                    end -= 1;
-                }
-                message.truncate(end);
-                message.push_str("...");
-            }
-            ToolError::InvalidParam {
-                message: format!("snippet JavaScript is invalid: {message}"),
-                param: "body".to_string(),
-            }
-        })?;
-    Ok(())
-}
-
-/// Strip the opening `---` frontmatter delimiter line, tolerating both LF and
-/// CRLF endings. Windows checkouts (and Windows-authored user snippets) carry
-/// `---\r\n`, which a bare `strip_prefix("---\n")` would miss — silently
-/// dropping the snippet's frontmatter and making built-ins undiscoverable.
-fn strip_frontmatter_open(body: &str) -> Option<&str> {
-    body.strip_prefix("---\n")
-        .or_else(|| body.strip_prefix("---\r\n"))
-}
-
-/// Parse optional YAML snippet frontmatter from a Markdown snippet body.
-pub fn frontmatter(body: &str) -> Result<Option<SnippetFrontmatter>, ToolError> {
-    let Some(rest) = strip_frontmatter_open(body) else {
-        return Ok(None);
-    };
-    let Some(raw) = frontmatter_block(rest) else {
-        return Err(ToolError::InvalidParam {
-            message: "snippet frontmatter starts with --- but is not closed".to_string(),
-            param: "body".to_string(),
-        });
-    };
-    let mut name = None;
-    let mut description = None;
-    let mut tags = Vec::new();
-    let mut tools = None;
-    let lines: Vec<&str> = raw.lines().collect();
-    let mut inputs = BTreeMap::new();
-    let mut i = 0;
-    while i < lines.len() {
-        let raw_line = lines[i];
-        if raw_line.starts_with("  ") {
-            i += 1;
-            continue;
-        }
-        let line = raw_line.trim();
-        if let Some((key, value)) = line.split_once(':')
-            && key.trim() == "tools"
-        {
-            if tools.is_some() {
-                return Err(tool_declarations::invalid(
-                    "frontmatter tools must not be repeated",
-                ));
-            }
-            let (parsed, next) = tool_declarations::parse(&lines, i + 1, value.trim())?;
-            tools = Some(parsed);
-            i = next;
-            continue;
-        }
-        if line == "inputs:" {
-            let (parsed, next) = parse_inputs_block(&lines, i + 1)?;
-            inputs = parsed;
-            i = next;
-            continue;
-        }
-        let line = line.trim();
-        if line.is_empty() {
-            i += 1;
-            continue;
-        }
-        let Some((key, value)) = line.split_once(':') else {
-            return Err(ToolError::InvalidParam {
-                message: format!("invalid frontmatter line `{line}`"),
-                param: "body".to_string(),
-            });
-        };
-        let value = value.trim().trim_matches('"');
-        match key.trim() {
-            "name" => name = Some(value.to_string()),
-            "description" => description = Some(value.to_string()),
-            "tags" => tags = parse_tags(value)?,
-            _ => {}
-        }
-        i += 1;
-    }
-    let name = required_frontmatter_field(name, "name")?;
-    let description = required_frontmatter_field(description, "description")?;
-    Ok(Some(SnippetFrontmatter {
-        tools,
-        name,
-        description,
-        tags,
-        inputs,
-    }))
-}
-
-fn frontmatter_block(rest: &str) -> Option<String> {
-    let mut raw = Vec::new();
-    for line in rest.lines() {
-        if line.trim_end_matches('\r') == "---" {
-            return Some(raw.join("\n"));
-        }
-        raw.push(line.trim_end_matches('\r'));
-    }
-    None
-}
-
-fn has_frontmatter(body: &str) -> bool {
-    strip_frontmatter_open(body).is_some()
-}
-
-fn required_frontmatter_field(value: Option<String>, field: &str) -> Result<String, ToolError> {
-    let Some(value) = value.filter(|v| !v.trim().is_empty()) else {
-        return Err(ToolError::InvalidParam {
-            message: format!("snippet frontmatter requires `{field}`"),
-            param: "body".to_string(),
-        });
-    };
-    Ok(value)
-}
-
-fn parse_tags(value: &str) -> Result<Vec<String>, ToolError> {
-    let value = value.trim();
-    if value.is_empty() || value == "[]" {
-        return Ok(Vec::new());
-    }
-    let Some(inner) = value.strip_prefix('[').and_then(|v| v.strip_suffix(']')) else {
-        return Err(ToolError::InvalidParam {
-            message: "frontmatter `tags` must be an inline array".to_string(),
-            param: "body".to_string(),
-        });
-    };
-    Ok(inner
-        .split(',')
-        .map(|tag| tag.trim().trim_matches('"').to_string())
-        .filter(|tag| !tag.is_empty())
-        .collect())
-}
-
-fn render_user_snippet_body(
-    name: &str,
-    body: &str,
-    description: Option<&str>,
-) -> Result<String, ToolError> {
-    if has_frontmatter(body) {
-        return Ok(body.to_string());
-    }
-    let description = description
-        .filter(|value| !value.trim().is_empty())
-        .map(sanitize_frontmatter_scalar)
-        .unwrap_or_else(|| "User snippet".to_string());
-    let code = if body.contains("```") {
-        extract_javascript_block(body)?
-    } else {
-        body.trim().to_string()
-    };
-    validate_snippet_code(&code)?;
-    Ok(format!(
-        "---\nname: {name}\ndescription: {description}\ntags: []\n---\n\n```js\n{code}\n```\n"
-    ))
-}
-
-fn sanitize_frontmatter_scalar(value: &str) -> String {
-    let sanitized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if sanitized.is_empty() {
-        "User snippet".to_string()
-    } else {
-        sanitized.replace('"', "'")
-    }
-}
-
-fn atomic_write_snippet(path: &Path, body: &str, force: bool) -> Result<(), ToolError> {
-    static WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    let _guard = WRITE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock()
-        .map_err(|_| ToolError::internal_message("snippet write lock poisoned"))?;
-    // Authoritative no-overwrite guard, held under the process-wide write lock so
-    // the exists-check and the rename below are atomic with respect to other
-    // in-process writers (the caller's pre-lock check is only a fast path).
-    if !force && path.exists() {
-        let name = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("snippet");
-        return Err(ToolError::Conflict {
-            message: format!("user snippet `{name}` already exists"),
-            existing_id: name.to_string(),
-        });
-    }
-    let dir = path.parent().ok_or_else(|| {
-        ToolError::internal_message(format!("snippet path `{}` has no parent", path.display()))
-    })?;
-    let temp = dir.join(format!(
-        ".{}.{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("snippet"),
-        std::process::id()
-    ));
-    {
-        let mut file =
-            fs::File::create(&temp).map_err(|e| io_error("create temp snippet", &temp, e))?;
-        use std::io::Write as _;
-        file.write_all(body.as_bytes())
-            .map_err(|e| io_error("write temp snippet", &temp, e))?;
-        file.sync_all()
-            .map_err(|e| io_error("sync temp snippet", &temp, e))?;
-    }
-    fs::rename(&temp, path).map_err(|e| io_error("rename snippet", path, e))?;
-    if let Ok(dir_file) = fs::File::open(dir) {
-        drop(dir_file.sync_all());
-    }
-    Ok(())
-}
-
-/// Merge caller-supplied snippet inputs with declared defaults and validate types/required fields.
-pub fn merge_snippet_input(snippet: &ResolvedSnippet, caller: Value) -> Result<Value, ToolError> {
-    let caller = match caller {
-        Value::Null => Value::Object(Map::new()),
-        Value::Object(map) => Value::Object(map),
-        _ => {
-            return Err(ToolError::InvalidParam {
-                message: "snippet params must be a JSON object".to_string(),
-                param: "params".to_string(),
-            });
-        }
-    };
-
-    if snippet.inputs.is_empty() {
-        return Ok(caller);
-    }
-
-    let caller = caller.as_object().expect("caller normalized to object");
-    for key in caller.keys() {
-        if !snippet.inputs.contains_key(key) {
-            return Err(ToolError::InvalidParam {
-                message: format!("unknown snippet input `{key}`"),
-                param: format!("params.{key}"),
-            });
-        }
-    }
-
-    let mut merged = Map::new();
-    for (name, spec) in &snippet.inputs {
-        let value = caller
-            .get(name)
-            .cloned()
-            .or_else(|| spec.default.clone())
-            .or_else(|| (!spec.required).then_some(Value::Null));
-        let Some(value) = value else {
-            return Err(ToolError::MissingParam {
-                message: format!("missing required snippet input `{name}`"),
-                param: format!("params.{name}"),
-            });
-        };
-        if !value.is_null() {
-            validate_input_type(name, spec.ty, &value)?;
-        }
-        merged.insert(name.clone(), value);
-    }
-
-    Ok(Value::Object(merged))
-}
-
-fn parse_inputs_block(
-    lines: &[&str],
-    mut i: usize,
-) -> Result<(BTreeMap<String, SnippetInputSpec>, usize), ToolError> {
-    let mut inputs = BTreeMap::new();
-    while i < lines.len() {
-        let line = lines[i];
-        if line.trim().is_empty() {
-            i += 1;
-            continue;
-        }
-        if !line.starts_with("  ") {
-            break;
-        }
-        if line.starts_with("    ") {
-            return Err(ToolError::InvalidParam {
-                message: format!("invalid input declaration line `{}`", line.trim()),
-                param: "body".to_string(),
-            });
-        }
-        let Some(input_name) = line.trim().strip_suffix(':') else {
-            return Err(ToolError::InvalidParam {
-                message: format!("invalid input declaration line `{}`", line.trim()),
-                param: "body".to_string(),
-            });
-        };
-        // Input keys are JSON fields, not filesystem-backed snippet slugs.
-        // Preserve camelCase callers without relaxing artifact-name safety.
-        if input_name.is_empty()
-            || input_name.len() > 128
-            || !input_name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-            || inputs.contains_key(input_name)
-        {
-            return Err(ToolError::InvalidParam {
-                message: "snippet input names must be unique, bounded alphanumeric keys".into(),
-                param: "body".into(),
-            });
-        }
-        i += 1;
-
-        let mut ty = None;
-        let mut required = false;
-        let mut default = None;
-        let mut description = None;
-        while i < lines.len() {
-            let field_line = lines[i];
-            if field_line.trim().is_empty() {
-                i += 1;
-                continue;
-            }
-            if !field_line.starts_with("    ") {
-                break;
-            }
-            let Some((key, value)) = field_line.trim().split_once(':') else {
-                return Err(ToolError::InvalidParam {
-                    message: format!("invalid input field line `{}`", field_line.trim()),
-                    param: "body".to_string(),
-                });
-            };
-            let value = value.trim().trim_matches('"');
-            match key.trim() {
-                "type" => ty = Some(parse_input_type(value)?),
-                "required" => required = parse_bool(value, "required")?,
-                "default" => default = Some(parse_default_value(value)),
-                "description" => description = Some(value.to_string()),
-                _ => {}
-            }
-            i += 1;
-        }
-
-        let ty = ty.ok_or_else(|| ToolError::InvalidParam {
-            message: format!("snippet input `{input_name}` requires `type`"),
-            param: "body".to_string(),
-        })?;
-        if let Some(default_value) = &default {
-            validate_input_type(input_name, ty, default_value)?;
-        }
-        inputs.insert(
-            input_name.to_string(),
-            SnippetInputSpec {
-                ty,
-                required,
-                default,
-                description,
-            },
-        );
-    }
-    Ok((inputs, i))
-}
-
-fn parse_input_type(value: &str) -> Result<SnippetInputType, ToolError> {
-    match value {
-        "string" => Ok(SnippetInputType::String),
-        "integer" => Ok(SnippetInputType::Integer),
-        "number" => Ok(SnippetInputType::Number),
-        "boolean" => Ok(SnippetInputType::Boolean),
-        "object" => Ok(SnippetInputType::Object),
-        "array" => Ok(SnippetInputType::Array),
-        "json" => Ok(SnippetInputType::Json),
-        _ => Err(ToolError::InvalidParam {
-            message: format!("unsupported snippet input type `{value}`"),
-            param: "body".to_string(),
-        }),
-    }
-}
-
-fn parse_bool(value: &str, field: &str) -> Result<bool, ToolError> {
-    match value {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(ToolError::InvalidParam {
-            message: format!("frontmatter `{field}` must be true or false"),
-            param: "body".to_string(),
-        }),
-    }
-}
-
-fn parse_default_value(value: &str) -> Value {
-    let value = value.trim();
-    if value.eq_ignore_ascii_case("true") {
-        return Value::Bool(true);
-    }
-    if value.eq_ignore_ascii_case("false") {
-        return Value::Bool(false);
-    }
-    if let Ok(n) = value.parse::<i64>()
-        && n.to_string() == value
-    {
-        return Value::Number(n.into());
-    }
-    if let Ok(n) = value.parse::<f64>()
-        && let Some(num) = serde_json::Number::from_f64(n)
-        && n.to_string() == value
-    {
-        return Value::Number(num);
-    }
-    if let Ok(json) = serde_json::from_str::<Value>(value)
-        && (json.is_object() || json.is_array())
-    {
-        return json;
-    }
-    Value::String(value.trim_matches('"').to_string())
-}
-
-fn validate_input_type(name: &str, ty: SnippetInputType, value: &Value) -> Result<(), ToolError> {
-    let ok = match ty {
-        SnippetInputType::String => value.is_string(),
-        SnippetInputType::Integer => value.as_i64().is_some(),
-        SnippetInputType::Number => value.is_number(),
-        SnippetInputType::Boolean => value.is_boolean(),
-        SnippetInputType::Object => value.is_object(),
-        SnippetInputType::Array => value.is_array(),
-        SnippetInputType::Json => true,
-    };
-    if ok {
-        return Ok(());
-    }
-    Err(ToolError::InvalidParam {
-        message: format!("snippet input `{name}` has wrong type; expected {ty:?}"),
-        param: format!("params.{name}"),
-    })
-}
-
 #[cfg(test)]
-mod tests {
-    #![allow(clippy::panic)]
-    use super::*;
-    use serde_json::json;
-
-    fn valid_body() -> &'static str {
-        "---\nname: demo\ndescription: Demo snippet\ntags: []\n---\n\n```js\nasync () => ({ ok: true })\n```\n"
-    }
-
-    #[test]
-    fn generated_frontmatter_description_is_single_line() {
-        let body = render_user_snippet_body(
-            "demo",
-            "async () => ({ ok: true })",
-            Some("first line\nname: injected\n---\nsecond line"),
-        )
-        .expect("rendered");
-
-        let metadata = frontmatter(&body)
-            .expect("frontmatter parsed")
-            .expect("metadata");
-        assert_eq!(metadata.name, "demo");
-        assert_eq!(
-            metadata.description,
-            "first line name: injected --- second line"
-        );
-        assert!(validate_snippet_body("demo", &body).is_ok());
-    }
-
-    #[test]
-    fn frontmatter_requires_exact_closing_delimiter_line() {
-        let body = "---\nname: demo\ndescription: Demo snippet\n--- trailing\n\n```js\nasync () => ({ ok: true })\n```\n";
-
-        let error = frontmatter(body).expect_err("loose delimiter should be rejected");
-        assert!(format!("{error}").contains("not closed"));
-    }
-
-    #[test]
-    fn validate_snippet_body_accepts_valid_frontmatter() {
-        assert!(validate_snippet_body("demo", valid_body()).is_ok());
-    }
-
-    #[test]
-    fn validate_snippet_code_accepts_formatter_trailing_semicolon() {
-        let code = "async () => ({ ok: true });";
-        assert!(validate_snippet_code(code).is_ok());
-        assert_eq!(normalize_snippet_code(code), "async () => ({ ok: true })");
-    }
-
-    #[test]
-    fn validate_snippet_code_accepts_trailing_line_comment() {
-        let code = "async () => ({ ok: true }) // formatter note";
-        assert!(
-            validate_snippet_code(code).is_ok(),
-            "the validator's generated closing delimiter must not be swallowed by a trailing // comment"
-        );
-    }
-
-    #[test]
-    fn validate_snippet_body_rejects_malformed_javascript_before_execution() {
-        let body = "---\nname: demo\ndescription: Broken snippet\ntags: []\n---\n\n```js\nasync () => { const broken = ; return broken; }\n```\n";
-        let error = validate_snippet_body("demo", body)
-            .expect_err("malformed JavaScript must fail static validation");
-        assert!(
-            format!("{error}").contains("snippet JavaScript is invalid"),
-            "syntax failure should explain that the JavaScript is invalid: {error}"
-        );
-    }
-
-    #[test]
-    fn validate_snippet_code_parses_without_executing_function_body() {
-        let code = "async () => { throw new Error(\"validation must not execute me\"); }";
-        assert!(
-            validate_snippet_code(code).is_ok(),
-            "validation should compile the function expression without invoking it"
-        );
-    }
-
-    #[test]
-    fn resolve_snippet_not_found_does_not_expose_filesystem_authorities() {
-        let lab_home = tempfile::tempdir().expect("lab home");
-        let builtin = tempfile::tempdir().expect("builtin snippets");
-        let error = resolve_snippet(lab_home.path(), builtin.path(), "missing")
-            .expect_err("missing snippet must fail");
-        let message = format!("{error}");
-        assert!(message.contains("missing"));
-        assert!(!message.contains(&user_snippet_dir(lab_home.path()).display().to_string()));
-        assert!(!message.contains(&builtin.path().display().to_string()));
-    }
-
-    #[test]
-    fn atomic_write_snippet_rejects_overwrite_without_force_under_lock() {
-        // The authoritative no-overwrite guard lives INSIDE atomic_write_snippet,
-        // under WRITE_LOCK — independent of create_user_snippet's pre-lock
-        // fast-path check. Exercise it directly so the guard is pinned even if
-        // the fast path is bypassed (the TOCTOU window two concurrent non-force
-        // creates could otherwise both slip through).
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("demo.md");
-        let body = render_user_snippet_body("demo", "async () => ({ ok: true })", None)
-            .expect("rendered body");
-
-        atomic_write_snippet(&path, &body, false).expect("first write succeeds");
-
-        let err = atomic_write_snippet(&path, &body, false)
-            .expect_err("second non-force write must be rejected");
-        assert!(
-            matches!(err, ToolError::Conflict { .. }),
-            "under-lock guard must reject overwrite without force, got {err:?}"
-        );
-
-        // force=true still overwrites in place.
-        atomic_write_snippet(&path, &body, true).expect("force write overwrites");
-    }
-
-    #[test]
-    fn frontmatter_tolerates_crlf_line_endings() {
-        // Regression guard for the Windows-checkout failure: a `---\r\n` opening
-        // delimiter must be recognized just like `---\n`, otherwise built-in
-        // snippets carry no frontmatter and become undiscoverable. Without this
-        // test a dropped CRLF arm in `strip_frontmatter_open` would pass on both
-        // CI platforms (Cargo never rewrites these string literals).
-        let body = "---\r\nname: demo\r\ndescription: Demo snippet\r\ntags: []\r\n---\r\n\r\n```js\r\nasync () => ({ ok: true })\r\n```\r\n";
-
-        assert!(has_frontmatter(body), "CRLF frontmatter must be detected");
-        let meta = frontmatter(body)
-            .expect("CRLF frontmatter must parse")
-            .expect("CRLF frontmatter must be present");
-        assert_eq!(meta.name, "demo");
-        assert_eq!(meta.description, "Demo snippet");
-        assert!(validate_snippet_body("demo", body).is_ok());
-    }
-
-    #[test]
-    fn snippet_catalog_exposes_metadata_without_saved_source() {
-        const SOURCE_SENTINEL: &str = "SOURCE_SENTINEL_MUST_STAY_EXECUTION_SIDE";
-        let lab_home = tempfile::tempdir().expect("temp lab home");
-        let builtin_dir = tempfile::tempdir().expect("temp builtin dir");
-        let code = format!(
-            "async () => {{ const marker = \"{SOURCE_SENTINEL}\"; return {{ ok: marker.length > 0 }}; }}"
-        );
-        create_user_snippet(
-            lab_home.path(),
-            "metadata-only",
-            &code,
-            Some("Metadata-only catalog oracle"),
-            false,
-        )
-        .expect("create user snippet");
-
-        let listed = list_snippets(lab_home.path(), builtin_dir.path())
-            .expect("list saved snippet metadata");
-        let serialized = serde_json::to_string(&listed).expect("serialize catalog metadata");
-        assert!(serialized.contains("metadata-only"));
-        assert!(serialized.contains("Metadata-only catalog oracle"));
-        assert!(
-            !serialized.contains(SOURCE_SENTINEL),
-            "saved source must not enter model-facing snippet catalog metadata"
-        );
-
-        let resolved = resolve_snippet(lab_home.path(), builtin_dir.path(), "metadata-only")
-            .expect("host-side source resolution");
-        assert!(
-            resolved.body.contains(SOURCE_SENTINEL),
-            "source must remain available to the execution plane"
-        );
-    }
-
-    #[test]
-    fn docker_host_inventory_uses_per_run_log_markers() {
-        let lab_home = tempfile::tempdir().expect("temp lab home");
-        let snippet = resolve_snippet(
-            lab_home.path(),
-            &builtin_snippet_dir(),
-            "docker-host-inventory",
-        )
-        .expect("resolve docker host inventory");
-        let code = code_for_snippet(&snippet).expect("valid docker inventory source");
-
-        assert!(
-            code.contains("Math.random()"),
-            "log framing must carry a per-run nonce"
-        );
-        assert!(
-            code.contains("__LABBY_DOCKER_LOG_SECTION_${markerNonce}__"),
-            "section marker must incorporate the per-run nonce"
-        );
-        assert!(
-            !code.contains("__LABBY_DOCKER_LOG_SECTION_9D81__"),
-            "static framing lets container output spoof parser boundaries"
-        );
-    }
-
-    #[test]
-    fn homelab_inventory_snippets_pin_ssh_safety_and_artifact_redaction() {
-        let lab_home = tempfile::tempdir().expect("temp lab home");
-        let builtin = builtin_snippet_dir();
-        let ssh = code_for_snippet(
-            &resolve_snippet(lab_home.path(), &builtin, "homelab-ssh-targets")
-                .expect("resolve ssh targets"),
-        )
-        .expect("valid ssh targets source");
-        let docker = code_for_snippet(
-            &resolve_snippet(lab_home.path(), &builtin, "docker-host-inventory")
-                .expect("resolve docker host inventory"),
-        )
-        .expect("valid docker host source");
-        let aggregate = code_for_snippet(
-            &resolve_snippet(lab_home.path(), &builtin, "homelab-docker-inventory")
-                .expect("resolve aggregate inventory"),
-        )
-        .expect("valid aggregate source");
-
-        for code in [&ssh, &docker] {
-            assert!(code.contains("-o ForwardAgent=no"));
-            assert!(code.contains("-o ClearAllForwardings=yes"));
-            assert!(code.contains("ssh ") && code.contains(" -- "));
-            assert!(code.contains("docker_path=%s"));
-            assert!(code.contains("timeout_path=%s"));
-        }
-        assert!(
-            ssh.contains("-F "),
-            "custom SSH config must reach ssh -G and live probes"
-        );
-        assert!(ssh.contains(r#"const slash = from.lastIndexOf("/")"#));
-        assert!(ssh.contains(r#"slash >= 0 ? from.slice(0, slash + 1) : """#));
-        assert!(
-            !ssh.contains(r#"Math.max(0, from.lastIndexOf("/"))"#),
-            "bare config filenames must not prefix relative Includes with the first filename character"
-        );
-        assert!(ssh.contains("config_file_limit_reached"));
-        assert!(ssh.contains("config_truncated"));
-        assert!(docker.contains("ssh_config"));
-        assert!(
-            docker.contains("-F "),
-            "one-host inventory must reuse a supplied custom SSH config"
-        );
-        assert!(aggregate.contains("ssh_config: input.ssh_config"));
-        assert!(aggregate.contains("delete artifactInput.ssh_config"));
-        assert!(aggregate.contains("parsed_config_file_count"));
-        assert!(aggregate.contains("identity_files_configured"));
-        assert!(aggregate.contains("artifactTargets"));
-        assert!(aggregate.contains("ssh_config_supplied: Boolean(input.ssh_config)"));
-    }
-
-    #[test]
-    fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
-        let lab_home = tempfile::tempdir().expect("temp lab home");
-        let builtin_dir = builtin_snippet_dir();
-        let snippets = list_snippets(lab_home.path(), &builtin_dir).expect("list snippets");
-        let info = snippets
-            .iter()
-            .find(|snippet| snippet.name == "repo-status-gh-pulse")
-            .expect("repo-status-gh-pulse listed");
-
-        assert_eq!(info.source, SnippetSource::Builtin);
-        assert!(info.inputs.contains_key("owner"));
-        assert!(info.inputs.contains_key("repo"));
-        assert!(info.inputs.contains_key("include_workflow_runs"));
-
-        let resolved = resolve_snippet(lab_home.path(), &builtin_dir, "repo-status-gh-pulse")
-            .expect("resolve builtin snippet");
-        let code = code_for_snippet(&resolved).expect("extract executable code");
-
-        assert!(code.contains("github::search_pull_requests"));
-        assert!(!code.contains("github::list_workflow_runs"));
-    }
-
-    #[test]
-    fn all_builtin_snippets_satisfy_the_size_and_format_contract() {
-        // Guards against the failure mode that silently broke `docs generate`:
-        // a built-in tutorial snippet whose body violated the size contract.
-        // `collect_snippets` skips invalid snippets silently, so without this
-        // test an oversized built-in only surfaces as a `docs generate` abort.
-        let dir = builtin_snippet_dir();
-        let entries = fs::read_dir(&dir).expect("read builtin snippets directory");
-        let mut checked = 0usize;
-        for entry in entries {
-            let path = entry.expect("builtin snippet dir entry").path();
-            if !path.is_file() || !has_snippet_extension(&path) {
-                continue;
-            }
-            let stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .expect("builtin snippet file stem");
-            let body = fs::read_to_string(&path).expect("read builtin snippet");
-            // Mirror `collect_snippets`' builtin discovery rule: a markdown file
-            // with no frontmatter at all (e.g. the directory README) is not a
-            // snippet, so it is not held to the snippet contract. A file that
-            // *opens* frontmatter (`---`) but fails to parse is a broken builtin
-            // and must fail loudly — so skip only on genuine absence and let the
-            // `frontmatter(body)?` inside `validate_snippet_body` surface parse
-            // errors, rather than collapsing both cases with `.ok().flatten()`.
-            if path.extension().and_then(|e| e.to_str()) == Some("md") && !has_frontmatter(&body) {
-                continue;
-            }
-            validate_snippet_body(stem, &body).unwrap_or_else(|error| {
-                panic!(
-                    "builtin snippet `{}` violates the size/format contract: {error}",
-                    path.display()
-                )
-            });
-            checked += 1;
-        }
-        assert!(checked > 0, "expected at least one builtin snippet");
-    }
-
-    #[test]
-    fn validate_snippet_body_bounds_executable_code_not_prose() {
-        // A large prose body with a small code block must pass: only the
-        // extracted JS is held to MAX_SNIPPET_CODE_BYTES.
-        let code = "async () => ({ ok: true })";
-        let prose = "x".repeat(MAX_SNIPPET_CODE_BYTES + 4096);
-        let body = format!(
-            "---\nname: demo\ndescription: Demo snippet\ntags: []\n---\n\n{prose}\n\n```js\n{code}\n```\n"
-        );
-        assert!(body.len() > MAX_SNIPPET_CODE_BYTES);
-        assert!(validate_snippet_body("demo", &body).is_ok());
-
-        // A code block that itself exceeds the code limit must fail.
-        let big_code = format!(
-            "async () => {{\n{}\nreturn 1;\n}}",
-            "x".repeat(MAX_SNIPPET_CODE_BYTES)
-        );
-        assert!(big_code.len() > MAX_SNIPPET_CODE_BYTES);
-        let body = format!(
-            "---\nname: demo\ndescription: Demo snippet\ntags: []\n---\n\n```js\n{big_code}\n```\n"
-        );
-        let error = validate_snippet_body("demo", &body)
-            .expect_err("oversized code block should be rejected");
-        assert!(format!("{error}").contains("snippet code exceeds"));
-    }
-
-    #[test]
-    fn validate_snippet_body_accepts_context_sized_code_beyond_legacy_20k() {
-        let context = "x".repeat(64 * 1024);
-        let code = format!(
-            "async () => {{ const context = \"{context}\"; return {{ ok: context.length > 0 }}; }}"
-        );
-        assert!(
-            code.len() > 20 * 1024,
-            "oracle must exceed the retired 20 KiB cap"
-        );
-        assert!(
-            code.len() < MAX_SNIPPET_CODE_BYTES,
-            "oracle should fit the Code Mode source budget"
-        );
-        assert!(validate_snippet_body("demo", &code).is_ok());
-    }
-
-    #[test]
-    fn validate_snippet_body_bounds_bare_code_without_fences() {
-        // A bare snippet body (no frontmatter, no fences) is its own code, so
-        // the code bound governs the whole body directly.
-        let small = "async () => ({ ok: true })";
-        assert!(validate_snippet_body("demo", small).is_ok());
-
-        let big = format!(
-            "async () => {{\n{}\nreturn 1;\n}}",
-            "x".repeat(MAX_SNIPPET_CODE_BYTES)
-        );
-        assert!(big.len() > MAX_SNIPPET_CODE_BYTES);
-        let error = validate_snippet_body("demo", &big)
-            .expect_err("oversized bare code should be rejected");
-        assert!(format!("{error}").contains("snippet code exceeds"));
-    }
-
-    #[test]
-    fn validate_snippet_body_code_bound_is_exclusive_at_the_limit() {
-        // Pin the strict `>` comparison: code of exactly MAX_SNIPPET_CODE_BYTES
-        // passes, one byte over fails. Guards against a `>` -> `>=` drift.
-        let prefix = "async () => { return \"";
-        let suffix = "\"; }";
-        let pad = MAX_SNIPPET_CODE_BYTES - prefix.len() - suffix.len();
-        let at_limit = format!("{prefix}{}{suffix}", "x".repeat(pad));
-        assert_eq!(at_limit.len(), MAX_SNIPPET_CODE_BYTES);
-        assert!(validate_snippet_body("demo", &at_limit).is_ok());
-
-        let over_limit = format!("{prefix}{}{suffix}", "x".repeat(pad + 1));
-        assert_eq!(over_limit.len(), MAX_SNIPPET_CODE_BYTES + 1);
-        let error = validate_snippet_body("demo", &over_limit)
-            .expect_err("code one byte over the limit should be rejected");
-        assert!(format!("{error}").contains("snippet code exceeds"));
-    }
-
-    #[test]
-    fn validate_snippet_body_rejects_oversized_file() {
-        // A file larger than MAX_SNIPPET_FILE_BYTES is rejected before parsing,
-        // even though its extracted code would be tiny.
-        let prose = "x".repeat(MAX_SNIPPET_FILE_BYTES + 1);
-        let body = format!(
-            "---\nname: demo\ndescription: Demo snippet\ntags: []\n---\n\n{prose}\n\n```js\nasync () => ({{ ok: true }})\n```\n"
-        );
-        let error =
-            validate_snippet_body("demo", &body).expect_err("oversized file should be rejected");
-        assert!(format!("{error}").contains("snippet file exceeds"));
-    }
-
-    #[test]
-    fn read_resolved_bounds_file_bytes_before_full_read() {
-        let dir = tempfile::tempdir().expect("temp snippets");
-        let path = dir.path().join("demo.js");
-        fs::write(&path, vec![b'x'; MAX_SNIPPET_FILE_BYTES + 4096])
-            .expect("write oversized fixture");
-
-        let error = read_resolved("demo", SnippetSource::User, path)
-            .expect_err("oversized on-disk snippet must fail before a full read");
-        assert!(format!("{error}").contains("snippet file exceeds"));
-    }
-
-    #[test]
-    fn read_resolved_rejects_non_utf8_snippet_files() {
-        let dir = tempfile::tempdir().expect("temp snippets");
-        let path = dir.path().join("demo.js");
-        fs::write(&path, [0xff, 0xfe, 0xfd]).expect("write non-UTF8 fixture");
-
-        let error = read_resolved("demo", SnippetSource::User, path)
-            .expect_err("saved snippets are UTF-8 text");
-        assert!(format!("{error}").contains("valid UTF-8"));
-    }
-
-    #[test]
-    fn merge_snippet_input_rejects_unknown_declared_inputs() {
-        let body = "---\nname: demo\ndescription: Demo snippet\ninputs:\n  host:\n    type: string\n    default: node-a\n---\n\n```js\nasync (input) => input\n```\n";
-        let metadata = frontmatter(body)
-            .expect("frontmatter parsed")
-            .expect("metadata");
-        let snippet = ResolvedSnippet {
-            tools: metadata.tools,
-            name: "demo".to_string(),
-            description: Some(metadata.description),
-            tags: metadata.tags,
-            inputs: metadata.inputs,
-            source: SnippetSource::User,
-            path: PathBuf::from("demo.md"),
-            body: body.to_string(),
-        };
-
-        let error = merge_snippet_input(&snippet, json!({"bogus": true}))
-            .expect_err("unknown input should be rejected");
-        assert!(format!("{error}").contains("unknown snippet input"));
-    }
-}
+mod tests;

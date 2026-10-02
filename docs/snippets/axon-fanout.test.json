@@ -1,0 +1,106 @@
+{
+  "calls": [
+    {
+      "tool": "Axon::axon",
+      "result": {
+        "ok": true,
+        "data": {
+          "shape": {
+            "search_results": {
+              "sample": [
+                {
+                  "url": "https://modelcontextprotocol.io/docs/develop/build-server",
+                  "title": "MCP Rust server"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "match": {
+        "action": "search"
+      }
+    },
+    {
+      "tool": "Axon::axon",
+      "result": {
+        "ok": true,
+        "data": {
+          "key_fields": {
+            "summary": "Use the Rust SDK to build an MCP server."
+          }
+        }
+      },
+      "match": {
+        "action": "research"
+      }
+    },
+    {
+      "tool": "Axon::axon",
+      "result": {
+        "ok": true,
+        "data": {
+          "shape": {
+            "results": {
+              "sample": []
+            }
+          }
+        }
+      },
+      "match": {
+        "action": "query"
+      }
+    },
+    {
+      "tool": "Axon::axon",
+      "result": {
+        "ok": true,
+        "data": {
+          "key_fields": {
+            "summary": "Define tools and connect the MCP transport."
+          }
+        }
+      },
+      "match": {
+        "action": "scrape",
+        "url": "https://modelcontextprotocol.io/docs/develop/build-server"
+      }
+    },
+    {
+      "tool": "Axon::axon",
+      "result": {
+        "ok": true,
+        "data": {
+          "key_fields": {
+            "summary": "Rust tools return structured MCP results."
+          }
+        }
+      },
+      "match": {
+        "action": "summarize",
+        "url": "https://modelcontextprotocol.io/docs/develop/build-server"
+      }
+    }
+  ],
+  "expect": {
+    "/workflow": "axon_research_brief",
+    "/followup_snippet/purpose": "Included in the markdown artifact under `Follow-Up Code Mode Snippet`.",
+    "/artifact/mode": "mock"
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 6,
+    "output_bytes": 16000
+  },
+  "artifacts": [
+    {
+      "path": "axon/implementing-mcp-ui-in-rust.md",
+      "content_type": "text/markdown",
+      "contains": [
+        "Use the Rust SDK to build an MCP server.",
+        "https://modelcontextprotocol.io/docs/develop/build-server",
+        "Rust tools return structured MCP results."
+      ]
+    }
+  ]
+}

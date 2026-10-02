@@ -2010,10 +2010,7 @@ impl LabMcpServer {
                 unreachable!("Depot publishing is gateway-only")
             } else if cfg!(feature = "gateway")
                 && service == "snippets"
-                && matches!(
-                    action.as_str(),
-                    "snippets.exec" | "snippets.test" | "snippets.promote"
-                )
+                && crate::dispatch::snippets::dispatch::requires_execution_context(&action)
             {
                 #[cfg(feature = "gateway")]
                 return self

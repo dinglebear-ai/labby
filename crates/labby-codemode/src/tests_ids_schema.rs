@@ -91,6 +91,7 @@ fn artifact_write_protocol_round_trips() {
 #[test]
 fn snippet_catalog_entry_projects_to_codemode_run() {
     let info = SnippetInfo {
+        content_digest: None,
         tools: None,
         name: "repo-summary".to_string(),
         description: Some("Summarize repo health".to_string()),
@@ -127,6 +128,7 @@ fn snippet_catalog_json_input_schema_allows_any_json_value() {
     inputs.insert(
         "payload".to_string(),
         SnippetInputSpec {
+            nullable: true,
             ty: SnippetInputType::Json,
             required: true,
             default: None,
@@ -134,6 +136,7 @@ fn snippet_catalog_json_input_schema_allows_any_json_value() {
         },
     );
     let info = SnippetInfo {
+        content_digest: None,
         tools: None,
         name: "json-snippet".to_string(),
         description: None,
@@ -775,5 +778,29 @@ fn builds_catalog_entry_for_tool() {
         candidate
             .dts
             .contains("project, filter, or slice large tool results")
+    );
+}
+
+#[test]
+fn snippet_catalog_preserves_explicit_nullability() {
+    let home = tempfile::tempdir().unwrap();
+    let body = "---\nname: nullable-schema\ndescription: Schema test\ninputs:\n  text:\n    type: string\n    nullable: true\n  payload:\n    type: json\n---\n```js\nasync (input) => input\n```\n";
+    let info = crate::snippet::store::create_user_snippet(
+        home.path(),
+        "nullable-schema",
+        body,
+        None,
+        false,
+    )
+    .unwrap();
+    let descriptor = CatalogDescriptor::snippet(&info);
+    let schema = descriptor.schema.unwrap();
+    assert_eq!(
+        schema["properties"]["text"]["type"],
+        serde_json::json!(["string", "null"])
+    );
+    assert_eq!(
+        schema["properties"]["payload"]["not"],
+        serde_json::json!({"type":"null"})
     );
 }

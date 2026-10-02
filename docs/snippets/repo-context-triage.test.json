@@ -1,0 +1,55 @@
+{
+  "calls": [
+    {
+      "tool": "time::get_current_time",
+      "result": {
+        "datetime": "2026-10-01T12:00:00-04:00"
+      }
+    },
+    {
+      "tool": "github::search_issues",
+      "result": {
+        "total_count": 1,
+        "items": [
+          {
+            "number": 12,
+            "title": "Code Mode fixtures",
+            "state": "open",
+            "html_url": "https://github.com/dinglebear-ai/labby/issues/12"
+          }
+        ]
+      },
+      "match": {
+        "owner": "dinglebear-ai",
+        "repo": "labby",
+        "query": "Code Mode"
+      }
+    },
+    {
+      "tool": "github::get_file_contents",
+      "result": {
+        "path": "docs/snippets/README.md",
+        "content": "Fixture snippet documentation"
+      },
+      "match": {
+        "owner": "dinglebear-ai",
+        "repo": "labby",
+        "path": "docs/snippets/README.md"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/status": "ok",
+    "/skipped": [
+      "local_doc",
+      "local_code_search"
+    ],
+    "/calls/1/result/issues/0/number": 12
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 3,
+    "output_bytes": 16000
+  }
+}

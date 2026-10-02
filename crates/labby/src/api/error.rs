@@ -120,7 +120,7 @@ impl IntoResponse for ApiError {
             | "oauth_client_mismatch"
             | "oauth_shared_credential_protected" => StatusCode::CONFLICT,
             "unknown_action" | "unknown_subaction" | "unknown_instance" => StatusCode::BAD_REQUEST,
-            "unknown_upstream" | "unknown_tool" => StatusCode::NOT_FOUND,
+            "unknown_upstream" | "unknown_tool" | "unknown_execution" => StatusCode::NOT_FOUND,
             "network_error"
             | "bad_gateway"
             | "server_error"
@@ -136,6 +136,8 @@ impl IntoResponse for ApiError {
             | "not_connected"
             | "invalid_provider_output" => StatusCode::BAD_GATEWAY,
             "conflict"
+            | "preview_stale"
+            | "preview_unavailable"
             | "stale_document"
             | "contract_changed"
             | "ambiguous_tool"
@@ -300,6 +302,13 @@ mod tests {
             status_for("invalid_provider_output"),
             StatusCode::BAD_GATEWAY
         );
+    }
+
+    #[test]
+    fn snippet_preview_and_owner_lookup_errors_are_actionable_http_statuses() {
+        assert_eq!(status_for("unknown_execution"), StatusCode::NOT_FOUND);
+        assert_eq!(status_for("preview_stale"), StatusCode::CONFLICT);
+        assert_eq!(status_for("preview_unavailable"), StatusCode::CONFLICT);
     }
 
     #[test]

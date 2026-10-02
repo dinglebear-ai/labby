@@ -72,6 +72,7 @@ mod tests_ts_signatures;
 // ── Public surface ──────────────────────────────────────────────────────────
 
 pub use artifacts::install_artifact_config_defaults;
+pub use artifacts::read_receipted_artifact;
 pub use broker::CodeModeBroker;
 pub(crate) use broker::lab_action_unknown_tool_hint;
 pub use config::{MAX_SOURCE_BYTES, SERVICE, install_call_budget_config_defaults};

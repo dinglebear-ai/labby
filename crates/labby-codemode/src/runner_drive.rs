@@ -1551,7 +1551,7 @@ mod tests {
     #[cfg(not(windows))]
     use crate::pool::RunnerSpawn;
 
-    fn test_config(timeout: Duration) -> RunnerConfig {
+    pub(super) fn test_config(timeout: Duration) -> RunnerConfig {
         RunnerConfig {
             code_to_run: "async () => 1".to_string(),
             proxy: String::new(),
@@ -2730,3 +2730,6 @@ sleep 3600
         }
     }
 }
+
+#[cfg(all(test, not(windows)))]
+mod cancellation_tests;
