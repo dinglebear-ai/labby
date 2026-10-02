@@ -25,7 +25,7 @@ test('guided edit preserves complete existing input contracts without requiring 
     assert.deepEqual(result[name], existing[name as keyof typeof existing])
   assert.match(
     inputSpecsFrontmatter(result).join('\n'),
-    /required:\n    type: number\n    required: true\n    nullable: false\n    description: Current ratio/,
+    /required:\n {4}type: number\n {4}required: true\n {4}nullable: false\n {4}description: Current ratio/,
   )
   assert.equal(
     Object.prototype.hasOwnProperty.call(result.required, 'default'),

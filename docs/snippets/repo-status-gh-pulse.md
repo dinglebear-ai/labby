@@ -64,7 +64,7 @@ async (input) => {
   let local;try{local=unwrap(localCall.value)}catch(e){return {ok:false,classification:'unknown',error:'Local snapshot was unavailable or truncated',failures}}
   if(local.error)return {ok:false,classification:'unknown',error:local.error};
   root=local.root;
-  const match=String(local.remote??'').match(/github\.com(?:/|:)([^/]+)\/([^/]+?)(?:\.git)?$/);
+  const match=String(local.remote??'').match(/github\.com(?:\/|:)([^/]+)\/([^/]+?)(?:\.git)?$/);
   const owner=input.owner??match?.[1],repo=input.repo??match?.[2];
   if(match&&((input.owner&&input.owner!==match[1])||(input.repo&&input.repo!==match[2])))return {ok:false,local,error:'Requested GitHub repository does not match origin'};
   let prs=[],total=null;
