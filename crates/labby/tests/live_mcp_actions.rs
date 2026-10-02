@@ -209,6 +209,7 @@ async fn assert_mcp_transition_readback(
         }
         "snippets:snippets.replay" => {
             let run: serde_json::Value = serde_json::from_str(mutation_text).expect("replay JSON");
+            let run = action_scenarios::snippet_response_data("snippets.replay", &run);
             assert_eq!(run["receipt_status"], "persisted", "replay receipt: {run}");
             let id = run["execution_id"]
                 .as_str()
@@ -219,9 +220,13 @@ async fn assert_mcp_transition_readback(
                 serde_json::json!({"execution_id":id}),
             )
             .await;
-            assert!(
-                ok && text.contains(id),
-                "{key} retained replay readback: {text}"
+            assert!(ok, "{key} retained replay readback: {text}");
+            let response: serde_json::Value =
+                serde_json::from_str(&text).expect("replay receipt JSON");
+            let receipt = action_scenarios::snippet_response_data("snippets.receipt", &response);
+            assert_eq!(
+                receipt["execution_id"], id,
+                "{key} retained replay identifier"
             );
             true
         }

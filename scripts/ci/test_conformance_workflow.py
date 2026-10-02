@@ -58,12 +58,20 @@ class ConformanceWorkflowTests(unittest.TestCase):
     def test_build_is_separate_from_five_minute_execution(self) -> None:
         steps = self.job()["steps"]
         build = next(step for step in steps if step.get("name", "").startswith("Build product"))
-        self.assertEqual(build["timeout-minutes"], "15")
+        self.assertEqual(build["timeout-minutes"], "20")
+        self.assertEqual(self.job()["timeout-minutes"], "35")
         self.assertIn("cargo build -p labby --all-features --bin labby --locked", build["run"])
         self.assertIn(
             "cargo test -p labby --all-features --test lifecycle_conformance --no-run --locked",
             build["run"],
         )
+        self.assertIn(
+            "cargo build --manifest-path tools/verification/Cargo.toml -p labby-verify --locked",
+            build["run"],
+        )
+        replay = next(step for step in steps if step.get("name", "").startswith("Replay and explore"))
+        self.assertEqual(replay["timeout-minutes"], "4")
+        self.assertIn("timeout --signal=TERM --kill-after=5s 200s", replay["run"])
         execute = next(step for step in steps if step.get("name", "").startswith("Run required"))
         self.assertEqual(execute["timeout-minutes"], "6")
         self.assertIn("timeout --signal=TERM --kill-after=5s 300s", execute["run"])

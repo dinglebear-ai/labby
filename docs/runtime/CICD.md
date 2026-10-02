@@ -53,10 +53,11 @@ publisher is opt-in, disabled by default, fork-excluding and does not execute
 checkout code with its write token. No current caller enables publication.
 
 The unconditional `verification-conformance.yml` call is required by `ci-gate`.
-It builds the real product and lifecycle test target under a separate 15-minute
-cap, then runs the controlled HTTP/WebSocket/owned-audit conformance suite under
-a five-minute process timeout with five-second kill grace (25-minute total job
-cap). Nine required case artifacts cover the terminal outcomes, cancellation
+It builds the real product, lifecycle test target, and isolated verifier under
+a separate 20-minute cap, then runs the controlled HTTP/WebSocket/owned-audit
+conformance suite under a five-minute process timeout with five-second kill
+grace (35-minute total job cap, including setup, incident replay, validation,
+and upload margin). Nine required case artifacts cover the terminal outcomes, cancellation
 before and after dispatch, replacement ownership, and a deliberately divergent
 real adapter. Validation binds every trace hash and per-step observation to
 independently captured source/binary identity, requires successful cleanup, and
