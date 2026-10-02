@@ -61,8 +61,14 @@ pub(crate) fn configure_microsandbox_at(path: &Path) -> anyhow::Result<()> {
         .get_mut("mcpServers")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| anyhow::anyhow!(".mcp.json must contain an mcpServers object"))?;
-    if servers.contains_key("microsandbox") {
+    if servers.contains_key("microsandbox") || servers.values().any(is_microsandbox_entry) {
         return Ok(());
+    }
+    if servers.len() >= crate::proxy::config::MAX_MCP_SERVERS {
+        anyhow::bail!(
+            ".mcp.json may contain at most {} MCP servers; remove an entry before sandbox setup",
+            crate::proxy::config::MAX_MCP_SERVERS
+        );
     }
     servers.insert(
         "microsandbox".into(),
@@ -72,6 +78,31 @@ pub(crate) fn configure_microsandbox_at(path: &Path) -> anyhow::Result<()> {
     );
     lock.write(&serde_json::to_string_pretty(&document)?)?;
     Ok(())
+}
+
+#[cfg(any(feature = "gateway", test))]
+fn is_microsandbox_entry(entry: &serde_json::Value) -> bool {
+    let command = entry.get("command").and_then(serde_json::Value::as_str);
+    let direct = command
+        .and_then(|command| Path::new(command).file_name())
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|name| {
+            matches!(
+                name,
+                "microsandbox-mcp" | "microsandbox-mcp.exe" | "microsandbox-mcp.cmd"
+            )
+        });
+    direct
+        || entry
+            .get("args")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|args| {
+                args.iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .any(|argument| {
+                        argument == "microsandbox-mcp" || argument.starts_with("microsandbox-mcp@")
+                    })
+            })
 }
 
 #[cfg(test)]
@@ -105,6 +136,63 @@ mod sandbox_configuration_tests {
                 .unwrap()
                 .contains("custom-runtime")
         );
+    }
+
+    #[test]
+    fn sandbox_setup_recognizes_custom_names_and_commands() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".mcp.json");
+        for entry in [
+            serde_json::json!({"command":"npx", "args":["-y", "microsandbox-mcp"]}),
+            serde_json::json!({"command":"npx", "args":["-y", "microsandbox-mcp@0.7.6"]}),
+            serde_json::json!({"command":"/opt/bin/microsandbox-mcp", "args":["--custom"]}),
+        ] {
+            let raw = serde_json::to_string(&serde_json::json!({"mcpServers":{"sandbox":entry}}))
+                .unwrap();
+            std::fs::write(&path, &raw).unwrap();
+            configure_microsandbox_at(&path).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        }
+    }
+
+    #[test]
+    fn sandbox_setup_respects_upstream_capacity_without_changing_full_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".mcp.json");
+        let mut servers = serde_json::Map::new();
+        for index in 0..crate::proxy::config::MAX_MCP_SERVERS - 1 {
+            servers.insert(
+                format!("server{index}"),
+                serde_json::json!({"command":"other"}),
+            );
+        }
+        std::fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({"mcpServers":servers})).unwrap(),
+        )
+        .unwrap();
+        configure_microsandbox_at(&path).unwrap();
+        let full = std::fs::read_to_string(&path).unwrap();
+        configure_microsandbox_at(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), full);
+        servers.insert("last".into(), serde_json::json!({"command":"other"}));
+        let raw = serde_json::to_string(&serde_json::json!({"mcpServers":servers})).unwrap();
+        std::fs::write(&path, &raw).unwrap();
+        assert!(
+            configure_microsandbox_at(&path)
+                .unwrap_err()
+                .to_string()
+                .contains("at most 16")
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
+        servers.insert(
+            "last".into(),
+            serde_json::json!({"command":"npx","args":["microsandbox-mcp"]}),
+        );
+        let raw = serde_json::to_string(&serde_json::json!({"mcpServers":servers})).unwrap();
+        std::fs::write(&path, &raw).unwrap();
+        configure_microsandbox_at(&path).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), raw);
     }
 
     #[test]

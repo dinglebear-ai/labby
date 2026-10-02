@@ -2864,6 +2864,22 @@ pub fn env_key_set_outside_dotenv(key: &str) -> bool {
         .is_some_and(|keys| labby_runtime::helpers::environment_keys_contain(keys, key))
 }
 
+/// Let a fresh Labby child reload file-owned settings while preserving external
+/// environment overrides. Does not mutate the parent process environment.
+#[cfg(feature = "gateway")]
+pub(crate) fn remove_dotenv_from_child_environment(command: &mut std::process::Command) {
+    let Some(external_keys) = PROCESS_ENV_KEYS_BEFORE_DOTENV.get() else {
+        return;
+    };
+    for (key, _) in std::env::vars_os() {
+        if key.to_str().is_some_and(|key| {
+            !labby_runtime::helpers::environment_keys_contain(external_keys, key)
+        }) {
+            command.env_remove(key);
+        }
+    }
+}
+
 /// Load `.env` files into the process environment.
 ///
 /// Called after `load_toml()` and tracing init. Env vars loaded here
@@ -5988,7 +6004,7 @@ mod gateway_bearer_reload_tests {
         #[cfg(not(target_os = "macos"))]
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
-        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=original-file\nLABBY_DOTENV_RELOAD_EXTERNAL=ignored-file\n").unwrap();
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=original-file\nLABBY_DOTENV_RELOAD_EXTERNAL=ignored-file\nLABBY_PUBLIC_URL=https://old.example.ts.net:8443\n").unwrap();
         // A subprocess exercises the real startup loader without modifying the
         // environment of ordinary cargo-test threads or other test managers.
         let external_name = if cfg!(windows) {
@@ -6006,6 +6022,7 @@ mod gateway_bearer_reload_tests {
             .env("LABBY_HOME", dir.path())
             .env(external_name, "external-authority")
             .env_remove("LABBY_DOTENV_RELOAD_MANAGED")
+            .env_remove("LABBY_PUBLIC_URL")
             .output()
             .unwrap();
         assert!(
@@ -6036,7 +6053,27 @@ mod gateway_bearer_reload_tests {
             Some("original-file")
         );
         let path = super::dotenv_path().unwrap();
-        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=replacement-file\nLABBY_DOTENV_RELOAD_EXTERNAL=replacement-file\n").unwrap();
+        std::fs::write(&path, "LABBY_DOTENV_RELOAD_MANAGED=replacement-file\nLABBY_DOTENV_RELOAD_EXTERNAL=replacement-file\nLABBY_PUBLIC_URL=https://new.example.ts.net\n").unwrap();
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "config::gateway_bearer_reload_tests::fresh_child_reloads_file_environment",
+            "--ignored",
+            "--nocapture",
+        ]);
+        super::remove_dotenv_from_child_environment(&mut command);
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        assert_eq!(
+            std::env::var("LABBY_DOTENV_RELOAD_MANAGED").unwrap(),
+            "original-file"
+        );
         assert_eq!(
             labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
                 .as_deref(),
@@ -6053,6 +6090,26 @@ mod gateway_bearer_reload_tests {
             labby_gateway::upstream::auth::configured_bearer_token("LABBY_DOTENV_RELOAD_MANAGED")
                 .is_none(),
             "deleting a file-managed key must not resurrect its startup snapshot"
+        );
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for startup_dotenv_reload_child"]
+    fn fresh_child_reloads_file_environment() {
+        assert!(std::env::var_os("LABBY_DOTENV_RELOAD_MANAGED").is_none());
+        assert!(std::env::var_os("LABBY_PUBLIC_URL").is_none());
+        super::load_dotenv().unwrap();
+        assert_eq!(
+            std::env::var("LABBY_PUBLIC_URL").unwrap(),
+            "https://new.example.ts.net"
+        );
+        assert_eq!(
+            std::env::var("LABBY_DOTENV_RELOAD_MANAGED").unwrap(),
+            "replacement-file"
+        );
+        assert_eq!(
+            std::env::var("LABBY_DOTENV_RELOAD_EXTERNAL").unwrap(),
+            "external-authority"
         );
     }
 }

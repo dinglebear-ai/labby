@@ -110,9 +110,9 @@ pub(super) async fn run(
     {
         // A fresh process loads the saved env/config without mutating this
         // process's environment or accidentally retaining stale OAuth settings.
-        let status = Command::new(std::env::current_exe()?)
-            .arg("proxy")
-            .status()?;
+        let mut command = Command::new(std::env::current_exe()?);
+        crate::config::remove_dotenv_from_child_environment(&mut command);
+        let status = command.arg("proxy").status()?;
         if !status.success() {
             bail!("proxy exited unsuccessfully; configuration is retained, retry labby proxy");
         }
