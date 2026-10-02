@@ -40,6 +40,8 @@ pub(super) async fn handle_artifact_write_event(
             trace_params,
             artifact_max_bytes,
             writes_allowed,
+            &cfg.caller,
+            &cfg.capability_filter,
         )
         .await
     };
@@ -175,6 +177,8 @@ async fn handle_artifact_write(
     trace_params: bool,
     max_bytes: usize,
     writes_allowed: bool,
+    caller: &CodeModeCaller,
+    scope: &ToolScope,
 ) -> Result<(), ToolError> {
     let started = std::time::Instant::now();
     let redacted_params = artifact_trace_params(&request, trace_params);
@@ -201,7 +205,15 @@ async fn handle_artifact_write(
         )
         .await;
     }
-    match write_code_mode_artifact(artifact_root, &request, max_bytes).await {
+    let mut file_persisted = false;
+    let result = async {
+        let mut receipt = write_code_mode_artifact(artifact_root, &request, max_bytes).await?;
+        file_persisted = true;
+        crate::artifact_access::enroll(artifact_root, &mut receipt, caller, scope).await?;
+        Ok::<_, ToolError>(receipt)
+    }
+    .await;
+    match result {
         Ok(receipt) => {
             let result = json!(receipt);
             artifacts.push(receipt);
@@ -215,7 +227,11 @@ async fn handle_artifact_write(
             write_runner_input(stdin, &CodeModeRunnerInput::ToolResult { seq, result }).await
         }
         Err(error) => {
-            let error = CodeModeCallError::from(error).with_tool(ARTIFACT_WRITE_CALL_ID);
+            let mut error = CodeModeCallError::from(error).with_tool(ARTIFACT_WRITE_CALL_ID);
+            if file_persisted {
+                error.side_effects = crate::CodeModeSideEffectRisk::Possible;
+                error.recovery.guidance = "The artifact file was written but retrieval enrollment failed. Inspect the output before repeating the write.".into();
+            }
             let kind = error.kind.clone();
             calls.push(artifact_call(
                 seq,

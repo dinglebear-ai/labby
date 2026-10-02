@@ -822,6 +822,23 @@ impl LabMcpServer {
         let mut resources = CatalogSnapshotCollector::new(page_collector);
         let mut regular_resource_provenance = Vec::new();
 
+        #[cfg(feature = "gateway")]
+        if self.gateway_manager.is_some()
+            && self.route_scope.is_root()
+            && admin_app_resources_visible(auth)
+        {
+            for (uri, name) in [
+                ("lab://gateway/status", "Gateway status"),
+                ("lab://gateway/limits", "Code Mode limits"),
+                ("lab://capabilities", "Capability overview"),
+            ] {
+                resources.accept(Resource::new(uri, name).with_mime_type("application/json"));
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
         for resource in self.file_stash_resources(&context).await? {
             resources.accept(resource);
             if resources.finished() {
@@ -1815,7 +1832,7 @@ impl LabMcpServer {
 
         // Branch 2: gateway-synthetic resources.
         #[cfg(feature = "gateway")]
-        if uri.starts_with("lab://gateway/") {
+        if uri.starts_with("lab://gateway/") || uri == "lab://capabilities" {
             return self
                 .read_gateway_resource_impl(&uri, &subject, start, &context)
                 .await

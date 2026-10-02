@@ -890,7 +890,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     if !pending_tool_calls.is_empty() =>
                 {
                     if let Err(err) = handle_completed_tool_call(
-                        completed, stdin, child, child_pid, deadline, &mut state,
+                        completed, stdin, child, child_pid, deadline, &mut state, &cfg,
                     )
                     .await
                     {
@@ -1422,6 +1422,7 @@ async fn handle_completed_tool_call(
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
     state: &mut DriveState,
+    cfg: &RunnerConfig,
 ) -> Result<(), CodeModeExecutionError> {
     let Some((seq, id, params, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
@@ -1437,8 +1438,31 @@ async fn handle_completed_tool_call(
                 .map(|v| v.len())
                 .unwrap_or(0);
             let ui = outcome.ui;
+            let receipt =
+                if !is_internal && serialized_len > crate::response_artifacts::inline_threshold() {
+                    tokio::time::timeout_at(
+                        deadline,
+                        crate::response_artifacts::preserve(
+                            &state.artifact_root,
+                            format!("automatic/tool-{seq}.json"),
+                            &outcome.value,
+                            &cfg.caller,
+                            &cfg.capability_filter,
+                        ),
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                } else {
+                    None
+                };
+            if let Some(receipt) = receipt.as_ref() {
+                state.artifacts.push(receipt.clone());
+            }
             if serialized_len > state.calltool_result_max_bytes {
                 let max = state.calltool_result_max_bytes;
+                let recovery = receipt.as_ref().and_then(|r| r.artifact_id.as_ref()).map(|artifact_id| format!(" Complete response saved; use codemode.readArtifact({artifact_id:?}) in a later run.")).unwrap_or_else(|| " Complete response was not saved (access policy, artifact size limit, or storage failure).".into());
+
                 write_runner_input_by_deadline(
                     stdin,
                     &CodeModeRunnerInput::ToolError {
@@ -1447,7 +1471,7 @@ async fn handle_completed_tool_call(
                             CodeModeCallError::new(
                                 "result_too_large",
                                 format!(
-                                    "callTool result is {serialized_len} bytes; maximum is {max} bytes (use writeArtifact for large payloads)"
+                                    "callTool result is {serialized_len} bytes; maximum is {max} bytes {recovery}"
                                 ),
                             )
                             .with_tool(id.clone()),
