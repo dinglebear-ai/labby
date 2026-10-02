@@ -1,3 +1,9 @@
+---
+title: "Snippet performance and storage limits"
+created: "2026-10-01"
+updated: "2026-10-02"
+---
+
 # Snippet performance and storage limits
 
 The [snippet performance example](../../crates/labby-codemode/examples/snippet_performance.rs) measures two separate workloads without contacting live services:
