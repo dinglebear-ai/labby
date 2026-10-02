@@ -1011,6 +1011,9 @@ mod diagnostic_tests {
 
     #[tokio::test]
     async fn identity_http_client_times_out_when_server_never_sends_headers() {
+        // Nextest runs this independently of LiveLabbyGuard startup, which
+        // normally installs the same provider before constructing HTTP clients.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
