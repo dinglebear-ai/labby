@@ -107,6 +107,19 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.6.0](https://github.com/dinglebear-ai/labby/compare/v2.5.0...v2.6.0) (2026-10-03)
+
+
+### Added
+
+* **snippets:** generate and validate schema-backed fixtures ([#873](https://github.com/dinglebear-ai/labby/issues/873)) ([8f8f9ad](https://github.com/dinglebear-ai/labby/commit/8f8f9adc54a6b93d6c133a136852a43978291569))
+* **tailcat:** preserve unfinished browser/native transport extension ([#870](https://github.com/dinglebear-ai/labby/issues/870)) ([1303821](https://github.com/dinglebear-ai/labby/commit/13038217bd85655024b2d084e91d147a02adc80f))
+
+
+### Fixed
+
+* **gateway:** secure status recovery and caller isolation ([#871](https://github.com/dinglebear-ai/labby/issues/871)) ([fb3cd4a](https://github.com/dinglebear-ai/labby/commit/fb3cd4ad1674c6c774de31df380d0cd06993b3f8))
+
 ## [2.5.0](https://github.com/dinglebear-ai/labby/compare/v2.3.2...v2.5.0) (2026-10-02)
 
 ### Added
