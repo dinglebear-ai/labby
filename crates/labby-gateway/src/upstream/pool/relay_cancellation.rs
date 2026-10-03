@@ -105,7 +105,7 @@ async fn send_peer_relay_cancellation_once(
         Ok(Ok(correlated)) => correlated,
         Ok(Err(error)) => {
             tracing::debug!(
-                error = %error,
+                error = %super::capability_call::bounded_service_error_text(&error),
                 "upstream did not accept the Labby relay cancellation request"
             );
             false
@@ -153,7 +153,9 @@ async fn send_http_relay_cancellation_once(
         Ok(Ok(correlated)) => correlated,
         Ok(Err(error)) => {
             tracing::debug!(
-                error = %error,
+                error = %labby_runtime::agent_error::sanitize_error_text(
+                    &error.to_string(), super::capability_call::UPSTREAM_ERROR_MESSAGE_CAP_CHARS,
+                ),
                 "best-effort HTTP relay-token cancellation failed"
             );
             false
@@ -276,10 +278,12 @@ pub(super) fn dispatch_relay_cancellation(
                 {
                     Ok(Ok(())) => {}
                     Ok(Err(error)) => tracing::debug!(
-                            request_id = ?request_id_for_http,
-                            error = %error,
-                            "best-effort standard HTTP cancellation failed"
+                                request_id = ?request_id_for_http,
+                                error = %labby_runtime::agent_error::sanitize_error_text(
+                        &error.to_string(), super::capability_call::UPSTREAM_ERROR_MESSAGE_CAP_CHARS,
                     ),
+                                "best-effort standard HTTP cancellation failed"
+                        ),
                     Err(_) => tracing::debug!(
                             request_id = ?request_id_for_http,
                             "best-effort standard HTTP cancellation timed out"
@@ -296,7 +300,7 @@ pub(super) fn dispatch_relay_cancellation(
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::debug!(
                 request_id = ?request_id,
-                error = %error,
+                error = %super::capability_call::bounded_service_error_text(&error),
                 "standard upstream cancellation notification failed"
             ),
             Err(_) => tracing::debug!(
@@ -352,7 +356,7 @@ pub(super) fn spawn_bounded_handle_cancellation(
         match tokio::time::timeout(CANCELLATION_DELIVERY_TIMEOUT, cancellation).await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => tracing::debug!(
-                error = %error,
+                error = %super::capability_call::bounded_service_error_text(&error),
                 "best-effort rmcp request-handle cancellation failed"
             ),
             Err(_) => tracing::debug!("best-effort rmcp request-handle cancellation timed out"),

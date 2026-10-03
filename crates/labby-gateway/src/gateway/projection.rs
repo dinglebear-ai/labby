@@ -32,12 +32,13 @@ pub(super) fn config_view(
     upstream: &UpstreamConfig,
     code_mode: &CodeModeConfig,
 ) -> GatewayConfigView {
+    let (command, args) = redacted_stdio_command(upstream);
     GatewayConfigView {
         name: upstream.name.clone(),
         enabled: upstream.enabled,
         url: upstream.url.as_deref().map(redact_url),
-        command: upstream.command.as_deref().map(redact_stdio_value),
-        args: redact_stdio_args(&upstream.args),
+        command,
+        args,
         bearer_token_env: upstream.bearer_token_env.clone(),
         oauth_enabled: upstream.oauth.is_some(),
         proxy_resources: upstream.proxy_resources,
@@ -618,7 +619,13 @@ pub(super) async fn server_view_from_upstream(
         || summary.exposed_prompt_count > 0
         || summary.exposed_skill_count > 0;
     let health_ok = health.map(|health| health.is_routable()).unwrap_or(false);
-    let connected = last_error.is_none() && (exposing_capabilities || health_ok);
+    let (transport_available, capability_observation) = match pool {
+        Some(pool) => pool.cached_global_status_observation(&upstream.name).await,
+        None => (None, Default::default()),
+    };
+    let connected = transport_available != Some(false)
+        && last_error.is_none()
+        && (exposing_capabilities || health_ok);
     let pid = runtime.as_ref().and_then(|meta| meta.pid);
     // OAuth upstreams list tools per authenticated subject, so the shared
     // catalog stays empty by design; reporting it as warming would pin them in
@@ -654,10 +661,7 @@ pub(super) async fn server_view_from_upstream(
     let (command, args) = redacted_stdio_command(upstream);
 
     ServerView {
-        capability_observation: Some(match pool {
-            Some(pool) => pool.cached_global_observation(&upstream.name).await,
-            None => Default::default(),
-        }),
+        capability_observation: Some(capability_observation),
         notification_incidents: match pool {
             Some(pool) => pool.notification_incidents(&upstream.name).await,
             None => Default::default(),
@@ -879,13 +883,16 @@ pub(super) async fn runtime_view(
     let header_recovery = pool.header_recovery_metrics(name);
     let runtime_metadata = pool.upstream_runtime_metadata(name).await;
     let tool_health = pool.upstream_tool_health(name).await;
-    let connected = last_error.is_none()
+    let (transport_available, capability_observation) =
+        pool.cached_global_status_observation(name).await;
+    let connected = transport_available != Some(false)
+        && last_error.is_none()
         && tool_health
             .map(|health| health.is_routable())
             .unwrap_or(false);
 
     GatewayRuntimeView {
-        capability_observation: Some(pool.cached_global_observation(name).await),
+        capability_observation: Some(capability_observation),
         name: name.to_string(),
         connected,
         tool_count: summary.discovered_tool_count,
@@ -1000,6 +1007,77 @@ pub(super) async fn scoped_runtime_view(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_view_redacts_positional_credentials() {
+        let token = ["ghp_", &"a".repeat(36)].concat();
+        let embedded = format!("prefix-{token}-suffix");
+        let upstream = stdio_upstream(
+            "npx",
+            &["server", &token, &embedded, "--token", "synthetic"],
+        );
+        let view = config_view(&upstream, &CodeModeConfig::default());
+        assert_eq!(view.args[0], "server");
+        assert_eq!(view.args[1], "[REDACTED]");
+        assert_eq!(view.args[2], "prefix-[REDACTED]-suffix");
+        assert_eq!(view.args[3], "--token");
+        assert_eq!(view.args[4], "[redacted]");
+    }
+
+    #[tokio::test]
+    async fn closed_global_transport_disconnects_server_and_runtime_views() {
+        let pool = crate::upstream::pool::testsupport::static_catalog_pool("fixture").await;
+        let upstream = upstream_fixture(None, &[], Some("https://fixture.invalid/mcp"));
+        let dir = tempfile::tempdir().expect("fixture config directory");
+        let runtime = crate::gateway::runtime::GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool.clone())).await;
+        let manager =
+            crate::gateway::manager::GatewayManager::new(dir.path().join("config.toml"), runtime);
+        manager
+            .seed_config_unchecked_for_tests(labby_runtime::gateway_config::GatewayConfig {
+                upstream: vec![upstream.clone()],
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            server_view_from_upstream(Some(&pool), &upstream)
+                .await
+                .connected
+        );
+        assert!(runtime_view(Some(&pool), "fixture", None).await.connected);
+        crate::upstream::pool::testsupport::close_global_transport_for_tests(&pool, "fixture")
+            .await;
+        assert!(
+            !server_view_from_upstream(Some(&pool), &upstream)
+                .await
+                .connected
+        );
+        assert!(!runtime_view(Some(&pool), "fixture", None).await.connected);
+        let rows = manager
+            .mcp_runtime_list(None, &Default::default())
+            .await
+            .expect("runtime list");
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].connected);
+    }
+
+    #[tokio::test]
+    async fn never_acquired_lazy_upstream_keeps_ready_connection_projection() {
+        let pool = UpstreamPool::new();
+        let upstream = stdio_upstream("fixture-command", &[]);
+        pool.seed_lazy_upstreams(std::slice::from_ref(&upstream))
+            .await;
+        assert!(
+            server_view_from_upstream(Some(&pool), &upstream)
+                .await
+                .connected
+        );
+        assert!(runtime_view(Some(&pool), "fixture", None).await.connected);
+        assert_eq!(
+            pool.cached_global_observation("fixture").await.tools.state,
+            crate::gateway::view_models::CapabilityObservationState::Unknown,
+        );
+    }
 
     #[test]
     fn upstream_warning_code_preserves_response_limit_kind() {

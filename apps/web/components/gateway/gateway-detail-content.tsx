@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic'
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
   type ReactNode,
@@ -50,6 +51,7 @@ import {
 } from './gateway-confirmations'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
@@ -231,7 +233,7 @@ function formatGatewayTimestamp(value: string | null | undefined): string {
 export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { data: gateway, isLoading, error } = useGateway(gatewayId)
+  const { data: gateway, isLoading, isValidating, error, mutate: refreshGateway } = useGateway(gatewayId)
   const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
   const usage = useSWR(gatewayId ? ['gateway-detail-calls', gatewayId] : null, () => fetchToolCalls({ window: '24h', upstream: gatewayId!, limit: 5 }), { revalidateOnFocus: false })
   const usageMetrics = useSWR(gatewayId ? ['gateway-detail-metrics', gatewayId] : null, () => fetchGatewayUsageMetrics('24h', gatewayId!), { revalidateOnFocus: false })
@@ -256,6 +258,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [editOpen, setEditOpen] = useState(false)
   const [removeConfirmationOpen, setRemoveConfirmationOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
+  const [exposureChangedRemotely, setExposureChangedRemotely] = useState(false)
+  const exposureSnapshot = useRef<{ id?: string; signature: string }>({ signature: '' })
   const [draftSelectedToolNames, setDraftSelectedToolNames] = useState<string[]>([])
   const [selectedRowToolNames, setSelectedRowToolNames] = useState<string[]>([])
   const [isSavingExposure, setIsSavingExposure] = useState(false)
@@ -305,10 +309,17 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   }, [])
 
   useEffect(() => {
+    const previous = exposureSnapshot.current
+    exposureSnapshot.current = { id: gateway?.id, signature: toolExposureSignature }
+    if (previous.id === gateway?.id && manageToolsMode) {
+      if (previous.signature !== toolExposureSignature) setExposureChangedRemotely(true)
+      return
+    }
     setDraftSelectedToolNames(currentExposedToolNames)
     setSelectedRowToolNames([])
     setManageToolsMode(false)
-  }, [currentExposedToolNames, gateway?.id, toolExposureSignature])
+    setExposureChangedRemotely(false)
+  }, [currentExposedToolNames, gateway?.id, toolExposureSignature, manageToolsMode])
 
   useEffect(() => {
     setEnvDraft(Object.entries(gateway?.config.env ?? {}).map(([key, value]) => `${key}=${value}`).join('\n'))
@@ -483,7 +494,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     )
   }
 
-  if (error || !gateway) {
+  if (!gateway) {
     return (
       <>
         <AppHeader
@@ -767,18 +778,18 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
   const updatedAtLabel = formatGatewayTimestamp(gateway.updated_at)
   const isEnabled = gateway.enabled ?? true
-  const detailStatus = gatewayDetailStatus({ enabled: isEnabled, connected: gateway.status.connected, healthy: gateway.status.healthy })
+  const detailStatus = gatewayDetailStatus({ enabled: isEnabled, ...gateway.status, warnings: gateway.warnings })
   const operationalStatus = describeGatewayOperationalState(gateway)
   const statusLabel = detailStatus.label
   const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
   const statusDotColor = detailStatus.tone === 'connected'
     ? 'var(--aurora-accent-strong)'
-    : detailStatus.tone === 'disabled'
+    : detailStatus.tone === 'disabled' || detailStatus.tone === 'idle'
       ? 'var(--aurora-text-muted)'
       : 'var(--aurora-error)'
   const statusDotHalo = detailStatus.tone === 'connected'
     ? 'rgba(103,203,250,0.16)'
-    : detailStatus.tone === 'disabled'
+    : detailStatus.tone === 'disabled' || detailStatus.tone === 'idle'
       ? 'rgba(137,163,180,0.10)'
       : 'rgba(199,132,144,0.10)'
   const transportLabel =
@@ -951,6 +962,23 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       />
 
       <div className="flex-1 min-w-0 overflow-x-hidden">
+        {error ? (
+          <Alert variant="warn" className="mb-4">
+            <AlertTriangle />
+            <AlertTitle>Connection status may be out of date</AlertTitle>
+            <AlertDescription>
+              <p>Showing the last successful server snapshot. {getErrorMessage(error, 'The latest status refresh failed.')}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isValidating}
+                onClick={() => { void refreshGateway().catch(() => undefined) }}
+              >
+                {isValidating ? 'Refreshing connection status…' : 'Retry connection status'}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {!(gateway.enabled ?? true) ? (
           <div className="mb-4 flex items-start gap-3 rounded-lg border border-aurora-warn/30 bg-aurora-warn/10 px-4 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-aurora-warn" />
@@ -1314,6 +1342,13 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     <h2 className="text-lg font-semibold">{toolsTabLabel}</h2>
                   </div>
                   {gateway.status.capability_observation && displayedTools.length === 0 && capabilityValue(gateway.status, 'tools').state !== 'known' ? <p role="status" className="text-xs text-aurora-text-muted">{capabilityLabel(gateway.status, 'tools')}. Refresh discovery to load tools.</p> : null}
+                  {manageToolsMode && exposureChangedRemotely ? (
+                    <Alert variant="warn" className="mb-4">
+                      <AlertTriangle />
+                      <AlertTitle>Tool catalog or exposure changed while you were editing</AlertTitle>
+                      <AlertDescription>Your draft is preserved. Review the current catalog before saving, or cancel to use the latest server exposure.</AlertDescription>
+                    </Alert>
+                  ) : null}
                   <ToolExposureTable
                     emptyLabel={capabilityValue(gateway.status, 'tools').state !== 'known' ? capabilityLabel(gateway.status, 'tools') : capabilityValue(gateway.status, 'tools').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No tools discovered'}
                     tools={displayedTools}

@@ -162,9 +162,28 @@ export interface GatewayListViewProps {
   onDelete: (gateway: Gateway) => void
 }
 
+export function GatewayRuntimeRefreshNotice({
+  error,
+  updatedAt,
+  onRetry,
+}: { error?: unknown; updatedAt?: number; onRetry: () => void }) {
+  if (!error) return null
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm text-aurora-warn">
+      <div>
+        <p>Connection status may be out of date. {getErrorMessage(error, 'The latest runtime refresh failed.')}</p>
+        <p className="text-xs text-aurora-text-muted">
+          {updatedAt !== undefined ? <>Last successful refresh: <time dateTime={new Date(updatedAt).toISOString()}>{new Date(updatedAt).toLocaleTimeString()}</time>.</> : 'No successful runtime refresh yet.'}
+        </p>
+      </div>
+      <Button variant="outline" size="sm" onClick={onRetry}>Retry connection status</Button>
+    </div>
+  )
+}
+
 export function GatewayListContent() {
   const [primaryView, setPrimaryView] = useState<GatewayPrimaryLens | 'tools'>(DEFAULT_GATEWAY_LENS)
-  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm, toolInventoryError, retryToolInventory } = useGateways(
+  const { data: gateways, isLoading, error, runtimeError, runtimeUpdatedAt, retryRuntime, catalogWarmError, retryCatalogWarm, toolInventoryError, retryToolInventory } = useGateways(
     true,
     primaryView === 'tools',
   )
@@ -225,6 +244,7 @@ export function GatewayListContent() {
     const serverStates = items.map((gateway) => {
       const base = { id: gateway.id, name: gatewayDisplayName(gateway.name) }
       const operational = describeGatewayOperationalState(gateway)
+      if (operational.kind === 'idle') return { ...base, color: 'var(--aurora-text-muted)', state: operational.label.toLowerCase() }
       if (operational.kind === 'disabled') return { ...base, color: 'var(--aurora-text-muted)', state: 'disabled' }
       if (operational.kind === 'disconnected') return { ...base, color: 'var(--aurora-error)', state: 'disconnected' }
       if (operational.kind === 'degraded') return { ...base, color: 'var(--aurora-warn)', state: 'needs attention' }
@@ -630,6 +650,7 @@ export function GatewayListContent() {
 
   return (
     <>
+      <GatewayRuntimeRefreshNotice error={runtimeError} updatedAt={runtimeUpdatedAt} onRetry={() => { void retryRuntime().catch(() => undefined) }} />
       {loadingEditId ? <p role="status" className="px-4 py-2 text-sm text-aurora-text-muted">Loading configuration for {loadingEditId}…</p> : null}
       {editError ? <p role="alert" className="px-4 py-2 text-sm text-destructive">{editError}</p> : null}
       {primaryView === 'tools' && (toolInventoryError || items.some(item => item.warnings.some(warning => warning.code === 'tool_inventory_unavailable'))) ? (

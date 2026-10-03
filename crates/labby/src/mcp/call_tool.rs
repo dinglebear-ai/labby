@@ -150,6 +150,58 @@ use crate::mcp::result_format::{
 };
 use crate::mcp::server::LabMcpServer;
 
+#[cfg(feature = "gateway")]
+async fn synthetic_gateway_authority(
+    server: &LabMcpServer,
+    context: &RequestContext<RoleServer>,
+    action: &str,
+) -> Result<crate::access::GatewayActionAuthorization, ToolError> {
+    let denied = || ToolError::Forbidden {
+        message: "Gateway operation is not authorized".into(),
+        required_scopes: Vec::new(),
+    };
+    let identity = crate::mcp::context::verified_identity_from_extensions(&context.extensions)
+        .cloned()
+        .ok_or_else(denied)?;
+    let ceiling = match (
+        auth_context_from_extensions(&context.extensions),
+        server.absent_auth_trust(),
+    ) {
+        (Some(auth), _) => crate::access::AuthorityCeiling::from_auth_context(auth),
+        (None, crate::mcp::context::AbsentAuth::TrustedLocal) => {
+            crate::access::AuthorityCeiling::trusted_local()
+        }
+        (None, crate::mcp::context::AbsentAuth::Untrusted) => return Err(denied()),
+    };
+    let store = server.access_runtime.store().await.map_err(|error| {
+        crate::dispatch::access_errors::map_action_runtime_error("gateway", action, error)
+    })?;
+    let installation_id = store
+        .installation_id()
+        .await
+        .map_err(|error| {
+            crate::dispatch::access_errors::map_store_error("gateway", error, || {
+                ToolError::Forbidden {
+                    message: "Gateway operation is not authorized".into(),
+                    required_scopes: Vec::new(),
+                }
+            })
+        })?
+        .unwrap_or_else(|| "installation".into());
+    let authority = crate::access::authorize_gateway_action(
+        &server.access_runtime,
+        identity,
+        ceiling,
+        &installation_id,
+        None,
+        action,
+    )
+    .await?
+    .ok_or_else(denied)?;
+    authority.validate_before_external_effect().await?;
+    Ok(authority)
+}
+
 #[cfg(feature = "skills")]
 pub(super) struct SkillLibraryCallbackBoundary {
     pub(super) identity: labby_auth::VerifiedIdentity,
@@ -1574,6 +1626,19 @@ impl LabMcpServer {
                             );
                             return Ok(error_result_from_envelope(envelope).into());
                         }
+                        let authority =
+                            match synthetic_gateway_authority(self, &context, gateway_action).await
+                            {
+                                Ok(authority) => authority,
+                                Err(error) => {
+                                    return Ok(error_result_from_envelope(tool_error_envelope(
+                                        &service,
+                                        synthetic_action,
+                                        &error,
+                                    ))
+                                    .into());
+                                }
+                            };
                         let params = inject_gateway_origin_param(
                             gateway_action,
                             params,
@@ -1590,13 +1655,18 @@ impl LabMcpServer {
                                 )
                                 .map(std::borrow::Cow::into_owned),
                         };
-                        Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
-                            manager,
-                            gateway_action,
-                            params,
-                            enrichment_scope,
-                        ))
-                        .await
+                        let response =
+                            Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
+                                manager,
+                                gateway_action,
+                                params,
+                                enrichment_scope,
+                            ))
+                            .await;
+                        match authority.validate_after_external_effect().await {
+                            Ok(()) => response,
+                            Err(error) => Err(error),
+                        }
                     }
                     _ => Err(ToolError::UnknownAction {
                         message: format!("unknown Add Server action `{synthetic_action}`"),
@@ -1604,11 +1674,23 @@ impl LabMcpServer {
                         hint: None,
                     }),
                 };
+                let error_envelope = result.as_ref().err().map(|error| {
+                    let mut envelope = tool_error_envelope(&service, synthetic_action, error);
+                    if error.kind() == "authority_changed" {
+                        envelope["error"]["canonical_action"] =
+                            serde_json::json!(if synthetic_action == "test" {
+                                "gateway.test"
+                            } else {
+                                "gateway.add"
+                            });
+                    }
+                    envelope
+                });
                 let result =
                     result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
                 let elapsed_ms = start.elapsed().as_millis();
                 let input_tokens = estimate_tokens_args(&args);
-                let (result, outcome) = format_dispatch_result(
+                let (mut result, outcome) = format_dispatch_result(
                     result,
                     &service,
                     synthetic_action,
@@ -1617,6 +1699,9 @@ impl LabMcpServer {
                     self.request_actor_key(&context),
                     input_tokens,
                 );
+                if let Some(envelope) = error_envelope {
+                    result = error_result_from_envelope(envelope);
+                }
                 self.emit_dispatch_notification(
                     &context,
                     &service,
@@ -1639,39 +1724,53 @@ impl LabMcpServer {
                 };
                 let result = match synthetic_action {
                     "open" | "refresh" => {
-                        let manager = self
-                            .gateway_manager
-                            .as_ref()
-                            .expect("availability requires a gateway manager");
-                        let enrichment_scope = crate::dispatch::gateway::GatewayEnrichmentScope {
-                            route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
-                            oauth_subject: self
-                                .route_oauth_subject(
-                                    crate::mcp::context::oauth_upstream_subject_for_request(
-                                        auth_context_from_extensions(&context.extensions),
-                                        self.request_subject(&context),
-                                    ),
-                                )
-                                .map(std::borrow::Cow::into_owned),
-                        };
-                        if synthetic_action == "refresh" {
-                            drop(
-                                manager
-                                    .refresh_gateway_status_catalog(&enrichment_scope, None)
-                                    .await,
-                            );
+                        async {
+                            let authority =
+                                synthetic_gateway_authority(self, &context, "gateway.list").await?;
+                            let manager = self
+                                .gateway_manager
+                                .as_ref()
+                                .expect("availability requires a gateway manager");
+                            let enrichment_scope =
+                                crate::dispatch::gateway::GatewayEnrichmentScope {
+                                    route_visible_upstreams: self
+                                        .route_scope
+                                        .allowed_upstreams()
+                                        .cloned(),
+                                    oauth_subject: self
+                                        .route_oauth_subject(
+                                            crate::mcp::context::oauth_upstream_subject_for_request(
+                                                auth_context_from_extensions(&context.extensions),
+                                                self.request_subject(&context),
+                                            ),
+                                        )
+                                        .map(std::borrow::Cow::into_owned),
+                                };
+                            if synthetic_action == "refresh" {
+                                drop(
+                                    manager
+                                        .refresh_gateway_status_catalog(&enrichment_scope, None)
+                                        .await,
+                                );
+                            }
+                            let response =
+                                Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
+                                    manager,
+                                    "gateway.list",
+                                    serde_json::json!({}),
+                                    enrichment_scope,
+                                ))
+                                .await;
+                            authority.validate_after_external_effect().await?;
+                            response.map(|mut value| {
+                                retain_route_visible_gateway_status_rows(
+                                    &mut value,
+                                    &self.route_scope,
+                                );
+                                value
+                            })
                         }
-                        Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
-                            manager,
-                            "gateway.list",
-                            serde_json::json!({}),
-                            enrichment_scope,
-                        ))
                         .await
-                        .map(|mut value| {
-                            retain_route_visible_gateway_status_rows(&mut value, &self.route_scope);
-                            value
-                        })
                     }
                     _ => Err(ToolError::UnknownAction {
                         message: format!("unknown Gateway Status action `{synthetic_action}`"),
@@ -1679,11 +1778,18 @@ impl LabMcpServer {
                         hint: None,
                     }),
                 };
+                let error_envelope = result.as_ref().err().map(|error| {
+                    let mut envelope = tool_error_envelope(&service, synthetic_action, error);
+                    if error.kind() == "authority_changed" {
+                        envelope["error"]["canonical_action"] = serde_json::json!("gateway.list");
+                    }
+                    envelope
+                });
                 let result =
                     result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
                 let elapsed_ms = start.elapsed().as_millis();
                 let input_tokens = estimate_tokens_args(&args);
-                let (result, outcome) = format_dispatch_result(
+                let (mut result, outcome) = format_dispatch_result(
                     result,
                     &service,
                     synthetic_action,
@@ -1692,6 +1798,9 @@ impl LabMcpServer {
                     self.request_actor_key(&context),
                     input_tokens,
                 );
+                if let Some(envelope) = error_envelope {
+                    result = error_result_from_envelope(envelope);
+                }
                 self.emit_dispatch_notification(
                     &context,
                     &service,
@@ -2364,6 +2473,13 @@ impl LabMcpServer {
                             enrichment_scope,
                         ))
                         .await;
+                    let response = match gateway_authority.as_ref() {
+                        Some(authority) => authority
+                            .validate_after_external_effect()
+                            .await
+                            .and(response),
+                        None => response,
+                    };
                     response.map(|mut response| {
                         // Only Team-scoped policy responses are projected
                         // through the Team namespace; platform responses stay
@@ -2384,10 +2500,17 @@ impl LabMcpServer {
             } else {
                 (entry.dispatch)(action.clone(), params).await
             };
+            // Preserve the response-fence contract through the legacy formatter,
+            // while still recording and notifying completion of the executed action.
+            let authority_error_envelope = result
+                .as_ref()
+                .err()
+                .filter(|error| service == "gateway" && error.kind() == "authority_changed")
+                .map(|error| tool_error_envelope(&service, &action, error));
             let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
             let elapsed_ms = start.elapsed().as_millis();
             let input_tokens = estimate_tokens_args(&args);
-            let (result, outcome) = format_dispatch_result(
+            let (mut result, outcome) = format_dispatch_result(
                 result,
                 &service,
                 &action,
@@ -2396,6 +2519,9 @@ impl LabMcpServer {
                 actor_key,
                 input_tokens,
             );
+            if let Some(envelope) = authority_error_envelope {
+                result = error_result_from_envelope(envelope);
+            }
             self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)
                 .await;
             return Ok(result.into());

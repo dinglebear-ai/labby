@@ -63,6 +63,15 @@ function gatewayWithStatus(status: Partial<Gateway['status']>): Gateway {
   }
 }
 
+test('overview does not call unchecked credential servers nominal', () => {
+  const unknown = { state: 'unknown' as const, discovered: null, exposed: null }
+  const html = renderGatewayHero(gatewayWithStatus({ connected: false, healthy: false,
+    capability_observation: { scope: 'credential', tools: unknown, resources: unknown, prompts: unknown, skills: unknown },
+  }))
+  assert.match(html, /1 not checked or idle/)
+  assert.doesNotMatch(html, /all systems nominal/)
+})
+
 function renderGatewayHero(gateway: Gateway): string {
   return renderToStaticMarkup(
     <OverviewHero

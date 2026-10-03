@@ -275,6 +275,12 @@ pub(super) fn log_upstream_request_error(
     response_bytes: Option<usize>,
     max_bytes: Option<usize>,
 ) {
+    let error = error.map(|error| {
+        labby_runtime::agent_error::sanitize_error_text(
+            &error.to_string(),
+            super::capability_call::UPSTREAM_ERROR_MESSAGE_CAP_CHARS,
+        )
+    });
     tracing::warn!(
         surface = "dispatch",
         service = "upstream.pool",
@@ -289,7 +295,7 @@ pub(super) fn log_upstream_request_error(
         item = event.item,
         elapsed_ms,
         kind,
-        error = error.map(tracing::field::display),
+        error = error.as_deref().map(tracing::field::display),
         response_bytes,
         max_bytes,
         "upstream.request.error"
@@ -302,6 +308,34 @@ mod tests {
     use labby_primitives::trace::{LabbyTraceCorrelation, TraceContext};
     use rmcp::transport::DynamicTransportError;
     use tracing_subscriber::layer::SubscriberExt;
+
+    #[test]
+    fn request_error_logs_redact_short_credentials() {
+        let _lock = crate::test_support::TRACING_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let buf = crate::test_support::SharedBuf::default();
+        let subscriber = tracing_subscriber::registry().with(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(buf.clone())
+                .with_ansi(false)
+                .without_time(),
+        );
+        let guard = tracing::subscriber::set_default(subscriber);
+        log_upstream_request_error(
+            UpstreamRequestLog::tool("up", "ping", false),
+            1,
+            "upstream_error",
+            Some(&"Authorization: Bearer secret-token-for-regression"),
+            None,
+            None,
+        );
+        drop(guard);
+        let logs = crate::test_support::captured_logs(&buf);
+        assert!(logs.contains("upstream.request.error"));
+        assert!(!logs.contains("secret-token-for-regression"));
+    }
 
     #[test]
     fn google_http_404_method_not_found_is_capability_unsupported() {

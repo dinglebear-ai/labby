@@ -270,8 +270,12 @@ Changing a bearer-token env var does not hot-apply by itself. Use `gateway.reloa
 
 In `auto` lifecycle mode, compatibility fallback is bounded to one legacy
 `initialize` attempt. Discovery HTTP 401, 403, 429, and 5xx responses do not
-trigger a downgrade. An uncorrelated error or unsupported-protocol text alone
-is not sufficient legacy evidence. Network discovery can still fall back on
+trigger a downgrade. Network HTTP 400 with an explicit unsupported
+`MCP-Protocol-Version` marker can retry legacy initialization. Generic legacy
+JSON-RPC codes `-32600` and `-32000` can also retry when the error rejects
+`2026-07-28` and advertises `2025-11-25` among its supported versions. An
+uncorrelated error or ambiguous unsupported-protocol text is not sufficient
+legacy evidence. Network discovery can still fall back on
 plain 400, 404, 405, 415, or 422 responses and recognized lifecycle errors;
 modern protocol-contract errors retain their failure classification. Stdio
 classification uses the transport's protocol error, not arbitrary child stderr.
