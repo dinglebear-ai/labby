@@ -2532,5 +2532,92 @@
     "exclusion_reason": null,
     "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "setup",
+    "action": "tailcat.configure",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api",
+      "web_ui"
+    ],
+    "applicable_features": [
+      "all"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::tailcat_configure::native_context_denial",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_setup_readonly",
+      "parameters": {
+        "project_id": "$fixture.name",
+        "public_resource": "$fixture.expected_url",
+        "derp_map_url": "$fixture.expected_url",
+        "node_path": "$fixture.name",
+        "dry_run": "$fixture.approved"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "setup",
+    "action": "tailcat.enable",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api",
+      "web_ui"
+    ],
+    "applicable_features": [
+      "all"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::tailcat_enable::native_context_denial",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_setup_readonly",
+      "parameters": {
+        "project_id": "$fixture.name",
+        "credential_id": "$fixture.name"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "setup",
+    "action": "tailcat.enroll",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api",
+      "web_ui"
+    ],
+    "applicable_features": [
+      "all"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::setup::tailcat_enroll::native_context_denial",
+    "minimum_evidence": "live_error_path",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_setup_readonly",
+      "parameters": {
+        "project_id": "$fixture.name",
+        "idempotency_key": "$fixture.name"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "surface_action_runner"
   }
 ]

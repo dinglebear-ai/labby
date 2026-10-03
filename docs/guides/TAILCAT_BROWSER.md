@@ -22,9 +22,13 @@ cleanup. It inspected disabled networking and empty mounts, denied unrelated VM
 cleanup, and verified the guest was absent afterward. The fixture uses local
 OAuth configuration. The actual Depot page also passed sign-in, pairing request,
 approved delivery import and tool discovery, and the cleanup response confirmed
-the identity-bound adapter was used. Those results predate the automatic encrypted delivery and native settings flow
-described below. Installed-controller setup, the complete encrypted handoff,
-Google sign-in and production deployment have not yet been qualified. This remains an experimental integration.
+the identity-bound adapter was used. A fresh October 3 fixture also passed automatic encrypted delivery through the
+actual Depot page, matching fingerprints, native approval and real VM cleanup.
+It uses isolated OAuth configuration, not a live Google sign-in. Installed-owner
+setup/enrollment/activation and Google sign-in remain unqualified; packaged asset
+discovery was checked in a disposable installation, but real provider credentials
+are required to finish that setup. Production deployment has not been qualified.
+This remains an experimental integration.
 
 ## Prerequisites
 

@@ -83,14 +83,31 @@ Process.sleep(:infinity)
  if(depotRoot){
   stage='depot_login_page';await page.goto(origin+'/ui/login');stage='depot_login_form';await page.locator('input[name="token"]').fill((await readFile(path.join(root,'depot-reader-token'),'utf8')).trim());stage='depot_login_submit';await Promise.all([page.waitForURL(url=>url.pathname==='/'),page.locator('form[action="/ui/login"] button').click()]);
   stage='depot_page';await page.goto(origin+'/ui/sandboxes');await page.waitForSelector('[data-phx-main].phx-connected');
-  stage='depot_prepare';await page.locator('[name="upstream"]').fill('msb');const downloaded=page.waitForEvent('download');await page.locator('[data-tailcat="prepare"]').click();const requestFile=path.join(root,'depot-request.json');await (await downloaded).saveAs(requestFile);const request=JSON.parse(await readFile(requestFile,'utf8'));
-  stage='native_approve';const prepared=await control('/prepare',{origin:request.origin,peer:request.peer,upstream:request.upstream,source_credential:source});delivery=await control('/approve',{origin:request.origin,peer:request.peer,upstream:request.upstream,id:prepared.id,nonce:prepared.nonce});
-  stage='depot_import';const deliveryFile=path.join(root,'depot-delivery.json');await writeFile(deliveryFile,JSON.stringify(delivery),{mode:0o600});await page.locator('input[type="file"]').setInputFiles(deliveryFile);await page.waitForFunction(()=>document.querySelector('[data-tailcat="status"]')?.textContent==='ready',{},{timeout:45000});
+  stage='depot_prepare';await page.locator('[name="upstream"]').fill('msb');await page.locator('[data-tailcat="prepare"]').click();
+  await page.waitForFunction(()=>/--pairing-id [A-Za-z0-9_-]{43}/.test(document.querySelector('[data-tailcat="command"]')?.textContent||''));
+  const command=await page.locator('[data-tailcat="command"]').textContent();
+  const pairingId=command.match(/--pairing-id ([A-Za-z0-9_-]{43})/)[1];
+  const code=(await page.locator('[data-tailcat="code"]').textContent()).trim();
+  if(!/^[A-Za-z0-9_-]{43}$/.test(code))throw Error('pairing_code_shape');
+  const exchangeURL=origin+'/ui/tailcat/pairings/'+pairingId+'/exchange';
+  stage='native_exchange';const fetched=await context.request.get(exchangeURL,{headers:{'X-Labby-Pairing-Code':code},timeout:10000});
+  if(fetched.status()!==200)throw Error('native_exchange_denied');
+  const exchange=await fetched.json();const request=exchange.request;
+  if(exchange.id!==pairingId||request.origin!==origin)throw Error('native_exchange_binding');
+  const fingerprint=sha(Buffer.from(JSON.stringify(['labby.tailcat.public-request/v1',pairingId,request.origin,request.peer,request.upstream])));
+  if((await page.locator('[data-tailcat="fingerprint"]').textContent()).trim()!==fingerprint)throw Error('fingerprint_mismatch');
+  stage='native_approve';const prepared=await control('/prepare',{origin:request.origin,peer:request.peer,upstream:request.upstream,source_credential:source});
+  delivery=await control('/approve',{origin:request.origin,peer:request.peer,upstream:request.upstream,id:prepared.id,nonce:prepared.nonce,exchange_id:pairingId});
+  if(!delivery.packet?.ciphertext||'address' in delivery||'grant' in delivery)throw Error('plaintext_delivery_exposed');
+  stage='encrypted_deposit';const deposited=await context.request.post(exchangeURL,{headers:{'X-Labby-Pairing-Code':code},data:delivery.packet,timeout:10000});
+  if(deposited.status()!==204)throw Error('encrypted_deposit_denied');
+  await page.waitForFunction(()=>document.querySelector('[data-tailcat="status"]')?.textContent==='ready',{},{timeout:45000});
+  evidence.encryptedPairingVerified=true;
  }else{await page.goto(origin);}
  page.setDefaultTimeout(180000);
  stage='vm_workflow';evidence=await page.evaluate(async({name,wasmSha,runtimeSha,depot})=>{
   const {loadTailcat}=await import(depot?'/assets/tailcat/wasm.mjs':'/wasm.mjs');const {TailcatClient}=await import(depot?'/assets/tailcat/transport.mjs':'/transport.mjs');
-  let client,createAttempted=false;const result={ok:false,vm:name,networkDisabled:true,hostMounts:false};
+  let client,createAttempted=false;const result={ok:false,vm:name,networkDisabled:true,hostMounts:false,encryptedPairingVerified:Boolean(depot)};
   const deadline=setTimeout(()=>client?.close(),175000);
   try {
    if(depot){const el=document.getElementById('tailcat-sandbox');client=window.liveSocket.owner(el).getHook(el).client;if(!client)throw Error('depot_hook_not_connected');result.depotLiveViewConnected=true;}else{
