@@ -487,3 +487,46 @@ fn notice_production_windows_second_open_while_first_connection_is_live() {
     drop(first);
     drop(second);
 }
+
+#[test]
+fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let bytes = Arc::new(Mutex::new(Vec::new()));
+    let writer = Capture(Arc::clone(&bytes));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, || {
+        let sqlite = rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+            Some("private notice payload and SQL".into()),
+        );
+        assert_eq!(NoticeError::from(sqlite), NoticeError::Unavailable);
+        let io = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "private database path",
+        );
+        assert_eq!(
+            filesystem_failure("verify_database", &io),
+            NoticeError::Unavailable
+        );
+    });
+    let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    assert!(logs.contains("DiskFull"));
+    assert!(logs.contains("PermissionDenied"));
+    assert!(logs.contains("verify_database"));
+    assert!(!logs.contains("private notice"));
+    assert!(!logs.contains("private database"));
+}

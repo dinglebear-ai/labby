@@ -193,9 +193,38 @@ impl From<rusqlite::Error> for NoticeError {
             {
                 Self::Busy
             }
-            _ => Self::Unavailable,
+            error => {
+                // SQLite messages can include SQL or payloads. Log codes only.
+                if let rusqlite::Error::SqliteFailure(code, _) = error {
+                    tracing::error!(
+                        subsystem = "agent_notifications",
+                        operation = "sqlite",
+                        sqlite_code = ?code.code,
+                        sqlite_extended_code = code.extended_code,
+                        "notification storage operation failed"
+                    );
+                } else {
+                    tracing::error!(
+                        subsystem = "agent_notifications",
+                        operation = "sqlite",
+                        "notification storage operation failed without a SQLite status code"
+                    );
+                }
+                Self::Unavailable
+            }
         }
     }
+}
+
+fn filesystem_failure(operation: &'static str, error: &std::io::Error) -> NoticeError {
+    tracing::error!(
+        subsystem = "agent_notifications",
+        operation,
+        io_kind = ?error.kind(),
+        os_code = error.raw_os_error(),
+        "notification filesystem operation failed"
+    );
+    NoticeError::Unavailable
 }
 
 #[derive(Clone)]
@@ -281,7 +310,7 @@ impl NoticeStore {
     fn open_at_attempt(root: &Path, retried: bool) -> Result<Self, NoticeError> {
         let directory = root.join("agent-notifications");
         crate::installation::secure_file::create_private_dir(&directory)
-            .map_err(|_| NoticeError::Unavailable)?;
+            .map_err(|error| filesystem_failure("create_directory", &error))?;
         let path = directory.join("inbox.sqlite3");
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) => {
@@ -294,8 +323,8 @@ impl NoticeStore {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::MetadataExt as _;
-                    let parent =
-                        std::fs::metadata(&directory).map_err(|_| NoticeError::Unavailable)?;
+                    let parent = std::fs::metadata(&directory)
+                        .map_err(|error| filesystem_failure("directory_metadata", &error))?;
                     if metadata.mode() & 0o077 != 0
                         || metadata.nlink() != 1
                         || metadata.uid() != parent.uid()
@@ -314,16 +343,17 @@ impl NoticeStore {
                             Self::open_at_attempt(root, true)
                         };
                     }
-                    Err(_) => return Err(NoticeError::Unavailable),
+                    Err(error) => return Err(filesystem_failure("create_database", &error)),
                 }
             }
-            Err(_) => return Err(NoticeError::Unavailable),
+            Err(error) => return Err(filesystem_failure("database_metadata", &error)),
         }
         #[cfg(windows)]
         {
             let file = labby_winjob::fs::open_sqlite_verification(&path)
-                .map_err(|_| NoticeError::Unavailable)?;
-            labby_winjob::fs::verify_private_acl(&file).map_err(|_| NoticeError::Unavailable)?;
+                .map_err(|error| filesystem_failure("verify_database", &error))?;
+            labby_winjob::fs::verify_private_acl(&file)
+                .map_err(|error| filesystem_failure("verify_database_acl", &error))?;
         }
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
