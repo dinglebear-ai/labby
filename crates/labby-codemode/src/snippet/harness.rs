@@ -114,6 +114,9 @@ impl Default for FixtureBudgets {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SnippetFixture {
+    /// Optional saved tool schemas for offline argument and response checks.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub schemas: BTreeMap<String, super::schemas::FixtureSchemas>,
     /// Fixture input defaults; explicit caller parameters take precedence.
     #[serde(default)]
     pub params: BTreeMap<String, Value>,
@@ -235,7 +238,51 @@ impl SnippetFixture {
             ));
         }
         let mut count = 0usize;
+        if self.schemas.len() > 128 {
+            return Err(invalid("fixture exceeds schema contract limit"));
+        }
+        for (tool, contract) in &self.schemas {
+            if contract
+                .fingerprint
+                .as_ref()
+                .is_some_and(|saved| *saved != contract.contract_fingerprint())
+            {
+                return Err(invalid("saved schema fingerprint does not match contract"));
+            }
+            if !self.calls.iter().any(|rule| &rule.tool == tool) {
+                return Err(invalid("fixture schema has no corresponding tool rule"));
+            }
+            for schema in [&contract.input_schema, &contract.output_schema]
+                .into_iter()
+                .flatten()
+            {
+                super::schemas::check_schema(schema)?;
+            }
+        }
+        let mut schema_budget = super::schemas::validation_budget();
         for rule in &self.calls {
+            if rule.error.is_none()
+                && let Some(schema) = self
+                    .schemas
+                    .get(&rule.tool)
+                    .and_then(|s| s.output_schema.as_ref())
+            {
+                super::schemas::validate_value_with_budget(
+                    &rule.result,
+                    schema,
+                    &mut schema_budget,
+                )
+                .map_err(|_| {
+                    if schema_budget.is_exhausted() {
+                        invalid("fixture response schema validation work budget exceeded")
+                    } else {
+                        invalid(format!(
+                            "fixture response violates output schema for {}",
+                            rule.tool
+                        ))
+                    }
+                })?;
+            }
             let Some((namespace, tool)) = rule.tool.split_once("::") else {
                 return Err(invalid(
                     "fixture tools must use exact upstream::tool identifiers",
@@ -338,6 +385,7 @@ fn valid_json_pointer(pointer: &str) -> bool {
 
 #[derive(Deserialize)]
 struct RawReport {
+    contract_calls: Vec<ContractCall>,
     result: Value,
     exception: Option<String>,
     calls: Vec<FixtureTrace>,
@@ -345,6 +393,12 @@ struct RawReport {
     unexpected: usize,
     max_in_flight: usize,
     unused: Vec<Value>,
+}
+
+#[derive(Deserialize)]
+struct ContractCall {
+    tool: String,
+    params: Value,
 }
 
 /// Execute synthetic calls in the production QuickJS subprocess, without a gateway.
@@ -366,6 +420,7 @@ pub async fn run_fixture_with_source_limit(
     fixture: &SnippetFixture,
     max_source_bytes: usize,
 ) -> Result<SnippetFixtureReport, ToolError> {
+    let started = Instant::now();
     fixture.validate()?;
     if let Some(declared) = &snippet.tools {
         for rule in &fixture.calls {
@@ -394,14 +449,20 @@ pub async fn run_fixture_with_source_limit(
     let wrapped = format!(
         "async () => {{ return await ({WRAPPER})({code_json}, {fixture_json}, {input_json}, codemode.batch); }}"
     );
+    let preparation_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let remaining_ms = fixture
+        .budgets
+        .wall_clock_ms
+        .checked_sub(preparation_ms)
+        .filter(|remaining| *remaining > 0)
+        .ok_or_else(|| invalid("fixture validation deadline exceeded before execution"))?;
     let config = CodeModeConfig {
-        timeout_ms: fixture.budgets.wall_clock_ms,
+        timeout_ms: remaining_ms,
         max_source_bytes: 10 * crate::MAX_SOURCE_BYTES,
         trace_params: false,
         ..CodeModeConfig::default()
     };
     let host = offline::OfflineHost::new(config.clone())?;
-    let started = Instant::now();
     let execution = CodeModeBroker::new(Some(&host))
         .execute_fixture_with_raw_response(
             &wrapped,
@@ -411,7 +472,6 @@ pub async fn run_fixture_with_source_limit(
             ToolScope::scoped_namespaces(Vec::new(), Vec::new()).read_only(),
         )
         .await;
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     host.shutdown().await;
     let response = execution
         .map_err(crate::CodeModeExecutionError::into_contract_tool_error)?
@@ -423,5 +483,6 @@ pub async fn run_fixture_with_source_limit(
             .ok_or_else(|| invalid("fixture runner returned no result"))?,
     )
     .map_err(|e| invalid(format!("invalid fixture runner response: {e}")))?;
+    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     evaluate(&snippet.name, raw, fixture, elapsed_ms, escaped)
 }

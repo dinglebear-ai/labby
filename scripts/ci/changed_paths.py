@@ -23,6 +23,7 @@ OUTPUT_KEYS = [
     "browser_extension",
     "desktop",
     "npm",
+    "tailcat",
     "incus",
     "security",
     "javascript_advisories",
@@ -209,6 +210,20 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     )
     desktop = any_match(paths, lambda p: starts(p, "apps/tauri/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
+    tailcat = any_match(
+        paths,
+        lambda p: starts(
+            p, "packages/labby-tailcat-browser/", "packages/labby-microsandbox/",
+            "tools/tailcat-bridge/", "crates/labby-tailcat/",
+            "crates/labby/src/dispatch/tailcat/", "crates/labby/src/api/tailcat/",
+        ) or p in {
+            "crates/labby/src/mcp/tool_execution.rs", "crates/labby/src/mcp/call_tool.rs",
+            "crates/labby/src/api/tailcat.rs", "crates/labby/src/dispatch/tailcat.rs",
+            "scripts/test-tailcat-bridge.sh", "scripts/build-tailcat-bridge.sh",
+            "scripts/package-tailcat-release.sh", "scripts/install-tailcat-depot-assets.sh",
+            "scripts/ci/test_tailcat_workflow.py",
+        },
+    )
     # The M3 model consumes only core/scenario from the isolated toolkit.
     # Their sources and inherited manifest/lints affect product compilation;
     # runner/backend/host code remains on the separate verification lane.
@@ -300,6 +315,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "browser_extension": browser_extension,
         "desktop": desktop,
         "npm": npm,
+        "tailcat": tailcat,
         "incus": incus,
         "security": security,
         "javascript_advisories": javascript_advisories,

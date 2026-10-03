@@ -51,15 +51,26 @@ export type SafeFanoutResult<TItem, TValue> =
 export async function safeFanout<TItem, TValue>(
   items: readonly TItem[],
   load: (item: TItem) => Promise<TValue>,
+  concurrency = 4,
 ): Promise<Array<SafeFanoutResult<TItem, TValue>>> {
-  return Promise.all(
-    items.map((item) =>
-      load(item).then(
-        (value) => ({ ok: true as const, item, value }),
-        (error: unknown) => ({ ok: false as const, item, error }),
-      ),
-    ),
-  )
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new RangeError('Fanout concurrency must be a positive integer')
+  }
+  const results: Array<SafeFanoutResult<TItem, TValue>> = new Array(items.length)
+  let nextIndex = 0
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++
+      const item = items[index]
+      try {
+        results[index] = { ok: true, item, value: await load(item) }
+      } catch (error: unknown) {
+        results[index] = { ok: false, item, error }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker))
+  return results
 }
 
 async function parseActionResponse<T, TError extends ServiceActionError>(

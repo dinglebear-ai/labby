@@ -53,7 +53,7 @@ jobs:
           --allow-arm64
       - name: Verify workflow policy tests and Node toolchain sync
         run: |
-          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py scripts/ci/test_verification_workflow.py scripts/ci/test_conformance_workflow.py scripts/ci/test_incident_evidence.py scripts/ci/test_mcp_spec_workflow.py
+          python -m unittest scripts/ci/test_workflow_policy.py scripts/ci/test_ci_supply_policy.py scripts/ci/test_verification_workflow.py scripts/ci/test_conformance_workflow.py scripts/ci/test_incident_evidence.py scripts/ci/test_mcp_spec_workflow.py scripts/ci/test_tailcat_workflow.py
           python scripts/ci/check_node_toolchain_sync.py
       - name: Enforce shared-cache capability boundary
         run: >-
@@ -89,6 +89,7 @@ jobs:
       desktop: ${{ steps.classify.outputs.desktop }}
       unraid: ${{ steps.classify.outputs.unraid }}
       npm: ${{ steps.classify.outputs.npm }}
+      tailcat: ${{ steps.classify.outputs.tailcat }}
       incus: ${{ steps.classify.outputs.incus }}
       security: ${{ steps.classify.outputs.security }}
       javascript_advisories: ${{ steps.classify.outputs.javascript_advisories }}
@@ -706,6 +707,37 @@ jobs:
           npm test --prefix packages/labby-mcp
           npm run check --prefix packages/labby-mcp
           npm pack --dry-run --json ./packages/labby-mcp
+
+  tailcat-tests:
+    name: Tailcat deterministic safety tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: changes
+    if: ${{ needs.changes.outputs.tailcat == 'true' }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: "1.27.1"
+          cache-dependency-path: tools/tailcat-bridge/go.sum
+      - name: Test browser transport and identity-bound adapter without a VM
+        run: |
+          set -euo pipefail
+          npm ci --prefix packages/labby-tailcat-browser --ignore-scripts --no-audit --no-fund
+          npm test --prefix packages/labby-tailcat-browser
+          npm ci --prefix packages/labby-microsandbox --ignore-scripts --no-audit --no-fund
+          npm test --prefix packages/labby-microsandbox
+      - name: Verify pinned bridge dependencies and test native race and WASM targets
+        run: |
+          set -euo pipefail
+          (cd tools/tailcat-bridge && go mod verify)
+          bash scripts/test-tailcat-bridge.sh
 
   feature-slices:
     name: Feature slice (${{ matrix.slice }})
@@ -1471,6 +1503,7 @@ jobs:
       - javascript-advisories
       - msrv
       - npm-launcher
+      - tailcat-tests
       - extracted-crate-slices
       - docs-check
       - native-plugins
@@ -1512,6 +1545,7 @@ jobs:
           BASE_REPOSITORY: ${{ github.repository }}
           RUST_TEST_ROUTED: ${{ needs.changes.outputs.rust_test }}
           WEB_ROUTED: ${{ needs.changes.outputs.web }}
+          TAILCAT_ROUTED: ${{ needs.changes.outputs.tailcat }}
         run: |
           set -euo pipefail
           require_success_or_skipped() {
@@ -1553,6 +1587,11 @@ jobs:
           require_success_or_skipped javascript-advisories "${{ needs.javascript-advisories.result }}"
           require_success_or_skipped msrv "${{ needs.msrv.result }}"
           require_success_or_skipped npm-launcher "${{ needs.npm-launcher.result }}"
+          if [[ "$TAILCAT_ROUTED" == true ]]; then
+            require_success tailcat-tests "${{ needs.tailcat-tests.result }}"
+          else
+            require_success_or_skipped tailcat-tests "${{ needs.tailcat-tests.result }}"
+          fi
           require_success_or_skipped extracted-crate-slices "${{ needs.extracted-crate-slices.result }}"
           require_success_or_skipped docs-check "${{ needs.docs-check.result }}"
           require_success_or_skipped native-plugins "${{ needs.native-plugins.result }}"

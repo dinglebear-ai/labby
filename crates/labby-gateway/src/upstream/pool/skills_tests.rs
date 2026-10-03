@@ -17,6 +17,7 @@
 mod bounded_discovery;
 #[cfg(feature = "skills")]
 mod cold_get;
+mod subject_peer;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -875,7 +876,7 @@ async fn direct_get_snapshot_reads_skill_md_and_supporting_file() {
 async fn direct_get_snapshot_is_subject_scoped_and_exposure_is_rechecked() {
     let server = SkillsServer::new(vec![json!({ "skills": [] })])
         .with_get(entry_with_supporting("up", "unlisted"));
-    let pool = catalog_pool_with_server("up", server).await;
+    let pool = subject_catalog_pool_with_server("up", server).await;
     let alice = super::SepSkillProvider::new(
         Arc::clone(&pool),
         oauth_skills_config("up", None),
@@ -1231,6 +1232,31 @@ fn skills_config(
     }
 }
 
+async fn subject_catalog_pool_with_server(
+    name: &str,
+    server: SkillsServer,
+) -> Arc<super::UpstreamPool> {
+    let pool = Arc::new(super::UpstreamPool::new());
+    pool.ensure_lazy_upstream_entry(&oauth_skills_config(name, None))
+        .await;
+    for subject in ["alice", "bob"] {
+        let fixture = catalog_pool_with_server(name, server.clone()).await;
+        move_connection_to_subject_cache_with_tools(&fixture, name, subject, Vec::new()).await;
+        let key = (name.to_string(), subject.to_string());
+        let connection = fixture
+            .subject_connections
+            .write()
+            .await
+            .remove(&key)
+            .unwrap();
+        pool.subject_connections
+            .write()
+            .await
+            .insert(key, connection);
+    }
+    pool
+}
+
 fn oauth_skills_config(
     name: &str,
     expose: Option<Vec<&str>>,
@@ -1239,6 +1265,8 @@ fn oauth_skills_config(
         UpstreamOauthConfig, UpstreamOauthMode, UpstreamOauthRegistration,
     };
     let mut config = skills_config(name, expose);
+    config.command = None;
+    config.url = Some("https://skills-fixture.example/mcp".to_string());
     config.oauth = Some(UpstreamOauthConfig {
         mode: UpstreamOauthMode::AuthorizationCodePkce,
         registration: UpstreamOauthRegistration::Dynamic,
@@ -1529,7 +1557,7 @@ async fn two_oauth_subjects_never_share_a_cached_catalog() {
         json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
-    let pool = catalog_pool_with_server("up", server).await;
+    let pool = subject_catalog_pool_with_server("up", server).await;
     let config = oauth_skills_config("up", None);
 
     pool.upstream_skills(&config, Some("alice"))
@@ -1577,7 +1605,7 @@ async fn invalidation_drops_every_subject_for_one_upstream() {
         json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
-    let pool = catalog_pool_with_server("up", server).await;
+    let pool = subject_catalog_pool_with_server("up", server).await;
     let config = oauth_skills_config("up", None);
 
     pool.upstream_skills(&config, Some("alice"))
@@ -1970,4 +1998,85 @@ async fn a_manifest_may_not_mix_schemes_to_escape_its_namespace() {
         "a cross-scheme manifest entry must exclude the skill"
     );
     assert_eq!(exposed.excluded_count, 1, "and be counted as excluded");
+}
+
+#[tokio::test]
+async fn oauth_skills_use_the_subject_peer_without_a_global_connection() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
+    ]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = oauth_skills_config("up", None);
+    pool.ensure_lazy_upstream_entry(&config).await;
+    move_connection_to_subject_cache_with_tools(&pool, "up", "alice", Vec::new()).await;
+    assert!(pool.connections.read().await.is_empty());
+    let catalog = pool
+        .upstream_skills(&config, Some("alice"))
+        .await
+        .expect("subject catalog");
+    assert_eq!(catalog.skills.len(), 1);
+}
+
+#[tokio::test]
+async fn oauth_skill_reads_use_the_subject_peer_without_a_global_connection() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
+    ]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let catalog = pool
+        .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+        .await
+        .expect("published subject manifest");
+    let epoch = pool.skills_cache_epoch("up").await;
+    assert!(
+        pool.store_skills(
+            "up",
+            Some("alice"),
+            epoch,
+            super::skills_cache::CachedSkills::new(catalog)
+        )
+        .await
+    );
+    let config = oauth_skills_config("up", None);
+    pool.ensure_lazy_upstream_entry(&config).await;
+    move_connection_to_subject_cache_with_tools(&pool, "up", "alice", Vec::new()).await;
+    assert!(pool.connections.read().await.is_empty());
+    let file = pool
+        .read_proxied_skill_file(&config, Some("alice"), "skill://up/alpha/SKILL.md")
+        .await
+        .expect("subject resource read");
+    assert_eq!(file.bytes, skill_md_body("alpha").into_bytes());
+}
+
+#[tokio::test]
+async fn oauth_skills_never_publish_private_names_to_the_global_catalog() {
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [entry("up", "private-alice-skill")], "ttlMs": 600_000 }),
+    ]);
+    let pool = catalog_pool_with_server("up", server.clone()).await;
+    let subject_fixture = catalog_pool_with_server("up", server).await;
+    move_connection_to_subject_cache_with_tools(&subject_fixture, "up", "alice", Vec::new()).await;
+    let key = ("up".to_string(), "alice".to_string());
+    let scoped = subject_fixture
+        .subject_connections
+        .write()
+        .await
+        .remove(&key)
+        .unwrap();
+    pool.subject_connections.write().await.insert(key, scoped);
+    let config = oauth_skills_config("up", None);
+    pool.ensure_lazy_upstream_entry(&config).await;
+    let catalog = pool
+        .upstream_skills(&config, Some("alice"))
+        .await
+        .expect("subject discovery");
+    assert_eq!(catalog.skills.len(), 1);
+    let global = pool.catalog.read().await;
+    let entry = global.get("up").expect("shared baseline");
+    assert!(
+        entry.skill_names.is_empty(),
+        "private catalog names must remain in subject shard"
+    );
+    assert_eq!(entry.skill_count, 0);
+    assert_eq!(entry.supports_skills, None);
 }

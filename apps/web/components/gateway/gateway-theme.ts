@@ -1,5 +1,5 @@
 import { cn } from '@/lib/utils'
-import type { GatewayOperationalKind } from '@/lib/gateway-operational-state'
+import type { GatewayOperationalKind, GatewayOperationalState } from '@/lib/gateway-operational-state'
 import {
   AURORA_CONTROL_SURFACE,
   AURORA_DISPLAY_NUMBER,
@@ -68,11 +68,11 @@ export function gatewayStatusTone(kind: GatewayOperationalKind) {
     }
   }
 
-  if (kind === 'disabled') {
+  if (kind === 'disabled' || kind === 'idle') {
     return {
       dot: 'bg-aurora-text-muted',
       text: 'text-aurora-text-muted',
-      label: 'Disabled',
+      label: kind === 'idle' ? 'Not checked' : 'Disabled',
     }
   }
 
@@ -91,7 +91,10 @@ export function gatewayStatusTone(kind: GatewayOperationalKind) {
   }
 }
 
-export function gatewayConnectionTone(enabled: boolean, connected: boolean) {
+export function gatewayConnectionTone(enabled: boolean, connected: boolean, operational?: GatewayOperationalState) {
+  if (enabled && operational?.kind === 'idle') {
+    return { dot: 'bg-aurora-text-muted', text: 'text-aurora-text-muted', label: operational.connectionLabel }
+  }
   if (!enabled) {
     return {
       dot: 'bg-aurora-text-muted',

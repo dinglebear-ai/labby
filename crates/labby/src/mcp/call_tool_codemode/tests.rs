@@ -886,6 +886,51 @@ fn dedup_key_separates_runs_with_different_request_contexts() {
 }
 
 #[test]
+fn authority_wrapped_runs_preserve_request_context_isolation() {
+    let wrapped = |caller| labby_codemode::CodeModeCaller::WithAuthority {
+        caller: Box::new(labby_codemode::CodeModeCaller::WithAuthority {
+            caller: Box::new(caller),
+            authority_token: "inner-authority".into(),
+        }),
+        authority_token: "outer-authority".into(),
+    };
+    let key = |caller: &labby_codemode::CodeModeCaller| {
+        code_mode_dedup_key("root", "codemode", "actor", "filter", "code", caller)
+    };
+    let first = wrapped(provider_caller("request-a", Some("skills-a")));
+    let second = wrapped(provider_caller("request-b", Some("skills-a")));
+    assert_ne!(key(&first), key(&second));
+    assert_ne!(
+        key(&first),
+        key(&wrapped(provider_caller("request-a", Some("skills-b"))))
+    );
+    assert_eq!(
+        key(&first),
+        key(&provider_caller("request-a", Some("skills-a")))
+    );
+    assert!(!key(&first).contains("token"));
+    assert!(!key(&first).contains("authority"));
+    let private = |token: &str| labby_codemode::CodeModeCaller::ScopedPrivate {
+        capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+        sub: None,
+        context_token: token.into(),
+    };
+    let skills = |token: &str| labby_codemode::CodeModeCaller::ScopedSkills {
+        capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+        sub: None,
+        skill_context_token: token.into(),
+    };
+    assert_ne!(
+        key(&wrapped(private("private-a"))),
+        key(&wrapped(private("private-b")))
+    );
+    assert_ne!(
+        key(&wrapped(skills("skills-a"))),
+        key(&wrapped(skills("skills-b")))
+    );
+}
+
+#[test]
 fn oversized_upstream_list_keeps_the_example_and_a_utf8_safe_cut() {
     let mut upstreams = (0..400)
         .map(|index| CodeModeUpstreamDescription {

@@ -121,9 +121,16 @@ impl UpstreamPool {
                 ..SubjectSummary::default()
             };
         };
-        let connected = config.enabled
-            && !entry.peer.is_transport_closed()
-            && entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL;
+        let transport_closed = entry.peer.is_transport_closed();
+        let recently_used = entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL;
+        let connected = config.enabled && !transport_closed && recently_used;
+        // Expired cached peers are idle; a recent enabled peer closing is an
+        // observed failure even when no subsequent RPC recorded an error.
+        // Use a fixed message so transport diagnostics cannot expose secrets.
+        let last_error = last_error.or_else(|| {
+            (config.enabled && transport_closed && recently_used)
+                .then(|| "Upstream transport closed unexpectedly".to_owned())
+        });
         let tool_policy =
             resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
         let resource_policy =

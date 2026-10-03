@@ -171,8 +171,35 @@ test('list edit preserves stdio arguments from the authoritative detail', async 
     await view.wait(() => assert.ok(document.querySelector('#command')))
     await view.click('Save changes')
     await view.wait(() => assert.ok(patch))
-    assert.equal(patch?.command, 'npx')
-    assert.deepEqual(patch?.args, ['-y', 'fixture', '/path with spaces'])
+    assert.equal(Object.hasOwn(patch!, 'command'), false, 'unchanged command must preserve stored executable')
+    assert.equal(Object.hasOwn(patch!, 'args'), false, 'unchanged argv must preserve stored arguments')
+    assert.deepEqual({ ...stdioDetail.config, ...patch }.args, ['-y', 'fixture', '/path with spaces'])
+  } finally { await view.cleanup() }
+})
+
+test('list edit preserves stored credentials behind masked authoritative argv', async () => {
+  const stdioSummary = { ...summary, config_summary: { transport: 'stdio', target: 'npx', command: 'npx', args: ['[REDACTED]', 'TOKEN=[redacted]', '--token', '[redacted]'] } }
+  const stdioDetail = { ...detail, config: { name: 'restricted', command: 'npx', args: ['[REDACTED]', 'TOKEN=[redacted]', '--token', '[redacted]'], proxy_resources: true, proxy_prompts: true, proxy_mcp_ui: true } }
+  let patch: Record<string, unknown> | undefined
+  const stored = { command: 'npx', args: ['synthetic-positional-value', 'TOKEN=synthetic-env-value', '--token', 'synthetic-flag-value'] }
+  const view = await mountList((action, params) => {
+    if (action === 'gateway.list') return [stdioSummary]
+    if (action === 'gateway.server.get') return stdioSummary
+    if (action === 'gateway.get') return stdioDetail
+    if (action === 'gateway.update') { patch = params.patch as Record<string, unknown>; Object.assign(stored, patch); return stdioDetail }
+    return defaultResponse(action)
+  })
+  try {
+    await view.wait(() => assert.match(view.container.textContent ?? '', /restricted/))
+    await view.click('More actions')
+    await view.click('Edit server')
+    await view.wait(() => assert.ok(document.querySelector('#command')))
+    await view.click('Save changes')
+    await view.wait(() => assert.ok(patch))
+    assert.equal(Object.hasOwn(patch!, 'command'), false, 'unchanged command must preserve stored executable')
+    assert.equal(Object.hasOwn(patch!, 'args'), false, 'unchanged argv must preserve stored arguments')
+    assert.deepEqual(stored.args, ['synthetic-positional-value', 'TOKEN=synthetic-env-value', '--token', 'synthetic-flag-value'])
+    assert.equal(stored.command, 'npx')
   } finally { await view.cleanup() }
 })
 
