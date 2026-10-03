@@ -1,6 +1,62 @@
 use super::*;
 use serde_json::json;
 
+#[tokio::test(flavor = "current_thread")]
+async fn generated_fixture_preserves_optional_input_omissions_for_replay() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = crate::dispatch::helpers::TestLabHomeGuard::set(home.path().to_path_buf());
+    let body = "---\nname: fixture-input-omission\ndescription: Synthetic input replay regression\ninputs:\n  optional:\n    type: string\n  defaulted:\n    type: integer\n    default: 7\n  supplied:\n    type: boolean\ntools:\n  - synthetic::lookup\n---\n```js\nasync input => input\n```\n";
+    super::super::store::create_user_snippet(
+        home.path(),
+        "fixture-input-omission",
+        body,
+        None,
+        false,
+    )
+    .unwrap();
+    let snippet = resolve_snippet(
+        home.path(),
+        &builtin_snippet_dir(),
+        "fixture-input-omission",
+    )
+    .unwrap();
+    for supplied in [
+        Value::Null,
+        json!({}),
+        json!({"supplied":false}),
+        json!({"optional":"value", "defaulted":9}),
+    ] {
+        let request = json!({"name":snippet.name, "params":supplied,
+            "schemas":{"synthetic::lookup":{"output_schema":{"type":"boolean"}}}});
+        let report = generate(None, request, None).await.unwrap();
+        assert_eq!(report["ready"], true);
+        let fixture: SnippetFixture = serde_json::from_value(report["fixture"].clone()).unwrap();
+        let replay_params = serde_json::to_value(&fixture.params).unwrap();
+        assert_eq!(
+            replay_params,
+            if supplied.is_null() {
+                json!({})
+            } else {
+                supplied.clone()
+            }
+        );
+        assert_eq!(
+            merge_snippet_input(&snippet, replay_params).unwrap(),
+            merge_snippet_input(&snippet, supplied).unwrap()
+        );
+    }
+    assert!(
+        generate(
+            None,
+            json!({"name":snippet.name,"params":{"optional":null},
+        "schemas":{"synthetic::lookup":{"output_schema":{"type":"boolean"}}}}),
+            None
+        )
+        .await
+        .is_err()
+    );
+}
+
 #[test]
 fn fixture_output_is_complete_and_never_clobbers_existing_destination() {
     let dir = tempfile::tempdir().unwrap();

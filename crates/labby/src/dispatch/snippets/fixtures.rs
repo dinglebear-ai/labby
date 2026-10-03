@@ -191,7 +191,14 @@ fn prepare(params: Value, context: Option<SnippetDispatchContext>) -> Result<Pre
         // Contract comparison neither executes the snippet nor consumes its inputs.
         Value::Null
     } else {
-        merge_snippet_input(&snippet, params.params.clone())?
+        // Validate execution inputs now, but save caller omissions rather than
+        // merged null placeholders: replay distinguishes omitted optional inputs
+        // from explicit null on nonnullable declarations.
+        merge_snippet_input(&snippet, params.params.clone())?;
+        match &params.params {
+            Value::Null => Value::Object(Default::default()),
+            supplied => supplied.clone(),
+        }
     };
     let scope = super::execution::snippet_execution_scope(&snippet, &context.execution_scope);
     let tools = params.tools.clone().or_else(|| snippet.tools.as_ref().map(|tools| tools.as_slice().to_vec()))
