@@ -517,20 +517,7 @@ impl TransportQualification {
     }
 
     pub(crate) fn effect_counts(&self) -> Result<(u64, u64), String> {
-        let text = std::fs::read_to_string(&self.ledger).map_err(|error| error.to_string())?;
-        let mut fields = text.split_ascii_whitespace();
-        let invocations = fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .ok_or("effect ledger omitted invocation count")?;
-        let active = fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .ok_or("effect ledger omitted active count")?;
-        if fields.next().is_some() {
-            return Err("effect ledger contained trailing fields".into());
-        }
-        Ok((invocations, active))
+        read_effect_counts(&self.ledger)
     }
 
     async fn wait_for_effect_counts(&self, expected: (u64, u64)) -> Result<(), String> {
@@ -796,9 +783,114 @@ async fn wait_for_process_exit(pid: u32) -> Result<bool, String> {
     }
 }
 
+/// Writers truncate in place under an exclusive lock. Observe a complete snapshot
+/// on the same inode, rather than racing their truncate/write publication window.
+fn read_effect_counts(path: &Path) -> Result<(u64, u64), String> {
+    use std::io::Read as _;
+
+    let file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let deadline = std::time::Instant::now() + SETTLEMENT_TIMEOUT;
+    loop {
+        match file.try_lock_shared() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err("effect ledger snapshot lock deadline expired".into());
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(error.to_string()),
+        }
+    }
+    // Closing this exact handle releases the shared lock after the read.
+    let mut text = String::new();
+    file.take(65)
+        .read_to_string(&mut text)
+        .map_err(|error| error.to_string())?;
+    if text.len() > 64 {
+        return Err("effect ledger exceeded snapshot budget".into());
+    }
+    let mut fields = text.split_ascii_whitespace();
+    let invocations = fields
+        .next()
+        .and_then(|value| value.parse().ok())
+        .ok_or("effect ledger omitted invocation count")?;
+    let active = fields
+        .next()
+        .and_then(|value| value.parse().ok())
+        .ok_or("effect ledger omitted active count")?;
+    if fields.next().is_some() {
+        return Err("effect ledger contained trailing fields".into());
+    }
+    Ok((invocations, active))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_ledger_snapshot_waits_through_writer_truncation() {
+        use std::io::{Seek as _, SeekFrom, Write as _};
+        use std::sync::mpsc;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("effects");
+        std::fs::write(&path, "1 0").unwrap();
+        let mut writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        writer.lock().unwrap();
+        writer.set_len(0).unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (snapshot_tx, snapshot_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            snapshot_tx.send(read_effect_counts(&path)).unwrap();
+        });
+        started_rx.recv_timeout(SETTLEMENT_TIMEOUT).unwrap();
+        let premature = snapshot_rx.recv_timeout(Duration::from_millis(100));
+        // Publish even if the regression fails so the reader always terminates.
+        writer.seek(SeekFrom::Start(0)).unwrap();
+        write!(writer, "3 2").unwrap();
+        writer.sync_data().unwrap();
+        writer.unlock().unwrap();
+        reader.join().unwrap();
+        assert!(
+            matches!(premature, Err(mpsc::RecvTimeoutError::Timeout)),
+            "reader observed an uncommitted ledger snapshot: {premature:?}"
+        );
+        assert_eq!(
+            snapshot_rx
+                .recv_timeout(SETTLEMENT_TIMEOUT)
+                .unwrap()
+                .unwrap(),
+            (3, 2)
+        );
+    }
+
+    #[test]
+    fn effect_ledger_snapshot_rejects_invalid_committed_counters() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("effects");
+        for value in [
+            "",
+            "1",
+            "1 2 extra",
+            "-1 0",
+            "x 0",
+            "0 18446744073709551616",
+        ] {
+            std::fs::write(&path, value).unwrap();
+            assert!(read_effect_counts(&path).is_err(), "accepted {value:?}");
+        }
+        std::fs::write(&path, format!("{} {}\n", u64::MAX, u64::MAX)).unwrap();
+        assert_eq!(read_effect_counts(&path).unwrap(), (u64::MAX, u64::MAX));
+        std::fs::write(&path, "1 2").unwrap();
+        assert_eq!(read_effect_counts(&path).unwrap(), (1, 2));
+    }
 
     #[test]
     fn runner_bounds_are_literal_and_small() {
