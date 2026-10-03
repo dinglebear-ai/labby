@@ -54,14 +54,32 @@ There is also a repo shortcut for that local no-auth mode:
 just chat-local
 ```
 
-Browser-facing bearer mode is intentionally disabled in the current UI. The gateway screens always use the Rust-owned browser session flow plus CSRF headers when talking to `/v1/*`. If you need a local-only backend bypass, use `LABBY_WEB_UI_AUTH_DISABLED=true` on the Rust side rather than embedding a public browser token.
+## Authenticated local development
 
-For authenticated development, build the static export with `pnpm build` and
-serve it through the Rust host using the binary-served flow above. Open the
-Rust origin (`http://127.0.0.1:8765`) so `/auth/*` and `/v1/*` share cookies and
-CSRF state. Rebuild the export after frontend changes. A standalone Next dev
-server or `pnpm start` only serves frontend assets; it does not proxy Rust's
-session endpoints. CORS and a public browser token do not supply that proxy.
+Build the static export with `pnpm build`, then start the Rust host from the
+repository root with both browser auth-disable variables removed. Bind the
+preview to loopback and use an isolated absolute `LABBY_HOME` for disposable
+preview state:
+
+```bash
+env -u LABBY_WEB_UI_AUTH_DISABLED -u LABBY_WEB_UI_DISABLE_AUTH \
+LABBY_HOME=/absolute/path/to/disposable-labby-preview \
+LABBY_WEB_ASSETS_DIR=apps/web/out \
+cargo run --bin labby -- serve --host 127.0.0.1 --port 8765
+```
+
+Use the preview's configured sign-in provider or enter its operator bearer token
+once on the sign-in screen. The UI exchanges that token through
+`POST /auth/bearer-session` for a Rust-owned browser session and clears the token
+input. Subsequent `/v1/*` requests use the session cookie and CSRF headers. Do
+not embed operator tokens in public frontend environment variables.
+
+Open the Rust origin (`http://127.0.0.1:8765`) so `/auth/*` and `/v1/*` share
+cookies and CSRF state. Rebuild the export after frontend changes. A standalone
+Next dev server or `pnpm start` only serves frontend assets; it does not proxy
+Rust's session endpoints. CORS and a public browser token do not supply that proxy.
+The no-auth flow and `just chat-local` above are separate development bypasses;
+they do not exercise authenticated browser behavior.
 
 ## Static Export
 

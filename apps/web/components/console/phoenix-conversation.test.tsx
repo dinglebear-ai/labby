@@ -1,10 +1,55 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import React from 'react'
+import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { PhoenixConversation } from './phoenix-conversation.tsx'
 
 const noop = () => undefined
+
+test('each completed streamed turn keeps its own copy and regenerate controls', async () => {
+  const { installTestDom, renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  installTestDom()
+  const copied: Array<[string, number]> = []
+  const retried: number[] = []
+  const view = await renderClient(<PhoenixConversation
+    messages={[
+      { role: 'user', text: 'First question', created_at_ms: 100 },
+      { role: 'assistant', text: 'First answer', created_at_ms: 300 },
+      { role: 'user', text: 'Second question', created_at_ms: 400 },
+      { role: 'assistant', text: 'Second answer', created_at_ms: 600 },
+    ]}
+    events={[
+      { method: 'item/agentMessage/delta', received_at_ms: 200, params: { turnId: 'first', delta: 'First answer' } },
+      { method: 'item/agentMessage/delta', received_at_ms: 500, params: { turnId: 'second', delta: 'Second answer' } },
+    ]}
+    mark={<span>PX</span>} onCopy={(text, index) => copied.push([text, index])} onRetry={index => retried.push(index)} onEdit={noop}
+  />)
+  try {
+    const copies = [...view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Copy answer"]')]
+    const retries = [...view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Regenerate"]')]
+    assert.equal(copies.length, 2)
+    assert.equal(retries.length, 2)
+    await act(async () => { copies.forEach(button => button.click()); retries.forEach(button => button.click()) })
+    assert.deepEqual(copied, [['First answer', 1], ['Second answer', 3]])
+    assert.deepEqual(retried, [1, 3])
+  } finally { await view.unmount() }
+})
+
+for (const delta of ['First ', 'Earlier answer']) {
+  test(`completed assistant text survives an incomplete or revised stream: ${delta}`, () => {
+    const html = renderToStaticMarkup(<PhoenixConversation
+      messages={[
+        { role: 'user', text: 'Question', created_at_ms: 100 },
+        { role: 'assistant', text: 'First second', created_at_ms: 300 },
+      ]}
+      events={[{ method: 'item/agentMessage/delta', received_at_ms: 200, params: { turnId: 'first', delta } }]}
+      mark={<span>PX</span>} onCopy={noop} onRetry={noop} onEdit={noop}
+    />)
+    assert.match(html, /First second/)
+    assert.equal((html.match(/aria-label="Copy answer"/g) ?? []).length, 1)
+    assert.equal((html.match(/data-phoenix-message="assistant-stream"/g) ?? []).length, 0, 'completed text replaces an incomplete stream')
+  })
+}
 
 test('Phoenix interleaves streamed assistant text and tool activity in execution order', () => {
   const html = renderToStaticMarkup(<PhoenixConversation

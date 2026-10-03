@@ -3,7 +3,7 @@ import { normalizeArtifactTags, type ArtifactIssue, type ArtifactMetadata } from
 // Every field validateArtifactDraft can report is listed, so no issue is dropped from the pass count.
 export const ARTIFACT_VALIDATION_FIELDS = [
   ['name', 'Name'], ['description', 'Description'], ['tags', 'Tags'], ['content', 'Body'],
-  ['license', 'License'], ['compatibility', 'Compatibility'], ['allowedTools', 'Allowed tools'],
+  ['license', 'License'], ['compatibility', 'Compatibility'], ['allowedTools', 'Allowed tools'], ['frontmatter', 'Frontmatter'],
 ] as const satisfies ReadonlyArray<readonly [ArtifactIssue['field'], string]>
 
 export function artifactValidationSummary(issues: ArtifactIssue[]) {
@@ -13,7 +13,7 @@ export function artifactValidationSummary(issues: ArtifactIssue[]) {
 }
 
 export interface ArtifactAuthoringCheck {
-  id: 'name' | 'description' | 'tags' | 'sections' | 'substance' | 'example'
+  id: ArtifactIssue['field'] | 'sections' | 'substance' | 'example'
   field: keyof ArtifactMetadata | 'content'
   label: string
   description: string
@@ -68,6 +68,13 @@ export function skillAuthoringChecks(metadata: ArtifactMetadata, content: string
       optional: true,
     },
   ]
+  const representedFields = new Set(checks.map(check => check.field))
+  for (const [field, label] of ARTIFACT_VALIDATION_FIELDS) {
+    const blocking = issues.filter(issue => issue.field === field && issue.severity === 'error')
+    if (!representedFields.has(field) && blocking.length) {
+      checks.push({ id: field, field, label, description: blocking.map(issue => issue.message).join(' '), passing: false })
+    }
+  }
   return checks.map(check => {
     if (!check.passing) return check
     const blocking = issues.filter(issue => issue.field === check.field && issue.severity === 'error')

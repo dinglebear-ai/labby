@@ -23,24 +23,17 @@ function eventTurnKey(event: PhoenixEvent): string {
 function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[] {
   const timedEvents = events.filter((event) => phoenixEventTime(event) !== undefined)
   const legacyEvents = events.filter((event) => phoenixEventTime(event) === undefined)
-  const suppressAssistant = new Set<number>()
-  let priorAssistantTime = -Infinity
-  for (let index = 0; index < messages.length; index += 1) {
-    const message = messages[index]
-    if (message.role !== 'assistant' || typeof message.created_at_ms !== 'number') continue
-    if (timedEvents.some((event) => isPhoenixAgentDelta(event) && (phoenixEventTime(event) ?? 0) > priorAssistantTime && (phoenixEventTime(event) ?? Infinity) <= message.created_at_ms!)) suppressAssistant.add(index)
-    priorAssistantTime = message.created_at_ms
-  }
-
   const entries: Entry[] = []
   messages.forEach((message, index) => {
-    if (suppressAssistant.has(index)) return
     entries.push({ kind: 'message', time: message.created_at_ms ?? Number.MAX_SAFE_INTEGER - messages.length + index, order: index * 10, index, message })
   })
   timedEvents.forEach((event, index) => entries.push({ kind: 'event', time: phoenixEventTime(event) ?? 0, order: typeof event.sequence === 'number' ? event.sequence : index, event }))
   entries.sort((left, right) => left.time - right.time || left.order - right.order)
 
   const chunks: Chunk[] = []
+  type StreamChunk = Extract<Chunk, { kind: 'assistant-stream' }>
+  let pendingStreams: StreamChunk[] = []
+  const replacedStreams = new Set<StreamChunk>()
   const flushEvent = (event: PhoenixEvent) => {
     const previous = chunks.at(-1)
     if (previous?.kind === 'events') previous.events.push(event)
@@ -48,6 +41,22 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
   }
   for (const entry of entries) {
     if (entry.kind === 'message') {
+      if (entry.message.role === 'assistant' && typeof entry.message.created_at_ms === 'number') {
+        const completeStream = pendingStreams.length > 0
+          && pendingStreams.every(chunk => chunk.turnKey === pendingStreams[0].turnKey)
+          && pendingStreams.map(chunk => chunk.text).join('') === entry.message.text
+        if (completeStream) {
+          // The chronological message boundary owns only the streams since
+          // the previous message, never a later turn's final stream.
+          pendingStreams[pendingStreams.length - 1].messageIndex = entry.index
+          pendingStreams = []
+          continue
+        }
+        // Persisted text wins if events are partial or final wording changed.
+        // Keep intervening tool activity while replacing incomplete deltas.
+        pendingStreams.forEach(chunk => replacedStreams.add(chunk))
+      }
+      pendingStreams = []
       chunks.push({ kind: 'message', id: 'message-' + String(entry.index), index: entry.index, message: entry.message })
       continue
     }
@@ -56,27 +65,19 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
       if (!delta) continue
       const turnKey = eventTurnKey(entry.event)
       const previous = chunks.at(-1)
-      if (previous?.kind === 'assistant-stream' && previous.turnKey === turnKey) previous.text += delta
-      else chunks.push({ kind: 'assistant-stream', id: 'stream-' + String(chunks.length), text: delta, turnKey })
+      if (previous?.kind === 'assistant-stream' && previous.turnKey === turnKey && previous.messageIndex === undefined) previous.text += delta
+      else {
+        const chunk: StreamChunk = { kind: 'assistant-stream', id: 'stream-' + String(chunks.length), text: delta, turnKey }
+        chunks.push(chunk)
+        pendingStreams.push(chunk)
+      }
       continue
     }
     flushEvent(entry.event)
   }
   if (legacyEvents.length) chunks.push({ kind: 'events', id: 'legacy-events', events: legacyEvents })
 
-  for (const index of suppressAssistant) {
-    const message = messages[index]
-    const time = message.created_at_ms ?? Infinity
-    for (let chunkIndex = chunks.length - 1; chunkIndex >= 0; chunkIndex -= 1) {
-      const chunk = chunks[chunkIndex]
-      if (chunk.kind === 'assistant-stream') {
-        chunk.messageIndex = index
-        break
-      }
-      if (chunk.kind === 'message' && typeof chunk.message.created_at_ms === 'number' && chunk.message.created_at_ms < time && chunk.message.role === 'user') break
-    }
-  }
-  return chunks
+  return chunks.filter(chunk => chunk.kind !== 'assistant-stream' || !replacedStreams.has(chunk))
 }
 
 function mcpAppHtml(app: PhoenixMcpApp): string | undefined {

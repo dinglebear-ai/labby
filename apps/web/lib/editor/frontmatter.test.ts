@@ -23,3 +23,14 @@ test('ignores markdown files outside supported claude categories', () => {
   const diagnostics = validateClaudeFrontmatter('README.md', '# Demo')
   assert.deepEqual(diagnostics, [])
 })
+
+test('accepts CRLF delimiters and retains original diagnostic offsets', () => {
+  const valid = '---\r\nname: tdd\r\ndescription: Test first\r\n---\r\nBody'
+  assert.deepEqual(validateClaudeFrontmatter('skills/tdd.md', valid), [])
+  const missing = '---\r\nname: tdd\r\n---\r\nBody'
+  assert.equal(validateClaudeFrontmatter('skills/tdd.md', missing)[0].to, missing.indexOf('Body'))
+})
+
+test('does not accept a delimiter prefix as a closing delimiter', () => {
+  assert.match(validateClaudeFrontmatter('skills/tdd.md', '---\nname: tdd\n---invalid\nBody')[0].message, /Expected YAML/)
+})
