@@ -269,20 +269,26 @@ ensure_incus_ready() {
         incus_cmd admin init --minimal
     fi
     incus_has_storage_pool || die "Incus initialization did not create a storage pool"
+    ensure_smoke_forwarding
 }
 
 # Docker's hosted-runner FORWARD policy can block Incus guest HTTPS while
 # DHCP and DNS still work. Scope the existing N-1 workaround to the actual
 # managed bridge and journal only this smoke run's additions for cleanup.
 ensure_smoke_forwarding() {
-    [[ "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
+    [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
     have iptables || return 0
     sudo_cmd iptables -w 5 -L DOCKER-USER >/dev/null 2>&1 || return 0
     SMOKE_FORWARD_BRIDGE="$(incus_cmd profile device get default eth0 network)"
-    [[ "$SMOKE_FORWARD_BRIDGE" =~ ^[a-zA-Z0-9_.-]{1,15}$ ]] \
+    [[ "$SMOKE_FORWARD_BRIDGE" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ && ${#SMOKE_FORWARD_BRIDGE} -le 15 ]] \
         || die "default eth0 has no valid managed bridge"
+    # Incus 6.0 lacks -c; default CSV begins with name,type,managed.
+    incus_cmd network list --format csv | \
+        awk -F, -v name="$SMOKE_FORWARD_BRIDGE" '$1 == name && $2 == "bridge" && $3 == "YES" { found = 1 } END { exit !found }' \
+        || die "default Incus network $SMOKE_FORWARD_BRIDGE is not a managed bridge"
     [[ "$(incus_cmd network get "$SMOKE_FORWARD_BRIDGE" ipv4.nat)" == "true" ]] \
         || die "smoke bridge requires managed IPv4 NAT"
+    log "allowing CI Docker forwarding for Incus bridge $SMOKE_FORWARD_BRIDGE"
     if ! sudo_cmd iptables -w 5 -C DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" -j ACCEPT 2>/dev/null; then
         sudo_cmd iptables -w 5 -I DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" \
             -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || return 1
@@ -431,7 +437,6 @@ fi
 
 install_incus_if_needed
 ensure_incus_ready
-ensure_smoke_forwarding
 ensure_smoke_names_available
 SMOKE_RESOURCES_OWNED=1
 ensure_smoke_profile
@@ -517,9 +522,14 @@ do
         exit 1
     fi
 done
-if env | grep -E "^(TS_AUTHKEY|LABBY_MCP_HTTP_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|CARGO_REGISTRY_TOKEN)=" >&2; then
-    exit 1
-fi'
+forbidden_env=0
+for name in TS_AUTHKEY LABBY_MCP_HTTP_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY GITHUB_TOKEN GH_TOKEN NPM_TOKEN CARGO_REGISTRY_TOKEN; do
+    if printenv "$name" >/dev/null; then
+        printf "forbidden runtime environment variable: %s\n" "$name" >&2
+        forbidden_env=1
+    fi
+done
+test "$forbidden_env" = 0'
 
 log "checking provision convergence"
 incus_cmd file push "$smoke_binary" "$container_name/usr/local/bin/labby"

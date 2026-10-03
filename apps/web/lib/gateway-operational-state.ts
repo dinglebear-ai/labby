@@ -1,5 +1,8 @@
+import type { CapabilityKind, CapabilityObservation, CapabilityObservationValue } from './types/gateway'
+
 export type GatewayOperationalKind =
   | 'disabled'
+  | 'idle'
   | 'disconnected'
   | 'discovering'
   | 'degraded'
@@ -13,14 +16,15 @@ export type GatewayOperationalInput = {
     catalog_warming?: boolean
     last_error?: string
     likely_stale_count?: number
+    capability_observation?: Pick<CapabilityObservation, 'scope'> & Partial<Record<CapabilityKind, Pick<CapabilityObservationValue, 'state' | 'error'>>>
   }
   warnings?: ReadonlyArray<{ code: string; message: string }>
 }
 
 export type GatewayOperationalState = {
   kind: GatewayOperationalKind
-  label: 'Disabled' | 'Disconnected' | 'Discovering' | 'Needs attention' | 'Healthy'
-  connectionLabel: 'Disabled' | 'Disconnected' | 'Connected'
+  label: 'Disabled' | 'Disconnected' | 'Discovering' | 'Needs attention' | 'Healthy' | 'Not checked' | 'Idle'
+  connectionLabel: 'Disabled' | 'Disconnected' | 'Connected' | 'Not checked' | 'Idle'
   connected: boolean
   needsAttention: boolean
   reason: string
@@ -28,6 +32,19 @@ export type GatewayOperationalState = {
 
 function firstWarningMessage(gateway: GatewayOperationalInput): string | undefined {
   return gateway.warnings?.find((warning) => warning.message.trim().length > 0)?.message.trim()
+}
+
+function capabilityFailureReason(gateway: GatewayOperationalInput): string | undefined {
+  const observation = gateway.status.capability_observation
+  if (!observation) return undefined
+  for (const kind of ['tools', 'resources', 'prompts', 'skills'] as const) {
+    const family = observation[kind]
+    if (family?.error?.trim()) return family.error.trim()
+    if (family?.state === 'failed') {
+      return kind[0].toUpperCase() + kind.slice(1) + ' capability discovery failed; refresh to retry.'
+    }
+  }
+  return undefined
 }
 
 function degradedReason(gateway: GatewayOperationalInput): string {
@@ -40,6 +57,8 @@ function degradedReason(gateway: GatewayOperationalInput): string {
   }
 
   if (gateway.status.last_error?.trim()) return gateway.status.last_error.trim()
+  const capabilityFailure = capabilityFailureReason(gateway)
+  if (capabilityFailure) return capabilityFailure
   return 'Connected, but one or more health checks need attention.'
 }
 
@@ -67,6 +86,23 @@ export function describeGatewayOperationalState(
   }
 
   if (!gateway.status.connected) {
+    const observation = gateway.status.capability_observation
+    const families = observation ? [observation.tools, observation.resources, observation.prompts, observation.skills] : []
+    const hasObservedFailure = gateway.status.last_error?.trim()
+      || (gateway.warnings?.length ?? 0) > 0
+      || (gateway.status.likely_stale_count ?? 0) > 0
+      || capabilityFailureReason(gateway)
+    // Credential-scoped status is cache-only: absence or idle expiry is not a
+    // failed connection attempt and must not become an outage incident.
+    if (observation?.scope === 'credential' && !hasObservedFailure) {
+      const label = families.some((family) => family && family.state !== 'unknown') ? 'Idle' : 'Not checked'
+      return {
+        kind: 'idle', label, connectionLabel: label, connected: false, needsAttention: false,
+        reason: label === 'Idle'
+          ? 'No active connection for your credentials. Test this server to check its current status.'
+          : 'This server has not been checked with your credentials. Test it to check its status.',
+      }
+    }
     return {
       kind: 'disconnected',
       label: 'Disconnected',
@@ -83,10 +119,11 @@ export function describeGatewayOperationalState(
   const hasWarnings = (gateway.warnings?.length ?? 0) > 0
   const hasStaleRuntime = (gateway.status.likely_stale_count ?? 0) > 0
   const hasLastError = Boolean(gateway.status.last_error?.trim())
+  const hasCapabilityFailure = Boolean(capabilityFailureReason(gateway))
   const hasNonWarmingHealthFailure =
     !gateway.status.healthy && gateway.status.catalog_warming !== true
 
-  if (hasWarnings || hasStaleRuntime || hasLastError || hasNonWarmingHealthFailure) {
+  if (hasWarnings || hasStaleRuntime || hasLastError || hasCapabilityFailure || hasNonWarmingHealthFailure) {
     return {
       kind: 'degraded',
       label: 'Needs attention',

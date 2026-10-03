@@ -6,6 +6,19 @@ impl UpstreamPool {
         &self,
         name: &str,
     ) -> crate::gateway::view_models::CapabilityObservation {
+        self.cached_global_status_observation(name).await.1
+    }
+
+    /// One transport sample for the status badge and its capability observations.
+    /// `None` denotes a never-acquired lazy catalog, whose readiness is still
+    /// derived from health. A closed acquired transport must veto that readiness.
+    pub(crate) async fn cached_global_status_observation(
+        &self,
+        name: &str,
+    ) -> (
+        Option<bool>,
+        crate::gateway::view_models::CapabilityObservation,
+    ) {
         use crate::gateway::view_models::{
             CapabilityFamilyObservation as Family, CapabilityObservation as Observation,
         };
@@ -16,16 +29,23 @@ impl UpstreamPool {
             .await
             .get(&(name.to_owned(), None))
             .map(|cached| cached.read_snapshot());
-        let connected = self
+        let _binding = self.connection_catalog_binding.read().await;
+        let transport_available = self
             .connections
             .read()
             .await
             .get(name)
-            .is_some_and(|entry| !entry.peer.is_transport_closed());
+            .map(|entry| !entry.peer.is_transport_closed());
+        let connected = transport_available.unwrap_or(false);
         let catalog = self.catalog.read().await;
         let Some(entry) = catalog.get(name) else {
-            return Observation::default();
+            return (transport_available, Observation::default());
         };
+        // Retained measurements also identify a previously acquired peer after
+        // the dead connection has been detached, unlike a fresh lazy seed.
+        let transport_available = transport_available.or_else(|| {
+            (entry.supports_skills.is_some() || !entry.tools.is_empty()).then_some(false)
+        });
         let mut summary =
             super::helpers::catalog_entry_summary(entry, catalog.resource_rows_withheld(name));
         // Compatibility counts retain their historical shape, but observation
@@ -71,7 +91,7 @@ impl UpstreamPool {
             )
         };
         let resources_at = catalog.resource_snapshot_listed_at(name);
-        Observation {
+        let observation = Observation {
             tools: family(
                 entry.supports_skills.is_some() || !entry.tools.is_empty(),
                 false,
@@ -104,7 +124,8 @@ impl UpstreamPool {
                 summary.exposed_skill_count,
             ),
             ..Observation::default()
-        }
+        };
+        (transport_available, observation)
     }
 }
 
