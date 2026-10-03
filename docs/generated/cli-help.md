@@ -4764,6 +4764,7 @@ Commands:
   validate  Validate a snippet without saving or executing it
   remove    Remove a user snippet
   test      Test with deterministic fixtures; use --live to contact upstreams
+  fixture   Generate an editable fixture from tool schemas without executing tools
 
 Options:
       --json
@@ -5125,6 +5126,73 @@ Options:
 
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby snippet fixture`
+
+```text
+Generate an editable fixture from tool schemas without executing tools
+
+Usage: labby snippet fixture [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --tool <TOOLS>
+          Exact tool IDs for legacy snippets without declarations
+
+      --check <CHECK>
+          Compare current contracts with a saved fixture; never execute tools
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --schemas <SCHEMAS>
+          Saved schema map keyed by upstream::tool; uses no gateway when supplied
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --results <RESULTS>
+          Synthetic result overrides keyed by upstream::tool
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --variant <VARIANT>
+          Populate optional fields and one array item, or generate minimal values
+
+          [default: populated]
+          [possible values: populated, minimal]
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --output <OUTPUT>
+          Save the generated fixture to a new file; existing files are never overwritten
+
+      --param <KEY=VALUE>
+
 
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination

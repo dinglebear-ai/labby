@@ -1120,6 +1120,7 @@ fn render_gateway_tool_row(tool: &rmcp::model::Tool, input_schema: Option<Value>
         "name": tool.name.as_ref(),
         "description": tool.description.as_ref().map(|description| description.as_ref()),
         "input_schema": input_schema,
+        "output_schema": tool.output_schema.as_ref().map(|schema| Value::Object((**schema).clone())),
         "meta": tool.meta,
     })
 }
@@ -2047,6 +2048,26 @@ mod tests {
         assert_eq!(doc["health"], "healthy");
         assert!(doc["last_error"].is_null());
         assert_eq!(doc["name"], "alpha");
+    }
+
+    #[test]
+    fn gateway_schema_preserves_both_contracts_without_leaking_excluded_tools() {
+        let input = serde_json::json!({"type":"object","properties":{"query":{"type":"string"}}});
+        let output = serde_json::json!({"type":"object","required":["items"],"properties":{"items":{"type":"array","items":{"type":"string"}}}});
+        let tool = Tool::new(
+            "lookup",
+            "lookup",
+            Arc::new(input.as_object().unwrap().clone()),
+        )
+        .with_raw_output_schema(Arc::new(output.as_object().unwrap().clone()));
+        let row = render_gateway_tool_row(&tool, Some(input.clone()));
+        assert_eq!(row["input_schema"], input);
+        assert_eq!(row["output_schema"], output);
+        let hidden = Tool::new("hidden", "hidden", Arc::new(serde_json::Map::new()));
+        let policy = ToolExposurePolicy::from_patterns(vec!["lookup".into()]).unwrap();
+        let doc = render_subject_scoped_gateway_schema("sample", &[tool, hidden], &policy);
+        assert_eq!(doc["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(doc["tools"][0]["output_schema"], output);
     }
 
     #[test]
