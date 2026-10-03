@@ -764,8 +764,8 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
     if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}
   } else if (input.transport === 'stdio') {
     patch.url = null
-    patch.command = config.command ?? null
-    patch.args = normalizeArgs(config.args)
+    if (config.command !== undefined) patch.command = config.command
+    if (config.args !== undefined) patch.args = normalizeArgs(config.args)
     if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}
   } else {
     if (config.url !== undefined) patch.url = config.url

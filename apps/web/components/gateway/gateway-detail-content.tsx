@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic'
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
   type ReactNode,
@@ -257,6 +258,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [editOpen, setEditOpen] = useState(false)
   const [removeConfirmationOpen, setRemoveConfirmationOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
+  const [exposureChangedRemotely, setExposureChangedRemotely] = useState(false)
+  const exposureSnapshot = useRef<{ id?: string; signature: string }>({ signature: '' })
   const [draftSelectedToolNames, setDraftSelectedToolNames] = useState<string[]>([])
   const [selectedRowToolNames, setSelectedRowToolNames] = useState<string[]>([])
   const [isSavingExposure, setIsSavingExposure] = useState(false)
@@ -306,10 +309,17 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   }, [])
 
   useEffect(() => {
+    const previous = exposureSnapshot.current
+    exposureSnapshot.current = { id: gateway?.id, signature: toolExposureSignature }
+    if (previous.id === gateway?.id && manageToolsMode) {
+      if (previous.signature !== toolExposureSignature) setExposureChangedRemotely(true)
+      return
+    }
     setDraftSelectedToolNames(currentExposedToolNames)
     setSelectedRowToolNames([])
     setManageToolsMode(false)
-  }, [currentExposedToolNames, gateway?.id, toolExposureSignature])
+    setExposureChangedRemotely(false)
+  }, [currentExposedToolNames, gateway?.id, toolExposureSignature, manageToolsMode])
 
   useEffect(() => {
     setEnvDraft(Object.entries(gateway?.config.env ?? {}).map(([key, value]) => `${key}=${value}`).join('\n'))
@@ -1332,6 +1342,13 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     <h2 className="text-lg font-semibold">{toolsTabLabel}</h2>
                   </div>
                   {gateway.status.capability_observation && displayedTools.length === 0 && capabilityValue(gateway.status, 'tools').state !== 'known' ? <p role="status" className="text-xs text-aurora-text-muted">{capabilityLabel(gateway.status, 'tools')}. Refresh discovery to load tools.</p> : null}
+                  {manageToolsMode && exposureChangedRemotely ? (
+                    <Alert variant="warn" className="mb-4">
+                      <AlertTriangle />
+                      <AlertTitle>Tool catalog or exposure changed while you were editing</AlertTitle>
+                      <AlertDescription>Your draft is preserved. Review the current catalog before saving, or cancel to use the latest server exposure.</AlertDescription>
+                    </Alert>
+                  ) : null}
                   <ToolExposureTable
                     emptyLabel={capabilityValue(gateway.status, 'tools').state !== 'known' ? capabilityLabel(gateway.status, 'tools') : capabilityValue(gateway.status, 'tools').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No tools discovered'}
                     tools={displayedTools}

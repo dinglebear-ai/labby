@@ -34,6 +34,19 @@ function firstWarningMessage(gateway: GatewayOperationalInput): string | undefin
   return gateway.warnings?.find((warning) => warning.message.trim().length > 0)?.message.trim()
 }
 
+function capabilityFailureReason(gateway: GatewayOperationalInput): string | undefined {
+  const observation = gateway.status.capability_observation
+  if (!observation) return undefined
+  for (const kind of ['tools', 'resources', 'prompts', 'skills'] as const) {
+    const family = observation[kind]
+    if (family?.error?.trim()) return family.error.trim()
+    if (family?.state === 'failed') {
+      return kind[0].toUpperCase() + kind.slice(1) + ' capability discovery failed; refresh to retry.'
+    }
+  }
+  return undefined
+}
+
 function degradedReason(gateway: GatewayOperationalInput): string {
   const warning = firstWarningMessage(gateway)
   if (warning) return warning
@@ -44,6 +57,8 @@ function degradedReason(gateway: GatewayOperationalInput): string {
   }
 
   if (gateway.status.last_error?.trim()) return gateway.status.last_error.trim()
+  const capabilityFailure = capabilityFailureReason(gateway)
+  if (capabilityFailure) return capabilityFailure
   return 'Connected, but one or more health checks need attention.'
 }
 
@@ -76,7 +91,7 @@ export function describeGatewayOperationalState(
     const hasObservedFailure = gateway.status.last_error?.trim()
       || (gateway.warnings?.length ?? 0) > 0
       || (gateway.status.likely_stale_count ?? 0) > 0
-      || families.some((family) => family?.state === 'failed' || family?.error?.trim())
+      || capabilityFailureReason(gateway)
     // Credential-scoped status is cache-only: absence or idle expiry is not a
     // failed connection attempt and must not become an outage incident.
     if (observation?.scope === 'credential' && !hasObservedFailure) {
@@ -104,10 +119,11 @@ export function describeGatewayOperationalState(
   const hasWarnings = (gateway.warnings?.length ?? 0) > 0
   const hasStaleRuntime = (gateway.status.likely_stale_count ?? 0) > 0
   const hasLastError = Boolean(gateway.status.last_error?.trim())
+  const hasCapabilityFailure = Boolean(capabilityFailureReason(gateway))
   const hasNonWarmingHealthFailure =
     !gateway.status.healthy && gateway.status.catalog_warming !== true
 
-  if (hasWarnings || hasStaleRuntime || hasLastError || hasNonWarmingHealthFailure) {
+  if (hasWarnings || hasStaleRuntime || hasLastError || hasCapabilityFailure || hasNonWarmingHealthFailure) {
     return {
       kind: 'degraded',
       label: 'Needs attention',

@@ -1493,3 +1493,18 @@ test('queued inventory requests stop when the authority changes during bounded h
     assert.equal(started, 4, 'remaining queued rows must not be requested under the replacement authority')
   })
 })
+
+test('detail runtime refresh requests only the named runtime and preserves catalog and health evidence', async () => {
+  const { mockGateways } = await import('./mock-data')
+  const snapshot = { ...mockGateways[0], id: 'cheap-runtime', name: 'cheap-runtime',
+    status: { ...mockGateways[0].status, connected: false, healthy: false, last_error: 'retained failure' } }
+  await withGatewayFetch({ 'gateway.mcp.list': () => [{ name: snapshot.id, connected: true, enabled: true }] }, async requests => {
+    const refreshed = await gatewayApi.refreshRuntime(snapshot)
+    assert.deepEqual(requests, [{ action: 'gateway.mcp.list', params: { name: snapshot.id } }])
+    assert.equal(refreshed.status.connected, true)
+    assert.equal(refreshed.status.healthy, false)
+    assert.equal(refreshed.status.last_error, 'retained failure')
+    assert.equal(refreshed.discovery, snapshot.discovery)
+    assert.deepEqual(refreshed.config, snapshot.config)
+  })
+})

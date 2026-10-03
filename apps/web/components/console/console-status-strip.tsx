@@ -29,8 +29,25 @@ export function deriveConsoleAttention(
         likely_stale_count: row.likely_stale_count,
         capability_observation: row.capability_observation,
       },
-    }).needsAttention
+    }).kind === 'disconnected'
   }).map(row => row.name)
+}
+
+export function deriveConsoleCapabilityAlerts(runtime: readonly BackendGatewayMcpRuntimeView[]): GatewayNotification[] {
+  return runtime.flatMap(row => {
+    if (row.enabled === false || row.connected !== true) return []
+    return (['tools', 'resources', 'prompts', 'skills'] as const).flatMap(kind => {
+      const family = row.capability_observation?.[kind]
+      if (family?.state !== 'failed' && !family?.error?.trim()) return []
+      const message = family?.error?.trim() || `${kind} capability discovery failed; refresh to retry.`
+      return [{
+        key: `gateway:${row.name}:capability:${kind}`,
+        fingerprint: row.notification_incidents?.[kind] ?? message,
+        gatewayName: row.name,
+        message,
+      }]
+    })
+  })
 }
 
 export interface GatewayClientView {
@@ -71,7 +88,7 @@ export function upstreamMetricColor(snapshot: Pick<ConsoleStatusSnapshot, 'conne
 
 export type ConsoleStatusState =
   | { kind: 'loading' }
-  | { kind: 'ready'; snapshot: ConsoleStatusSnapshot; attention?: string[]; disconnectedOccurrences?: Record<string, string>; alerts?: GatewayNotification[] }
+  | { kind: 'ready'; snapshot: ConsoleStatusSnapshot; attention?: string[]; disconnectedOccurrences?: Record<string, string>; alerts?: GatewayNotification[]; runtimeAlerts?: GatewayNotification[] }
   /** The viewer lacks gateway admin scope: expected, so no chrome is shown. */
   | { kind: 'unauthorized' }
   | { kind: 'unavailable'; reason: string }
@@ -90,7 +107,7 @@ export function classifyStatusFailure(error: unknown): ConsoleStatusState {
   return { kind: 'unavailable', reason: failureReason(error) }
 }
 
-async function loadConsoleStatus(signal: AbortSignal): Promise<ConsoleStatusState> {
+export async function loadConsoleStatus(signal: AbortSignal): Promise<ConsoleStatusState> {
   const [runtimeResult, clientsResult, gatewayResult] = await Promise.allSettled([
     gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal),
     gatewayAction<GatewayClientView[]>('gateway.clients.list', {}, signal),
@@ -100,8 +117,9 @@ async function loadConsoleStatus(signal: AbortSignal): Promise<ConsoleStatusStat
   const snapshot = deriveConsoleStatus(runtimeResult.value, clientsResult.status === 'fulfilled' ? clientsResult.value : undefined)
   if (clientsResult.status === 'rejected' && !isAbortError(clientsResult.reason)) snapshot.sessionsUnavailable = failureReason(clientsResult.reason)
   const alerts = gatewayResult.status === 'fulfilled' ? gatewayResult.value.flatMap(gateway => (gateway.warnings ?? []).map(warning => ({ key: `gateway:${gateway.name}:warning:${warning.code}`, fingerprint: warning.occurrence_id ?? `${warning.code}:${warning.message}`, gatewayName: gateway.name, message: warning.message }))) : undefined
-  if (alerts) for (const runtime of runtimeResult.value) if ((runtime.likely_stale_count ?? 0) > 0) alerts.push({ key: `gateway:${runtime.name}:stale`, fingerprint: runtime.notification_incidents?.stale ?? String(runtime.likely_stale_count), gatewayName: runtime.name, message: `${runtime.likely_stale_count} likely stale processes` })
-  return { kind: 'ready', snapshot, alerts, disconnectedOccurrences: Object.fromEntries(runtimeResult.value.flatMap(row => row.notification_incidents?.tools ? [[row.name, row.notification_incidents.tools]] : [])), attention: deriveConsoleAttention(runtimeResult.value, gatewayResult.status === 'fulfilled' ? gatewayResult.value : undefined) }
+  const runtimeAlerts = deriveConsoleCapabilityAlerts(runtimeResult.value)
+  for (const runtime of runtimeResult.value) if ((runtime.likely_stale_count ?? 0) > 0) runtimeAlerts.push({ key: `gateway:${runtime.name}:stale`, fingerprint: runtime.notification_incidents?.stale ?? String(runtime.likely_stale_count), gatewayName: runtime.name, message: `${runtime.likely_stale_count} likely stale processes` })
+  return { kind: 'ready', snapshot, alerts, runtimeAlerts, disconnectedOccurrences: Object.fromEntries(runtimeResult.value.flatMap(row => row.notification_incidents?.tools ? [[row.name, row.notification_incidents.tools]] : [])), attention: deriveConsoleAttention(runtimeResult.value, gatewayResult.status === 'fulfilled' ? gatewayResult.value : undefined) }
 }
 
 function Metric({

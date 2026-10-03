@@ -514,6 +514,16 @@ export const gatewayApi = {
     return gateways
   },
 
+  async refreshRuntime(gateway: Gateway, signal?: AbortSignal): Promise<Gateway> {
+    if (gateway.source === 'in_process') return gateway
+    const rows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: gateway.id }, signal)
+    const refreshed = applyRuntimeRow(gateway, rows.find(row => row.name === gateway.id))
+    // The cheap runtime response does not contain complete health observations.
+    // Full reconciliation is required before clearing a recorded unhealthy state.
+    return { ...refreshed, status: { ...refreshed.status,
+      healthy: gateway.status.healthy && refreshed.status.healthy } }
+  },
+
   async hydrateRuntime(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
     const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
     const runtimeByName = new Map(runtimeRows.map((row) => [row.name, row]))

@@ -324,15 +324,21 @@ function abortableMockDelay(ms: number, signal?: AbortSignal): Promise<void> {
 // Coalesce at the fetch boundary, so SWR hydration, catalog warming, and
 // scheduler mutations all share ownership of the underlying operation.
 const gatewayFlights = new Map<string, Promise<unknown>>()
+let gatewayMutationGeneration = 0
+function retireGatewayFlights() {
+  gatewayMutationGeneration += 1
+  gatewayFlights.clear()
+}
 function gatewaySingleFlight<T>(key: string, fetch: () => Promise<T>): Promise<T> {
+  const generation = gatewayMutationGeneration
   const epoch = getBrowserSessionEpoch()
   const context = getBrowserSessionContextIdentity()
   const base = normalizeGatewayApiBase()
-  const identity = JSON.stringify([base, context, epoch, key])
+  const identity = JSON.stringify([base, context, epoch, generation, key])
   const existing = gatewayFlights.get(identity)
   if (existing) return existing as Promise<T>
   const flight = fetch().then(result => {
-    if (epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Gateway authority changed', 'AbortError')
+    if (generation !== gatewayMutationGeneration || epoch !== getBrowserSessionEpoch() || context !== getBrowserSessionContextIdentity() || base !== normalizeGatewayApiBase()) throw new DOMException('Gateway authority changed', 'AbortError')
     return result
   }).finally(() => { if (gatewayFlights.get(identity) === flight) gatewayFlights.delete(identity) })
   gatewayFlights.set(identity, flight)
@@ -477,7 +483,7 @@ export function gatewaysRuntimeRequestKey(
 
 type GatewayMutate = ReturnType<typeof useSWRConfig>['mutate']
 type GatewayPollingState = { configured: boolean; runtime: boolean; inventory: boolean; detail: boolean }
-type GatewayRefreshKeys = { configuration?: boolean; runtimeCacheId?: string; inventoryCacheId?: string; detailKey?: string }
+type GatewayRefreshKeys = { configuration?: boolean; runtimeCacheId?: string; inventoryCacheId?: string; detailKey?: string; detailRuntimeKey?: string }
 const gatewayRefreshSubscribers = new Set<GatewayRefreshKeys & { mutate: GatewayMutate; state: () => GatewayPollingState }>()
 const gatewayRefreshBusy = new Map<GatewayMutate, Set<string>>()
 let gatewayRefreshTimer: number | null = null
@@ -499,7 +505,7 @@ function refreshVisibleGateways(catchUp = false) {
   if (document.visibilityState === 'hidden' || navigator.onLine === false) return
   if (!catchUp) gatewayRefreshPulse += 1
   const byCache = new Map<GatewayMutate, Map<string, { key: string | [string, string]; validating: boolean }>>()
-  for (const { mutate, configuration, runtimeCacheId, inventoryCacheId, detailKey, state } of gatewayRefreshSubscribers) {
+  for (const { mutate, configuration, runtimeCacheId, inventoryCacheId, detailKey, detailRuntimeKey, state } of gatewayRefreshSubscribers) {
     const keys = byCache.get(mutate) ?? new Map<string, { key: string | [string, string]; validating: boolean }>()
     const polling = state()
     const add = (key: string | [string, string], validating: boolean) => {
@@ -512,7 +518,8 @@ function refreshVisibleGateways(catchUp = false) {
     if (inventoryCacheId && (catchUp || gatewayRefreshPulse % 12 === 0)) {
       add(['/gateways/tool-inventory', inventoryCacheId], polling.inventory)
     }
-    if (detailKey) add(detailKey, polling.detail)
+    if (detailRuntimeKey) add(detailRuntimeKey, polling.runtime)
+    if (detailKey && (catchUp || gatewayRefreshPulse % 12 === 0)) add(detailKey, polling.detail)
     if (configuration && (catchUp || gatewayRefreshPulse % 3 === 0)) add(GATEWAYS_KEY, polling.configured)
     byCache.set(mutate, keys)
   }
@@ -634,23 +641,39 @@ export function useGateways(enabled = true, includeToolInventory = false, warmCa
 }
 
 export function useGateway(id: string | null) {
-  const { mutate } = useSWRConfig()
+  const { mutate, cache } = useSWRConfig()
   const fallbackGateway = USE_MOCK_DATA && id ? getMockGatewayFallback(id) : undefined
   const result = useSWR<Gateway>(
     id ? gatewayKey(id) : null,
-    id ? () => gatewaySingleFlight('detail:' + id, () => fetchGateway(id)) : null,
+    id ? () => {
+      const canonicalId = (cache.get(gatewayKey(id))?.data as Gateway | undefined)?.id ?? id
+      return gatewaySingleFlight('detail:' + canonicalId, () => fetchGateway(canonicalId))
+    } : null,
     {
       revalidateOnFocus: false,
+      compare: (a, b) => a === b,
       fallbackData: fallbackGateway,
       revalidateOnMount: !USE_MOCK_DATA || fallbackGateway === undefined,
     }
   )
+  const detailRuntimeKey = id ? `/gateway-detail-runtime/${id}` : null
+  const runtime = useSWR<{ source: Gateway; gateway: Gateway }>(detailRuntimeKey, id ? async () => {
+    const source = cache.get(gatewayKey(id))?.data as Gateway | undefined
+    if (!source) throw new Error('Gateway snapshot is unavailable')
+    return gatewaySingleFlight('detail-runtime:' + source.id, async () => ({
+      source, gateway: await gatewayApi.refreshRuntime(source),
+    }))
+  } : null, { revalidateOnMount: false, revalidateOnFocus: false })
+  const seedRuntime = runtime.mutate
+  useEffect(() => {
+    if (result.data) void seedRuntime({ source: result.data, gateway: result.data }, false)
+  }, [result.data, seedRuntime])
   const detailPollingState = useRef({ configured: false, runtime: false, inventory: false, detail: false })
-  detailPollingState.current = { configured: false, runtime: false, inventory: false, detail: result.isValidating }
+  detailPollingState.current = { configured: false, inventory: false, detail: result.isValidating, runtime: runtime.isValidating }
   useEffect(() => {
     if (!id || USE_MOCK_DATA) return
-    return subscribeGatewayRefresh(mutate, { detailKey: gatewayKey(id) }, () => detailPollingState.current)
-  }, [id, mutate])
+    return subscribeGatewayRefresh(mutate, { detailKey: gatewayKey(id), detailRuntimeKey: detailRuntimeKey ?? undefined }, () => detailPollingState.current)
+  }, [id, mutate, detailRuntimeKey])
   const previousIdentity = useRef<{ requested: string | null; resolved?: string }>({ requested: id })
   useEffect(() => {
     const previous = previousIdentity.current
@@ -661,7 +684,10 @@ export function useGateway(id: string | null) {
     }
     previousIdentity.current = { requested: id, resolved: result.data?.id }
   }, [id, result.data?.id, mutate])
-  return result
+  const currentRuntime = runtime.data?.source === result.data
+  return { ...result, data: currentRuntime ? runtime.data?.gateway : result.data,
+    error: result.error ?? (currentRuntime ? runtime.error : undefined),
+    isValidating: result.isValidating || runtime.isValidating }
 }
 
 export function useExposurePolicy(id: string | null) {
@@ -735,6 +761,7 @@ export function useGatewayMutations() {
   const { mutate } = useSWRConfig()
   const invalidateGatewayDetail = useCallback((id: string) => mutate(gatewayKey(id), undefined, false), [mutate])
   const refreshGatewayCache = useCallback(async (id?: string, extraKeys: string[] = []) => {
+    retireGatewayFlights()
     const keys = [GATEWAYS_KEY, ...(id ? [gatewayKey(id)] : []), ...extraKeys]
     await Promise.all([
       ...keys.map((key) => mutate(key)),
@@ -882,6 +909,7 @@ export function useGatewayMutations() {
       return updated
     }
     const gateway = await gatewayApi.update(id, input)
+    retireGatewayFlights()
     // A successful rename removes the old backend ID. Keep its mounted view
     // usable until the form's complete transaction navigates to the new ID.
     await mutate(gatewayKey(id), gateway, false)

@@ -14,6 +14,7 @@ export function ConsoleNotifications({ state }: { state: ConsoleStatusState }) {
   const [open, setOpen] = useState(false)
   const { notifications, clearAll } = useGatewayNotifications('gateway-runtime', state.kind === 'ready' ? (state.attention ?? []).map(name => ({ key: `gateway:${name}:disconnected`, fingerprint: state.disconnectedOccurrences?.[name] ?? 'disconnected', gatewayName: name, message: 'Enabled upstream is disconnected.' })) : undefined)
   useGatewayNotifications('gateway-alerts', state.kind === 'ready' ? state.alerts : undefined)
+  useGatewayNotifications('gateway-runtime-alerts', state.kind === 'ready' ? state.runtimeAlerts : undefined)
   const attention = notifications
   const notificationTitle = attention.length === 0
     ? 'Notifications — all clear'

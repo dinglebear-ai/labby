@@ -140,3 +140,28 @@ test('credential observation never suppresses recorded errors or runtime inciden
     }).needsAttention, true)
   }
 })
+
+test('connected peers with failed capability observations still need attention', () => {
+  for (const family of ['tools', 'resources', 'prompts', 'skills'] as const) {
+    const observation = credentialObservation('unknown')
+    const state = describeGatewayOperationalState({
+      status: { connected: true, healthy: true, capability_observation: {
+        ...observation, [family]: { state: 'failed', error: `${family} refresh failed` },
+      } },
+    })
+    assert.equal(state.kind, 'degraded')
+    assert.equal(state.connectionLabel, 'Connected')
+    assert.equal(state.needsAttention, true)
+    assert.equal(state.reason, `${family} refresh failed`)
+  }
+})
+
+test('failed observations without an error string explain the failing capability', () => {
+  const state = describeGatewayOperationalState({
+    status: { connected: true, healthy: true, capability_observation: {
+      scope: 'credential', skills: { state: 'failed' },
+    } },
+  })
+  assert.equal(state.kind, 'degraded')
+  assert.match(state.reason, /Skills capability discovery failed/)
+})
