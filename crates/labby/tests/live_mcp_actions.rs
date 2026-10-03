@@ -598,10 +598,11 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         .collect::<Vec<_>>();
     let expected_count = expected.len();
 
-    // Root raw mode intentionally disables Code Mode. Guarded execution uses
-    // a separate owned admin operator route that exposes native Snippets while
-    // its runtime is enabled. It does not opt into Project asset execution;
-    // the same verified credential and route own every receipt.
+    // Also prove guarded receipts on a separate owned admin operator route
+    // that exposes native Snippets while the synthetic MCP surface is enabled.
+    // The raw root runner covers the disabled advertisement regime. The scoped
+    // route does not opt into Project asset execution; one verified credential
+    // and route own every receipt.
     let snippet_identity =
         live_identity::LiveIdentity::bootstrap_snippet_receipt_harness("mcp-matrix-snippet-replay")
             .await
@@ -654,7 +655,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
                     Some(true),
                     "{action} receipt fixture failed: {text}"
                 );
-                serde_json::from_str(&text).expect("snippet fixture JSON")
+                action_scenarios::snippet_mcp_action_data(
+                    serde_json::from_str(&text).expect("snippet fixture JSON"),
+                    action,
+                )
             },
         )
         .await;
@@ -680,8 +684,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             intent.key()
         );
         if prepared_case && result.is_error != Some(true) {
-            let value: serde_json::Value =
-                serde_json::from_str(&text).expect("snippet action JSON");
+            let value = action_scenarios::snippet_mcp_action_data(
+                serde_json::from_str(&text).expect("snippet action JSON"),
+                &intent.action,
+            );
             action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
         }
         let succeeded = result.is_error != Some(true);

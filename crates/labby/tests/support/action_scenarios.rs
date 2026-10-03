@@ -387,6 +387,55 @@ pub(crate) fn action_request(intent: &CaseIntent) -> Value {
     json!({"action": intent.action, "params": fixture_params(intent)})
 }
 
+/// Validate the MCP CommandResponse before exposing its action payload.
+pub(crate) fn snippet_mcp_action_data(value: Value, action: &str) -> Value {
+    assert_eq!(value["ok"], true, "{action} MCP command failed: {value}");
+    assert_eq!(
+        value["service"], "snippets",
+        "unexpected MCP service: {value}"
+    );
+    assert_eq!(value["action"], action, "unexpected MCP action: {value}");
+    assert!(
+        value["data"].is_object(),
+        "{action} MCP command has no data object: {value}"
+    );
+    snippet_response_data(action, &value).clone()
+}
+
+#[cfg(test)]
+mod snippet_mcp_action_data_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_receipt_data_survives_the_mcp_command_envelope() {
+        let data =
+            json!({"execution_id":"owned-run","receipt_status":"persisted","result":{"ok":true}});
+        let envelope =
+            json!({"ok":true,"service":"snippets","action":"snippets.replay","data":data});
+        let actual = snippet_mcp_action_data(envelope, "snippets.replay");
+        assert_snippet_receipt_case("snippets.replay", &actual);
+        assert_eq!(actual["execution_id"], "owned-run");
+    }
+
+    #[test]
+    fn failed_or_mismatched_mcp_commands_cannot_supply_receipt_evidence() {
+        for envelope in [
+            json!({"ok":false,"service":"snippets","action":"snippets.exec","data":{"receipt_status":"persisted"}}),
+            json!({"service":"snippets","action":"snippets.exec","data":{}}),
+            json!({"ok":true,"service":"gateway","action":"snippets.exec","data":{}}),
+            json!({"ok":true,"service":"snippets","action":"snippets.receipt","data":{}}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec"}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec","data":null}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec","data":{},"error":{"kind":"failure"}}),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| snippet_mcp_action_data(envelope, "snippets.exec"))
+                    .is_err()
+            );
+        }
+    }
+}
+
 /// HTTP dispatch returns payloads directly; MCP wraps them in the standard
 /// success envelope. Reject partial, failed, or mismatched envelopes.
 pub(crate) fn snippet_response_data<'a>(action: &str, response: &'a Value) -> &'a Value {
@@ -401,7 +450,9 @@ pub(crate) fn snippet_response_data<'a>(action: &str, response: &'a Value) -> &'
             response.get("error").is_none(),
             "{action} success carried an error"
         );
-        response.get("data").expect("snippet success envelope data")
+        let data = response.get("data").expect("snippet success envelope data");
+        assert!(data.is_object(), "{action} success data must be an object");
+        data
     } else {
         response
     }

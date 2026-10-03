@@ -349,33 +349,6 @@ async fn prepare_authority_action(
     intent: &action_matrix::CaseIntent,
     mut params: serde_json::Value,
 ) -> serde_json::Value {
-    if matches!(
-        intent.action.as_str(),
-        "snippets.preview" | "snippets.replay"
-    ) {
-        // This runner starts in raw mode for its unreachable upstream fixtures.
-        // Guarded previews require enabled Code Mode even for tools: [].
-        let (status, bytes) = post_action(
-            client,
-            base,
-            "/v1/gateway",
-            "gateway.code_mode.set",
-            serde_json::json!({"enabled":true}),
-            true,
-        )
-        .await;
-        assert!(
-            status.is_success(),
-            "enable receipt preview fixture: {}",
-            String::from_utf8_lossy(&bytes)
-        );
-        let config: serde_json::Value =
-            serde_json::from_slice(&bytes).expect("Code Mode configuration JSON");
-        assert_eq!(
-            config["enabled"], true,
-            "receipt preview fixture must enable execution"
-        );
-    }
     if let Some(prepared) = action_scenarios::prepare_snippet_receipt_case(
         &intent.action,
         |action, params| async move {
