@@ -8,6 +8,59 @@ Object.defineProperty(globalThis, 'self', { configurable: true, value: window })
 Object.defineProperty(globalThis, 'NodeFilter', { configurable: true, value: window.NodeFilter })
 Object.defineProperty(globalThis, 'HTMLInputElement', { configurable: true, value: window.HTMLInputElement })
 
+test('Phoenix surfaces model discovery failures after available status', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    if (action === 'phoenix.status') return new Response(JSON.stringify({ available: true }), { status: 200 })
+    if (action === 'phoenix.models.list') return new Response(JSON.stringify({ message: 'Model catalog unavailable' }), { status: 503 })
+    return new Response(JSON.stringify({ sessions: [] }), { status: 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.match(document.querySelector('[aria-label="Phoenix session"]')?.textContent ?? '', /Model catalog unavailable/)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('Phoenix cancels pending model discovery quietly on unmount', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  let modelSignal: AbortSignal | null | undefined
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    if (action === 'phoenix.status') return new Response(JSON.stringify({ available: true }), { status: 200 })
+    if (action === 'phoenix.models.list') {
+      modelSignal = init?.signal
+      return new Promise<Response>((_resolve, reject) => modelSignal?.addEventListener('abort', () => reject(new DOMException('cancelled', 'AbortError')), { once: true }))
+    }
+    return new Response(JSON.stringify({ sessions: [] }), { status: 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.ok(modelSignal, 'model discovery started')
+    await view.unmount()
+    assert.equal(modelSignal.aborted, true)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+  } finally {
+    if (view.container.isConnected) await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
 test('Phoenix opens an explicit unavailable session panel without simulated send actions', async () => {
   __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   const { PhoenixAvailability } = await import('./console-global-tools.tsx')

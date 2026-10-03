@@ -127,3 +127,33 @@ test('a caller signal aborts the authority-scoped request without disturbing its
   scoped.finish()
   sibling.finish()
 })
+
+test('finished requests release forwarding listeners on a reused caller signal', () => {
+  const caller = new AbortController()
+  const active = new Set<EventListenerOrEventListenerObject>()
+  const add = caller.signal.addEventListener.bind(caller.signal)
+  const remove = caller.signal.removeEventListener.bind(caller.signal)
+  caller.signal.addEventListener = (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+    if (type === 'abort' && listener) active.add(listener)
+    add(type, listener, options)
+  }
+  caller.signal.removeEventListener = (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | EventListenerOptions) => {
+    if (type === 'abort' && listener) active.delete(listener)
+    remove(type, listener, options)
+  }
+  const snapshot = parseAuthoritySnapshot(payload)
+  for (let index = 0; index < 20; index += 1) {
+    const request = beginAuthorityRequest(snapshot, 3, 'local', caller.signal)
+    assert.equal(active.size, 1)
+    request.finish()
+    request.finish()
+    assert.equal(active.size, 0)
+    assert.equal(request.signal.aborted, false)
+  }
+  const live = beginAuthorityRequest(snapshot, 3, 'local', caller.signal)
+  caller.abort('caller cancelled')
+  assert.equal(live.signal.aborted, true)
+  assert.equal(live.signal.reason, 'caller cancelled')
+  live.finish()
+  assert.equal(active.size, 0)
+})

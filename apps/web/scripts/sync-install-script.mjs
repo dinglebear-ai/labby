@@ -19,7 +19,7 @@ export async function syncInstallScript({
   return { source, target, rootTarget };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const { source, target, rootTarget } = await syncInstallScript();
   console.log(`Synced ${source} -> ${target}, ${rootTarget}`);
 }
