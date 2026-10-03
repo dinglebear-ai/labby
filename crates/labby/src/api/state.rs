@@ -33,6 +33,9 @@ pub struct AppState {
     pub depot_manager: Arc<crate::dispatch::depot::manager::Manager>,
     /// Bounded operator notification inbox shared by the API and background monitors.
     pub notifications: Arc<crate::notifications::NotificationCenter>,
+    /// Separate recipient-scoped store; never exposes the operator feed to agents.
+    #[cfg(feature = "gateway")]
+    pub(crate) agent_notifications: crate::notifications::codemode::NoticeStore,
     /// Durable provider lifecycle dispatch, available only with browser OAuth authority.
     pub depot_admin: Option<Arc<crate::dispatch::depot::admin::Admin>>,
     depot_store: Option<Arc<crate::dispatch::depot::store::Store>>,
@@ -173,6 +176,8 @@ impl AppState {
             depot: Arc::new(crate::dispatch::depot::DepotClient::disabled()),
             depot_manager: Arc::new(crate::dispatch::depot::manager::Manager::default()),
             notifications: Arc::new(crate::notifications::NotificationCenter::default()),
+            #[cfg(feature = "gateway")]
+            agent_notifications: crate::notifications::codemode::NoticeStore::default(),
             depot_admin: None,
             depot_store: None,
             depot_policy: Default::default(),

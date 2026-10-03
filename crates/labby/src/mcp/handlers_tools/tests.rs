@@ -7734,3 +7734,5 @@ async fn code_mode_stash_exception_does_not_admit_in_process_peers() {
             .contains("hidden while code_mode")
     );
 }
+
+mod codemode_notices;

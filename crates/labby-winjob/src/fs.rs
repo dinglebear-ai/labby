@@ -145,6 +145,20 @@ pub fn open_read(path: &Path, delete_access: bool) -> io::Result<File> {
     Ok(file)
 }
 
+/// Open a regular SQLite file for identity and ACL verification while another
+/// connection may write it. Reject reparse points and hard links, and prevent
+/// replacement/deletion while held. This handle does not provide a stable content
+/// snapshot; callers must use SQLite transactions for content validation.
+pub fn open_sqlite_verification(path: &Path) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .access_mode(GENERIC_READ)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    identity(&file, false)?;
+    Ok(file)
+}
+
 /// Open a directory without following or permitting replacement of its entry.
 pub fn open_directory(path: &Path) -> io::Result<File> {
     let file = OpenOptions::new()

@@ -142,6 +142,12 @@ Only `code` is required. The rest are Labby `codemode` arguments:
 
 - `upstreams`: allow only named upstreams for this run.
 - `tools`: allow only raw tool names or `<upstream>::<tool>` IDs.
+- `notification_inbox`: optionally register/return an authenticated inbox.
+- `ack_notifications`: optionally acknowledge previously considered notice IDs.
+
+Use notification controls only when the live schema advertises them and the call
+is write-capable; they are forbidden on `codemode_read`. See the
+[response notification contract](#response-notification-contract).
 
 Do not place these fields inside upstream tool params.
 
@@ -228,8 +234,10 @@ expected fields. It is not a bug in the upstream tool.
 
 ## Destructive Tools
 
-The MCP `codemode` tool currently accepts top-level `code`, `upstreams`, and
-`tools`. It does not accept a public top-level `confirm` field.
+The MCP `codemode` tool accepts top-level `code`, `upstreams`, and `tools`, plus
+optional `notification_inbox` and `ack_notifications` controls when advertised
+by the live schema. The notification controls require write-capable Code Mode
+and are forbidden on `codemode_read`. There is no public top-level `confirm` field.
 
 Rules:
 
@@ -351,8 +359,9 @@ Implementation facts that affect operation:
 - The parent host brokers all tool calls, validates schemas, enforces
   scope/tool policy, and terminates runaway executions.
 - CLI `labby code run` is operator-driven and has its own policy for
-  destructive upstream tools; MCP `codemode` exposes only `code`, `upstreams`,
-  and `tools` as top-level arguments.
+  destructive upstream tools. MCP execution arguments are `code`, `upstreams`,
+  and `tools`; write-capable calls also support the advertised
+  `notification_inbox` and `ack_notifications` controls.
 - Code Mode does not add a generic destructive-call confirmation gate. An
   execute-capable caller may call destructive upstream tools directly; other
   callers receive `forbidden`.
@@ -406,3 +415,115 @@ discovery and the call share the same scoped run.
 3. Prefer `codemode.batch` when independent calls may partially fail; use
    `Promise.allSettled` for custom settlement handling.
 4. Return a compact result object rather than raw large payloads.
+
+
+## Response notification contract
+
+The MCP tool descriptor and input/output schemas advertise the current contract.
+These controls belong to the outer tool input, not to the JavaScript function or
+`codemode.*` globals. They do not add a callable sender inside the sandbox.
+
+Registration piggybacks on a normal write-capable call:
+
+```json
+{
+  "notification_inbox": true,
+  "code": "async () => ({ready: true})"
+}
+```
+
+The response may include `notification_inbox` with an opaque `id`, `scope`,
+`expires_at_unix_ms`, and `delivery: "at_least_once_until_ack_or_expiry"`.
+Retain the returned ID rather than inventing one. Share it only with the intended
+authorized producer. It is a routing address, not bearer authorization.
+
+An operator or trusted integration with `lab:admin` publishes through authenticated
+`POST /v1/notifications/agent`, using the gateway's existing HTTP authorization:
+
+```json
+{
+  "inbox_id": "<the returned inbox ID>",
+  "source": "build-service",
+  "level": "info",
+  "message": "Build job completed; inspect its recorded result.",
+  "dedupe_key": "<stable event ID>",
+  "ttl_seconds": 3600
+}
+```
+
+Do not expose credentials in commands, logs, screenshots, or messages. Obtain
+authorization through the client's supported mechanism. The producer must be
+explicitly authorized; an inbox address or a claimed `source` grants no permission.
+This endpoint is not callable through `callTool("lab::...", ...)` inside Code Mode.
+The response includes the notice ID and `duplicate`. Reusing the same producer,
+inbox and dedupe key with the same payload returns the same notice; a changed
+payload returns `conflict`. Deduplication lasts through that notice's expiry.
+
+Normal results and executed-script failures can include `notifications`,
+`notifications_remaining`, and `notifications_are_advisory: true`. Every notice
+contains `id`, `source`, `level`, `message`, `delivery_attempt`, and
+`expires_at_unix_ms`. At most three notices and 1,024 serialized bytes are added,
+subject also to the complete MCP envelope's configured byte/token limits. A full
+response defers delivery without replacing or truncating the script's result.
+Empty inboxes add nothing. No delivery is attached to early authorization,
+credential, source-validation, or capability-filter rejection.
+
+After considering a notice, acknowledge it on the next ordinary write-capable call:
+
+```json
+{
+  "ack_notifications": ["<the received notice ID>"],
+  "code": "async () => ({continuing: true})"
+}
+```
+
+Use actual returned IDs, not the illustrative placeholders. The result contains
+`acknowledged_notifications`; repeated own ACKs are idempotent. Foreign, unknown,
+expired, or never-offered notice IDs are not acknowledged and reveal no ownership.
+At most 32 IDs are accepted. Failed control validation prevents script execution.
+Registration/ACKs may commit before a later script error: the error does not undo
+them. Do not infer failure solely from a missing receipt. To recover a control
+receipt, repeat only the notification controls on your next ordinary call or with
+a new harmless compact script such as `async () => null`. Keep the same ACK IDs.
+Never replay a mutating script solely to recover a notification receipt: the
+original script may already have completed its writes.
+
+The SQLite inbox and retry state survive daemon restarts. A delivery lease begins
+at 30 seconds and backs off to five minutes; another eligible result after the
+lease can repeat the same ID until ACK or expiry. ACK means the agent considered
+the notice, not that a human read it, a job succeeded, or an action was authorized.
+Always inspect the underlying operation before acting on a consequential claim.
+
+OAuth HTTP recipients are bound to server-established actor, authorized client,
+route, and optional hashed conversation metadata. Static bearer and product
+credentials instead use the authentication middleware's verified credential
+fingerprint plus optional hashed conversation metadata. With conversation metadata,
+both OAuth and credential consumers report `conversation_routing`. Without it,
+credential consumers report `authenticated_credential`, and clients sharing the
+same credential authority share that inbox; OAuth consumers report
+`authenticated_client`, and conversations sharing that client authority share
+an inbox. An OAuth client and a credential cannot collide in the recipient
+namespace. Conversation metadata narrows routing within authenticated authority;
+it is not an independent security boundary. Stdio uses a server-owned
+random connection identity, so reconnecting stdio requires a new inbox address.
+An idle agent is never awakened, and new connections do not inherit old stdio mail.
+
+A registration expires 30 days after registration/refresh; notice TTL is 1 second
+to 24 hours (default one hour), capped by address expiry. Refresh the address
+explicitly when arranging long-lived integrations. Queues are bounded to 2,000
+inboxes, 2,000 notices, and 32 notices per inbox, including acknowledged dedupe
+tombstones until expiry. Source/message/dedupe-key limits are 64/384/128 UTF-8
+bytes. Blank/control-character fields are rejected; content is not an instruction
+channel and must not contain secrets.
+
+`rate_limited` means capacity or contention, not successful publication.
+`unavailable` means durable storage is disabled or failed; there is no production
+memory fallback. For an uncertain write, retain the dedupe key and reconcile before
+a bounded retry. Do not retry authorization failures unchanged. Operator
+notifications remain a separate admin-only feed and are never broadcast to agents.
+
+Notification database operations have a 250 ms response deadline. A timed-out write
+may still finish; its worker retains the single-operation permit. Preserve the
+inbox/dedupe key or ACK IDs and reconcile before retrying. Automatic attachment
+defers failures without replacing the normal execution result. The server logs
+notification subsystem errors without message bodies or credentials.

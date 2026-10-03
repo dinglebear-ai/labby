@@ -62,6 +62,15 @@ The root `apm.yml` carries a `# x-release-please-version` marker, so Release Ple
 its version aligned with the workspace. The package ships no binary and no
 hooks; host provisioning stays with `install-labby` and `labby setup`.
 
+## Primitive authoring
+
+The [root guide](../AGENTS.md#plugin-primitives-source-and-regeneration) and
+[plugin guide](../plugins/labby/AGENTS.md#primitive-ownership) define the authoring
+contract. Edit canonical skills/references/agent metadata under .apm/skills, then
+regenerate and check client projections. Update binary embedding and the live tool
+descriptor when a primitive introduces a new agent workflow. Installed client
+caches and generated packages are never the source of truth.
+
 ## Direct client packages
 
 `plugins/labby/<client>/` contains checked-in, self-contained packages for

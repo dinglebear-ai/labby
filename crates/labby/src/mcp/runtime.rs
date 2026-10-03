@@ -204,6 +204,11 @@ impl<T> CatalogSnapshotStore<T> {
 /// paginated result set.
 #[derive(Default)]
 pub(crate) struct McpRouteRuntime {
+    /// Durable agent inbox shared with the authenticated publication API.
+    #[cfg(feature = "gateway")]
+    pub(crate) code_mode_notifications: crate::notifications::codemode::NoticeStore,
+    #[cfg(feature = "gateway")]
+    notification_stdio_session: std::sync::OnceLock<String>,
     resources: RwLock<CatalogSnapshotStore<Resource>>,
     resource_templates: RwLock<CatalogSnapshotStore<ResourceTemplate>>,
     prompts: RwLock<CatalogSnapshotStore<Prompt>>,
@@ -211,6 +216,22 @@ pub(crate) struct McpRouteRuntime {
 }
 
 impl McpRouteRuntime {
+    #[cfg(feature = "gateway")]
+    pub(crate) fn with_notification_store(
+        store: crate::notifications::codemode::NoticeStore,
+    ) -> Self {
+        Self {
+            code_mode_notifications: store,
+            ..Self::default()
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    pub(crate) fn notification_stdio_session(&self) -> &str {
+        self.notification_stdio_session
+            .get_or_init(|| ulid::Ulid::new().to_string())
+    }
+
     pub(crate) fn configure_depot(&self, depot: Arc<crate::dispatch::depot::DepotClient>) {
         drop(self.depot.set(depot));
     }
