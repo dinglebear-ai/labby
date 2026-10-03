@@ -38,7 +38,8 @@ fn owner_pid(name: &str) -> Option<u32> {
 #[cfg(unix)]
 fn is_dead(pid: u32) -> bool {
     let Ok(raw) = i32::try_from(pid) else {
-        return true;
+        // An unrepresentable owner cannot be probed: preserve its guest.
+        return false;
     };
     matches!(
         nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw), None),
@@ -472,5 +473,15 @@ mod tests {
         assert_eq!(pool.available_permits(), 0);
         drop(ledger().lock().await.remove(&name));
         assert_eq!(pool.available_permits(), 1);
+    }
+
+    #[test]
+    fn unrepresentable_owner_pids_are_not_proven_dead() {
+        for pid in [i32::MAX as u32 + 1, u32::MAX] {
+            let name = format!("labby-workload-{pid}-01ARZ3NDEKTSV4RRFFQ69G5FAV");
+            let owner = owner_pid(&name).expect("syntactically valid owner");
+            assert!(!is_dead(owner), "unprovable ownership must preserve {name}");
+        }
+        assert!(!is_dead(std::process::id()));
     }
 }

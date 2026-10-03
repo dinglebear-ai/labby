@@ -61,7 +61,7 @@ receipt with `ok: false`. Timeout, cancellation, output overflow, projection,
 startup, and cleanup failures use the existing Code Mode error contract.
 
 ## Authorization and lifecycle
-c
+
 `sandbox` is a reserved local namespace. Existing local-provider authorization
 allows trusted local and unscoped admin callers; scoped or read-only callers
 cannot use it. Dispatch happens in the parent, outside the state/git lock.
