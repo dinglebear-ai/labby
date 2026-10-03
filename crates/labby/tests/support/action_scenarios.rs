@@ -407,13 +407,22 @@ pub(crate) fn snippet_response_data<'a>(action: &str, response: &'a Value) -> &'
     }
 }
 
-/// Seed a real receipt and artifact in the transport runner's disposable home.
+/// Seed a saved schema fixture or real receipt in the transport runner's disposable home.
 /// Replay uses a fresh preview, never a fabricated fingerprint or weakened gate.
 pub(crate) async fn prepare_snippet_receipt_case<F, Fut>(action: &str, mut call: F) -> Option<Value>
 where
     F: FnMut(&'static str, Value) -> Fut,
     Fut: Future<Output = Value>,
 {
+    if action == "snippets.fixture" {
+        let name = "matrix-schema-fixture";
+        let body = "---\nname: matrix-schema-fixture\ndescription: Owned synthetic schema fixture\ntools:\n  - synthetic::matrix\n---\n```js\nasync () => await callTool('synthetic::matrix', {})\n```\n";
+        let created = call("snippets.create", json!({"name":name,"body":body})).await;
+        snippet_response_data("snippets.create", &created);
+        return Some(
+            json!({"name":name,"schemas":fixtures()["snippets"].parameters["tool_schemas"]}),
+        );
+    }
     if !matches!(
         action,
         "snippets.artifact"
@@ -462,7 +471,8 @@ where
 pub(crate) fn assert_snippet_receipt_case(action: &str, response: &Value) {
     if !matches!(
         action,
-        "snippets.artifact"
+        "snippets.fixture"
+            | "snippets.artifact"
             | "snippets.history"
             | "snippets.preview"
             | "snippets.receipt"
@@ -472,6 +482,18 @@ pub(crate) fn assert_snippet_receipt_case(action: &str, response: &Value) {
     }
     let value = snippet_response_data(action, response);
     match action {
+        "snippets.fixture" => {
+            assert_eq!(value["ready"], true);
+            assert_eq!(value["coverage"], "selected_tools_only");
+            assert_eq!(value["fixture"]["calls"].as_array().unwrap().len(), 1);
+            assert_eq!(value["fixture"]["calls"][0]["tool"], "synthetic::matrix");
+            assert_eq!(value["fixture"]["calls"][0]["result"], true);
+            assert!(
+                value["fixture"]["schemas"]["synthetic::matrix"]["fingerprint"]
+                    .as_str()
+                    .is_some()
+            );
+        }
         "snippets.artifact" => {
             assert_eq!(value["path"], "report.txt");
             assert_eq!(value["content_base64"], "bWF0cml4LW93bmVkIGFydGlmYWN0");

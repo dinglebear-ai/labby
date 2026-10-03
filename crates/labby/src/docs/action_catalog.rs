@@ -124,6 +124,8 @@ const CLI_ACTION_BINDINGS: &[(&str, &str)] = &[
     #[cfg(feature = "gateway")]
     ("snippets", "snippets.exec"),
     #[cfg(feature = "gateway")]
+    ("snippets", "snippets.fixture"),
+    #[cfg(feature = "gateway")]
     ("snippets", "snippets.get"),
     #[cfg(feature = "gateway")]
     ("snippets", "snippets.list"),
@@ -347,7 +349,7 @@ mod tests {
     #[cfg(feature = "all")]
     #[test]
     fn all_features_cli_action_denominator_excludes_retired_plugin_management() {
-        assert_eq!(CLI_ACTION_BINDINGS.len(), 68);
+        assert_eq!(CLI_ACTION_BINDINGS.len(), 69);
 
         let retired = BTreeSet::from([
             ("setup", "plugin.install"),
