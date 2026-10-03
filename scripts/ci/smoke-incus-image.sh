@@ -290,28 +290,39 @@ ensure_smoke_forwarding() {
         || die "smoke bridge requires managed IPv4 NAT"
     log "allowing CI Docker forwarding for Incus bridge $SMOKE_FORWARD_BRIDGE"
     if ! sudo_cmd iptables -w 5 -C DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" -j ACCEPT 2>/dev/null; then
+        # Arm cleanup before insertion: cancellation can arrive after iptables commits.
+        SMOKE_FORWARD_OUTBOUND=1
         sudo_cmd iptables -w 5 -I DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" \
             -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || return 1
-        SMOKE_FORWARD_OUTBOUND=1
     fi
     if ! sudo_cmd iptables -w 5 -C DOCKER-USER -o "$SMOKE_FORWARD_BRIDGE" \
         -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+        SMOKE_FORWARD_RETURN=1
         sudo_cmd iptables -w 5 -I DOCKER-USER -o "$SMOKE_FORWARD_BRIDGE" \
             -m conntrack --ctstate RELATED,ESTABLISHED \
             -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || return 1
-        SMOKE_FORWARD_RETURN=1
     fi
+}
+
+remove_owned_smoke_forwarding_rule() {
+    local status=0
+    sudo_cmd iptables -w 5 -C DOCKER-USER "$@" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) sudo_cmd iptables -w 5 -D DOCKER-USER "$@" ;;
+        1) return 0 ;; # The attempted insertion did not leave a rule.
+        *) return 1 ;; # A failed probe cannot establish successful cleanup.
+    esac
 }
 
 cleanup_smoke_forwarding() {
     local failed=0
     if [[ "$SMOKE_FORWARD_RETURN" == "1" ]]; then
-        sudo_cmd iptables -w 5 -D DOCKER-USER -o "$SMOKE_FORWARD_BRIDGE" \
+        remove_owned_smoke_forwarding_rule -o "$SMOKE_FORWARD_BRIDGE" \
             -m conntrack --ctstate RELATED,ESTABLISHED \
             -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || failed=1
     fi
     if [[ "$SMOKE_FORWARD_OUTBOUND" == "1" ]]; then
-        sudo_cmd iptables -w 5 -D DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" \
+        remove_owned_smoke_forwarding_rule -i "$SMOKE_FORWARD_BRIDGE" \
             -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || failed=1
     fi
     if [[ "$failed" == "1" ]]; then
