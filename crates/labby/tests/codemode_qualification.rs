@@ -10,6 +10,8 @@ mod codemode_harness;
 mod evidence;
 #[path = "support/live_labby.rs"]
 mod live_labby;
+#[path = "support/codemode_qualification/queue_prewarm.rs"]
+mod queue_prewarm;
 
 use codemode_harness::{CodeModeQualification, Limits, write_report};
 use serde_json::json;
@@ -483,17 +485,9 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
-    let prewarm = runner
-        .execute(
-            r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
-        )
+    queue_prewarm::prewarm_queue_fixture(&runner)
         .await
-        .expect("prewarm Code Mode and the upstream tool path");
-    assert!(
-        !prewarm.is_error,
-        "prewarm must complete before the queue oracle: {}",
-        prewarm.structured
-    );
+        .expect("safe prewarm must complete and settle before the queue oracle");
     let before = runner
         .fixture_invocation_count()
         .await
