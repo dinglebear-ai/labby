@@ -1163,6 +1163,15 @@ pub(crate) fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> 
         || match serde_json::json!({
             "type": "object",
             "properties": {
+                "notification_inbox": {
+                    "type": "boolean", "default": false,
+                    "description": "Write-capable Code Mode only: return/register this authenticated consumer's durable notification address. Not a secret or a grant of receive/send authority."
+                },
+                "ack_notifications": {
+                    "type": "array", "maxItems": 32,
+                    "items": { "type": "string", "pattern": "^notice_[0-9A-HJKMNP-TV-Z]{26}$" },
+                    "description": "Write-capable Code Mode only: acknowledge notice IDs already considered. Piggyback on the next normal call; not proof of human reading or completed work."
+                },
                 "code": {
                     "type": "string",
                     "minLength": 1,
@@ -1193,6 +1202,28 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
     static TRACE_OUTPUT_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
         || match serde_json::json!({
         "type": "object",
+        "properties": {
+            "notifications": { "type": "array", "maxItems": 3, "items": {
+                "type": "object", "properties": {
+                    "id": { "type": "string", "pattern": "^notice_[0-9A-HJKMNP-TV-Z]{26}$" },
+                    "source": { "type": "string", "maxLength": 64 },
+                    "level": { "type": "string", "enum": ["info", "warning"] },
+                    "message": { "type": "string", "maxLength": 384 },
+                    "delivery_attempt": { "type": "integer", "minimum": 1 },
+                    "expires_at_unix_ms": { "type": "integer", "minimum": 0 }
+                }, "required": ["id", "source", "level", "message", "delivery_attempt", "expires_at_unix_ms"],
+                "additionalProperties": false
+            } },
+            "notifications_remaining": { "type": "integer", "minimum": 0 },
+            "notifications_are_advisory": { "const": true },
+            "acknowledged_notifications": { "type": "array", "maxItems": 32, "items": { "type": "string" } },
+            "notification_inbox": { "type": "object", "properties": {
+                "id": { "type": "string", "pattern": "^inbox_[0-9A-HJKMNP-TV-Z]{26}$" },
+                "scope": { "type": "string", "enum": ["authenticated_client", "authenticated_credential", "conversation_routing", "stdio_connection"] },
+                "delivery": { "const": "at_least_once_until_ack_or_expiry" },
+                "expires_at_unix_ms": { "type": "integer", "minimum": 0 }
+            }, "required": ["id", "scope", "delivery", "expires_at_unix_ms"], "additionalProperties": false }
+        },
         "oneOf": [
             {
                 "type": "object",

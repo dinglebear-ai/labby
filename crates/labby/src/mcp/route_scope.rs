@@ -49,6 +49,7 @@ pub(crate) enum McpRouteScope {
         expose_skills: bool,
         expose_code_mode: bool,
         authority_partition: String,
+        notification_loadout: Option<String>,
         team_id: Option<String>,
         credential_bindings: BTreeMap<String, (String, u64)>,
     },
@@ -103,6 +104,7 @@ impl McpRouteScope {
             expose_skills: capabilities.expose_skills,
             expose_code_mode: capabilities.expose_code_mode,
             authority_partition: "unbound".to_owned(),
+            notification_loadout: None,
             team_id: None,
             credential_bindings: BTreeMap::new(),
         }
@@ -156,17 +158,55 @@ impl McpRouteScope {
         }
     }
 
+    /// Durable inbox namespace includes authority, never just a display name.
+    pub(crate) fn notification_authority_key(&self) -> String {
+        let Self::ProtectedSubset {
+            route_name,
+            upstreams,
+            services,
+            authority_partition,
+            team_id,
+            notification_loadout,
+            expose_tools,
+            expose_resources,
+            expose_prompts,
+            expose_skills,
+            expose_code_mode,
+            ..
+        } = self
+        else {
+            return self.label();
+        };
+        let binding = serde_json::json!([
+            "labby.notice.route.v1",
+            route_name,
+            team_id,
+            notification_loadout,
+            authority_partition,
+            upstreams,
+            services,
+            expose_tools,
+            expose_resources,
+            expose_prompts,
+            expose_skills,
+            expose_code_mode
+        ]);
+        hex::encode(Sha256::digest(binding.to_string().as_bytes()))
+    }
+
     fn bind_loadout_authority(&mut self, loadout: &GatewayLoadoutConfig) {
         let Self::ProtectedSubset {
             authority_partition,
             team_id,
             credential_bindings,
+            notification_loadout,
             ..
         } = self
         else {
             return;
         };
         let mut digest = Sha256::new();
+        *notification_loadout = Some(loadout.name.clone());
         *team_id = loadout
             .name
             .strip_prefix("team:")
@@ -331,6 +371,42 @@ impl McpRouteScope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notice_production_same_name_route_rebinding_changes_recipient_authority() {
+        let scope = |name: &str| {
+            let mut scope = McpRouteScope::protected_subset("shared", ["github"], ["skills"], true);
+            scope.bind_loadout_authority(&GatewayLoadoutConfig {
+                name: name.into(),
+                ..Default::default()
+            });
+            scope
+        };
+        let before = scope("team:alpha:prod");
+        let same = scope("team:alpha:prod");
+        let other_team = scope("team:beta:prod");
+        let other_loadout = scope("team:alpha:other");
+        assert_eq!(before.label(), other_team.label());
+        assert_eq!(before.label(), other_loadout.label());
+        assert_eq!(
+            before.notification_authority_key(),
+            same.notification_authority_key()
+        );
+        assert_ne!(
+            before.notification_authority_key(),
+            other_team.notification_authority_key()
+        );
+        assert_ne!(
+            before.notification_authority_key(),
+            other_loadout.notification_authority_key()
+        );
+        let narrower = McpRouteScope::protected_subset("shared", ["linear"], ["skills"], true);
+        let unbound = McpRouteScope::protected_subset("shared", ["github"], ["skills"], true);
+        assert_ne!(
+            narrower.notification_authority_key(),
+            unbound.notification_authority_key()
+        );
+    }
 
     #[test]
     fn root_allows_everything() {

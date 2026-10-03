@@ -497,6 +497,7 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope));
         }
         let config = manager.code_mode_config().await;
+        let notice_budget = (config.max_response_bytes, config.max_response_tokens);
         let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
         let code = match code_arg(args, max_source_bytes) {
             Ok(code) => code,
@@ -679,6 +680,14 @@ impl LabMcpServer {
             capability_filter_fingerprint: Some(capability_filter_fingerprint.clone()),
         };
 
+        let notice_control = match notices::prepare(self, args, context, read_only).await {
+            Ok(control) => control,
+            Err(error) => {
+                let envelope =
+                    build_error(service, "notifications", error.kind(), &error.to_string());
+                return Ok(error_result_from_envelope(envelope));
+            }
+        };
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
         let before = self.snapshot_tool_catalog_for_request(context).await;
         let dedup_key = code_mode_dedup_key(
@@ -799,6 +808,9 @@ impl LabMcpServer {
                 });
                 let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
                 result.structured_content = Some(structured);
+                notice_control
+                    .attach(&mut result, notice_budget.0, notice_budget.1)
+                    .await;
                 return Ok(result);
             }
         };
@@ -930,12 +942,16 @@ impl LabMcpServer {
             captured_ui_resource_uri = captured_resource_uri.unwrap_or("<none>"),
             "gateway codemode ok"
         );
-        Ok(code_mode_result(
+        let mut result = code_mode_result(
             output,
             structured,
             &response,
             self.route_scope.exposes_resources(),
-        ))
+        );
+        notice_control
+            .attach(&mut result, notice_budget.0, notice_budget.1)
+            .await;
+        Ok(result)
     }
 }
 
@@ -983,6 +999,7 @@ fn code_mode_result(
 }
 
 mod description;
+mod notices;
 
 #[cfg(test)]
 pub(crate) use description::CODE_MODE_DESCRIPTION_MAX_BYTES;

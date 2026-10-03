@@ -124,11 +124,12 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 // four desktop handoff routes, owner-link consume, the GET/POST Depot publish
 // pair, native CLI metadata, and the handler-authenticated
 // POST /auth/bearer-session exchange, and the admin-only GET /v1/notifications
-// inbox route, the caller-authenticated GET /v1/stash/folders listing, and
+// inbox route and POST /v1/notifications/agent publication, the caller-authenticated
+// GET /v1/stash/folders listing, and
 // local setup handoff minting plus one-shot redemption.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 139;
+pub(crate) const PINNED_ROUTE_COUNT: usize = 140;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "a2830a0f3a0c4cb1d718b125bf766e80c06184a9663ae0f4fd31515a4c21b93c";
+    "4b2d8fc7e23b60bcb11a406f9d020a0b07971fd38a4e8a1f8e22a82f3ce31cd5";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -281,6 +282,11 @@ fn feature_is_compiled(feature: &str) -> bool {
 }
 
 fn request_body(route: &RouteDescriptor) -> Option<&'static str> {
+    if route.method == "POST" && route.path == "/v1/notifications/agent" {
+        return Some(
+            r#"{"inbox_id":"inbox_01ARZ3NDEKTSV4RRFFQ69G5FAV","source":"route-matrix","level":"info","message":"Qualification notice","dedupe_key":"route-matrix-event"}"#,
+        );
+    }
     if route.method == "POST" && route.path == "/auth/setup-handoff/redeem" {
         // Reach the one-shot proof boundary with a valid schema and unissued token.
         return Some(r#"{"token":"unissued-route-matrix-proof"}"#);
@@ -358,6 +364,28 @@ mod tests {
             PINNED_METHOD_PATH_SHA256,
             "the independent method/path denominator changed; review and deliberately repin"
         );
+    }
+
+    #[test]
+    fn agent_notification_publication_has_an_authenticated_mutation_recipe() {
+        let cases = route_cases().expect("route cases");
+        let publish = cases
+            .iter()
+            .find(|case| case.key() == "POST /v1/notifications/agent")
+            .expect("agent notification publication recipe");
+        assert_eq!(publish.class, RequestClass::BrowserSession);
+        assert_eq!(publish.descriptor.handler_identity, "publish_agent");
+        assert!(publish.descriptor.auth_required);
+        assert!(publish.descriptor.master_only);
+        assert!(publish.descriptor.csrf_required);
+        invariant_for(publish.class)
+            .validate_descriptor(&publish.descriptor)
+            .expect("publication security axes");
+        let body: serde_json::Value = serde_json::from_str(publish.body.expect("publication body"))
+            .expect("valid JSON recipe");
+        assert_eq!(body["level"], "info");
+        assert!(body["inbox_id"].as_str().unwrap().starts_with("inbox_"));
+        assert!(body["dedupe_key"].as_str().is_some());
     }
 
     #[test]

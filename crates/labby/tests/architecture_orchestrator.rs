@@ -48,6 +48,9 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // `depot` backs provider discovery projected through the `artifacts`
     // service; it is not itself a registered product service.
     "depot",
+    // Durable notice authorization and delivery are shared API/MCP runtime
+    // operations; this subsystem declares no action-dispatched service catalog.
+    "codemode_notices",
     "node",
     "security",
     // `upstream` is now a temporary compatibility shim (`crate::dispatch::upstream`

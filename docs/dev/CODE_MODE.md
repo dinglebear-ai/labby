@@ -6,6 +6,9 @@ updated: "2026-10-02"
 
 # Code Mode
 
+For advisory delivery, durable acknowledgments, identity scope, and operator
+recovery, see [Agent Notifications](AGENT_NOTIFICATIONS.md).
+
 Code Mode is the JavaScript execution surface behind the MCP `codemode` and
 `codemode_read` tools. It lets an agent discover upstream MCP tools, inspect
 compact docs, and run one async JavaScript function in a sandbox that can call

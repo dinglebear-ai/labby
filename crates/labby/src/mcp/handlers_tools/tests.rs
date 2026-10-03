@@ -7758,6 +7758,8 @@ async fn code_mode_stash_exception_does_not_admit_in_process_peers() {
     );
 }
 
+mod codemode_notices;
+
 #[tokio::test]
 async fn synthetic_gateway_callbacks_require_current_durable_authority() {
     for unavailable in [false, true] {
