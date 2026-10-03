@@ -227,6 +227,28 @@ fn filesystem_failure(operation: &'static str, error: &std::io::Error) -> Notice
     NoticeError::Unavailable
 }
 
+fn validation_failure(reason: &'static str, observed_value: Option<i64>) -> NoticeError {
+    // Schema SQL and integrity diagnostics may contain private names or data.
+    tracing::error!(
+        subsystem = "agent_notifications",
+        operation = "validate_database",
+        reason,
+        observed_value,
+        "notification database validation rejected"
+    );
+    NoticeError::Unavailable
+}
+
+fn validate_integrity(integrity: &str, foreign_violation: bool) -> Result<(), NoticeError> {
+    if integrity != "ok" {
+        return Err(validation_failure("integrity_check", None));
+    }
+    if foreign_violation {
+        return Err(validation_failure("foreign_keys", None));
+    }
+    Ok(())
+}
+
 #[derive(Clone)]
 pub(crate) struct NoticeStore {
     connection: Option<Arc<Mutex<Connection>>>,
@@ -273,18 +295,19 @@ impl NoticeStore {
             } else {
                 let expected = Connection::open_in_memory()?;
                 expected.execute_batch(SCHEMA_SQL)?;
-                if version != SCHEMA_VERSION
-                    || application != APPLICATION_ID
-                    || schema != schema_snapshot(&expected)?
-                {
-                    return Err(NoticeError::Unavailable);
+                if version != SCHEMA_VERSION {
+                    return Err(validation_failure("schema_version", Some(version)));
+                }
+                if application != APPLICATION_ID {
+                    return Err(validation_failure("application_id", Some(application)));
+                }
+                if schema != schema_snapshot(&expected)? {
+                    return Err(validation_failure("schema_mismatch", None));
                 }
             }
             let integrity: String = tx.query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
             let foreign_violation: bool = tx.prepare("PRAGMA foreign_key_check")?.exists([])?;
-            if integrity != "ok" || foreign_violation {
-                return Err(NoticeError::Unavailable);
-            }
+            validate_integrity(&integrity, foreign_violation)?;
             tx.commit()?;
         }
         connection.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA max_page_count=4096;")?;

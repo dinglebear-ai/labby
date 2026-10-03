@@ -1,7 +1,7 @@
 ---
 title: "Code Mode Agent Notifications"
 created: "2026-10-02"
-updated: "2026-10-02"
+updated: "2026-10-03"
 ---
 
 # Code Mode Agent Notifications
@@ -51,6 +51,15 @@ normal stopped-daemon maintenance workflow; do not delete or edit the live datab
 to hide a storage failure. Notification data may be sensitive and must not be
 included in public diagnostics or shared backups.
 
+Startup storage diagnostics identify rejected `schema_version`, `application_id`,
+`schema_mismatch`, `integrity_check`, and `foreign_keys` validations through a
+stable `reason` field. Version and application-ID rejections also include a numeric
+`observed_value`. Logs omit schema SQL, integrity-check text, database paths, and
+notice payloads. An unsupported version or application ID calls for checking the
+binary/backup compatibility; integrity and foreign-key failures call for a
+consistent protected backup. Keep the daemon stopped during maintenance and
+verify the restored store before serving consumers again.
+
 SQLite transactions durably store registration, idempotent publication, leases,
 and acknowledgments. An unacknowledged notice becomes eligible again after 30
 seconds, with bounded exponential backoff to five minutes, until its TTL expires.
@@ -61,7 +70,9 @@ in the canonical reference, including global and recipient quotas.
 
 OAuth uses the authenticated actor and authorized client ID. Static bearer and
 product credentials use verified credential fingerprints, not clientInfo or caller
-supplied IDs. Route plus optional hashed conversation metadata narrow routing.
+supplied IDs. Protected-route identity includes its Team, loadout, and effective authority
+partition as well as the route label; rebinding a route cannot inherit an old
+partition's inbox. Optional hashed conversation metadata narrows routing.
 Without that metadata, clients sharing authority share an inbox. Conversation
 metadata is not an independent security boundary. Stdio has a random server-owned
 connection identity; reconnects must register again rather than inheriting mail.

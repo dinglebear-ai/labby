@@ -1,7 +1,7 @@
 ---
 title: "HTTP API Surface"
 created: "2026-08-27"
-updated: "2026-08-31"
+updated: "2026-10-03"
 ---
 
 # HTTP API
@@ -24,3 +24,24 @@ a fuzzy match. Other queries retain case-insensitive fuzzy search behavior.
 `POST /v1/palette/execute` requires `expectedContractHash`. Labby re-resolves and checks the exact subject-bound peer before validation and dispatch. Contract drift returns HTTP 409 with `contract_changed` and no expected side effects. Successful responses include a redacted receipt containing only request ID, tool ID, authoritative hash, catalog revision, and truncation state.
 
 OAuth callers require `mcp:read` to browse. Execution requires `mcp:write` and an exact `gateway:<upstream>` grant. `gateway:*` is not accepted. `lab:admin` remains an operator shortcut. Non-admin callers cannot execute destructive tools or Labby administrative actions.
+
+## Agent notice publication
+
+Gateway builds expose `POST /v1/notifications/agent` for an authenticated operator
+or trusted integration with `lab:admin`. The existing V1 middleware enforces
+caller authorization, master-route restriction, and CSRF for
+browser sessions. The JSON body supplies the consumer's opaque `inbox_id`,
+`source`, `level`, `message`, `dedupe_key`, and optional `ttl_seconds`; it cannot
+supply producer authority. An inbox address alone grants no publication access.
+
+The endpoint returns the notice `id` and `duplicate` flag. Publication is
+idempotent for the same producer, inbox, key, and payload until expiry; changing
+the payload with that key produces a conflict. Notices are delivered through
+subsequent eligible Code Mode results and remain retryable until acknowledged or
+expired. This endpoint does not send a push notification or wake an assistant.
+The existing `GET /v1/notifications` operator feed remains separate.
+
+See [Agent Notifications](../dev/AGENT_NOTIFICATIONS.md) for quotas, typed failure
+handling, storage recovery, and consumer isolation. The
+[canonical Code Mode reference](../../plugins/labby/.apm/skills/using-codemode/references/code-mode.md#response-notification-contract)
+contains publication and acknowledgment examples.

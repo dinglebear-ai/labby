@@ -542,8 +542,7 @@ fn notice_production_windows_second_open_while_first_connection_is_live() {
     drop(second);
 }
 
-#[test]
-fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
+fn capture_logs(work: impl FnOnce()) -> String {
     #[derive(Clone)]
     struct Capture(Arc<Mutex<Vec<u8>>>);
     impl std::io::Write for Capture {
@@ -562,7 +561,14 @@ fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
         .with_ansi(false)
         .with_writer(move || writer.clone())
         .finish();
-    tracing::subscriber::with_default(subscriber, || {
+    tracing::subscriber::with_default(subscriber, work);
+    let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+    logs
+}
+
+#[test]
+fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
+    let logs = capture_logs(|| {
         let sqlite = rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
             Some("private notice payload and SQL".into()),
@@ -577,10 +583,68 @@ fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
             NoticeError::Unavailable
         );
     });
-    let logs = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
     assert!(logs.contains("DiskFull"));
     assert!(logs.contains("PermissionDenied"));
     assert!(logs.contains("verify_database"));
     assert!(!logs.contains("private notice"));
     assert!(!logs.contains("private database"));
+}
+
+#[test]
+fn notice_production_database_rejections_have_sanitized_reasons() {
+    for (reason, observed) in [
+        ("schema_version", Some(999)),
+        ("application_id", Some(123)),
+        ("schema_mismatch", None),
+        ("foreign_keys", None),
+    ] {
+        let mut connection = db();
+        match reason {
+            "schema_version" => connection.pragma_update(None, "user_version", 999).unwrap(),
+            "application_id" => connection
+                .pragma_update(None, "application_id", 123)
+                .unwrap(),
+            "schema_mismatch" => connection
+                .execute_batch("CREATE TABLE private_schema_sentinel (private_column TEXT);")
+                .unwrap(),
+            "foreign_keys" => {
+                let key = who("private_actor_sentinel").key().unwrap();
+                let inbox = register_at(&mut connection, &key, "client", 1000).unwrap();
+                let mut input = message(&inbox.id, "private_dedupe_sentinel");
+                input.message = "private_payload_sentinel".into();
+                publish_at(&mut connection, "admin", &input, 1001).unwrap();
+                connection
+                    .execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM agent_inboxes;")
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        let logs = capture_logs(|| {
+            assert!(matches!(
+                NoticeStore::from_connection(connection),
+                Err(NoticeError::Unavailable)
+            ));
+        });
+        assert!(logs.contains(&format!("reason=\"{reason}\"")), "{logs}");
+        if let Some(observed) = observed {
+            assert!(
+                logs.contains(&format!("observed_value={observed}")),
+                "{logs}"
+            );
+        }
+        assert!(!logs.contains("private_"), "{logs}");
+        assert!(!logs.contains("CREATE TABLE"), "{logs}");
+    }
+
+    // Exercise the exact integrity rejection helper without relying on a
+    // platform-dependent byte corruption that may fail before quick_check.
+    let logs = capture_logs(|| {
+        assert_eq!(
+            validate_integrity("private_integrity_sentinel", false),
+            Err(NoticeError::Unavailable)
+        );
+    });
+    assert!(logs.contains("reason=\"integrity_check\""), "{logs}");
+    assert!(!logs.contains("private_integrity_sentinel"), "{logs}");
+    assert_eq!(validate_integrity("ok", false), Ok(()));
 }
