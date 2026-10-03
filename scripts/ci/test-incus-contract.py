@@ -86,8 +86,11 @@ class IncusContract(unittest.TestCase):
                 incus_cmd() {
                     if [[ "$*" == "profile device get default eth0 network" ]]; then
                         printf 'fixturebr0\n'
-                    elif [[ "$*" == "network list --format csv -c ntm" ]]; then
-                        printf 'fixturebr0,bridge,%s\n' "$FAKE_MANAGED"
+                    elif [[ "$*" == "network list --format csv" ]]; then
+                        printf 'fixturebr0,bridge,%s,10.0.0.1/24,none,fixture,0,CREATED\n' "$FAKE_MANAGED"
+                    elif [[ "$1 $2" == "network list" ]]; then
+                        printf 'Error: unknown shorthand flag in network list\n' >&2
+                        return 2
                     elif [[ "$*" == "network get fixturebr0 ipv4.nat" ]]; then
                         printf 'true\n'
                     else

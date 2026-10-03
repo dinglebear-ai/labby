@@ -255,7 +255,8 @@ ensure_ci_bridge_egress() {
     bridge="$(incus_cmd profile device get default eth0 network)"
     [[ "$bridge" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ && ${#bridge} -le 15 ]] ||
         die "default Incus profile does not identify a valid managed bridge"
-    incus_cmd network list --format csv -c ntm |
+    # Incus 6.0 lacks -c; default CSV begins with name,type,managed.
+    incus_cmd network list --format csv |
         awk -F, -v name="$bridge" '$1 == name && $2 == "bridge" && $3 == "YES" { found = 1 } END { exit !found }' ||
         die "default Incus network $bridge is not a managed bridge"
     [[ "$(incus_cmd network get "$bridge" ipv4.nat)" == "true" ]] ||
