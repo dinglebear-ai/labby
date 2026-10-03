@@ -90,9 +90,9 @@ async fn run_cli_case(
     if case.key == "snippets:snippets.fixture" {
         let name = "matrix-cli-schema-fixture";
         let body = "---\nname: matrix-cli-schema-fixture\ndescription: Owned synthetic schema fixture\ntools:\n  - synthetic::matrix\n---\n```js\nasync () => await callTool('synthetic::matrix', {})\n```\n";
+        let code_arg = format!("--code={body}");
         let created =
-            action_scenarios::run_cli(home, &["snippet", "add", name, "--code", body, "--json"])
-                .await?;
+            action_scenarios::run_cli(home, &["snippet", "add", name, &code_arg, "--json"]).await?;
         action_scenarios::assert_success_json(&created, "fixture snippet setup");
         let schemas = home.join("matrix-cli-tool-schemas.json");
         let contracts = action_scenarios::fixtures()["snippets"].parameters["tool_schemas"].clone();
