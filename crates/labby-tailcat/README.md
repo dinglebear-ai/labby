@@ -51,5 +51,7 @@ tool restriction remain prerequisites for the product integration.
   WASM against a synthetic MCP backend through the public test relay. It is
   explicitly a fixture, not a production pairing endpoint or VM qualification.
   Eight overlapping MCP requests share one Tailcat client and DERP identity.
-- Native pairing, product listener, Depot LiveView and Microsandbox acceptance
-  are described in the approved implementation plan and are not wired yet.
+- Native pairing/session management, the product listener, and the portable
+  Depot LiveView hook are wired in this branch. Fixture results do not qualify
+  an external Depot deployment or real Microsandbox acceptance; those require
+  the end-to-end checks described in the approved implementation plan.
