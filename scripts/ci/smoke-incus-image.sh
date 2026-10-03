@@ -56,6 +56,9 @@ SMOKE_IMAGE_IMPORTED=0
 SMOKE_RENDERED_PROFILE=""
 SYSTEMD_INCUS_SERVICE_STARTED=0
 SYSTEMD_INCUS_SOCKET_STARTED=0
+SMOKE_FIREWALL_BRIDGE=""
+SMOKE_FIREWALL_OUTBOUND_OWNED=0
+SMOKE_FIREWALL_RETURN_OWNED=0
 
 incus_cmd() {
     if [[ "$INCUS_USE_SUDO" == "1" ]]; then
@@ -73,6 +76,13 @@ cleanup() {
     local status="$?"
     trap - EXIT
     set +e
+
+    if [[ "$SMOKE_FIREWALL_RETURN_OWNED" == "1" ]]; then
+        sudo_cmd iptables -D DOCKER-USER -o "$SMOKE_FIREWALL_BRIDGE" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || true
+    fi
+    if [[ "$SMOKE_FIREWALL_OUTBOUND_OWNED" == "1" ]]; then
+        sudo_cmd iptables -D DOCKER-USER -i "$SMOKE_FIREWALL_BRIDGE" -j ACCEPT || true
+    fi
 
     if [[ "$SMOKE_RESOURCES_OWNED" == "1" ]] && incus_cmd info >/dev/null 2>&1; then
         incus_cmd delete "$bootstrap_container_name" --force >/dev/null 2>&1 || true
@@ -236,6 +246,33 @@ start_manual_incus() {
     fi
 }
 
+ensure_ci_bridge_egress() {
+    [[ "${CI:-}" == "true" ]] || return 0
+    have iptables || return 0
+    sudo_cmd iptables -L DOCKER-USER >/dev/null 2>&1 || return 0
+
+    local bridge
+    bridge="$(incus_cmd profile device get default eth0 network)"
+    [[ "$bridge" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ && ${#bridge} -le 15 ]] ||
+        die "default Incus profile does not identify a valid managed bridge"
+    incus_cmd network list --format csv -c ntm |
+        awk -F, -v name="$bridge" '$1 == name && $2 == "bridge" && $3 == "YES" { found = 1 } END { exit !found }' ||
+        die "default Incus network $bridge is not a managed bridge"
+    [[ "$(incus_cmd network get "$bridge" ipv4.nat)" == "true" ]] ||
+        die "default Incus bridge $bridge does not enable IPv4 NAT"
+
+    SMOKE_FIREWALL_BRIDGE="$bridge"
+    log "allowing CI Docker forwarding for Incus bridge $bridge"
+    if ! sudo_cmd iptables -C DOCKER-USER -i "$bridge" -j ACCEPT 2>/dev/null; then
+        sudo_cmd iptables -I DOCKER-USER -i "$bridge" -j ACCEPT
+        SMOKE_FIREWALL_OUTBOUND_OWNED=1
+    fi
+    if ! sudo_cmd iptables -C DOCKER-USER -o "$bridge" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+        sudo_cmd iptables -I DOCKER-USER -o "$bridge" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+        SMOKE_FIREWALL_RETURN_OWNED=1
+    fi
+}
+
 ensure_incus_ready() {
     if incus info >/dev/null 2>&1; then
         INCUS_USE_SUDO=0
@@ -263,6 +300,7 @@ ensure_incus_ready() {
         incus_cmd admin init --minimal
     fi
     incus_has_storage_pool || die "Incus initialization did not create a storage pool"
+    ensure_ci_bridge_egress
 }
 
 default_storage_pool() {
