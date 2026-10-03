@@ -82,8 +82,10 @@ bash scripts/install-tailcat-depot-assets.sh \
 ```
 
 The installer checks `SHA256SUMS`, copies the matching Go runtime and WASM,
-portable client/hook and notices, and writes a checksum manifest. Generated
-assets are not source files; include them when packaging the Depot deployment.
+portable client/hook and notices, and writes a checksum manifest. The four
+generated JavaScript modules ship in Depot releases; regenerate them from Labby
+rather than editing the copies. WASM, the Go runtime and manifest remain
+generated deployment inputs and must be installed for an HTTPS connection.
 
 Configure Depot at runtime:
 

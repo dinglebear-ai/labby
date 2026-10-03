@@ -16,7 +16,7 @@ export class TailcatClient {
   if(signal?.aborted){owner.close();throw Error('Operation cancelled')}
   return new TailcatClient(capability,()=>owner.dial(),owner);
  }
- constructor(capability,dial,owner){this.owner=owner;this.capability=capability;this.dial=dial;this.session=null;this.nextId=1;this.active=new Set();this.closed=false;this.pending=0;this.lifetime=new AbortController();this.heartbeat=setInterval(()=>{if(this.pending)return;this.request('ping').catch(()=>this.close())},30000);this.heartbeat.unref?.();}
+ constructor(capability,dial,owner){this.owner=owner;this.capability=capability;this.dial=dial;this.session=null;this.nextId=1;this.active=new Set();this.closed=false;this.closeReason=null;this.closeListeners=new Set();this.pending=0;this.lifetime=new AbortController();this.heartbeat=setInterval(()=>{if(this.pending)return;this.request('ping').then(message=>{if(message?.error||!message?.result||typeof message.result!=='object'||Array.isArray(message.result))throw Error('Invalid heartbeat')}).catch(()=>this.close('failed'))},30000);this.heartbeat.unref?.();}
  async request(method,params={}, {signal}={}){
   if(this.closed||this.capability.expiresAt<=Date.now()||signal?.aborted)throw Error('Connection closed or expired');
   if(this.pending>=8)throw Error('Connection capacity exceeded');
@@ -26,8 +26,8 @@ export class TailcatClient {
   if(encoder.encode(body).length>1024*1024)throw Error('Request budget exceeded');
   this.pending++;let conn,timer,abortListener,lifetimeListener,rejectAbort;
   const aborted=new Promise((_,reject)=>{rejectAbort=()=>reject(Error('Operation cancelled'));abortListener=rejectAbort;lifetimeListener=rejectAbort;signal?.addEventListener('abort',abortListener,{once:true});this.lifetime.signal.addEventListener('abort',lifetimeListener,{once:true});});
-  const deadline=()=>new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Connection deadline exceeded')),Math.min(30000,Math.max(1,this.capability.expiresAt-Date.now())))});
-  const wait=async promise=>{try{return await Promise.race([promise,aborted,deadline()])}finally{clearTimeout(timer)}};
+  const deadline=new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Connection deadline exceeded')),Math.min(30000,Math.max(1,this.capability.expiresAt-Date.now())))});
+  const wait=promise=>Promise.race([promise,aborted,deadline]);
   try{
    const dialing=this.dial({addr:this.capability.address,port:1,derpMapURL:this.capability.derpMapURL,privateKey:this.capability.peer.privateKey});
    let abandoned=false;dialing.then(c=>{if(abandoned)c.close()},()=>{});
@@ -51,5 +51,6 @@ export class TailcatClient {
    if(conn){this.active.delete(conn);conn.close()}this.pending--;
   }
  }
- close(){if(this.closed)return;clearInterval(this.heartbeat);this.closed=true;this.lifetime.abort();for(const c of this.active)c.close();this.active.clear();this.session=null;this.capability=null;this.owner?.close();this.owner=null;}
+ onClose(callback){if(typeof callback!=='function')throw Error('Invalid close callback');if(this.closed){callback(this.closeReason);return ()=>{}}this.closeListeners.add(callback);return ()=>this.closeListeners.delete(callback);}
+ close(reason='closed'){if(this.closed)return;this.closeReason=['closed','failed','revoked','expired'].includes(reason)?reason:'failed';clearInterval(this.heartbeat);this.closed=true;this.lifetime.abort();for(const c of this.active)c.close();this.active.clear();this.session=null;this.capability=null;this.owner?.close();this.owner=null;const callbacks=[...this.closeListeners];this.closeListeners.clear();for(const callback of callbacks){try{callback(this.closeReason)}catch{}}}
 }

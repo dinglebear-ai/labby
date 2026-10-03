@@ -68,3 +68,35 @@ test('heartbeat does not interrupt a busy connection and stops on close',async t
  c.pending=0;tick();assert.equal(pings,1);
  c.close();assert.equal(cleared,true);
 });
+
+test('deadline covers dial, write and read together',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});
+ const delay=()=>new Promise(resolve=>setTimeout(resolve,20000));let closed=0;
+ const c=await TailcatClient.connect({...cap,expiresAt:Date.now()+60000},{dial:async()=>{await delay();return {write:delay,read:delay,close:()=>closed++}}});
+ let settled=false;const pending=c.request('tools/list');const rejected=assert.rejects(pending,/deadline/).finally(()=>{settled=true});
+ t.mock.timers.tick(20000);for(let i=0;i<12;i++)await Promise.resolve();
+ t.mock.timers.tick(10000);for(let i=0;i<12;i++)await Promise.resolve();
+ try{assert.equal(settled,true,'request must expire after 30 seconds total');await rejected;assert.equal(closed,1);assert.equal(c.pending,0)}finally{c.close();await rejected.catch(()=>{})}
+});
+test('heartbeat termination notifies subscribers once with a safe reason',async t=>{
+ let tick;t.mock.method(globalThis,'setInterval',fn=>{tick=fn;return {unref(){}}});
+ const c=await TailcatClient.connect(cap,{dial:async()=>{throw Error('secret upstream detail')}});
+ const reasons=[];c.onClose(reason=>reasons.push(reason));const unsubscribe=c.onClose(()=>assert.fail('unsubscribed'));unsubscribe();
+ tick();for(let i=0;i<20;i++)await Promise.resolve();
+ assert.equal(c.closed,true);assert.deepEqual(reasons,['failed']);c.close();assert.deepEqual(reasons,['failed']);
+ c.onClose(reason=>assert.equal(reason,'failed'));
+});
+test('a dial resolving after the total deadline is closed without writing',async t=>{
+ t.mock.timers.enable({apis:['setTimeout']});let resolveDial,closes=0;
+ const c=await TailcatClient.connect({...cap,expiresAt:Date.now()+60000},{dial:()=>new Promise(resolve=>{resolveDial=resolve})});
+ const pending=assert.rejects(c.request('tools/list'),/deadline/);t.mock.timers.tick(30000);await pending;
+ resolveDial({close:()=>closes++,write:()=>assert.fail('late stream must not write')});await Promise.resolve();assert.equal(closes,1);c.close();
+});
+test('heartbeat RPC errors retire the connection instead of renewing readiness',async t=>{
+ let tick;t.mock.method(globalThis,'setInterval',fn=>{tick=fn;return {unref(){}}});
+ const c=await TailcatClient.connect(cap,{dial:async()=>{throw Error('unused')}});
+ c.request=async()=>({jsonrpc:'2.0',id:1,error:{code:-32603,message:'private detail'}});
+ const reasons=[];c.onClose(reason=>reasons.push(reason));tick();
+ for(let i=0;i<20;i++)await Promise.resolve();
+ try{assert.equal(c.closed,true);assert.deepEqual(reasons,['failed']);}finally{c.close();}
+});

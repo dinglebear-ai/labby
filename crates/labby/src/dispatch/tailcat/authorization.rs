@@ -197,7 +197,7 @@ mod tests {
             manager,
         )
         .await;
-        let listener = crate::api::tailcat::RestrictedListener::start_authorized(
+        let listener = crate::dispatch::tailcat::listener::RestrictedListener::start_authorized(
             router,
             authority.clone(),
             lease.envelope().to_owned(),
@@ -268,7 +268,7 @@ mod tests {
                 >())
             }),
         );
-        let listener = crate::api::tailcat::RestrictedListener::start_authorized(
+        let listener = crate::dispatch::tailcat::listener::RestrictedListener::start_authorized(
             router,
             authority,
             lease.envelope().to_owned(),

@@ -9,7 +9,7 @@ const index=(bytes,text)=>{
 
 /** Incremental response parser for the restricted JSON/SSE MCP endpoint. */
 export class HttpDecoder {
- constructor(){this.buffer=new Uint8Array();this.headers=null;this.status=0;this.done=false;this.messages=[];this.messageBytes=0;this.body=[];this.bodyBytes=0;this.remaining=null;this.chunkRemaining=null;this.trailers=false;this.sse='';this.text=new TextDecoder('utf-8',{fatal:true});}
+ constructor(){this.buffer=new Uint8Array();this.headers=null;this.status=0;this.done=false;this.messages=[];this.messageBytes=0;this.body=[];this.bodyBytes=0;this.remaining=null;this.chunkRemaining=null;this.chunkTerminator=false;this.trailers=false;this.sseParts=[];this.sseLines=[];this.sseBytes=0;this.text=new TextDecoder('utf-8',{fatal:true});}
  push(bytes){
   if(this.done){if(bytes.length)throw failure();return}
   if(this.buffer.length+bytes.length>MAX+HEADER_MAX)throw failure();
@@ -37,15 +37,21 @@ export class HttpDecoder {
   while(!this.done){
    if(this.trailers){const pos=index(this.buffer,'\r\n');if(pos<0)return;if(pos!==0)throw failure();this.buffer=this.buffer.slice(2);this.complete();return}
    if(this.chunkRemaining===null){const pos=index(this.buffer,'\r\n');if(pos<0){if(this.buffer.length>1024)throw failure();return}const hex=new TextDecoder().decode(this.buffer.slice(0,pos));if(!/^[0-9a-fA-F]{1,8}$/.test(hex))throw failure();this.chunkRemaining=parseInt(hex,16);if(this.chunkRemaining>MAX)throw failure();this.buffer=this.buffer.slice(pos+2);if(!this.chunkRemaining){this.trailers=true;continue}}
-   if(this.buffer.length<this.chunkRemaining+2)return;
-   const n=this.chunkRemaining;if(this.buffer[n]!==13||this.buffer[n+1]!==10)throw failure();this.consume(this.buffer.slice(0,n));this.buffer=this.buffer.slice(n+2);this.chunkRemaining=null;
+   if(this.chunkRemaining){const n=Math.min(this.buffer.length,this.chunkRemaining);this.consume(this.buffer.subarray(0,n));this.buffer=this.buffer.subarray(n);this.chunkRemaining-=n;if(this.chunkRemaining)return;this.chunkTerminator=true;}
+   if(this.chunkTerminator){if(this.buffer.length&&this.buffer[0]!==13)throw failure();if(this.buffer.length<2)return;if(this.buffer[1]!==10)throw failure();this.buffer=this.buffer.subarray(2);this.chunkTerminator=false;this.chunkRemaining=null;}
   }
  }
  consume(bytes){
   if(this.streaming){
-   this.sse+=this.text.decode(bytes,{stream:true});if(encoder.encode(this.sse).length>MAX)throw failure();
-   this.sse=this.sse.replace(/\r\n/g,'\n');
-   for(;;){const end=this.sse.indexOf('\n\n');if(end<0)break;const event=this.sse.slice(0,end);this.sse=this.sse.slice(end+2);const data=event.split('\n').filter(l=>l.startsWith('data:')).map(l=>l.slice(5).replace(/^ /,'')).join('\n');if(data){this.messageBytes+=encoder.encode(data).length;if(this.messageBytes>MAX)throw failure();this.messages.push(JSON.parse(data));}}
+   const lines=this.text.decode(bytes,{stream:true}).split('\n');
+   for(let i=0;i<lines.length;i++){
+    this.sseBytes+=encoder.encode(lines[i]).length+(i<lines.length-1?1:0);if(this.sseBytes>MAX)throw failure();
+    this.sseParts.push(lines[i]);if(i===lines.length-1)break;
+    const line=this.sseParts.join('').replace(/\r$/,'');this.sseParts=[];
+    if(line){this.sseLines.push(line);continue}
+    const data=this.sseLines.filter(l=>l.startsWith('data:')).map(l=>l.slice(5).replace(/^ /,'')).join('\n');this.sseLines=[];this.sseBytes=0;
+    if(data){this.messageBytes+=encoder.encode(data).length;if(this.messageBytes>MAX)throw failure();this.messages.push(JSON.parse(data));}
+   }
   }else{this.bodyBytes+=bytes.length;if(this.bodyBytes>MAX)throw failure();if(bytes.length)this.body.push(bytes);}
  }
  complete(){

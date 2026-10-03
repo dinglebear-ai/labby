@@ -34,3 +34,66 @@ test('JSON control responses stop reading at their byte budget', async()=>{
  await assert.rejects(readJsonResponse(response));assert.equal(cancelled,true);
  assert.deepEqual(await readJsonResponse(new Response('{"id":"public"}')),{id:'public'});
 });
+
+import {tailcatHook,rpcResult,discoverTools} from './hook.mjs';
+const rpc=result=>({jsonrpc:'2.0',id:1,result});
+const tool={name:'sandbox_list',inputSchema:{type:'object'}};
+test('discovery rejects RPC errors, malformed results and repeated cursors',async()=>{
+ for(const result of [{jsonrpc:'2.0',error:{code:-32603}},rpc({}),rpc({tools:[{}]})])
+  await assert.rejects(discoverTools({request:async()=>result}));
+ let calls=0;
+ await assert.rejects(discoverTools({request:async()=>{calls++;return rpc({tools:[tool],nextCursor:'repeat'});}}));
+ assert.equal(calls,2);
+ assert.throws(()=>rpcResult({jsonrpc:'2.0',result:{},error:{code:1}}));
+});
+test('discovery follows pages and enforces item, byte and page limits',async()=>{
+ const cursors=[];
+ assert.deepEqual(await discoverTools({request:async(method,params)=>{cursors.push(params);return rpc(cursors.length===1?{tools:[tool],nextCursor:'second'}:{tools:[{...tool,name:'sandbox_exec'}]});}}),[{name:'sandbox_list',description:undefined},{name:'sandbox_exec',description:undefined}]);
+ assert.deepEqual(cursors,[{},{cursor:'second'}]);
+ for(const result of [{tools:Array(513).fill(tool)},{tools:[{...tool,description:'x'.repeat(1024*1024)}]}])
+  await assert.rejects(discoverTools({request:async()=>rpc(result)}));
+ let calls=0;await assert.rejects(discoverTools({request:async()=>rpc({tools:[],nextCursor:String(++calls)})}));assert.equal(calls,8);
+});
+
+function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
+function fixture(t,{prepare,confirm,connect}={}) {
+ const elements=new Map();
+ const el=selector=>{if(!elements.has(selector))elements.set(selector,{textContent:'',value:'microsandbox',addEventListener(event,fn){this[event]=fn;},removeEventListener(){}});return elements.get(selector);};
+ t.mock.method(globalThis.URL,'createObjectURL',()=> 'blob:test');t.mock.method(globalThis.URL,'revokeObjectURL',()=>{});
+ const previous={window:globalThis.window,location:globalThis.location,document:globalThis.document};
+ globalThis.window=el('window');globalThis.location={protocol:'https:',origin:request.origin};globalThis.document={createElement:()=>({click(){}})};
+ const posts=[];let closeCallback;const client={request:async method=>method==='initialize'?rpc({protocolVersion:'2025-03-26',capabilities:{},serverInfo:{name:'labby',version:'1'}}):method==='tools/list'?rpc({tools:[tool]}):null,onClose(fn){closeCallback=fn;return ()=>{closeCallback=null;};},close(){this.closed=true;}};
+ const hook=tailcatHook({fetcher:async(path,options)=>{
+  if(!options?.method)return new Response(JSON.stringify({derpMapURL:'https://relay.example/map'}));
+  posts.push(path);if(path==='/ui/sandboxes/pair')return new Response(JSON.stringify(await (prepare?.()??{id:'pair'})));
+  if(path.endsWith('/confirm'))await confirm?.();return new Response(null,{status:204});
+ },load:async()=>({identity:()=>({publicKey:peer,privateKey:'private'}),createSession(){}}),connect:connect??(async()=>client)});
+ hook.el={querySelector:el};hook.pushEvent=()=>{};hook.mounted();
+ t.after(()=>{hook.destroyed();Object.assign(globalThis,previous);});
+ return {hook,client,posts,el,prepare:()=>el('[data-tailcat="prepare"]').click(),import:file=>el('input[type="file"]').change({target:{files:[file],value:'delivery'}}),closed:()=>closeCallback?.()};
+}
+const delivery=()=>({size:1,text:async()=>JSON.stringify(packet())});
+test('a second import cannot confirm twice or close the successful connection',async t=>{
+ const waiting=deferred();const f=fixture(t,{confirm:()=>waiting.promise});await f.prepare();
+ const first=f.import(delivery());await new Promise(setImmediate);await f.import(delivery());waiting.resolve();await first;
+ assert.equal(f.posts.filter(p=>p.endsWith('/confirm')).length,1);assert.equal(f.el('[data-tailcat="status"]').textContent,'ready');assert.equal(f.client.closed,undefined);
+ f.closed();assert.equal(f.el('[data-tailcat="status"]').textContent,'failed');assert.equal(f.el('[data-tailcat="tools"]').textContent,'');
+});
+test('disconnect during delivery reading cannot confirm stale approval',async t=>{
+ const waiting=deferred();const f=fixture(t);await f.prepare();const importing=f.import({size:1,text:()=>waiting.promise});
+ f.el('[data-tailcat="disconnect"]').click();waiting.resolve(JSON.stringify(packet()));await importing;
+ assert.equal(f.posts.filter(p=>p.endsWith('/confirm')).length,0);assert.ok(f.posts.some(p=>p.endsWith('/discard')));
+});
+test('late prepare responses are discarded after disconnect',async t=>{
+ const waiting=deferred();const f=fixture(t,{prepare:()=>waiting.promise});const preparing=f.prepare();await new Promise(setImmediate);
+ f.el('[data-tailcat="disconnect"]').click();waiting.resolve({id:'late'});await preparing;assert.ok(f.posts.includes('/ui/sandboxes/pair/late/discard'));
+});
+test('initialization RPC errors cannot produce ready',async t=>{
+ const f=fixture(t);await f.prepare();f.client.request=async()=>({jsonrpc:'2.0',error:{code:-32603}});await f.import(delivery());
+ assert.equal(f.el('[data-tailcat="status"]').textContent,'failed');assert.equal(f.client.closed,true);
+});
+test('discovery propagates cancellation and rejects late results',async()=>{
+ const controller=new AbortController();let received;
+ await assert.rejects(discoverTools({request:async(_method,_params,{signal})=>{received=signal;controller.abort();return rpc({tools:[tool]});}},{signal:controller.signal}));
+ assert.equal(received.aborted,true);
+});

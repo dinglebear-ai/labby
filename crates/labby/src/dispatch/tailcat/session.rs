@@ -1,6 +1,7 @@
 //! One native lifetime owns helper, listener, and credential retirement.
+use super::listener::RestrictedListener;
 use super::{PairingError, RequestAuthority, grant::GrantLease};
-use crate::{access::AccessRuntime, api::tailcat::RestrictedListener};
+use crate::access::AccessRuntime;
 use labby_tailcat::{Bridge, BridgeConfig, BridgeStatus};
 use std::{path::PathBuf, sync::Arc};
 use tokio_util::sync::CancellationToken;

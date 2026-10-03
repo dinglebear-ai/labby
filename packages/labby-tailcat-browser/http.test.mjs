@@ -32,3 +32,23 @@ test('SSE progress batching is independent of TCP boundaries',()=>{
  const grouped=new HttpDecoder();grouped.push(bytes);assert.equal(grouped.takeMessages().length,9);
  const split=new HttpDecoder();let count=0;for(const byte of bytes){split.push(Uint8Array.of(byte));count+=split.takeMessages().length}assert.equal(count,9);
 });
+
+test('near-limit chunk payload in tiny fragments copies only linear bytes',t=>{
+ const body=bytes(JSON.stringify({result:'x'.repeat(1024*1024-64)}));
+ const header=bytes(`HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n${body.length.toString(16)}\r\n`);
+ let copied=0;const original=Uint8Array.prototype.set;
+ t.mock.method(Uint8Array.prototype,'set',function(source,offset){copied+=source.length;return original.call(this,source,offset)});
+ const d=new HttpDecoder();d.push(header);for(let i=0;i<body.length;i+=64)d.push(body.subarray(i,i+64));d.push(bytes('\r\n0\r\n\r\n'));
+ assert.equal(d.done,true);assert.equal(d.messages[0].result.length,1024*1024-64);
+ assert.ok(copied<body.length*4,`copied ${copied} bytes for ${body.length} payload bytes`);
+});
+test('fragmented chunk terminators remain mandatory',()=>{
+ const d=new HttpDecoder();d.push(bytes('HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}'));d.push(bytes('\r'));assert.throws(()=>d.push(bytes('x')));
+});
+test('large fragmented SSE lines preserve UTF-8 and event budget',()=>{
+ const value='é'.repeat(100000),body=bytes(`data: ${JSON.stringify({result:value})}\r\n\r\n`);
+ const d=new HttpDecoder();d.push(bytes('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n'+body.length.toString(16)+'\r\n'));
+ for(let i=0;i<body.length;i+=63)d.push(body.subarray(i,i+63));d.push(bytes('\r\n0\r\n\r\n'));assert.deepEqual(d.messages,[{result:value}]);
+ const oversized=new HttpDecoder();oversized.push(bytes('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n'));
+ for(let i=0;i<16;i++)oversized.push(bytes('x'.repeat(65536)));assert.throws(()=>oversized.push(bytes('x')));
+});

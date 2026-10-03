@@ -44,7 +44,12 @@ impl ControlListener {
         let config = crate::unix_listener::private_control_config(path)?;
         let listener = crate::unix_listener::bind(&config).await?;
         let cancel = CancellationToken::new();
-        let task = super::serve_owned(listener, router(manager), cancel.clone(), 16 * 1024);
+        let task = crate::dispatch::tailcat::listener::serve_owned(
+            listener,
+            router(manager),
+            cancel.clone(),
+            16 * 1024,
+        );
         Ok(Self { cancel, task })
     }
 }
@@ -216,7 +221,12 @@ mod tests {
         let listener = crate::unix_listener::bind(&config).await.unwrap();
         let router = Router::new().route("/status", get(|| async { "should-not-run" }));
         let cancel = CancellationToken::new();
-        let task = super::super::serve_owned(listener, router, cancel.clone(), 16384);
+        let task = crate::dispatch::tailcat::listener::serve_owned(
+            listener,
+            router,
+            cancel.clone(),
+            16384,
+        );
         let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
         let _written = stream
             .write_all(b"GET /status HTTP/1.1\r\nHost: localhost\r\nX-UID: 0\r\n\r\n")

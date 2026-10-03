@@ -25,9 +25,8 @@ async fn browser_to_native_project_to_network_disabled_vm() {
         .expect("set matching Microsandbox firmware");
     assert!(PathBuf::from(&msb).is_absolute());
     assert!(PathBuf::from(&firmware).is_absolute());
-    let version = std::process::Command::new(&msb)
-        .arg("--version")
-        .output()
+    let version = bounded_probe(&msb, &["--version"], Duration::from_secs(10))
+        .await
         .unwrap();
     assert!(version.status.success());
     assert_eq!(
@@ -44,7 +43,7 @@ async fn browser_to_native_project_to_network_disabled_vm() {
     ];
     let host_paths = tempfile::Builder::new()
         .prefix("tailcat-empty-")
-        .tempdir_in("/private/tmp")
+        .tempdir()
         .unwrap();
     let upstream: crate::config::UpstreamConfig = serde_json::from_value(serde_json::json!({
         "name":"msb", "command":node, "args":[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/labby-microsandbox/server.mjs")],
@@ -200,11 +199,13 @@ loadout = "sandbox"
     .await;
     drop(guard); // Covers Chromium descendants on success, timeout and failure.
     let label = format!("labby-tailcat-run={name}");
-    let owned = tokio::process::Command::new(&msb)
-        .args(["list", "--quiet", "--label", &label])
-        .output()
-        .await
-        .unwrap();
+    let owned = bounded_probe(
+        &msb,
+        &["list", "--quiet", "--label", &label],
+        Duration::from_secs(10),
+    )
+    .await
+    .unwrap();
     assert!(
         owned.status.success(),
         "ownership inventory unavailable; see recovery identity"
@@ -215,14 +216,12 @@ loadout = "sandbox"
         "unexpected ownership label; no cleanup attempted"
     );
     if owned_names.lines().any(|entry| entry == name) {
-        let cleanup = tokio::time::timeout(
+        let cleanup = bounded_probe(
+            &msb,
+            &["remove", "--force", "--quiet", &name],
             Duration::from_secs(30),
-            tokio::process::Command::new(&msb)
-                .args(["remove", "--force", "--quiet", &name])
-                .output(),
         )
         .await
-        .unwrap()
         .unwrap();
         assert!(
             cleanup.status.success(),
@@ -242,9 +241,7 @@ loadout = "sandbox"
     )
     .unwrap();
     gateway.reload_with_origin(None, None).await.unwrap();
-    let listed = tokio::process::Command::new(&msb)
-        .args(["list", "--quiet"])
-        .output()
+    let listed = bounded_probe(&msb, &["list", "--quiet"], Duration::from_secs(10))
         .await
         .unwrap();
     assert!(
@@ -277,4 +274,85 @@ loadout = "sandbox"
     let evidence: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(evidence["ok"], true);
     std::fs::write(assets.join("vm-acceptance-evidence.json"), &output.stdout).unwrap();
+}
+
+/// Qualification probes retain group custody and never retain unbounded output.
+async fn bounded_probe(
+    executable: &str,
+    args: &[&str],
+    deadline: Duration,
+) -> std::io::Result<std::process::Output> {
+    use process_wrap::tokio::{CommandWrap, ProcessGroup};
+    use tokio::io::AsyncReadExt as _;
+    async fn read_bounded(reader: impl tokio::io::AsyncRead + Unpin) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        reader.take(64 * 1024 + 1).read_to_end(&mut bytes).await?;
+        if bytes.len() > 64 * 1024 {
+            return Err(std::io::Error::other("native probe output limit"));
+        }
+        Ok(bytes)
+    }
+    let mut command = CommandWrap::with_new(executable, |cmd| {
+        cmd.args(args)
+            .kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+    });
+    command.wrap(ProcessGroup::leader());
+    let mut child = command.spawn()?;
+    let guard = labby_gateway::upstream::process_guard::ProcessGroupGuard::arm(
+        child
+            .id()
+            .ok_or_else(|| std::io::Error::other("native probe identity unavailable"))?,
+    );
+    let stdout = child
+        .stdout()
+        .take()
+        .ok_or_else(|| std::io::Error::other("native probe stdout unavailable"))?;
+    let stderr = child
+        .stderr()
+        .take()
+        .ok_or_else(|| std::io::Error::other("native probe stderr unavailable"))?;
+    let result = tokio::time::timeout(deadline, async {
+        let (status, stdout, _stderr) =
+            tokio::try_join!(child.wait(), read_bounded(stdout), read_bounded(stderr))?;
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr: Vec::new(),
+        })
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "native probe deadline",
+        ))
+    });
+    drop(guard);
+    if result.is_err() {
+        let _killed = child.start_kill();
+        tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await
+            .map_err(|_| std::io::Error::other("native probe reap deadline"))??;
+    }
+    result
+}
+
+#[tokio::test]
+async fn native_probes_reject_hanging_and_oversized_output() {
+    let started = tokio::time::Instant::now();
+    let error = bounded_probe("/bin/sh", &["-c", "sleep 30"], Duration::from_millis(100))
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+    assert!(started.elapsed() < Duration::from_secs(6));
+    let error = bounded_probe("/bin/sh", &["-c", "while :; do printf '0123456789012345678901234567890123456789012345678901234567890123456789'; done"], Duration::from_secs(5)).await.unwrap_err();
+    assert!(error.to_string().contains("output limit"));
+    let output = bounded_probe("/bin/sh", &["-c", "printf bounded"], Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"bounded");
 }

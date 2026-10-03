@@ -4,6 +4,7 @@ mod pairing;
 pub use pairing::{ApprovedPairing, PairingError, PairingRequest, PendingPairing};
 
 mod grant;
+pub(crate) mod listener;
 #[cfg(all(feature = "tailcat", unix))]
 mod session;
 #[cfg(all(feature = "tailcat", unix))]
