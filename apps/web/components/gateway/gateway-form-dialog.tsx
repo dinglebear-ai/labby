@@ -655,6 +655,9 @@ export function GatewayFormDialog({
       } else {
         try {
           new URL(url)
+          if (isEditing && gateway?.transport === 'http' && url !== gateway.config.url && /(?:\[redacted\]|%5bredacted%5d)/i.test(url)) {
+            newErrors.url = 'Re-enter all redacted credentials before changing this URL.'
+          }
         } catch {
           newErrors.url = 'Invalid URL format'
         }
@@ -764,7 +767,7 @@ export function GatewayFormDialog({
       config: {
         ...(transport === 'http'
           ? {
-              url,
+              ...(!isEditing || gateway?.transport !== 'http' || url !== gateway.config.url ? { url } : {}),
               ...(Object.keys(stdioEnv).length > 0 ? { env: stdioEnv } : {}),
             }
           : {

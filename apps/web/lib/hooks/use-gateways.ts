@@ -893,6 +893,7 @@ export function useGatewayMutations() {
         config: {
           ...gateway.config,
           ...input.config,
+          url: input.config?.url === null ? undefined : input.config?.url ?? gateway.config.url,
         },
         // updated_at comes from the backend; omit in mock paths.
       }

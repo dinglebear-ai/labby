@@ -288,7 +288,6 @@ test('buildGatewayUpdatePayload clears auth when bearer_token_env is blanked', (
   assert.deepEqual(payload, {
     name: 'github',
     patch: {
-      url: null,
       command: null,
       args: [],
       bearer_token_env: null,
@@ -1199,4 +1198,13 @@ test('stdio partial edits preserve omitted command and args while retaining tran
 test('stdio explicit empty args clears stored argv without clearing an omitted command', () => {
   assert.deepEqual(buildGatewayPatch({ transport: 'stdio', config: { args: [] } }), { url: null, args: [] })
   assert.deepEqual(buildGatewayPatch({ transport: 'stdio', config: { command: 'python', args: ['server.py'] } }), { url: null, command: 'python', args: ['server.py'] })
+})
+
+test('HTTP edits preserve the stored credential URL when omitted and permit replacement or clear', () => {
+  const stored = { url: 'https://user:private-token@example.com/mcp?token=private-query' }
+  const unchanged = buildGatewayPatch({ transport: 'http', display_name: 'Renamed', config: {} })
+  assert.equal(Object.hasOwn(unchanged, 'url'), false)
+  assert.equal({ ...stored, ...unchanged }.url, stored.url)
+  assert.equal(buildGatewayPatch({ transport: 'http', config: { url: 'https://new.example/mcp' } }).url, 'https://new.example/mcp')
+  assert.equal(buildGatewayPatch({ transport: 'http', config: { url: null } }).url, null)
 })

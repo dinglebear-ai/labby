@@ -758,7 +758,7 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
   }
 
   if (input.transport === 'http') {
-    patch.url = config.url ?? null
+    if (config.url !== undefined) patch.url = config.url
     patch.command = null
     patch.args = []
     if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}

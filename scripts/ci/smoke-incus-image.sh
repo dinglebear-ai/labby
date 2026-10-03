@@ -467,9 +467,14 @@ do
         exit 1
     fi
 done
-if env | grep -E "^(TS_AUTHKEY|LABBY_MCP_HTTP_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|CARGO_REGISTRY_TOKEN)=" >&2; then
-    exit 1
-fi'
+forbidden_env=0
+for name in TS_AUTHKEY LABBY_MCP_HTTP_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY GITHUB_TOKEN GH_TOKEN NPM_TOKEN CARGO_REGISTRY_TOKEN; do
+    if printenv "$name" >/dev/null; then
+        printf "forbidden runtime environment variable: %s\n" "$name" >&2
+        forbidden_env=1
+    fi
+done
+test "$forbidden_env" = 0'
 
 log "checking provision convergence"
 incus_cmd file push "$smoke_binary" "$container_name/usr/local/bin/labby"

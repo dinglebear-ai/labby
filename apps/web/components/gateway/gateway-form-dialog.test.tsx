@@ -1441,3 +1441,28 @@ for (const replacement of ['node --safe', 'node', 'node --safe [REDACTED]']) {
     } finally { await view.unmount(); globalThis.fetch = originalFetch }
   })
 }
+
+for (const projectedUrl of ['https://example.com/mcp?token=%5BREDACTED%5D', 'https://example.com/mcp']) for (const replacement of [undefined, 'https://new.example/mcp', 'https://new.example/mcp?token=%5BREDACTED%5D']) {
+  test(`HTTP edit ${projectedUrl} ${replacement?.includes('REDACTED') ? 'requires credential re-entry' : replacement ? 'sends intentional URL replacement' : 'omits unchanged projected credential URL'}`, async () => {
+    const window = installGatewayDialogDom()
+    const existing = gatewayFixture('masked-http')
+    existing.config.url = projectedUrl
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {})) as typeof fetch
+    const view = await renderOpenGatewayDialog(existing, async input => { inputs.push(input) })
+    try {
+      await setInputValue(window, document.querySelector('#display_name') as HTMLInputElement, 'Renamed')
+      if (replacement) await setInputValue(window, document.querySelector('#url') as HTMLInputElement, replacement)
+      await clickSave()
+      if (replacement?.includes('REDACTED')) {
+        assert.equal(inputs.length, 0)
+        assert.match(document.body.textContent ?? '', /Re-enter.*redacted.*credentials/i)
+        return
+      }
+      await waitFor(() => assert.equal(inputs.length, 1))
+      assert.equal(Object.hasOwn(inputs[0].config ?? {}, 'url'), Boolean(replacement))
+      if (replacement) assert.equal(inputs[0].config?.url, replacement)
+    } finally { await view.unmount(); globalThis.fetch = originalFetch }
+  })
+}

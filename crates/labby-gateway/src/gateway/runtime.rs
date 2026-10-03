@@ -35,6 +35,9 @@ use labby_runtime::redact::redact_secret_like_segments;
 
 static NEXT_POOL_PUBLICATION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+mod status_snapshot;
+pub(super) use status_snapshot::RuntimeProcessSnapshotCache;
+
 fn next_pool_publication_generation() -> u64 {
     NEXT_POOL_PUBLICATION_GENERATION
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
@@ -306,27 +309,21 @@ impl GatewayManager {
         cfg: &GatewayConfig,
         pool: Option<&UpstreamPool>,
     ) -> Result<PersistedGatewayRuntimeState, ToolError> {
-        let mut state = self.load_runtime_state().await?;
-        state
-            .entries
-            .retain(persisted_runtime_process_still_matches);
-
+        let state = self.load_runtime_state().await?;
+        let mut live_entries = Vec::new();
         if let Some(pool) = pool {
             for upstream in &cfg.upstream {
                 if let Some(runtime) = pool.upstream_runtime_metadata(&upstream.name).await
                     && let Some(pid) = runtime.pid
                 {
-                    state
-                        .entries
-                        .retain(|entry| !(entry.upstream == upstream.name && entry.pid == pid));
-                    state.entries.push(PersistedGatewayRuntimeEntry {
+                    live_entries.push(PersistedGatewayRuntimeEntry {
                         upstream: upstream.name.clone(),
                         pid,
                         pgid: runtime.pgid,
                         started_at_epoch_secs: runtime
                             .started_at
                             .and_then(system_time_to_epoch_secs),
-                        process_start_ticks: runtime_process_start_ticks(pid),
+                        process_start_ticks: None,
                         observed_at_epoch_secs: epoch_now_secs(),
                         origin: runtime.origin.clone(),
                         owner: runtime.owner.as_ref().map(runtime_owner_view),
@@ -340,6 +337,21 @@ impl GatewayManager {
                 }
             }
         }
+        let mut state = run_runtime_inspection(move || {
+            let mut state = state;
+            state
+                .entries
+                .retain(persisted_runtime_process_still_matches);
+            for mut entry in live_entries {
+                state
+                    .entries
+                    .retain(|old| !(old.upstream == entry.upstream && old.pid == entry.pid));
+                entry.process_start_ticks = runtime_process_start_ticks(entry.pid);
+                state.entries.push(entry);
+            }
+            state
+        })
+        .await?;
 
         state.reconciled_at_epoch_secs = Some(epoch_now_secs());
         state.entries.sort_by(|left, right| {
@@ -516,38 +528,13 @@ impl GatewayManager {
         if let Some(name) = name {
             scope.ensure_visible(name)?;
         }
-        let cfg = self.config.read().await.clone();
-        let pool = self.runtime.current_pool().await;
-        // Runtime inspection reports the current snapshot. It must not start or
-        // connect upstreams; refresh/test/reload own active discovery.
-        let persisted = self.reconcile_runtime_state(&cfg, pool.as_deref()).await?;
-        let live_runtimes = match pool.as_deref() {
-            Some(pool) => pool.upstream_runtime_metadata_snapshot().await,
-            None => Default::default(),
-        };
-        let registered_live_runtimes = registered_runtime_identities(live_runtimes.values());
-        let patterns: Vec<String> = cfg
-            .upstream
-            .iter()
-            .filter(|upstream| {
-                upstream.command.is_some()
-                    && name.is_none_or(|name| name == upstream.name)
-                    && scope
-                        .route_visible_upstreams
-                        .as_ref()
-                        .is_none_or(|visible| visible.contains(&upstream.name))
-            })
-            .flat_map(|upstream| upstream_cleanup_patterns(upstream, false))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        let process_matches = if patterns.is_empty() {
-            Vec::new()
-        } else {
-            tokio::task::spawn_blocking(move || matching_processes(&patterns))
-                .await
-                .unwrap_or_default()
-        };
+        // Process/journal observations are internal fleet snapshots. Visible
+        // rows and all subject/capability observations remain request-scoped.
+        let context = self.runtime_status_process_context().await?;
+        let cfg = &context.config;
+        let pool = &context.pool;
+        let live_runtimes = &context.live;
+        let persisted = context.persisted();
         let mut rows = Vec::with_capacity(cfg.upstream.len());
         for upstream in &cfg.upstream {
             if name.is_some_and(|name| name != upstream.name)
@@ -585,17 +572,7 @@ impl GatewayManager {
                 .iter()
                 .filter(|entry| Some(entry.pid) != live_pid)
                 .count();
-            let live_stale_groups = if upstream.command.is_some() {
-                let live_runtime = live_pid.zip(runtime.as_ref().and_then(|meta| meta.pgid));
-                likely_stale_process_groups(
-                    upstream,
-                    live_runtime,
-                    &registered_live_runtimes,
-                    &process_matches,
-                )
-            } else {
-                BTreeSet::new()
-            };
+            let live_stale_groups = context.stale_groups(&upstream.name);
             let stale_count = persisted_stale_count.max(live_stale_groups.len());
             let mut notification_incidents = match pool.as_deref() {
                 Some(pool) => pool.notification_incidents(&upstream.name).await,
@@ -1017,6 +994,15 @@ impl GatewayManager {
 
         Ok(view)
     }
+}
+
+// One boundary for synchronous process inspection; keep async pool locks outside it.
+async fn run_runtime_inspection<T: Send + 'static>(
+    inspect: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, ToolError> {
+    tokio::task::spawn_blocking(inspect).await.map_err(|error| {
+        ToolError::internal_message(format!("runtime inspection task failed: {error}"))
+    })
 }
 
 /// Marks one upstream's restart as in flight until the restart task ends,
@@ -1482,6 +1468,34 @@ fn terminate_process_group(_pid: u32) -> Result<(), ()> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_process_inspection_runs_off_the_async_executor() {
+        let executor_thread = std::thread::current().id();
+        let inspection_thread = run_runtime_inspection(|| std::thread::current().id())
+            .await
+            .expect("inspection completes");
+        assert_ne!(
+            executor_thread, inspection_thread,
+            "blocking proc inspection must use a worker"
+        );
+    }
+
+    #[tokio::test]
+    #[allow(
+        clippy::panic,
+        reason = "Exercises conversion of a panicking inspection worker into an error"
+    )]
+    async fn runtime_inspection_panics_are_reported_as_errors() {
+        let error = run_runtime_inspection(|| panic!("inspection regression panic"))
+            .await
+            .expect_err("failed worker must be visible");
+        assert!(
+            error
+                .user_message()
+                .contains("runtime inspection task failed")
+        );
+    }
+
     #[test]
     fn stale_incident_identity_tracks_processes_not_count_or_order() {
         let first = stale_incident_identity(

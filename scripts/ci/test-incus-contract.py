@@ -60,6 +60,26 @@ class IncusContract(unittest.TestCase):
         self.assertIn("https://snapshot.ubuntu.com/ubuntu/", text)
         self.assertNotIn('uv" python install', text)
 
+    def test_image_runtime_secret_guard_fails_without_printing_values(self):
+        smoke = self.text("scripts/ci/smoke-incus-image.sh")
+        section = smoke.split('log "checking image does not contain runtime secrets"', 1)[1].split('log "checking provision convergence"', 1)[0]
+        command = re.search(r"-- sh -lc '(.*?)'", section, re.S).group(1)
+        with tempfile.TemporaryDirectory() as directory:
+            for path in ["/home/labby/.labby/.env", "/root/.labby/.env", "/run/labby-ts-authkey"]:
+                command = command.replace(path, str(pathlib.Path(directory) / path.lstrip("/")))
+            for name in ["TS_AUTHKEY", "LABBY_MCP_HTTP_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "CARGO_REGISTRY_TOKEN"]:
+                with self.subTest(name=name):
+                    result = subprocess.run(["sh", "-c", command], env={"PATH": os.environ["PATH"], name: "private-sentinel\nsecond-private-line"}, capture_output=True, text=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+                    self.assertNotIn("private-sentinel", result.stdout + result.stderr)
+                    self.assertNotIn("second-private-line", result.stdout + result.stderr)
+            empty = subprocess.run(["sh", "-c", command], env={"PATH": os.environ["PATH"], "TS_AUTHKEY": ""}, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertIn("TS_AUTHKEY", empty.stderr)
+            clean = subprocess.run(["sh", "-c", command], env={"PATH": os.environ["PATH"]}, capture_output=True, text=True, timeout=10)
+            self.assertEqual(clean.returncode, 0, clean.stderr)
+
     def test_image_is_substrate_only_and_smoke_installs_candidate(self):
         image = self.text(".config/incus/labby-image.yaml")
         builder = self.text("scripts/ci/build-incus-image.sh")

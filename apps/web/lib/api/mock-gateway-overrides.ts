@@ -5,7 +5,7 @@ export interface MockGatewayOverride {
   capabilityObservation?: Gateway['status']['capability_observation']
   exposurePolicy?: ExposurePolicy
   proxyResources?: boolean
-  config?: Partial<Gateway['config']>
+  config?: Omit<Partial<Gateway['config']>, 'url'> & { url?: string | null }
 }
 
 const STORAGE_KEY = 'labby.mock.gateway-overrides.v1'
@@ -72,7 +72,11 @@ export function applyMockGatewayOverride(
     return gateway
   }
 
-  const overriddenConfig = { ...gateway.config, ...override.config }
+  const overriddenConfig = {
+    ...gateway.config,
+    ...override.config,
+    url: override.config?.url === null ? undefined : override.config?.url ?? gateway.config.url,
+  }
   const exposePatterns = override.exposurePolicy?.mode === 'allowlist'
     ? override.exposurePolicy.patterns
     : []
