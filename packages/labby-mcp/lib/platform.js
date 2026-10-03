@@ -54,6 +54,10 @@ function installRoot() {
   return path.resolve(__dirname, "..", "vendor");
 }
 
+function companionRoot() {
+  return path.join(installRoot(), "tailcat");
+}
+
 function binaryPath(platform = process.platform, arch = process.arch) {
   const target = targetFor(platform, arch);
   return path.join(installRoot(), target.binary);
@@ -61,6 +65,7 @@ function binaryPath(platform = process.platform, arch = process.arch) {
 
 module.exports = {
   binaryPath,
+  companionRoot,
   downloadUrl,
   installRoot,
   packageVersion,

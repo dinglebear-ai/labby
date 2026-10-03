@@ -9,7 +9,8 @@
         "gateway-host",
         "fs",
         "systemd",
-        "skills"
+        "skills",
+        "tailcat"
       ],
       "included_in_default": false,
       "included_in_all": false,
@@ -147,6 +148,19 @@
       "feature": "systemd",
       "dependencies": [
         "dep:sd-notify"
+      ],
+      "included_in_default": false,
+      "included_in_all": true,
+      "classification": "helper_internal",
+      "mapped_crate_feature": null,
+      "exception_reason": "helper/internal feature"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "tailcat",
+      "dependencies": [
+        "gateway",
+        "dep:labby-tailcat"
       ],
       "included_in_default": false,
       "included_in_all": true,

@@ -284,6 +284,48 @@ pub(crate) async fn refresh_authority_epochs(
         .await
 }
 
+impl AccessStore {
+    /// Fence native Tailcat configuration publication against durable authority writers.
+    /// The caller must acquire and prepare its host configuration lock beforehand;
+    /// the callback performs only the bounded final file replacement, with no await
+    /// or nested store access. SQLite rollback does not undo a published host file.
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    pub(crate) async fn commit_tailcat_configuration<T: Send + 'static>(
+        &self,
+        identity: VerifiedIdentity,
+        project: String,
+        lease: AuthorityLease,
+        commit: impl FnOnce() -> T + Send + 'static,
+    ) -> AccessStoreResult<T> {
+        self.with_connection(move |connection| {
+            let transaction = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(map_sqlite_error)?;
+            let principal = resolve_principal(&transaction, &identity)?;
+            let direct_owner: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM project_memberships m JOIN projects p ON p.organization_id=m.organization_id AND p.project_id=m.project_id JOIN organizations o ON o.organization_id=m.organization_id WHERE m.organization_id=?1 AND m.project_id=?2 AND m.principal_id=?3 AND m.role='owner' AND m.status='active' AND p.status='active' AND o.status='active')",
+                params![principal.organization_id,project,principal.id], |row| row.get(0)
+            ).map_err(map_sqlite_error)?;
+            if !direct_owner || identity.authenticator() != labby_auth::Authenticator::BrowserSession {
+                return Err(AccessStoreError::NotAuthorized);
+            }
+            let owner = OwnerScope::Project(labby_primitives::access::ProjectId::new(project)
+                .map_err(|_| AccessStoreError::InvalidBootstrapInput)?);
+            let resolved = resolve_authority(&transaction, &identity, &owner, Capability::ScopeManage)?;
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .ok().and_then(|duration| u64::try_from(duration.as_millis()).ok())
+                .ok_or(AccessStoreError::NotAuthorized)?;
+            lease.validate_at(AuthoritySafeBoundary::BeforeCommit, now, &resolved.epochs)
+                .map_err(|_| AccessStoreError::NotAuthorized)?;
+            let result = commit();
+            // This transaction only fences reads: rollback releases its write reservation
+            // without adding a fallible database commit after the file linearization point.
+            drop(transaction);
+            Ok(result)
+        }).await
+    }
+}
+
 /// Resolve the pinned executable and its authority in one durable snapshot.
 /// Definition mutations do not advance owner epochs, so separate reads could
 /// otherwise accept a definition revoked between those reads.
@@ -1022,6 +1064,85 @@ mod tests {
                 capability,
             )],
         )
+    }
+
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    async fn tailcat_lease(store: &AccessStore, identity: VerifiedIdentity) -> AuthorityLease {
+        let action = ActionRef::new("setup", "tailcat.configure").unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        authorize_action(
+            store,
+            AuthorityRequest::new(
+                identity,
+                ActionAuthoritySpec::SCHEMA_VERSION,
+                action.clone(),
+                ResourceRef::new(
+                    OwnerScope::Project(ProjectId::new("bootstrap-default").unwrap()),
+                    ResourceFamily::Project,
+                    ResourceId::new("bootstrap-default").unwrap(),
+                ),
+                AuthorityCeiling::trusted_local(),
+                None,
+                now,
+                vec![AuthoritySafeBoundary::BeforeCommit],
+                vec![ActionAuthoritySpec::new(
+                    action,
+                    ResourceFamily::Project,
+                    Capability::ScopeManage,
+                )],
+            ),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    #[tokio::test]
+    async fn tailcat_commit_denies_disabled_project_before_file_callback() {
+        let (_directory, store, owner, _) = fixture().await;
+        let lease = tailcat_lease(&store, owner.clone()).await;
+        store
+            .execute_test_statement(
+                "UPDATE projects SET status='disabled' WHERE project_id='bootstrap-default';",
+            )
+            .await
+            .unwrap();
+        let invoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let probe = invoked.clone();
+        assert!(
+            store
+                .commit_tailcat_configuration(owner, "bootstrap-default".into(), lease, move || {
+                    probe.store(true, std::sync::atomic::Ordering::SeqCst)
+                })
+                .await
+                .is_err()
+        );
+        assert!(!invoked.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tailcat_commit_fences_cross_connection_authority_writes() {
+        let (directory, store, owner, _) = fixture().await;
+        let lease = tailcat_lease(&store, owner.clone()).await;
+        let database = directory.path().join("access.db");
+        let result = store.commit_tailcat_configuration(owner, "bootstrap-default".into(), lease, move || {
+            let concurrent = rusqlite::Connection::open(database).unwrap();
+            concurrent.busy_timeout(std::time::Duration::ZERO).unwrap();
+            let result = concurrent.execute("UPDATE projects SET status='disabled' WHERE project_id='bootstrap-default'", []);
+            assert!(matches!(result, Err(rusqlite::Error::SqliteFailure(error, _)) if error.code == rusqlite::ErrorCode::DatabaseBusy));
+            "published"
+        }).await.unwrap();
+        assert_eq!(result, "published");
+        store
+            .execute_test_statement(
+                "UPDATE projects SET status='disabled' WHERE project_id='bootstrap-default';",
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

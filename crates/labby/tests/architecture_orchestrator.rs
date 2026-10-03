@@ -77,6 +77,8 @@ const SHARED_NON_SERVICES: &[&str] = &[
     "agent_payloads",
     "agent_llm",
     "phoenix_openai",
+    // Tailcat owns transport pairing/session lifecycle, not an action service.
+    "tailcat",
     "helpers",
     "redact",
     "path_safety",

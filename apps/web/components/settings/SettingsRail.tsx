@@ -50,7 +50,8 @@ export function settingsRailEntries(session: BrowserSessionState): RailEntry[] {
     ...ENTRIES,
     { href: '/settings/notifications/', label: 'Notifications', icon: Bell },
     ...(session.isConfiguredAdmin
-      ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound }]
+      ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound },
+        { href: '/settings/tailcat/', label: 'Tailcat', icon: PlugZap }]
       : []),
     { href: '/settings/depot/', label: 'Depot', icon: Warehouse },
   ]
@@ -94,7 +95,7 @@ export function SettingsRail(): React.ReactElement {
         {['Workspace', 'Connections', 'System'].map((group) => {
           const grouped = entries.filter((entry) => {
             const section = entry.href.split('/')[2]
-            return (['', 'core', 'agents', 'services'].includes(section) ? 'Workspace' : ['surfaces', 'authentication', 'depot'].includes(section) ? 'Connections' : 'System') === group
+            return (['', 'core', 'agents', 'services'].includes(section) ? 'Workspace' : ['surfaces', 'authentication', 'depot', 'tailcat'].includes(section) ? 'Connections' : 'System') === group
           })
           return <div key={group}>
             <p className="mb-2 px-3 text-xs font-medium text-aurora-text-muted">{group}</p>

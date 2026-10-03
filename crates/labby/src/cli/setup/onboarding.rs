@@ -80,11 +80,12 @@ struct PreserveDefaults {
 
 pub(super) async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
     let interactive = crate::cli::helpers::interactive_allowed() && !args.yes && !format.is_json();
-    if interactive && args.role.is_none() && !args.chatgpt {
+    if interactive && args.role.is_none() && !args.chatgpt && !args.tailcat {
         match Select::with_theme(&ColorfulTheme::default())
             .with_prompt("How would you like to use Labby?")
             .items([
                 "Connect ChatGPT to local sandboxes",
+                "Connect a dashboard through Tailcat",
                 "Connect to an existing Labby gateway",
                 "Install a managed Labby gateway",
             ])
@@ -92,12 +93,19 @@ pub(super) async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<Exi
             .interact()?
         {
             0 => args.chatgpt = true,
-            1 => args.role = Some(SetupRoleArg::Client),
+            1 => args.tailcat = true,
+            2 => args.role = Some(SetupRoleArg::Client),
             _ => {
                 args.role = Some(SetupRoleArg::Server);
                 args.deployment = Some(SetupDeploymentArg::Native);
             }
         }
+    }
+    if args.tailcat {
+        #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+        return super::tailcat::run(args, interactive, format);
+        #[cfg(not(all(feature = "tailcat", feature = "gateway", unix)))]
+        bail!("Tailcat dashboard setup requires a gateway-enabled Tailcat build on Unix");
     }
     if args.chatgpt {
         #[cfg(feature = "gateway")]
@@ -178,6 +186,13 @@ pub(super) fn configure_only(args: &SetupArgs, interactive: bool) -> Result<serd
     let mut plan = collect_plan(args, interactive)?;
     let paths = crate::installation::InstallationPaths::resolve()?;
     resolve_existing_native_defaults(&mut plan, paths.root())?;
+    if args.tailcat
+        && (!matches!(resolved_server_auth(&plan), SetupAuthArg::OAuth) || plan.oauth.is_none())
+    {
+        bail!(
+            "Tailcat setup requires OAuth-only server configuration; configure an OAuth provider explicitly before continuing"
+        );
+    }
     let mut outcome = redacted_plan(&plan);
     outcome["config_only"] = json!(true);
     outcome["env_path"] = json!(paths.root().join(".env"));

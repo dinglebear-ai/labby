@@ -143,7 +143,9 @@ class WorkspaceContract(unittest.TestCase):
         model = next(p for p in self.product["packages"] if p["name"] == "labby-model")
         self.assertTrue({d["name"] for d in model["dependencies"]} <=
                         {"verify-core", "verify-scenario", "serde", "serde_json", "labby-primitives"})
-        self.assertEqual(len(self.product["workspace_members"]), 13)
+        self.assertEqual(len(self.product["workspace_members"]), 14)
+        tailcat = next(p for p in self.product["packages"] if p["name"] == "labby-tailcat")
+        self.assertTrue(tailcat["id"] in self.product["workspace_members"])
 
     def test_core_dependencies_remain_pure_and_backends_are_not_activated(self) -> None:
         assert_pure_leaf_dependencies(self.toolkit["packages"])

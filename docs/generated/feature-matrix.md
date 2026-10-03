@@ -6,7 +6,7 @@ Feature invariant status: clean.
 
 | Crate | Feature | Class | In Default | In All | Maps To | Dependencies |
 | --- | --- | --- | --- | --- | --- | --- |
-| labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd`<br>`skills` |
+| labby | `all` | AggregateDefault | false | false | - | `lab-admin`<br>`api-docs`<br>`gateway-host`<br>`fs`<br>`systemd`<br>`skills`<br>`tailcat` |
 | labby | `api-docs` | HelperInternal | false | true | - | `dep:utoipa` |
 | labby | `codemode-microsandbox` | IntentionalException | false | false | - | `gateway`<br>`labby-codemode/microsandbox-sdk` |
 | labby | `default` | AggregateDefault | false | false | - | `gateway-host` |
@@ -18,6 +18,7 @@ Feature invariant status: clean.
 | labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit`<br>`labby-auth/testkit` |
 | labby | `skills` | IntentionalException | true | true | - | `labby-gateway?/skills` |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |
+| labby | `tailcat` | HelperInternal | false | true | - | `gateway`<br>`dep:labby-tailcat` |
 | labby | `web-ui` | HelperInternal | true | true | - | `dep:labby-web` |
 | labby-apis | `all` | AggregateDefault | false | false | labby/all |  |
 | labby-apis | `default` | AggregateDefault | false | false | labby/default |  |

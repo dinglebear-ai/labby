@@ -38,6 +38,7 @@ labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
 labby-codemode = { path = "../labby-codemode", optional = true }
 labby-gateway = { path = "../labby-gateway", optional = true }
+labby-tailcat = { path = "../labby-tailcat", optional = true }
 labby-openapi = { path = "../labby-openapi", optional = true }
 labby-web = { path = "../labby-web", optional = true }
 
@@ -114,11 +115,11 @@ uuid.workspace = true
 
 axum.workspace = true
 http-body-util.workspace = true
-hyper = { version = "1.9", features = ["client", "http1", "http2"] }
+hyper = { version = "1.9", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", features = ["client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "0.27.9", default-features = false, features = ["http1", "http2", "native-tokio", "ring", "tls12"] }
 tower.workspace = true
-tower-http.workspace = true
+tower-http = { workspace = true, features = ["limit"] }
 utoipa = { workspace = true, optional = true }
 
 oauth2 = { version = "5.0", default-features = false }
@@ -184,7 +185,8 @@ path = "src/lib.rs"
 # - Helper/internal features are not standalone product slices unless this comment is updated.
 [features]
 codemode-microsandbox = ["gateway", "labby-codemode/microsandbox-sdk"]
-all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills"]
+all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills", "tailcat"]
+tailcat = ["gateway", "dep:labby-tailcat"]
 gateway = [
   "dep:labby-codemode",
   "dep:labby-gateway",

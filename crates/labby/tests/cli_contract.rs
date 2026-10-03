@@ -811,6 +811,9 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         "serve mcp" | "mcp" | "proxy" => {
             LeafPlan::Exempt("starts a long-running transport and requires lifecycle orchestration")
         }
+        "tailcat pair" | "tailcat status" | "tailcat stop" => LeafPlan::Exempt(
+            "requires the owned authenticated Tailcat controller; lifecycle and browser pairing are qualified by the isolated Tailcat acceptance fixture",
+        ),
         "completions refresh" | "completions clear" => {
             LeafPlan::Exempt("intentionally mutates the persistent shell completion cache")
         }

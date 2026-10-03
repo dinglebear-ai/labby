@@ -244,13 +244,10 @@ jobs:
               raise SystemExit(f"expected exactly 1 substitution in {verify_host_path}, got {count}")
           open(verify_host_path, "w").write(patched)
 
-          package_path = "packages/labby-mcp/package.json"
-          with open(package_path) as fh:
+          import subprocess
+          subprocess.run(["python3", "scripts/sync-npm-release-version.py", ".", new_version], check=True)
+          with open("packages/labby-mcp/package.json") as fh:
               npm_manifest = json.load(fh)
-          npm_manifest["version"] = new_version
-          with open(package_path, "w") as fh:
-              json.dump(npm_manifest, fh, indent=2)
-              fh.write("\n")
 
           server_path = "server.json"
           with open(server_path) as fh:
@@ -279,6 +276,8 @@ jobs:
           cargo update --manifest-path tools/verification/Cargo.toml -p labby-model --offline \
             || cargo update --manifest-path tools/verification/Cargo.toml -p labby-model
           git diff --stat -- Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json \
+            packages/labby-microsandbox/package.json packages/labby-microsandbox/package-lock.json \
+            packages/labby-tailcat-browser/package.json packages/labby-tailcat-browser/package-lock.json \
             apps/tauri/package.json apps/tauri/src-tauri/Cargo.toml apps/tauri/src-tauri/Cargo.lock apps/tauri/src-tauri/tauri.conf.json \
             tools/verification/hosts/labby/Cargo.toml tools/verification/Cargo.lock
 
@@ -287,6 +286,8 @@ jobs:
         run: |
           set -euo pipefail
           paths=(Cargo.toml Cargo.lock packages/labby-mcp/package.json server.json
+            packages/labby-microsandbox/package.json packages/labby-microsandbox/package-lock.json
+            packages/labby-tailcat-browser/package.json packages/labby-tailcat-browser/package-lock.json
             apps/tauri/package.json apps/tauri/src-tauri/Cargo.toml apps/tauri/src-tauri/Cargo.lock apps/tauri/src-tauri/tauri.conf.json
             tools/verification/hosts/labby/Cargo.toml tools/verification/Cargo.lock)
           if git diff --quiet -- "${paths[@]}"; then
