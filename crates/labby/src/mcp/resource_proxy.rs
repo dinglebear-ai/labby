@@ -117,6 +117,43 @@ impl LabMcpServer {
         };
 
         let auth = auth_context_from_extensions(&context.extensions);
+        if matches!(
+            uri,
+            "lab://gateway/status" | "lab://gateway/limits" | "lab://capabilities"
+        ) {
+            if !self.route_scope.is_root()
+                || !crate::mcp::handlers_resources::admin_app_resources_visible(auth)
+            {
+                return Err(ErrorData::invalid_params(
+                    "operator resource requires unscoped admin access",
+                    None,
+                ));
+            }
+            let caller = if auth.is_none() {
+                labby_codemode::CodeModeCaller::TrustedLocal
+            } else {
+                labby_codemode::CodeModeCaller::Scoped {
+                    sub: self.request_subject(context).map(str::to_owned),
+                    capabilities: labby_codemode::CodeModeCallerCapabilities {
+                        can_read: true,
+                        can_execute: true,
+                        can_use_snippets: true,
+                        is_admin: true,
+                    },
+                }
+            };
+            let value = manager
+                .read_code_mode_operator_resource(
+                    uri,
+                    &caller,
+                    &labby_codemode::ToolScope::default(),
+                )
+                .await
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+            return serde_json::from_value(value).map_err(|_| {
+                ErrorData::internal_error("cannot serialize operator resource", None)
+            });
+        }
         let scope = crate::dispatch::gateway::GatewayEnrichmentScope {
             route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
             oauth_subject: self

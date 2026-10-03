@@ -569,6 +569,9 @@ impl CodeModeHost for GatewayManager {
         scope: &ToolScope,
     ) -> Result<Value, ToolError> {
         super::resources::validate_read_uri(&uri)?;
+        if uri.starts_with("lab://gateway/") || uri == "lab://capabilities" {
+            return super::resources::read_local_resource(self, &uri, caller, scope).await;
+        }
         if let Some(upstream) = uri
             .strip_prefix("lab://upstream/")
             .and_then(|rest| rest.split_once('/').map(|(name, _)| name))

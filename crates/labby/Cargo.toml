@@ -183,6 +183,7 @@ path = "src/lib.rs"
 #   deleted from this crate rather than left as sleeping feature gates.
 # - Helper/internal features are not standalone product slices unless this comment is updated.
 [features]
+codemode-microsandbox = ["gateway", "labby-codemode/microsandbox-sdk"]
 all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills"]
 gateway = [
   "dep:labby-codemode",

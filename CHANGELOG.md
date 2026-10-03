@@ -107,12 +107,18 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
-## [2.5.0](https://github.com/dinglebear-ai/labby/compare/v2.4.0...v2.5.0) (2026-10-02)
-
+## [2.5.0](https://github.com/dinglebear-ai/labby/compare/v2.3.2...v2.5.0) (2026-10-02)
 
 ### Added
 
-* **setup:** guide ChatGPT sandbox onboarding ([#861](https://github.com/dinglebear-ai/labby/issues/861)) ([e2c4ba5](https://github.com/dinglebear-ai/labby/commit/e2c4ba53fa372c3673b7223a8ad9bd64c4e2e9af))
+* **setup:** guide ChatGPT sandbox onboarding ([#861](https://github.com/dinglebear-ai/labby/issues/861)) ([e2c4ba5](https://github.com/dinglebear-ai/labby/commit/e2c4ba53fa372c3673b7223a8ad9bd64c4e2e9af)).
+* Consolidate snippet workflows, Code Mode artifacts, and the optional sandbox spike ([#862](https://github.com/dinglebear-ai/labby/issues/862)) ([c72bca3](https://github.com/dinglebear-ai/labby/commit/c72bca3f373c0c11f264d57a014b2ca327f9d5c6)).
+* Includes the changes recorded in the retained [2.4.0 changelog entry](https://github.com/dinglebear-ai/labby/blob/main/CHANGELOG.md#240-2026-10-02); 2.4.0 remained an unpublished draft.
+
+### Fixed
+
+* Preserve verified installer fallback for definitive HTTP 404 responses and bootstrap Incus with the pinned ChezMoi installer before N-1 activation.
+* Restore exact snippet action receipts and MCP transport contracts, and bound live identity HTTP requests with separate E2E build and execution budgets.
 
 ## [2.4.0](https://github.com/dinglebear-ai/labby/compare/v2.3.2...v2.4.0) (2026-10-02)
 

@@ -253,14 +253,16 @@ fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
     assert_eq!(info.source, SnippetSource::Builtin);
     assert!(info.inputs.contains_key("owner"));
     assert!(info.inputs.contains_key("repo"));
-    assert!(info.inputs.contains_key("include_workflow_runs"));
+    assert!(info.inputs.contains_key("root"));
+    assert!(info.inputs.contains_key("skill_dir"));
 
     let resolved = resolve_snippet(lab_home.path(), &builtin_dir, "repo-status-gh-pulse")
         .expect("resolve builtin snippet");
     let code = code_for_snippet(&resolved).expect("extract executable code");
 
     assert!(code.contains("github::search_pull_requests"));
-    assert!(!code.contains("github::list_workflow_runs"));
+    assert!(code.contains("claude-macpoo::Bash"));
+    assert!(code.contains("github::pull_request_read"));
 }
 
 #[test]

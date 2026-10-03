@@ -6,9 +6,9 @@ CHECKPOINTS = ["storage","profile","container-launch","container-start","backup-
 
 class BootstrapFakeTest(unittest.TestCase):
     def baseline(self, customized):
-        return {"name":"fixture","storage":customized,"storage_driver":"dir","storage_name":"pool","profiles":({"labby-gateway":"custom-profile\n"} if customized else {}),"container":customized,"running":False,"container_profiles":(["labby-gateway"] if customized else []),"config":{},"hostname":"custom-host" if customized else "", "netplan":"custom-netplan" if customized else "", "services":{"systemd-networkd":{"active":"active","enabled":"enabled"},"systemd-resolved":{"active":"active","enabled":"enabled"},"labby.service":{"active":"active","enabled":"enabled"}},"labby_failed_on_start":False,"binary":"prior-binary" if customized else None,"upload":None,"web":"prior-web" if customized else None,"web_backup":None,"owned":"prior-owned" if customized else None,"owned_backup":None,"tailscale":False,"ts_key":False}
+        return {"name":"fixture","storage":customized,"storage_driver":"dir","storage_name":"pool","profiles":({"labby-gateway":"custom-profile\n"} if customized else {}),"container":customized,"running":False,"container_profiles":(["labby-gateway"] if customized else []),"config":{},"hostname":"custom-host" if customized else "", "netplan":"custom-netplan" if customized else "", "services":{"systemd-networkd":{"active":"active","enabled":"enabled"},"systemd-resolved":{"active":"active","enabled":"enabled"},"labby.service":{"active":"active","enabled":"enabled"}},"labby_failed_on_start":False,"binary":"prior-binary" if customized else None,"upload":None,"web":"prior-web" if customized else None,"web_backup":None,"owned":"prior-owned" if customized else None,"owned_backup":None,"tailscale":False,"ts_key":False,"chezmoi":"existing-version","chezmoi_installer":None}
 
-    def run_bootstrap(self, work, state, fail_after=None, fail_list_column=None, dry_run=False):
+    def run_bootstrap(self, work, state, fail_after=None, fail_list_column=None, dry_run=False, missing_chezmoi=False, chezmoi_download="corrupt", chezmoi_failure=None):
         state_path = work / "state.json"; state_path.write_text(json.dumps(state, sort_keys=True))
         binary = work / "candidate"; binary.write_text("candidate-binary")
         bin_dir = work / "bin"; bin_dir.mkdir(exist_ok=True)
@@ -16,6 +16,18 @@ class BootstrapFakeTest(unittest.TestCase):
         if not incus.exists(): incus.symlink_to(ROOT / "scripts/tests/fake-incus.py")
         timeout = bin_dir / "timeout"; timeout.write_text("#!/bin/sh\nshift\nexec \"$@\"\n"); timeout.chmod(0o755)
         env = os.environ | {"PATH":f"{bin_dir}:/usr/bin:/bin","FAKE_INCUS_STATE":str(state_path)}
+        if missing_chezmoi or not state.get("chezmoi"):
+            if missing_chezmoi: env["FAKE_INCUS_MISSING_CHEZMOI"] = "1"
+            curl = bin_dir / "curl"
+            curl.write_text(f'#!/bin/sh\nwhile [ "$#" -gt 0 ]; do if [ "$1" = -o ]; then printf {chezmoi_download} >"$2"; exit 0; fi; shift; done\nexit 1\n')
+            curl.chmod(0o755)
+            checksum = bin_dir / "sha256sum"
+            checksum.write_text('#!/bin/sh\nexec /usr/bin/shasum -a 256 -c\n')
+            checksum.chmod(0o755)
+            if chezmoi_download == "reviewed-fixture":
+                checksum.write_text("#!/usr/bin/env python3\nimport sys,pathlib\nspec=sys.stdin.read().split(None,1)\nassert spec[0]=='75de125a45a82b53c16546db7057052e98c11866ded27c4b6f95a51f59432e7b'\nassert pathlib.Path(spec[1].strip()).read_text()=='reviewed-fixture'\n")
+        if chezmoi_download == "reviewed-fixture": env["FAKE_INCUS_REQUIRE_CHEZMOI_PIN"] = "1"
+        if chezmoi_failure: env["FAKE_INCUS_CHEZMOI_FAILURE"] = chezmoi_failure
         if fail_after: env["LABBY_INCUS_FAIL_AFTER"] = fail_after
         if fail_list_column: env["FAKE_INCUS_FAIL_LIST_COLUMN"] = fail_list_column
         if fail_after and fail_after.startswith("tailscale-"): env["TS_AUTHKEY"] = "fixture-key"
@@ -55,7 +67,40 @@ class BootstrapFakeTest(unittest.TestCase):
                 self.assertIn(expected, result.stdout)
                 self.assertLess(result.stdout.index("then install Tailscale"),
                                 result.stdout.index("'setup' '--provision'"))
+                self.assertLess(result.stdout.index("then install ChezMoi"),
+                                result.stdout.index("'setup' '--provision'"))
                 self.assertEqual(after, before)
+
+    def test_corrupt_chezmoi_installer_stops_before_provision_and_restores_target(self):
+        with tempfile.TemporaryDirectory() as td:
+            before = self.baseline(True)
+            result, after = self.run_bootstrap(
+                pathlib.Path(td), copy.deepcopy(before), missing_chezmoi=True
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("chezmoi-install.sh: FAILED", result.stdout)
+            self.assertNotIn("'setup' '--provision'", result.stdout)
+            self.assertEqual(after, before)
+
+    def test_chezmoi_install_is_pinned_and_cleans_temporary_script(self):
+        with tempfile.TemporaryDirectory() as td:
+            before = self.baseline(True); before["chezmoi"] = None
+            result, after = self.run_bootstrap(pathlib.Path(td), before, chezmoi_download="reviewed-fixture")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(after["chezmoi"], "2.72.1")
+            self.assertIsNone(after["chezmoi_installer"])
+
+
+    def test_chezmoi_failures_restore_absent_and_existing_executable(self):
+        for prior in (None, "old-non-executable"):
+            for failure in ("install", "version"):
+                with self.subTest(prior=prior, failure=failure), tempfile.TemporaryDirectory() as td:
+                    before = self.baseline(True); before["chezmoi"] = prior
+                    result, after = self.run_bootstrap(pathlib.Path(td), copy.deepcopy(before), missing_chezmoi=True,
+                                                       chezmoi_download="reviewed-fixture", chezmoi_failure=failure)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn("'setup' '--provision'", result.stdout)
+                    self.assertEqual(after, before, result.stdout + result.stderr)
 
     def test_fault_matrix_restores_new_and_customized_targets_and_reruns(self):
         for customized in (False, True):

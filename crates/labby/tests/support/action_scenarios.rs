@@ -399,7 +399,7 @@ pub(crate) fn snippet_mcp_action_data(value: Value, action: &str) -> Value {
         value["data"].is_object(),
         "{action} MCP command has no data object: {value}"
     );
-    value["data"].clone()
+    snippet_response_data(action, &value).clone()
 }
 
 #[cfg(test)]
@@ -426,6 +426,7 @@ mod snippet_mcp_action_data_tests {
             json!({"ok":true,"service":"snippets","action":"snippets.receipt","data":{}}),
             json!({"ok":true,"service":"snippets","action":"snippets.exec"}),
             json!({"ok":true,"service":"snippets","action":"snippets.exec","data":null}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec","data":{},"error":{"kind":"failure"}}),
         ] {
             assert!(
                 std::panic::catch_unwind(|| snippet_mcp_action_data(envelope, "snippets.exec"))
@@ -435,13 +436,44 @@ mod snippet_mcp_action_data_tests {
     }
 }
 
-/// Seed a real receipt and artifact in the transport runner's disposable home.
+/// HTTP dispatch returns payloads directly; MCP wraps them in the standard
+/// success envelope. Reject partial, failed, or mismatched envelopes.
+pub(crate) fn snippet_response_data<'a>(action: &str, response: &'a Value) -> &'a Value {
+    if ["service", "action", "data"]
+        .iter()
+        .any(|key| response.get(key).is_some())
+    {
+        assert_eq!(response["ok"], true, "{action} failed envelope: {response}");
+        assert_eq!(response["service"], "snippets", "{action} envelope service");
+        assert_eq!(response["action"], action, "{action} envelope action");
+        assert!(
+            response.get("error").is_none(),
+            "{action} success carried an error"
+        );
+        let data = response.get("data").expect("snippet success envelope data");
+        assert!(data.is_object(), "{action} success data must be an object");
+        data
+    } else {
+        response
+    }
+}
+
+/// Seed a saved schema fixture or real receipt in the transport runner's disposable home.
 /// Replay uses a fresh preview, never a fabricated fingerprint or weakened gate.
 pub(crate) async fn prepare_snippet_receipt_case<F, Fut>(action: &str, mut call: F) -> Option<Value>
 where
     F: FnMut(&'static str, Value) -> Fut,
     Fut: Future<Output = Value>,
 {
+    if action == "snippets.fixture" {
+        let name = "matrix-schema-fixture";
+        let body = "---\nname: matrix-schema-fixture\ndescription: Owned synthetic schema fixture\ntools:\n  - synthetic::matrix\n---\n```js\nasync () => await callTool('synthetic::matrix', {})\n```\n";
+        let created = call("snippets.create", json!({"name":name,"body":body})).await;
+        snippet_response_data("snippets.create", &created);
+        return Some(
+            json!({"name":name,"schemas":fixtures()["snippets"].parameters["tool_schemas"]}),
+        );
+    }
     if !matches!(
         action,
         "snippets.artifact"
@@ -456,11 +488,13 @@ where
     let body = format!(
         "---\nname: {name}\ndescription: Owned receipt matrix fixture\ntools: []\n---\n```js\nasync () => {{ await writeArtifact('report.txt', 'matrix-owned artifact', {{contentType:'text/plain'}}); return {{ok:true}}; }}\n```\n"
     );
-    call("snippets.create", json!({"name":name,"body":body})).await;
+    let created = call("snippets.create", json!({"name":name,"body":body})).await;
+    snippet_response_data("snippets.create", &created);
     if action == "snippets.preview" {
         return Some(json!({"name":name,"params":{}}));
     }
-    let run = call("snippets.exec", json!({"name":name,"params":{}})).await;
+    let response = call("snippets.exec", json!({"name":name,"params":{}})).await;
+    let run = snippet_response_data("snippets.exec", &response);
     assert_eq!(
         run["receipt_status"], "persisted",
         "matrix seed must retain a real receipt: {run}"
@@ -473,7 +507,8 @@ where
         "snippets.receipt" => json!({"execution_id":id}),
         "snippets.artifact" => json!({"execution_id":id,"path":"report.txt"}),
         "snippets.replay" => {
-            let preview = call("snippets.preview", json!({"execution_id":id,"params":{}})).await;
+            let response = call("snippets.preview", json!({"execution_id":id,"params":{}})).await;
+            let preview = snippet_response_data("snippets.preview", &response);
             assert_eq!(
                 preview["can_execute"], true,
                 "seed replay preview: {preview}"
@@ -484,8 +519,32 @@ where
     })
 }
 
-pub(crate) fn assert_snippet_receipt_case(action: &str, value: &Value) {
+pub(crate) fn assert_snippet_receipt_case(action: &str, response: &Value) {
+    if !matches!(
+        action,
+        "snippets.fixture"
+            | "snippets.artifact"
+            | "snippets.history"
+            | "snippets.preview"
+            | "snippets.receipt"
+            | "snippets.replay"
+    ) {
+        return;
+    }
+    let value = snippet_response_data(action, response);
     match action {
+        "snippets.fixture" => {
+            assert_eq!(value["ready"], true);
+            assert_eq!(value["coverage"], "selected_tools_only");
+            assert_eq!(value["fixture"]["calls"].as_array().unwrap().len(), 1);
+            assert_eq!(value["fixture"]["calls"][0]["tool"], "synthetic::matrix");
+            assert_eq!(value["fixture"]["calls"][0]["result"], true);
+            assert!(
+                value["fixture"]["schemas"]["synthetic::matrix"]["fingerprint"]
+                    .as_str()
+                    .is_some()
+            );
+        }
         "snippets.artifact" => {
             assert_eq!(value["path"], "report.txt");
             assert_eq!(value["content_base64"], "bWF0cml4LW93bmVkIGFydGlmYWN0");
@@ -814,6 +873,36 @@ fn dedicated_contract_for(key: &str, surface: Surface) -> Option<(&'static str, 
         };
     }
     dedicated_contract(key)
+}
+
+#[cfg(test)]
+mod snippet_response_tests {
+    use super::snippet_response_data;
+    use serde_json::json;
+
+    #[test]
+    fn http_payload_and_mcp_envelope_resolve_to_the_same_receipt() {
+        let data = json!({"receipt_status":"persisted","execution_id":"owned-run"});
+        let envelope = json!({"ok":true,"service":"snippets","action":"snippets.exec","data":data});
+        assert_eq!(snippet_response_data("snippets.exec", &data), &data);
+        assert_eq!(snippet_response_data("snippets.exec", &envelope), &data);
+    }
+
+    #[test]
+    fn failed_partial_or_mismatched_envelopes_are_rejected() {
+        for response in [
+            json!({"ok":false,"service":"snippets","action":"snippets.exec","error":{"kind":"failed"}}),
+            json!({"ok":true,"service":"other","action":"snippets.exec","data":{}}),
+            json!({"ok":true,"service":"snippets","action":"snippets.receipt","data":{}}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec"}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec","data":{},"error":{}}),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| snippet_response_data("snippets.exec", &response))
+                    .is_err()
+            );
+        }
+    }
 }
 
 #[cfg(test)]

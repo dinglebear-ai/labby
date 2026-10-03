@@ -53,10 +53,11 @@ publisher is opt-in, disabled by default, fork-excluding and does not execute
 checkout code with its write token. No current caller enables publication.
 
 The unconditional `verification-conformance.yml` call is required by `ci-gate`.
-It builds the real product and lifecycle test target under a separate 15-minute
-cap, then runs the controlled HTTP/WebSocket/owned-audit conformance suite under
-a five-minute process timeout with five-second kill grace (25-minute total job
-cap). Nine required case artifacts cover the terminal outcomes, cancellation
+It builds the real product, lifecycle test target, and isolated verifier under
+a separate 20-minute cap, then runs the controlled HTTP/WebSocket/owned-audit
+conformance suite under a five-minute process timeout with five-second kill
+grace (35-minute total job cap, including setup, incident replay, validation,
+and upload margin). Nine required case artifacts cover the terminal outcomes, cancellation
 before and after dispatch, replacement ownership, and a deliberately divergent
 real adapter. Validation binds every trace hash and per-step observation to
 independently captured source/binary identity, requires successful cleanup, and
@@ -73,6 +74,14 @@ claims of discovering or reproducing a production incident.
 The unconditional workflow-policy job also runs the conformance and incident
 evidence validators' negative unit tests using repository-root module discovery.
 Those tests supplement, but do not replace, the real-process evidence lane.
+
+The shared Linux Rust setup installs `libcap-ng-dev` and probes `libcap-ng`
+through pkg-config so all-feature Microsandbox SDK links have their native
+capability library before compilation.
+The independent Incus builder installs the same development library in its
+custom setup command. Its image package floor includes `libcap-ng0` so the
+all-feature CLI can load the capability library during image smoke and normal
+provisioning.
 
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 It deliberately skips that job for fork pull requests. Consequently the
@@ -289,6 +298,15 @@ The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
 script with its declared shell and runs ShellCheck at warning severity. Analyzer
 setup, parse failures, warnings, and errors all fail the stable `ci-gate`.
 
+Live E2E precompiles the all-feature CLI and every shard/coverage test target
+under a separate 20-minute build cap. Qualification uses those artifacts with
+an explicit 1,800-second harness deadline and unchanged 900-second shard caps.
+The qualification step allows 31 minutes, including cleanup and coverage
+report generation; the 60-minute job cap leaves setup and evidence-upload
+margin outside both bounded phases. The aggregate deadline is stricter than
+the local harness default and applies to every hosted tier. A failed or timed-out shard fails the run;
+this budget separation does not waive any declared shard or evidence check.
+
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
 [MCP_CONFORMANCE.md](../surfaces/MCP_CONFORMANCE.md).
@@ -426,7 +444,14 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
    releases stayed drafts or never received assets are skipped; if no release
-   qualifies, the leg fails closed. The authenticated check is a bearer
+   qualifies, the leg fails closed. Historical Incus baselines may embed mutable
+   dependency installer URLs; bootstrap prepares the checksum-verified pinned
+   Tailscale and ChezMoi versions before running their provisioning plans.
+   ChezMoi installation and its temporary installer participate in bootstrap
+   rollback. The archive installer accepts curl exit 22 or macOS exit 56 only
+   with an exact HTTP 404 for a missing public bundle, then still requires
+   authenticated GitHub attestation verification before activation.
+   The authenticated check is a bearer
    `help` call on the gateway: from v1.16, a bearer-mode install with no access
    store answers gateway admin actions with setup-required until an owner
    bootstraps through OAuth. Each adapter must install N-1 and seed

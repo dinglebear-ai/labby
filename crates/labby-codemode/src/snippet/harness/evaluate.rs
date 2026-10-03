@@ -7,7 +7,39 @@ pub(super) fn evaluate(
     elapsed: u64,
     escaped: bool,
 ) -> Result<SnippetFixtureReport, ToolError> {
+    let validation_started = Instant::now();
+    let mut schema_budget = super::super::schemas::validation_budget();
     let mut failures = Vec::new();
+    for call in &raw.contract_calls {
+        if elapsed.saturating_add(
+            u64::try_from(validation_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        ) >= fixture.budgets.wall_clock_ms
+        {
+            failures.push("argument validation deadline exceeded".into());
+            break;
+        }
+        if let Some(schema) = fixture
+            .schemas
+            .get(&call.tool)
+            .and_then(|s| s.input_schema.as_ref())
+            && super::super::schemas::validate_value_with_budget(
+                &call.params,
+                schema,
+                &mut schema_budget,
+            )
+            .is_err()
+        {
+            failures.push(if schema_budget.is_exhausted() {
+                "argument schema validation work budget exceeded".into()
+            } else {
+                format!(
+                    "tool arguments violate saved input schema for {}",
+                    call.tool
+                )
+            });
+            break;
+        }
+    }
     if let Some(exception) = raw.exception {
         failures.push(format!("snippet exception: {exception}"));
     }
@@ -37,6 +69,9 @@ pub(super) fn evaluate(
     if bytes > fixture.budgets.output_bytes {
         failures.push("output_bytes budget exceeded".into());
     }
+    let elapsed = elapsed.saturating_add(
+        u64::try_from(validation_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    );
     if elapsed > fixture.budgets.wall_clock_ms {
         failures.push("wall_clock_ms budget exceeded".into());
     }

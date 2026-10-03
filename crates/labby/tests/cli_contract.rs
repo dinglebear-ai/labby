@@ -755,6 +755,7 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         | "snippet validate"
         | "snippet remove"
         | "snippet test"
+        | "snippet fixture"
         | "skill list"
         | "skill search"
         | "skill get"

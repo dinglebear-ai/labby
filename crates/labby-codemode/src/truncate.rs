@@ -276,6 +276,15 @@ fn truncation_marker(
             "Output only; execution already ran. Do not replay mutations. Omitted output is not cached. Use artifact receipts or a read-only query. For a stable resource, read its exact discovered URI, JSON.stringify the envelope, and return small slices without splitting UTF-16 surrogate pairs. Advance the offset by the returned chunk length until the total length is reached; lower the chunk size if needed."
         );
     }
+    if let Some(receipt) = artifacts
+        .iter()
+        .find(|r| r.path == "automatic/final-result.json" && r.artifact_id.is_some())
+    {
+        marker["preserved_result_artifact_id"] = json!(receipt.artifact_id);
+        marker["next_action"] = json!(
+            "Complete returned JSON saved in preserved_result_artifact_id. Read it with codemode.readArtifact(id, {offset, length}); offsets are UTF-8 bytes. Do not replay mutations. Artifact retention limits apply."
+        );
+    }
     marker
 }
 
@@ -341,6 +350,40 @@ mod tests {
     use crate::shape::CodeModeResultShapeMetadata;
     use crate::types::CodeModeExecutedCall;
     use labby_runtime::CodeModeResultShapePolicy;
+
+    #[test]
+    fn automatic_result_marker_points_to_complete_saved_json() {
+        let receipt = CodeModeArtifactReceipt {
+            artifact_id: Some("saved-id".into()),
+            path: "automatic/final-result.json".into(),
+            absolute_path: "hidden".into(),
+            content_type: "application/json".into(),
+            bytes: 100_000,
+            sha256: "digest".into(),
+        };
+        for compact in [false, true] {
+            let marker = truncation_marker(
+                &json!("x".repeat(100_000)),
+                4,
+                std::slice::from_ref(&receipt),
+                512,
+                compact,
+            );
+            assert_eq!(marker["preserved_result_artifact_id"], "saved-id");
+            assert!(
+                marker["next_action"]
+                    .as_str()
+                    .unwrap()
+                    .contains("codemode.readArtifact")
+            );
+            assert!(
+                !marker["next_action"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not cached")
+            );
+        }
+    }
 
     fn response_with_logs(result: Value, logs: Vec<String>) -> CodeModeExecutionResponse {
         CodeModeExecutionResponse {

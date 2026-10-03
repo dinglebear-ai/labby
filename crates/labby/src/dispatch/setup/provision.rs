@@ -984,6 +984,7 @@ mod tests {
                 "python3",
                 "zsh",
                 "ffmpeg",
+                "libcap-ng0",
             ]
         );
     }

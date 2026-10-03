@@ -10770,7 +10770,8 @@
               "snippets.promote",
               "snippets.validate",
               "snippets.remove",
-              "snippets.test"
+              "snippets.test",
+              "snippets.fixture"
             ]
           },
           "params": {
@@ -10842,6 +10843,38 @@
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "SnippetsSnippetsFixtureParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "check": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "results": {
+            "type": "object"
+          },
+          "schemas": {
+            "type": "object"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "variant": {
+            "type": "string"
           }
         }
       },

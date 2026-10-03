@@ -107,6 +107,7 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
                     .iter()
                     .map(|artifact| {
                         json!({
+                            "artifact_id": artifact.artifact_id,
                             "path": artifact.path.as_str(),
                             "content_type": artifact.content_type.as_str(),
                             "bytes": artifact.bytes,
@@ -215,6 +216,7 @@ mod tests {
             calls: Vec::new(),
             logs: Vec::new(),
             artifacts: vec![CodeModeArtifactReceipt {
+                artifact_id: None,
                 path: "reports/result.md".to_string(),
                 absolute_path: "/home/jmagar/.labby/code-mode-artifacts/run/reports/result.md"
                     .to_string(),

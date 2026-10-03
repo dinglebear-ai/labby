@@ -101,6 +101,9 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
     "describe",
     "listResources",
     "readResource",
+    "readArtifact",
+    "artifactInfo",
+    "listArtifacts",
     "getPrompt",
     "listSkills",
     "getSkill",
@@ -652,6 +655,15 @@ codemode.readResource = async function(uri) {{
     throw new TypeError("codemode.readResource requires a non-empty URI string");
   }}
   return callTool("__lab_internal::read_resource", {{ uri: uri }});
+}};
+codemode.readArtifact = async function(artifactId, options) {{
+  return callTool("__lab_internal::read_artifact", Object.assign({{}}, options || {{}}, {{ artifact_id: artifactId }}));
+}};
+codemode.artifactInfo = async function(artifactId) {{
+  return callTool("__lab_internal::artifact_info", {{ artifact_id: artifactId }});
+}};
+codemode.listArtifacts = async function(options) {{
+  return callTool("__lab_internal::list_artifacts", options || {{}});
 }};
 codemode.getPrompt = async function(prompt, args) {{
   if (typeof prompt !== "string" || !prompt.trim()) {{
@@ -1306,6 +1318,38 @@ mod tests {
             value["incompleteSources"],
             serde_json::json!(["team_depot"])
         );
+    }
+
+    #[test]
+    fn artifact_helpers_forward_ids_and_pagination_inside_quickjs() {
+        let js = generate_discovery_js(&[], 0.5, &[]).expect("discovery JS");
+        let script = format!(
+            r"{js}
+            globalThis.calls = [];
+            globalThis.callTool = async (id, params) => {{ calls.push({{id, params}}); return params; }};
+            (async () => {{
+                await codemode.readArtifact('opaque-id', {{offset:4, length:100, artifact_id:'wrong'}});
+                await codemode.artifactInfo('opaque-id');
+                await codemode.listArtifacts({{limit:5, cursor:'cursor'}});
+                globalThis.result = JSON.stringify(calls);
+            }})();"
+        );
+        let runtime = javy::Runtime::new(javy::Config::default()).expect("runtime");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .expect("script");
+        runtime.resolve_pending_jobs().expect("jobs");
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .expect("result");
+        let calls: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert_eq!(calls[0]["id"], "__lab_internal::read_artifact");
+        assert_eq!(calls[0]["params"]["artifact_id"], "opaque-id");
+        assert_eq!(calls[0]["params"]["offset"], 4);
+        assert_eq!(calls[1]["id"], "__lab_internal::artifact_info");
+        assert_eq!(calls[2]["params"]["limit"], 5);
     }
 
     #[test]
