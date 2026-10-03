@@ -3302,7 +3302,7 @@
         },
         {
           "name": "gateway.schema",
-          "description": "Return tool schemas (input_schema + meta) for one upstream MCP server, filtered by its exposure policy. OAuth upstreams are discovered live with the authenticated subject; other upstreams use the shared cache.",
+          "description": "Return tool schemas (input_schema + output_schema + meta) for one upstream MCP server, filtered by its exposure policy. OAuth upstreams are discovered live with the authenticated subject; other upstreams use the shared cache.",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -6423,6 +6423,60 @@
             }
           ],
           "returns": "SnippetTestResult"
+        },
+        {
+          "name": "snippets.fixture",
+          "description": "Generate an editable offline fixture draft from visible tool schemas without executing tools",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "name",
+              "ty": "string",
+              "required": true,
+              "description": "Saved snippet name"
+            },
+            {
+              "name": "params",
+              "ty": "object",
+              "required": false,
+              "description": "Synthetic snippet input values"
+            },
+            {
+              "name": "tools",
+              "ty": "string[]",
+              "required": false,
+              "description": "Explicit exact tool IDs for legacy snippets; can only narrow declarations"
+            },
+            {
+              "name": "check",
+              "ty": "object",
+              "required": false,
+              "description": "Saved fixture to compare with current contracts without execution"
+            },
+            {
+              "name": "schemas",
+              "ty": "object",
+              "required": false,
+              "description": "Saved contracts keyed by exact tool ID; omit to discover caller-visible schemas"
+            },
+            {
+              "name": "results",
+              "ty": "object",
+              "required": false,
+              "description": "Explicit synthetic response overrides keyed by exact tool ID"
+            },
+            {
+              "name": "variant",
+              "ty": "string",
+              "required": false,
+              "description": "populated (default) or minimal"
+            }
+          ],
+          "returns": "SnippetFixtureDraft"
         }
       ]
     },
