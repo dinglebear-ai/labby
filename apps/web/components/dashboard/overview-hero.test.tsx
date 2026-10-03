@@ -139,7 +139,7 @@ test('partial catalog keeps metric values compact with a separate disclosure', (
     gateways={[]} live={{ totalServers: 1, connectedServers: 1, offlineServers: 0, discoveredTools: 1024, exposedTools: 1002, incompleteTools: 1, warnings: 0 }}
     metrics={undefined} activeWindow="1h" onWindowChange={() => {}} onRefresh={() => {}} loadedAt={null}
   />)
-  assert.match(html, />1002</)
+  assert.match(html, />1,002</)
   assert.doesNotMatch(html, /1002\+|· incomplete/)
   assert.match(html, /role="status"[^>]*title="Tools, prompts and resources show observed exposed counts/)
   assert.match(html, /Partial catalog/)
@@ -158,7 +158,7 @@ test('sampled token values meet large-text contrast on both themed hero gradient
   />)
   const tokenLink = html.match(/<a[^>]*href="[^"]*focus=tokens"[^>]*>[\s\S]*?<\/a>/)?.[0]
   assert.ok(tokenLink)
-  const valueStyle = tokenLink.match(/<div style="([^"]+)">127<\/div>/)?.[1]
+  const valueStyle = tokenLink.match(/<div data-overview-quantity="Tokens \(sample\)" style="([^"]+)">127<\/div>/)?.[1]
   assert.ok(valueStyle)
   const fontSize = Number(valueStyle.match(/font-size:([\d.]+)px/)?.[1])
   const fontWeight = Number(valueStyle.match(/font-weight:(\d+)/)?.[1])
@@ -198,4 +198,15 @@ test('sampled token values meet large-text contrast on both themed hero gradient
       assert.ok(ratio >= minimumContrast, `${theme} token value on ${stop}: ${ratio.toFixed(2)}:1 is below ${minimumContrast}:1 for ${fontSize}px/${fontWeight}`)
     }
   }
+})
+
+test('overview quantities preserve exact catalog counts and semantic theme foregrounds', () => {
+  const html = renderToStaticMarkup(<OverviewHero gateways={[]} live={{ totalServers: 57, connectedServers: 50, offlineServers: 7, discoveredTools: 1002, exposedTools: 1002, warnings: 0 }} metrics={undefined} activeWindow="1h" onWindowChange={() => {}} onRefresh={() => {}} loadedAt={null}/> )
+  assert.match(html, /data-overview-quantity="Connected"[^>]*color:var\(--aurora-success\)[^>]*>50</)
+  assert.match(html, /data-overview-quantity="Offline"[^>]*color:var\(--aurora-warn\)[^>]*>7</)
+  assert.match(html, /data-overview-quantity="Tools"[^>]*color:var\(--aurora-accent-pink\)[^>]*>1,002</)
+  assert.match(html, /data-overview-quantity="Prompts"[^>]*color:var\(--aurora-accent-strong\)/)
+  const source = readFileSync(new URL('./overview-hero.tsx', import.meta.url), 'utf8')
+  assert.match(source, /tertiary: 'var\(--aurora-protocol-strong\)'/)
+  assert.doesNotMatch(source, /color: '#bfe7fb'|axon-orange-deep/)
 })

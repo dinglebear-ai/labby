@@ -43,7 +43,7 @@ const TONE_COLOR: Record<Tone, string> = {
   error: 'var(--aurora-error)',
   info: 'var(--aurora-accent-strong)',
   secondary: 'var(--aurora-accent-pink)',
-  tertiary: 'var(--axon-orange-deep)',
+  tertiary: 'var(--aurora-protocol-strong)',
 }
 
 type HeroStat = {
@@ -167,7 +167,7 @@ function StatCell({ stat, isLast }: { stat: HeroStat; isLast: boolean }) {
         <span style={{ flexShrink: 0, color: 'var(--aurora-text-muted)', display: 'grid' }}><Icon size={12} strokeWidth={1.8} /></span>
         <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--aurora-text-muted)', whiteSpace: 'nowrap' }}>{stat.label}</span>
       </div>
-      <div style={{ marginTop: 6, fontFamily: 'var(--font-display)', fontSize: 21, lineHeight: 1, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: TONE_COLOR[stat.tone ?? 'default'] }}>{stat.value}</div>
+      <div data-overview-quantity={stat.label} style={{ marginTop: 6, overflowWrap: 'anywhere', fontFamily: 'var(--font-display)', fontSize: 21, lineHeight: 1, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: TONE_COLOR[stat.tone ?? 'default'] }}>{typeof stat.value === 'number' ? stat.value.toLocaleString('en-US') : stat.value}</div>
     </>
   )
   if (stat.href) {
@@ -358,7 +358,7 @@ export function OverviewHero({
                 lineHeight: 1.04,
                 fontWeight: 800,
                 color: 'var(--aurora-text-primary)',
-                whiteSpace: 'nowrap',
+                overflowWrap: 'anywhere',
               }}
             >
               Operational Overview
@@ -502,7 +502,7 @@ export function OverviewHero({
               background: manageHovered
                 ? 'color-mix(in srgb, var(--aurora-accent-primary) 13%, var(--aurora-panel-strong))'
                 : 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))',
-              color: '#bfe7fb',
+              color: 'var(--aurora-accent-strong)',
               fontFamily: 'inherit',
               fontSize: 13,
               fontWeight: 650,
