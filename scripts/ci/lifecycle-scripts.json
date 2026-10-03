@@ -54,7 +54,8 @@
     "plugins/scripts/link-claude-mds",
     "plugins/scripts/protected-mcp-smoke",
     "scripts/build-tailcat-bridge.sh",
-    "scripts/install-tailcat-depot-assets.sh"
+    "scripts/install-tailcat-depot-assets.sh",
+    "scripts/test-tailcat-bridge.sh"
   ],
   "powershell": [
     "scripts/install.ps1"
