@@ -324,6 +324,19 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   })
   await page.reload({ waitUntil: 'networkidle' })
 
+  const viewControls = page.locator('[data-gateway-hero-controls="1"]')
+  assert.equal(await viewControls.getByRole('group', { name: 'Server view' }).count(), 1)
+  for (const view of ['List view', 'Card view', 'Table view']) {
+    await viewControls.getByRole('button', { name: view, exact: true }).click()
+    assert.equal(await viewControls.getByRole('button', { name: view, exact: true }).getAttribute('aria-pressed'), 'true')
+  }
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await viewControls.getByRole('button', { name: 'Table view', exact: true }).getAttribute('aria-pressed'), 'true')
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((value) => { document.documentElement.classList.remove('dark', 'light'); document.documentElement.classList.add(value) }, theme)
+    if (process.env.LABBY_UI_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.LABBY_UI_SCREENSHOT_DIR, `labby-gateway-polish-${theme}.png`) })
+  }
+
   const totalStat = page.locator('[data-gateway-stat="total"]')
   const toolsStat = page.locator('[data-gateway-stat="tools"]')
   await assert.doesNotReject(() => totalStat.waitFor())
@@ -338,6 +351,19 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   })
 
   assert.equal(hasHorizontalOverflow, false)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await viewControls.getByRole('button', { name: 'List view', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  assert.equal(await viewControls.getByRole('button', { name: 'List view', exact: true }).getAttribute('aria-pressed'), 'true')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+  if (process.env.LABBY_UI_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.LABBY_UI_SCREENSHOT_DIR, 'labby-gateway-polish-mobile.png') })
+  await page.setViewportSize({ width: 1360, height: 960 })
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((value) => { document.documentElement.classList.remove('dark', 'light'); document.documentElement.classList.add(value) }, theme)
+    if (process.env.LABBY_UI_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.LABBY_UI_SCREENSHOT_DIR, `labby-overview-polish-${theme}.png`) })
+  }
+
 })
 
 test('Depot Administration renders live schemas and guards destructive operations', { concurrency: false }, async (t) => {

@@ -865,27 +865,30 @@ export function GatewayListView({
               onLensChange={onPrimaryLensChange}
               actions={
                 <div className="flex flex-col items-end gap-[9px]">
-                  <div className="inline-flex gap-1">
-                    <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Reload visible servers" aria-label="Reload visible servers" disabled={isReloadingVisible || filteredGateways.length === 0} onClick={() => onReloadVisible(filteredGateways)}><RefreshCw className={cn('size-3', isReloadingVisible && 'animate-spin')} /></Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Gateway actions" aria-label="Gateway actions, search and filters"><MoreHorizontal className="size-3" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={onCreate}><Plus className="size-3.5"/>Add server</DropdownMenuItem>
-                        <DropdownMenuItem disabled={isDiscoveringConfigs || isImportingConfigs} onClick={onDiscoverConfigs}><Search className="size-3.5"/>Scan MCP configs</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowToolbar((value) => !value)}><SlidersHorizontal className="size-3.5"/>{showToolbar ? 'Hide search and view controls' : 'Search, filters and views'}</DropdownMenuItem>
-                        <DropdownMenuSeparator/>
-                        <div className="px-2 py-1.5"><CodeModeHeaderToggle /></div>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Download gateway diagnostics snapshot" aria-label="Download gateway diagnostics snapshot" onClick={() => {
-                      const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
-                      const href = URL.createObjectURL(blob)
-                      const anchor = document.createElement('a')
-                      anchor.href = href
-                      anchor.download = 'labby-gateway-snapshot.json'
-                      anchor.click()
-                      URL.revokeObjectURL(href)
-                    }}><Download className="size-3" /></Button>
+                  <div className="flex flex-wrap items-center justify-end gap-2" data-gateway-hero-controls="1">
+                    {!showToolsView ? <CollectionViewToggle value={layout} onChange={selectLayout} ariaLabel="Server view" /> : null}
+                    <div className="inline-flex gap-1">
+                      <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Reload visible servers" aria-label="Reload visible servers" disabled={isReloadingVisible || filteredGateways.length === 0} onClick={() => onReloadVisible(filteredGateways)}><RefreshCw className={cn('size-3', isReloadingVisible && 'animate-spin')} /></Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild><Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Gateway actions" aria-label="Gateway actions, search and filters"><MoreHorizontal className="size-3" /></Button></DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={onCreate}><Plus className="size-3.5"/>Add server</DropdownMenuItem>
+                          <DropdownMenuItem disabled={isDiscoveringConfigs || isImportingConfigs} onClick={onDiscoverConfigs}><Search className="size-3.5"/>Scan MCP configs</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setShowToolbar((value) => !value)}><SlidersHorizontal className="size-3.5"/>{showToolbar ? 'Hide search and filters' : 'Search and filters'}</DropdownMenuItem>
+                          <DropdownMenuSeparator/>
+                          <div className="px-2 py-1.5"><CodeModeHeaderToggle /></div>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Download gateway diagnostics snapshot" aria-label="Download gateway diagnostics snapshot" onClick={() => {
+                        const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
+                        const href = URL.createObjectURL(blob)
+                        const anchor = document.createElement('a')
+                        anchor.href = href
+                        anchor.download = 'labby-gateway-snapshot.json'
+                        anchor.click()
+                        URL.revokeObjectURL(href)
+                      }}><Download className="size-3" /></Button>
+                    </div>
                   </div>
                   <GatewayFleetMetadata />
                 </div>
@@ -894,7 +897,7 @@ export function GatewayListView({
           </div>
 
           <div className="grid gap-4">
-            {showToolbar || activeSearch || mobileSheetOpen || !showToolsView ? (
+            {showToolbar || activeSearch || mobileSheetOpen ? (
               <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start">
                 {showToolbar || activeSearch || mobileSheetOpen ? (
                   <div data-gateway-filters="all-viewports" className="min-w-0 sm:flex-1">
@@ -917,14 +920,6 @@ export function GatewayListView({
                       onClearFilters={onClearFilters}
                     />
                   </div>
-                ) : null}
-                {!showToolsView ? (
-                  <CollectionViewToggle
-                    value={layout}
-                    onChange={selectLayout}
-                    ariaLabel="Server view"
-                    className="self-end sm:self-start lg:mt-3.5"
-                  />
                 ) : null}
               </div>
             ) : null}
