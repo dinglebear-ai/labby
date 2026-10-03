@@ -43,7 +43,7 @@ const TONE_COLOR: Record<Tone, string> = {
   error: 'var(--aurora-error)',
   info: 'var(--aurora-accent-strong)',
   secondary: 'var(--aurora-accent-pink)',
-  tertiary: 'var(--axon-orange)',
+  tertiary: 'var(--axon-orange-deep)',
 }
 
 type HeroStat = {
