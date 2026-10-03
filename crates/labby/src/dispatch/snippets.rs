@@ -13,7 +13,7 @@ pub use labby_codemode::snippet::store;
 
 pub use catalog::ACTIONS;
 pub use dispatch::dispatch;
-pub(crate) use fixtures::generate_remote as generate_remote_fixture;
+pub(crate) use fixtures::{generate_remote as generate_remote_fixture, write_fixture_output};
 
 #[cfg(test)]
 mod tests {

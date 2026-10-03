@@ -1,6 +1,35 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn fixture_output_is_complete_and_never_clobbers_existing_destination() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fixture.json");
+    let fixture = json!({"calls":[{"tool":"synthetic::lookup","result":true}]});
+    write_fixture_output(&path, &fixture).unwrap();
+    let saved = std::fs::read(&path).unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&saved).unwrap(), fixture);
+    assert_eq!(saved.last(), Some(&b'\n'));
+    assert!(write_fixture_output(&path, &json!({"replacement":true})).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), saved);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn failed_fixture_write_leaves_no_partial_destination_or_staging_file() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fixture.json");
+    let error = publish_fixture_output(&path, |file| {
+        file.write_all(b"{\"partial\":")?;
+        anyhow::bail!("injected write failure")
+    })
+    .unwrap_err();
+    assert!(format!("{error:#}").contains("injected write failure"));
+    assert!(!path.exists());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
 fn scoped_context() -> SnippetDispatchContext {
     let mut context = SnippetDispatchContext::trusted_local();
     context.execution_scope = labby_codemode::ToolScope::scoped_namespaces(

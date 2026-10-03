@@ -301,14 +301,7 @@ async fn generate_fixture(
     if report["ready"] == true
         && let Some(path) = args.output
     {
-        use std::io::Write;
-        let bytes = serde_json::to_vec_pretty(&report["fixture"])?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)?;
-        file.write_all(&bytes)?;
-        file.write_all(b"\n")?;
+        crate::dispatch::snippets::write_fixture_output(&path, &report["fixture"])?;
     }
     crate::output::print(&report, format)?;
     Ok(remote_test_exit_code(report["ready"] == true))

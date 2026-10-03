@@ -46,6 +46,39 @@ fn invalid(message: impl Into<String>) -> ToolError {
     }
 }
 
+/// Publish a complete fixture without replacing an existing destination.
+pub(crate) fn write_fixture_output(path: &std::path::Path, fixture: &Value) -> anyhow::Result<()> {
+    publish_fixture_output(path, |file| {
+        use std::io::Write;
+        serde_json::to_writer_pretty(&mut *file, fixture)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    })
+}
+
+fn publish_fixture_output(
+    path: &std::path::Path,
+    write: impl FnOnce(&mut std::fs::File) -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut staged = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("cannot stage fixture output {}", path.display()))?;
+    write(staged.as_file_mut())
+        .with_context(|| format!("cannot write fixture output {}", path.display()))?;
+    staged
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("cannot sync fixture output {}", path.display()))?;
+    staged
+        .persist_noclobber(path)
+        .with_context(|| format!("cannot publish fixture output {}", path.display()))?;
+    Ok(())
+}
+
 pub(super) async fn generate(
     manager: Option<&GatewayManager>,
     params: Value,

@@ -339,3 +339,99 @@ fn schema_transport_diagnostics_are_contextual_bounded_and_redacted() {
     };
     assert_eq!(message.chars().count(), 1024);
 }
+
+#[tokio::test]
+async fn truncated_schema_reads_use_bounded_native_metadata_on_the_same_peer() {
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    drop(rustls::crypto::ring::default_provider().install_default());
+    for (case, tools, size, succeeds) in [
+        ("multiple", 4, 8_000, true),
+        ("single", 1, 32_000, true),
+        ("oversize", 1, 140_000, false),
+        ("denied", 1, 32_000, false),
+        ("identity", 1, 32_000, false),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/mcp"))
+            .and(header("authorization", "Bearer test-token"))
+            .respond_with(move |request: &wiremock::Request| {
+                let rpc: Value = serde_json::from_slice(&request.body).unwrap();
+                let result = match rpc["method"].as_str().unwrap() {
+                    "server/discover" => json!({"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"selected","version":"1"},"ttlMs":0,"cacheScope":"private"}),
+                    "tools/call" => {
+                        assert_eq!(rpc["params"]["name"], "codemode_read");
+                        let code = rpc["params"]["arguments"]["code"].as_str().unwrap();
+                        assert!(code.contains("codemode.readResource"));
+                        assert!(!code.contains("callTool"));
+                        json!({"resultType":"complete","content":[],"structuredContent":{"result_shape":{"truncated":true},"result":{}}})
+                    },
+                    "resources/read" => {
+                        assert_eq!(rpc["params"]["uri"], "lab://gateway/example/schema");
+                        if case == "denied" {
+                            return ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":rpc["id"],"error":{"code":-32603,"message":"permission denied"}}));
+                        }
+                        let rows = (0..tools).map(|i| json!({"name":format!("lookup_{i}"),"input_schema":{"type":"object"},"output_schema":{"type":"string","description":"x".repeat(size)}})).collect::<Vec<_>>();
+                        let document = json!({"name":"example","health":"healthy","tools":rows});
+                        assert!(serde_json::to_vec(&document).unwrap().len() > 24 * 1024);
+                        json!({"contents":[{"uri":if case == "identity" {"lab://gateway/other/schema"} else {"lab://gateway/example/schema"},"mimeType":"application/json","text":document.to_string()}]})
+                    },
+                    other => panic!("unexpected RPC {other}"),
+                };
+                ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":rpc["id"],"result":result}))
+            }).mount(&server).await;
+        let live = LiveGateway {
+            base_url: normalize_base_url(&server.uri()).unwrap(),
+            explicit: true,
+            source: "test",
+            token: Some("test-token".into()),
+            team_id: None,
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            dispatch_timeout: SCHEMA_DEADLINE,
+            actions: None,
+        };
+        let ids = (0..tools)
+            .map(|i| format!("example::lookup_{i}"))
+            .collect::<Vec<_>>();
+        let result = live.fixture_tool_schemas(&ids).await;
+        if succeeds {
+            let contracts = result.unwrap();
+            assert_eq!(contracts.len(), tools);
+            for contract in contracts.values() {
+                assert_eq!(
+                    contract.output_schema.as_ref().unwrap()["description"]
+                        .as_str()
+                        .unwrap()
+                        .len(),
+                    size
+                );
+            }
+        } else {
+            let error = result.unwrap_err().to_string();
+            assert!(
+                error.contains(match case {
+                    "oversize" => "128 KiB",
+                    "denied" => "permission denied",
+                    "identity" => "identity mismatch",
+                    _ => unreachable!(),
+                }),
+                "{case}: {error}"
+            );
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(
+                    |request| serde_json::from_slice::<Value>(&request.body).unwrap()["method"]
+                        == "resources/read"
+                )
+                .count(),
+            1
+        );
+        assert!(requests.len() <= 3, "no retries or tool execution");
+    }
+}

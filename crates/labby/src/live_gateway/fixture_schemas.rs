@@ -53,7 +53,14 @@ impl LiveGateway {
                                     schema_transport_error("schema read", &upstream, &error)
                                 })?;
                             let payload = codemode_result_value(response)?;
-                            let selected = decode_schema_trace(payload, &upstream, &names)?;
+                            let selected = if schema_trace_truncated(&payload)
+                                && payload.get("error").is_none()
+                                && payload.get("error_kind").is_none()
+                            {
+                                read_native_schema_resource(&peer, &upstream, &names).await?
+                            } else {
+                                decode_schema_trace(payload, &upstream, &names)?
+                            };
                             contracts.extend(selected);
                             if serde_json::to_vec(&contracts)
                                 .map_err(|_| schema_error("invalid tool schemas"))?
@@ -91,6 +98,57 @@ impl LiveGateway {
         }
         result?
     }
+}
+
+fn schema_trace_truncated(trace: &Value) -> bool {
+    trace.pointer("/result_shape/truncated") == Some(&json!(true))
+        || trace.pointer("/result_shaping/truncated") == Some(&json!(true))
+}
+
+/// The native metadata resource avoids Code Mode's much smaller result budget.
+/// Read the same URI on the same authenticated peer; native resource policy
+/// remains authoritative and a denial never falls back to another target.
+async fn read_native_schema_resource(
+    peer: &rmcp::service::Peer<RoleClient>,
+    upstream: &str,
+    names: &[String],
+) -> Result<BTreeMap<String, FixtureSchemas>, ToolError> {
+    let uri = format!("lab://gateway/{upstream}/schema");
+    let response = peer
+        .read_resource(rmcp::model::ReadResourceRequestParams::new(uri.clone()))
+        .await
+        .map_err(|error| schema_transport_error("native schema resource read", upstream, &error))?;
+    let response = serde_json::to_value(response)
+        .map_err(|_| schema_error("invalid native schema resource"))?;
+    if serde_json::to_vec(&response)
+        .map_err(|_| schema_error("invalid native schema resource"))?
+        .len()
+        > 8 * 1024 * 1024
+    {
+        return Err(schema_error("native schema resource exceeds 8 MiB"));
+    }
+    let contents = response["contents"]
+        .as_array()
+        .filter(|contents| contents.len() == 1)
+        .ok_or_else(|| schema_error("native schema resource must contain one complete document"))?;
+    if contents[0]["uri"] != uri {
+        return Err(schema_error("native schema resource identity mismatch"));
+    }
+    let mut document: Value = serde_json::from_str(
+        contents[0]["text"]
+            .as_str()
+            .ok_or_else(|| schema_error("native schema resource missing text"))?,
+    )
+    .map_err(|_| schema_error("invalid native schema resource JSON"))?;
+    let rows = document["tools"]
+        .as_array_mut()
+        .ok_or_else(|| schema_error("native schema resource returned invalid tools"))?;
+    rows.retain(|row| {
+        row["name"]
+            .as_str()
+            .is_some_and(|name| names.iter().any(|n| n == name))
+    });
+    decode_schema_trace(json!({"result":document}), upstream, names)
 }
 
 /// Older schema resources omitted outputs. Recover native wire contracts by exact
@@ -236,8 +294,7 @@ fn decode_schema_trace(
 ) -> Result<BTreeMap<String, FixtureSchemas>, ToolError> {
     if trace.get("error").is_some()
         || trace.get("error_kind").is_some()
-        || trace.pointer("/result_shape/truncated") == Some(&json!(true))
-        || trace.pointer("/result_shaping/truncated") == Some(&json!(true))
+        || schema_trace_truncated(&trace)
     {
         return Err(schema_error(
             "live schema discovery failed or was truncated; no local fallback",
