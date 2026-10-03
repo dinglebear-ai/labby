@@ -16,8 +16,7 @@ callback. It needs durable Labby OAuth state but no separate `labby serve`.
 ## The 30-second version
 
 **You need:** Node.js, signed-in Tailscale with Funnel enabled, and Apple
-Silicon or Linux with KVM. Until this feature is released, use the built
-checkout binary instead of `npx -y @dinglebear/labby`.
+Silicon or Linux with KVM. Verify the selected release includes Funnel proxy support with `proxy --help`.
 
 1. **Get your Google callback first:**
 
@@ -55,7 +54,7 @@ or use the [private OpenAI tunnel](#optional-private-mcp-connection-with-openai-
 
 Labby and the Microsandbox MCP adapter can both run through `npx`; there is no
 separate manual Labby binary install for this path. You still need Node.js
-18+ and Tailscale. The Microsandbox runtime can be installed through its MCP
+22+ and Tailscale. The Microsandbox runtime can be installed through its MCP
 tools after connecting ChatGPT. The Labby npm launcher downloads
 the matching native Labby release binary on first use and verifies its release
 checksum. It does not verify the release's build attestation; use the
@@ -63,10 +62,10 @@ checksum. It does not verify the release's build attestation; use the
 required. The npm launcher supports macOS Apple Silicon and Linux x86-64.
 Keep npm's cache and `$LABBY_HOME` available across runs.
 The commands below require a Labby release containing Funnel proxy support.
-Published npm version 2.3.2 does not include `--funnel` or `--mcp-json`.
-Until these changes are released, replace `npx -y @dinglebear/labby` with the
-built checkout binary, such as `./target/debug/labby`. Keep the child command
-`npx -y microsandbox-mcp` as shown.
+Verify `proxy --help` lists `--funnel` and `--mcp-json` in the selected release.
+If either is absent, replace `npx -y @dinglebear/labby` with a checkout binary
+containing those features. Keep the child command `npx -y microsandbox-mcp`
+as shown.
 
 1. Install Tailscale on the host that will run Labby and the microVMs. On
    macOS, Funnel requires a Tailscale open source variant. Sign in,
@@ -96,8 +95,9 @@ built checkout binary, such as `./target/debug/labby`. Keep the child command
    ```
 
    Provide `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and
-   `LABBY_AUTH_ADMIN_EMAIL` through the setup's secret inputs. Setup generates
-   the signing and token encryption material. Keep `$LABBY_HOME`, its `.env`,
+   `LABBY_AUTH_ADMIN_EMAIL` through the setup's secret inputs. Server setup without `--deployment` prepares authentication without
+   installing or starting a daemon. The proxy initializes its durable OAuth
+   state on first startup. Keep `$LABBY_HOME`, its `.env`,
    auth database, and signing key across restarts. The configured public origin
    must exactly match the Funnel origin, including its port.
    Save the proxy defaults once, using the same port:
