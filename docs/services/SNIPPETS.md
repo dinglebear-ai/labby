@@ -195,6 +195,19 @@ Authorization still comes from the shared action catalog.
 
 ### Fixture Contract
 
+`labby snippet fixture <name>` generates an editable fixture draft from the
+selected gateway's visible tool schemas over its authenticated MCP connection without executing tools. The CLI resolves the snippet and generates the fixture locally. `--tool` supplies exact dependencies for legacy snippets; `--check` compares saved contracts with current metadata and exits nonzero on drift. `--schemas`
+uses a saved contract map offline; `--results` supplies synthetic response
+overrides, and `--variant minimal` omits optional fields and extra array items.
+`--output` writes only a complete draft to a new file. The shared
+`snippets.fixture` action returns the draft without saving it. Generated rules
+cover one call per selected tool; authors must edit repetition, branches and
+assertions. See [fixture generation](../dev/SNIPPET_TESTING.md#generating-schema-backed-fixtures).
+
+Generated contracts store SHA-256 fingerprints; offline execution checks saved contract integrity. Optional fixture `schemas` validate successful response rules and actual tool
+arguments against saved contracts. Tests remain offline; unsupported schema
+assertions fail explicitly instead of reporting partial validation as complete.
+
 Fixtures are JSON documents containing ordered exact-tool response rules,
 JSON Pointer equality assertions, optional normalized snapshots, and resource
 budgets. Rule `match` objects compare a subset of top-level parameters; nested
@@ -229,7 +242,7 @@ Snapshots compare the complete result. `ignore_paths` lists JSON Pointers whose
 values are replaced with null on both sides, for example
 `["/summary/elapsedMs"]`. Missing properties remain distinguishable from null.
 Fixtures must be synthetic or separately scrubbed of credentials and personal
-data; there is no automatic fixture recorder in this implementation.
+data; there is no automatic live-response recorder in this implementation.
 
 ### Execution Boundary And Budgets
 
