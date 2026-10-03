@@ -389,11 +389,18 @@ impl NoticeStore {
         let worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
             #[cfg(windows)]
-            let _guard = guard;
+            // Tuple fields drop in order, including on early errors/unwinding.
+            let resources = (db, guard);
+            #[cfg(windows)]
+            let mut connection = resources.0.lock().map_err(|_| NoticeError::Unavailable)?;
+            #[cfg(not(windows))]
             let mut connection = db.lock().map_err(|_| NoticeError::Unavailable)?;
             let result = work(&mut connection);
             drop(connection);
             // Close the worker's last connection before releasing Windows pins.
+            #[cfg(windows)]
+            drop(resources);
+            #[cfg(not(windows))]
             drop(db);
             result
         });
