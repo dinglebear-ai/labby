@@ -72,7 +72,7 @@ function DiscoverCollectionCard({ artifact, href, now }: { artifact: FederatedAr
   const Icon = presentation.icon
   const authoredAt = artifact.currentRevision?.authoredAt
   const date = authoredAt && Number.isFinite(Date.parse(authoredAt)) ? authoredAt : undefined
-  return <Link href={href} data-discover-collection-artifact={`${artifact.providerId}:${artifact.artifactId}`} className="flex w-64 max-w-[calc(100vw-4rem)] shrink-0 flex-col gap-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-strong px-4 py-3 text-left shadow-[var(--aurora-shadow-medium)] transition-colors hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
+  return <Link href={href} data-discover-collection-artifact={`${artifact.providerId}:${artifact.artifactId}`} className="relative flex w-64 max-w-[calc(100vw-4rem)] shrink-0 flex-col gap-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-strong px-4 py-3 text-left shadow-[var(--aurora-shadow-medium)] transition-colors hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
     <span className="flex min-w-0 items-center gap-2">
       <span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-aurora-1 border border-aurora-border-default" style={{ color: presentation.color }}><Icon className="size-4" /></span>
       <span className="min-w-0"><span className="block truncate font-display text-sm font-bold text-aurora-text-primary" title={artifactTitle(artifact)}>{artifactTitle(artifact)}</span><span className="text-xs text-aurora-text-muted">{kind}</span></span>
