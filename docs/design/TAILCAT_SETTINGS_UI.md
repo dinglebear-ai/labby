@@ -1,3 +1,9 @@
+---
+title: "Native Tailcat setup panel"
+created: "2026-10-03"
+updated: "2026-10-03"
+---
+
 # Native Tailcat setup panel
 
 The Settings panel prepares dashboard connectivity on the existing native OAuth
