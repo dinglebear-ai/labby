@@ -99,9 +99,11 @@ The saved schema map is keyed by exact tool ID:
 `{"synthetic::lookup":{"items":["synthetic-item"]}}`. Explicit null responses
 are preserved. Missing output schemas require an explicit result; missing tool
 metadata requires a saved contract. Missing input schemas produce a warning.
-Unavailable generation returns `ready: false`, diagnostic failures and a partial
-draft, exits nonzero and does not write the requested output file. Existing
-output files are never overwritten.
+Missing or un-generatable responses return `ready: false`, diagnostic failures
+and a partial draft. Invalid saved contracts, explicit response overrides and
+fixture admission failures return an error without a draft. Both cases exit
+nonzero and do not write the requested output file. Existing output files are
+never overwritten.
 
 The default `populated` variant includes optional object fields and one array
 item when allowed. `minimal` includes required fields and minimum array lengths.
@@ -114,7 +116,7 @@ response overrides. Unsupported validation keywords such as `format` and
 
 Generated contracts include a SHA-256 `fingerprint` over canonical input and output schemas. Offline tests reject a fingerprint that no longer matches its saved contract. `--check` compares saved and current contracts, lists changed or missing tool IDs in `changed_tools`, exits nonzero on drift, and leaves the saved fixture unchanged. A check never executes upstream tools and requires no execution inputs, including required snippet parameters. Saved fixtures are validated before discovery; current contracts must also pass structural validation. Older fixtures without fingerprints can still be checked using their saved schemas.
 
-Older gateways may omit output schemas from their schema resources even when native MCP tools expose them. The CLI can recover a native output contract when the namespaced identity matches exactly, or when a read-only bare name resolves uniquely to the requested tool and its input contract matches. Ambiguous names and Labby service identities are never used as upstream aliases. Otherwise an explicit synthetic result is required. JSON schemas are never inferred from TypeScript descriptions.
+Older gateways may omit output schemas from their schema resources even when native MCP tools expose them. The CLI can recover a native output contract when the namespaced identity matches exactly, or when a read-only bare name resolves uniquely to the requested tool and its input contract matches. Ambiguous names and Labby service identities are never used as upstream aliases. Otherwise an explicit synthetic result is required. On older gateways, ordinary tools hidden by the Code Mode projection have no native JSON output contract to recover; supply `--results` or a saved `--schemas` map for those tools. Visible MCP App tools can still provide native output contracts. JSON schemas are never inferred from TypeScript descriptions.
 
 The draft contains one response rule per selected tool and no invented assertions.
 Edit matching, repeated calls, conditional paths, pagination and expected output

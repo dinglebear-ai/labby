@@ -9777,7 +9777,7 @@
     ],
     "returns": "SnippetFixtureDraft",
     "surface_availability": {
-      "cli": false,
+      "cli": true,
       "mcp": true,
       "api": true,
       "web_ui": false

@@ -233,3 +233,109 @@ async fn legacy_resource_output_is_supplemented_only_for_verified_native_identit
         );
     }
 }
+
+#[tokio::test]
+async fn native_schema_listing_rejects_incomplete_and_over_budget_catalogs() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    drop(rustls::crypto::ring::default_provider().install_default());
+    for (case, expected) in [
+        ("cursor", "native MCP schema pagination incomplete"),
+        ("duplicate", "duplicate native tool identity"),
+        ("bytes", "native MCP schema catalog exceeds bounds"),
+        ("items", "native MCP schema catalog exceeds bounds"),
+        (
+            "permission",
+            "native tool listing for selected gateway failed: MCP -32603: permission denied",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/mcp"))
+            .respond_with(move |request: &wiremock::Request| {
+                let rpc: Value = serde_json::from_slice(&request.body).unwrap();
+                let result = match rpc["method"].as_str().unwrap() {
+                    "server/discover" => json!({"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"serverInfo":{"name":"selected","version":"1"},"ttlMs":0,"cacheScope":"private"}),
+                    "tools/call" => {
+                        assert_eq!(rpc["params"]["name"], "codemode_read");
+                        assert!(rpc["params"]["arguments"]["code"].as_str().unwrap().contains("codemode.readResource"));
+                        json!({"resultType":"complete","content":[],"structuredContent":{"result":{"name":"example","health":"healthy","tools":[{"name":"lookup","input_schema":{"type":"object"}}]}}})
+                    },
+                    "tools/list" => match case {
+                        "permission" => return ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":rpc["id"],"error":{"code":-32603,"message":"permission denied","data":{"source":"must not be exposed"}}})),
+                        "cursor" => json!({"tools":[],"nextCursor":"repeat"}),
+                        "duplicate" => json!({"tools":[{"name":"lookup","inputSchema":{}},{"name":"lookup","inputSchema":{}}]}),
+                        "bytes" => {
+                            let second = rpc["params"]["cursor"] == "next";
+                            json!({"tools":[{"name":if second {"second"} else {"first"},"inputSchema":{},"description":"x".repeat(4 * 1024 * 1024 + 1024)}],"nextCursor":if second {None} else {Some("next")}})
+                        },
+                        "items" => json!({"tools":(0..4097).map(|i| json!({"name":format!("tool_{i}"),"inputSchema":{}})).collect::<Vec<_>>()}),
+                        _ => unreachable!(),
+                    },
+                    other => panic!("unexpected RPC {other}"),
+                };
+                ResponseTemplate::new(200).set_body_json(json!({"jsonrpc":"2.0","id":rpc["id"],"result":result}))
+            }).mount(&server).await;
+        let live = LiveGateway {
+            base_url: normalize_base_url(&server.uri()).unwrap(),
+            explicit: true,
+            source: "test",
+            token: None,
+            team_id: None,
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            dispatch_timeout: SCHEMA_DEADLINE,
+            actions: None,
+        };
+        let error = live
+            .fixture_tool_schemas(&["example::lookup".into()])
+            .await
+            .unwrap_err();
+        match error {
+            ToolError::Sdk { sdk_kind, message } => {
+                assert_eq!(sdk_kind, "schema_unavailable");
+                assert_eq!(message, expected, "case {case}");
+            }
+            other => panic!("case {case} returned unexpected error: {other:?}"),
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.iter().all(|request| request.url.path() == "/mcp"));
+        assert!(
+            requests.len() <= 4,
+            "discovery must stop at the failed bound"
+        );
+    }
+}
+
+#[test]
+fn schema_transport_diagnostics_are_contextual_bounded_and_redacted() {
+    let error = rmcp::ServiceError::McpError(rmcp::model::ErrorData::new(
+        rmcp::model::ErrorCode(-32603),
+        "permission rejected Authorization: Bearer synthetic-secret",
+        Some(
+            json!({"source":"private request source", "params":{"secret":"opaque private value"}}),
+        ),
+    ));
+    let ToolError::Sdk { sdk_kind, message } =
+        schema_transport_error("schema read", "example", &error)
+    else {
+        panic!("expected schema error")
+    };
+    assert_eq!(sdk_kind, "schema_unavailable");
+    assert!(message.contains("schema read for example"));
+    assert!(message.contains("MCP -32603: permission rejected"));
+    assert!(!message.contains("synthetic-secret"));
+    assert!(!message.contains("private request source"));
+    assert!(!message.contains("opaque private value"));
+    let error = rmcp::ServiceError::McpError(rmcp::model::ErrorData::new(
+        rmcp::model::ErrorCode(-32603),
+        "x".repeat(2048),
+        None,
+    ));
+    let ToolError::Sdk { message, .. } = schema_transport_error("schema read", "example", &error)
+    else {
+        panic!("expected schema error")
+    };
+    assert_eq!(message.chars().count(), 1024);
+}

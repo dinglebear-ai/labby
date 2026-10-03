@@ -49,7 +49,9 @@ impl LiveGateway {
                                     ),
                                 )
                                 .await
-                                .map_err(|_| schema_error("remote MCP schema read failed"))?;
+                                .map_err(|error| {
+                                    schema_transport_error("schema read", &upstream, &error)
+                                })?;
                             let payload = codemode_result_value(response)?;
                             let selected = decode_schema_trace(payload, &upstream, &names)?;
                             contracts.extend(selected);
@@ -91,9 +93,9 @@ impl LiveGateway {
     }
 }
 
-/// Older schema resources omitted outputs. Use native wire contracts only when
-/// the same unqualified name resolves uniquely to the requested exact tool ID.
-/// This avoids borrowing an output from a same-name tool on another upstream.
+/// Older schema resources omitted outputs. Recover native wire contracts by exact
+/// qualified ID, or by a read-only bare name verified to resolve to that exact ID.
+/// Both paths require matching input contracts to avoid borrowing another output.
 async fn supplement_native_outputs(
     peer: &rmcp::service::Peer<RoleClient>,
     contracts: &mut BTreeMap<String, FixtureSchemas>,
@@ -115,7 +117,9 @@ async fn supplement_native_outputs(
                 rmcp::model::PaginatedRequestParams::default().with_cursor(Some(cursor))
             }))
             .await
-            .map_err(|_| schema_error("native MCP schema listing failed"))?;
+            .map_err(|error| {
+                schema_transport_error("native tool listing", "selected gateway", &error)
+            })?;
         bytes += serde_json::to_vec(&page)
             .map_err(|_| schema_error("invalid native tool catalog"))?
             .len();
@@ -177,7 +181,9 @@ async fn supplement_native_outputs(
                     ),
                 )
                 .await
-                .map_err(|_| schema_error("native MCP tool identity verification failed"))?;
+                .map_err(|error| {
+                    schema_transport_error("native identity verification", id, &error)
+                })?;
             let trace = codemode_result_value(response)?;
             if trace.pointer("/result/id").and_then(Value::as_str) != Some(id.as_str())
                 || trace
@@ -198,6 +204,19 @@ fn schema_error(message: &str) -> ToolError {
         sdk_kind: "schema_unavailable".into(),
         message: message.into(),
     }
+}
+
+fn schema_transport_error(operation: &str, target: &str, error: &rmcp::ServiceError) -> ToolError {
+    // MCP error data may echo request payloads; retain only the code and message.
+    let cause = match error {
+        rmcp::ServiceError::McpError(error) => format!("MCP {}: {}", error.code.0, error.message),
+        rmcp::ServiceError::Cancelled { .. } => "request cancelled".into(),
+        other => other.to_string(),
+    };
+    let message = labby_runtime::redact::redact_secret_like_segments(&format!(
+        "{operation} for {target} failed: {cause}"
+    ));
+    schema_error(&message.chars().take(1024).collect::<String>())
 }
 
 fn schema_read_code(upstream: &str, names: &[String]) -> Result<String, ToolError> {

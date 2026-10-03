@@ -87,6 +87,40 @@ async fn run_cli_case(
     home: &std::path::Path,
     case: CliActionCase,
 ) -> Result<std::process::Output, String> {
+    if case.key == "snippets:snippets.fixture" {
+        let name = "matrix-cli-schema-fixture";
+        let body = "---\nname: matrix-cli-schema-fixture\ndescription: Owned synthetic schema fixture\ntools:\n  - synthetic::matrix\n---\n```js\nasync () => await callTool('synthetic::matrix', {})\n```\n";
+        let created =
+            action_scenarios::run_cli(home, &["snippet", "add", name, "--code", body, "--json"])
+                .await?;
+        action_scenarios::assert_success_json(&created, "fixture snippet setup");
+        let schemas = home.join("matrix-cli-tool-schemas.json");
+        let contracts = action_scenarios::fixtures()["snippets"].parameters["tool_schemas"].clone();
+        std::fs::write(&schemas, serde_json::to_vec(&contracts).unwrap())
+            .map_err(|error| error.to_string())?;
+        let output = action_scenarios::run_cli(
+            home,
+            &[
+                "snippet",
+                "fixture",
+                name,
+                "--schemas",
+                schemas.to_str().unwrap(),
+                "--json",
+            ],
+        )
+        .await;
+        let removed =
+            action_scenarios::run_cli(home, &["snippet", "remove", name, "--yes", "--json"])
+                .await?;
+        action_scenarios::assert_success_json(&removed, "fixture snippet cleanup");
+        std::fs::remove_file(&schemas).map_err(|error| error.to_string())?;
+        if let Ok(result) = &output {
+            let report = action_scenarios::assert_success_json(result, case.key);
+            action_scenarios::assert_snippet_receipt_case("snippets.fixture", &report);
+        }
+        return output;
+    }
     if !case.key.starts_with("doctor:") {
         return action_scenarios::run_cli(home, case.argv).await;
     }
@@ -634,6 +668,10 @@ fn cli_action_cases() -> std::collections::BTreeSet<CliActionCase> {
         (
             "snippets:snippets.exec",
             &["snippet", "run", MISSING, "--json"],
+        ),
+        (
+            "snippets:snippets.fixture",
+            &["snippet", "fixture", MISSING, "--json"],
         ),
         (
             "snippets:snippets.get",
