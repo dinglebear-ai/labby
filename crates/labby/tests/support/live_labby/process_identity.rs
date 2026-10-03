@@ -412,7 +412,9 @@ mod tests {
                     }
                 });
                 let mut builder = LiveLabbyBuilder::new().existing_root(root.path());
-                if mode == "deadline" {
+                // The restart case injects expiry only after a healthy initial
+                // start; keep that initial start on the normal readiness budget.
+                if mode == "deadline" && !restart {
                     builder.readiness_deadline = Duration::from_secs(3);
                 }
                 builder.identity_probe = Some(probe);

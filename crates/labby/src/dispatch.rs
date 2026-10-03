@@ -16,6 +16,8 @@ pub mod browser;
 pub mod clients;
 #[cfg(feature = "gateway")]
 pub(crate) mod code_mode_search;
+#[cfg(feature = "gateway")]
+pub(crate) mod codemode_notices;
 pub mod depot;
 pub mod depot_publish;
 pub(crate) mod dev_containers;

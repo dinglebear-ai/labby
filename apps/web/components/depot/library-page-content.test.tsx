@@ -162,7 +162,7 @@ function artifact(id: string, kind: string, title = id) {
 
 type DepotRequest = { operation: string; input: Record<string, unknown>; projectId: string | null }
 
-async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')], pages?: ReturnType<typeof artifact>[][]) {
+async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')], pages?: ReturnType<typeof artifact>[][], omitTotal = false) {
   const requested: DepotRequest[] = []
   const requestSequence: string[] = []
   const originalFetch = globalThis.fetch
@@ -184,7 +184,7 @@ async function renderLibrary(search = new URLSearchParams(), records = [artifact
     }
     if (body.operation === 'depot.artifacts.list') {
       const page = Number(body.params?.cursor ?? 0)
-      return envelope({ artifacts: pages?.[page] ?? records, total: pages ? pages.reduce((sum, items) => sum + items.length, 0) : records.length, ...(pages && page + 1 < pages.length ? { nextCursor: String(page + 1) } : {}) })
+      return envelope({ artifacts: pages?.[page] ?? records, ...(omitTotal ? {} : { total: pages ? pages.reduce((sum, items) => sum + items.length, 0) : records.length }), ...(pages && page + 1 < pages.length ? { nextCursor: String(page + 1) } : {}) })
     }
     return Response.json({ message: 'unexpected request' }, { status: 500 })
   }) as typeof globalThis.fetch
@@ -382,4 +382,63 @@ test('Library explains capacity eviction without claiming that a populated catal
     assert.doesNotMatch(view.container.textContent ?? '', /No artifacts in your library yet/)
     assert.equal(view.container.querySelector<HTMLButtonElement>('button[aria-label="Export loaded library metadata"]')!.disabled, true)
   } finally { await view.unmount(); restore() }
+})
+
+test('Library unavailable counts stay unknown and retry recovers actual records', async () => {
+  const originalFetch = globalThis.fetch
+  let unavailable = true
+  let lists = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? 'GET') === 'GET' && String(input) === '/v1/depot/operations') return unavailable ? new Response('<html>bad gateway</html>', { status: 502 }) : operationCatalog()
+    const body = JSON.parse(String(init?.body ?? '{}'))
+    if (body.operation === 'depot.artifacts.list') { lists++; return envelope({ artifacts: [artifact('actual', 'skill', 'Actual Library record')], total: 1 }) }
+    return Response.json({}, { status: 500 })
+  }) as typeof fetch
+  document.body.replaceChildren()
+  const view = await renderClient(<SearchParamsContext.Provider value={new URLSearchParams() as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+  try {
+    await flush()
+    assert.match(view.container.textContent ?? '', /Count unavailable/)
+    assert.doesNotMatch(view.container.textContent ?? '', /0 of 0|No artifacts in your library yet/)
+    assert.equal((view.container.querySelector('[data-console-hero-stats]')?.textContent?.match(/—/g) ?? []).length, 5)
+    unavailable = false
+    const retry = [...view.container.querySelectorAll('button')].find(button => button.textContent?.includes('Retry loading'))!
+    await act(async () => retry.click())
+    await flush()
+    assert.match(view.container.textContent ?? '', /Actual Library record/)
+    assert.match(view.container.textContent ?? '', /1 of 1/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Library unavailable|Count unavailable/)
+    const refresh = [...view.container.querySelectorAll('button')].find(button => button.textContent === 'Refresh')!
+    await act(async () => { refresh.click(); refresh.click() })
+    await flush()
+    assert.equal(lists, 2, 'repeated same-turn refresh activations share one catalog request')
+    assert.match(view.container.textContent ?? '', /Actual Library record/)
+  } finally { await view.unmount(); globalThis.fetch = originalFetch }
+})
+
+test('Library empty success differs from failed catalogs and partial facets remain lower bounds', async () => {
+  const empty = await renderLibrary(new URLSearchParams(), [])
+  try { await flush(); assert.match(empty.view.container.textContent ?? '', /No artifacts in your library yet/); assert.match(empty.view.container.textContent ?? '', /0 of 0/) }
+  finally { await empty.view.unmount(); empty.restore() }
+  const partial = await renderLibrary(new URLSearchParams(), [artifact('one', 'skill')], [[artifact('one', 'skill')], [artifact('two', 'skill')]])
+  try {
+    await flush()
+    assert.match(partial.view.container.textContent ?? '', /1 of 2/)
+    assert.match(partial.view.container.textContent ?? '', /Facet counts describe loaded artifacts only/)
+    assert.match(partial.view.container.querySelector('[data-console-hero-stats]')?.textContent ?? '', /Public1\+/)
+  } finally { await partial.view.unmount(); partial.restore() }
+})
+
+
+test('Library does not invent a global total when a paginated authority omits it', async () => {
+  const fixture = await renderLibrary(new URLSearchParams(), [artifact('one', 'skill')], [[artifact('one', 'skill')], [artifact('two', 'skill')]], true)
+  try {
+    await flush()
+    assert.match(fixture.view.container.textContent ?? '', /1 of 1\+/)
+    const loadMore = [...fixture.view.container.querySelectorAll('button')].find(button => button.textContent === 'Load more')!
+    await act(async () => loadMore.click())
+    await flush()
+    assert.match(fixture.view.container.textContent ?? '', /2 of 2/)
+    assert.doesNotMatch(fixture.view.container.textContent ?? '', /Facet counts describe loaded artifacts only/)
+  } finally { await fixture.view.unmount(); fixture.restore() }
 })

@@ -257,8 +257,9 @@ pub(super) async fn prepare(
         .unwrap_or_default();
     let preview_fingerprint =
         fingerprint::assemble(name, &fingerprints, &config, context, previous, &drift);
-    let can_execute = config.enabled
-        && context.execution_caller.can_use_snippets()
+    // `enabled` controls the synthetic MCP surface; native snippet execution
+    // uses the same caller/scope policies even when raw MCP tools are exposed.
+    let can_execute = context.execution_caller.can_use_snippets()
         && (context.execution_caller.can_execute()
             || scope.is_read_only() && context.execution_caller.can_read())
         && declared_tools.iter().all(|tool| tool.status == "allowed");

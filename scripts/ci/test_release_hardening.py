@@ -902,6 +902,19 @@ class PromotionDurabilityTests(unittest.TestCase):
             helper.verify_latest("@example/pkg", None)
 
     def test_incus_rollback_preserves_object_in_shallow_checkout(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=False)
+
+    def test_incus_image_ancestor_promotes_and_rolls_back_from_shallow_checkout(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=True)
+
+    def test_incus_image_newer_pointer_is_refused_from_shallow_checkout(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=True, newer_pointer=True)
+
+    def test_incus_image_history_fetch_failure_leaves_pointer_unchanged(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=True, history_fetch_failure=True)
+
+    def assert_incus_shallow_pointer_transaction(self, *, image_release, newer_pointer=False,
+                                                 history_fetch_failure=False):
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
@@ -922,8 +935,15 @@ class PromotionDurabilityTests(unittest.TestCase):
             (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.1.0"\n')
             git("commit", "-am", "candidate")
             candidate = git("rev-parse", "HEAD")
+            git("branch", "candidate", candidate)
+            if newer_pointer:
+                (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.0"\n')
+                git("commit", "-am", "newer stable")
+                git("tag", "-f", "-a", "labby-incus-latest", "-m", "newer annotated target")
+                previous = git("rev-parse", "refs/tags/labby-incus-latest")
             git("clone", "--bare", str(source), str(remote))
-            git("clone", "--depth=1", "--no-tags", remote.as_uri(), str(checkout))
+            git("clone", "--depth=1", "--no-tags", "--branch", "candidate", remote.as_uri(), str(checkout))
+            self.assertEqual("true", git("rev-parse", "--is-shallow-repository", cwd=checkout))
             missing = subprocess.run(["git", "cat-file", "-e", previous], cwd=checkout, capture_output=True)
             self.assertNotEqual(0, missing.returncode)
             # Rewrite the script's authenticated URL only inside this disposable
@@ -938,9 +958,37 @@ class PromotionDurabilityTests(unittest.TestCase):
             gh.write_text('#!/bin/sh\ncase "$*" in *--pattern*) exit 1;; esac\nif [ "$2" = download ]; then cp "$ASSETS/"* "$5/"; fi\n')
             gh.chmod(0o755)
             receipt = work / "receipt"
-            env = dict(os.environ, GH_TOKEN="test", GITHUB_REPOSITORY="example/repo", GITHUB_SHA=candidate, RELEASE_TAG="v1.1.0", INCUS_POINTER_RECEIPT=str(receipt), GH_BIN=str(gh), ASSETS=str(assets))
+            release_tag = f"incus-{candidate}" if image_release else "v1.1.0"
+            env = dict(os.environ, GH_TOKEN="test", GITHUB_REPOSITORY="example/repo", GITHUB_SHA=candidate, RELEASE_TAG=release_tag, INCUS_POINTER_RECEIPT=str(receipt), GH_BIN=str(gh), ASSETS=str(assets))
+            if history_fetch_failure:
+                import shutil
+                real_git = shutil.which("git")
+                self.assertIsNotNone(real_git)
+                bin_dir = work / "bin"
+                bin_dir.mkdir()
+                git_wrapper = bin_dir / "git"
+                git_wrapper.write_text('#!/bin/sh\nfor arg in "$@"; do [ "$arg" != --unshallow ] || exit 37; done\nexec "$REAL_GIT" "$@"\n')
+                git_wrapper.chmod(0o755)
+                env.update(PATH=str(bin_dir) + os.pathsep + env["PATH"], REAL_GIT=real_git)
             command = ["bash", str(ROOT / "scripts/ci/promote-incus-pointer.sh")]
-            subprocess.run(command + ["promote"], cwd=checkout, env=env, check=True, capture_output=True)
+            promoted = subprocess.run(command + ["promote"], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
+            if history_fetch_failure:
+                self.assertNotEqual(0, promoted.returncode)
+                self.assertIn("unable to verify Incus ancestry: candidate history fetch failed", promoted.stderr)
+                self.assertEqual(previous, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+                self.assertFalse((receipt / "state").exists())
+                self.assertFalse((receipt / "candidate/generation.json").exists())
+                return
+            if image_release:
+                self.assertEqual("false", git("rev-parse", "--is-shallow-repository", cwd=checkout))
+            if newer_pointer:
+                self.assertNotEqual(0, promoted.returncode)
+                self.assertIn("refusing to replace a newer Incus stable generation", promoted.stderr)
+                self.assertEqual(previous, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+                self.assertFalse((receipt / "state").exists(), "refusal must precede pointer preparation")
+                self.assertFalse((receipt / "candidate/generation.json").exists(), "refusal must precede candidate publication")
+                return
+            self.assertEqual(0, promoted.returncode, promoted.stdout + promoted.stderr)
             self.assertEqual(candidate, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
             # Overwrite FETCH_HEAD; the durable local recovery ref must survive.
             git("fetch", "origin", "main", cwd=checkout)

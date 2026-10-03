@@ -21,6 +21,66 @@ class IncusContract(unittest.TestCase):
     def text(self, path):
         return (ROOT / path).read_text()
 
+    def test_smoke_forwarding_preserves_existing_rules_and_cleans_only_owned_rules(self):
+        source = self.text("scripts/ci/smoke-incus-image.sh")
+        functions = source[source.index("ensure_smoke_forwarding() {"):source.index("default_storage_pool() {")]
+        for mode, expected in (("absent", 0), ("existing", 0), ("new", 4), ("partial", 3), ("cleanup-failure", 4)):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                log = pathlib.Path(directory) / "calls"
+                harness = """set -eu
+GITHUB_ACTIONS=true
+SMOKE_FORWARD_BRIDGE=''
+SMOKE_FORWARD_COMMENT=labby-incus-smoke-fixture
+SMOKE_FORWARD_OUTBOUND=0
+SMOKE_FORWARD_RETURN=0
+OWNED_OUTBOUND=0
+OWNED_RETURN=0
+have() { return 0; }
+log() { :; }
+die() { exit 1; }
+incus_cmd() {
+    if [[ "$1" == profile ]]; then
+        printf 'incusbr0\n'
+    elif [[ "$1 $2" == 'network list' ]]; then
+        printf 'incusbr0,bridge,YES\n'
+    else
+        printf 'true\n'
+    fi
+}
+sudo_cmd() {
+    shift
+    [[ "$1" == -w && "$2" == 5 ]] || return 99
+    shift 2
+    if [[ "$1" == -L ]]; then [[ "$MODE" != absent ]]; return; fi
+    if [[ "$1" == -C ]]; then
+        if [[ "$*" != *--comment* ]]; then [[ "$MODE" == existing ]]; return; fi
+        if [[ "$3" == -i ]]; then [[ "$OWNED_OUTBOUND" == 1 ]]; else [[ "$OWNED_RETURN" == 1 ]]; fi
+        return
+    fi
+    printf '%s\n' "$*" >> "$CALL_LOG"
+    if [[ "$MODE" == partial && "$1" == -I && "$3" == -o ]]; then return 1; fi
+    if [[ "$MODE" == cleanup-failure && "$1" == -D ]]; then return 1; fi
+    if [[ "$1" == -I ]]; then
+        if [[ "$3" == -i ]]; then OWNED_OUTBOUND=1; else OWNED_RETURN=1; fi
+    else
+        if [[ "$3" == -i ]]; then OWNED_OUTBOUND=0; else OWNED_RETURN=0; fi
+    fi
+}
+""" + functions + """
+if ensure_smoke_forwarding; then setup=0; else setup=$?; fi
+if cleanup_smoke_forwarding; then cleanup=0; else cleanup=$?; fi
+printf '%s %s\n' "$setup" "$cleanup"
+"""
+                env = dict(os.environ, MODE=mode, CALL_LOG=str(log))
+                result = subprocess.run(["bash", "-c", harness], env=env, text=True, capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                calls = log.read_text().splitlines() if log.exists() else []
+                self.assertEqual(len(calls), expected, calls)
+                self.assertTrue(all("DOCKER-USER" in call and "incusbr0" in call and "--comment labby-incus-smoke-fixture" in call for call in calls))
+                deletes = [call for call in calls if " -D " in " " + call + " "]
+                self.assertEqual(len(deletes), 1 if mode == "partial" else 2 if mode in {"new", "cleanup-failure"} else 0)
+                self.assertEqual(result.stdout.strip(), "1 0" if mode == "partial" else "0 1" if mode == "cleanup-failure" else "0 0")
+
     def test_bootstrap_copies_backups_when_private_parent_is_initially_absent(self):
         bootstrap = self.text("scripts/incus-bootstrap.sh")
         commands = [line.strip() for line in bootstrap.splitlines()
@@ -53,7 +113,9 @@ class IncusContract(unittest.TestCase):
                     self.assertEqual(stat.S_IMODE((backups[0] / ".env").stat().st_mode), 0o600)
                 self.assertTrue((source / "web-assets/index.html").is_file())
 
-    def run_smoke_firewall_fixture(self, *, ci="true", docker=True, borrowed=False, fail_second=False, managed=True):
+    def run_smoke_firewall_fixture(self, *, ci="true", github_actions="", docker=True, borrowed=False,
+                                   borrowed_comment=None, fail_first=False, fail_second=False, fail_cleanup=False, managed=True,
+                                   bridge_type="bridge", nat=True, interrupt_after_insert=False, fail_probe=False):
         smoke = self.text("scripts/ci/smoke-incus-image.sh")
         definitions = smoke.split('if [[ -z "$image_tar" ]]; then', 1)[0]
         # Execute the real setup and EXIT cleanup against a stateful fake firewall.
@@ -62,22 +124,32 @@ class IncusContract(unittest.TestCase):
             state = root / "rules"
             calls = root / "calls"
             initial = ["-i fixturebr0 -j ACCEPT", "-o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"] if borrowed else []
+            if borrowed_comment:
+                initial = [rule.replace(" -j ACCEPT", f" -m comment --comment {borrowed_comment} -j ACCEPT") for rule in initial]
             state.write_text("\n".join(initial) + ("\n" if initial else ""))
             firewall = root / "iptables"
             firewall.write_text("#!/usr/bin/env python3\n" +
-                "import os,pathlib,sys\n" +
+                "import os,pathlib,sys,signal\n" +
                 "p=pathlib.Path(os.environ['FAKE_RULES']); log=pathlib.Path(os.environ['FAKE_CALLS'])\n" +
-                "args=sys.argv[1:]; log.open('a').write(' '.join(args)+'\\n')\n" +
+                "args=sys.argv[1:]\n" +
+                "if args[:2]!=['-w','5']: sys.exit(19)\n" +
+                "args=args[2:]; log.open('a').write(' '.join(args)+'\\n')\n" +
                 "rules=p.read_text().splitlines(); action=args[0]\n" +
                 "if action=='-L': sys.exit(0 if os.environ['FAKE_DOCKER']=='1' else 1)\n" +
                 "rule=' '.join(args[2:])\n" +
-                "if action=='-C': sys.exit(0 if rule in rules else 1)\n" +
+                "if action=='-C':\n" +
+                " if os.environ['FAKE_FAIL_PROBE']=='1' and '--comment' in args: sys.exit(4)\n" +
+                " sys.exit(0 if rule in rules else 1)\n" +
                 "if action=='-I':\n" +
+                " if os.environ['FAKE_FAIL_FIRST']=='1' and '-i' in args: sys.exit(8)\n" +
                 " if os.environ['FAKE_FAIL_SECOND']=='1' and '-o' in args: sys.exit(9)\n" +
                 " rules.append(rule)\n" +
-                "elif action=='-D': rules.remove(rule)\n" +
+                "elif action=='-D':\n" +
+                " if os.environ['FAKE_FAIL_CLEANUP']=='1': sys.exit(10)\n" +
+                " rules.remove(rule)\n" +
                 "else: sys.exit(20)\n" +
-                "p.write_text('\\n'.join(rules)+('\\n' if rules else ''))\n")
+                "p.write_text('\\n'.join(rules)+('\\n' if rules else ''))\n" +
+                "if action=='-I' and os.environ['FAKE_INTERRUPT']=='1': os.kill(int(os.environ['FAKE_PARENT']), signal.SIGTERM)\n")
             firewall.chmod(0o755)
             harness = definitions + r"""
                 sudo_cmd() { "$@"; }
@@ -87,31 +159,55 @@ class IncusContract(unittest.TestCase):
                     if [[ "$*" == "profile device get default eth0 network" ]]; then
                         printf 'fixturebr0\n'
                     elif [[ "$*" == "network list --format csv" ]]; then
-                        printf 'fixturebr0,bridge,%s,10.0.0.1/24,none,fixture,0,CREATED\n' "$FAKE_MANAGED"
+                        printf 'fixturebr0,%s,%s,10.0.0.1/24,none,fixture,0,CREATED\n' "$FAKE_BRIDGE_TYPE" "$FAKE_MANAGED"
                     elif [[ "$1 $2" == "network list" ]]; then
                         printf 'Error: unknown shorthand flag in network list\n' >&2
                         return 2
                     elif [[ "$*" == "network get fixturebr0 ipv4.nat" ]]; then
-                        printf 'true\n'
+                        printf '%s\n' "$FAKE_NAT"
                     else
                         return 0
                     fi
                 }
+                SMOKE_FORWARD_COMMENT=labby-incus-smoke-fixture
+                export FAKE_PARENT=$$
                 ensure_incus_ready
                 cp "$FAKE_RULES" "$FAKE_RULES.after_setup"
             """
-            env = dict(os.environ, CI=ci, PATH=str(root) + os.pathsep + os.environ["PATH"],
+            env = dict(os.environ, CI=ci, GITHUB_ACTIONS=github_actions,
+                       PATH=str(root) + os.pathsep + os.environ["PATH"],
                        FAKE_RULES=str(state), FAKE_CALLS=str(calls),
-                       FAKE_MANAGED="YES" if managed else "NO", FAKE_DOCKER="1" if docker else "0", FAKE_FAIL_SECOND="1" if fail_second else "0")
-            result = subprocess.run(["bash", "--noprofile", "--norc", "-c", harness],
+                       FAKE_MANAGED="YES" if managed else "NO", FAKE_BRIDGE_TYPE=bridge_type,
+                       FAKE_NAT="true" if nat else "false", FAKE_DOCKER="1" if docker else "0",
+                       FAKE_FAIL_FIRST="1" if fail_first else "0", FAKE_FAIL_SECOND="1" if fail_second else "0",
+                       FAKE_FAIL_CLEANUP="1" if fail_cleanup else "0",
+                       FAKE_INTERRUPT="1" if interrupt_after_insert else "0",
+                       FAKE_FAIL_PROBE="1" if fail_probe else "0")
+            fixture_script = root / "fixture.sh"
+            fixture_script.write_text(harness)
+            result = subprocess.run(["bash", "--noprofile", "--norc", str(fixture_script)],
                                     env=env, capture_output=True, text=True, timeout=10)
             after_setup = pathlib.Path(str(state) + ".after_setup")
             return result, initial, (after_setup.read_text().splitlines() if after_setup.exists() else None), state.read_text().splitlines(), (calls.read_text().splitlines() if calls.exists() else [])
 
+    def test_smoke_ci_docker_firewall_cleans_interrupted_insertion(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(interrupt_after_insert=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIsNone(setup)
+        self.assertEqual(final, initial)
+        self.assertEqual(sum(line.startswith("-D ") for line in calls), 1)
+
+    def test_smoke_ci_docker_firewall_failed_cleanup_probe_fails_script(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(fail_probe=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(final, setup)
+        self.assertFalse(any(line.startswith("-D ") for line in calls))
+        self.assertIn("failed to remove owned smoke forwarding rules", result.stdout)
+
     def test_smoke_ci_docker_firewall_allows_bridge_egress_and_cleans_owned_rules(self):
         result, initial, setup, final, calls = self.run_smoke_firewall_fixture()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(setup, ["-i fixturebr0 -j ACCEPT", "-o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"])
+        self.assertEqual(setup, ["-i fixturebr0 -m comment --comment labby-incus-smoke-fixture -j ACCEPT", "-o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -m comment --comment labby-incus-smoke-fixture -j ACCEPT"])
         self.assertEqual(final, initial)
         self.assertEqual(sum(line.startswith("-D ") for line in calls), 2)
         self.assertFalse(any("FORWARD" in line or "-P " in line for line in calls))
@@ -124,18 +220,57 @@ class IncusContract(unittest.TestCase):
         self.assertTrue(any(line.startswith("-C ") for line in calls))
         self.assertFalse(any(line.startswith(("-D ", "-I ")) for line in calls))
 
+    def test_smoke_ci_docker_firewall_cleanup_preserves_another_runs_tagged_rules(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(
+            borrowed=True, borrowed_comment="different-smoke-run")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(setup), 4)
+        self.assertEqual(final, initial)
+        deletes = [line for line in calls if line.startswith("-D ")]
+        self.assertEqual(len(deletes), 2)
+        self.assertTrue(all("--comment labby-incus-smoke-fixture" in line for line in deletes))
+        self.assertFalse(any("--comment different-smoke-run" in line for line in deletes))
+
     def test_smoke_ci_docker_firewall_cleans_partial_setup_failure(self):
         result, initial, setup, final, calls = self.run_smoke_firewall_fixture(fail_second=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(final, initial)
-        self.assertIn("-D DOCKER-USER -i fixturebr0 -j ACCEPT", calls)
-        self.assertNotIn("-D DOCKER-USER -o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", calls)
+        self.assertIn("-D DOCKER-USER -i fixturebr0 -m comment --comment labby-incus-smoke-fixture -j ACCEPT", calls)
+        self.assertFalse(any(line.startswith("-D DOCKER-USER -o ") for line in calls))
 
     def test_smoke_ci_docker_firewall_rejects_unmanaged_interface(self):
         result, initial, setup, final, calls = self.run_smoke_firewall_fixture(managed=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(final, initial)
         self.assertFalse(any(line.startswith(("-I ", "-D ")) for line in calls))
+
+    def test_smoke_ci_docker_firewall_rejects_non_bridge_and_non_nat_networks(self):
+        for options in ({"bridge_type": "physical"}, {"nat": False}):
+            with self.subTest(options=options):
+                result, initial, setup, final, calls = self.run_smoke_firewall_fixture(**options)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(final, initial)
+                self.assertFalse(any(line.startswith(("-I ", "-D ")) for line in calls))
+
+    def test_smoke_ci_docker_firewall_first_insert_failure_owns_no_rules(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(fail_first=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(final, initial)
+        self.assertFalse(any(line.startswith("-D ") for line in calls))
+
+    def test_smoke_ci_docker_firewall_cleanup_failure_fails_script(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(fail_cleanup=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(final, setup)
+        self.assertEqual(sum(line.startswith("-D ") for line in calls), 2)
+        self.assertIn("failed to remove owned smoke forwarding rules", result.stdout)
+
+    def test_smoke_github_actions_forwarding_without_generic_ci_flag(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(ci="", github_actions="true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(setup), 2)
+        self.assertEqual(final, initial)
+        self.assertEqual(sum(line.startswith("-D ") for line in calls), 2)
 
     def test_smoke_firewall_leaves_non_ci_and_non_docker_hosts_untouched(self):
         for ci, docker in [("", True), ("false", True), ("true", False)]:

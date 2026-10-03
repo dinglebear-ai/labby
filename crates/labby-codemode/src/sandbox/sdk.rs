@@ -22,6 +22,13 @@ impl Drop for CancelOnDrop {
 /// Execute through the pinned local SDK. No SDK auto-installer is invoked.
 pub(super) async fn run(profile: SandboxProfile, request: SandboxRun) -> Result<Value, ToolError> {
     request.validate(&profile)?;
+    let backend: Arc<dyn microsandbox::Backend> = Arc::new(
+        tokio::time::timeout(Duration::from_secs(5), LocalBackend::new())
+            .await
+            .map_err(|_| error("sandbox_unavailable", "local MSB initialization timed out"))?
+            .map_err(|_| error("sandbox_unavailable", "local MSB initialization failed"))?,
+    );
+    microsandbox::with_backend(backend, super::recovery::reconcile()).await?;
     let permit = ADMISSION
         .get_or_init(|| Arc::new(Semaphore::new(2)))
         .clone()
@@ -50,13 +57,7 @@ fn start_worker(
             .map_err(|_| error("sandbox_unavailable", "local MSB initialization failed"))?;
         let backend: Arc<dyn microsandbox::Backend> = Arc::new(local);
         microsandbox::with_backend(backend, async move {
-            let result = run_owned(profile, request, cancel).await;
-            if matches!(&result, Err(ToolError::Sdk { sdk_kind, .. }) if sdk_kind == "cleanup_failed" || sdk_kind == "sandbox_start_failed") {
-                // Quarantine capacity on unconfirmed cleanup; do not admit an
-                // unbounded succession of potentially orphaned guests.
-                permit.forget();
-            } else { drop(permit); }
-            result
+            run_owned(profile, request, cancel, permit).await
         })
         .await
     })
@@ -66,8 +67,9 @@ async fn run_owned(
     profile: SandboxProfile,
     request: SandboxRun,
     cancel: CancellationToken,
+    permit: OwnedSemaphorePermit,
 ) -> Result<Value, ToolError> {
-    let name = format!("labby-workload-{}", ulid::Ulid::new());
+    let name = super::recovery::name();
     let started = std::time::Instant::now();
     let builder = Sandbox::builder(&name)
         .image(profile.image.as_str())
@@ -79,7 +81,8 @@ async fn run_owned(
         .security(SecurityProfile::Restricted)
         .disable_network()
         .max_duration(60)
-        .label("owner", "labby-codemode-spike");
+        .label("owner", super::recovery::OWNER)
+        .label("labby.pid", std::process::id().to_string());
     // Finish or time out startup before honoring cancellation, so the worker
     // retains responsibility for the named guest even if its caller disappears.
     let created = tokio::time::timeout(Duration::from_secs(15), builder.create()).await;
@@ -92,10 +95,16 @@ async fn run_owned(
                 Err(err) => eprintln!("MSB startup timeout: {err}"),
                 _ => {}
             }
-            if let Ok(Ok(handle)) =
-                tokio::time::timeout(Duration::from_secs(5), Sandbox::get(&name)).await
-            {
-                drop(tokio::time::timeout(Duration::from_secs(5), handle.destroy()).await);
+            let (cleaned, identity) =
+                match tokio::time::timeout(Duration::from_secs(5), Sandbox::get(&name)).await {
+                    Ok(Ok(handle)) => {
+                        let (cleaned, identity) = cleanup_startup(handle).await;
+                        (cleaned, Some(identity))
+                    }
+                    _ => (false, None),
+                };
+            if !cleaned {
+                super::recovery::quarantine(name.clone(), permit, identity).await;
             }
             return Err(error(
                 "sandbox_start_failed",
@@ -116,6 +125,7 @@ async fn run_owned(
     let cleanup = tokio::time::timeout(Duration::from_secs(5), sb.destroy()).await;
     if !matches!(cleanup, Ok(Ok(()))) {
         tracing::warn!(sandbox=%name,"Code Mode workload cleanup unconfirmed");
+        super::recovery::quarantine(name.clone(), permit, Some(sb.id())).await;
         return Err(error(
             "cleanup_failed",
             format!("cleanup unconfirmed for owned guest {name}"),
@@ -129,6 +139,17 @@ async fn run_owned(
     result["network"] = json!("disabled");
     result["projected_files"] = json!(request.files.keys().collect::<Vec<_>>());
     Ok(result)
+}
+
+pub(super) async fn cleanup_startup(
+    handle: microsandbox::sandbox::SandboxHandle,
+) -> (bool, microsandbox::sandbox::SandboxId) {
+    let identity = handle.id();
+    let cleaned = matches!(
+        tokio::time::timeout(Duration::from_secs(5), handle.destroy()).await,
+        Ok(Ok(()))
+    );
+    (cleaned, identity)
 }
 
 async fn execute(sb: &Sandbox, request: &SandboxRun) -> Result<Value, ToolError> {

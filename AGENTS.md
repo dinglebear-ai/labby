@@ -4,7 +4,7 @@ Labby is a Rust MCP gateway and operator control plane. CLI, MCP, HTTP API, and 
 
 ## Read for the task
 
-Read applicable nested AGENTS.md files and the matching references below for the changed subsystem, not the entire tree. [Product docs](docs/README.md) indexes contracts.
+Read nested AGENTS.md and subsystem references as needed; [Product docs](docs/README.md) indexes contracts.
 
 | Change | Start here |
 | --- | --- |
@@ -20,13 +20,13 @@ Read applicable nested AGENTS.md files and the matching references below for the
 
 ## Implementation boundaries
 
-Put shared product operations in `crates/labby/src/dispatch/` or the owning extracted runtime, not duplicated CLI/MCP/API handlers. Adapters translate input, caller context, and output; validation, authorization, destructive classification, and retry policy stay below them.
+Shared operations belong in `crates/labby/src/dispatch/` or their extracted runtime. Adapters translate input, caller, and output; validation, authorization, destructive classification, and retry policy stay below them.
 
-`labby-gateway` owns upstream pools, discovery, routing, OAuth lifecycle, and the gateway Code Mode host. Product `dispatch/upstream.rs` is only a compatibility shim. `labby-codemode` owns the host-neutral execution kernel and runner protocol; gateway catalog wiring does not belong there.
+`labby-gateway` owns upstream pools/discovery/routing, OAuth lifecycle, and the Code Mode host; `dispatch/upstream.rs` is a compatibility shim. `labby-codemode` owns the host-neutral kernel and runner protocol, not gateway catalog wiring.
 
 `labby-apis` remains a pure SDK boundary without ambient configuration or product transports. `labby-model` is never a product dependency; Windows FFI stays behind `labby-winjob`'s safe API.
 
-Prefer configured MCP upstreams for external capabilities. Add built-ins only for Labby-owned state/lifecycle through Service Onboarding; Architecture owns the complete crate map.
+Use configured MCP upstreams for external capabilities. Built-ins are for Labby state/lifecycle: follow Service Onboarding and the Architecture crate map.
 
 ## Contracts to preserve
 
@@ -41,7 +41,7 @@ Prefer configured MCP upstreams for external capabilities. Add built-ins only fo
 
 ## Build and verification
 
-From the repository root, use [Justfile](Justfile) recipes, the [Rust pin](rust-toolchain.toml), and [product feature definitions](crates/labby/Cargo.toml). Package manifests specify Node/pnpm requirements.
+Use root [Justfile](Justfile) recipes, the [Rust pin](rust-toolchain.toml), and [product features](crates/labby/Cargo.toml); manifests own Node/pnpm requirements.
 
 ```bash
 just check                         # all-feature workspace compilation
@@ -51,7 +51,7 @@ just docs-check                    # generated freshness and documentation gates
 just rustdoc-check                 # strict Rustdoc and workspace doctests
 ```
 
-Focused gateway tests: `cargo nextest run -p labby-gateway --all-features`. Nextest does not run doctests. Feature changes also need `bash scripts/check-feature-slices.sh`; all-feature success can conceal a broken standalone slice. `proxy-testkit` is test support, not a product slice. `just module-reachability` catches orphan Rust files that rustc never visits.
+Focused gateway tests: `cargo nextest run -p labby-gateway --all-features`. Nextest excludes doctests. Feature changes need `bash scripts/check-feature-slices.sh`; all-features can hide broken slices. `proxy-testkit` is test-only. `just module-reachability` catches orphan Rust files.
 
 `just build` builds web assets first, then the all-feature `release-fast` binary. Raw Cargo builds do not refresh the static export. `just build-release` and `just install` install a binary; `just host-sync` restarts a service. These are not interchangeable compile checks. `just chat-local` disables browser auth and binds all interfaces, so it is not the default isolated preview.
 
@@ -64,13 +64,21 @@ Run package checks in the named directory:
 | `apps/tauri` | `pnpm verify`; `cargo test --manifest-path src-tauri/Cargo.toml --locked` |
 | `packages/labby-mcp` | `npm run check`; `npm test` |
 
-Desktop and `tools/verification` have separate Cargo workspaces. For verification, use root `just verify-check`, `just verify-test`, and `just verify-lint`; keep fixtures serial as the recipe requires. See Testing for live/ignored-suite prerequisites.
+Desktop and `tools/verification` use separate Cargo workspaces. Use root `just verify-check`, `just verify-test`, and `just verify-lint` with serial fixtures. Testing documents live/ignored-suite prerequisites.
+
+## Plugin primitives: source and regeneration
+
+Author skills/references/agent metadata in plugins/labby/.apm/skills.
+Never edit client copies; follow [primitive ownership](plugins/labby/AGENTS.md#primitive-ownership)
+for manifests, embedding, and tools. Update behavior, descriptors, and skills
+together; run python3 scripts/generate-native-plugins.py and --check.
+Review generated diffs and regenerate docs after schema changes.
 
 ## UI, packaging, and documentation
 
 Gateway Admin is a static export, not a production Node server. Reuse the [Aurora contract](docs/DESIGN.md), `@aurora` components, and typed API/auth helpers. Preserve export build IDs, generated assets, and bundle budgets. Desktop hosts that same control plane, not a second renderer or durable token store. The browser bridge requires explicit site permissions and approved pairing.
 
-Plugin assets own skills and MCP metadata; the binary owns setup/repair and host lifecycle. Do not restore automatic plugin install hooks. After root README edits, run `node packages/labby-mcp/scripts/sync-readme.js`.
+Plugins own skills/MCP metadata; the binary owns setup/repair and host lifecycle. Never restore automatic install hooks. After README edits: `node packages/labby-mcp/scripts/sync-readme.js`.
 
 Regenerate `docs/generated/` with `just docs-generate` after metadata/CLI/schema changes; do not hand-edit catalogs. Standalone ACP/Marketplace/Fleet/Deploy products remain retired; Artifact discovery and Linux File Stash are separate contracts.
 
