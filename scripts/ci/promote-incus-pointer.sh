@@ -60,6 +60,16 @@ case "$mode" in
       [[ $(git rev-parse "$rollback_ref") == "$previous" ]]
       printf '%s\n' "$rollback_ref" >"$receipt/previous-ref"
       if [[ "$release_tag" == incus-* ]]; then
+        # A depth-one checkout marks the candidate as a history boundary even
+        # after fetching the retained previous object. Hydrate its ancestry
+        # before deciding whether this is an older or unrelated generation.
+        if [[ $(git rev-parse --is-shallow-repository) == true ]]; then
+          bash "$(dirname "${BASH_SOURCE[0]}")/../with_timeout.sh" 120 -- \
+            git fetch --no-tags --unshallow origin "$GITHUB_SHA" || {
+              echo "unable to verify Incus ancestry: candidate history fetch failed" >&2
+              exit 1
+            }
+        fi
         git merge-base --is-ancestor "$previous^{commit}" "$GITHUB_SHA" || {
           echo "refusing to replace a newer Incus stable generation" >&2
           exit 1
