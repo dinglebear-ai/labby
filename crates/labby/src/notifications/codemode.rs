@@ -391,7 +391,11 @@ impl NoticeStore {
             #[cfg(windows)]
             let _guard = guard;
             let mut connection = db.lock().map_err(|_| NoticeError::Unavailable)?;
-            work(&mut connection)
+            let result = work(&mut connection);
+            drop(connection);
+            // Close the worker's last connection before releasing Windows pins.
+            drop(db);
+            result
         });
         tokio::time::timeout(Duration::from_millis(250), worker)
             .await
