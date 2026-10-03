@@ -23,6 +23,7 @@ Commands:
   doctor       Audit configuration and dependencies without automatically repairing them
   logs         Query bounded local process logs, or explicitly select the deployment journal
   setup        Guide onboarding, check prerequisites, or explicitly repair local setup
+  tailcat      Pair an approved browser with local hardware sandbox tools
   host         Install, update, or operate the host service and its Incus deployment
   config       Inspect setup state and manage drafts or proxy defaults
   state        Migrate, export, verify, or restore durable installation state offline
@@ -6493,6 +6494,195 @@ Usage: labby setup repair [OPTIONS]
 Options:
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat`
+
+```text
+Pair an approved browser with local hardware sandbox tools
+
+Usage: labby tailcat [OPTIONS] <COMMAND>
+
+Commands:
+  pair    Approve a browser key for the selected sandbox upstream
+  status  Show local native session states without credentials or addresses
+  stop    Stop one local session and retire its credential
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat pair`
+
+```text
+Approve a browser key for the selected sandbox upstream
+
+Usage: labby tailcat pair [OPTIONS] --request <PATH> --credential-file <PATH> --output <PATH>
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --request <PATH>
+          Browser-exported request JSON containing its public key and HTTPS origin
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --credential-file <PATH>
+          Private project credential file, owned by the current user
+
+      --output <PATH>
+          New private delivery file to import into the requesting browser
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+  -y, --yes
+          Explicitly approve the reviewed origin, peer key and sandbox upstream
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat status`
+
+```text
+Show local native session states without credentials or addresses
+
+Usage: labby tailcat status [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat stop`
+
+```text
+Stop one local session and retire its credential
+
+Usage: labby tailcat stop [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
 
       --color <COLOR>
           Control human-readable CLI styling

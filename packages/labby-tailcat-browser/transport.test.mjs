@@ -58,3 +58,13 @@ test('unsafe or absent origins reject before starting transport',async()=>{
  }
  assert.equal(calls,0);
 });
+test('heartbeat does not interrupt a busy connection and stops on close',async t=>{
+ let tick,cleared=false;
+ t.mock.method(globalThis,'setInterval',callback=>{tick=callback;return {unref(){}};});
+ t.mock.method(globalThis,'clearInterval',()=>{cleared=true;});
+ const c=await TailcatClient.connect(cap,{dial:()=>new Promise(()=>{})});
+ let pings=0;c.request=async()=>{pings++;};
+ c.pending=8;tick();assert.equal(pings,0);assert.equal(c.closed,false);
+ c.pending=0;tick();assert.equal(pings,1);
+ c.close();assert.equal(cleared,true);
+});

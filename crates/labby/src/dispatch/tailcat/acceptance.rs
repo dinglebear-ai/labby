@@ -19,6 +19,21 @@ async fn browser_to_native_project_to_network_disabled_vm() {
         std::env::var("LABBY_TAILCAT_ACCEPTANCE_NODE").expect("set explicit Node executable");
     let playwright = std::env::var("LABBY_TAILCAT_ACCEPTANCE_PLAYWRIGHT")
         .expect("set explicit Playwright module");
+    let msb = std::env::var("LABBY_TAILCAT_ACCEPTANCE_MSB")
+        .expect("set explicit compatible Microsandbox executable");
+    let firmware = std::env::var("LABBY_TAILCAT_ACCEPTANCE_FIRMWARE")
+        .expect("set matching Microsandbox firmware");
+    assert!(PathBuf::from(&msb).is_absolute());
+    assert!(PathBuf::from(&firmware).is_absolute());
+    let version = std::process::Command::new(&msb)
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    assert_eq!(
+        String::from_utf8(version.stdout).unwrap().trim(),
+        "msb 0.7.6"
+    );
     let allowed = [
         "sandbox_create",
         "sandbox_exec",
@@ -32,11 +47,12 @@ async fn browser_to_native_project_to_network_disabled_vm() {
         .tempdir_in("/private/tmp")
         .unwrap();
     let upstream: crate::config::UpstreamConfig = serde_json::from_value(serde_json::json!({
-        "name":"msb", "command":"npx", "args":["-y","microsandbox-mcp@0.7.6"],
+        "name":"msb", "command":node, "args":[PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../packages/labby-microsandbox/server.mjs")],
         "env":{
             "MICROSANDBOX_MCP_HOST_PATH_POLICY":"allowlist",
             "MICROSANDBOX_MCP_HOST_PATHS":host_paths.path(),
-            "MICROSANDBOX_MCP_ENABLE_DANGEROUS":"0"
+            "MICROSANDBOX_MCP_ENABLE_DANGEROUS":"0",
+            "MSB_PATH":msb, "MSB_LIBKRUNFW_PATH":firmware, "MSB_BACKEND":"local"
         },
         "expose_tools":allowed, "proxy_resources":false, "proxy_prompts":false
     }))
@@ -183,14 +199,8 @@ loadout = "sandbox"
     })
     .await;
     drop(guard); // Covers Chromium descendants on success, timeout and failure.
-    if let Ok(Ok(output)) = &output
-        && output.stdout.len() <= 16 * 1024
-        && serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok()
-    {
-        std::fs::write(assets.join("vm-acceptance-evidence.json"), &output.stdout).unwrap();
-    }
     let label = format!("labby-tailcat-run={name}");
-    let owned = tokio::process::Command::new("msb")
+    let owned = tokio::process::Command::new(&msb)
         .args(["list", "--quiet", "--label", &label])
         .output()
         .await
@@ -207,7 +217,7 @@ loadout = "sandbox"
     if owned_names.lines().any(|entry| entry == name) {
         let cleanup = tokio::time::timeout(
             Duration::from_secs(30),
-            tokio::process::Command::new("msb")
+            tokio::process::Command::new(&msb)
                 .args(["remove", "--force", "--quiet", &name])
                 .output(),
         )
@@ -232,7 +242,7 @@ loadout = "sandbox"
     )
     .unwrap();
     gateway.reload_with_origin(None, None).await.unwrap();
-    let listed = tokio::process::Command::new("msb")
+    let listed = tokio::process::Command::new(&msb)
         .args(["list", "--quiet"])
         .output()
         .await
@@ -248,6 +258,13 @@ loadout = "sandbox"
             .any(|entry| entry == name),
         "owned VM remains; see recovery identity"
     );
+    if let Ok(Ok(output)) = &output
+        && output.stdout.len() <= 16 * 1024
+        && serde_json::from_slice::<serde_json::Value>(&output.stdout).is_ok()
+    {
+        let _evidence_write =
+            std::fs::write(assets.join("vm-acceptance-evidence.json"), &output.stdout);
+    }
     let output = output
         .expect("browser acceptance deadline")
         .expect("browser driver launch");

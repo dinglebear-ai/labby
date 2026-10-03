@@ -256,7 +256,7 @@ mod tests {
         use base64::Engine as _;
         use tower::ServiceExt as _;
         let (directory, runtime, adapter, approved, manager) =
-            super::super::testing::fixture_with_manager().await;
+            super::super::testing::fixture_with_lifetime(12).await;
         let authority = Arc::new(super::super::RequestAuthority {
             adapter: adapter.clone(),
             approved,
@@ -270,61 +270,45 @@ mod tests {
         let lease = GrantLease::issue_checked(runtime.clone(), &manager, &authority)
             .await
             .unwrap();
-        let route: crate::config::ProtectedMcpRouteConfig = toml::from_str(
-            r#"
-name = "sandbox"
-public_host = "labby.example"
-public_path = "/sandbox"
-scopes = ["lab"]
-[target]
-kind = "gateway_subset"
-project_id = "bootstrap-default"
-loadout = "sandbox"
-"#,
+        let router = super::super::testing::protected_projection(
+            &directory,
+            runtime,
+            adapter,
+            authority.clone(),
+            manager,
         )
-        .unwrap();
-        let config = crate::config::LabConfig {
-            protected_mcp_routes: vec![route.clone()],
-            loadouts: vec![crate::config::GatewayLoadoutConfig {
-                name: "sandbox".into(),
-                upstreams: vec!["msb".into()],
-                expose_resources: false,
-                expose_prompts: false,
-                expose_skills: false,
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-        let mut state = crate::api::AppState::new();
-        state.config = Arc::new(config);
-        state.installation_id = Some("machine".into());
-        state.access_runtime = runtime;
-        state.access_credential_adapter = Some(adapter);
-        state.gateway_manager = Some(Arc::new(manager));
-        state.oauth_state = Some(Arc::new(
-            labby_auth::state::AuthState::new(labby_auth::config::AuthConfig {
-                mode: labby_auth::config::AuthMode::OAuth,
-                public_url: Some(url::Url::parse("https://labby.example").unwrap()),
-                sqlite_path: directory.path().join("auth.db"),
-                key_path: directory.path().join("auth.pem"),
-                google: labby_auth::config::GoogleConfig {
-                    client_id: "fixture".into(),
-                    client_secret: "fixture".into(),
-                    ..Default::default()
-                },
-                token_encryption_key: Some((*authority.key).clone()),
-                ..Default::default()
-            })
-            .await
-            .unwrap(),
-        ));
-        let projection = crate::cli::serve::tailcat_test_projection(&state).unwrap();
-        state = state.with_protected_mcp_routers(projection);
-        let router =
-            crate::api::tailcat::restricted_router(state, route, authority.clone()).unwrap();
+        .await;
         let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params": {
             "protocolVersion":"2025-03-26", "capabilities":{}, "clientInfo":{"name":"tailcat-fixture","version":"1"}
         }});
+        let now = u64::try_from(labby_auth::util::now_unix()).unwrap();
+        let child = labby_auth::transport_grant::open(
+            &authority.key,
+            lease.envelope(),
+            &lease.binding(),
+            now,
+        )
+        .unwrap();
+        let mut wrong_peer = lease.binding();
+        wrong_peer.peer = format!("nodekey:{}", "2".repeat(64));
+        let wrong_peer =
+            labby_auth::transport_grant::seal(&authority.key, &child, &wrong_peer, now).unwrap();
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", format!("Bearer {wrong_peer}"))
+                    .header("origin", authority.approved.origin())
+                    .header("labby-tailcat-generation", authority.approved.generation())
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
         let wrong_origin = router
             .clone()
             .oneshot(
@@ -398,7 +382,7 @@ loadout = "sandbox"
         if let Some(session) = session {
             request = request.header("mcp-session-id", session);
         }
-        let response = router.oneshot(request.body(axum::body::Body::from(serde_json::json!({
+        let response = router.clone().oneshot(request.body(axum::body::Body::from(serde_json::json!({
             "jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"gateway","arguments":{"action":"status"}}
         }).to_string())).unwrap()).await.unwrap();
         let bytes = axum::body::to_bytes(response.into_body(), 65536)
@@ -407,6 +391,26 @@ loadout = "sandbox"
         let text = std::str::from_utf8(&bytes).unwrap();
         assert!(text.contains("gateway"));
         assert!(text.contains("error") || text.contains("isError\":true"));
+        let remaining = authority
+            .approved
+            .expires_at()
+            .saturating_sub(labby_auth::util::now_unix() as u64);
+        tokio::time::sleep(std::time::Duration::from_secs(remaining + 1)).await;
+        let expired = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", format!("Bearer {}", lease.envelope()))
+                    .header("origin", authority.approved.origin())
+                    .header("labby-tailcat-generation", authority.approved.generation())
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(expired.status(), axum::http::StatusCode::UNAUTHORIZED);
         lease.revoke().await.unwrap();
     }
 

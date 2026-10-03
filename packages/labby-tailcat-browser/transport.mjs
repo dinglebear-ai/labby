@@ -16,7 +16,7 @@ export class TailcatClient {
   if(signal?.aborted){owner.close();throw Error('Operation cancelled')}
   return new TailcatClient(capability,()=>owner.dial(),owner);
  }
- constructor(capability,dial,owner){this.owner=owner;this.capability=capability;this.dial=dial;this.session=null;this.nextId=1;this.active=new Set();this.closed=false;this.pending=0;this.lifetime=new AbortController();}
+ constructor(capability,dial,owner){this.owner=owner;this.capability=capability;this.dial=dial;this.session=null;this.nextId=1;this.active=new Set();this.closed=false;this.pending=0;this.lifetime=new AbortController();this.heartbeat=setInterval(()=>{if(this.pending)return;this.request('ping').catch(()=>this.close())},30000);this.heartbeat.unref?.();}
  async request(method,params={}, {signal}={}){
   if(this.closed||this.capability.expiresAt<=Date.now()||signal?.aborted)throw Error('Connection closed or expired');
   if(this.pending>=8)throw Error('Connection capacity exceeded');
@@ -51,5 +51,5 @@ export class TailcatClient {
    if(conn){this.active.delete(conn);conn.close()}this.pending--;
   }
  }
- close(){if(this.closed)return;this.closed=true;this.lifetime.abort();for(const c of this.active)c.close();this.active.clear();this.session=null;this.capability=null;this.owner?.close();this.owner=null;}
+ close(){if(this.closed)return;clearInterval(this.heartbeat);this.closed=true;this.lifetime.abort();for(const c of this.active)c.close();this.active.clear();this.session=null;this.capability=null;this.owner?.close();this.owner=null;}
 }

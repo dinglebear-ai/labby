@@ -105,6 +105,143 @@ mod tests {
     use super::*;
     use base64::Engine as _;
 
+    #[cfg(feature = "proxy-testkit")]
+    #[derive(Clone)]
+    struct PendingTool {
+        started: std::sync::Arc<tokio::sync::Notify>,
+        release: std::sync::Arc<tokio::sync::Notify>,
+    }
+    #[cfg(feature = "proxy-testkit")]
+    impl rmcp::ServerHandler for PendingTool {
+        fn get_info(&self) -> rmcp::model::ServerInfo {
+            rmcp::model::ServerInfo::new(
+                rmcp::model::ServerCapabilities::builder()
+                    .enable_tools()
+                    .build(),
+            )
+        }
+        async fn call_tool(
+            &self,
+            _request: rmcp::model::CallToolRequestParams,
+            _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+        ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(
+                rmcp::model::CallToolResult::success(vec![rmcp::model::ContentBlock::text(
+                    "released",
+                )])
+                .into(),
+            )
+        }
+    }
+
+    #[cfg(feature = "proxy-testkit")]
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // Exact upstream fixture metadata, not a Labby-owned descriptor.
+    async fn revocation_closes_an_authorized_call_on_the_actual_protected_endpoint() {
+        use std::sync::Arc;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let pool = Arc::new(labby_gateway::upstream::pool::UpstreamPool::new());
+        pool.install_tool_server_for_tests(
+            "msb",
+            PendingTool {
+                started: started.clone(),
+                release: release.clone(),
+            },
+        )
+        .await;
+        let tool = rmcp::model::Tool::new(
+            "pending_tool",
+            "bounded cancellation fixture",
+            Arc::new(serde_json::Map::new()),
+        )
+        .with_annotations(
+            rmcp::model::ToolAnnotations::new()
+                .read_only(true)
+                .destructive(false),
+        );
+        pool.insert_tool_routes_for_tests(
+            "msb",
+            vec![labby_gateway::upstream::types::UpstreamTool {
+                upstream_name: Arc::from("msb"),
+                input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
+                output_schema: None,
+                destructive: false,
+                tool,
+            }],
+        )
+        .await;
+        let (directory, runtime, adapter, approved, manager) =
+            super::super::testing::fixture_with_test_pool(pool).await;
+        let authority = Arc::new(RequestAuthority {
+            adapter: adapter.clone(),
+            approved,
+            key: Arc::new(TokenEncryptionKey::from_encoded(&"01".repeat(32)).unwrap()),
+            source: ProductCredential::parse(&format!(
+                "lby_pc_v1_source_{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0xA5; 32])
+            ))
+            .unwrap(),
+        });
+        let lease = GrantLease::issue_checked(runtime.clone(), &manager, &authority)
+            .await
+            .unwrap();
+        let router = super::super::testing::protected_projection(
+            &directory,
+            runtime,
+            adapter,
+            authority.clone(),
+            manager,
+        )
+        .await;
+        let listener = crate::api::tailcat::RestrictedListener::start_authorized(
+            router,
+            authority.clone(),
+            lease.envelope().to_owned(),
+        )
+        .await
+        .unwrap();
+        let mut stream = tokio::net::TcpStream::connect(listener.address())
+            .await
+            .unwrap();
+        let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pending_tool","arguments":{}}}).to_string();
+        let headers = format!(
+            "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nOrigin: {}\r\nLabby-Tailcat-Generation: {}\r\nMCP-Protocol-Version: 2025-03-26\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
+            lease.envelope(),
+            authority.approved.origin(),
+            authority.approved.generation(),
+            body.len(),
+            body
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
+            .await
+            .expect("authorized request must reach the actual upstream");
+        lease.revoke().await.unwrap();
+        let mut buffer = [0; 1024];
+        tokio::time::timeout(std::time::Duration::from_secs(7), async {
+            loop {
+                match stream.read(&mut buffer).await {
+                    Ok(0) => break,
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => break,
+                    Err(error) => panic!("unexpected stream failure: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("revocation must close the actual protected request connection");
+        assert!(
+            tokio::net::TcpStream::connect(listener.address())
+                .await
+                .is_err()
+        );
+        release.notify_waiters();
+    }
+
     #[tokio::test]
     async fn native_revocation_closes_existing_stream_and_listener() {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

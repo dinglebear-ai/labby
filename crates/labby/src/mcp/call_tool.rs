@@ -636,6 +636,37 @@ impl LabMcpServer {
         let access_context_unavailable = binding.is_none();
         let result = match (binding, self.gateway_manager.as_deref()) {
             (Some((transport, identity)), Some(manager)) => {
+                #[cfg(feature = "tailcat")]
+                let cleanup = context
+                    .extensions
+                    .get::<axum::http::request::Parts>()
+                    .and_then(|parts| {
+                        parts
+                            .extensions
+                            .get::<Arc<crate::dispatch::tailcat::cleanup::CleanupSession>>()
+                    });
+                #[cfg(feature = "tailcat")]
+                if let Some(cleanup) = cleanup {
+                    crate::mcp::tool_execution::execute_tailcat_project_complete_tool(
+                        self.access_runtime.as_ref(),
+                        manager,
+                        transport,
+                        identity,
+                        request,
+                        cleanup,
+                    )
+                    .await
+                } else {
+                    crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
+                        self.access_runtime.as_ref(),
+                        manager,
+                        transport,
+                        identity,
+                        request,
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "tailcat"))]
                 crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
                     self.access_runtime.as_ref(),
                     manager,

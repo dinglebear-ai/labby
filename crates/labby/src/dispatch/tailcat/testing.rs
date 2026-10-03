@@ -40,6 +40,32 @@ pub(super) async fn fixture_with_upstream(
     ApprovedPairing,
     labby_gateway::gateway::manager::GatewayManager,
 ) {
+    fixture_with_upstream_lifetime(upstream, 3600, Default::default()).await
+}
+
+pub(super) async fn fixture_with_lifetime(
+    seconds: i64,
+) -> (
+    tempfile::TempDir,
+    Arc<AccessRuntime>,
+    Arc<AccessCredentialAdapter>,
+    ApprovedPairing,
+    labby_gateway::gateway::manager::GatewayManager,
+) {
+    fixture_with_upstream_lifetime(None, seconds, Default::default()).await
+}
+
+async fn fixture_with_upstream_lifetime(
+    upstream: Option<crate::config::UpstreamConfig>,
+    seconds: i64,
+    pool_runtime: labby_gateway::gateway::manager::GatewayRuntimeHandle,
+) -> (
+    tempfile::TempDir,
+    Arc<AccessRuntime>,
+    Arc<AccessCredentialAdapter>,
+    ApprovedPairing,
+    labby_gateway::gateway::manager::GatewayManager,
+) {
     let directory = tempfile::Builder::new()
         .prefix("tailcat-authority-")
         .tempdir_in(if cfg!(target_os = "macos") {
@@ -87,7 +113,7 @@ loadout = "sandbox"
     }
     let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
         directory.path().join("gateway.toml"),
-        Default::default(),
+        pool_runtime,
     );
     manager
         .seed_config_unchecked_for_tests(config.to_gateway_config())
@@ -149,7 +175,7 @@ loadout = "sandbox"
             audience: lease.audience().into(),
             scopes_json: "[\"lab\"]".into(),
             now,
-            credential_expires_at: now + 3600,
+            credential_expires_at: now + seconds,
         })
         .await
         .unwrap();
@@ -181,4 +207,94 @@ loadout = "sandbox"
         .approve(&pending.nonce().unwrap(), &request(), &bound, now as u64)
         .unwrap();
     (directory, runtime, adapter, approved, manager)
+}
+
+#[cfg(feature = "proxy-testkit")]
+pub(super) async fn fixture_with_test_pool(
+    pool: Arc<labby_gateway::upstream::pool::UpstreamPool>,
+) -> (
+    tempfile::TempDir,
+    Arc<AccessRuntime>,
+    Arc<AccessCredentialAdapter>,
+    ApprovedPairing,
+    labby_gateway::gateway::manager::GatewayManager,
+) {
+    let runtime = labby_gateway::gateway::manager::GatewayRuntimeHandle::default();
+    runtime.swap(Some(pool)).await;
+    fixture_with_upstream_lifetime(
+        Some(
+            toml::from_str(
+                r#"name = "msb"
+enabled = true
+command = "node"
+[env]
+MCP_UPSTREAM_RELAY_MODE = "pooled"
+"#,
+            )
+            .unwrap(),
+        ),
+        3600,
+        runtime,
+    )
+    .await
+}
+
+pub(super) async fn protected_projection(
+    directory: &tempfile::TempDir,
+    runtime: Arc<AccessRuntime>,
+    adapter: Arc<AccessCredentialAdapter>,
+    authority: Arc<super::RequestAuthority>,
+    manager: labby_gateway::gateway::manager::GatewayManager,
+) -> axum::Router {
+    let route: ProtectedMcpRouteConfig = toml::from_str(
+        r#"
+name = "sandbox"
+public_host = "labby.example"
+public_path = "/sandbox"
+scopes = ["lab"]
+[target]
+kind = "gateway_subset"
+project_id = "bootstrap-default"
+loadout = "sandbox"
+"#,
+    )
+    .unwrap();
+    let config = LabConfig {
+        protected_mcp_routes: vec![route.clone()],
+        loadouts: vec![GatewayLoadoutConfig {
+            name: "sandbox".into(),
+            upstreams: vec!["msb".into()],
+            expose_resources: false,
+            expose_prompts: false,
+            expose_skills: false,
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut state = crate::api::AppState::new();
+    state.config = Arc::new(config);
+    state.installation_id = Some("machine".into());
+    state.access_runtime = runtime;
+    state.access_credential_adapter = Some(adapter);
+    state.gateway_manager = Some(Arc::new(manager));
+    state.oauth_state = Some(Arc::new(
+        labby_auth::state::AuthState::new(labby_auth::config::AuthConfig {
+            mode: labby_auth::config::AuthMode::OAuth,
+            public_url: Some(url::Url::parse("https://labby.example").unwrap()),
+            sqlite_path: directory.path().join("auth.db"),
+            key_path: directory.path().join("auth.pem"),
+            google: labby_auth::config::GoogleConfig {
+                client_id: "fixture".into(),
+                client_secret: "fixture".into(),
+                ..Default::default()
+            },
+            token_encryption_key: Some((*authority.key).clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap(),
+    ));
+    let projection = crate::cli::serve::tailcat_test_projection(&state).unwrap();
+    state = state.with_protected_mcp_routers(projection);
+    crate::api::tailcat::restricted_router(state, route, authority.clone()).unwrap()
 }

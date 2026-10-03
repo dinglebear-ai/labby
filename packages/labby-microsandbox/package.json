@@ -1,0 +1,11 @@
+{
+  "name": "@dinglebear/labby-microsandbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental Microsandbox MCP adapter with identity-bound session cleanup",
+  "bin": {"labby-microsandbox": "server.mjs"},
+  "scripts": {"test": "node --test *.test.mjs"},
+  "engines": {"node": ">=22"},
+  "dependencies": {"microsandbox-mcp": "0.7.6", "microsandbox": "0.7.6", "@modelcontextprotocol/sdk": "1.29.0", "zod": "4.3.6"}
+}

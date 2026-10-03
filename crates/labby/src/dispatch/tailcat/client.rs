@@ -42,8 +42,8 @@ pub(crate) struct LocalClient {
     path: PathBuf,
 }
 pub(crate) fn credential_wire(path: &std::path::Path) -> Result<String, ControlError> {
-    let bytes = crate::installation::secure_file::read_private(path)
-        .map_err(|_| ControlError::Denied)?;
+    let bytes =
+        crate::installation::secure_file::read_private(path).map_err(|_| ControlError::Denied)?;
     let wire = std::str::from_utf8(&bytes).map_err(|_| ControlError::Denied)?;
     labby_primitives::product_credential::ProductCredential::parse(wire)
         .map_err(|_| ControlError::Denied)?;

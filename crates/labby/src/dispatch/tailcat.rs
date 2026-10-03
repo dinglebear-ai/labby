@@ -9,6 +9,7 @@ mod session;
 #[cfg(all(feature = "tailcat", unix))]
 pub(crate) use session::{HelperArtifact, SessionDelivery};
 mod authorization;
+pub(crate) mod cleanup;
 #[cfg(all(feature = "tailcat", unix))]
 pub(crate) mod client;
 #[cfg(all(feature = "tailcat", unix))]

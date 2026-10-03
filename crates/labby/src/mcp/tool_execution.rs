@@ -109,7 +109,10 @@ pub(crate) fn transport_bound_tool_ownership(
     }
 }
 
-fn resolve_exact_target(context: &BoundAccessContext, wire_name: &str) -> Option<ExactToolTarget> {
+fn resolve_visible_target(
+    context: &BoundAccessContext,
+    wire_name: &str,
+) -> Option<ExactToolTarget> {
     if context.catalog().access().permission != Permission::AssetUse {
         return None;
     }
@@ -126,12 +129,10 @@ fn resolve_exact_target(context: &BoundAccessContext, wire_name: &str) -> Option
     }
     let tools = context.catalog().catalog().tools();
     let published = tools.unique_route_for_wire_name(wire_name)?;
-    if published.tool.destructive
-        || !context.allows_upstream_tool_pair(
-            published.upstream_name.as_ref(),
-            published.tool_name.as_ref(),
-        )
-    {
+    if !context.allows_upstream_tool_pair(
+        published.upstream_name.as_ref(),
+        published.tool_name.as_ref(),
+    ) {
         return None;
     }
     Some(ExactToolTarget {
@@ -151,7 +152,48 @@ pub(crate) async fn execute_exact_project_tool(
     manager: &GatewayManager,
     input: ToolExecutionResolutionInput,
 ) -> Result<CallToolResponse, ToolExecutionResolutionError> {
-    let wire_name = input.request.name.to_string();
+    execute_exact_project_tool_scoped(
+        runtime,
+        manager,
+        input,
+        None,
+        #[cfg(feature = "tailcat")]
+        None,
+    )
+    .await
+}
+
+async fn execute_exact_project_tool_scoped(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    input: ToolExecutionResolutionInput,
+    expected: Option<(&str, &str)>,
+    #[cfg(feature = "tailcat")] cleanup: Option<
+        &crate::dispatch::tailcat::cleanup::CleanupPermit<'_>,
+    >,
+) -> Result<CallToolResponse, ToolExecutionResolutionError> {
+    let resolve = |context: &BoundAccessContext| {
+        let target = resolve_visible_target(context, input.request.name.as_ref())?;
+        if expected.is_some_and(|(upstream, native)| {
+            target.upstream != upstream || target.native_name != native
+        }) {
+            return None;
+        }
+        if target.destructive {
+            #[cfg(feature = "tailcat")]
+            if cleanup.is_some_and(|permit| {
+                permit.allows(
+                    &target.upstream,
+                    &target.native_name,
+                    input.request.arguments.as_ref(),
+                )
+            }) {
+                return Some(target);
+            }
+            return None;
+        }
+        Some(target)
+    };
     let first = bind_asset_use_access_context(
         runtime,
         manager,
@@ -162,9 +204,8 @@ pub(crate) async fn execute_exact_project_tool(
     )
     .await
     .map_err(|_| ToolExecutionResolutionError::Unavailable)?;
-    let target = resolve_exact_target(&first, &wire_name)
-        .ok_or(ToolExecutionResolutionError::Unavailable)?;
-    let mut outbound = input.request;
+    let target = resolve(&first).ok_or(ToolExecutionResolutionError::Unavailable)?;
+    let mut outbound = input.request.clone();
     outbound.name = target.native_name.clone().into();
     let result = manager
         .execute_published_tool_exact(
@@ -178,15 +219,14 @@ pub(crate) async fn execute_exact_project_tool(
     let second = bind_asset_use_access_context(
         runtime,
         manager,
-        input.identity,
+        input.identity.clone(),
         &input.route_name,
         &input.resource,
         &input.project_id,
     )
     .await
     .map_err(|_| ToolExecutionResolutionError::Unavailable)?;
-    let second_target = resolve_exact_target(&second, &wire_name)
-        .ok_or(ToolExecutionResolutionError::Unavailable)?;
+    let second_target = resolve(&second).ok_or(ToolExecutionResolutionError::Unavailable)?;
     if !first.same_publication_as(&second) || target != second_target {
         return Err(ToolExecutionResolutionError::Unavailable);
     }
@@ -236,6 +276,195 @@ fn finish_transport_bound_tool_result(
         return Err(ToolExecutionResolutionError::Unavailable);
     }
     result
+}
+
+#[cfg(feature = "tailcat")]
+pub(crate) async fn execute_tailcat_project_complete_tool(
+    runtime: &AccessRuntime,
+    manager: &GatewayManager,
+    transport: &TransportBoundAccessContext,
+    identity: &VerifiedIdentity,
+    mut request: CallToolRequestParams,
+    session: &crate::dispatch::tailcat::cleanup::CleanupSession,
+) -> Result<CallToolResult, ToolExecutionResolutionError> {
+    use ToolExecutionResolutionError::Unavailable;
+    transport
+        .validate_not_expired(SystemTime::now())
+        .map_err(|_| Unavailable)?;
+    if !transport.matches_identity(identity) {
+        return Err(Unavailable);
+    }
+    let route = transport.core().route();
+    let current = bind_asset_use_access_context(
+        runtime,
+        manager,
+        identity.clone(),
+        route.route_name(),
+        route.resource(),
+        route.project_id(),
+    )
+    .await
+    .map_err(|_| Unavailable)?;
+    let target = resolve_visible_target(&current, request.name.as_ref()).ok_or(Unavailable)?;
+    if target.upstream != session.upstream() {
+        return Err(Unavailable);
+    }
+    if target.native_name != "sandbox_create" && target.native_name != "sandbox_remove" {
+        return execute_transport_bound_project_complete_tool(
+            runtime, manager, transport, identity, request,
+        )
+        .await;
+    }
+    let make_input = |request| {
+        ToolExecutionResolutionInput::new(
+            identity.clone(),
+            route.route_name(),
+            route.resource(),
+            route.project_id(),
+            request,
+        )
+    };
+    let result = if target.native_name == "sandbox_create" {
+        let name = session
+            .prepare_create(request.arguments.as_mut().ok_or(Unavailable)?)
+            .map_err(|_| Unavailable)?;
+        let result = execute_exact_project_tool_scoped(
+            runtime,
+            manager,
+            make_input(request),
+            Some((session.upstream(), "sandbox_create")),
+            None,
+        )
+        .await;
+        let result =
+            finish_transport_bound_tool_result(transport, identity, SystemTime::now(), result)
+                .and_then(finish_complete_tool_response);
+        session.finish_create(
+            &name,
+            result.as_ref().is_ok_and(|r| {
+                tool_body(r).is_some_and(|body| {
+                    body.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                        && body
+                            .pointer("/data/name")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(name.as_str())
+                })
+            }),
+        );
+        return result;
+    } else {
+        let published = current
+            .catalog()
+            .catalog()
+            .tools()
+            .unique_route_for_wire_name(request.name.as_ref())
+            .ok_or(Unavailable)?;
+        if !published
+            .tool
+            .tool
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("labby.tailcat.atomic_cleanup"))
+            .is_some_and(|value| value.as_u64() == Some(1))
+            || published
+                .tool
+                .input_schema
+                .as_ref()
+                .and_then(|schema| schema.pointer("/properties/expectedOwner/type"))
+                .and_then(serde_json::Value::as_str)
+                != Some("string")
+        {
+            return Err(Unavailable);
+        }
+        let mut permit = session
+            .reserve_remove(request.arguments.as_ref().ok_or(Unavailable)?)
+            .map_err(|_| Unavailable)?;
+        let inspect = current
+            .catalog()
+            .catalog()
+            .tools()
+            .routes()
+            .iter()
+            .find(|route| {
+                route.upstream_name.as_ref() == session.upstream()
+                    && route.tool_name.as_ref() == "sandbox_inspect"
+            })
+            .map(|route| route.tool_name.to_string());
+        let inspect_name = inspect.ok_or(Unavailable)?;
+        let mut inspection = request.clone();
+        inspection.name = inspect_name.into();
+        inspection.arguments = Some(
+            serde_json::json!({"name":permit.name()})
+                .as_object()
+                .expect("object")
+                .clone(),
+        );
+        let response = execute_exact_project_tool_scoped(
+            runtime,
+            manager,
+            make_input(inspection),
+            Some((session.upstream(), "sandbox_inspect")),
+            None,
+        )
+        .await?;
+        let inspected = finish_complete_tool_response(response)?;
+        let body = tool_body(&inspected).ok_or(Unavailable)?;
+        if inspected.is_error == Some(true)
+            || body.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+            || body
+                .pointer("/data/name")
+                .and_then(serde_json::Value::as_str)
+                != Some(permit.name())
+            || !body
+                .pointer("/data/config/labels")
+                .is_some_and(|labels| session.matches_labels(labels))
+        {
+            return Err(Unavailable);
+        }
+        transport
+            .validate_not_expired(SystemTime::now())
+            .map_err(|_| Unavailable)?;
+        request.arguments.as_mut().ok_or(Unavailable)?.insert(
+            "expectedOwner".into(),
+            serde_json::Value::String(session.owner_label().into()),
+        );
+        permit.mark_dispatched();
+        let response = execute_exact_project_tool_scoped(
+            runtime,
+            manager,
+            make_input(request),
+            Some((session.upstream(), "sandbox_remove")),
+            Some(&permit),
+        )
+        .await;
+        let result =
+            finish_transport_bound_tool_result(transport, identity, SystemTime::now(), response)
+                .and_then(finish_complete_tool_response);
+        if result.as_ref().is_ok_and(|r| {
+            r.is_error != Some(true)
+                && tool_body(r)
+                    .is_some_and(|b| b.get("ok").and_then(serde_json::Value::as_bool) == Some(true))
+        }) {
+            permit.removed();
+        }
+        result
+    };
+    result
+}
+
+#[cfg(feature = "tailcat")]
+fn tool_body(result: &CallToolResult) -> Option<serde_json::Value> {
+    if result.is_error == Some(true) {
+        return None;
+    }
+    if let Some(body) = &result.structured_content {
+        return Some(body.clone());
+    }
+    result.content.iter().find_map(|content| {
+        content
+            .as_text()
+            .and_then(|text| serde_json::from_str(&text.text).ok())
+    })
 }
 
 /// Execute the protected Tool path under the handler's explicit Complete-only
@@ -350,6 +579,10 @@ mod tests {
         execute_transport_bound_project_tool_with_clock, finish_complete_tool_response,
         finish_transport_bound_tool_result, map_manager_error, map_manager_result,
         transport_bound_tool_ownership,
+    };
+    #[cfg(feature = "tailcat")]
+    use super::{
+        execute_tailcat_project_complete_tool, execute_transport_bound_project_complete_tool,
     };
     use crate::access::{AccessRuntime, AssignProjectLoadoutInput, BootstrapOwnerInput};
     use crate::mcp::bound_access::{
@@ -918,6 +1151,238 @@ mod tests {
             .await
         });
         (task, started, release)
+    }
+
+    #[cfg(feature = "tailcat")]
+    #[derive(Clone)]
+    struct CleanupToolServer {
+        calls: Arc<AtomicUsize>,
+        labels: Arc<Mutex<serde_json::Value>>,
+    }
+    #[cfg(feature = "tailcat")]
+    impl ServerHandler for CleanupToolServer {
+        fn get_info(&self) -> ServerInfo {
+            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        }
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            let args = request.arguments.unwrap();
+            let name = &args["name"];
+            let data = match request.name.as_ref() {
+                "sandbox_create" => {
+                    *self.labels.lock().await = args["process"]["labels"].clone();
+                    serde_json::json!({"name":name,"status":"running"})
+                }
+                "sandbox_inspect" => {
+                    serde_json::json!({"name":name,"config":{"labels":self.labels.lock().await.clone()}})
+                }
+                "sandbox_remove" => {
+                    self.calls.fetch_add(1, Ordering::SeqCst);
+                    serde_json::json!({"name":name})
+                }
+                _ => panic!("unexpected cleanup fixture tool"),
+            };
+            Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::json!({"ok":true,"data":data}).to_string(),
+            )])
+            .into())
+        }
+    }
+
+    #[cfg(feature = "tailcat")]
+    #[tokio::test]
+    async fn tailcat_cleanup_requires_session_creation_and_current_runtime_label() {
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let runtime = Arc::new(AccessRuntime::initialize(directory.path().join("access.db")).await);
+        let identity = VerifiedIdentity::local_credential_with_issuer(
+            Authenticator::StaticBearer,
+            "server-static-issuer",
+            "server-credential",
+        )
+        .unwrap();
+        runtime
+            .bootstrap_owner(
+                BootstrapOwnerInput::new(identity.clone(), "Local", "Default").unwrap(),
+            )
+            .await
+            .unwrap();
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .assign_project_loadout(
+                AssignProjectLoadoutInput::new(identity.clone(), "bootstrap-default", "production")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let usage_store = Arc::new(
+            labby_gateway::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let labels = Arc::new(Mutex::new(serde_json::json!({})));
+        let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(usage_store)));
+        pool.install_tool_server_for_tests(
+            "alpha",
+            CleanupToolServer {
+                calls: calls.clone(),
+                labels: labels.clone(),
+            },
+        )
+        .await;
+        pool.insert_tool_routes_for_tests(
+            "alpha",
+            vec![
+                upstream_tool("sandbox_create", false),
+                upstream_tool("sandbox_inspect", false),
+                {
+                    let mut tool = upstream_tool("sandbox_remove", true);
+                    tool.tool.meta = Some(
+                        serde_json::json!({"labby.tailcat.atomic_cleanup":1})
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                            .into(),
+                    );
+                    tool.input_schema =
+                        Some(serde_json::json!({"properties":{"expectedOwner":{"type":"string"}}}));
+                    tool
+                },
+            ],
+        )
+        .await;
+        let gateway_runtime = GatewayRuntimeHandle::default();
+        gateway_runtime.swap(Some(Arc::clone(&pool))).await;
+        let path = directory.path().join("tool-execution.toml");
+        let manager = Arc::new(
+            GatewayManager::with_store(
+                path.clone(),
+                gateway_runtime.clone(),
+                Arc::new(FsGatewayConfigStore::new(path)),
+            )
+            .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry())),
+        );
+        manager.try_seed_config(config(true)).await.unwrap();
+
+        let now = SystemTime::now();
+        let expiry = now.duration_since(UNIX_EPOCH).unwrap().as_secs() as usize + 300;
+        let transport = transport_binding(&runtime, &manager, identity.clone(), expiry, now).await;
+        let owner = crate::dispatch::tailcat::cleanup::CleanupSession::new("alpha");
+        let stranger = crate::dispatch::tailcat::cleanup::CleanupSession::new("alpha");
+        let name = "labby-tailcat-0123456789abcdef0123456789abcdef";
+        let request = |tool: &str, name: &str| {
+            CallToolRequestParams::new(tool.to_owned()).with_arguments(
+                serde_json::json!({"name":name})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+        };
+        assert!(
+            execute_tailcat_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request("sandbox_remove", name),
+                &owner
+            )
+            .await
+            .is_err()
+        );
+        execute_tailcat_project_complete_tool(
+            &runtime,
+            &manager,
+            &transport,
+            &identity,
+            request("sandbox_create", name),
+            &owner,
+        )
+        .await
+        .unwrap();
+        assert!(
+            execute_tailcat_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request("sandbox_remove", name),
+                &stranger
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            execute_transport_bound_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request("sandbox_remove", name)
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        execute_tailcat_project_complete_tool(
+            &runtime,
+            &manager,
+            &transport,
+            &identity,
+            request("sandbox_remove", name),
+            &owner,
+        )
+        .await
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(
+            execute_tailcat_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request("sandbox_remove", name),
+                &owner
+            )
+            .await
+            .is_err()
+        );
+        let replacement = "labby-tailcat-1123456789abcdef0123456789abcdef";
+        execute_tailcat_project_complete_tool(
+            &runtime,
+            &manager,
+            &transport,
+            &identity,
+            request("sandbox_create", replacement),
+            &owner,
+        )
+        .await
+        .unwrap();
+        *labels.lock().await = serde_json::json!({"labby-tailcat-owner":"different-session"});
+        assert!(
+            execute_tailcat_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request("sandbox_remove", replacement),
+                &owner
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

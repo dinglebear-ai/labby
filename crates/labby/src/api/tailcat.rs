@@ -87,12 +87,16 @@ pub(crate) fn restricted_router(
         .map_err(|_| crate::dispatch::tailcat::PairingError)?;
     let host = HeaderValue::from_str(&route.public_host)
         .map_err(|_| crate::dispatch::tailcat::PairingError)?;
+    let cleanup = std::sync::Arc::new(crate::dispatch::tailcat::cleanup::CleanupSession::new(
+        authority.approved.upstream(),
+    ));
     Ok(Router::new().route(
         "/mcp",
         axum::routing::any(move |mut request: axum::http::Request<Body>| {
             let state = state.clone();
             let route = route.clone();
             let authority = authority.clone();
+            let cleanup = cleanup.clone();
             let path = path.clone();
             let host = host.clone();
             async move {
@@ -132,6 +136,7 @@ pub(crate) fn restricted_router(
                 // hop is native, like a desktop MCP client; its public HTTP
                 // origin allowlist must not reinterpret the approved portal.
                 request.headers_mut().remove(header::ORIGIN);
+                request.extensions_mut().insert(cleanup);
                 *request.uri_mut() = path;
                 super::router::protected_mcp_route_entry(state, request, route).await
             }
@@ -172,6 +177,23 @@ impl RestrictedListener {
                 authority.approved.generation(),
             )
             .await?;
+        // Successful browser requests renew liveness; native authority polling does not.
+        let activity = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let observed = activity.clone();
+        let router = router.layer(axum::middleware::from_fn(
+            move |request: axum::http::Request<Body>, next: axum::middleware::Next| {
+                let observed = observed.clone();
+                async move {
+                    let response = next.run(request).await;
+                    if response.status().is_success() {
+                        if let Ok(mut last) = observed.lock() {
+                            *last = Some(tokio::time::Instant::now());
+                        }
+                    }
+                    response
+                }
+            },
+        ));
         let mut listener = Self::start(router)
             .await
             .map_err(|_| crate::dispatch::tailcat::PairingError)?;
@@ -181,6 +203,13 @@ impl RestrictedListener {
                 tokio::select! {
                     () = cancel.cancelled() => break,
                     () = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                }
+                let idle = activity.lock().map_or(true, |last| {
+                    browser_idle_expired(*last, tokio::time::Instant::now())
+                });
+                if idle {
+                    cancel.cancel();
+                    break;
                 }
                 let checked = tokio::time::timeout(
                     std::time::Duration::from_secs(5),
@@ -217,8 +246,31 @@ impl Drop for RestrictedListener {
     }
 }
 
+fn browser_idle_expired(last: Option<tokio::time::Instant>, now: tokio::time::Instant) -> bool {
+    last.is_some_and(|last| {
+        now.saturating_duration_since(last) >= std::time::Duration::from_secs(90)
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn browser_liveness_has_bounded_retirement_after_first_request() {
+        let now = tokio::time::Instant::now();
+        assert!(!browser_idle_expired(None, now));
+        assert!(!browser_idle_expired(
+            Some(now),
+            now + Duration::from_secs(89)
+        ));
+        assert!(browser_idle_expired(
+            Some(now),
+            now + Duration::from_secs(90)
+        ));
+        assert!(!browser_idle_expired(
+            Some(now + Duration::from_mins(1)),
+            now + Duration::from_secs(90)
+        ));
+    }
     use super::*;
     use axum::routing::get;
     use std::time::Duration;

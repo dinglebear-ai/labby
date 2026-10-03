@@ -1,16 +1,24 @@
 # Experimental Tailcat browser connection
 
-Tailcat carries MCP requests from a browser to local Labby through an approved
-relay. Native Labby still verifies the project credential, its restricted child,
+Tailcat connects the hosted Depot dashboard to local Labby through an approved
+relay. Agents continue to create and work in sandboxes through Labby MCP;
+Tailcat is the dashboard connection, not the agent connection. The current
+Depot page supports pairing, connection status and tool discovery. VM commands
+in the acceptance fixture qualify the transport; they are not dashboard controls. Native Labby still verifies the project credential, its restricted child,
 the browser key, origin, session generation and current route policy. Depot is
 not an authorization server and does not receive the native bearer or browser
 private key.
 
-This integration is under development. Its configuration and process lifecycle,
-browser transport package, and Go/WASM bridge have focused regression coverage.
-That coverage does not qualify an installed native controller, the Depot
-integration, or a successful browser → Labby → network-disabled Microsandbox VM
-run. Live acceptance and final review remain required before publication.
+This integration is under development. An isolated real-Chromium acceptance
+fixture has completed browser → Tailcat WASM → relay → native protected Labby
+MCP → Microsandbox VM creation, non-root Linux execution and session-owned
+cleanup. It inspected disabled networking and empty mounts, denied unrelated VM
+cleanup, and verified the guest was absent afterward. The fixture uses local
+OAuth configuration. The actual Depot page also passed sign-in, pairing request,
+approved delivery import and tool discovery, and the cleanup response confirmed
+the identity-bound adapter was used. Final review findings were addressed;
+installed-controller setup, Google sign-in and production deployment have not
+been qualified. This remains an experimental integration.
 
 ## Prerequisites
 
@@ -19,6 +27,15 @@ run. Live acceptance and final review remain required before publication.
 - An existing project credential bound to a named, tools-only Loadout containing
   exactly the approved Microsandbox upstream, and an enabled protected MCP route.
   Admin credentials, inline Loadouts and wider projections are refused.
+- Microsandbox 0.7.6 with matching native runtime and firmware. For browser
+  cleanup, use the experimental adapter in `packages/labby-microsandbox`
+  (`npm ci` in that directory, then configure its `server.mjs` as a Node MCP
+  upstream). This adapter is not published to npm. Ordinary
+  `microsandbox-mcp@0.7.6` remains usable for nondestructive tools, but browser
+  deletion is denied because its removal operation targets a reusable name.
+  An older runtime in the Microsandbox home directory can override the npm
+  package runtime. Set upstream environment variables `MSB_PATH` and
+  `MSB_LIBKRUNFW_PATH` to the matching executable and firmware when needed.
 - Pinned helper/browser assets built with
   `scripts/build-tailcat-bridge.sh`, plus an approved HTTPS DERP map.
 - Authenticated Depot with the matching portable browser assets installed.
@@ -100,6 +117,28 @@ cannot open it. Leave the feature disabled until the deployment is qualified.
 The delivery file is a sensitive capability. Keep it private and remove the
 owned file after importing it. Neither secret belongs in command arguments,
 logs, HTML attributes, query strings or Git.
+
+## Sandbox cleanup scope
+
+VMs created through this session must use a unique name of the form
+`labby-tailcat-<32 lowercase hexadecimal characters>`. Labby adds its own
+ownership label and records successful creation in native memory. The session
+can remove only those VMs. The adapter checks the current ownership label and
+uses the SDK identity-bound handle destruction, which refuses a same-name
+replacement. Labby requires the adapter's atomic cleanup capability before
+authorizing deletion. Creation refuses replacement options. The session
+cannot remove an existing VM or one created through another session. Other
+destructive tools keep their existing project access policy.
+
+Each session can track up to eight sandboxes, including uncertain creation or
+cleanup attempts. A failed inspection releases its reservation for another
+explicit attempt. Once deletion is dispatched, an uncertain outcome is not
+replayed automatically.
+The browser sends a ping every 30 seconds. After the first successful request,
+90 seconds without successful browser activity retires the native grant, helper
+and listener. An unused delivery still expires at its original deadline.
+Closing or expiring a session does not delete its VMs; use native Microsandbox
+recovery if cleanup was not confirmed. VM lifetime limits should remain enabled.
 
 ## Stop and recover
 
