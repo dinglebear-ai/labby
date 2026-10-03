@@ -254,6 +254,67 @@ fn bound_upstream_error_data(data: rmcp::model::ErrorData) -> rmcp::model::Error
     sanitized_upstream_error_data(&data)
 }
 
+// Stop serialization at the byte budget without allocating a potentially large
+// upstream payload merely to measure it.
+fn error_data_fits_budget(value: &Value) -> bool {
+    struct Budget(usize);
+    impl std::io::Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.0 {
+                return Err(std::io::Error::other("upstream error data exceeded cap"));
+            }
+            self.0 -= bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(&mut Budget(UPSTREAM_ERROR_DATA_CAP_BYTES), value).is_ok()
+}
+
+// Error diagnostics use only the byte budget; trace collection/string limits
+// would discard useful metadata from otherwise small errors.
+fn redact_error_metadata(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    let value = if labby_runtime::redact::is_sensitive_key(key) {
+                        Value::String("[REDACTED]".into())
+                    } else {
+                        redact_error_metadata(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_error_metadata).collect()),
+        Value::String(text) => {
+            // Reuse the owner's scalar credential heuristics without adopting
+            // its 512-character trace truncation for ordinary diagnostics.
+            let scalar =
+                labby_runtime::redact::redact_trace_value(value, UPSTREAM_ERROR_DATA_CAP_BYTES);
+            if scalar.as_str() == Some("[redacted]") {
+                return scalar;
+            }
+            if text.starts_with("http://") || text.starts_with("https://") {
+                return Value::String(labby_runtime::redact::redact_url(text));
+            }
+            let redacted = labby_runtime::redact::redact_secret_like_segments(text);
+            // The shared free-text helper normalizes whitespace. Preserve exact
+            // nonsecret diagnostics when it did not replace a credential.
+            if redacted.contains("[REDACTED]") && redacted != *text {
+                Value::String(redacted)
+            } else {
+                value.clone()
+            }
+        }
+        _ => value.clone(),
+    }
+}
+
 fn sanitized_upstream_error_data(data: &rmcp::model::ErrorData) -> rmcp::model::ErrorData {
     let mut sanitized = rmcp::model::ErrorData::new(
         data.code,
@@ -264,8 +325,16 @@ fn sanitized_upstream_error_data(data: &rmcp::model::ErrorData) -> rmcp::model::
         None,
     );
     if let Some(payload) = data.data.as_ref() {
-        let mut bounded =
-            labby_codemode::redact_trace_value(payload, UPSTREAM_ERROR_DATA_CAP_BYTES);
+        let mut bounded = if error_data_fits_budget(payload) {
+            let redacted = redact_error_metadata(payload);
+            if error_data_fits_budget(&redacted) {
+                redacted
+            } else {
+                labby_codemode::redact_trace_value(&redacted, UPSTREAM_ERROR_DATA_CAP_BYTES)
+            }
+        } else {
+            labby_codemode::redact_trace_value(payload, UPSTREAM_ERROR_DATA_CAP_BYTES)
+        };
         // Preserve the recovery hint even when truncation drops this field. It
         // remains untrusted upstream text and must be sanitized before insertion.
         if let (Some(stub), Some(original)) = (bounded.as_object_mut(), payload.as_object())
@@ -1010,6 +1079,47 @@ mod tests {
             Some(Value::Object(payload)),
         ));
         assert_eq!(bounded.data.unwrap()["kind"], "unknown_action");
+    }
+
+    #[test]
+    fn under_cap_error_metadata_preserves_all_collection_entries() {
+        let mut fields = serde_json::Map::new();
+        for index in 0..70 {
+            fields.insert(format!("f{index}"), serde_json::json!(index));
+        }
+        let payload = serde_json::json!({
+            "fields": fields, "items": (0..70).collect::<Vec<_>>(),
+            "access_token": "private-collection-regression",
+        });
+        assert!(serde_json::to_vec(&payload).unwrap().len() < UPSTREAM_ERROR_DATA_CAP_BYTES);
+        let bounded = bound_upstream_error_data(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "invalid",
+            Some(payload.clone()),
+        ))
+        .data
+        .unwrap();
+        assert_eq!(bounded["fields"], payload["fields"]);
+        assert_eq!(bounded["items"], payload["items"]);
+        assert_ne!(bounded["access_token"], payload["access_token"]);
+    }
+
+    #[test]
+    fn under_cap_error_metadata_preserves_long_diagnostics() {
+        let diagnostic = format!("{}diagnostic-tail", "x".repeat(700));
+        let payload = serde_json::json!({
+            "diagnostic": diagnostic, "detail": "Bearer private-long-regression",
+        });
+        assert!(serde_json::to_vec(&payload).unwrap().len() < UPSTREAM_ERROR_DATA_CAP_BYTES);
+        let bounded = bound_upstream_error_data(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "invalid",
+            Some(payload.clone()),
+        ))
+        .data
+        .unwrap();
+        assert_eq!(bounded["diagnostic"], payload["diagnostic"]);
+        assert!(!bounded.to_string().contains("private-long-regression"));
     }
 
     #[test]

@@ -2473,14 +2473,13 @@ impl LabMcpServer {
                             enrichment_scope,
                         ))
                         .await;
-                    if let Some(authority) = gateway_authority.as_ref()
-                        && let Err(error) = authority.validate_after_external_effect().await
-                    {
-                        return Ok(error_result_from_envelope(tool_error_envelope(
-                            &service, &action, &error,
-                        ))
-                        .into());
-                    }
+                    let response = match gateway_authority.as_ref() {
+                        Some(authority) => authority
+                            .validate_after_external_effect()
+                            .await
+                            .and(response),
+                        None => response,
+                    };
                     response.map(|mut response| {
                         // Only Team-scoped policy responses are projected
                         // through the Team namespace; platform responses stay
@@ -2501,10 +2500,17 @@ impl LabMcpServer {
             } else {
                 (entry.dispatch)(action.clone(), params).await
             };
+            // Preserve the response-fence contract through the legacy formatter,
+            // while still recording and notifying completion of the executed action.
+            let authority_error_envelope = result
+                .as_ref()
+                .err()
+                .filter(|error| service == "gateway" && error.kind() == "authority_changed")
+                .map(|error| tool_error_envelope(&service, &action, error));
             let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
             let elapsed_ms = start.elapsed().as_millis();
             let input_tokens = estimate_tokens_args(&args);
-            let (result, outcome) = format_dispatch_result(
+            let (mut result, outcome) = format_dispatch_result(
                 result,
                 &service,
                 &action,
@@ -2513,6 +2519,9 @@ impl LabMcpServer {
                 actor_key,
                 input_tokens,
             );
+            if let Some(envelope) = authority_error_envelope {
+                result = error_result_from_envelope(envelope);
+            }
             self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)
                 .await;
             return Ok(result.into());

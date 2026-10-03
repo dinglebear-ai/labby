@@ -7925,20 +7925,31 @@ async fn gateway_mcp_fences_revocation_during_discovery() {
         .unwrap()
         .extensions
         .insert(primary_static_bearer_identity());
-    let operation = tokio::spawn(async move {
-        Box::pin(running.service().call_tool_impl(
-            CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
-                (
-                    "action".into(),
-                    serde_json::json!("gateway.oauth.authorize"),
-                ),
-                ("params".into(), serde_json::json!({"upstream":"personal"})),
-            ])),
-            context,
-        ))
-        .await
-        .unwrap()
-    });
+    use tracing::instrument::WithSubscriber as _;
+    let logs = crate::test_support::SharedBuf::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(logs.clone())
+        .finish();
+    let operation = tokio::spawn(
+        async move {
+            Box::pin(running.service().call_tool_impl(
+                CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+                    (
+                        "action".into(),
+                        serde_json::json!("gateway.oauth.authorize"),
+                    ),
+                    ("params".into(), serde_json::json!({"upstream":"personal"})),
+                ])),
+                context,
+            ))
+            .await
+            .unwrap()
+        }
+        .with_subscriber(subscriber),
+    );
     tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
         .await
         .unwrap();
@@ -7973,6 +7984,13 @@ async fn gateway_mcp_fences_revocation_during_discovery() {
     assert_eq!(
         envelope["error"]["recovery"]["same_arguments"],
         "discouraged"
+    );
+    let output = crate::test_support::captured_logs(&logs);
+    assert!(
+        output.lines().any(|line| line.contains("dispatch error")
+            && line.contains("authority_changed")
+            && line.contains("gateway.oauth.authorize")),
+        "missing completion failure log: {output}"
     );
 }
 
