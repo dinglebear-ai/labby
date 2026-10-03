@@ -7,7 +7,7 @@ import {registerSandboxTools} from 'microsandbox-mcp/dist/tools/sandbox.js';
 import {registerExecTools} from 'microsandbox-mcp/dist/tools/exec.js';
 import {ok,fail} from 'microsandbox-mcp/dist/utils/response.js';
 import {removeOwned} from './cleanup.mjs';
-const server=new McpServer({name:'labby-microsandbox',version:'0.0.0'});
+const server=new McpServer({name:'labby-microsandbox',version:'2.5.0'});
 const facade={registerTool(name,config,callback){
   if(name!=='sandbox_remove')return server.registerTool(name,config,callback);
   return server.registerTool(name,{

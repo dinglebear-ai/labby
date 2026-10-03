@@ -2,11 +2,41 @@
   "schema_version": 1,
   "minimum_severity": "high",
   "workspaces": [
-    {"manifest": "apps/chrome/package.json", "lockfile": "apps/chrome/package-lock.json", "manager": "npm"},
-    {"manifest": "apps/web/package.json", "lockfile": "apps/web/pnpm-lock.yaml", "manager": "pnpm"},
-    {"manifest": "apps/tauri/package.json", "lockfile": "apps/tauri/pnpm-lock.yaml", "manager": "pnpm"},
-    {"manifest": ".config/agent-clis/package.json", "lockfile": ".config/agent-clis/package-lock.json", "manager": "npm"},
-    {"manifest": "packages/labby-mcp/package.json", "lockfile": "packages/labby-mcp/pnpm-lock.yaml", "manager": "pnpm"}
+    {
+      "manifest": "apps/chrome/package.json",
+      "lockfile": "apps/chrome/package-lock.json",
+      "manager": "npm"
+    },
+    {
+      "manifest": "apps/web/package.json",
+      "lockfile": "apps/web/pnpm-lock.yaml",
+      "manager": "pnpm"
+    },
+    {
+      "manifest": "apps/tauri/package.json",
+      "lockfile": "apps/tauri/pnpm-lock.yaml",
+      "manager": "pnpm"
+    },
+    {
+      "manifest": ".config/agent-clis/package.json",
+      "lockfile": ".config/agent-clis/package-lock.json",
+      "manager": "npm"
+    },
+    {
+      "manifest": "packages/labby-mcp/package.json",
+      "lockfile": "packages/labby-mcp/pnpm-lock.yaml",
+      "manager": "pnpm"
+    },
+    {
+      "manifest": "packages/labby-tailcat-browser/package.json",
+      "lockfile": "packages/labby-tailcat-browser/package-lock.json",
+      "manager": "npm"
+    },
+    {
+      "manifest": "packages/labby-microsandbox/package.json",
+      "lockfile": "packages/labby-microsandbox/package-lock.json",
+      "manager": "npm"
+    }
   ],
   "ignored_advisories": []
 }

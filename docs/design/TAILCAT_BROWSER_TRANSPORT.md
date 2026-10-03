@@ -2,6 +2,7 @@
 title: "Tailcat Browser Transport"
 status: proposed
 created: "2026-10-01"
+updated: "2026-10-02"
 ---
 
 # Tailcat Browser Transport

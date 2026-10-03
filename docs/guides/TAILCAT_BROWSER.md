@@ -1,3 +1,9 @@
+---
+title: "Experimental Tailcat browser connection"
+created: "2026-10-02"
+updated: "2026-10-02"
+---
+
 # Experimental Tailcat browser connection
 
 Tailcat connects the hosted Depot dashboard to local Labby through an approved
