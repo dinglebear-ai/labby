@@ -6,6 +6,47 @@ import { PhoenixConversation } from './phoenix-conversation.tsx'
 
 const noop = () => undefined
 
+test('a new turn does not claim a previous turn\'s unfinished stream', () => {
+  const html = renderToStaticMarkup(<PhoenixConversation
+    messages={[
+      { role: 'user', text: 'First question', created_at_ms: 100, turn_id: 'first' },
+      { role: 'user', text: 'New question', created_at_ms: 300, turn_id: 'second' },
+      { role: 'assistant', text: 'Second answer', created_at_ms: 500, turn_id: 'second' },
+    ]}
+    events={[{ method: 'item/agentMessage/delta', received_at_ms: 200, params: { turnId: 'first', delta: 'Unfinished first answer' } }]}
+    mark={<span>PX</span>} onCopy={noop} onRetry={noop} onEdit={noop}
+  />)
+  assert.match(html, /Unfinished first answer/)
+  assert.match(html, /Second answer/)
+})
+
+for (const suffix of ['second', 'partial']) {
+  test(`same-turn steering reconciles preceding deltas: ${suffix}`, () => {
+    const html = renderToStaticMarkup(<PhoenixConversation
+      messages={[
+        { role: 'user', text: 'Question', created_at_ms: 100, turn_id: 'first' },
+        { role: 'user', text: 'Steer', created_at_ms: 300, turn_id: 'first' },
+        { role: 'assistant', text: 'First second', created_at_ms: 500, turn_id: 'first' },
+      ]}
+      events={[
+        { method: 'item/agentMessage/delta', received_at_ms: 200, params: { turnId: 'first', delta: 'First ' } },
+        { method: 'item/agentMessage/delta', received_at_ms: 400, params: { turnId: 'first', delta: suffix } },
+      ]}
+      mark={<span>PX</span>} onCopy={noop} onRetry={noop} onEdit={noop}
+    />)
+    assert.equal((html.match(/First /g) ?? []).length, 1, 'steering must not leave a duplicated prefix')
+    assert.equal((html.match(/aria-label="Copy answer"/g) ?? []).length, 1)
+    assert.match(html, /Steer/)
+    if (suffix === 'partial') {
+      assert.match(html, /First second/)
+      assert.doesNotMatch(html, /partial/)
+    } else {
+      assert.ok(html.indexOf('First ') < html.indexOf('Steer'))
+      assert.ok(html.indexOf('Steer') < html.indexOf('second'))
+    }
+  })
+}
+
 test('each completed streamed turn keeps its own copy and regenerate controls', async () => {
   const { installTestDom, renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
   installTestDom()

@@ -41,13 +41,14 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
   }
   for (const entry of entries) {
     if (entry.kind === 'message') {
+      const messageTurn = entry.message.turn_id
+      if (messageTurn) pendingStreams = pendingStreams.filter(chunk => chunk.turnKey === messageTurn)
       if (entry.message.role === 'assistant' && typeof entry.message.created_at_ms === 'number') {
         const completeStream = pendingStreams.length > 0
           && pendingStreams.every(chunk => chunk.turnKey === pendingStreams[0].turnKey)
           && pendingStreams.map(chunk => chunk.text).join('') === entry.message.text
         if (completeStream) {
-          // The chronological message boundary owns only the streams since
-          // the previous message, never a later turn's final stream.
+          // Same-turn steering can separate deltas from their final message.
           pendingStreams[pendingStreams.length - 1].messageIndex = entry.index
           pendingStreams = []
           continue
@@ -56,7 +57,7 @@ function buildChunks(messages: PhoenixMessage[], events: PhoenixEvent[]): Chunk[
         // Keep intervening tool activity while replacing incomplete deltas.
         pendingStreams.forEach(chunk => replacedStreams.add(chunk))
       }
-      pendingStreams = []
+      if (entry.message.role !== 'user' || !messageTurn) pendingStreams = []
       chunks.push({ kind: 'message', id: 'message-' + String(entry.index), index: entry.index, message: entry.message })
       continue
     }
