@@ -655,6 +655,9 @@ export function GatewayFormDialog({
       } else {
         try {
           new URL(url)
+          if (isEditing && gateway?.transport === 'http' && url !== gateway.config.url && /(?:\[redacted\]|%5bredacted%5d)/i.test(url)) {
+            newErrors.url = 'Re-enter all redacted credentials before changing this URL.'
+          }
         } catch {
           newErrors.url = 'Invalid URL format'
         }
@@ -662,7 +665,16 @@ export function GatewayFormDialog({
 
     } else {
       try {
-        parseStdioCommandLine(command)
+        const parsed = parseStdioCommandLine(command)
+        if (isEditing && gateway?.transport === 'stdio') {
+          const original = [gateway.config.command ?? '', ...(gateway.config.args ?? [])]
+          const next = [parsed.command, ...parsed.args]
+          const changed = JSON.stringify(original) !== JSON.stringify(next)
+          const hasMask = (values: string[]) => values.some(value => /\[redacted\]/i.test(value))
+          if (changed && hasMask(original) && hasMask(next)) {
+            newErrors.command = 'Re-enter all redacted credentials before changing this command or its arguments.'
+          }
+        }
       } catch (error) {
         newErrors.command = error instanceof Error ? error.message : 'Invalid command'
       }
@@ -733,6 +745,9 @@ export function GatewayFormDialog({
 
   const buildInput = (): CreateGatewayInput => {
     const stdio = transport === 'stdio' ? parseStdioCommandLine(command) : null
+    const existingStdio = isEditing && gateway?.transport === 'stdio'
+    const commandChanged = !existingStdio || stdio?.command !== gateway.config.command
+    const argsChanged = !existingStdio || JSON.stringify(stdio?.args ?? []) !== JSON.stringify(gateway.config.args ?? [])
     const authEnabled = transport === 'http'
     const preserveExistingOauth = isEditing && gateway?.config.oauth_enabled && authMode === 'oauth'
     const oauthConfig =
@@ -752,12 +767,12 @@ export function GatewayFormDialog({
       config: {
         ...(transport === 'http'
           ? {
-              url,
+              ...(!isEditing || gateway?.transport !== 'http' || url !== gateway.config.url ? { url } : {}),
               ...(Object.keys(stdioEnv).length > 0 ? { env: stdioEnv } : {}),
             }
           : {
-              command: stdio?.command,
-              args: stdio && stdio.args.length > 0 ? stdio.args : undefined,
+              ...(commandChanged ? { command: stdio?.command } : {}),
+              ...(argsChanged ? { args: isEditing ? stdio?.args ?? [] : stdio?.args.length ? stdio.args : undefined } : {}),
               env: Object.keys(stdioEnv).length > 0 ? stdioEnv : undefined,
             }),
         bearer_token_env: !authEnabled

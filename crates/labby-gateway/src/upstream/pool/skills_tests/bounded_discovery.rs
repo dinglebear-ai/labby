@@ -473,7 +473,7 @@ async fn bounded_discovery_never_reuses_another_oauth_subjects_cache() {
         json!({"skills": [entry("up", "bob-only")]}),
     ]);
     let calls = Arc::clone(&server.list_calls);
-    let pool = catalog_pool_with_server("up", server).await;
+    let pool = subject_catalog_pool_with_server("up", server).await;
     let alice = super::super::SepSkillProvider::new(
         Arc::clone(&pool),
         oauth_skills_config("up", None),

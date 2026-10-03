@@ -246,6 +246,7 @@ impl GatewayManager {
             )),
             config_mutation: Arc::new(Mutex::new(())),
             restarts_in_flight: Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            runtime_process_status_cache: Arc::new(Default::default()),
             mcp_catalog_refresh_inflight: Arc::new(Mutex::new(std::collections::HashSet::new())),
             mcp_catalog_refresh_failures: Arc::new(Mutex::new(std::collections::HashSet::new())),
             execution_loadouts: Arc::new(RwLock::new(execution_loadouts)),

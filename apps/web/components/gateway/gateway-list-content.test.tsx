@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import React from 'react'
+import React, { act } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
-import { GatewayListView } from './gateway-list-content'
+import { GatewayListView, GatewayRuntimeRefreshNotice } from './gateway-list-content'
 import { GatewayHero } from './gateway-hero'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import type { Gateway } from '@/lib/types/gateway'
@@ -205,4 +205,29 @@ test('gateway hero does not report a disabled-only fleet as nominal', () => {
   assert.match(markup, />no active servers<\/span>/)
   assert.match(markup, /aria-label="Gateway status: no active servers"/)
   assert.doesNotMatch(markup, /all systems nominal/)
+})
+
+
+test('runtime refresh failure visibly marks cached connection statuses and allows retry', async () => {
+  const { installTestDom, renderClient } = await import('@/lib/testing/dom-test-utils')
+  installTestDom()
+  let retries = 0
+  const observedAt = Date.parse('2026-10-02T12:00:00Z')
+  const view = await renderClient(<GatewayRuntimeRefreshNotice
+    error={new Error('Runtime snapshot rejected')}
+    updatedAt={observedAt}
+    onRetry={() => { retries++ }}
+  />)
+  try {
+    const alert = view.container.querySelector('[role="alert"]')
+    assert.ok(alert)
+    assert.match(alert.textContent ?? '', /Connection status may be out of date/)
+    assert.match(alert.textContent ?? '', /Runtime snapshot rejected/)
+    assert.equal(alert.querySelector('time')?.getAttribute('datetime'), '2026-10-02T12:00:00.000Z')
+    const button = alert.querySelector('button')
+    assert.ok(button)
+    await act(async () => { button.click() })
+    assert.equal(retries, 1)
+  } finally { await view.unmount() }
+  assert.equal(renderToStaticMarkup(<GatewayRuntimeRefreshNotice onRetry={() => {}} />), '')
 })

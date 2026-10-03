@@ -33,6 +33,7 @@ struct LegacyLifecycleResponder {
     initialize_requests: Arc<AtomicUsize>,
     list_tools_requests: Arc<AtomicUsize>,
     reject_protocol_version: bool,
+    legacy_version_error_code: Option<i32>,
 }
 
 impl Respond for LegacyLifecycleResponder {
@@ -47,6 +48,12 @@ impl Respond for LegacyLifecycleResponder {
         match method {
             "server/discover" => {
                 self.discover_requests.fetch_add(1, Ordering::SeqCst);
+                if let Some(code) = self.legacy_version_error_code {
+                    return ResponseTemplate::new(200).set_body_json(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": {"code": code, "message": "Bad Request: Unsupported protocol version: 2026-07-28 (supported versions: 2025-11-25, 2025-06-18)"}
+                    }));
+                }
                 let version = request
                     .headers
                     .get("mcp-protocol-version")
@@ -150,7 +157,7 @@ async fn http_upstream_falls_back_after_transport_rejects_2026_discovery() {
 }
 
 #[tokio::test]
-async fn http_upstream_does_not_downgrade_explicit_protocol_version_rejection() {
+async fn http_upstream_falls_back_after_legacy_header_version_rejection() {
     let server = MockServer::start().await;
     let responder = LegacyLifecycleResponder {
         reject_protocol_version: true,
@@ -165,7 +172,7 @@ async fn http_upstream_does_not_downgrade_explicit_protocol_version_rejection() 
     let mut config = test_upstream_config();
     config.url = Some(format!("{}/mcp", server.uri()));
 
-    let error = connect_http_upstream(
+    let (_connection, tools) = connect_http_upstream(
         config.url.as_deref().expect("url"),
         &config,
         None,
@@ -174,16 +181,42 @@ async fn http_upstream_does_not_downgrade_explicit_protocol_version_rejection() 
         (),
     )
     .await
-    .expect_err("explicit protocol rejection must not trigger a legacy retry");
+    .expect("explicit legacy header rejection should reconnect through initialize");
 
-    assert!(
-        error
-            .to_string()
-            .contains("unsupported mcp-protocol-version"),
-        "{error}"
-    );
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
+    assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(tools[0].name, "legacy_echo");
+}
+
+#[tokio::test]
+async fn http_upstream_falls_back_after_legacy_jsonrpc_version_rejection() {
+    for code in [-32600, -32000] {
+        let server = MockServer::start().await;
+        let responder = LegacyLifecycleResponder {
+            legacy_version_error_code: Some(code),
+            ..Default::default()
+        };
+        Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/mcp"))
+            .respond_with(responder.clone())
+            .mount(&server)
+            .await;
+        let mut config = test_upstream_config();
+        config.url = Some(format!("{}/mcp", server.uri()));
+        let (_connection, tools) = connect_http_upstream(
+            config.url.as_deref().expect("url"),
+            &config,
+            None,
+            None,
+            None,
+            (),
+        )
+        .await
+        .expect("explicit legacy JSON-RPC rejection should retry initialization");
+        assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(tools[0].name, "legacy_echo");
+    }
 }
 
 #[derive(Clone, Default)]

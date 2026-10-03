@@ -202,7 +202,7 @@ test('same-ID edits replace hydrated rows even when catalog polling is inactive'
   }
 })
 
-test('active catalog polling refreshes same-ID tool inventory and retries a failed inventory', async () => {
+test('tool inventory refreshes on explicit retry or observation revision, not unchanged status polls', async () => {
   const { SWRConfig } = await import('swr')
   const { useGateways } = await import('./use-gateways')
   const { mockGateways } = await import('../api/mock-data')
@@ -215,11 +215,13 @@ test('active catalog polling refreshes same-ID tool inventory and retries a fail
     tick = () => callback(...args)
     return original.interval.call(window, () => {}, delay)
   }
-  const row = { ...mockGateways[0], id: 'stable-id', name: 'stable-id' }
+  const row = { ...mockGateways[0], id: 'stable-id', name: 'stable-id', status: { ...mockGateways[0].status, discovered_tool_count: 1 } }
   let calls = 0
   let toolName = 'alpha'
+  let revision = 1
+  let retryInventory: (() => Promise<unknown>) | undefined
   gatewayApi.list = async () => [row]
-  gatewayApi.hydrateRuntime = async rows => rows
+  gatewayApi.hydrateRuntime = async rows => rows.map(row => ({ ...row, status: { ...row.status, discovered_tool_count: revision } }))
   gatewayApi.refreshStatus = async () => { throw new Error('warming unavailable') }
   gatewayApi.hydrateToolInventory = async rows => {
     calls++
@@ -230,6 +232,7 @@ test('active catalog polling refreshes same-ID tool inventory and retries a fail
   }
   function Harness() {
     const result = useGateways(true, true)
+    retryInventory = result.retryToolInventory
     return React.createElement('span', null, result.data?.[0]?.discovery.tools[0]?.name ?? 'empty')
   }
   const view = await renderClient(React.createElement(SWRConfig,
@@ -246,9 +249,14 @@ test('active catalog polling refreshes same-ID tool inventory and retries a fail
     }
     assert.equal(calls, 1)
     assert.ok(tick)
-    await act(async () => tick!())
+    await act(async () => { tick!(); await Promise.resolve() })
+    assert.equal(calls, 1, 'unchanged status must not refetch the inventory')
+    await act(async () => { await retryInventory!() })
     await settle('alpha')
+    await act(async () => { tick!(); await Promise.resolve() })
+    assert.equal(calls, 2, 'successful unchanged inventory stays cached')
     toolName = 'beta'
+    revision = 2
     await act(async () => tick!())
     await settle('beta')
     assert.equal(calls, 3)
@@ -381,7 +389,12 @@ test('a rename seeds the new detail cache without fetching the removed ID', asyn
   const { SWRConfig, useSWRConfig } = await import('swr')
   const { useGateway, useGatewayMutations } = await import('./use-gateways')
   const { __setBrowserSessionStateForTests } = await import('../auth/session-store')
-  installTestDom()
+  const window = installTestDom()
+  const originalInterval = window.setInterval
+  const originalClear = window.clearInterval
+  let tick: () => void
+  window.setInterval = ((callback: () => void) => { tick = callback; return 91 }) as unknown as typeof window.setInterval
+  window.clearInterval = (() => {}) as typeof window.clearInterval
   __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   const requests: Array<{ action: string; params: Record<string, unknown> }> = []
   let currentId = 'old-id'
@@ -424,6 +437,11 @@ test('a rename seeds the new detail cache without fetching the removed ID', asyn
     assert.equal(view.container.textContent, 'new-id')
     assert.equal(cache.get('/gateways/new-id')?.data?.id, 'new-id')
     assert.equal(requests.some(row => row.action === 'gateway.server.get' && row.params.id === 'old-id'), false)
+    await act(async () => { tick(); await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(requests.some(row => row.action === 'gateway.mcp.list' && row.params.name === 'old-id'), false)
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(requests.some(row => row.action === 'gateway.server.get' && row.params.id === 'old-id'), false)
+    assert.equal(view.container.textContent, 'new-id')
     await act(async () => navigate('new-id'))
     assert.equal(cache.get('/gateways/old-id')?.data, undefined, 'navigation retires the removed-ID cache')
     await act(async () => { await rename('new-id', { name: 'old-id' }) })
@@ -431,6 +449,8 @@ test('a rename seeds the new detail cache without fetching the removed ID', asyn
   } finally {
     await view.unmount()
     globalThis.fetch = originalFetch
+    window.setInterval = originalInterval
+    window.clearInterval = originalClear
   }
 })
 
@@ -513,5 +533,215 @@ test('slow initial runtime hydration coalesces scheduler and catalog warming', a
     await view.unmount()
     gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.hydrate; gatewayApi.refreshStatus = original.refresh
     window.setInterval = original.interval; window.clearInterval = original.clear
+  }
+})
+
+
+test('runtime failure retains last successful rows and freshness until explicit retry succeeds', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  const window = installTestDom()
+  const original = { list: gatewayApi.list, runtime: gatewayApi.hydrateRuntime,
+    interval: window.setInterval, clear: window.clearInterval }
+  let tick!: () => void
+  window.setInterval = ((callback: () => void) => { tick = callback; return 81 }) as unknown as typeof window.setInterval
+  window.clearInterval = (() => {}) as typeof window.clearInterval
+  let fail = false
+  const row = { ...mockGateways[0], id: 'freshness', name: 'freshness' }
+  gatewayApi.list = async () => [row]
+  gatewayApi.hydrateRuntime = async rows => {
+    if (fail) throw new Error('Runtime snapshot rejected')
+    return rows
+  }
+  let state: ReturnType<typeof useGateways> | undefined
+  function Harness() {
+    state = useGateways(true, false, false)
+    return React.createElement('span', null, state.runtimeError ? 'stale' : state.data ? 'current' : 'loading')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  const settle = async (predicate: () => boolean) => {
+    for (let attempt = 0; attempt < 50 && !predicate(); attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.ok(predicate())
+  }
+  try {
+    await settle(() => Boolean(state?.runtimeUpdatedAt))
+    const lastSuccess = state!.runtimeUpdatedAt
+    fail = true
+    await act(async () => { tick(); await Promise.resolve() })
+    await settle(() => view.container.textContent === 'stale')
+    assert.equal(state!.runtimeUpdatedAt, lastSuccess)
+    assert.equal(state!.data![0].id, 'freshness')
+    fail = false
+    await act(async () => { await state!.retryRuntime() })
+    await settle(() => view.container.textContent === 'current')
+    assert.ok(state!.runtimeUpdatedAt! >= lastSuccess!)
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.runtime
+    window.setInterval = original.interval; window.clearInterval = original.clear
+  }
+})
+
+test('mounted server details share visible polling and publish external connection changes', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateway } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  const window = installTestDom()
+  const original = { get: gatewayApi.get, runtime: gatewayApi.refreshRuntime, interval: window.setInterval, clear: window.clearInterval }
+  let tick: (() => void) | undefined
+  let timers = 0
+  window.setInterval = ((callback: () => void) => { tick = callback; timers++; return 82 }) as unknown as typeof window.setInterval
+  window.clearInterval = (() => { timers-- }) as typeof window.clearInterval
+  let connected = true
+  let calls = 0
+  gatewayApi.get = async id => {
+    calls++
+    const row = mockGateways[0]
+    return { ...row, id, status: { ...row.status, connected } }
+  }
+  let runtimeCalls = 0
+  let runtimeFail = false
+  gatewayApi.refreshRuntime = async row => { runtimeCalls++; if (runtimeFail) throw new Error("runtime unavailable"); return { ...row, status: { ...row.status, connected } } }
+  function Harness() {
+    const result = useGateway('detail-refresh')
+    return React.createElement('span', null, result.error ? 'stale' : result.data?.status.connected ? 'connected' : result.data ? 'disconnected' : 'loading')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } },
+    React.createElement(React.Fragment, null, React.createElement(Harness), React.createElement(Harness))))
+  const settle = async (expected: string) => {
+    for (let attempt = 0; attempt < 50 && view.container.textContent !== expected; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(view.container.textContent, expected)
+  }
+  try {
+    await settle('connectedconnected')
+    assert.equal(timers, 1)
+    assert.equal(calls, 1)
+    assert.ok(tick, 'detail must subscribe to the shared status scheduler')
+    await act(async () => { tick!(); await Promise.resolve() })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    assert.equal(calls, 1, 'five-second pulse must preserve the full catalog snapshot')
+    assert.equal(runtimeCalls, 1)
+    runtimeFail = true
+    await act(async () => { tick!(); await Promise.resolve() })
+    await settle('stalestale')
+    assert.equal(calls, 1)
+    runtimeFail = false
+    await act(async () => { tick!(); await Promise.resolve() })
+    await settle('connectedconnected')
+    for (let pulse = 3; pulse < 11; pulse++) {
+      await act(async () => { tick!(); await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(calls, 1, 'full reads stay idle before sixty seconds')
+    await act(async () => { tick!(); await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(calls, 2, 'sixty-second pulse reconciles full detail')
+    connected = false
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+    await act(async () => { tick!(); await Promise.resolve() })
+    assert.equal(calls, 2, 'hidden detail must not poll')
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); await Promise.resolve() })
+    await settle('disconnecteddisconnected')
+    assert.equal(calls, 3, 'same detail key refreshes once for both consumers')
+  } finally {
+    await view.unmount()
+    gatewayApi.get = original.get
+    gatewayApi.refreshRuntime = original.runtime
+    window.setInterval = original.interval; window.clearInterval = original.clear
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+  }
+})
+
+
+test('unchanged-count catalogs reconcile at sixty seconds rather than every status poll', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateways } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  const window = installTestDom()
+  const original = { list: gatewayApi.list, runtime: gatewayApi.hydrateRuntime,
+    inventory: gatewayApi.hydrateToolInventory, interval: window.setInterval, clear: window.clearInterval }
+  let tick!: () => void
+  window.setInterval = ((callback: () => void) => { tick = callback; return 83 }) as unknown as typeof window.setInterval
+  window.clearInterval = (() => {}) as typeof window.clearInterval
+  const row = { ...mockGateways[0], id: 'same-count-catalog' }
+  gatewayApi.list = async () => [row]
+  gatewayApi.hydrateRuntime = async rows => rows
+  let calls = 0
+  let name = 'before'
+  gatewayApi.hydrateToolInventory = async rows => {
+    calls++
+    return rows.map(row => ({ ...row, discovery: { ...row.discovery, tools: [{ name, exposed: true, matched_by: '*' }] } }))
+  }
+  function Harness() {
+    const result = useGateways(true, true, false)
+    return React.createElement('span', null, result.data?.[0]?.discovery.tools[0]?.name ?? 'loading')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0 } }, React.createElement(Harness)))
+  const settle = async (expected: string) => {
+    for (let attempt = 0; attempt < 50 && view.container.textContent !== expected; attempt++) {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 10)) })
+    }
+    assert.equal(view.container.textContent, expected)
+  }
+  try {
+    await settle('before')
+    name = 'after'
+    for (let pulse = 0; pulse < 11; pulse++) {
+      await act(async () => { tick(); await new Promise(resolve => setTimeout(resolve, 1)) })
+    }
+    assert.equal(calls, 1)
+    await act(async () => { tick(); await Promise.resolve() })
+    await settle('after')
+    assert.equal(calls, 2)
+  } finally {
+    await view.unmount()
+    gatewayApi.list = original.list; gatewayApi.hydrateRuntime = original.runtime
+    gatewayApi.hydrateToolInventory = original.inventory
+    window.setInterval = original.interval; window.clearInterval = original.clear
+  }
+})
+
+test('a successful save starts a fresh detail flight while a pre-save read remains pending', async () => {
+  const { SWRConfig } = await import('swr')
+  const { useGateway, useGatewayMutations } = await import('./use-gateways')
+  const { mockGateways } = await import('../api/mock-data')
+  installTestDom()
+  const original = { get: gatewayApi.get, update: gatewayApi.update }
+  const saved = { ...mockGateways[0], id: 'mutation-flight', name: 'saved' }
+  let calls = 0
+  let finishOld: (row: typeof saved) => void
+  gatewayApi.get = async () => {
+    calls++
+    if (calls === 1) return new Promise(resolve => { finishOld = resolve })
+    return saved
+  }
+  gatewayApi.update = async () => saved
+  let save!: ReturnType<typeof useGatewayMutations>['updateGateway']
+  function Harness() {
+    save = useGatewayMutations().updateGateway
+    const row = useGateway('mutation-flight')
+    return React.createElement('span', null, row.data?.name ?? 'loading')
+  }
+  const view = await renderClient(React.createElement(SWRConfig,
+    { value: { provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false } }, React.createElement(Harness)))
+  try {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    assert.equal(calls, 1)
+    const saving = save('mutation-flight', { name: 'saved' })
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 30)) })
+    assert.equal(calls, 2, 'post-save revalidation must not reuse a pre-save flight')
+    await act(async () => { finishOld({ ...saved, name: 'stale' }); await saving })
+    assert.equal(view.container.textContent, 'saved')
+  } finally {
+    await view.unmount()
+    gatewayApi.get = original.get
+    gatewayApi.update = original.update
   }
 })
