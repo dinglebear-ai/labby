@@ -1,0 +1,50 @@
+{
+  "calls": [
+    {
+      "tool": "claude-macpoo::Bash",
+      "result": {
+        "stdout": "fixture-controller\nfixture-user\nDarwin\n/fixture/workspace\n/fixture/home\n/usr/bin/ssh\n"
+      },
+      "match": {
+        "command": "hostname; whoami; uname -s; pwd; printenv HOME; command -v ssh || true"
+      }
+    },
+    {
+      "tool": "claude-macpoo::Read",
+      "result": {
+        "file": {
+          "content": "Host fixture-host\n  HostName fixture-host.example\n  User fixture-user\n"
+        }
+      },
+      "match": {
+        "file_path": "/fixture/home/.ssh/config"
+      }
+    },
+    {
+      "tool": "claude-macpoo::Bash",
+      "result": {
+        "stdout": "hostname fixture-host.example\nuser fixture-user\nport 22\nidentityfile /fixture/home/.ssh/id_fixture\n"
+      },
+      "match": {
+        "command": "ssh -G -- 'fixture-host'"
+      }
+    },
+    {
+      "tool": "claude-macpoo::Bash",
+      "result": {
+        "stdout": "hostname=fixture-host\nuser=fixture-user\nplatform=Linux\ndocker_path=/usr/bin/docker\ndocker_version=27.0\ntimeout_path=/usr/bin/timeout\n"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/discovery/configured_aliases": 1,
+    "/discovery/key_auth_working": 1,
+    "/targets/0/remote/docker_path": "/usr/bin/docker"
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 4,
+    "output_bytes": 16000
+  }
+}

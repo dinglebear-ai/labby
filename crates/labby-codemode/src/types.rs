@@ -411,7 +411,16 @@ fn snippet_inputs_schema(inputs: &std::collections::BTreeMap<String, SnippetInpu
         }
         let mut field = serde_json::Map::new();
         if let Some(json_type) = snippet_input_json_type(spec.ty) {
-            field.insert("type".to_string(), Value::String(json_type.to_string()));
+            field.insert(
+                "type".to_string(),
+                if spec.nullable {
+                    json!([json_type, "null"])
+                } else {
+                    Value::String(json_type.to_string())
+                },
+            );
+        } else if !spec.nullable {
+            field.insert("not".to_string(), json!({"type":"null"}));
         }
         if let Some(description) = &spec.description {
             field.insert(

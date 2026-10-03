@@ -57,8 +57,9 @@ Before writing or running a snippet, use `codemode.search()` and `codemode.descr
 The following schema-driven builder is an authoring design, not a description of
 a shipped schema-driven call-plan editor. The current Snippets UI lists,
 inspects, edits, and runs saved source, and builds drafts from manually entered
-tool IDs and one example input object. Its parallel template currently uses
-`Promise.all`; review it for the failure-isolated batch pattern below. Runtime
+tool IDs, snippet inputs, and a separate parameter mapping for each tool. Parallel
+drafts defer calls through `codemode.batch` and retain each call's success or
+failure. The UI offers editable offline fixtures alongside explicit live tests. Runtime
 syntax/frontmatter/input validation is implemented;
 `snippet validate` does not execute tools or statically prove every embedded
 call's parameters against live upstream schemas.
@@ -514,3 +515,22 @@ A snippet is ready to reuse when:
 Upstream names and schemas in these examples are deployment-specific snapshots,
 not built-in Labby capabilities. Rediscover them on the intended gateway before
 execution. Dated smoke-test notes record prior evidence, not current health.
+
+## Built-in offline coverage
+
+Every executable example declares its exact upstream tool dependencies and has
+an adjacent `.test.json` fixture. Run `labby snippet test --all --json` in an
+isolated Labby home to execute the examples without contacting upstreams.
+The product integration test `builtin_snippet_fixtures` keeps this coverage in CI.
+
+The SSH fixture exercises identity, config parsing, effective configuration, and
+a reachable host. The Docker primitive exercises a discovered container whose
+inspect stage fails, verifying that the failure survives into the result. The
+fleet orchestration fixture supplies synthetic child outputs and checks its
+artifact content; it does not execute those child workflows itself. The child
+primitives have their own fixtures. Axon coverage includes discovery, source
+selection, evidence calls, and a checked synthetic Markdown artifact.
+
+These synthetic scenarios validate workflow behavior and output contracts. They
+do not establish current upstream schemas, SSH reachability, registry access,
+or production performance.

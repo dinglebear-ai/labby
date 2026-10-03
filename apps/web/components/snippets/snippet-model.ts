@@ -296,6 +296,10 @@ export function buildSnippetParams(
   for (const [name, spec] of Object.entries(inputs ?? {})) {
     const raw = (values?.[name] ?? '').trim()
     if (!raw) continue
+    if (raw === 'null' && spec.nullable) {
+      params[name] = null
+      continue
+    }
 
     switch (spec.ty) {
       case 'integer': {

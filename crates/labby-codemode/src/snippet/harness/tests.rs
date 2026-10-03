@@ -255,3 +255,24 @@ fn explicit_null_snapshot_is_an_assertion_not_an_omission() {
         .passed
     );
 }
+
+#[test]
+fn nested_and_artifact_rules_are_bounded_and_portable() {
+    let f = fixture(json!({
+        "params": {"alias": "fixture-host"},
+        "snippets": [{"name": "docker-host-inventory", "match": {"alias": "fixture-host"}, "result": {"ok": true}}],
+        "artifacts": [{"path": "report/result.json", "content_type": "application/json", "contains": ["fixture-host"]}]
+    }));
+    f.validate().expect("portable synthetic rules");
+    for value in [
+        json!({"snippets": [{"name": "../escape"}]}),
+        json!({"snippets": [{"name": "child", "times": 0}]}),
+        json!({"snippets": [{"name": "child", "match": []}]}),
+        json!({"artifacts": [{"path": "../escape"}]}),
+        json!({"artifacts": [{"path": "/absolute"}]}),
+        json!({"artifacts": [{"path": "report", "times": 0}]}),
+        json!({"calls": [{"tool": "github::get_me", "times": 512}], "snippets": [{"name": "child"}]}),
+    ] {
+        assert!(fixture(value).validate().is_err());
+    }
+}

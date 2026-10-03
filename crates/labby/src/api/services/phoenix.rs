@@ -31,7 +31,12 @@ pub(crate) fn descriptors() -> Vec<crate::api::route_registry::RouteDescriptor> 
 fn csrf_exempt(action: &str) -> bool {
     matches!(
         action,
-        "help" | "schema" | "phoenix.status" | "phoenix.session.list" | "phoenix.session.read"
+        "help"
+            | "schema"
+            | "phoenix.status"
+            | "phoenix.session.list"
+            | "phoenix.session.read"
+            | "phoenix.account.login.read"
     )
 }
 
@@ -176,7 +181,10 @@ async fn handle(
             {
                 if matches!(
                     action.as_str(),
-                    "phoenix.session.read" | "phoenix.turn.send" | "phoenix.turn.steer"
+                    "phoenix.session.read"
+                        | "phoenix.turn.send"
+                        | "phoenix.turn.steer"
+                        | "phoenix.turn.revise"
                 ) {
                     return Ok(hydrate_mcp_apps(payload, gateway_manager.as_deref()).await);
                 }

@@ -188,6 +188,16 @@ impl GatewayManager {
         self.config.read().await.code_mode.clone()
     }
 
+    /// Nonblocking snapshot for synchronous MCP server discovery. When a config
+    /// transaction owns the lock, advertise the limits resource instead of stale defaults.
+    #[must_use]
+    pub fn code_mode_config_snapshot(&self) -> Option<CodeModeConfig> {
+        self.config
+            .try_read()
+            .ok()
+            .map(|config| config.code_mode.clone())
+    }
+
     /// Location of the one-shot CLI catalog cache: the product path unless a
     /// test injected an isolated file.
     pub(crate) fn code_mode_catalog_cache_path(&self) -> PathBuf {

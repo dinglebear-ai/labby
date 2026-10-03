@@ -31,13 +31,14 @@ jobs:
   live-e2e-core:
     name: Live E2E core
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Separate cold compilation, thirty-minute qualification, and evidence margin.
+    timeout-minutes: 60
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
-      # The product E2E script builds the all-features CLI before browser tests.
+      # Precompile the product and every shard target before qualification.
       # Restore Cargo artifacts through the same credentialless fallback used
       # by CI so every PR does not pay for a cold Rust build here.
       - uses: ./.github/actions/setup-rust-kache
@@ -118,6 +119,21 @@ jobs:
         run: pnpm --dir apps/web exec playwright install chromium
       - name: Build Gateway Admin assets for this revision
         run: pnpm --dir apps/web build
+      - name: Precompile product and live E2E test targets
+        timeout-minutes: 20
+        env:
+          CARGO_BUILD_JOBS: "2"
+        run: |
+          set -euo pipefail
+          cargo build -p labby --all-features --bin labby --locked
+          cargo test -p labby --all-features --locked --no-run \
+            --test action_matrix_completeness \
+            --test live_http_routes --test live_cli_actions --test live_api_actions \
+            --test live_browser_bridge --test live_http_observability --test live_http_ipv6 \
+            --test live_mcp_actions --test live_surface_parity \
+            --test live_identity_bootstrap --test live_protected_routes --test live_restart_persistence \
+            --test mcp_apps_host_qualification --test live_browser_supervisor \
+            --test e2e_fault_qualification --test e2e_coverage_report
       - name: Select exclusive live E2E run root
         shell: bash
         run: |
@@ -126,7 +142,11 @@ jobs:
           test ! -e "$run_root"
           printf 'LABBY_E2E_RUN_ROOT=%s\n' "$run_root" >> "$GITHUB_ENV"
       - name: Run bounded hermetic product E2E shards
+        timeout-minutes: 31
         env:
+          LABBY_E2E_PREBUILT: "1"
+          LABBY_E2E_SHARD_TIMEOUT_SECONDS: "900"
+          LABBY_E2E_RUN_TIMEOUT_SECONDS: "1800"
           CARGO_BUILD_JOBS: "2"
           LABBY_E2E_SEED: "1"
           LABBY_E2E_TIER: ${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && 'manual' || 'pr' }}

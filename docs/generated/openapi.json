@@ -10760,7 +10760,12 @@
               "schema",
               "snippets.list",
               "snippets.get",
+              "snippets.preview",
+              "snippets.replay",
               "snippets.exec",
+              "snippets.receipt",
+              "snippets.history",
+              "snippets.artifact",
               "snippets.create",
               "snippets.promote",
               "snippets.validate",
@@ -10784,6 +10789,21 @@
           }
         }
       },
+      "SnippetsSnippetsArtifactParams": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "path"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsSnippetsCreateParams": {
         "type": "object",
         "required": [
@@ -10795,6 +10815,9 @@
             "type": "string"
           },
           "description": {
+            "type": "string"
+          },
+          "expected_digest": {
             "type": "string"
           },
           "force": {
@@ -10811,6 +10834,9 @@
           "name"
         ],
         "properties": {
+          "expected_preview_fingerprint": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
@@ -10827,6 +10853,34 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "SnippetsSnippetsHistoryParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SnippetsSnippetsPreviewParams": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
           }
         }
       },
@@ -10854,6 +10908,17 @@
           }
         }
       },
+      "SnippetsSnippetsReceiptParams": {
+        "type": "object",
+        "required": [
+          "execution_id"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsSnippetsRemoveParams": {
         "type": "object",
         "required": [
@@ -10862,6 +10927,32 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "SnippetsSnippetsReplayParams": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "params",
+          "expected_preview_fingerprint",
+          "acknowledged_drift"
+        ],
+        "properties": {
+          "acknowledged_drift": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "expected_preview_fingerprint": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
           }
         }
       },

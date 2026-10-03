@@ -11,7 +11,7 @@ export type ToolSearchResponse = { results: ToolSearchHit[]; total: number; trun
 export type ToolDescription = {
   path: string; id: string; namespace: string; name: string; description: string
   helper: string; signature: string; tags: string[]; safety?: ToolSafety
-  typescript?: string; typescript_omitted?: string
+  output_schema?: unknown; output_schema_omitted?: 'size_limit'; input_schema?: unknown; input_schema_omitted?: 'size_limit'; typescript?: string; typescript_omitted?: string
 }
 
 const SEARCH_RESPONSE_MAX_BYTES = 256 * 1024

@@ -1,5 +1,8 @@
 pub mod catalog;
 pub mod dispatch;
+mod execution;
+mod history;
+mod preview;
 mod testing;
 
 /// The snippet ENGINE lives in `labby-codemode`; the snippet SURFACE (catalog,

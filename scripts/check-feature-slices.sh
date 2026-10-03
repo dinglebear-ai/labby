@@ -26,6 +26,7 @@ run cargo check -p labby-runtime --no-default-features --all-targets
 labby_product_features=(
   ""
   "gateway"
+  "codemode-microsandbox"
   "gateway-host"
   "integrated-gateway"
   "fs"
