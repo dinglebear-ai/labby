@@ -67,9 +67,19 @@ allows trusted local and unscoped admin callers; scoped or read-only callers
 cannot use it. Dispatch happens in the parent, outside the state/git lock.
 
 Dropping the invocation signals an owned worker to finish startup and destroy
-its guest. Guests are named `labby-workload-<ULID>` and labeled
-`owner=labby-codemode-spike`. Cleanup failure or uncertain startup quarantines
-an admission slot until process restart. A 60-second guest lifetime bounds
+its guest. Guests are named `labby-workload-<PID>-<ULID>` and labeled
+`owner=labby-codemode-workload-v1`. Cleanup failure or uncertain startup quarantines
+an admission slot. Before new admission, recovery lists only the versioned owner
+label and removes guests whose process is provably dead, or whose current-process
+name is recorded in the quarantine ledger. Live, unprovable, malformed, and legacy
+owners are preserved. SDK handles fence removal against identity replacement. Quarantine records also
+retain a known original SDK identity; a mismatch preserves the replacement
+guest and the counted permit.
+A counted admission permit is released after successful removal and an
+absence check, or confirmed absence of a previously observed SDK identity.
+Startup cleanup retains the identity as soon as a lookup observes it, even when
+destruction fails; a same-name replacement remains protected. Uncertain startup records absent from the inventory remain
+quarantined until process restart: absence cannot disprove delayed creation. A 60-second guest lifetime bounds
 runtime survival, but is not proof of persisted-state removal.
 
 ## Verification
@@ -92,21 +102,21 @@ Inspect the owned label afterward to verify guest removal.
 This is an execution spike, not published-tool support. It does not implement
 named profile configuration, guest-to-Labby credential brokering, secret
 projection, output-file export, or snippet publication metadata. Caller
-cancellation, crash recovery, and startup races need broader qualification and
-an ownership reconciler before production use. The SDK adds a substantial
+cancellation, crash recovery, and startup races need broader qualification before production use. Recovery runs lazily before a workload request; it is not
+a gateway startup daemon. PID reuse conservatively preserves a stale guest. The SDK adds a substantial
 optional dependency graph; evaluate binary size and build cost before adopting
 it in default product features. Full workspace feature and CI gates remain
 separate from focused kernel verification.
 
 ## Spike observations
 
-A local macOS ARM64 smoke run against MSB 0.7.3 passed all four live tests:
+A local macOS ARM64 smoke run against MSB 0.7.3 passed all seven live tests:
 projection through the actual JavaScript runner, workload timeout, invocation
-drop cancellation, and output overflow. The projected program returned `answer: 42`, UID 65534, only the
+drop cancellation, output overflow, owned-guest recovery, process-crash recovery, and interrupted startup. The projected program returned `answer: 42`, UID 65534, only the
 `lo` interface, and no GitHub token in its environment. The successful receipt
 confirmed cleanup. A subsequent CLI inventory contained no `labby-workload-`
 guests. Cancellation signaling on invocation drop also has a focused unit test;
-process crash and startup-race recovery remain unqualified.
+process crashes after creation and during observed SDK startup were tested with disposable owner subprocesses.
 
 The CLI image inventory can list a digest derived from a cached tag without
 having the SDK's digest-specific cache metadata. Explicitly preparing the
@@ -114,10 +124,20 @@ immutable reference with `msb image pull <reference> --materialize layered`
 resolved that startup failure. This preparation is an operator step, outside
 request execution; `PullPolicy::Never` remains enforced in the adapter.
 
-Kernel verification passed: 370 unit tests plus 2 error-schema integration tests;
-4 live tests were run separately and passed. Strict Clippy passed with the SDK
+Kernel verification passed: 372 unit tests plus 2 error-schema integration tests;
+7 live tests were run separately and passed. Strict Clippy passed with the SDK
 feature and without default features. These results do not establish full
 workspace feature-slice, CI, release, or deployment readiness. Application compilation passed with the
 new feature, both with defaults and as a standalone feature slice. The new slice
 is included in `scripts/check-feature-slices.sh`; the full slice matrix has not
 been run for this spike.
+
+Recovery qualification used a reaped disposable host process as the dead-owner
+fixture. It verified stale guest removal, live-owner preservation, confirmed
+quarantine capacity recovery, retention of an absent uncertain startup
+record, capacity recovery after a known guest disappears, and preservation of a
+guest whose identity mismatches quarantine, including startup cleanup failure. A separate subprocess test created a guest, killed and reaped its SDK owner,
+and verified recovery removed the persisted guest. A further subprocess test observed a guest in `Created` or `Starting`, killed
+its owner, and verified recovery removed its persisted state. These tests use the
+SDK-owning process fixture. Process panic and immediate gateway startup recovery
+remain unqualified.

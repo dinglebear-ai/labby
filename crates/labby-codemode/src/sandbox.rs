@@ -9,6 +9,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 #[cfg(feature = "microsandbox-sdk")]
+mod recovery;
+#[cfg(feature = "microsandbox-sdk")]
 mod sdk;
 
 /// Operator-owned spike profile. No credentials or host paths are accepted.
