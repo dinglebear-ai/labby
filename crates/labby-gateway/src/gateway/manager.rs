@@ -150,6 +150,7 @@ pub struct GatewayManager {
     /// shared with non-gateway Labby code, so they cannot live in `labby-gateway`.
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
+    pub(super) runtime_process_status_cache: Arc<super::runtime::RuntimeProcessSnapshotCache>,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
     /// Serializes the short publication window spanning the live pool,
     /// config snapshot, protected-route index, and Code Mode flags. Readers

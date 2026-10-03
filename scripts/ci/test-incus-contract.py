@@ -53,12 +53,127 @@ class IncusContract(unittest.TestCase):
                     self.assertEqual(stat.S_IMODE((backups[0] / ".env").stat().st_mode), 0o600)
                 self.assertTrue((source / "web-assets/index.html").is_file())
 
+    def run_smoke_firewall_fixture(self, *, ci="true", docker=True, borrowed=False, fail_second=False, managed=True):
+        smoke = self.text("scripts/ci/smoke-incus-image.sh")
+        definitions = smoke.split('if [[ -z "$image_tar" ]]; then', 1)[0]
+        # Execute the real setup and EXIT cleanup against a stateful fake firewall.
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            state = root / "rules"
+            calls = root / "calls"
+            initial = ["-i fixturebr0 -j ACCEPT", "-o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"] if borrowed else []
+            state.write_text("\n".join(initial) + ("\n" if initial else ""))
+            firewall = root / "iptables"
+            firewall.write_text("#!/usr/bin/env python3\n" +
+                "import os,pathlib,sys\n" +
+                "p=pathlib.Path(os.environ['FAKE_RULES']); log=pathlib.Path(os.environ['FAKE_CALLS'])\n" +
+                "args=sys.argv[1:]; log.open('a').write(' '.join(args)+'\\n')\n" +
+                "rules=p.read_text().splitlines(); action=args[0]\n" +
+                "if action=='-L': sys.exit(0 if os.environ['FAKE_DOCKER']=='1' else 1)\n" +
+                "rule=' '.join(args[2:])\n" +
+                "if action=='-C': sys.exit(0 if rule in rules else 1)\n" +
+                "if action=='-I':\n" +
+                " if os.environ['FAKE_FAIL_SECOND']=='1' and '-o' in args: sys.exit(9)\n" +
+                " rules.append(rule)\n" +
+                "elif action=='-D': rules.remove(rule)\n" +
+                "else: sys.exit(20)\n" +
+                "p.write_text('\\n'.join(rules)+('\\n' if rules else ''))\n")
+            firewall.chmod(0o755)
+            harness = definitions + r"""
+                sudo_cmd() { "$@"; }
+                incus() { return 0; }
+                incus_has_storage_pool() { return 0; }
+                incus_cmd() {
+                    if [[ "$*" == "profile device get default eth0 network" ]]; then
+                        printf 'fixturebr0\n'
+                    elif [[ "$*" == "network list --format csv" ]]; then
+                        printf 'fixturebr0,bridge,%s,10.0.0.1/24,none,fixture,0,CREATED\n' "$FAKE_MANAGED"
+                    elif [[ "$1 $2" == "network list" ]]; then
+                        printf 'Error: unknown shorthand flag in network list\n' >&2
+                        return 2
+                    elif [[ "$*" == "network get fixturebr0 ipv4.nat" ]]; then
+                        printf 'true\n'
+                    else
+                        return 0
+                    fi
+                }
+                ensure_incus_ready
+                cp "$FAKE_RULES" "$FAKE_RULES.after_setup"
+            """
+            env = dict(os.environ, CI=ci, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                       FAKE_RULES=str(state), FAKE_CALLS=str(calls),
+                       FAKE_MANAGED="YES" if managed else "NO", FAKE_DOCKER="1" if docker else "0", FAKE_FAIL_SECOND="1" if fail_second else "0")
+            result = subprocess.run(["bash", "--noprofile", "--norc", "-c", harness],
+                                    env=env, capture_output=True, text=True, timeout=10)
+            after_setup = pathlib.Path(str(state) + ".after_setup")
+            return result, initial, (after_setup.read_text().splitlines() if after_setup.exists() else None), state.read_text().splitlines(), (calls.read_text().splitlines() if calls.exists() else [])
+
+    def test_smoke_ci_docker_firewall_allows_bridge_egress_and_cleans_owned_rules(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(setup, ["-i fixturebr0 -j ACCEPT", "-o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"])
+        self.assertEqual(final, initial)
+        self.assertEqual(sum(line.startswith("-D ") for line in calls), 2)
+        self.assertFalse(any("FORWARD" in line or "-P " in line for line in calls))
+
+    def test_smoke_ci_docker_firewall_preserves_borrowed_rules(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(borrowed=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(setup, initial)
+        self.assertEqual(final, initial)
+        self.assertTrue(any(line.startswith("-C ") for line in calls))
+        self.assertFalse(any(line.startswith(("-D ", "-I ")) for line in calls))
+
+    def test_smoke_ci_docker_firewall_cleans_partial_setup_failure(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(fail_second=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(final, initial)
+        self.assertIn("-D DOCKER-USER -i fixturebr0 -j ACCEPT", calls)
+        self.assertNotIn("-D DOCKER-USER -o fixturebr0 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT", calls)
+
+    def test_smoke_ci_docker_firewall_rejects_unmanaged_interface(self):
+        result, initial, setup, final, calls = self.run_smoke_firewall_fixture(managed=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(final, initial)
+        self.assertFalse(any(line.startswith(("-I ", "-D ")) for line in calls))
+
+    def test_smoke_firewall_leaves_non_ci_and_non_docker_hosts_untouched(self):
+        for ci, docker in [("", True), ("false", True), ("true", False)]:
+            with self.subTest(ci=ci, docker=docker):
+                result, initial, setup, final, calls = self.run_smoke_firewall_fixture(ci=ci, docker=docker)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(setup, initial)
+                self.assertEqual(final, initial)
+                self.assertFalse(any(line.startswith(("-I ", "-D ")) for line in calls))
+                if ci != "true":
+                    self.assertEqual(calls, [])
+
     def test_incus_sources_are_https(self):
         text = self.text(".config/incus/labby-image.yaml")
         self.assertNotIn("url: http://", text)
         self.assertNotIn("mirror: http://", text)
         self.assertIn("https://snapshot.ubuntu.com/ubuntu/", text)
         self.assertNotIn('uv" python install', text)
+
+    def test_image_runtime_secret_guard_fails_without_printing_values(self):
+        smoke = self.text("scripts/ci/smoke-incus-image.sh")
+        section = smoke.split('log "checking image does not contain runtime secrets"', 1)[1].split('log "checking provision convergence"', 1)[0]
+        command = re.search(r"-- sh -lc '(.*?)'", section, re.S).group(1)
+        with tempfile.TemporaryDirectory() as directory:
+            for path in ["/home/labby/.labby/.env", "/root/.labby/.env", "/run/labby-ts-authkey"]:
+                command = command.replace(path, str(pathlib.Path(directory) / path.lstrip("/")))
+            for name in ["TS_AUTHKEY", "LABBY_MCP_HTTP_TOKEN", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "NPM_TOKEN", "CARGO_REGISTRY_TOKEN"]:
+                with self.subTest(name=name):
+                    result = subprocess.run(["sh", "-c", command], env={"PATH": os.environ["PATH"], name: "private-sentinel\nsecond-private-line"}, capture_output=True, text=True, timeout=10)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(name, result.stderr)
+                    self.assertNotIn("private-sentinel", result.stdout + result.stderr)
+                    self.assertNotIn("second-private-line", result.stdout + result.stderr)
+            empty = subprocess.run(["sh", "-c", command], env={"PATH": os.environ["PATH"], "TS_AUTHKEY": ""}, capture_output=True, text=True, timeout=10)
+            self.assertNotEqual(empty.returncode, 0)
+            self.assertIn("TS_AUTHKEY", empty.stderr)
+            clean = subprocess.run(["sh", "-c", command], env={"PATH": os.environ["PATH"]}, capture_output=True, text=True, timeout=10)
+            self.assertEqual(clean.returncode, 0, clean.stderr)
 
     def test_image_is_substrate_only_and_smoke_installs_candidate(self):
         image = self.text(".config/incus/labby-image.yaml")

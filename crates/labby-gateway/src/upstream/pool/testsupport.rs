@@ -170,6 +170,26 @@ impl ServerHandler for StaticCatalogServer {
     }
 }
 
+pub(crate) async fn close_global_transport_for_tests(pool: &UpstreamPool, name: &str) {
+    let peer = {
+        let connections = pool.connections.read().await;
+        let entry = connections.get(name).expect("test connection exists");
+        entry
+            ._server_task
+            .as_ref()
+            .expect("test server task")
+            .abort();
+        entry.peer.clone()
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !peer.is_transport_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("test transport closes");
+}
+
 pub(crate) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
     static_catalog_pool_with_server(upstream_name, StaticCatalogServer::default()).await
 }
