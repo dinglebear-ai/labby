@@ -138,6 +138,7 @@ struct GatewayServerToolSchemaRow {
     name: String,
     description: Option<String>,
     input_schema: Option<serde_json::Value>,
+    output_schema: Option<serde_json::Value>,
     meta: Option<serde_json::Value>,
 }
 
@@ -1643,7 +1644,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.schema",
-        description: "Return tool schemas (input_schema + meta) for one upstream MCP server, \
+        description: "Return tool schemas (input_schema + output_schema + meta) for one upstream MCP server, \
                        filtered by its exposure policy. OAuth upstreams are discovered live with \
                        the authenticated subject; other upstreams use the shared cache.",
         destructive: false,

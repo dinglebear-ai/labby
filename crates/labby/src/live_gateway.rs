@@ -38,6 +38,9 @@ use rmcp::service::RunningService;
 use serde_json::Value;
 use url::{Host, Url};
 
+#[cfg(feature = "gateway")]
+mod fixture_schemas;
+
 use crate::config::LabConfig;
 use crate::dispatch::error::ToolError;
 

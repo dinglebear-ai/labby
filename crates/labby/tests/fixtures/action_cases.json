@@ -4739,6 +4739,36 @@
     "scenario_owner": "surface_action_runner"
   },
 {
+  "service": "snippets",
+  "action": "snippets.fixture",
+  "canonical_action": null,
+  "applicable_surfaces": [
+    "cli",
+    "mcp",
+    "api"
+  ],
+  "applicable_features": [
+    "all",
+    "default",
+    "gateway-host"
+  ],
+  "scenario_kind": "live_invoke",
+  "scenario_id": "live_invoke::snippets::snippets_fixture",
+  "minimum_evidence": "live_success",
+  "setup_ref": "disposable-home",
+  "fixture_params": {
+    "fixture": "isolated_snippets_readonly",
+    "parameters": {
+      "name": "$fixture.name",
+      "schemas": "$fixture.tool_schemas"
+    }
+  },
+  "required": true,
+  "exclusion_reason": null,
+  "persistence_class": "none",
+  "scenario_owner": "surface_action_runner"
+},
+{
     "service": "snippets",
     "action": "snippets.get",
     "canonical_action": null,

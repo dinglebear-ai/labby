@@ -140,6 +140,7 @@ function heartbeatPoints(buckets: { calls: number }[]): string {
 
 function gatewayTone(gateway: Gateway): { color: string; state: string } {
   const operational = describeGatewayOperationalState(gateway)
+  if (operational.kind === 'idle') return { color: 'var(--aurora-text-muted)', state: operational.label.toLowerCase() }
   if (operational.kind === 'disabled') return { color: 'var(--aurora-text-muted)', state: 'disabled' }
   if (operational.kind === 'disconnected') return { color: 'var(--aurora-error)', state: 'disconnected' }
   if (operational.kind === 'degraded') return { color: 'var(--aurora-warn)', state: 'needs attention' }
@@ -203,6 +204,7 @@ export function OverviewHero({
     .map((gateway) => ({ gateway, operational: describeGatewayOperationalState(gateway) }))
   const attention = activeGatewayStates.filter(({ operational }) => operational.needsAttention)
   const discovering = activeGatewayStates.filter(({ operational }) => operational.kind === 'discovering')
+  const idle = activeGatewayStates.filter(({ operational }) => operational.kind === 'idle')
   const troubled = attention
     .filter(({ gateway, operational }) => {
       const prefix = `gateway:${gateway.name}:`
@@ -237,7 +239,9 @@ export function OverviewHero({
           : `${troubled.length} need${troubled.length === 1 ? 's' : ''} attention`
         : discovering.length > 0
           ? `${discovering.length} discovering`
-          : 'all systems nominal'
+          : idle.length > 0
+            ? `${idle.length} not checked or idle`
+            : 'all systems nominal'
 
   const activeStatuses = gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status)
   const promptSummary = summarizeCapabilities(activeStatuses, 'prompts')

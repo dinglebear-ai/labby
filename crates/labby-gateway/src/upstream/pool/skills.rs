@@ -280,18 +280,42 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         subject: Option<&str>,
     ) -> Result<Option<rmcp::service::Peer<rmcp::RoleClient>>, UpstreamSkillsError> {
+        let peer = self
+            .skills_request_peer(config, subject, "skills.list")
+            .await?;
+        Ok(peer_declares_skills(&peer).then_some(peer))
+    }
+
+    /// Resolve the same identity-scoped peer for every Skills operation.
+    pub(super) async fn skills_request_peer(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        operation: &'static str,
+    ) -> Result<rmcp::service::Peer<rmcp::RoleClient>, UpstreamSkillsError> {
+        if config.oauth.is_some()
+            && let Some(subject) = subject
+        {
+            if !config.enabled {
+                return Err(UpstreamSkillsError::Unavailable);
+            }
+            self.ensure_lazy_upstream_entry(config).await;
+            return self
+                .acquire_or_connect_subject(config, subject)
+                .await
+                .map(|(peer, _)| peer)
+                .map_err(|_| UpstreamSkillsError::Unavailable);
+        }
         self.ensure_connection_for_upstream(config, subject, None)
             .await
             .map_err(|_| UpstreamSkillsError::Unavailable)?;
-        let peer = self
-            .acquire_peer(
-                &config.name,
-                super::super::types::UpstreamCapability::Skills,
-                "skills.list",
-            )
-            .await
-            .ok_or(UpstreamSkillsError::Unavailable)?;
-        Ok(peer_declares_skills(&peer).then_some(peer))
+        self.acquire_peer(
+            &config.name,
+            super::super::types::UpstreamCapability::Skills,
+            operation,
+        )
+        .await
+        .ok_or(UpstreamSkillsError::Unavailable)
     }
 
     /// Fetch one upstream's catalog and store it.
@@ -314,11 +338,13 @@ impl UpstreamPool {
             {
                 return Err(UpstreamSkillsError::Invalidated);
             }
-            let mut catalog = self.catalog_write().await;
-            if let Some(catalog_entry) = catalog.get_mut(&config.name) {
-                catalog_entry.supports_skills = Some(false);
-                catalog_entry.skill_count = 0;
-                catalog_entry.skill_names.clear();
+            if !(config.oauth.is_some() && subject.is_some()) {
+                let mut catalog = self.catalog_write().await;
+                if let Some(catalog_entry) = catalog.get_mut(&config.name) {
+                    catalog_entry.supports_skills = Some(false);
+                    catalog_entry.skill_count = 0;
+                    catalog_entry.skill_names.clear();
+                }
             }
             return Ok(empty);
         };
@@ -338,7 +364,7 @@ impl UpstreamPool {
                 {
                     return Err(UpstreamSkillsError::Invalidated);
                 }
-                {
+                if !(config.oauth.is_some() && subject.is_some()) {
                     let mut catalog = self.catalog_write().await;
                     if let Some(catalog_entry) = catalog.get_mut(&config.name) {
                         catalog_entry.supports_skills = Some(true);

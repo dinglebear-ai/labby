@@ -7,6 +7,7 @@ fn fixture(value: Value) -> SnippetFixture {
 
 fn raw(result: Value) -> RawReport {
     RawReport {
+        contract_calls: Vec::new(),
         result,
         exception: None,
         calls: Vec::new(),
@@ -24,6 +25,40 @@ fn fixture_defaults_and_unknown_keys() {
     assert_eq!(f.budgets.tool_calls, 40);
     assert_eq!(f.budgets.output_bytes, 16_000);
     assert!(serde_json::from_value::<SnippetFixture>(json!({"budgest": {}})).is_err());
+}
+
+#[test]
+fn saved_contracts_validate_results_and_actual_arguments_without_echoing_values() {
+    let contract = json!({"input_schema":{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}},
+        "output_schema":{"type":"object","required":["items"],"properties":{"items":{"type":"array"}}}});
+    let f = fixture(
+        json!({"calls":[{"tool":"synthetic::lookup","result":{"items":[]}}],
+        "schemas":{"synthetic::lookup":contract}}),
+    );
+    f.validate().unwrap();
+    let mut outcome = raw(json!({"ok":true}));
+    outcome.contract_calls.push(ContractCall {
+        tool: "synthetic::lookup".into(),
+        params: json!({"id":"private-value"}),
+    });
+    let report = evaluate("test", outcome, &f, 1, false).unwrap();
+    assert!(!report.passed);
+    assert!(report.failures[0].contains("input schema"));
+    assert!(
+        !serde_json::to_string(&report)
+            .unwrap()
+            .contains("private-value")
+    );
+    let bad = fixture(
+        json!({"calls":[{"tool":"synthetic::lookup","result":{"items":1}}],
+        "schemas":{"synthetic::lookup":contract}}),
+    );
+    assert!(bad.validate().is_err());
+    let rejection = fixture(
+        json!({"calls":[{"tool":"synthetic::lookup","error":{"kind":"timeout","message":"synthetic"}}],
+        "schemas":{"synthetic::lookup":contract}}),
+    );
+    rejection.validate().unwrap();
 }
 
 #[tokio::test]
@@ -275,4 +310,74 @@ fn nested_and_artifact_rules_are_bounded_and_portable() {
     ] {
         assert!(fixture(value).validate().is_err());
     }
+}
+
+#[test]
+fn fixture_contract_validation_shares_work_across_responses_and_arguments() {
+    let schema =
+        json!({"type":"object","properties":{"items":{"type":"array","items":{"type":"integer"}}}});
+    let value = json!({"items":vec![0;128]});
+    let rules = (0..130)
+        .map(|_| json!({"tool":"synthetic::lookup","result":value}))
+        .collect::<Vec<_>>();
+    let responses =
+        fixture(json!({"calls":rules,"schemas":{"synthetic::lookup":{"output_schema":schema}}}));
+    assert!(responses.validate().is_err());
+    let arguments = fixture(json!({"calls":[{"tool":"synthetic::lookup","times":130}],
+        "schemas":{"synthetic::lookup":{"input_schema":schema}}}));
+    arguments.validate().unwrap();
+    let mut outcome = raw(json!({"ok":true}));
+    outcome.contract_calls = (0..130)
+        .map(|_| ContractCall {
+            tool: "synthetic::lookup".into(),
+            params: value.clone(),
+        })
+        .collect();
+    let report = evaluate("bounded", outcome, &arguments, 1, false).unwrap();
+    assert!(!report.passed);
+    assert_eq!(report.failures.len(), 1);
+    assert!(report.failures[0].contains("work budget"));
+}
+
+#[test]
+fn argument_validation_stops_at_the_fixture_deadline() {
+    let f = fixture(json!({"budgets":{"wall_clock_ms":1},
+        "calls":[{"tool":"synthetic::lookup"}],
+        "schemas":{"synthetic::lookup":{"input_schema":{"type":"object"}}}}));
+    let mut outcome = raw(json!({"ok":true}));
+    outcome.contract_calls.push(ContractCall {
+        tool: "synthetic::lookup".into(),
+        params: json!({}),
+    });
+    let report = evaluate("deadline", outcome, &f, 1, false).unwrap();
+    assert!(!report.passed);
+    assert!(
+        report
+            .failures
+            .iter()
+            .any(|f| f.contains("validation deadline"))
+    );
+    assert!(report.metrics.wall_clock_ms >= 1);
+}
+
+#[test]
+fn fixture_admission_rejects_defects_in_absent_optional_inputs() {
+    for input_schema in [
+        json!({"type":"object","properties":{"optional":{"$ref":"#/$defs/missing"}}}),
+        json!({"type":"object","patternProperties":{"[":{"type":"string"}}}),
+    ] {
+        let f = fixture(json!({"calls":[{"tool":"synthetic::lookup","result":true}],
+            "schemas":{"synthetic::lookup":{"input_schema":input_schema,"output_schema":{"type":"boolean"}}}}));
+        assert!(f.validate().is_err());
+    }
+}
+
+#[test]
+fn runner_reports_must_include_argument_contract_metadata() {
+    let report = json!({"result":{"ok":true},"exception":null,"calls":[],
+        "attempted":0,"unexpected":0,"max_in_flight":0,"unused":[]});
+    assert!(serde_json::from_value::<RawReport>(report.clone()).is_err());
+    let mut complete = report;
+    complete["contract_calls"] = json!([]);
+    assert!(serde_json::from_value::<RawReport>(complete).is_ok());
 }

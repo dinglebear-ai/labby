@@ -99,6 +99,7 @@ pub fn requires_execution_context(action: &str) -> bool {
     matches!(
         action,
         "snippets.exec"
+            | "snippets.fixture"
             | "snippets.test"
             | "snippets.promote"
             | "snippets.preview"
@@ -165,6 +166,7 @@ async fn dispatch_inner(
             &lab_home(),
             &builtin_snippet_dir(),
         )?),
+        "snippets.fixture" => super::fixtures::generate(manager, params, dispatch_context).await,
         "snippets.history" | "snippets.artifact" => {
             super::history::dispatch(manager, action, params, dispatch_context).await
         }

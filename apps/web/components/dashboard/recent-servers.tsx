@@ -26,7 +26,7 @@ export function RecentServers({ gateways, loading = false, error = false }: { ga
       : gateways.length === 0 ? <div className="px-[14px] py-3 text-xs text-aurora-text-muted"><p>No servers configured.</p><Link href="/gateways" className="mt-2 inline-block text-aurora-accent-strong underline">Add server</Link></div>
       : <ul>{gateways.slice(0, 5).map(gateway => {
         const operational = describeGatewayOperationalState(gateway)
-        const color = operational.kind === 'disabled'
+        const color = (operational.kind === 'disabled' || operational.kind === 'idle')
           ? 'bg-aurora-text-muted'
           : operational.kind === 'disconnected'
             ? 'bg-aurora-error'

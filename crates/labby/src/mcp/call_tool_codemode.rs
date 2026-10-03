@@ -80,7 +80,7 @@ fn code_mode_dedup_key(
     code_hash: &str,
     caller: &CodeModeCaller,
 ) -> String {
-    let context = match caller {
+    let context = match caller.without_authority() {
         CodeModeCaller::ScopedPrivate { context_token, .. } => {
             serde_json::json!({ "private": context_token })
         }

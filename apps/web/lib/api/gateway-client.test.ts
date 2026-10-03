@@ -1442,3 +1442,69 @@ test('runtime hydration replaces scoped observation independently of legacy zero
   assert.equal(gateway.status.connected,false)
  })
 })
+
+
+test('tool inventory hydration caps fleet request concurrency and returns every server', async () => {
+  let active = 0
+  let maximum = 0
+  await withGatewayFetch({
+    'gateway.discovered_tools': async ({ name }) => {
+      active += 1
+      maximum = Math.max(maximum, active)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        return [{ name: String(name) + '_tool', exposed: true, matched_by: '*' }]
+      } finally {
+        active -= 1
+      }
+    },
+  }, async () => {
+    const gateways = Array.from({ length: 12 }, (_, index) => ({
+      id: 'fleet-' + index, name: 'fleet-' + index, source: 'custom_gateway', config: {},
+      discovery: { tools: [], resources: [], prompts: [] }, warnings: [],
+    }))
+    const hydrated = await gatewayApi.hydrateToolInventory(gateways as never)
+    assert.ok(maximum <= 4, 'inventory loaders must not launch the whole fleet concurrently')
+    assert.equal(hydrated.length, 12)
+    assert.equal(hydrated[11].discovery.tools[0].name, 'fleet-11_tool')
+  })
+})
+
+
+test('queued inventory requests stop when the authority changes during bounded hydration', async () => {
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let started = 0
+  await withGatewayFetch({
+    'gateway.discovered_tools': async () => {
+      started++
+      await blocked
+      return [{ name: 'private_tool', exposed: true, matched_by: '*' }]
+    },
+  }, async () => {
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      id: 'fenced-' + index, name: 'fenced-' + index, source: 'custom_gateway', config: {},
+      discovery: { tools: [], resources: [], prompts: [] }, warnings: [],
+    }))
+    const pending = gatewayApi.hydrateToolInventory(rows as never)
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'different-owner' }, csrfToken: 'test-csrf', expiresAt: 1, projectId: 'different-project' })
+    release()
+    await assert.rejects(pending, error => error instanceof DOMException && error.name === 'AbortError')
+    assert.equal(started, 4, 'remaining queued rows must not be requested under the replacement authority')
+  })
+})
+
+test('detail runtime refresh requests only the named runtime and preserves catalog and health evidence', async () => {
+  const { mockGateways } = await import('./mock-data')
+  const snapshot = { ...mockGateways[0], id: 'cheap-runtime', name: 'cheap-runtime',
+    status: { ...mockGateways[0].status, connected: false, healthy: false, last_error: 'retained failure' } }
+  await withGatewayFetch({ 'gateway.mcp.list': () => [{ name: snapshot.id, connected: true, enabled: true }] }, async requests => {
+    const refreshed = await gatewayApi.refreshRuntime(snapshot)
+    assert.deepEqual(requests, [{ action: 'gateway.mcp.list', params: { name: snapshot.id } }])
+    assert.equal(refreshed.status.connected, true)
+    assert.equal(refreshed.status.healthy, false)
+    assert.equal(refreshed.status.last_error, 'retained failure')
+    assert.equal(refreshed.discovery, snapshot.discovery)
+    assert.deepEqual(refreshed.config, snapshot.config)
+  })
+})

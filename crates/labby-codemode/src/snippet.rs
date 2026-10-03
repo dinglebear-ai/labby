@@ -7,6 +7,9 @@
 /// Deterministic fixture execution using the production parser and sandbox.
 pub mod harness;
 
+/// Offline schema contracts and synthetic fixture value generation.
+pub mod schemas;
+
 /// Snippet storage, validation, resolution, and input-merging primitives.
 pub mod store;
 /// Validated, presence-aware exact-tool declarations for saved snippets.

@@ -1,6 +1,7 @@
 pub mod catalog;
 pub mod dispatch;
 mod execution;
+mod fixtures;
 mod history;
 mod preview;
 mod testing;
@@ -12,6 +13,7 @@ pub use labby_codemode::snippet::store;
 
 pub use catalog::ACTIONS;
 pub use dispatch::dispatch;
+pub(crate) use fixtures::{generate_remote as generate_remote_fixture, write_fixture_output};
 
 #[cfg(test)]
 mod tests {
