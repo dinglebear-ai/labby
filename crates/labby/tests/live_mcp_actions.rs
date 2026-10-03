@@ -208,7 +208,10 @@ async fn assert_mcp_transition_readback(
             true
         }
         "snippets:snippets.replay" => {
-            let run: serde_json::Value = serde_json::from_str(mutation_text).expect("replay JSON");
+            let run = action_scenarios::snippet_mcp_action_data(
+                serde_json::from_str(mutation_text).expect("replay JSON"),
+                "snippets.replay",
+            );
             assert_eq!(run["receipt_status"], "persisted", "replay receipt: {run}");
             let id = run["execution_id"]
                 .as_str()
@@ -614,7 +617,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
                     Some(true),
                     "{action} receipt fixture failed: {text}"
                 );
-                serde_json::from_str(&text).expect("snippet fixture JSON")
+                action_scenarios::snippet_mcp_action_data(
+                    serde_json::from_str(&text).expect("snippet fixture JSON"),
+                    action,
+                )
             },
         )
         .await;
@@ -640,8 +646,10 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             intent.key()
         );
         if prepared_case && result.is_error != Some(true) {
-            let value: serde_json::Value =
-                serde_json::from_str(&text).expect("snippet action JSON");
+            let value = action_scenarios::snippet_mcp_action_data(
+                serde_json::from_str(&text).expect("snippet action JSON"),
+                &intent.action,
+            );
             action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
         }
         let succeeded = result.is_error != Some(true);

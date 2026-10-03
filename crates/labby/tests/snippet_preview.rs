@@ -57,32 +57,37 @@ fn preview_is_read_only_and_replay_requires_current_owner_guard_and_all_drift() 
         run(Path::new(&home));
         return;
     }
-    let home = if cfg!(target_os = "macos") {
-        tempfile::Builder::new()
-            .prefix("lpv-")
-            .tempdir_in("/private/tmp")
-    } else {
-        tempfile::tempdir()
-    }
-    .unwrap();
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "preview_is_read_only_and_replay_requires_current_owner_guard_and_all_drift",
-            "--nocapture",
-        ])
-        .env_clear()
-        .env("HOME", home.path())
-        .env("LABBY_HOME", home.path())
-        .env("LABBY_PREVIEW_TEST_CHILD", home.path())
-        .output()
+    // The advertisement switch must not disable native snippet preview/replay.
+    // Run the complete durability and denial regression under both MCP regimes.
+    for enabled in [true, false] {
+        let home = if cfg!(target_os = "macos") {
+            tempfile::Builder::new()
+                .prefix("lpv-")
+                .tempdir_in("/private/tmp")
+        } else {
+            tempfile::tempdir()
+        }
         .unwrap();
-    assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "preview_is_read_only_and_replay_requires_current_owner_guard_and_all_drift",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("HOME", home.path())
+            .env("LABBY_HOME", home.path())
+            .env("LABBY_PREVIEW_TEST_CHILD", home.path())
+            .env("LABBY_PREVIEW_CODE_MODE_ENABLED", enabled.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 fn run(home: &Path) {
@@ -99,7 +104,9 @@ fn run(home: &Path) {
         .unwrap();
     runtime.block_on(async {
         let store=StepJournalStore::open(home.join("journal.db")).await.unwrap();
-        let manager=GatewayManager::with_store(home.join("config.toml"),GatewayRuntimeHandle::default(), Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(Arc::new(std::sync::RwLock::new(labby::config::LabConfig::default())),home.join("config.toml"))))
+        let mut config = labby::config::LabConfig::default();
+        config.code_mode.enabled = std::env::var("LABBY_PREVIEW_CODE_MODE_ENABLED").unwrap().parse().unwrap();
+        let manager=GatewayManager::with_store(home.join("config.toml"),GatewayRuntimeHandle::default(), Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(Arc::new(std::sync::RwLock::new(config)),home.join("config.toml"))))
             .with_step_journal(Arc::new(store)).with_code_mode_runner_spawn(RunnerSpawn {program:env!("CARGO_BIN_EXE_labby").into(),args:vec!["internal".into(),"code-mode-runner".into()]});
         let alice=context("alice");
         let secret="ephemeral-preview-secret-must-not-be-stored-90b76";

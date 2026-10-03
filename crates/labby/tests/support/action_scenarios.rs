@@ -387,6 +387,54 @@ pub(crate) fn action_request(intent: &CaseIntent) -> Value {
     json!({"action": intent.action, "params": fixture_params(intent)})
 }
 
+/// Validate the MCP CommandResponse before exposing its action payload.
+pub(crate) fn snippet_mcp_action_data(value: Value, action: &str) -> Value {
+    assert_eq!(value["ok"], true, "{action} MCP command failed: {value}");
+    assert_eq!(
+        value["service"], "snippets",
+        "unexpected MCP service: {value}"
+    );
+    assert_eq!(value["action"], action, "unexpected MCP action: {value}");
+    assert!(
+        value["data"].is_object(),
+        "{action} MCP command has no data object: {value}"
+    );
+    value["data"].clone()
+}
+
+#[cfg(test)]
+mod snippet_mcp_action_data_tests {
+    use super::*;
+
+    #[test]
+    fn persisted_receipt_data_survives_the_mcp_command_envelope() {
+        let data =
+            json!({"execution_id":"owned-run","receipt_status":"persisted","result":{"ok":true}});
+        let envelope =
+            json!({"ok":true,"service":"snippets","action":"snippets.replay","data":data});
+        let actual = snippet_mcp_action_data(envelope, "snippets.replay");
+        assert_snippet_receipt_case("snippets.replay", &actual);
+        assert_eq!(actual["execution_id"], "owned-run");
+    }
+
+    #[test]
+    fn failed_or_mismatched_mcp_commands_cannot_supply_receipt_evidence() {
+        for envelope in [
+            json!({"ok":false,"service":"snippets","action":"snippets.exec","data":{"receipt_status":"persisted"}}),
+            json!({"service":"snippets","action":"snippets.exec","data":{}}),
+            json!({"ok":true,"service":"gateway","action":"snippets.exec","data":{}}),
+            json!({"ok":true,"service":"snippets","action":"snippets.receipt","data":{}}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec"}),
+            json!({"ok":true,"service":"snippets","action":"snippets.exec","data":null}),
+        ] {
+            assert!(
+                std::panic::catch_unwind(|| snippet_mcp_action_data(envelope, "snippets.exec"))
+                    .is_err()
+            );
+        }
+    }
+}
+
 /// Seed a real receipt and artifact in the transport runner's disposable home.
 /// Replay uses a fresh preview, never a fabricated fingerprint or weakened gate.
 pub(crate) async fn prepare_snippet_receipt_case<F, Fut>(action: &str, mut call: F) -> Option<Value>
