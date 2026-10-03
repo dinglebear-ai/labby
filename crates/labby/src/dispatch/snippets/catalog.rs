@@ -478,4 +478,56 @@ pub const ACTIONS: &[ActionSpec] = &[
             },
         ],
     },
+    ActionSpec {
+        name: "snippets.fixture",
+        description: "Generate an editable offline fixture draft from visible tool schemas without executing tools",
+        destructive: false,
+        requires_admin: true,
+        returns: "SnippetFixtureDraft",
+        output_schema: Some(labby_primitives::action::schema_for::<super::fixtures::FixtureDraft>),
+        params: &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Saved snippet name",
+            },
+            ParamSpec {
+                name: "params",
+                ty: "object",
+                required: false,
+                description: "Synthetic snippet input values",
+            },
+            ParamSpec {
+                name: "tools",
+                ty: "string[]",
+                required: false,
+                description: "Explicit exact tool IDs for legacy snippets; can only narrow declarations",
+            },
+            ParamSpec {
+                name: "check",
+                ty: "object",
+                required: false,
+                description: "Saved fixture to compare with current contracts without execution",
+            },
+            ParamSpec {
+                name: "schemas",
+                ty: "object",
+                required: false,
+                description: "Saved contracts keyed by exact tool ID; omit to discover caller-visible schemas",
+            },
+            ParamSpec {
+                name: "results",
+                ty: "object",
+                required: false,
+                description: "Explicit synthetic response overrides keyed by exact tool ID",
+            },
+            ParamSpec {
+                name: "variant",
+                ty: "string",
+                required: false,
+                description: "populated (default) or minimal",
+            },
+        ],
+    },
 ];

@@ -23,6 +23,7 @@ fn owner_scoped_snippet_actions_share_the_contextual_surface_contract() {
     for action in [
         "snippets.exec",
         "snippets.test",
+        "snippets.fixture",
         "snippets.promote",
         "snippets.preview",
         "snippets.replay",
