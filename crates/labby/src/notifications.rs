@@ -14,9 +14,6 @@ use tokio::sync::RwLock;
 use crate::dispatch::depot::DepotClient;
 use crate::installation::InstallationPaths;
 
-#[cfg(feature = "gateway")]
-pub(crate) mod codemode;
-
 const DEFAULT_RETENTION: usize = 200;
 const MAX_RETENTION: usize = 2_000;
 const DEFAULT_DEPOT_MONITOR_INTERVAL_SECONDS: u64 = 30;

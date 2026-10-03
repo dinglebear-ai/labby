@@ -1,15 +1,15 @@
 //! MCP adaptation only: derive recipient authority, handle control inputs, and
 //! attach advisory notices without replacing the user's result or error.
+use crate::dispatch::codemode_notices::{
+    NoticeBatch, NoticeConsumer, NoticeError, NoticeRecipient, NoticeStore,
+    validate_acknowledgments,
+};
 use crate::mcp::{
     context::{
         auth_context_from_extensions, authorized_client_id_from_extensions,
         openai_session_fingerprint,
     },
     server::LabMcpServer,
-};
-use crate::notifications::codemode::{
-    NoticeBatch, NoticeConsumer, NoticeError, NoticeRecipient, NoticeStore,
-    validate_acknowledgments,
 };
 use rmcp::{
     RoleServer,
@@ -136,7 +136,7 @@ pub(super) async fn prepare(
         Some(value) => {
             let values = value
                 .as_array()
-                .filter(|v| v.len() <= crate::notifications::codemode::MAX_ACKS)
+                .filter(|v| v.len() <= crate::dispatch::codemode_notices::MAX_ACKS)
                 .ok_or(NoticeError::Invalid)?;
             let ids = values
                 .iter()

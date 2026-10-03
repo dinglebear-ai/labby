@@ -206,7 +206,7 @@ impl<T> CatalogSnapshotStore<T> {
 pub(crate) struct McpRouteRuntime {
     /// Durable agent inbox shared with the authenticated publication API.
     #[cfg(feature = "gateway")]
-    pub(crate) code_mode_notifications: crate::notifications::codemode::NoticeStore,
+    pub(crate) code_mode_notifications: crate::dispatch::codemode_notices::NoticeStore,
     #[cfg(feature = "gateway")]
     notification_stdio_session: std::sync::OnceLock<String>,
     resources: RwLock<CatalogSnapshotStore<Resource>>,
@@ -218,7 +218,7 @@ pub(crate) struct McpRouteRuntime {
 impl McpRouteRuntime {
     #[cfg(feature = "gateway")]
     pub(crate) fn with_notification_store(
-        store: crate::notifications::codemode::NoticeStore,
+        store: crate::dispatch::codemode_notices::NoticeStore,
     ) -> Self {
         Self {
             code_mode_notifications: store,

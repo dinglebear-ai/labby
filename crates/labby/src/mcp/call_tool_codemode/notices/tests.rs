@@ -1,5 +1,5 @@
 use super::*;
-use crate::notifications::codemode::{CodeModeNotice, NoticeLevel};
+use crate::dispatch::codemode_notices::{CodeModeNotice, NoticeLevel};
 use serde_json::json;
 fn result(error: bool) -> CallToolResult {
     let text = if error {

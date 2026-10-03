@@ -840,7 +840,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     #[cfg(feature = "gateway")]
     {
         state.agent_notifications =
-            match crate::notifications::codemode::NoticeStore::open_installation().await {
+            match crate::dispatch::codemode_notices::NoticeStore::open_installation().await {
                 Ok(store) => store,
                 Err(error) => {
                     tracing::error!(
@@ -848,7 +848,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
                         kind = error.kind(),
                         "durable agent inbox unavailable; notification operations disabled, no memory fallback"
                     );
-                    crate::notifications::codemode::NoticeStore::disabled()
+                    crate::dispatch::codemode_notices::NoticeStore::disabled()
                 }
             };
     }
@@ -2065,7 +2065,7 @@ async fn log_mcp_request(
     next.run(req).await
 }
 
-fn build_http_router(
+pub(crate) fn build_http_router(
     state: AppState,
     bearer_token: Option<String>,
     auth_state: Option<labby_auth::state::AuthState>,
@@ -2613,18 +2613,18 @@ fn run_stdio(
         let service_count = registry.services().len();
         #[cfg(feature = "gateway")]
         let route_runtime = {
-            let store = match crate::notifications::codemode::NoticeStore::open_installation().await
-            {
-                Ok(store) => store,
-                Err(error) => {
-                    tracing::error!(
-                        subsystem = "agent_notifications",
-                        kind = error.kind(),
-                        "durable stdio agent inbox unavailable; no memory fallback"
-                    );
-                    crate::notifications::codemode::NoticeStore::disabled()
-                }
-            };
+            let store =
+                match crate::dispatch::codemode_notices::NoticeStore::open_installation().await {
+                    Ok(store) => store,
+                    Err(error) => {
+                        tracing::error!(
+                            subsystem = "agent_notifications",
+                            kind = error.kind(),
+                            "durable stdio agent inbox unavailable; no memory fallback"
+                        );
+                        crate::dispatch::codemode_notices::NoticeStore::disabled()
+                    }
+                };
             Arc::new(crate::mcp::runtime::McpRouteRuntime::with_notification_store(store))
         };
         #[cfg(not(feature = "gateway"))]
@@ -4230,6 +4230,3 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 }
-
-#[cfg(all(test, feature = "gateway", feature = "proxy-testkit"))]
-mod notification_tests;

@@ -1,8 +1,9 @@
 //! Loopback HTTP qualification using the actual auth middleware and JS runner.
-use super::{PeerNotifier, build_http_router};
 use crate::api::AppState;
+use crate::cli::serve::build_http_router;
 use crate::config::{LabConfig, McpPreferences};
-use crate::notifications::codemode::NoticeStore;
+use crate::dispatch::codemode_notices::NoticeStore;
+use crate::mcp::peers::PeerNotifier;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 

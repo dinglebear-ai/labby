@@ -94,3 +94,7 @@ mod tests {
         );
     }
 }
+
+// Qualify cross-surface HTTP composition alongside the shared test fixtures.
+#[cfg(all(test, feature = "gateway", feature = "proxy-testkit"))]
+mod notification_http;

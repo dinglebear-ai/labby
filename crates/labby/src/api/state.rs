@@ -35,7 +35,7 @@ pub struct AppState {
     pub notifications: Arc<crate::notifications::NotificationCenter>,
     /// Separate recipient-scoped store; never exposes the operator feed to agents.
     #[cfg(feature = "gateway")]
-    pub(crate) agent_notifications: crate::notifications::codemode::NoticeStore,
+    pub(crate) agent_notifications: crate::dispatch::codemode_notices::NoticeStore,
     /// Durable provider lifecycle dispatch, available only with browser OAuth authority.
     pub depot_admin: Option<Arc<crate::dispatch::depot::admin::Admin>>,
     depot_store: Option<Arc<crate::dispatch::depot::store::Store>>,
@@ -177,7 +177,7 @@ impl AppState {
             depot_manager: Arc::new(crate::dispatch::depot::manager::Manager::default()),
             notifications: Arc::new(crate::notifications::NotificationCenter::default()),
             #[cfg(feature = "gateway")]
-            agent_notifications: crate::notifications::codemode::NoticeStore::default(),
+            agent_notifications: crate::dispatch::codemode_notices::NoticeStore::default(),
             depot_admin: None,
             depot_store: None,
             depot_policy: Default::default(),

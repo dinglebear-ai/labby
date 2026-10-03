@@ -48,9 +48,9 @@ async fn list(
 async fn publish_agent(
     State(state): State<AppState>,
     auth: Option<Extension<AuthContext>>,
-    Json(input): Json<crate::notifications::codemode::PublishNotice>,
-) -> Result<Json<crate::notifications::codemode::PublishReceipt>, crate::api::error::ApiError> {
-    use crate::notifications::codemode::NoticeProducer;
+    Json(input): Json<crate::dispatch::codemode_notices::PublishNotice>,
+) -> Result<Json<crate::dispatch::codemode_notices::PublishReceipt>, crate::api::error::ApiError> {
+    use crate::dispatch::codemode_notices::NoticeProducer;
     let producer = NoticeProducer {
         actor: auth
             .as_ref()
@@ -110,9 +110,10 @@ mod tests {
     #[cfg(feature = "gateway")]
     #[tokio::test]
     async fn notice_production_http_sender_auth_idempotency_and_input_limits() {
-        use crate::notifications::codemode::{NoticeConsumer, NoticeRecipient};
+        use crate::dispatch::codemode_notices::{NoticeConsumer, NoticeRecipient};
         let mut state = AppState::new();
-        state.agent_notifications = crate::notifications::codemode::NoticeStore::memory().unwrap();
+        state.agent_notifications =
+            crate::dispatch::codemode_notices::NoticeStore::memory().unwrap();
         let who = NoticeRecipient {
             actor: Some("alice".into()),
             route: "root".into(),

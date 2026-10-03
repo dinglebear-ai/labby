@@ -84,7 +84,7 @@ recover a receipt.
 ## Source ownership
 
 Shared storage, validation, idempotency, and delivery semantics live in
-crates/labby/src/notifications/codemode.rs. The API and MCP adapters only bind
+crates/labby/src/dispatch/codemode_notices.rs. The API and MCP adapters only bind
 trusted identities and transport the shared contract. Startup owns durable-store
 initialization; shared route runtime carries it across stateless HTTP requests.
 The MCP schema and description builders own discoverability. Skills are authored

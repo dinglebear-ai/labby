@@ -1,9 +1,9 @@
 //! Native MCP / actual JavaScript runner qualification for agent notices.
 use super::{code_mode_manager, completion_test_registry, test_server};
-use crate::mcp::{logging::LoggingLevel, route_scope::McpRouteScope};
-use crate::notifications::codemode::{
+use crate::dispatch::codemode_notices::{
     NoticeConsumer, NoticeLevel, NoticeProducer, NoticeRecipient, PublishNotice,
 };
+use crate::mcp::{logging::LoggingLevel, route_scope::McpRouteScope};
 use rmcp::{
     ServiceExt,
     model::{CallToolRequestParams, ProtocolVersion},
@@ -37,7 +37,7 @@ async fn notice_production_denied_execution_never_drains_inbox() {
     );
     server.route_runtime = Arc::new(
         crate::mcp::runtime::McpRouteRuntime::with_notification_store(
-            crate::notifications::codemode::NoticeStore::memory().unwrap(),
+            crate::dispatch::codemode_notices::NoticeStore::memory().unwrap(),
         ),
     );
     let route = Arc::clone(&server.route_runtime);
@@ -124,7 +124,7 @@ async fn notice_production_native_mcp_real_runner() {
     server.relay_session_id = crate::mcp::server::next_relay_session_id();
     server.route_runtime = Arc::new(
         crate::mcp::runtime::McpRouteRuntime::with_notification_store(
-            crate::notifications::codemode::NoticeStore::memory().unwrap(),
+            crate::dispatch::codemode_notices::NoticeStore::memory().unwrap(),
         ),
     );
     let route = Arc::clone(&server.route_runtime);
