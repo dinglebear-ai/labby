@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ReauthDialog } from '@/components/auth/reauth-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { probeProvider, providerOperation, removeProvider, upsertProvider, type CredentialOperation, type DepotProvider } from '@/lib/api/depot-client'
 import { useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
 
 type Props = { provider?: DepotProvider; baseVersion: string; onSaved(): void; onClose(): void }
 type ReauthAction = 'save' | 'remove'
@@ -36,6 +37,8 @@ export function providerInputError(id: string, name: string, endpoint: string, b
 
 export function DepotProviderDialog({ provider, baseVersion, onSaved, onClose }: Props) {
   const session = useBrowserSession(), title = useId(), secret = useRef<HTMLInputElement>(null)
+  const mounted = useRef(true), dialogEpoch = useRef(getBrowserSessionEpoch())
+  const currentContext = () => mounted.current && dialogEpoch.current === getBrowserSessionEpoch()
   const generation = useRef(0), operation = useRef(crypto.randomUUID())
   const [id,setId]=useState(provider?.id??''), [name,setName]=useState(provider?.name??''), [endpoint,setEndpoint]=useState(provider?.endpoint??'')
   const [enabled,setEnabled]=useState(provider?.enabled??false), [authMode,setAuthMode]=useState<'anonymous'|'bearer'>(()=>initialProviderAuthMode(provider))
@@ -44,34 +47,36 @@ export function DepotProviderDialog({ provider, baseVersion, onSaved, onClose }:
   const builtin=provider?.id==='public', version=provider?.configVersion??baseVersion
   const needsProof=providerRequiresFreshProof(provider,endpoint,authMode,credential)
 
-  useEffect(()=>()=>{ if(secret.current)secret.current.value=''; generation.current+=1 },[])
+  const clearCredential = useCallback(() => { if(secret.current)secret.current.value='' }, [])
+  useEffect(()=>{ mounted.current=true; return ()=>{ mounted.current=false; clearCredential(); generation.current+=1 } },[clearCredential])
   const credentialValue=():CredentialOperation=>credential==='replace'?{action:'replace',value:secret.current?.value??''}:credential==='clear'?{action:'clear'}:{action:'retain'}
   const reconcile=async(operationId:string,reason:unknown)=>{const outcome=await providerOperation(operationId).catch(()=>null);if(!outcome?.committed)throw reason}
 
   const run=async(kind:'probe'|'save')=>{
+    if(!currentContext())return
     const invalid = providerInputError(id, name, endpoint, builtin)
     if (invalid) { setError(invalid); return }
     if (authMode === 'bearer' && credential === 'replace' && !secret.current?.value.trim()) { setError('Enter the new bearer token.'); return }
     const runGeneration=++generation.current;setBusy(true);setError(undefined);setProbe(undefined)
     try {
       const csrf=session.status==='authenticated'?session.csrfToken:''
-      if(kind==='probe'){const result=await probeProvider({id,name,endpoint,enabled,authMode,credential:credentialValue()},csrf);if(runGeneration===generation.current)setProbe(result.state);return}
+      if(kind==='probe'){const result=await probeProvider({id,name,endpoint,enabled,authMode,credential:credentialValue()},csrf);if(currentContext()&&runGeneration===generation.current)setProbe(result.state);return}
       if(needsProof&&!proof)throw new Error('Fresh authentication is required before saving provider credentials.')
       try{await upsertProvider({id,name,endpoint,enabled,authMode,credential:credentialValue(),expectedVersion:version,operationId:operation.current,proof},csrf)}catch(reason){await reconcile(operation.current,reason)}
-      if(runGeneration===generation.current)onSaved()
-    } catch(reason){if(runGeneration===generation.current)setError(reason instanceof Error?reason.message:'Provider operation failed')}
-    finally{if(secret.current)secret.current.value='';if(runGeneration===generation.current)setBusy(false)}
+      if(currentContext()&&runGeneration===generation.current)onSaved()
+    } catch(reason){if(currentContext()&&runGeneration===generation.current)setError(reason instanceof Error?reason.message:'Provider operation failed')}
+    finally{if(secret.current)secret.current.value='';if(currentContext()&&runGeneration===generation.current)setBusy(false)}
   }
 
   const remove=async(freshProof:string)=>{
-    if(!provider||builtin)return
+    if(!currentContext()||!provider||builtin)return
     const runGeneration=++generation.current;setBusy(true);setError(undefined)
     try {
       const csrf=session.status==='authenticated'?session.csrfToken:''
       try{await removeProvider(provider.id,version,operation.current,freshProof,csrf)}catch(reason){await reconcile(operation.current,reason)}
-      if(runGeneration===generation.current)onSaved()
-    } catch(reason){if(runGeneration===generation.current)setError(reason instanceof Error?reason.message:'Provider removal failed')}
-    finally{if(runGeneration===generation.current)setBusy(false)}
+      if(currentContext()&&runGeneration===generation.current)onSaved()
+    } catch(reason){if(currentContext()&&runGeneration===generation.current)setError(reason instanceof Error?reason.message:'Provider removal failed')}
+    finally{if(currentContext()&&runGeneration===generation.current)setBusy(false)}
   }
 
   const openReauth=(action:ReauthAction)=>{operation.current=crypto.randomUUID();setProof(undefined);setReauthAction(action);setReauthOpen(true)}
@@ -95,13 +100,13 @@ export function DepotProviderDialog({ provider, baseVersion, onSaved, onClose }:
         {probe?<p role="status" className="text-sm">Diagnostic result: {probe}</p>:null}
         <div className="flex flex-wrap justify-end gap-2">
           {provider&&!builtin?<Button variant="destructive" disabled={busy} onClick={()=>openReauth('remove')}>Remove</Button>:null}
-          <Button variant="ghost" onClick={()=>{if(secret.current)secret.current.value='';onClose()}}>Cancel</Button>
+          <Button variant="ghost" onClick={()=>{mounted.current=false;generation.current+=1;if(secret.current)secret.current.value='';onClose()}}>Cancel</Button>
           <Button variant="outline" disabled={busy} onClick={()=>void run('probe')}>Test catalog access</Button>
           {needsProof?<Button variant="outline" onClick={()=>openReauth('save')}>{proof?'Identity confirmed':'Confirm identity'}</Button>:null}
           <Button disabled={busy||(needsProof&&!proof)} onClick={()=>void run('save')}>Save</Button>
         </div>
       </div>
     </div>
-    <ReauthDialog open={reauthOpen} purpose={purpose} onOpenChange={setReauthOpen} onProof={freshProof=>{if(reauthAction==='remove')void remove(freshProof);else setProof(freshProof)}}/>
+    <ReauthDialog open={reauthOpen} purpose={purpose} onOpenChange={setReauthOpen} onProof={freshProof=>{if(!currentContext())return;if(reauthAction==='remove')void remove(freshProof);else setProof(freshProof)}}/>
   </div>
 }

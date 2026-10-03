@@ -7,6 +7,7 @@ import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils.t
 import { filterArtifacts } from './library-model'
 
 const dom = installTestDom()
+test.after(() => dom.happyDOM.close())
 Object.defineProperty(globalThis, 'self', { value: globalThis.window, configurable: true })
 Object.defineProperty(globalThis, 'NodeFilter', { value: dom.NodeFilter, configurable: true })
 Object.defineProperty(globalThis, 'HTMLInputElement', { value: dom.HTMLInputElement, configurable: true })
@@ -151,6 +152,64 @@ const operationCatalog = () => Response.json({ operations: [
 ] })
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 
+test('production Library displays real revision contents and exact upstream identity', async () => {
+  const record = { ...artifact('unique-skill', 'skill'), providerId: 'team-catalog',
+    readme: { state: 'available' as const, kind: 'readme' as const, path: 'README.md' as const, revisionId: 'unique-skill-rev', content: '# Actual revision\n\nREADME_MARKER' },
+    lineage: { upstreamArtifactId: 'original', following: true },
+  }
+  const { view, restore } = await renderLibrary(new URLSearchParams({ artifact: record.id }), [record])
+  try {
+    await flush()
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent ?? '', /README_MARKER/)
+    assert.doesNotMatch(dialog.textContent ?? '', /Forks stay linked|reference.md|examples\/basic.md/)
+    await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click())
+    assert.match(dialog.textContent ?? '', /README.md/)
+    assert.doesNotMatch(dialog.textContent ?? '', /SKILL.md|scripts\/unique-skill.sh/)
+    const destination = new URL(dialog.querySelector<HTMLAnchorElement>('[aria-label="Upstream"] a')!.getAttribute('href')!, 'https://labby.example')
+    assert.equal(destination.searchParams.get('artifactProvider'), 'team-catalog')
+    assert.equal(destination.searchParams.get('artifact'), 'original')
+    assert.equal(dialog.querySelector('button[title="Add to Library"]'), null)
+    assert.equal(dialog.querySelector('[aria-label="Install command"]'), null)
+    assert.equal(dialog.querySelector('button[aria-label="Copy install command"]'), null)
+  } finally { await view.unmount(); restore() }
+})
+
+test('same-route navigation replaces stale search and kind filters', async () => {
+  const records = [artifact('alpha', 'skill', 'Alpha Skill'), artifact('beta', 'plugin', 'Beta Plugin')]
+  const { view, requested, restore } = await renderLibrary(new URLSearchParams({ q: 'Alpha', kind: 'skill' }), records)
+  try {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 360)) })
+    assert.match(view.container.textContent ?? '', /Alpha Skill/)
+    await view.rerender(<SearchParamsContext.Provider value={new URLSearchParams({ q: 'Beta', kind: 'plugin', artifact: 'beta' }) as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 360)) })
+    assert.equal(view.container.querySelector<HTMLInputElement>('input[aria-label="Search library"]')?.value, 'Beta')
+    assert.match(view.container.textContent ?? '', /Beta Plugin/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Alpha Skill/)
+    assert.equal(requested.filter(request => request.operation === 'depot.artifacts.list').at(-1)?.input.query, 'Beta')
+    assert.match(document.querySelector('[role="dialog"]')?.textContent ?? '', /Beta Plugin/)
+  } finally { await view.unmount(); restore() }
+})
+
+test('denied clipboard writes surface recovery without an unhandled rejection', async () => {
+  const { toast } = await import('sonner')
+  const originalError = toast.error
+  const messages: string[] = []
+  toast.error = (message => { messages.push(String(message)); return 'test' }) as typeof toast.error
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Permission denied') } } })
+  const { view, restore } = await renderLibrary(new URLSearchParams({ artifact: 'skill-one' }))
+  try {
+    await flush()
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Copy Library link"]')!.click())
+    assert.deepEqual(messages, ['Could not copy share link. Allow clipboard access and try again.'])
+  } finally {
+    await view.unmount(); restore(); toast.error = originalError
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+  }
+})
+
 function artifact(id: string, kind: string, title = id) {
   return {
     id, kind, namespace: 'tootie.tv', name: id, title, description: title + ' description', revisionCount: 1,
@@ -159,6 +218,34 @@ function artifact(id: string, kind: string, title = id) {
     publication: { state: 'published', visibility: 'public', distribution: 'catalog' },
   }
 }
+
+test('late clipboard settlement after unmount cannot publish feedback', async () => {
+  const { toast } = await import('sonner')
+  const originalSuccess = toast.success, originalError = toast.error
+  const feedback: string[] = []
+  toast.success = (message => { feedback.push(String(message)); return 'test' }) as typeof toast.success
+  toast.error = (message => { feedback.push(String(message)); return 'test' }) as typeof toast.error
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  try {
+    for (const fail of [false, true]) {
+      let resolve!: () => void, reject!: (error: Error) => void
+      const pending = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => pending } })
+      const { view, restore } = await renderLibrary(new URLSearchParams({ artifact: 'skill-one' }))
+      try {
+        await flush()
+        await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Copy Library link"]')!.click())
+        await view.unmount()
+        await act(async () => { if (fail) reject(new Error('denied')); else resolve() })
+      } finally { restore() }
+    }
+    assert.deepEqual(feedback, [])
+  } finally {
+    toast.success = originalSuccess; toast.error = originalError
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+  }
+})
 
 type DepotRequest = { operation: string; input: Record<string, unknown>; projectId: string | null }
 

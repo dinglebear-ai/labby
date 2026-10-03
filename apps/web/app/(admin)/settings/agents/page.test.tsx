@@ -45,7 +45,9 @@ for (const delayed of [false, true]) test(`saving provider invalidates ${delayed
     })
     await act(async () => (view.container.querySelector('[role=checkbox]') as HTMLElement).click())
     await act(async () => button('Save changes').click())
-    assert.equal(signal?.aborted, true)
+    assert.equal(signal?.aborted, delayed, delayed
+      ? 'saving aborts the still-pending transport request'
+      : 'a completed transport has released its caller forwarding listener')
     if (delayed) await act(async () => { finish(); await new Promise(resolve => setTimeout(resolve, 10)) })
     assert.doesNotMatch(view.container.textContent ?? '', /listed 1 available model/)
     assert.equal(button('Check models').disabled, false)

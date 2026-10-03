@@ -199,6 +199,21 @@ test('writing tips toggle reclaims editor width without resetting the draft', as
     assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact description"]')!.value, 'Updated through WebMCP.')
     assert.equal(view.container.querySelector<HTMLTextAreaElement>('[aria-label="Artifact content"]')!.value, '## Updated\n\nVisible WebMCP edit.')
     assert.match(view.container.querySelector('[aria-label="Artifact document status"]')!.textContent!, /skills\/webmcp-updated\/SKILL\.md/)
+    for (const [key, label] of [['license', 'License'], ['compatibility', 'Compatibility'], ['allowedTools', 'Allowed tools']] as const) {
+      const input = view.container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+      await act(async () => setControlValue(window, input, 'manual-value'))
+      await act(async () => { await configureDraft.execute({ [key]: 'tool-value' }) })
+      assert.equal(input.value, 'tool-value')
+      const composed = await registeredTools.get('read_create_draft')!.tool.execute({ includeSource: true }) as { source: string }
+      assert.match(composed.source, /tool-value/)
+      assert.doesNotMatch(JSON.stringify(await registeredTools.get('read_create_draft')!.tool.execute({})), /manual-value/)
+      await act(async () => { await configureDraft.execute({ [key]: '' }) })
+      assert.equal(input.value, '')
+      const cleared = await registeredTools.get('read_create_draft')!.tool.execute({ includeSource: true }) as { source: string }
+      assert.doesNotMatch(cleared.source, /tool-value/)
+      assert.doesNotMatch(JSON.stringify(await registeredTools.get('read_create_draft')!.tool.execute({})), /tool-value/)
+    }
+
   } finally {
     await view.unmount()
     assert.equal(webMcpSignal?.aborted, true)

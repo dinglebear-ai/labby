@@ -1,7 +1,7 @@
 export function updateLibraryUrl(values: { artifact?: string | null; kind?: string; q?: string }) {
   const url = new URL(window.location.href)
   for (const [key, value] of Object.entries(values)) {
-    if (value && value !== 'all') url.searchParams.set(key, value)
+    if (value && !(key === 'kind' && value === 'all')) url.searchParams.set(key, value)
     else url.searchParams.delete(key)
   }
   if (url.href === window.location.href) return

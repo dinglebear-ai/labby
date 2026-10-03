@@ -105,6 +105,7 @@ fn is_web_navigation(path: &str) -> bool {
         "/library",
         "/logs",
         "/mcp/code-mode",
+        "/projects",
         "/settings",
         "/skills",
         "/snippets",

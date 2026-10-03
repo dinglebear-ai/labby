@@ -14,6 +14,8 @@ test('initial library filters do not navigate or reload the current route', () =
     assert.deepEqual(replacements, [])
     updateLibraryUrl({ artifact: 'art-1' })
     assert.deepEqual(replacements, ['/library/?q=review&artifact=art-1#details'])
+    updateLibraryUrl({ q: 'all', artifact: 'all', kind: 'all' })
+    assert.equal(replacements.at(-1), '/library/?q=all&artifact=all#details')
   } finally {
     if (original) Object.defineProperty(globalThis, 'window', original)
     else Reflect.deleteProperty(globalThis, 'window')

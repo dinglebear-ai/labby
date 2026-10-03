@@ -5389,7 +5389,15 @@ mod tests {
 
         let state = AppState::new().with_web_assets_dir(dir.path().to_path_buf());
         let app = build_router_with_bearer(state, None, None);
-        for route in ["/gateways/", "/browsers", "/browsers/", "/stash", "/stash/"] {
+        for route in [
+            "/gateways/",
+            "/browsers",
+            "/browsers/",
+            "/stash",
+            "/stash/",
+            "/projects",
+            "/projects/",
+        ] {
             let response = app
                 .clone()
                 .oneshot(
@@ -5407,6 +5415,22 @@ mod tests {
                 .unwrap();
             let text = String::from_utf8(body.to_vec()).unwrap();
             assert!(text.contains("Labby"));
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_routes_are_not_web_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("index.html"), "<html>Labby</html>").unwrap();
+        let state = AppState::new().with_web_assets_dir(dir.path().to_path_buf());
+        let app = build_router_with_bearer(state, None, None);
+        for route in ["/projects/unknown", "/v1/unknown", "/unknown"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(route).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "route: {route}");
         }
     }
 

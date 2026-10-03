@@ -45,6 +45,16 @@ import {
 } from './create-page-webmcp'
 import { gatewaySkillDraft } from './gateway-skill-draft'
 
+function withFrontmatterField(metadata: ArtifactMetadata, field: string, value: string): ArtifactMetadata {
+  return {
+    ...metadata,
+    ...(field === 'license' ? { license: value } : {}),
+    ...(field === 'compatibility' ? { compatibility: value } : {}),
+    ...(field === 'allowed-tools' ? { allowedTools: value } : {}),
+    frontmatter: { ...(metadata.frontmatter ?? {}), [field]: value },
+  }
+}
+
 const STARTER_BODY = `## When to use
 
 Invoke when the user asks to triage, group, or summarize open work in a repository.
@@ -354,14 +364,14 @@ export function ArtifactComposer() {
   const configureDraftFromWebMcp = (patch: CreatePageDraftPatch): CreatePageDraftSnapshot => {
     const current = webMcpRuntimeRef.current?.snapshot ?? currentWebMcpSnapshot
     const nextKind = patch.kind ?? current.kind
-    const nextMetadata: ArtifactMetadata = {
+    let nextMetadata: ArtifactMetadata = {
       ...current.metadata,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       ...(patch.description !== undefined ? { description: patch.description } : {}),
       ...(patch.tags !== undefined ? { tags: [...patch.tags] } : {}),
-      ...(patch.license !== undefined ? { license: patch.license } : {}),
-      ...(patch.compatibility !== undefined ? { compatibility: patch.compatibility } : {}),
-      ...(patch.allowedTools !== undefined ? { allowedTools: patch.allowedTools } : {}),
+    }
+    for (const [key, field] of [['license', 'license'], ['compatibility', 'compatibility'], ['allowedTools', 'allowed-tools']] as const) {
+      if (patch[key] !== undefined) nextMetadata = withFrontmatterField(nextMetadata, field, patch[key])
     }
     const nextContent = patch.content ?? current.content
     const nextIssues = validateArtifactDraft(nextKind, nextMetadata, nextContent)
@@ -416,13 +426,7 @@ export function ArtifactComposer() {
   const updateMetadata = (field: Exclude<keyof ArtifactMetadata, 'tags' | 'frontmatter'>) => (value: string) => { markDraftDirty(); setMetadata((current) => ({ ...current, [field]: value })) }
   const updateFrontmatter = (field: string) => (value: string) => {
     markDraftDirty()
-    setMetadata((current) => ({
-      ...current,
-      ...(field === 'license' ? { license: value } : {}),
-      ...(field === 'compatibility' ? { compatibility: value } : {}),
-      ...(field === 'allowed-tools' ? { allowedTools: value } : {}),
-      frontmatter: { ...(current.frontmatter ?? {}), [field]: value },
-    }))
+    setMetadata(current => withFrontmatterField(current, field, value))
   }
   const addTag = () => {
     const tag = tagInput.trim().replace(/^#/, '').toLowerCase()
