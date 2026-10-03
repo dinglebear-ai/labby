@@ -7,6 +7,8 @@ use process_wrap::tokio::{ChildWrapper, CommandWrap, ProcessGroup};
 use std::{fmt, os::unix::fs::PermissionsExt, process::Stdio, time::Duration};
 use tokio::io::AsyncWriteExt;
 
+mod snapshot;
+
 /// Lifecycle state without connection capabilities or private keys.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BridgeStatus {
@@ -76,15 +78,22 @@ impl Bridge {
         if timeout.is_zero() || timeout > Duration::from_secs(30) {
             return Err(BridgeError::InvalidConfig);
         }
-        let snapshot = tempfile::Builder::new()
-            .prefix("tailcat-")
-            .tempdir_in(&validated.config.state_dir)
-            .map_err(|_| BridgeError::ArtifactUnavailable)?;
+        let startup_deadline = tokio::time::Instant::now() + timeout;
+        let state_dir = validated.config.state_dir.clone();
+        let snapshot = snapshot::prepare(startup_deadline, move || {
+            let snapshot = tempfile::Builder::new()
+                .prefix("tailcat-")
+                .tempdir_in(state_dir)
+                .map_err(|_| BridgeError::ArtifactUnavailable)?;
+            let executable = snapshot.path().join("bridge");
+            std::fs::write(&executable, validated.bytes)
+                .map_err(|_| BridgeError::ArtifactUnavailable)?;
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o500))
+                .map_err(|_| BridgeError::ArtifactUnavailable)?;
+            Ok(snapshot)
+        })
+        .await?;
         let executable = snapshot.path().join("bridge");
-        std::fs::write(&executable, validated.bytes)
-            .map_err(|_| BridgeError::ArtifactUnavailable)?;
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o500))
-            .map_err(|_| BridgeError::ArtifactUnavailable)?;
         let mut command = CommandWrap::with_new(&executable, |cmd| {
             cmd.current_dir(snapshot.path())
                 .env_clear()
@@ -103,7 +112,7 @@ impl Bridge {
         let stderr_task = tokio::spawn(async move {
             drop(tokio::io::copy(&mut stderr, &mut tokio::io::sink()).await);
         });
-        // Construct ownership before the first await so cancellation kills the process tree.
+        // Construct process ownership before awaiting the helper so cancellation kills its tree.
         let failure = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let seal_waiter: SealWaiter = Default::default();
         let mut bridge = Self {
@@ -131,7 +140,7 @@ impl Bridge {
         };
         let mut frame = serde_json::to_vec(&start).map_err(|_| BridgeError::Protocol)?;
         frame.push(b'\n');
-        let ready = tokio::time::timeout(timeout, async {
+        let ready = tokio::time::timeout_at(startup_deadline, async {
             stdin
                 .write_all(&frame)
                 .await

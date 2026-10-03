@@ -292,24 +292,33 @@ latest_release_with_asset() {
         '
 }
 
-binary_sha256() {
+binary_sha256() (
     if command -v sha256sum >/dev/null 2>&1; then
-        sha256sum "$1" | awk '{print $1}'
+        checksum_output=$(sha256sum "$1") || exit 1
     elif command -v shasum >/dev/null 2>&1; then
-        shasum -a 256 "$1" | awk '{print $1}'
+        checksum_output=$(shasum -a 256 "$1") || exit 1
     else
         fail "no sha256sum/shasum found; artifact identity cannot be recorded"
     fi
-}
+    printf '%s\n' "$checksum_output" | awk '{print $1}'
+)
 
 # Pin the complete companion inventory when caching the verified release. This
 # receipt is outside the bundle, so rollback can detect modified cached files.
 companion_inventory() (
     cd "$1" || exit 1
     [ -z "$(find . -type l -print -quit)" ] || exit 1
+    # Reject names the line-oriented receipt cannot represent before hashing.
+    find . -exec sh -c '
+        for companion_path do
+            case "$companion_path" in *"
+"*) exit 1 ;; esac
+        done
+    ' sh {} + || exit 1
     find . -type d -print | LC_ALL=C sort
     find . -type f -print | LC_ALL=C sort | while IFS= read -r companion_file; do
-        printf '%s %s\n' "$(binary_sha256 "$companion_file")" "$companion_file"
+        companion_digest=$(binary_sha256 "$companion_file") || exit 1
+        printf '%s %s\n' "$companion_digest" "$companion_file"
     done
 )
 
@@ -473,10 +482,16 @@ install_binary_atomic() {
         else
             companion_tmp=$(mktemp -d "$artifact_dir/.tailcat.XXXXXX")
             cp -Rp "$source_companions/." "$companion_tmp/"
+            companion_inventory_tmp=$(mktemp "$artifact_dir/.tailcat-inventory.XXXXXX")
+            companion_inventory "$companion_tmp" >"$companion_inventory_tmp" || fail "invalid Tailcat inventory"
+            chmod 600 "$companion_inventory_tmp"
+            durability_barrier
+            # Publish the complete receipt before the directory that marks this
+            # cache usable. A stopped install can then retry the same artifact;
+            # an existing companion directory always has its pinned inventory.
+            mv "$companion_inventory_tmp" "$artifact_dir/tailcat.inventory"
             durability_barrier
             mv "$companion_tmp" "$artifact_dir/tailcat"
-            companion_inventory "$artifact_dir/tailcat" >"$artifact_dir/tailcat.inventory" || fail "invalid Tailcat inventory"
-            chmod 600 "$artifact_dir/tailcat.inventory"
             durability_barrier
         fi
     elif [ -d "$artifact_dir/tailcat" ]; then

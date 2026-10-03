@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -104,8 +106,39 @@ func TestRealRelayRejectsWrongPeerAndStops(t *testing.T) {
 		t.Fatal("helper did not stop")
 	}
 	c.SetReadDeadline(time.Now().Add(time.Second))
-	if _, e = c.Read(buf); e == nil {
-		t.Fatal("stream survived stop")
+	if _, e = c.Read(buf); !streamStopped(e) {
+		t.Fatalf("stream survived stop or closure was not demonstrated: %v", e)
 	}
 	c.Close()
+}
+
+func streamStopped(err error) bool {
+	return errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, io.ErrClosedPipe) || errors.Is(err, syscall.ECONNRESET)
+}
+
+func TestStoppedStreamRejectsReadDeadline(t *testing.T) {
+	reader, idlePeer := net.Pipe()
+	defer reader.Close()
+	defer idlePeer.Close()
+	if err := reader.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := reader.Read(make([]byte, 1))
+	if timeout, ok := err.(net.Error); !ok || !timeout.Timeout() {
+		t.Fatalf("idle fixture did not time out: %v", err)
+	}
+	if streamStopped(err) {
+		t.Fatal("an open idle stream's read timeout was accepted as shutdown")
+	}
+}
+
+func TestStoppedStreamAcceptsClosedPeer(t *testing.T) {
+	reader, peer := net.Pipe()
+	defer reader.Close()
+	peer.Close()
+	_, err := reader.Read(make([]byte, 1))
+	if !streamStopped(err) {
+		t.Fatalf("closed peer was not recognized: %v", err)
+	}
 }

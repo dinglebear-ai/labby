@@ -98,9 +98,11 @@ helper and its bounded control protocol. It reuses the gateway's process-group
 guard. The matching browser transport lives in `packages/labby-tailcat-browser`;
 Go source and its dependency lock live in `tools/tailcat-bridge`.
 
-It does not currently mount product routes or authorize browser access. Pairing,
-restricted MCP projection and Depot integration remain product-owned work in the
-[Tailcat implementation plan](plans/2026-10-02-tailcat-browser-transport.md).
+The supervisor crate does not mount product routes or authorize browser access.
+The `labby` product implements pairing and the restricted MCP projection; the
+browser transport and Depot assets provide the integration described in the
+[Tailcat browser guide](guides/TAILCAT_BROWSER.md). The experimental transport
+remains explicitly enabled by the operator.
 
 ### `crates/labby-browser`
 
