@@ -308,6 +308,7 @@ function SessionDepotPage() {
   const resultCount=state.total??state.window.rowCount
   const incomplete = Boolean(state.error) || (state.coverage !== undefined && state.coverage !== 'complete' && state.coverage !== 'empty')
   const incompleteMessage = discoveryFailureMessage(state.error, state.failures)
+  const showCollections = !activeQuery && kind === 'all' && selectedProvider === 'all' && visibility === 'all'
 
   useEffect(() => {
     if (cursorIndex >= results.length) setCursorIndex(results.length ? results.length - 1 : -1)
@@ -366,8 +367,8 @@ function SessionDepotPage() {
       <div className="flex min-w-0 flex-col gap-3">
       <DiscoverFilterPanel open={filtersOpen} providers={providers} artifacts={visible.items} kind={kind} selectedProvider={selectedProvider} onFilter={changeFilter} visibility={visibility} onVisibility={setVisibility} mockKinds={USE_MOCK_DATA} showVisibility={!USE_MOCK_DATA}/>
       {providerError?<DashboardPanel title="Source filter status unavailable"><p role="status" className="text-sm text-aurora-text-muted">Artifact discovery remains usable, but the source selector may be incomplete or stale: {providerError}</p></DashboardPanel>:null}
-      {incomplete&&!state.loading?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
-      {!activeQuery && kind === 'all' && selectedProvider === 'all' && visibility === 'all' && !state.loading ? <DiscoverRails artifacts={USE_MOCK_DATA?visible.items:[]} artifactHref={artifactHref} unavailableReason={USE_MOCK_DATA?undefined:'Recommendation evidence is not reported by the current Depot contract.'}/> : null}
+      {incomplete&&!state.loading&&!showCollections?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
+      {showCollections ? <DiscoverRails artifacts={visible.items} artifactHref={artifactHref} loading={state.loading} incomplete={incomplete} failureMessage={incompleteMessage} onRetry={()=>void load(query.trim())} now={now}/> : null}
       <section aria-labelledby="artifact-results-title" className="contents">
         <div className="flex flex-wrap items-end gap-[10px] border-b border-aurora-border-default/55 px-0.5">
           <DiscoverResultTabs shelf={shelf} setShelf={setShelf} />
