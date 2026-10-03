@@ -130,6 +130,7 @@ const depotSessionSchema = z.object({
 export type DepotSession = z.infer<typeof depotSessionSchema>
 
 export type DepotArtifact = {
+  providerId?: string
   id?: string
   kind?: string
   namespace?: string
@@ -173,6 +174,7 @@ const controlReadmeSchema = z.discriminatedUnion('state', [
 ])
 
 const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
+  providerId: bounded(64).min(1).refine(value => value !== 'all').optional(),
   id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(),
   name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
   currentRevisionId: z.string().optional(), contentDigest: z.string().optional(),
@@ -310,6 +312,7 @@ async function ensureDepotOperationCatalog(epoch: number, signal?: AbortSignal):
 
 function mockControlArtifact(item: FederatedArtifact): DepotArtifact {
   return {
+    providerId: item.providerId,
     id: item.id ?? item.artifactId, kind: item.kind, namespace: item.namespace, name: item.name, title: item.title, description: item.description,
     currentRevisionId: item.currentRevisionId, contentDigest: item.contentDigest, revisionCount: item.revisionCount,
     sourceOrigin: item.sourceOrigin, publisherVerified: item.publisherVerified, metrics: item.metrics, readme: item.readme, provenance: item.provenance,

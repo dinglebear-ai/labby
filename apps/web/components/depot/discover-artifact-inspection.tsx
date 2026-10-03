@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { BookOpen, Braces, Check, ChevronRight, Clock3, Copy, Download, FileText, GitFork, Link2, List, Loader2, MessageSquare, Package, PackagePlus, Plus, Send, ShieldCheck, Star, Terminal, Wrench, X } from 'lucide-react'
+import { Braces, Check, ChevronRight, Clock3, Copy, Download, FileText, GitFork, Link2, List, Loader2, MessageSquare, Package, PackagePlus, Plus, Send, ShieldCheck, Star, Terminal, Wrench, X } from 'lucide-react'
 import { AURORA_MUTED_LABEL } from '@/components/aurora/tokens'
 import { Badge } from '@/components/ui/badge'
 import { DiscoverFileCount } from './discover-file-count'
@@ -10,9 +10,10 @@ import { DiscoverSourceBadge } from './discover-source-badge'
 import { Button } from '@/components/ui/button'
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import type { FederatedArtifact } from '@/lib/api/depot-client'
+import type { DepotArtifact, FederatedArtifact } from '@/lib/api/depot-client'
 import { artifactKind, artifactTitle } from './discover-model'
 import { discoverKindPresentation, DiscoverPublisherVerifiedIcon } from './discover-kind-presentation'
+import { artifactInstallCommand } from './install-command'
 import { DiscoverReadme } from './discover-readme'
 import { DiscoverUpstream } from './discover-upstream'
 import { DiscoverMcpActivation } from './discover-mcp-activation'
@@ -25,9 +26,12 @@ const readmeUnavailable = {
   invalid_text: 'The source document is not valid UTF-8 text.',
 } as const
 
-export function DiscoverArtifactInspection({ artifact, previewMode = false, specLabels, metricLabels, inLibrary = false, loading, open, copied, focusKey, importing, onImport, onFork, onSend, installFormats, onInstallFormat, onOpenChange, onCopy, onExport }: {
+export function DiscoverArtifactInspection({ artifact, previewMode = false, fixtureContent = false, revisionComponents, upstream, specLabels, metricLabels, inLibrary = false, loading, open, copied, focusKey, importing, onImport, onFork, onSend, installFormats, onInstallFormat, onOpenChange, onCopy, onExport }: {
   artifact: FederatedArtifact | null
   previewMode?: boolean
+  fixtureContent?: boolean
+  revisionComponents?: NonNullable<DepotArtifact['currentRevision']>['components']
+  upstream?: React.ReactNode
   specLabels?: readonly string[]
   metricLabels?: Partial<Record<'stars' | 'installs' | 'forks', string>>
   inLibrary?: boolean
@@ -92,7 +96,7 @@ export function DiscoverArtifactInspection({ artifact, previewMode = false, spec
         </div>
       </DialogHeader>}
       {loading ? <div role="status" className="flex min-h-56 items-center justify-center text-sm text-aurora-text-muted"><Loader2 aria-hidden="true" className="mr-[var(--space-2)] size-4 animate-spin" />Loading artifact…</div>
-        : artifact ? previewMode ? <PreviewArtifactDetail artifact={artifact} specLabels={specLabels} metricLabels={metricLabels} inLibrary={inLibrary} copied={copied} importing={importing} onImport={onImport} onFork={onFork} onSend={onSend} installFormats={installFormats} onInstallFormat={onInstallFormat} onCopy={onCopy}/> : <>
+        : artifact ? previewMode ? <PreviewArtifactDetail artifact={artifact} fixtureContent={fixtureContent} revisionComponents={revisionComponents} upstream={upstream} specLabels={specLabels} metricLabels={metricLabels} inLibrary={inLibrary} copied={copied} importing={importing} onImport={onImport} onFork={onFork} onSend={onSend} installFormats={installFormats} onInstallFormat={onInstallFormat} onCopy={onCopy}/> : <>
           <div className="aurora-scrollbar min-h-0 flex-1 space-y-3.5 overflow-y-auto px-4 pt-[15px] pb-5">
             <p className="text-[13px] leading-[1.6] text-pretty">{artifact.description ?? artifact.descriptor?.description ?? 'No description supplied by this source.'}</p>
             <div style={{ backgroundColor: `color-mix(in srgb, ${tone} 7%, transparent)`, borderColor: `color-mix(in srgb, ${tone} 24%, transparent)` }} className="flex flex-wrap gap-2 rounded-[10px] border px-[11px] py-[9px]">
@@ -167,6 +171,9 @@ function PreviewArtifactHeader({ artifact }: { artifact: FederatedArtifact }) {
 
 type PreviewArtifactDetailProps = {
   artifact: FederatedArtifact
+  fixtureContent: boolean
+  revisionComponents?: NonNullable<DepotArtifact['currentRevision']>['components']
+  upstream?: React.ReactNode
   specLabels?: readonly string[]
   metricLabels?: Partial<Record<'stars' | 'installs' | 'forks', string>>
   inLibrary: boolean
@@ -180,19 +187,16 @@ type PreviewArtifactDetailProps = {
   onCopy: (label: string, value?: string) => void
 }
 
-function PreviewArtifactDetail({ artifact, specLabels = [], metricLabels, inLibrary, copied, importing, onImport, onFork, onSend, installFormats, onInstallFormat, onCopy }: PreviewArtifactDetailProps) {
+function PreviewArtifactDetail({ artifact, fixtureContent, revisionComponents, upstream, specLabels = [], metricLabels, inLibrary, copied, importing, onImport, onFork, onSend, installFormats, onInstallFormat, onCopy }: PreviewArtifactDetailProps) {
   const [contentsOpen, setContentsOpen] = useState(false)
   useEffect(() => setContentsOpen(false), [artifact.providerId, artifact.artifactId])
   const kind = artifactKind(artifact)
   const { family, tone, color, icon: KindIcon } = discoverKindPresentation(kind)
   const description = artifact.description ?? artifact.descriptor?.description ?? 'No description supplied by this source.'
-  const publisher = artifact.namespace ?? artifact.descriptor?.namespace ?? 'community'
-  const artifactName = artifact.name ?? artifact.title ?? artifact.artifactId
-  const installRef = publisher.includes('/') ? publisher : `${publisher}/${artifactName}`
-  const installCommand = `depot add ${installRef}`
-  const sourceLabel = artifact.provenance?.originalFormat ?? artifact.sourceOrigin ?? artifact.providerId
-  const contents = previewArtifactContents(artifact, specLabels)
-  const readmePath = artifact.readme?.state === 'available' ? artifact.readme.path : kind === 'skill' ? 'SKILL.md' : 'README.md'
+  const installCommand = artifactInstallCommand(artifact)
+  const contents: ReadonlyArray<readonly [string, string]> = fixtureContent
+    ? previewArtifactContents(artifact, specLabels)
+    : (revisionComponents ?? []).flatMap(component => component.path ? [[component.path, component.kind ?? 'file'] as const] : [])
   const metrics = [
     { key: 'stars', label: 'Stars', icon: Star, color: 'var(--aurora-warn)' },
     { key: 'installs', label: 'Installs', icon: Download, color: 'var(--aurora-accent-strong)' },
@@ -213,21 +217,13 @@ function PreviewArtifactDetail({ artifact, specLabels = [], metricLabels, inLibr
         </button>
         {contentsOpen?<div className="flex flex-col border-t" style={{borderColor:`color-mix(in srgb, ${tone} 22%, transparent)`}}>{contents.map(([name,role])=><div key={name} className="flex min-w-0 items-center gap-[9px] border-b border-[color-mix(in_srgb,var(--aurora-border-default)_28%,transparent)] px-3 py-[7px] last:border-b-0"><PreviewContentMark role={role}/><span className="min-w-0 flex-1 truncate text-[11.5px] font-semibold leading-[14px] text-aurora-text-primary">{name}</span><span className="shrink-0 text-[9px] font-bold uppercase tracking-[0.08em] text-aurora-text-muted">{role}</span></div>)}</div>:null}
       </div>
-      <section aria-label="Readme" className="flex shrink-0 flex-col overflow-hidden rounded-[12px] border border-[color-mix(in_srgb,var(--aurora-border-default)_50%,var(--aurora-page-bg))] bg-[linear-gradient(180deg,var(--aurora-panel-strong-top),var(--aurora-panel-strong))] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-        <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-border-default)_50%,var(--aurora-page-bg))] bg-[var(--gw0-0_38)] px-[13px] py-[9px]">
-          <BookOpen aria-hidden className="size-[13px] shrink-0 text-aurora-accent-strong" strokeWidth={1.7}/><span className="shrink-0 text-[9.5px] font-bold uppercase leading-[13px] tracking-[0.13em] text-aurora-text-muted">Readme</span><span className="min-w-1 flex-1"/><code className="font-mono text-[10px] leading-[13px] text-[#99b8cb]">{readmePath}</code>
-        </div>
-        <div className="flex flex-col gap-[11px] px-[14px] pb-[15px] pt-[13px]">
-          <div className="flex min-w-0 flex-col gap-1.5 pr-[14px]"><p className="m-0 text-pretty text-[12.5px] leading-[1.65] text-aurora-text-muted">{description}</p></div>
-          <div className="flex min-w-0 flex-col gap-1.5 pr-[14px]">
-            <PreviewReadmeHeading>Install</PreviewReadmeHeading>
-            <div className="flex min-w-0 items-center gap-[9px] rounded-[9px] border border-[color-mix(in_srgb,var(--aurora-border-strong)_60%,var(--aurora-page-bg))] bg-[var(--gw0-0_48)] px-[10px] py-2">
-              <span className="shrink-0 font-mono text-[11.5px] leading-[14px] text-aurora-accent-strong">$</span><code className="min-w-0 overflow-x-auto whitespace-nowrap font-mono text-[11.5px] leading-[14px] text-aurora-text-primary">{installCommand}</code><span className="min-w-1 flex-1"/><button type="button" aria-label="Copy install command" title="Copy" onClick={()=>onCopy('Install command',installCommand)} className="grid size-6 shrink-0 place-items-center rounded-[7px] text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-accent-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">{copied==='Install command'?<Check aria-hidden className="size-3 text-aurora-success"/>:<Copy aria-hidden className="size-3" strokeWidth={1.8}/>}</button>
-            </div>
-          </div>
-          <div className="flex min-w-0 flex-col gap-1.5 pr-[14px]"><PreviewReadmeHeading>Upstream</PreviewReadmeHeading><p className="m-0 text-pretty text-[12.5px] leading-[1.65] text-aurora-text-muted">Tracked from {sourceLabel}. Forks stay linked {'\u2014'} Depot surfaces every upstream change as a reviewable diff.</p></div>
-        </div>
-      </section>
+      {!fixtureContent && revisionComponents === undefined ? <p className="text-xs text-aurora-text-muted">File paths were not supplied by this source.</p> : null}
+      {artifact.readme?.state === 'available' ? <DiscoverReadme path={artifact.readme.path} content={artifact.readme.content} /> : <section aria-label="Document preview" className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium p-4"><h3 className={AURORA_MUTED_LABEL}>Document preview</h3><p className="mt-2 text-sm text-aurora-text-muted">{readmeUnavailable[artifact.readme?.state === 'unavailable' ? artifact.readme.reason : 'absent']}</p></section>}
+      {installCommand ? <section aria-label="Install command" className="rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-medium p-4">
+        <h3 className={AURORA_MUTED_LABEL}>Install</h3>
+        <div className="mt-2 flex min-w-0 items-center gap-2"><code className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap text-xs">{installCommand}</code><Button variant="ghost" size="icon" aria-label="Copy install command" onClick={() => onCopy('Install command', installCommand)}>{copied === 'Install command' ? <Check aria-hidden className="size-3.5 text-aurora-success"/> : <Copy aria-hidden className="size-3.5"/>}</Button></div>
+      </section> : null}
+      {upstream ?? <DiscoverUpstream artifact={artifact} />}
     </div>
     <div className="flex shrink-0 flex-wrap items-center gap-[10px] border-t border-[color-mix(in_srgb,var(--aurora-border-default)_60%,var(--aurora-page-bg))] bg-[var(--gw0-0_38)] px-4 pb-[11px] pt-[9px]">
       <div className="mt-[3px] flex flex-wrap items-center gap-3">{metrics.map(({key,label,icon:MetricIcon,color:metricColor})=>{const value=artifact.metrics?.[key];if(!Number.isSafeInteger(value)||value!<0)return null;return <span key={key} title={label} aria-label={`${value} ${label.toLowerCase()}`} className="inline-flex min-w-0 items-center gap-[5px]"><MetricIcon aria-hidden className="size-3 shrink-0" style={{color:metricColor}}/><span className="text-[11.5px] font-bold leading-[14px] tabular-nums text-aurora-text-primary">{metricLabels?.[key]??new Intl.NumberFormat('en',{notation:'compact',maximumFractionDigits:1}).format(value!)}</span></span>})}</div>
@@ -283,10 +279,6 @@ function previewArtifactContents(artifact: FederatedArtifact, specLabels: readon
 function PreviewContentMark({ role }: { role: string }) {
   const Icon=role==='tool'?Wrench:role==='resource'?Package:role==='prompt'?MessageSquare:role==='hook'?ShieldCheck:role==='command'?Terminal:FileText
   return <Icon aria-hidden className="size-3 shrink-0 text-aurora-text-muted" strokeWidth={1.7}/>
-}
-
-function PreviewReadmeHeading({ children }: { children: React.ReactNode }) {
-  return <span className="inline-flex items-center gap-[7px] font-display text-[12.5px] font-[760] leading-[17px] tracking-[-0.005em] text-aurora-text-primary"><span aria-hidden className="h-3 w-[3px] rounded-full bg-[color-mix(in_srgb,var(--aurora-accent-primary)_65%,transparent)]"/>{children}</span>
 }
 
 function PreviewSpecMark({ label, color }: { label: string; color: string }) {

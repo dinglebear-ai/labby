@@ -15,8 +15,9 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { depotCall, type DepotArtifact } from '@/lib/api/depot-client'
 import { mockDepotMetricLabels, mockDepotSpecLabels } from '@/lib/api/depot-mock-data'
-import { localLibraryFederatedArtifact } from './local-library-model'
+import { libraryUpstreamHref, localLibraryFederatedArtifact } from './local-library-model'
 import { DiscoverArtifactInspection } from './discover-artifact-inspection'
+import { LibraryUpstream } from './library-upstream'
 import { LibraryNewLoadout } from './library-new-loadout'
 import { LibraryTabs } from '@/components/depot/depot-workspace-pages'
 import { getBrowserSessionEpoch } from '@/lib/auth/session-store'
@@ -138,19 +139,34 @@ function SessionLibraryPage() {
   const searchParams = useSearchParams()
   const selectedId = searchParams.get('artifact')?.trim() ?? ''
   const initialQuery = searchParams.get('q')?.trim() ?? ''
+  const urlKind = searchParams.get('kind')?.trim().toLocaleLowerCase() || 'all'
   const [query, setQuery] = useState(initialQuery)
+  const [observedUrlQuery, setObservedUrlQuery] = useState(initialQuery)
   const [activeQuery, setActiveQuery] = useState(initialQuery)
   const loadedQuery = useRef(initialQuery)
+  // Reconcile navigation before a stale draft can schedule another request.
+  if (observedUrlQuery !== initialQuery) {
+    setObservedUrlQuery(initialQuery)
+    setQuery(initialQuery)
+    setActiveQuery(initialQuery)
+  }
+  useEffect(() => { loadedQuery.current = initialQuery }, [initialQuery])
   const [tagSelection, setTagSelection] = useState<{ query: string; tag?: string }>({ query: initialQuery })
   const tag = tagSelection.query === query ? tagSelection.tag : undefined
   const [sort, setSort] = useState<'catalog' | 'name' | 'kind'>('catalog')
-  const [kind, setKind] = useState(searchParams.get('kind')?.trim().toLocaleLowerCase() || 'all')
+  const kind = urlKind
   const [pageSelection, setPageSelection] = useState({ context: '', page: 0 })
   const [state, setState] = useState<LibraryState>({ artifacts: [], window: createCatalogWindow<DepotArtifact>(), loading: true })
   const [detailResult, setDetail] = useState<{ selectedId: string; artifact: DepotArtifact } | null>(null)
   const detail = detailResult?.selectedId === selectedId ? detailResult.artifact : null
   const [detailLoading, setDetailLoading] = useState(false)
   const [copied, setCopied] = useState<string>()
+  const copyTimer = useRef<number | undefined>(undefined)
+  const copyOwner = useRef<object | null>(null)
+  useEffect(() => {
+    copyOwner.current = {}
+    return () => { copyOwner.current = null; window.clearTimeout(copyTimer.current) }
+  }, [])
   const [view, selectView] = useCollectionView('labby.library.layout')
   const [filtersOpen, setFiltersOpen] = useState(false)
   const filtersId = useId()
@@ -241,10 +257,19 @@ function SessionLibraryPage() {
     ...(USE_MOCK_DATA ? { loadouts: 4, snippets: 6, tools: 167 } : {}),
   }), [state.total])
   const copy = useCallback(async (label: string, value: string) => {
-    await navigator.clipboard.writeText(value)
-    setCopied(label)
-    toast.success(`${label} copied`)
-    window.setTimeout(() => setCopied((current) => current === label ? undefined : current), 1_500)
+    const epoch = getBrowserSessionEpoch()
+    const owner = copyOwner.current
+    const isCurrent = () => owner !== null && owner === copyOwner.current && epoch === getBrowserSessionEpoch()
+    try {
+      await navigator.clipboard.writeText(value)
+      if (!isCurrent()) return
+      window.clearTimeout(copyTimer.current)
+      setCopied(label)
+      toast.success(`${label} copied`)
+      copyTimer.current = window.setTimeout(() => setCopied(undefined), 1_500)
+    } catch {
+      if (isCurrent()) toast.error(`Could not copy ${label.toLowerCase()}. Allow clipboard access and try again.`)
+    }
   }, [])
   const exportArtifact = useCallback((artifact: DepotArtifact) => {
     const url = URL.createObjectURL(new Blob([serializeArtifact(artifact)], { type: 'application/json' }))
@@ -263,7 +288,7 @@ function SessionLibraryPage() {
     if (!previewDetail) return []
     if (USE_MOCK_DATA) return mockDepotSpecLabels(previewDetail)
     const count = detail?.currentRevision?.fileCount ?? detail?.currentRevision?.components?.length
-    return count ? [`${count} files`] : []
+    return count === undefined ? [] : [`${count} ${count === 1 ? 'file' : 'files'}`]
   }, [detail, previewDetail])
   const previewMetricLabels = useMemo(() => previewDetail && USE_MOCK_DATA ? mockDepotMetricLabels(previewDetail) : undefined, [previewDetail])
   return <>
@@ -279,7 +304,7 @@ function SessionLibraryPage() {
       {retainedCounts && !countsUnavailable ? <p role="status" className="text-xs text-aurora-text-muted">Facet counts describe loaded artifacts only. More catalog records may be available.</p> : null}
       {state.error ? <DashboardPanel title="Library unavailable"><div className="flex flex-wrap items-center justify-between gap-3"><div><p role="alert" className="text-sm text-aurora-error">{state.error}</p><p className="mt-1 text-sm text-aurora-text-muted">The catalog could not be loaded. Try again after the connection is restored.</p></div><Button variant="outline" disabled={state.loading} onClick={() => void load(activeQuery)}><RefreshCw className="size-4"/>Retry loading</Button></div></DashboardPanel> : null}
       <div data-lbgrid="1" className="grid min-w-0 items-start max-[900px]:grid-cols-1" style={{ gridTemplateColumns: '220px minmax(0,1fr)', gap: 16 }}>
-      <LibraryFilterRail id={filtersId} countsAvailable={!countsUnavailable} mobileOpen={filtersOpen} libraryView={libraryView} onView={setLibraryView} artifacts={state.artifacts} kind={kind} onKind={next => { setKind(next); updateUrl({ kind: next }) }} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
+      <LibraryFilterRail id={filtersId} countsAvailable={!countsUnavailable} mobileOpen={filtersOpen} libraryView={libraryView} onView={setLibraryView} artifacts={state.artifacts} kind={kind} onKind={next => updateUrl({ kind: next })} tag={tag} onTag={next => setTagSelection({ query, tag: next })} />
       <div className="min-w-0">
       <section aria-label="Artifact collection" data-library-collection="1" className="overflow-hidden rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-strong shadow-[var(--aurora-shadow-medium)]"><div data-library-toolbar="1" className="flex flex-wrap items-center gap-[9px] border-b border-aurora-border-subtle bg-aurora-control-surface" style={{ padding: '9px 12px' }}><div data-library-search="1" className="flex h-9 min-w-32 max-w-[360px] flex-1 items-center rounded-aurora-1 border border-aurora-border-subtle bg-aurora-panel-low focus-within:border-aurora-border-strong"><Search aria-hidden="true" className="ml-3 size-4 shrink-0 text-aurora-text-muted"/><Input aria-label="Search library" className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-[13px] shadow-none focus-visible:ring-0" placeholder={countsUnavailable ? 'Search library…' : `Filter ${state.total ?? state.artifacts.length} artifacts…`} value={query} onChange={(event) => setQuery(event.target.value)}/>{query ? <button type="button" aria-label="Clear library search" className="grid size-7 shrink-0 place-items-center text-aurora-text-muted hover:text-aurora-text-primary" onClick={() => setQuery('')}><X className="size-3.5"/></button> : null}<button type="button" aria-label="Toggle library filters" aria-expanded={filtersOpen} aria-controls={filtersId} aria-pressed={filtersOpen} title="Filters" onClick={() => setFiltersOpen(open => !open)} className="mr-1 grid size-7 shrink-0 place-items-center rounded-aurora-1 text-aurora-text-muted transition-colors hover:bg-aurora-hover-bg hover:text-aurora-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary aria-pressed:bg-aurora-selected-bg aria-pressed:text-aurora-accent-strong min-[901px]:hidden"><Filter className="size-3.5"/></button></div><span className="font-semibold tabular-nums text-aurora-text-muted" style={{ fontSize: 12, marginLeft: 6 }}>{countsUnavailable ? 'Count unavailable' : `${visible.length} of ${state.total ?? `${state.artifacts.length}${retainedCounts ? '+' : ''}`}`}</span><div className="flex-1"/><LibrarySortMenu sort={sort} onSort={setSort}/><CollectionViewToggle value={view} onChange={selectView} ariaLabel="Library view"/></div>
         {view !== 'table' ? <div className={view === 'cards' ? 'grid gap-3 p-3' : 'divide-y divide-aurora-border-subtle'} style={view === 'cards' ? { gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 260px), 1fr))' } : undefined}>{mounted.map((artifact) => { const id = artifactId(artifact); return <button key={id} type="button" onClick={() => updateUrl({ artifact: id })} className={view === 'cards' ? 'group rounded-aurora-2 border border-aurora-border-subtle bg-aurora-panel-low p-4 text-left transition-[transform,border-color] hover:-translate-y-0.5 hover:border-aurora-border-strong' : 'group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors hover:bg-aurora-surface-muted'}><ArtifactTypeMark artifact={artifact} compact/><span className="min-w-0 flex-1"><span className="block truncate font-semibold text-aurora-text-primary">{artifactLabel(artifact)}</span><span className="mt-1 line-clamp-2 block text-xs leading-5 text-aurora-text-muted">{artifactDescription(artifact)}</span><span className="mt-2 block truncate text-[11px] text-aurora-text-muted">{artifact.namespace ?? artifact.descriptor?.namespace ?? 'Unknown namespace'}</span></span><ChevronRight className="mt-1 size-4 shrink-0 text-aurora-text-muted group-hover:text-aurora-accent-primary"/></button> })}</div> : <LibraryArtifactTable key={`${pageContext}:${currentPage}:${state.window.evictedRows}`} artifacts={mounted} onInspect={id => updateUrl({ artifact: id })}/>}
@@ -296,6 +321,9 @@ function SessionLibraryPage() {
     <DiscoverArtifactInspection
       artifact={previewDetail}
       previewMode
+      fixtureContent={USE_MOCK_DATA}
+      revisionComponents={detail?.currentRevision?.components}
+      upstream={detail ? <LibraryUpstream artifact={detail} /> : undefined}
       specLabels={previewSpecLabels}
       metricLabels={previewMetricLabels}
       inLibrary
@@ -304,7 +332,7 @@ function SessionLibraryPage() {
       copied={copied}
       importing={false}
       onImport={async () => undefined}
-      onFork={(artifact) => { window.location.href = `/depot?artifact=${encodeURIComponent(artifact.artifactId)}` }}
+      onFork={detail ? () => { window.location.href = libraryUpstreamHref(detail) } : undefined}
       onSend={async () => { await shareArtifact() }}
       installFormats={['JSON']}
       onInstallFormat={() => { if (detail) exportArtifact(detail) }}
