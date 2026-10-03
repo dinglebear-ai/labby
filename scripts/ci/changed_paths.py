@@ -128,6 +128,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/lifecycle-scripts.json",
             "scripts/ci/check-lifecycle-scripts.sh",
             "scripts/ci/test_release_hardening.py",
+            "scripts/sync-npm-release-version.py",
             "scripts/ci/test_release_observer.py",
             "scripts/ci/resolve-n-minus-one-baseline.py",
             "scripts/ci/github-verifier-bootstrap.sh.in",
@@ -351,6 +352,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             lambda p: p
             in {
                 ".github/workflows/release.yml",
+                "scripts/sync-npm-release-version.py",
                 ".github/workflows/build-incus-image.yml",
                 "scripts/ci/resolve-n-minus-one-baseline.py",
                 "scripts/ci/github-verifier-bootstrap.sh.in",

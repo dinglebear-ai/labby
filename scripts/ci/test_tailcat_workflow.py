@@ -13,6 +13,11 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class TailcatWorkflowTests(unittest.TestCase):
+    def test_isolated_npm_version_helper_routes_its_release_contracts(self) -> None:
+        routed = classify("pull_request", ["scripts/sync-npm-release-version.py"])
+        self.assertTrue(routed["workflow"], "installer contracts exercise npm companion versions")
+        self.assertTrue(routed["release"], "release hardening exercises future version bumps")
+
     @classmethod
     def setUpClass(cls):
         cls.ci = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
