@@ -5,7 +5,46 @@ import React from 'react'
 import { GatewayApiError } from '@/lib/api/gateway-client'
 import { Window } from 'happy-dom'
 import { installTestDom, renderClient } from '@/lib/testing/dom-test-utils'
-import { classifyStatusFailure, deriveConsoleStatus, upstreamMetricColor, useConsoleStatus } from './console-status-strip'
+import { classifyStatusFailure, deriveConsoleAttention, deriveConsoleCapabilityAlerts, deriveConsoleStatus, loadConsoleStatus, upstreamMetricColor, useConsoleStatus } from './console-status-strip'
+
+test('partial warning inventory failure preserves the missing snapshot and still reports runtime alerts', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => {
+    const { action } = JSON.parse(String(init?.body))
+    if (action === 'gateway.mcp.list') return new Response(JSON.stringify([{ name: 'partial', connected: true, likely_stale_count: 1 }]), { status: 200 })
+    if (action === 'gateway.clients.list') return new Response('[]', { status: 200 })
+    return new Response('Inventory temporarily unavailable', { status: 503 })
+  }) as typeof fetch
+  try {
+    const state = await loadConsoleStatus(new AbortController().signal)
+    assert.equal(state.kind, 'ready')
+    if (state.kind !== 'ready') return
+    assert.equal(state.alerts, undefined, 'missing warning inventory must not clear warning incidents')
+    assert.equal(state.runtimeAlerts?.[0].key, 'gateway:partial:stale')
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('connected capability failures alert without claiming disconnection', () => {
+  const runtime = [{ name: 'connected', connected: true, capability_observation: {
+    scope: 'credential' as const,
+    tools: { state: 'known' as const, discovered: 1, exposed: 1 },
+    resources: { state: 'failed' as const, discovered: 1, exposed: 0, error: 'Resources refresh failed' },
+    prompts: { state: 'unknown' as const, discovered: null, exposed: null },
+    skills: { state: 'unknown' as const, discovered: null, exposed: null },
+  } }]
+  assert.deepEqual(deriveConsoleAttention(runtime), [])
+  const alerts = deriveConsoleCapabilityAlerts(runtime)
+  assert.equal(alerts.length, 1)
+  assert.equal(alerts[0].message, 'Resources refresh failed')
+  assert.equal(alerts[0].key, 'gateway:connected:capability:resources')
+})
+
+test('console attention excludes idle credential caches but retains actual failures', () => {
+  assert.deepEqual(deriveConsoleAttention([
+    { name: 'unchecked', connected: false, capability_observation: { scope: 'credential', tools: { state: 'unknown', discovered: null, exposed: null }, resources: { state: 'unknown', discovered: null, exposed: null }, prompts: { state: 'unknown', discovered: null, exposed: null }, skills: { state: 'unknown', discovered: null, exposed: null } } },
+    { name: 'down', connected: false },
+  ]), ['down'])
+})
 
 test('console status derives connected upstream, session, and exposed-tool counts', () => {
   const snapshot = deriveConsoleStatus(

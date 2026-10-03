@@ -116,3 +116,11 @@ test('applyMockGatewayOverride honors wildcard allowlist patterns', () => {
     ],
   )
 })
+
+for (const [url, expected] of [[undefined, 'http://localhost:3001/mcp'], [null, undefined], ['https://replacement.example/mcp', 'https://replacement.example/mcp']] as const) {
+  test(`mock HTTP URL patch ${String(url)} preserves update tri-state in the read projection`, () => {
+    const config = url === undefined ? { proxy_resources: false } : { url }
+    const updated = applyMockGatewayOverride(gateway, { config })
+    assert.equal(updated.config.url, expected)
+  })
+}

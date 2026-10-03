@@ -214,13 +214,9 @@ impl UpstreamPool {
         max_bytes: Option<usize>,
     ) -> Result<DecodedSkillContent, ToolError> {
         let peer = self
-            .acquire_peer(
-                &config.name,
-                super::super::types::UpstreamCapability::Skills,
-                "skill.read",
-            )
+            .skills_request_peer(config, subject, "skill.read")
             .await
-            .ok_or_else(|| ToolError::Sdk {
+            .map_err(|_| ToolError::Sdk {
                 sdk_kind: "upstream_error".to_string(),
                 message: format!("upstream `{}` is not connected", config.name),
             })?;

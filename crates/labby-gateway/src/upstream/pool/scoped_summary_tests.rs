@@ -2,6 +2,66 @@ use super::*;
 use crate::upstream::pool::testsupport::*;
 
 #[tokio::test]
+async fn recent_closed_credential_peer_reports_failure_but_expiry_is_neutral() {
+    use crate::gateway::view_models::CapabilityObservationState as State;
+    let pool = static_catalog_pool("alpha").await;
+    let config = UpstreamConfig {
+        name: "alpha".into(),
+        ..test_upstream_config()
+    };
+    pool.register_upstream_config_for_tests(&config);
+    close_global_transport_for_tests(&pool, "alpha").await;
+    move_connection_to_subject_cache_with_tools(&pool, "alpha", "alice", vec![test_tool("search")])
+        .await;
+    let closed = pool.cached_subject_summary(&config, Some("alice")).await;
+    assert!(!closed.connected);
+    assert_eq!(
+        closed.last_error.as_deref(),
+        Some("Upstream transport closed unexpectedly")
+    );
+    assert_eq!(closed.observation().tools.state, State::Failed);
+    assert_eq!(closed.summary.discovered_tool_count, 1);
+    assert_eq!(closed.summary.exposed_tool_count, 0);
+    assert!(
+        pool.cached_subject_summary(&config, Some("bob"))
+            .await
+            .last_error
+            .is_none()
+    );
+
+    pool.subject_connections
+        .write()
+        .await
+        .get_mut(&("alpha".into(), "alice".into()))
+        .unwrap()
+        .last_used = Instant::now()
+        .checked_sub(SUBJECT_CONN_IDLE_TTL)
+        .expect("test TTL fits clock");
+    let expired_closed = pool.cached_subject_summary(&config, Some("alice")).await;
+    assert!(expired_closed.last_error.is_none());
+    assert_eq!(expired_closed.observation().tools.state, State::Stale);
+
+    let open_pool = static_catalog_pool("alpha").await;
+    open_pool.register_upstream_config_for_tests(&config);
+    move_connection_to_subject_cache_with_tools(&open_pool, "alpha", "alice", vec![]).await;
+    open_pool
+        .subject_connections
+        .write()
+        .await
+        .get_mut(&("alpha".into(), "alice".into()))
+        .unwrap()
+        .last_used = Instant::now()
+        .checked_sub(SUBJECT_CONN_IDLE_TTL)
+        .expect("test TTL fits clock");
+    let expired_open = open_pool
+        .cached_subject_summary(&config, Some("alice"))
+        .await;
+    assert!(!expired_open.connected);
+    assert!(expired_open.last_error.is_none());
+    assert_eq!(expired_open.observation().tools.state, State::Stale);
+}
+
+#[tokio::test]
 async fn optional_observation_preserves_failure_empty_and_age() {
     use crate::gateway::view_models::CapabilityObservationState as State;
     let pool = static_catalog_pool("alpha").await;
