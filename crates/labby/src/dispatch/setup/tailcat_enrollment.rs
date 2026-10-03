@@ -585,7 +585,23 @@ fn prepare_custody(
     )
     .into();
     let key = hex::encode(operation);
+    // Serialize capacity admission across processes before creating an operation lock.
+    // The fixed admission lock lives outside the bounded journal directory.
+    let _admission = crate::config::host_write::HostConfigLock::acquire(
+        &root.join("tailcat/enrollment-admission"),
+    )
+    .map_err(|_| unavailable())?;
     let path = folder.join(format!("{key}.json"));
+    if !path.try_exists().map_err(|_| recovery_required())? {
+        let count = std::fs::read_dir(&folder)
+            .map_err(|_| unavailable())?
+            .take(257)
+            .count();
+        // A fresh operation needs both its persistent lock and journal.
+        if count > 254 {
+            return Err(recovery_required());
+        }
+    }
     let lock =
         crate::config::host_write::HostConfigLock::acquire(&path).map_err(|_| unavailable())?;
     let digest: [u8; 32] = Sha256::digest(

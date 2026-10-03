@@ -1815,22 +1815,36 @@ if authenticated_action; then exit 93; fi
         code = patch.split("<< 'PY'\n", 1)[1].split("\nPY", 1)[0]
         paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
                  "apps/tauri/package.json", "apps/tauri/src-tauri/Cargo.toml",
-                 "apps/tauri/src-tauri/tauri.conf.json"]
+                 "apps/tauri/src-tauri/tauri.conf.json",
+                 "packages/labby-microsandbox/package.json",
+                 "packages/labby-microsandbox/package-lock.json",
+                 "packages/labby-tailcat-browser/package.json",
+                 "packages/labby-tailcat-browser/package-lock.json"]
         # The verification workspace pins labby-model at the exact release
         # version; the patch script refuses to run without that manifest.
         pinned = "tools/verification/hosts/labby/Cargo.toml"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for path in paths + [pinned]:
+            for path in paths + [pinned, "scripts/sync-npm-release-version.py"]:
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(self.text(path))
+            locks = [path for path in paths if path.endswith("package-lock.json")]
+            dependencies = {
+                path: {key: value for key, value in json.loads((root / path).read_text())["packages"].items() if key}
+                for path in locks
+            }
             for version in ["1.19.0", "1.20.0"]:
                 subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
                 for path in paths:
                     text = (root / path).read_text()
                     if path.endswith(".json"):
-                        self.assertEqual(json.loads(text)["version"], version, path)
+                        document = json.loads(text)
+                        self.assertEqual(document["version"], version, path)
+                        if path in locks:
+                            self.assertEqual(document["packages"][""]["version"], version, path)
+                            self.assertEqual({key: value for key, value in document["packages"].items() if key},
+                                             dependencies[path], path)
                     else:
                         self.assertIn(f'version = "{version}"', text, path)
                 self.assertIn(f'labby-model = {{ version = "={version}"', (root / pinned).read_text(), pinned)

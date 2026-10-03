@@ -93,11 +93,18 @@ impl CleanupSession {
             }
         }
     }
-    #[cfg(test)]
-    fn owns(&self, name: &str) -> bool {
+    pub(crate) fn owns(&self, name: &str) -> bool {
         self.sandboxes
             .lock()
             .is_ok_and(|s| s.get(name) == Some(&State::Owned))
+    }
+    pub(crate) fn owned_names(&self) -> Result<Vec<String>, ()> {
+        let entries = self.sandboxes.lock().map_err(|_| ())?;
+        Ok(entries
+            .iter()
+            .filter(|(_, state)| **state == State::Owned)
+            .map(|(name, _)| name.clone())
+            .collect())
     }
     pub(crate) fn matches_labels(&self, labels: &Value) -> bool {
         labels.get(OWNER_LABEL).and_then(Value::as_str) == Some(self.owner.as_str())

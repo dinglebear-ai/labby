@@ -309,6 +309,46 @@ pub(crate) async fn execute_tailcat_project_complete_tool(
     if target.upstream != session.upstream() {
         return Err(Unavailable);
     }
+    if matches!(
+        target.native_name.as_str(),
+        "sandbox_exec" | "sandbox_inspect" | "sandbox_list"
+    ) {
+        let published = current
+            .catalog()
+            .catalog()
+            .tools()
+            .unique_route_for_wire_name(request.name.as_ref())
+            .ok_or(Unavailable)?;
+        if !published
+            .tool
+            .tool
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("labby.tailcat.owned_access"))
+            .is_some_and(|value| value.as_u64() == Some(1))
+        {
+            return Err(Unavailable);
+        }
+        let args = request.arguments.get_or_insert_with(serde_json::Map::new);
+        if target.native_name == "sandbox_list" {
+            // Never list the shared native engine; the adapter resolves only these names.
+            args.insert(
+                "names".into(),
+                serde_json::json!(session.owned_names().map_err(|_| Unavailable)?),
+            );
+            args.remove("name");
+        } else if !args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|name| session.owns(name))
+        {
+            return Err(Unavailable);
+        }
+        args.insert(
+            "expectedOwner".into(),
+            serde_json::Value::String(session.owner_label().into()),
+        );
+    }
     if target.native_name != "sandbox_create" && target.native_name != "sandbox_remove" {
         return execute_transport_bound_project_complete_tool(
             runtime, manager, transport, identity, request,
@@ -1170,7 +1210,7 @@ mod tests {
             _context: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
             let args = request.arguments.unwrap();
-            let name = &args["name"];
+            let name = args.get("name").unwrap_or(&serde_json::Value::Null);
             let data = match request.name.as_ref() {
                 "sandbox_create" => {
                     *self.labels.lock().await = args["process"]["labels"].clone();
@@ -1182,6 +1222,21 @@ mod tests {
                 "sandbox_remove" => {
                     self.calls.fetch_add(1, Ordering::SeqCst);
                     serde_json::json!({"name":name})
+                }
+                "sandbox_exec" => {
+                    assert!(args.get("expectedOwner").is_some());
+                    serde_json::json!({"name":name,"success":true})
+                }
+                "sandbox_list" => {
+                    assert!(args.get("expectedOwner").is_some());
+                    serde_json::json!(
+                        args["names"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|name| serde_json::json!({"name":name}))
+                            .collect::<Vec<_>>()
+                    )
                 }
                 _ => panic!("unexpected cleanup fixture tool"),
             };
@@ -1245,7 +1300,39 @@ mod tests {
             "alpha",
             vec![
                 upstream_tool("sandbox_create", false),
-                upstream_tool("sandbox_inspect", false),
+                {
+                    let mut tool = upstream_tool("sandbox_inspect", false);
+                    tool.tool.meta = Some(
+                        serde_json::json!({"labby.tailcat.owned_access":1})
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                            .into(),
+                    );
+                    tool
+                },
+                {
+                    let mut tool = upstream_tool("sandbox_exec", false);
+                    tool.tool.meta = Some(
+                        serde_json::json!({"labby.tailcat.owned_access":1})
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                            .into(),
+                    );
+                    tool
+                },
+                {
+                    let mut tool = upstream_tool("sandbox_list", false);
+                    tool.tool.meta = Some(
+                        serde_json::json!({"labby.tailcat.owned_access":1})
+                            .as_object()
+                            .unwrap()
+                            .clone()
+                            .into(),
+                    );
+                    tool
+                },
                 {
                     let mut tool = upstream_tool("sandbox_remove", true);
                     tool.tool.meta = Some(
@@ -1311,6 +1398,58 @@ mod tests {
         )
         .await
         .unwrap();
+        for tool in ["sandbox_exec", "sandbox_inspect"] {
+            assert!(
+                execute_tailcat_project_complete_tool(
+                    &runtime,
+                    &manager,
+                    &transport,
+                    &identity,
+                    request(tool, name),
+                    &stranger
+                )
+                .await
+                .is_err()
+            );
+            execute_tailcat_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request(tool, name),
+                &owner,
+            )
+            .await
+            .unwrap();
+        }
+        let list = execute_tailcat_project_complete_tool(
+            &runtime,
+            &manager,
+            &transport,
+            &identity,
+            request("sandbox_list", "foreign"),
+            &stranger,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::tool_body(&list).unwrap()["data"],
+            serde_json::json!([])
+        );
+        let list = execute_tailcat_project_complete_tool(
+            &runtime,
+            &manager,
+            &transport,
+            &identity,
+            request("sandbox_list", "foreign"),
+            &owner,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            super::tool_body(&list).unwrap()["data"],
+            serde_json::json!([{"name":name}])
+        );
         assert!(
             execute_tailcat_project_complete_tool(
                 &runtime,

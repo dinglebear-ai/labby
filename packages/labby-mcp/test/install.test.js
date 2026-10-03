@@ -61,26 +61,27 @@ test("npm installation repairs an interrupted companion extraction and validates
       fs.writeFileSync(file, relative);
       components.push({ path: relative, sha256: crypto.createHash("sha256").update(relative).digest("hex") });
     }
-    fs.writeFileSync(path.join(stage, "tailcat", "manifest.json"), JSON.stringify({ schemaVersion: 1, protocol: 1, version: "2.5.0", target: "aarch64-apple-darwin", components }));
+    fs.writeFileSync(path.join(stage, "tailcat", "manifest.json"), JSON.stringify({ schemaVersion: 1, protocol: 1, version: "2.5.1", target: "aarch64-apple-darwin", components }));
     const archive = path.join(tmp, "release.tar.gz");
     assert.equal(spawnSync("tar", ["-czf", archive, "-C", stage, "labby", "tailcat"]).status, 0);
     fs.mkdirSync(destination);
     fs.writeFileSync(path.join(destination, "labby"), "interrupted binary");
-    assert.equal(installationValid(destination, target, "v2.5.0"), false);
-    installArchive(archive, destination, target, "v2.5.0");
-    assert.equal(installationValid(destination, target, "v2.5.0"), true);
+    assert.equal(installationValid(destination, target, "v2.5.1"), false);
+    installArchive(archive, destination, target, "v2.5.1");
+    assert.equal(installationValid(destination, target, "v2.5.1"), true);
     fs.renameSync(destination, destination + ".previous");
     recoverInstallation(destination);
-    assert.equal(installationValid(destination, target, "v2.5.0"), true);
+    assert.equal(installationValid(destination, target, "v2.5.1"), true);
     fs.writeFileSync(path.join(stage, "tailcat", "adapter", "server.mjs"), "tampered");
     assert.equal(spawnSync("tar", ["-czf", archive, "-C", stage, "labby", "tailcat"]).status, 0);
-    assert.throws(() => installArchive(archive, destination, target, "v2.5.0"), /checksum/);
-    assert.equal(installationValid(destination, target, "v2.5.0"), true);
+    assert.throws(() => installArchive(archive, destination, target, "v2.5.1"), /checksum/);
+    assert.equal(installationValid(destination, target, "v2.5.1"), true);
     const legacy = path.join(tmp, "legacy.tar.gz");
     assert.equal(spawnSync("tar", ["-czf", legacy, "-C", stage, "labby"]).status, 0);
     const older = path.join(tmp, "older");
     installArchive(legacy, older, target, "v2.4.0");
     assert.equal(installationValid(older, target, "v2.4.0"), true);
-    assert.equal(installationValid(older, target, "v2.5.0"), false);
+    assert.equal(installationValid(older, target, "v2.5.0"), true);
+    assert.equal(installationValid(older, target, "v2.5.1"), false);
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });

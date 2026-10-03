@@ -41,8 +41,19 @@ export class TailcatClient {
     if(decoder.status&&(decoder.status<200||decoder.status>=300))throw Error(`MCP HTTP ${decoder.status}`);
     if(decoder.headers?.['mcp-session-id']){const s=decoder.headers['mcp-session-id'];if(!safeHeader(s))throw Error('Invalid MCP session');if(this.session&&s!==this.session)throw Error('MCP session changed');this.session=s;}
     for(const message of decoder.takeMessages()){
-     if(message.jsonrpc!=='2.0')throw Error('Invalid MCP response');
-     if(message.id!==undefined){if(message.id!==id)throw Error('Unexpected MCP response ID');return message;}
+     if(!message||typeof message!=='object'||Array.isArray(message)||message.jsonrpc!=='2.0')throw Error('Invalid MCP response');
+     if(message.id!==undefined){
+      if(message.id!==id)throw Error('Unexpected MCP response ID');
+      const hasResult=Object.hasOwn(message,'result'),hasError=Object.hasOwn(message,'error');
+      if(hasResult===hasError)throw Error('Invalid MCP response');
+      if(hasError){
+       const detail=message.error;
+       if(!detail||typeof detail!=='object'||Array.isArray(detail)||!Number.isInteger(detail.code)||typeof detail.message!=='string')throw Error('Invalid MCP error');
+       const error=Error(detail.message);error.code=detail.code;if(Object.hasOwn(detail,'data'))error.data=detail.data;throw error;
+      }
+      if(!message.result||typeof message.result!=='object'||Array.isArray(message.result))throw Error('Invalid MCP result');
+      return message;
+     }
     }
     if(decoder.done){if(id===undefined)return null;throw Error('Missing MCP response')}
    }

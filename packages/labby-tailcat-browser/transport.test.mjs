@@ -100,3 +100,19 @@ test('heartbeat RPC errors retire the connection instead of renewing readiness',
  for(let i=0;i<20;i++)await Promise.resolve();
  try{assert.equal(c.closed,true);assert.deepEqual(reasons,['failed']);}finally{c.close();}
 });
+
+test('RPC errors reject with their code and malformed response envelopes fail closed',async()=>{
+ for(const payload of [
+  {error:{code:-32603,message:'Discovery failed',data:{retryable:false}}},
+  {},{result:null},{result:[],error:{code:-1,message:'bad'}},{error:{code:'bad',message:'bad'}},
+ ]) {
+  const body=JSON.stringify({jsonrpc:'2.0',id:1,...payload});
+  const c=await TailcatClient.connect(cap,{dial:async()=>({write:async()=>{},close(){},read:async()=>new TextEncoder().encode(`HTTP/1.1 200 OK\r\nContent-Length: ${body.length}\r\n\r\n${body}`)})});
+  try {
+   await assert.rejects(c.request('tools/list'),error=>{
+    if(payload.error?.code===-32603){assert.equal(error.code,-32603);assert.equal(error.message,'Discovery failed');assert.deepEqual(error.data,{retryable:false});}
+    return true;
+   });
+  } finally {c.close();}
+ }
+});

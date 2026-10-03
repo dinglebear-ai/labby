@@ -367,6 +367,7 @@ jobs:
           scripts/tests/release-attestation-bundles.sh
           scripts/tests/tailcat-installers.sh
           python3 scripts/tests/test_tailcat_release.py
+          python3 scripts/tests/test_npm_release_version.py
       - name: Run macOS updater and recovery lifecycle tests
         run: |
           cargo test -p labby --all-features --locked self_update::tests

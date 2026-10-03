@@ -127,11 +127,15 @@ Process.sleep(:infinity)
     if(r.error||r.result?.isError||!body?.ok){result.failure={action,rpcCode:r.error?.code,toolError:r.result?.isError,bodyKeys:Object.keys(body||{}),kind:body?.error?.code||body?.kind||body?.error?.kind,message:String(body?.error?.message||'').replace(/(?:lby_[A-Za-z0-9_-]+|Bearer\s+\S+)/g,'[redacted]').slice(0,512)};throw Error(`${action}_failed`);}return body.data;};
    result.tools=tools.map(t=>t.name);
    if(tools.some(t=>/^(gateway|access|setup|fs)$/.test(t.name)))throw Error('operator_tool_exposed');
-   const denied=await client.request('tools/call',{name:tool('sandbox_remove'),arguments:{name:'existing-user-vm',force:true}});
-   const deniedText=denied.result?.content?.find(c=>c.type==='text')?.text;
-   const deniedBody=deniedText&&JSON.parse(deniedText);
-   if(!denied.error&&!denied.result?.isError&&!deniedBody?.error)throw Error('foreign_cleanup_allowed');
-   result.foreignCleanupDenied=true;
+   for(const action of ['sandbox_remove','sandbox_exec','sandbox_inspect']) {
+    let denied;
+    try {denied=await client.request('tools/call',{name:tool(action),arguments:{name:'existing-user-vm',...(action==='sandbox_exec'?{command:'/bin/true'}:{force:true})}});}
+    catch(error){if(!Number.isInteger(error.code))throw error;denied={error:{code:error.code}};}
+    const text=denied.result?.content?.find(c=>c.type==='text')?.text;
+    const body=text&&JSON.parse(text);
+    if(!denied.error&&!denied.result?.isError&&!body?.error)throw Error('foreign_access_allowed');
+   }
+   result.foreignCleanupDenied=true;result.foreignExecutionDenied=true;result.foreignInspectionDenied=true;
    const existing=await call('sandbox_list',{});if(existing.some(vm=>vm.name===name))throw Error('owned_name_collision');
    createAttempted=true;
    await call('sandbox_create',{name,rootfs:{kind:'oci',reference:'docker.io/library/ubuntu@sha256:a6757b311b671e9379ac0548b5abf7a7e68d33bff51f6044bbd60f68f781489a',pullPolicy:'never',upperSizeMib:128},cpus:1,memoryMib:128,network:{disabled:true},process:{user:'nobody',workdir:'/tmp',labels:{'labby-tailcat-run':name}},lifecycle:{maxDurationSecs:120,idleTimeoutSecs:60}});

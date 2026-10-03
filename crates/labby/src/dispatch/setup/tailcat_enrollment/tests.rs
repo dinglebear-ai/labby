@@ -184,3 +184,51 @@ fn request_rejects_identity_and_credential_material_and_errors_are_redacted() {
     assert!(!error.contains("lby_pc_v1"));
     assert!(error.contains("native recovery"));
 }
+
+#[tokio::test]
+async fn rejected_enrollment_capacity_does_not_create_an_unrecoverable_lock() {
+    let (_temp, root) = root();
+    let paths = InstallationPaths::from_root(root.clone()).unwrap();
+    let store = AccessStore::open(paths.access_db()).await.unwrap();
+    let folder = root.join("tailcat/enrollments");
+    for i in 0..128 {
+        let mut operation = request();
+        operation.idempotency_key = format!("capacity-operation-{i:04}");
+        drop(
+            prepare_custody(
+                &root,
+                "owner",
+                &operation,
+                "https://labby.example/sandbox",
+                [4; 32],
+            )
+            .unwrap(),
+        );
+    }
+    assert!(
+        prepare_custody(
+            &root,
+            "owner",
+            &request(),
+            "https://labby.example/sandbox",
+            [4; 32]
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 256);
+    assert!(
+        prepare_custody(
+            &root,
+            "owner",
+            &request(),
+            "https://labby.example/sandbox",
+            [4; 32]
+        )
+        .is_err()
+    );
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 256);
+    // The valid published files remain recoverable; rejected admission cannot
+    // make startup refuse this directory or mutate existing credential custody.
+    reconcile_pending(&paths, &store).await.unwrap();
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 256);
+}

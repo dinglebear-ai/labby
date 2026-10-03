@@ -14,6 +14,13 @@ test('configured adapter publishes atomic cleanup without creating a VM',async()
   assert.equal(removal.inputSchema.properties.expectedOwner.type,'string');
   assert.equal(removal.annotations.destructiveHint,true);
   assert.ok(tools.some(t=>t.name==='sandbox_create'));
-  assert.ok(tools.some(t=>t.name==='sandbox_exec'));
+  for(const name of ['sandbox_exec','sandbox_inspect','sandbox_list']){
+   const tool=tools.find(t=>t.name===name);
+   assert.equal(tool._meta['labby.tailcat.owned_access'],1);
+   assert.equal(tool.inputSchema.properties.expectedOwner.type,'string');
+  }
+ const ownedEmpty=await client.callTool({name:'sandbox_list',arguments:{names:[],expectedOwner:'01234567-89ab-4def-8123-456789abcdef'}});
+ assert.equal(ownedEmpty.isError,undefined);
+ assert.deepEqual(JSON.parse(ownedEmpty.content[0].text).data,[]);
  }finally{await client.close();await transport.close();}
 });

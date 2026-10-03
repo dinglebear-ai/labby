@@ -24,6 +24,8 @@ OAuth configuration. The actual Depot page also passed sign-in, pairing request,
 approved delivery import and tool discovery, and the cleanup response confirmed
 the identity-bound adapter was used. A fresh October 3 fixture also passed automatic encrypted delivery through the
 actual Depot page, matching fingerprints, native approval and real VM cleanup.
+The review fixture also passed session-owned execution and inspection, denied
+foreign access requests and verified identity-bound cleanup after the ownership fix.
 It uses isolated OAuth configuration, not a live Google sign-in. Installed-owner
 setup/enrollment/activation and Google sign-in remain unqualified; packaged asset
 discovery was checked in a disposable installation, but real provider credentials
@@ -37,12 +39,13 @@ This remains an experimental integration.
 - An existing project credential bound to a named, tools-only Loadout containing
   exactly the approved Microsandbox upstream, and an enabled protected MCP route.
   Admin credentials, inline Loadouts and wider projections are refused.
-- Microsandbox 0.7.6 with matching native runtime and firmware. For browser
-  cleanup, use the experimental adapter in `packages/labby-microsandbox`
+- Microsandbox 0.7.6 with matching native runtime and firmware. For paired sandbox
+  access and cleanup, use the experimental adapter in `packages/labby-microsandbox`
   (`npm ci` in that directory, then configure its `server.mjs` as a Node MCP
   upstream). This adapter is not published to npm. Ordinary
-  `microsandbox-mcp@0.7.6` remains usable for nondestructive tools, but browser
-  deletion is denied because its removal operation targets a reusable name.
+  `microsandbox-mcp@0.7.6` lacks the required ownership capabilities: paired
+  execution, inspection, listing and deletion are denied. Native callers can
+  continue to use that upstream through their existing authorization.
   An older runtime in the Microsandbox home directory can override the npm
   package runtime. Set upstream environment variables `MSB_PATH` and
   `MSB_LIBKRUNFW_PATH` to the matching executable and firmware when needed.
@@ -174,12 +177,14 @@ The existing flow remains available: export a public request, then run
 and import the new private delivery file into the same page. Keep that delivery
 private and remove the owned file after import. Never store it in Git or logs.
 
-## Sandbox cleanup scope
+## Sandbox access and cleanup scope
 
 VMs created through this session must use a unique name of the form
 `labby-tailcat-<32 lowercase hexadecimal characters>`. Labby adds its own
 ownership label and records successful creation in native memory. The session
-can remove only those VMs. The adapter checks the current ownership label and
+can execute commands, inspect and remove only those VMs; listing returns only
+its recorded VMs. Execution retains the SDK identity-bound handle through
+connection and command dispatch, so a same-name replacement is refused. The adapter checks the current ownership label and
 uses the SDK identity-bound handle destruction, which refuses a same-name
 replacement. Labby requires the adapter's atomic cleanup capability before
 authorizing deletion. Creation refuses replacement options. The session

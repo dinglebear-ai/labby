@@ -182,7 +182,9 @@ async function main() {
 function requiresCompanions(version) {
   const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!match) throw new Error("invalid release version");
-  return Number(match[1]) > 2 || (Number(match[1]) === 2 && Number(match[2]) >= 5);
+  // Published v2.5.0 archives contain only the binary. Later releases require the bundle.
+  const [, major, minor, patch] = match.map(Number);
+  return major > 2 || (major === 2 && (minor > 5 || (minor === 5 && patch > 0)));
 }
 
 function validateInstallation(root, target, version) {

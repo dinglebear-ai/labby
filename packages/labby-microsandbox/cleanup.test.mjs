@@ -20,3 +20,22 @@ test('owned cleanup destroys exact instance and refuses bulk selectors',async()=
  await removeOwned({name,expectedOwner:owner,force:true},sdk);assert.equal(destroyed,1);
  await assert.rejects(removeOwned({name,expectedOwner:owner,names:['foreign']},sdk));assert.equal(destroyed,1);
 });
+test('owned access rejects foreign execution and inspection before dispatch',async()=>{
+ const {accessOwned}=await import('./cleanup.mjs');let executed=0;
+ const sdk={get:async()=>({name,config:()=>({labels:{'labby-tailcat-owner':'foreign'}}),connectOrStart:async()=>{executed++;}})};
+ for(const tool of ['sandbox_exec','sandbox_inspect'])await assert.rejects(accessOwned(tool,{name,expectedOwner:owner,command:'id'},sdk,{},()=>{}));
+ assert.equal(executed,0);
+});
+test('owned listing never resolves names outside the supplied session set',async()=>{
+ const {accessOwned}=await import('./cleanup.mjs');const seen=[];
+ const sdk={get:async n=>{seen.push(n);return {name:n,status:'running',config:()=>({labels:{'labby-tailcat-owner':owner}})};}};
+ const result=await accessOwned('sandbox_list',{names:[name],expectedOwner:owner},sdk,{summary:h=>({name:h.name})});
+ assert.deepEqual(result.data,[{name}]);assert.deepEqual(seen,[name]);
+ assert.deepEqual((await accessOwned('sandbox_list',{names:[],expectedOwner:owner},sdk,{})).data,[]);
+});
+test('owned exec retains identity across replacement and never dispatches on replacement',async()=>{
+ const {accessOwned}=await import('./cleanup.mjs');let current='original',lookups=0,executions=0;
+ const sdk={get:async()=>{lookups++;return {name,status:'running',config:()=>{current='replacement';return {labels:{'labby-tailcat-owner':owner}};},connect:async()=>{if(current!=='original')throw Error('identity changed');return {execWith:async()=>{executions++;}};}};}};
+ await assert.rejects(accessOwned('sandbox_exec',{name,expectedOwner:owner,command:'id'},sdk,{},()=>{}));
+ assert.equal(lookups,1);assert.equal(executions,0);
+});
