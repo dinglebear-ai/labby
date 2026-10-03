@@ -48,17 +48,21 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	var accepting sync.WaitGroup
 	var serving sync.WaitGroup
 	accepting.Add(1)
-	defer func() {
-		cancel()
-		listener.Close()
-		accepting.Wait() // No worker may register after this point.
-		mu.Lock()
-		for c := range active {
-			c.Close()
-		}
-		mu.Unlock()
-		serving.Wait()
-	}()
+	var stoppedForwarding sync.Once
+	stopForwarding := func() {
+		stoppedForwarding.Do(func() {
+			cancel()
+			listener.Close()
+			accepting.Wait() // No worker may register after this point.
+			mu.Lock()
+			for c := range active {
+				c.Close()
+			}
+			mu.Unlock()
+			serving.Wait()
+		})
+	}
+	defer stopForwarding()
 	limit := make(chan struct{}, 8)
 	go func() {
 		defer accepting.Done()
@@ -144,7 +148,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 			return err
 		}
 	}
-	listener.Close()
+	// Retire forwarding while the relay can still deliver TCP shutdown frames,
+	// and acknowledge stop only after every owned forwarding worker has ended.
+	stopForwarding()
 	server.Close()
 	return emit(Event{Version: 1, Type: "stopped"})
 }
