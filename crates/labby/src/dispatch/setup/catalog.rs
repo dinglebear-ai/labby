@@ -147,6 +147,93 @@ struct SettingsAuthSurfaceSchema {
 pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "proxy.configure"];
 
 pub const ACTIONS: &[ActionSpec] = &[
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    ActionSpec {
+        name: "tailcat.enable",
+        description: "Enable native Tailcat preferences after verified owner credential enrollment; requires restart",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailcatEnableOutcome",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "project_id",
+                ty: "string",
+                required: true,
+                description: "Existing owned Tailcat project",
+            },
+            ParamSpec {
+                name: "credential_id",
+                ty: "string",
+                required: true,
+                description: "Public credential ID returned by native enrollment",
+            },
+        ],
+    },
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    ActionSpec {
+        name: "tailcat.enroll",
+        description: "Enroll a restricted Tailcat project credential in private native custody after verified owner sign-in",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailcatEnrollmentOutcome",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "project_id",
+                ty: "string",
+                required: true,
+                description: "Existing owned project with its exact Tailcat loadout already assigned",
+            },
+            ParamSpec {
+                name: "idempotency_key",
+                ty: "string",
+                required: true,
+                description: "Opaque 16–128 character operation key; reuse only when retrying this enrollment",
+            },
+        ],
+    },
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    ActionSpec {
+        name: "tailcat.configure",
+        description: "Prepare a restricted native Tailcat adapter and project route for an authenticated operator who owns the project",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailcatSetupOutcome",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "project_id",
+                ty: "string",
+                required: true,
+                description: "Existing project owned by the authenticated caller",
+            },
+            ParamSpec {
+                name: "public_resource",
+                ty: "string",
+                required: true,
+                description: "HTTPS resource URL for the restricted route",
+            },
+            ParamSpec {
+                name: "derp_map_url",
+                ty: "string",
+                required: true,
+                description: "HTTPS Tailcat DERP map URL",
+            },
+            ParamSpec {
+                name: "node_path",
+                ty: "string",
+                required: true,
+                description: "Absolute installed Node executable path",
+            },
+            ParamSpec {
+                name: "dry_run",
+                ty: "boolean",
+                required: false,
+                description: "Validate and preview without writing",
+            },
+        ],
+    },
     ActionSpec {
         name: "help",
         description: "Show this action catalog",

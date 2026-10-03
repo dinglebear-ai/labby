@@ -68,6 +68,13 @@ async fn handle(
     let gateway_manager = state.gateway_manager.clone();
     #[cfg(feature = "gateway")]
     let installation_id = state.installation_id.as_deref().map(str::to_owned);
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    let tailcat_oauth_enabled = !state.web_ui_auth_disabled
+        && state.oauth_state.is_some()
+        && state
+            .auth_config
+            .as_ref()
+            .is_some_and(|config| config.mode == labby_auth::config::AuthMode::OAuth);
     handle_action_with_meta(
         "setup",
         "api",
@@ -75,6 +82,36 @@ async fn handle(
         req,
         ACTIONS,
         move |action, params| async move {
+            #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+            if action == "tailcat.enable" {
+                super::require_session_csrf(&action,&request_headers,request_auth.as_ref())?;
+                let identity=authenticated_identity.ok_or_else(|| ToolError::Forbidden { message:"Tailcat activation requires native identity".into(),required_scopes:vec![] })?;
+                if request_headers.contains_key("x-labby-team-id") || request_auth.as_ref().is_none_or(|auth| !auth.scopes.iter().any(|scope| scope=="lab" || scope=="lab:admin")) { return Err(ToolError::Forbidden { message:"Tailcat activation requires native operator context".into(),required_scopes:vec![] }); }
+                let request=serde_json::from_value::<crate::dispatch::setup::tailcat_enrollment::EnableRequest>(params).map_err(|_| ToolError::InvalidParam {param:"params".into(),message:"Invalid Tailcat activation request".into()})?;
+                let manager=gateway_manager.ok_or_else(|| ToolError::Sdk {sdk_kind:"service_unavailable".into(),message:"Native gateway is unavailable".into()})?;
+                return crate::dispatch::setup::tailcat_enrollment::enable(caller,access_runtime.as_ref().clone(),manager.as_ref().clone(),identity,installation_id.ok_or_else(|| ToolError::Sdk {sdk_kind:"service_unavailable".into(),message:"Native installation identity unavailable".into()})?,tailcat_oauth_enabled,request).await;
+            }
+            #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+            if action == "tailcat.enroll" {
+                super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "Tailcat enrollment requires host-established identity".into(), required_scopes: vec![] })?;
+                if request_auth.as_ref().is_none_or(|auth| !auth.scopes.iter().any(|scope| scope == "lab" || scope == "lab:admin")) || request_headers.contains_key("x-labby-team-id") { return Err(ToolError::Forbidden { message: "Tailcat enrollment requires the native operator context".into(), required_scopes: vec![] }); }
+                let request = serde_json::from_value::<crate::dispatch::setup::tailcat_enrollment::EnrollmentRequest>(params)
+                    .map_err(|_| ToolError::InvalidParam { param: "params".into(), message: "Invalid Tailcat enrollment request".into() })?;
+                let manager = gateway_manager.ok_or_else(|| ToolError::Sdk { sdk_kind: "service_unavailable".into(), message: "Native gateway is unavailable".into() })?;
+                return crate::dispatch::setup::tailcat_enrollment::enroll(caller, access_runtime.as_ref().clone(), manager.as_ref().clone(), identity, installation_id.ok_or_else(|| ToolError::Sdk { sdk_kind: "service_unavailable".into(), message: "Native installation identity is unavailable".into() })?, request).await;
+            }
+            #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+            if action == "tailcat.configure" {
+                super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "Tailcat setup requires host-established identity".into(), required_scopes: vec![] })?;
+                let auth = request_auth.as_ref().ok_or_else(|| ToolError::Forbidden { message: "Tailcat setup requires authentication".into(), required_scopes: vec![] })?;
+                if request_headers.contains_key("x-labby-team-id") { return Err(ToolError::Forbidden { message: "Tailcat setup requires the native installation context".into(), required_scopes: vec![] }); }
+                let request = serde_json::from_value::<crate::dispatch::setup::tailcat::ConfigureRequest>(params)
+                    .map_err(|_| ToolError::InvalidParam { param: "params".into(), message: "Invalid Tailcat setup request".into() })?;
+                let store = access_runtime.store().await.map_err(|error| crate::dispatch::access_errors::map_runtime_error("setup", error))?;
+                return crate::dispatch::setup::tailcat::configure(caller, store, identity, crate::access::AuthorityCeiling::from_auth_context(auth), crate::config::config_toml_path().map_err(|_| ToolError::Sdk { sdk_kind: "configuration_io_error".into(), message: "Native configuration path is unavailable".into() })?, request).await;
+            }
             if matches!(action.as_str(), "clients.session.start" | "clients.session.revoke") {
                 super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
                 let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "Client observation requires authenticated identity".into(), required_scopes: vec![] })?;
@@ -230,6 +267,10 @@ fn request_has_local_capability(peer: Option<SocketAddr>, headers: &HeaderMap) -
             .and_then(|value| value.to_str().ok())
             .is_some_and(crate::api::host_validation::is_loopback_host_value)
 }
+
+#[cfg(all(test, feature = "tailcat", feature = "gateway", unix))]
+#[path = "setup/tailcat_tests.rs"]
+mod tailcat_tests;
 
 #[cfg(test)]
 mod tests {

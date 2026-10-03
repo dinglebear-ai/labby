@@ -42,6 +42,8 @@ pub mod skills;
 pub mod snippets;
 pub mod state;
 pub mod style;
+#[cfg(all(feature = "tailcat", unix))]
+pub mod tailcat;
 pub mod update;
 // [lab-scaffold: cli-modules]
 
@@ -144,6 +146,12 @@ pub enum Command {
     Logs(logs::LogsArgs),
     /// Guide onboarding, check prerequisites, or explicitly repair local setup.
     Setup(setup::SetupArgs),
+    /// Pair an approved browser with local hardware sandbox tools.
+    #[cfg(all(feature = "tailcat", unix))]
+    Tailcat(tailcat::TailcatArgs),
+    #[cfg(all(feature = "tailcat", unix))]
+    #[command(skip)]
+    TailcatOperation(tailcat::Operation),
     /// Install, update, or operate the host service and its Incus deployment.
     Host(operator::HostArgs),
     /// Inspect setup state and manage drafts or proxy defaults.
@@ -192,6 +200,8 @@ impl Command {
             Self::Auth(args) => args.operation(),
             Self::Host(args) => args.operation(),
             Self::Config(args) => args.operation(),
+            #[cfg(all(feature = "tailcat", unix))]
+            Self::Tailcat(args) => args.operation(),
             #[cfg(feature = "gateway")]
             Self::Server(args) => Self::Gateway(gateway::GatewayArgs {
                 command: args.operation(),
@@ -263,6 +273,8 @@ impl Command {
             Self::Skills(_) => "skills",
             Self::Oauth(_) => "oauth",
             Self::Proxy(_) => "proxy",
+            #[cfg(all(feature = "tailcat", unix))]
+            Self::Tailcat(_) | Self::TailcatOperation(_) => "tailcat",
             #[cfg(feature = "gateway")]
             Self::Internal(_) => "internal",
         }
@@ -324,6 +336,10 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
                 login::run(args, format).await
             }
             Command::Setup(args) => setup::run(args, format).await,
+            #[cfg(all(feature = "tailcat", unix))]
+            Command::TailcatOperation(operation) => tailcat::run(operation, &config, format).await,
+            #[cfg(all(feature = "tailcat", unix))]
+            Command::Tailcat(_) => Err(anyhow::anyhow!("internal Tailcat CLI lowering failure")),
             Command::Incus(args) => incus::run(args, format).await,
             Command::Update(args) => update::run(args, format).await,
             Command::State(args) => state::run(args, format).await,

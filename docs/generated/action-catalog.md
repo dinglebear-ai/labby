@@ -265,6 +265,9 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `settings.state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `section: string` | `SettingsState` | mcp, api, web |
 | `setup` | `settings.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupSnapshot` | cli, mcp, api, web |
+| `setup` | `tailcat.configure` | false | false | false |  | `transport` | `-` | `-` | `project_id*: string`<br>`public_resource*: string`<br>`derp_map_url*: string`<br>`node_path*: string`<br>`dry_run: boolean` | `TailcatSetupOutcome` | mcp, api, web |
+| `setup` | `tailcat.enable` | false | false | false |  | `transport` | `-` | `-` | `project_id*: string`<br>`credential_id*: string` | `TailcatEnableOutcome` | mcp, api, web |
+| `setup` | `tailcat.enroll` | false | false | false |  | `transport` | `-` | `-` | `project_id*: string`<br>`idempotency_key*: string` | `TailcatEnrollmentOutcome` | mcp, api, web |
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.artifact` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`path*: string` | `SnippetArtifactResponse` | mcp, api |

@@ -26,6 +26,7 @@ pub mod host_write;
 mod host_write_tests;
 mod paths;
 pub(crate) mod secret_files;
+pub mod tailcat;
 
 pub use env_writer::{EnvCredential, write_env_pairs, write_service_creds};
 #[cfg(test)]
@@ -443,6 +444,9 @@ pub struct LabConfig {
     /// Ephemeral stdio MCP proxy defaults.
     #[serde(default)]
     pub proxy: crate::proxy::config::ProxyPreferences,
+    /// Opt-in native browser transport; contains no credentials.
+    #[serde(default)]
+    pub tailcat: tailcat::TailcatPreferences,
     /// Logging preferences (overridden by `LABBY_LOG` / `LABBY_LOG_FORMAT` env vars).
     #[serde(default)]
     pub log: LogPreferences,

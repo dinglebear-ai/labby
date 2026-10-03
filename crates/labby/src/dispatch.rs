@@ -55,3 +55,6 @@ pub mod snippets;
 pub(crate) mod tasks;
 #[cfg(feature = "gateway")]
 pub mod upstream;
+
+#[cfg(all(feature = "gateway", any(feature = "tailcat", test)))]
+pub mod tailcat;

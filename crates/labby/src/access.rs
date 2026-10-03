@@ -79,6 +79,10 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+mod tailcat_enrollment;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+pub(crate) use tailcat_enrollment::TailcatEnrollmentInput;
 mod task;
 pub(crate) mod task_schedule;
 pub(crate) use task::TaskRecord;

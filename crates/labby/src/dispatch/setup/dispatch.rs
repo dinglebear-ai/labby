@@ -88,7 +88,10 @@ async fn dispatch_inner(
 ) -> Result<Value, ToolError> {
     match action {
         "help" => Ok(help_payload("setup", ACTIONS)),
-        "mcp.verification.tools"
+        "tailcat.enable"
+        | "tailcat.enroll"
+        | "tailcat.configure"
+        | "mcp.verification.tools"
         | "mcp.verification.call"
         | "clients.session.start"
         | "clients.session.revoke" => Err(ToolError::Forbidden {

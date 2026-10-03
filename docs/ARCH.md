@@ -91,6 +91,17 @@ group, and Windows Job Object ownership without routing through the aggregate
 gateway catalog. It does not own product config rendering or `.env` writes;
 those are injected by the host through `GatewayConfigStore`.
 
+### `crates/labby-tailcat`
+
+`labby-tailcat` is an experimental native supervisor for the pinned Go Tailcat
+helper and its bounded control protocol. It reuses the gateway's process-group
+guard. The matching browser transport lives in `packages/labby-tailcat-browser`;
+Go source and its dependency lock live in `tools/tailcat-bridge`.
+
+It does not currently mount product routes or authorize browser access. Pairing,
+restricted MCP projection and Depot integration remain product-owned work in the
+[Tailcat implementation plan](plans/2026-10-02-tailcat-browser-transport.md).
+
 ### `crates/labby-browser`
 
 `labby-browser` owns the surface-neutral browser bridge runtime and persistence. Product registration and HTTP/MCP adapters remain in `labby`.

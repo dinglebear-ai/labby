@@ -3,11 +3,11 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-pub(crate) const EXPECTED_ACTIONS: usize = 317;
+pub(crate) const EXPECTED_ACTIONS: usize = 320;
 pub(crate) const EXPECTED_CLI_ACTIONS: usize = 69;
-pub(crate) const EXPECTED_MCP_ACTIONS: usize = 310;
-pub(crate) const EXPECTED_API_ACTIONS: usize = 311;
-pub(crate) const EXPECTED_WEB_ACTIONS: usize = 120;
+pub(crate) const EXPECTED_MCP_ACTIONS: usize = 313;
+pub(crate) const EXPECTED_API_ACTIONS: usize = 314;
+pub(crate) const EXPECTED_WEB_ACTIONS: usize = 123;
 pub(crate) const EXPECTED_SHARED_CLI_MCP_API_ACTIONS: usize = 69;
 
 const INTENT_JSON: &str = include_str!("../fixtures/action_cases.json");

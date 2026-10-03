@@ -12,6 +12,15 @@ This document is the authoritative contract for CI, release, and artifact delive
 
 ## CI Path Routing
 
+Tailcat browser/adapter packages, Go bridge sources and locks, native transport
+boundary changes, and bridge packaging/test helpers route the credentialless
+`tailcat-tests` job. It runs both npm safety suites plus native Go race and WASM
+tests on a hosted runner with pinned Node/Go versions. `ci-gate` requires success
+when Tailcat is routed; a skip is legitimate only for unrelated paths. These
+deterministic suites launch no microVM and use no relay or provider credentials;
+the explicitly ignored real-browser/native-VM acceptance remains separate live
+qualification.
+
 The docs-check job also runs the pure-Python Microsandbox implementation skill
 receipt tests and its path-routing regression. Every file under
 `plugins/labby/.apm/skills/implement-in-microsandbox/` routes to that job, including

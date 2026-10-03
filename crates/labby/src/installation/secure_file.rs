@@ -63,6 +63,12 @@ fn validate_size(bytes: &[u8]) -> io::Result<()> {
     }
 }
 
+/// Publish a private, non-overwriting transit artifact using the same owner,
+/// permission and inode checks as credential bootstrap.
+pub(crate) fn publish_private_artifact(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    publish_new(path, bytes).map(drop)
+}
+
 fn read_bounded_private(path: &Path, file: &mut File) -> io::Result<Vec<u8>> {
     // Verify the exact file type, owner, ACL and link count before reading.
     identity(path, file, &[])?;

@@ -55,6 +55,7 @@ pub mod state;
 pub mod static_session;
 #[cfg(feature = "http-axum")]
 pub mod token;
+pub mod transport_grant;
 pub mod trusted_host;
 pub mod types;
 #[cfg(feature = "upstream-oauth-rmcp")]

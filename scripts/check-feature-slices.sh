@@ -29,6 +29,7 @@ labby_product_features=(
   "codemode-microsandbox"
   "gateway-host"
   "integrated-gateway"
+  "tailcat"
   "fs"
   "skills"
   "all"
