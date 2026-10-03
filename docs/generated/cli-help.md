@@ -6060,17 +6060,20 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
-      --advanced
-          Ask about deployment, listen address, port, and authentication instead of using local defaults
-
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
 
-      --config-only
-          Prepare server authentication in LABBY_HOME without installing or starting a service
+      --tailcat
+          Prepare native dashboard access through Tailcat without installing a daemon
+
+      --advanced
+          Ask about deployment, listen address, port, and authentication instead of using local defaults
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --config-only
+          Prepare server authentication in LABBY_HOME without installing or starting a service
 
       --deployment <DEPLOYMENT>
           Install a managed server explicitly: native service or isolated Incus container
@@ -6575,7 +6578,7 @@ Options:
 ```text
 Approve a browser key for the selected sandbox upstream
 
-Usage: labby tailcat pair [OPTIONS] --request <PATH> --credential-file <PATH> --output <PATH>
+Usage: labby tailcat pair [OPTIONS] --credential-file <PATH>
 
 Options:
       --json
@@ -6593,20 +6596,23 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --credential-file <PATH>
-          Private project credential file, owned by the current user
+      --rendezvous <RENDEZVOUS>
+          HTTPS dashboard origin; the exchange code is requested privately
 
-      --output <PATH>
-          New private delivery file to import into the requesting browser
+      --pairing-id <PAIRING_ID>
+          Public dashboard pairing identifier
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
+      --pair-code-stdin
+          Read the private exchange code from stdin for noninteractive approval
+
   -q, --quiet
           Suppress console logs, but always report command errors
 
-  -y, --yes
-          Explicitly approve the reviewed origin, peer key and sandbox upstream
+      --credential-file <PATH>
+          Private project credential file, owned by the current user
 
       --no-input
           Never prompt for missing input or confirmation
@@ -6614,8 +6620,14 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --output <PATH>
+          New private delivery file to import into the requesting browser
+
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
+
+  -y, --yes
+          Explicitly approve the reviewed origin, peer key and sandbox upstream
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)

@@ -37,6 +37,41 @@ function blockedFetch() {
 const run = () => performServiceAction({ action: 'artifacts.list', params: {}, serviceLabel: 'Library', url: '/v1/artifacts', createError: (message, status, code) => new TestActionError(message, status, code) })
 const isAbort = (error: unknown) => error instanceof DOMException && error.name === 'AbortError'
 
+test('native Tailcat setup omits routing headers but preserves session protection and defaults', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'csrf', projectId: 'project-a',
+    authority: { ...authority, activeTeamId: 'team-a', activeProjectId: 'project-a' } })
+  const requests: RequestInit[] = []
+  globalThis.fetch = async (_url, init) => { requests.push(init!); return Response.json({ ok: true }) }
+  const controller = new AbortController()
+  await performServiceAction({ action: 'tailcat.enroll', params: { project_id: 'project-a' }, serviceLabel: 'Setup',
+    url: '/v1/setup', signal: controller.signal, nativeOperatorContext: true, source: 'settings',
+    createError: (message, status, code) => new TestActionError(message, status, code) })
+  const native = new Headers(requests[0].headers)
+  assert.equal(native.get('x-labby-team-id'), null)
+  assert.equal(native.get('x-labby-project-id'), null)
+  assert.equal(native.get('x-csrf-token'), 'csrf')
+  assert.equal(native.get('x-lab-source'), 'settings')
+  assert.equal(requests[0].credentials, 'include')
+  assert.equal(requests[0].signal, controller.signal)
+  await run()
+  const standard = new Headers(requests[1].headers)
+  assert.equal(standard.get('x-labby-team-id'), 'team-a')
+  assert.equal(standard.get('x-labby-project-id'), 'project-a')
+  await assert.rejects(performServiceAction({ action: 'artifacts.list', params: {}, serviceLabel: 'Library', url: '/v1/artifacts',
+    nativeOperatorContext: true, createError: (message, status, code) => new TestActionError(message, status, code) }), TypeError)
+  assert.equal(requests.length, 2)
+})
+
+test('native Tailcat setup rejects a response after the selected project changes', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-a' })
+  const release = blockedFetch()
+  const pending = performServiceAction({ action: 'tailcat.enroll', params: { project_id: 'project-a' }, serviceLabel: 'Setup', url: '/v1/setup',
+    nativeOperatorContext: true, createError: (message, status, code) => new TestActionError(message, status, code) })
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', projectId: 'project-b' })
+  release()
+  await assert.rejects(pending, isAbort)
+})
+
 test('performServiceAction rejects a response from a superseded authority context', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'one' }, expiresAt: 1, csrfToken: 'one', authority })
   const release = blockedFetch()

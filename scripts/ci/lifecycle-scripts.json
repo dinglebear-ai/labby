@@ -55,7 +55,9 @@
     "plugins/scripts/protected-mcp-smoke",
     "scripts/build-tailcat-bridge.sh",
     "scripts/install-tailcat-depot-assets.sh",
-    "scripts/test-tailcat-bridge.sh"
+    "scripts/test-tailcat-bridge.sh",
+    "scripts/package-tailcat-release.sh",
+    "scripts/tests/tailcat-installers.sh"
   ],
   "powershell": [
     "scripts/install.ps1"
@@ -74,6 +76,8 @@
     "scripts/ci/test_npm_pointer.py",
     "scripts/ci/test_update_safety_oracles.py",
     "scripts/tests/test_timeout.py",
-    "scripts/tests/release-attestation-bundles.sh"
+    "scripts/tests/release-attestation-bundles.sh",
+    "scripts/tests/test_tailcat_release.py",
+    "scripts/tests/tailcat-installers.sh"
   ]
 }

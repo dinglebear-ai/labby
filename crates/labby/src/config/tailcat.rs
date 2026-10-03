@@ -6,6 +6,7 @@ use std::path::PathBuf;
 #[serde(default, deny_unknown_fields)]
 pub struct TailcatPreferences {
     pub enabled: bool,
+    pub bundle_path: Option<PathBuf>,
     pub helper_path: Option<PathBuf>,
     pub helper_sha256: Option<String>,
     pub derp_map_url: Option<String>,

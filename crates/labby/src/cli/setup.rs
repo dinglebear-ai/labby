@@ -27,6 +27,8 @@ mod browser_handoff;
 mod chatgpt;
 mod client_registration;
 mod onboarding;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+mod tailcat;
 
 const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
 
@@ -55,6 +57,10 @@ pub struct SetupArgs {
     /// Connect ChatGPT to local Microsandbox sandboxes through Google OAuth and Tailscale Funnel.
     #[arg(long, conflicts_with_all = ["role", "deployment", "provision", "config_only", "desktop", "clients", "apply_plan", "bootstrap_static_owner"])]
     pub chatgpt: bool,
+
+    /// Prepare native dashboard access through Tailcat without installing a daemon.
+    #[arg(long, conflicts_with_all = ["role", "deployment", "provision", "config_only", "desktop", "clients", "apply_plan", "bootstrap_static_owner", "chatgpt"])]
+    pub tailcat: bool,
 
     /// Ask about deployment, listen address, port, and authentication instead of using local defaults.
     #[arg(long)]

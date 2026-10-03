@@ -32,6 +32,10 @@ use crate::installation::secure_file;
 mod settings;
 pub(crate) use settings::agent_provider_configuration;
 mod state;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+pub(crate) mod tailcat;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+pub(crate) mod tailcat_enrollment;
 mod token;
 mod types;
 

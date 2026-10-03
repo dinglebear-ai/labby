@@ -15,6 +15,19 @@ pub enum BridgeStatus {
     Failed,
 }
 
+/// Opaque delivery encrypted to the helper's single approved browser peer.
+pub struct SealedDelivery {
+    pub sender: String,
+    pub ciphertext: String,
+}
+impl fmt::Debug for SealedDelivery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SealedDelivery([redacted])")
+    }
+}
+type SealWaiter =
+    std::sync::Arc<std::sync::Mutex<Option<tokio::sync::oneshot::Sender<SealedDelivery>>>>;
+
 /// Secret address, delivered only through an authorized pairing response.
 pub struct ConnectionCapability {
     address: String,
@@ -45,6 +58,8 @@ pub struct Bridge {
     capability: ConnectionCapability,
     snapshot: tempfile::TempDir,
     status: BridgeStatus,
+    seal_waiter: SealWaiter,
+    seal_requested: bool,
 }
 
 impl Bridge {
@@ -90,6 +105,7 @@ impl Bridge {
         });
         // Construct ownership before the first await so cancellation kills the process tree.
         let failure = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seal_waiter: SealWaiter = Default::default();
         let mut bridge = Self {
             child: std::sync::Arc::new(std::sync::Mutex::new(Some(child))),
             stdin: None,
@@ -103,6 +119,8 @@ impl Bridge {
             },
             snapshot,
             status: BridgeStatus::Failed,
+            seal_waiter: seal_waiter.clone(),
+            seal_requested: false,
         };
         let start = Start {
             version: 1,
@@ -122,7 +140,12 @@ impl Bridge {
         })
         .await
         .map_err(|_| BridgeError::StartupTimeout)??;
-        if ready.kind != "ready" || ready.code.is_some() || ready.port != Some(1) {
+        if ready.kind != "ready"
+            || ready.code.is_some()
+            || ready.port != Some(1)
+            || ready.sender.is_some()
+            || ready.ciphertext.is_some()
+        {
             return Err(BridgeError::Protocol);
         }
         let address = ready.address.ok_or(BridgeError::Protocol)?;
@@ -139,8 +162,41 @@ impl Bridge {
         bridge.stdin = Some(stdin);
         let monitored_child = bridge.child.clone();
         bridge.event_task = tokio::spawn(async move {
-            // Any unsolicited event or EOF invalidates the active generation.
-            drop(read_event(&mut stdout).await);
+            // A single solicited seal response is allowed; everything else retires
+            // the generation. Private helper stdout is never copied into logs.
+            loop {
+                let Ok(event) = read_event(&mut stdout).await else {
+                    break;
+                };
+                if event.kind != "sealed"
+                    || event.address.is_some()
+                    || event.port.is_some()
+                    || event.code.is_some()
+                {
+                    break;
+                }
+                let (Some(sender), Some(ciphertext)) = (event.sender, event.ciphertext) else {
+                    break;
+                };
+                if !sender.strip_prefix("nodekey:").is_some_and(|key| {
+                    key.len() == 64 && key.bytes().all(|byte| byte.is_ascii_hexdigit())
+                }) || ciphertext.is_empty()
+                    || ciphertext.len() > 24 * 1024
+                    || !ciphertext
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte))
+                {
+                    break;
+                }
+                let waiter = seal_waiter
+                    .lock()
+                    .expect("seal ownership lock poisoned")
+                    .take();
+                let Some(waiter) = waiter else { break };
+                if waiter.send(SealedDelivery { sender, ciphertext }).is_err() {
+                    break;
+                }
+            }
             failure.store(true, std::sync::atomic::Ordering::Release);
             let _signal_result =
                 labby_gateway::process::unix::terminate_process_group_sigkill(process_group);
@@ -162,6 +218,55 @@ impl Bridge {
 
     pub fn capability(&self) -> &ConnectionCapability {
         &self.capability
+    }
+
+    /// Seal once using the running helper's key and its fixed approved peer.
+    /// Cancellation or timeout invalidates the helper rather than retrying.
+    pub async fn seal_delivery(&mut self, payload: &str) -> Result<SealedDelivery, BridgeError> {
+        if self.status() != BridgeStatus::Ready
+            || self.seal_requested
+            || payload.is_empty()
+            || payload.len() > 16 * 1024
+        {
+            return Err(BridgeError::Protocol);
+        }
+        let mut frame =
+            serde_json::to_vec(&serde_json::json!({"version":1,"type":"seal","payload":payload}))
+                .map_err(|_| BridgeError::Protocol)?;
+        if frame.len() >= crate::protocol::FRAME_LIMIT {
+            return Err(BridgeError::Protocol);
+        }
+        frame.push(b'\n');
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *self
+            .seal_waiter
+            .lock()
+            .expect("seal ownership lock poisoned") = Some(sender);
+        self.seal_requested = true;
+        // The in-flight future owns the kill guard, including when dropped.
+        let owned_guard = self.guard.take();
+        let result = tokio::time::timeout(Duration::from_secs(10), async {
+            self.stdin
+                .as_mut()
+                .ok_or(BridgeError::ProcessFailed)?
+                .write_all(&frame)
+                .await
+                .map_err(|_| BridgeError::ProcessFailed)?;
+            receiver.await.map_err(|_| BridgeError::Protocol)
+        })
+        .await;
+        match result {
+            Ok(Ok(delivery)) => {
+                self.guard = owned_guard;
+                Ok(delivery)
+            }
+            _ => {
+                self.failure
+                    .store(true, std::sync::atomic::Ordering::Release);
+                drop(owned_guard);
+                Err(BridgeError::Protocol)
+            }
+        }
     }
 
     pub fn status(&mut self) -> BridgeStatus {

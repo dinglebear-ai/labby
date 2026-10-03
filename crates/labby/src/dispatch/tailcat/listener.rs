@@ -65,10 +65,19 @@ impl RestrictedListener {
     }
     /// Revalidation also owns open SSE streams: expiry, revocation, or an
     /// unavailable native authority closes every connection without a new call.
+    #[cfg(test)]
     pub(crate) async fn start_authorized(
         router: Router,
         authority: std::sync::Arc<crate::dispatch::tailcat::RequestAuthority>,
         envelope: String,
+    ) -> Result<Self, crate::dispatch::tailcat::PairingError> {
+        Self::start_authorized_with_activity(router, authority, envelope, false).await
+    }
+    pub(crate) async fn start_authorized_with_activity(
+        router: Router,
+        authority: std::sync::Arc<crate::dispatch::tailcat::RequestAuthority>,
+        envelope: String,
+        require_activity: bool,
     ) -> Result<Self, crate::dispatch::tailcat::PairingError> {
         authority
             .authorize(
@@ -78,7 +87,9 @@ impl RestrictedListener {
             )
             .await?;
         // Successful browser requests renew liveness; native authority polling does not.
-        let activity = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let activity = std::sync::Arc::new(std::sync::Mutex::new(
+            require_activity.then(tokio::time::Instant::now),
+        ));
         let observed = activity.clone();
         let router = router.layer(axum::middleware::from_fn(
             move |request: axum::http::Request<Body>, next: axum::middleware::Next| {

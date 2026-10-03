@@ -29,11 +29,13 @@ async function setupAction<T>(
   action: string,
   params: Record<string, unknown> = {},
   signal?: AbortSignal,
+  nativeOperatorContext = false,
 ): Promise<T> {
   return performServiceAction<T, SetupApiError>({
     action,
     params,
     signal,
+    nativeOperatorContext,
     serviceLabel: 'Setup',
     url: setupActionUrl(),
     createError: (message, status, code, param) => new SetupApiError(message, status, code, param),
@@ -384,6 +386,52 @@ function mockSettingsState(section: string, updates: SettingsUpdateEntry[] = [])
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────
+
+export interface TailcatConfigureRequest {
+  project_id: string
+  public_resource: string
+  derp_map_url: string
+  node_path: string
+  dry_run: boolean
+}
+export interface TailcatConfiguration {
+  configured: boolean
+  changed: boolean
+  dry_run: boolean
+  project_id: string
+  upstream: string
+  loadout: string
+  route: string
+  controller_enabled: boolean
+  restart_required: boolean
+  credential_enrollment_required: boolean
+  service_installed: boolean
+}
+export interface TailcatEnrollment {
+  enrolled: boolean
+  credential_id: string
+  credential_file: string
+  expires_at: number
+  controller_enabled: boolean
+  restart_required: boolean
+}
+export interface TailcatActivation {
+  enabled: boolean
+  changed: boolean
+  restart_required: boolean
+}
+
+export const tailcatSetupApi = {
+  tailcatConfigure(params: TailcatConfigureRequest, signal?: AbortSignal): Promise<TailcatConfiguration> {
+    return setupAction('tailcat.configure', { ...params }, signal, true)
+  },
+  tailcatEnroll(projectId: string, idempotencyKey: string, signal?: AbortSignal): Promise<TailcatEnrollment> {
+    return setupAction('tailcat.enroll', { project_id: projectId, idempotency_key: idempotencyKey }, signal, true)
+  },
+  tailcatEnable(projectId: string, credentialId: string, signal?: AbortSignal): Promise<TailcatActivation> {
+    return setupAction('tailcat.enable', { project_id: projectId, credential_id: credentialId }, signal, true)
+  },
+}
 
 export const setupApi = {
   state(signal?: AbortSignal): Promise<SetupSnapshot> {

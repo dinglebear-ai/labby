@@ -87,6 +87,7 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   url,
   createError,
   source,
+  nativeOperatorContext = false,
 }: {
   action: string
   params: object
@@ -95,11 +96,16 @@ export async function performServiceAction<T, TError extends ServiceActionError>
   url: string
   createError: ActionErrorFactory<TError>
   source?: string
+  nativeOperatorContext?: boolean
 }): Promise<T> {
   const initialCsrfToken = getSessionCsrfToken()
   const attemptedSessionAuth = Boolean(initialCsrfToken)
   const initialContext = getBrowserSessionContextIdentity()
   const initialContextIsCurrent = () => initialContext === getBrowserSessionContextIdentity()
+  const operatorHeaders = nativeOperatorContext
+    ? (await import('./native-operator-context.ts')).nativeOperatorHeaders(action, serviceLabel)
+    : undefined
+  if (!initialContextIsCurrent()) throw new DOMException('Authority or project context changed', 'AbortError')
 
   // Every attempt captures the session's authority/project identity and
   // rejects its own response if that context changes while it is in flight.
@@ -110,8 +116,11 @@ export async function performServiceAction<T, TError extends ServiceActionError>
     let response: Response
     try {
       const init = gatewayRequestInit(action, params, undefined, signal)
+      if (operatorHeaders) init.headers = operatorHeaders(init.headers)
       if (source) {
-        init.headers = { ...(init.headers as Record<string, string>), 'X-Lab-Source': source }
+        const headers = new Headers(init.headers)
+        headers.set('X-Lab-Source', source)
+        init.headers = headers
       }
       response = await fetch(url, init)
     } catch (error) {

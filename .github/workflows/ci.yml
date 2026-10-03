@@ -330,6 +330,10 @@ jobs:
         uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d
         with:
           install_args: just
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          package-manager-cache: false
       - name: Analyze every shipped shell lifecycle script
         run: scripts/ci/check-lifecycle-scripts.sh
 
@@ -353,10 +357,16 @@ jobs:
         with:
           shared-key: macos-installer
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          package-manager-cache: false
       - name: Run installer contracts on macOS
         run: |
           scripts/tests/installers.sh
           scripts/tests/release-attestation-bundles.sh
+          scripts/tests/tailcat-installers.sh
+          python3 scripts/tests/test_tailcat_release.py
       - name: Run macOS updater and recovery lifecycle tests
         run: |
           cargo test -p labby --all-features --locked self_update::tests

@@ -1,4 +1,5 @@
 //! Local control adapters. Raw credentials and delivery packets never print.
+use crate::dispatch::tailcat::exchange::{BrowserRequest, Exchange};
 use crate::{
     config::LabConfig,
     dispatch::tailcat::client::{Action, LocalClient, credential_wire},
@@ -30,14 +31,33 @@ pub enum TailcatCommand {
 #[derive(Debug, Args)]
 pub struct PairArgs {
     /// Browser-exported request JSON containing its public key and HTTPS origin.
-    #[arg(long, value_name = "PATH")]
-    pub request: PathBuf,
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "rendezvous",
+        conflicts_with = "rendezvous"
+    )]
+    pub request: Option<PathBuf>,
+    /// HTTPS dashboard origin; the exchange code is requested privately.
+    #[arg(long, requires = "pairing_id")]
+    pub rendezvous: Option<String>,
+    /// Public dashboard pairing identifier.
+    #[arg(long, requires = "rendezvous")]
+    pub pairing_id: Option<String>,
+    /// Read the private exchange code from stdin for noninteractive approval.
+    #[arg(long, requires = "rendezvous")]
+    pub pair_code_stdin: bool,
     /// Private project credential file, owned by the current user.
     #[arg(long, value_name = "PATH")]
     pub credential_file: PathBuf,
     /// New private delivery file to import into the requesting browser.
-    #[arg(long, value_name = "PATH")]
-    pub output: PathBuf,
+    #[arg(
+        long,
+        value_name = "PATH",
+        required_unless_present = "rendezvous",
+        conflicts_with = "rendezvous"
+    )]
+    pub output: Option<PathBuf>,
     /// Explicitly approve the reviewed origin, peer key and sandbox upstream.
     #[arg(short = 'y', long)]
     pub yes: bool,
@@ -54,14 +74,6 @@ impl TailcatArgs {
             command: self.command,
         })
     }
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RequestFile {
-    version: u8,
-    origin: String,
-    peer: String,
-    upstream: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,15 +116,51 @@ pub async fn run(
     Ok(ExitCode::SUCCESS)
 }
 async fn pair(args: PairArgs, client: &LocalClient, format: OutputFormat) -> Result<()> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(&args.request)?
+    let mut exchange = None;
+    let mut public_fingerprint = None;
+    let request = if let Some(origin) = &args.rendezvous {
+        let code = if args.pair_code_stdin {
+            let mut bytes = Vec::new();
+            std::io::stdin().take(128).read_to_end(&mut bytes)?;
+            String::from_utf8(bytes)
+                .map_err(|_| anyhow::anyhow!("invalid exchange code"))?
+                .trim()
+                .to_owned()
+        } else {
+            if !super::helpers::interactive_allowed() {
+                anyhow::bail!("enter the exchange code interactively or use --pair-code-stdin");
+            }
+            dialoguer::Password::new()
+                .with_prompt("Dashboard pairing code")
+                .interact()?
+        };
+        let id = args
+            .pairing_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("pairing identifier required"))?;
+        let rendezvous = Exchange::new(origin, id, &code).await?;
+        let request = rendezvous.fetch().await?;
+        public_fingerprint = Some(crate::dispatch::tailcat::exchange::fingerprint(
+            id, &request,
+        )?);
+        exchange = Some(rendezvous);
+        request
+    } else {
+        let mut bytes = Vec::new();
+        std::fs::File::open(
+            args.request
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("request file required"))?,
+        )?
         .take(16 * 1024 + 1)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > 16 * 1024 {
-        anyhow::bail!("Tailcat request file exceeds 16 KiB")
-    }
-    let request: RequestFile = serde_json::from_slice(&bytes)
-        .map_err(|_| anyhow::anyhow!("invalid Tailcat request file"))?;
+        if bytes.len() > 16 * 1024 {
+            anyhow::bail!("Tailcat request file exceeds 16 KiB")
+        }
+        let request: BrowserRequest = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow::anyhow!("invalid Tailcat request file"))?;
+        request
+    };
     if request.version != 1 {
         anyhow::bail!("unsupported Tailcat request version")
     }
@@ -126,13 +174,14 @@ async fn pair(args: PairArgs, client: &LocalClient, format: OutputFormat) -> Res
     {
         anyhow::bail!("native pairing response does not match the requested browser");
     }
-    let fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&(
-        "labby.tailcat.local-approval/v1",
-        &prepared.peer,
-        &prepared.nonce,
-        &prepared.origin,
-        &prepared.upstream,
-    ))?));
+    let fingerprint =
+        public_fingerprint.unwrap_or(hex::encode(Sha256::digest(serde_json::to_vec(&(
+            "labby.tailcat.local-approval/v1",
+            &prepared.peer,
+            &prepared.nonce,
+            &prepared.origin,
+            &prepared.upstream,
+        ))?)));
     if !args.yes {
         if !super::helpers::interactive_allowed() {
             anyhow::bail!("local approval required; review the request and pass --yes")
@@ -153,19 +202,52 @@ async fn pair(args: PairArgs, client: &LocalClient, format: OutputFormat) -> Res
     }
     let delivery = client.call(Action::Approve, Some(serde_json::json!({
         "id":prepared.id,"nonce":prepared.nonce,"origin":prepared.origin,"peer":prepared.peer,"upstream":prepared.upstream,
+        "exchange_id":args.pairing_id,
     }))).await?;
     let id = delivery
         .get("id")
         .and_then(serde_json::Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("pairing may have started; inspect tailcat status"))?
         .to_owned();
+    let mut publication =
+        crate::dispatch::tailcat::client::PublicationGuard::new(client.clone(), id.clone());
+    if let Some(exchange) = exchange {
+        let deposited = match delivery.get("packet") {
+            Some(packet) => exchange.deposit(packet).await,
+            None => Err(anyhow::anyhow!(
+                "native controller returned no sealed delivery"
+            )),
+        };
+        if let Err(error) = deposited {
+            // Keep cancellation ownership until this cleanup attempt returns.
+            let cleanup = client
+                .call(Action::Stop, Some(serde_json::json!({"id":id})))
+                .await;
+            // A completed uncertain response is reported, not automatically retried.
+            publication.disarm();
+            if cleanup.is_err() {
+                anyhow::bail!(
+                    "delivery failed and session cleanup is unconfirmed; inspect tailcat status"
+                );
+            }
+            return Err(error).context("delivery failed; native session stopped");
+        }
+        publication.disarm();
+        return print(
+            &serde_json::json!({"id":id,"state":"paired","origin":request.origin,"upstream":request.upstream,"fingerprint":fingerprint}),
+            format,
+        );
+    }
+    let output = args
+        .output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("private output file required"))?;
     let bytes = serde_json::to_vec(&delivery)?;
-    if let Err(error) =
-        crate::installation::secure_file::publish_private_artifact(&args.output, &bytes)
-    {
+    if let Err(error) = crate::installation::secure_file::publish_private_artifact(output, &bytes) {
         let cleanup = client
             .call(Action::Stop, Some(serde_json::json!({"id":id})))
             .await;
+        publication.disarm();
         if cleanup.is_err() {
             anyhow::bail!(
                 "delivery publication failed and session cleanup is unconfirmed; inspect tailcat status"
@@ -173,6 +255,7 @@ async fn pair(args: PairArgs, client: &LocalClient, format: OutputFormat) -> Res
         }
         return Err(error).context("delivery publication failed; native session stopped");
     }
+    publication.disarm();
     print(
         &serde_json::json!({"id":id,"state":"ready","delivery_file":args.output,
         "origin":request.origin,"upstream":request.upstream,"fingerprint":fingerprint}),
@@ -184,6 +267,51 @@ async fn pair(args: PairArgs, client: &LocalClient, format: OutputFormat) -> Res
 mod tests {
     use super::*;
     use clap::Parser as _;
+
+    #[tokio::test]
+    async fn cancellation_during_publication_cleanup_keeps_stop_ownership() {
+        use tokio::io::AsyncReadExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        let socket = directory.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+        let client = LocalClient::new(socket).unwrap();
+        let operation = tokio::spawn(async move {
+            let mut guard = crate::dispatch::tailcat::client::PublicationGuard::new(
+                client.clone(),
+                "cancel-test".into(),
+            );
+            let _result = client
+                .call(Action::Stop, Some(serde_json::json!({"id":"cancel-test"})))
+                .await;
+            guard.disarm();
+        });
+        // Keep the first Stop unresolved, modeling cancellation during failed-delivery cleanup.
+        let (mut first, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut bytes = [0; 4096];
+        assert!(first.read(&mut bytes).await.unwrap() > 0);
+        operation.abort();
+        let _aborted = operation.await;
+        let (mut fallback, _) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept())
+                .await
+                .unwrap()
+                .unwrap();
+        let mut request = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !String::from_utf8_lossy(&request).contains("cancel-test") {
+                let count = fallback.read(&mut bytes).await.unwrap();
+                assert!(count > 0 && request.len() + count <= 4096);
+                request.extend_from_slice(&bytes[..count]);
+            }
+        })
+        .await
+        .unwrap();
+        assert!(String::from_utf8_lossy(&request).contains("POST /"));
+    }
 
     #[test]
     fn tailcat_commands_lower_and_refuse_remote_authority() {
@@ -256,9 +384,9 @@ mod tests {
     fn request_file_accepts_public_material_only() {
         let request = serde_json::json!({"version":1,"origin":"https://depot.example",
             "peer":"nodekey:public", "upstream":"microsandbox"});
-        assert!(serde_json::from_value::<RequestFile>(request.clone()).is_ok());
+        assert!(serde_json::from_value::<BrowserRequest>(request.clone()).is_ok());
         let mut private = request;
         private["privateKey"] = serde_json::json!("must-not-cross-native-boundary");
-        assert!(serde_json::from_value::<RequestFile>(private).is_err());
+        assert!(serde_json::from_value::<BrowserRequest>(private).is_err());
     }
 }

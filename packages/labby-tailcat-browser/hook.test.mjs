@@ -56,7 +56,7 @@ test('discovery follows pages and enforces item, byte and page limits',async()=>
 });
 
 function deferred(){let resolve;const promise=new Promise(r=>resolve=r);return {promise,resolve};}
-function fixture(t,{prepare,confirm,connect}={}) {
+function fixture(t,{prepare,confirm,connect,encrypted,open}={}) {
  const elements=new Map();
  const el=selector=>{if(!elements.has(selector))elements.set(selector,{textContent:'',value:'microsandbox',addEventListener(event,fn){this[event]=fn;},removeEventListener(){}});return elements.get(selector);};
  t.mock.method(globalThis.URL,'createObjectURL',()=> 'blob:test');t.mock.method(globalThis.URL,'revokeObjectURL',()=>{});
@@ -64,10 +64,11 @@ function fixture(t,{prepare,confirm,connect}={}) {
  globalThis.window=el('window');globalThis.location={protocol:'https:',origin:request.origin};globalThis.document={createElement:()=>({click(){}})};
  const posts=[];let closeCallback;const client={request:async method=>method==='initialize'?rpc({protocolVersion:'2025-03-26',capabilities:{},serverInfo:{name:'labby',version:'1'}}):method==='tools/list'?rpc({tools:[tool]}):null,onClose(fn){closeCallback=fn;return ()=>{closeCallback=null;};},close(){this.closed=true;}};
  const hook=tailcatHook({fetcher:async(path,options)=>{
+  if(path.endsWith('/delivery'))return new Response(JSON.stringify(encrypted??{version:1,sender:'nodekey:'+'b'.repeat(64),ciphertext:'sealed'}));
   if(!options?.method)return new Response(JSON.stringify({derpMapURL:'https://relay.example/map'}));
   posts.push(path);if(path==='/ui/sandboxes/pair')return new Response(JSON.stringify(await (prepare?.()??{id:'pair'})));
   if(path.endsWith('/confirm'))await confirm?.();return new Response(null,{status:204});
- },load:async()=>({identity:()=>({publicKey:peer,privateKey:'private'}),createSession(){}}),connect:connect??(async()=>client)});
+ },load:async()=>({identity:()=>({publicKey:peer,privateKey:'private',openDelivery:open}),createSession(){}}),connect:connect??(async()=>client)});
  hook.el={querySelector:el};hook.pushEvent=()=>{};hook.mounted();
  t.after(()=>{hook.destroyed();Object.assign(globalThis,previous);});
  return {hook,client,posts,el,prepare:()=>el('[data-tailcat="prepare"]').click(),import:file=>el('input[type="file"]').change({target:{files:[file],value:'delivery'}}),closed:()=>closeCallback?.()};
@@ -96,4 +97,38 @@ test('discovery propagates cancellation and rejects late results',async()=>{
  const controller=new AbortController();let received;
  await assert.rejects(discoverTools({request:async(_method,_params,{signal})=>{received=signal;controller.abort();return rpc({tools:[tool]});}},{signal:controller.signal}));
  assert.equal(received.aborted,true);
+});
+
+test('automatic rendezvous opens encrypted delivery and validates pairing binding',async t=>{
+ const opened=[];
+ const f=fixture(t,{prepare:()=>({id:'p'.repeat(43),code:'a'.repeat(43)}),open:async(sender,ciphertext)=>{opened.push([sender,ciphertext]);return {...packet(),pairingId:'p'.repeat(43)};}});
+ await f.prepare();await new Promise(setImmediate);await new Promise(setImmediate);
+ assert.equal(opened.length,1);
+ assert.equal(f.el('[data-tailcat="status"]').textContent,'ready');
+ assert.match(f.el('[data-tailcat="command"]').textContent,/--rendezvous https:\/\/depot.example --pairing-id p{43}/);
+ assert.equal(f.posts.filter(p=>p.endsWith('/confirm')).length,1);
+});
+test('encrypted receipt with wrong pairing cannot confirm',async t=>{
+ const f=fixture(t,{prepare:()=>({id:'p'.repeat(43),code:'a'.repeat(43)}),open:async()=>({...packet(),pairingId:'other'})});
+ await f.prepare();await new Promise(setImmediate);await new Promise(setImmediate);
+ assert.equal(f.posts.filter(p=>p.endsWith('/confirm')).length,0);
+ assert.equal(f.el('[data-tailcat="status"]').textContent,'failed');
+});
+test('disconnect retires an in-flight encrypted opening',async t=>{
+ const waiting=deferred();
+ const f=fixture(t,{prepare:()=>({id:'p'.repeat(43),code:'a'.repeat(43)}),open:()=>waiting.promise});
+ await f.prepare();await new Promise(setImmediate);
+ f.el('[data-tailcat="disconnect"]').click();waiting.resolve({...packet(),pairingId:'p'.repeat(43)});await new Promise(setImmediate);
+ assert.equal(f.posts.filter(p=>p.endsWith('/confirm')).length,0);
+ assert.equal(f.el('[data-tailcat="code"]').textContent,'');
+});
+test('rendezvous polling bounds requests and promptly observes cancellation',async()=>{
+ const {pollDelivery,publicRequestFingerprint}=await import('./hook.mjs');
+ const controller=new AbortController();let calls=0;
+ await assert.rejects(pollDelivery({id:'pair',signal:controller.signal,fetcher:async()=>{calls++;return new Response(null,{status:202});},wait:async()=>{}}),/expired/);
+ assert.equal(calls,150);
+ const pending=pollDelivery({id:'pair',signal:controller.signal,fetcher:async()=>new Response(null,{status:202})});
+ await new Promise(setImmediate);controller.abort();await assert.rejects(pending,/canceled/);
+ const first=await publicRequestFingerprint('pair',request);
+ assert.equal(first.length,64);assert.notEqual(first,await publicRequestFingerprint('other',request));
 });

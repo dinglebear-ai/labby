@@ -28,6 +28,8 @@ struct Approve {
     origin: String,
     peer: String,
     upstream: String,
+    #[serde(default)]
+    exchange_id: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,7 +94,7 @@ fn router(manager: Arc<Manager>) -> Router {
                 let Ok(nonce) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(input.nonce) else { return invalid() };
                 let Ok(nonce) = <[u8;32]>::try_from(nonce) else { return invalid() };
                 let request = PairingRequest { origin: input.origin, peer: input.peer, upstream: input.upstream };
-                let Ok((id, delivery)) = manager.approve(&input.id, &nonce, request).await else { return denied() };
+                let Ok((id, delivery)) = manager.approve(&input.id, &nonce, request, input.exchange_id).await else { return denied() };
                 axum::Json(delivery_packet(id, delivery)).into_response()
             }
         }))
@@ -117,6 +119,9 @@ fn delivery_packet(
     id: String,
     delivery: crate::dispatch::tailcat::SessionDelivery,
 ) -> serde_json::Value {
+    if let Some(sealed) = delivery.sealed {
+        return serde_json::json!({"id":id,"packet":{"version":1,"sender":sealed.sender,"ciphertext":sealed.ciphertext}});
+    }
     serde_json::json!({ "version": 1, "id": id, "address": delivery.address,
         "port": delivery.port, "peer": delivery.peer, "upstream": delivery.upstream, "grant": delivery.envelope, "origin": delivery.origin,
         "generation": delivery.generation, "expiresAt": delivery.expires_at.saturating_mul(1000),
@@ -135,6 +140,7 @@ mod tests {
         let packet = delivery_packet(
             "session".into(),
             crate::dispatch::tailcat::SessionDelivery {
+                sealed: None,
                 address: "100.64.0.1".into(),
                 port: 1,
                 peer: format!("nodekey:{}", "a".repeat(64)),

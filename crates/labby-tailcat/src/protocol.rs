@@ -27,6 +27,10 @@ pub(crate) struct Event {
     pub port: Option<u16>,
     #[serde(default)]
     pub code: Option<String>,
+    #[serde(default)]
+    pub sender: Option<String>,
+    #[serde(default)]
+    pub ciphertext: Option<String>,
 }
 
 pub(crate) async fn read_event(

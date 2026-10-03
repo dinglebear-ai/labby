@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +22,8 @@ import (
 	"time"
 
 	"github.com/tailscale/tailcat"
+	"golang.org/x/crypto/curve25519"
+	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
@@ -34,10 +37,58 @@ func main() {
 		return map[string]any{"privateKey": string(j), "publicKey": pk.Private.Public().String()}
 	}))
 	js.Global().Set("tailcatSession", js.FuncOf(tailcatSession))
+	js.Global().Set("tailcatOpenDelivery", js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) != 3 {
+			return rejectedPromise(errors.New("invalid delivery"))
+		}
+		private, sender, ciphertext := args[0].String(), args[1].String(), args[2].String()
+		return makePromise(func() (any, error) {
+			var pk tailcat.PrivateKey
+			if len(private) > 4096 || json.Unmarshal([]byte(private), &pk) != nil || pk.Private.IsZero() {
+				return nil, errors.New("invalid delivery")
+			}
+			plaintext, err := openDelivery(pk.Private, sender, ciphertext)
+			if err != nil {
+				return nil, err
+			}
+			return js.Global().Get("JSON").Call("parse", string(plaintext)), nil
+		})
+	}))
 	if f := js.Global().Get("onTailcatReady"); f.Type() == js.TypeFunction {
 		f.Invoke()
 	}
 	select {}
+}
+
+func openDelivery(private key.NodePrivate, senderText, encoded string) ([]byte, error) {
+	denied := errors.New("invalid delivery")
+	var sender key.NodePublic
+	if private.IsZero() || len(senderText) != 72 || sender.UnmarshalText([]byte(senderText)) != nil || sender.IsZero() || len(encoded) > base64.StdEncoding.EncodedLen((16<<10)+40) {
+		return nil, denied
+	}
+	ciphertext, err := base64.StdEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		return nil, denied
+	}
+	secret := private.Raw32()
+	if _, err := curve25519.X25519(secret[:], sender.AppendTo(nil)); err != nil {
+		return nil, denied
+	}
+	plaintext, ok := private.OpenFrom(sender, ciphertext)
+	if !ok || len(plaintext) > 16<<10 {
+		return nil, denied
+	}
+	var packet struct {
+		Address string `json:"address"`
+	}
+	if json.Unmarshal(plaintext, &packet) != nil {
+		return nil, denied
+	}
+	info, err := tailcat.ParseAddr(tailcat.Addr(packet.Address))
+	if err != nil || info.ServerPublic.NodePublic != sender {
+		return nil, denied
+	}
+	return plaintext, nil
 }
 
 // pingUntil retries the meow/meowed handshake until it succeeds or

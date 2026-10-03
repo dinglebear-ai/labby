@@ -158,7 +158,8 @@ async function main() {
   const target = targetFor();
   const destination = binaryPath();
 
-  if (fs.existsSync(destination)) {
+  recoverInstallation(installRoot());
+  if (installationValid(installRoot(), target, releaseVersion())) {
     log(`${path.basename(destination)} already installed for ${releaseVersion()}`);
     return;
   }
@@ -171,12 +172,86 @@ async function main() {
     log(`downloading ${url}`);
     await download(url, archive);
     await verifyChecksum(url, archive);
-    extract(archive, installRoot(), target.archiveType);
-    fs.chmodSync(destination, 0o755);
+    installArchive(archive, installRoot(), target, releaseVersion());
     log(`installed ${destination}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }
+}
+
+function requiresCompanions(version) {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) throw new Error("invalid release version");
+  return Number(match[1]) > 2 || (Number(match[1]) === 2 && Number(match[2]) >= 5);
+}
+
+function validateInstallation(root, target, version) {
+  const binary = path.join(root, target.binary);
+  if (!fs.lstatSync(binary).isFile()) throw new Error("release binary is not regular");
+  const companions = path.join(root, "tailcat");
+  if (!fs.existsSync(companions)) {
+    if (requiresCompanions(version)) throw new Error("release companions missing");
+    return;
+  }
+  if (!fs.lstatSync(companions).isDirectory()) throw new Error("invalid companion directory");
+  const manifestPath = path.join(companions, "manifest.json");
+  if (!fs.lstatSync(manifestPath).isFile() || fs.statSync(manifestPath).size > 2 * 1024 * 1024) throw new Error("invalid companion manifest");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  if (manifest.schemaVersion !== 1 || manifest.protocol !== 1 || manifest.version !== version.replace(/^v/, "") || manifest.target !== target.asset.replace(/^lab-/, "").replace(/\.tar\.gz$/, "") || !Array.isArray(manifest.components) || manifest.components.length > 8192) throw new Error("companion release mismatch");
+  const expected = new Set();
+  let total = 0;
+  for (const entry of manifest.components) {
+    if (typeof entry.path !== "string" || !entry.path || entry.path.includes("\\") || entry.path.split("/").some(part => !part || part === "." || part === "..") || path.isAbsolute(entry.path) || expected.has(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256)) throw new Error("invalid companion entry");
+    expected.add(entry.path);
+    let file = companions;
+    for (const part of entry.path.split("/")) {
+      file = path.join(file, part);
+      if (fs.lstatSync(file).isSymbolicLink()) throw new Error("symlink companion");
+    }
+    const stat = fs.statSync(file);
+    total += stat.size;
+    if (!stat.isFile() || stat.size > 128 * 1024 * 1024 || total > 512 * 1024 * 1024 || crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex") !== entry.sha256) throw new Error("companion checksum mismatch");
+  }
+  let count = 0;
+  function inventory(directory, prefix = "", depth = 0) {
+    if (depth > 64) throw new Error("companion depth exceeded");
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (++count > 16384) throw new Error("companion inventory exceeded");
+      const relative = prefix + entry.name;
+      if (entry.isDirectory()) inventory(path.join(directory, entry.name), relative + "/", depth + 1);
+      else if (!entry.isFile() || (relative !== "manifest.json" && !expected.has(relative))) throw new Error("unlisted companion");
+    }
+  }
+  inventory(companions);
+  for (const required of ["native/tailcat-bridge", "browser/hook.mjs", "browser/transport.mjs", "browser/http.mjs", "browser/wasm.mjs", "browser/tailcat.wasm", "browser/tailcat.wasm.gz", "browser/wasm_exec.js", "browser/THIRD_PARTY_NOTICES.md", "adapter/server.mjs", "adapter/cleanup.mjs", "adapter/package.json", "adapter/package-lock.json"]) {
+    if (!expected.has(required)) throw new Error("incomplete companion inventory");
+  }
+}
+
+function installationValid(root, target, version) {
+  try { validateInstallation(root, target, version); return true; } catch { return false; }
+}
+
+function recoverInstallation(root) {
+  const backup = root + ".previous";
+  if (!fs.existsSync(root) && fs.existsSync(backup)) fs.renameSync(backup, root);
+}
+
+function installArchive(archive, root, target, version) {
+  fs.mkdirSync(path.dirname(root), { recursive: true });
+  const stage = fs.mkdtempSync(path.join(path.dirname(root), ".labby-install-"));
+  const backup = root + ".previous";
+  try {
+    extract(archive, stage, target.archiveType);
+    validateInstallation(stage, target, version);
+    fs.chmodSync(path.join(stage, target.binary), 0o755);
+    // Preserve the prior complete directory until the new pair has been published.
+    if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
+    if (fs.existsSync(root)) fs.renameSync(root, backup);
+    try { fs.renameSync(stage, root); }
+    catch (error) { recoverInstallation(root); throw error; }
+    fs.rmSync(backup, { recursive: true, force: true });
+  } finally { fs.rmSync(stage, { recursive: true, force: true }); }
 }
 
 if (require.main === module) {
@@ -187,6 +262,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  extract,
+  installArchive,
+  installationValid,
+  recoverInstallation,
   powershellExpandArchiveCommand,
   powershellLiteral,
 };

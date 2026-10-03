@@ -38,8 +38,44 @@ pub(crate) enum ControlError {
     Uncertain,
 }
 
+#[derive(Clone)]
 pub(crate) struct LocalClient {
     path: PathBuf,
+}
+
+/// Retire a newly approved session if its delivery future is abandoned.
+/// Abrupt process exit is additionally bounded by native heartbeat/expiry policy.
+pub(crate) struct PublicationGuard {
+    client: LocalClient,
+    id: String,
+    armed: bool,
+}
+impl PublicationGuard {
+    pub(crate) fn new(client: LocalClient, id: String) -> Self {
+        Self {
+            client,
+            id,
+            armed: true,
+        }
+    }
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+impl Drop for PublicationGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                let client = self.client.clone();
+                let id = self.id.clone();
+                runtime.spawn(async move {
+                    let _retired = client
+                        .call(Action::Stop, Some(serde_json::json!({"id":id})))
+                        .await;
+                });
+            }
+        }
+    }
 }
 pub(crate) fn credential_wire(path: &std::path::Path) -> Result<String, ControlError> {
     let bytes =
@@ -121,7 +157,7 @@ impl LocalClient {
         while let Some(frame) = incoming.frame().await {
             let frame = frame.map_err(|_| ControlError::Unavailable)?;
             if let Some(data) = frame.data_ref() {
-                if bytes.len().saturating_add(data.len()) > 16 * 1024 {
+                if bytes.len().saturating_add(data.len()) > 32 * 1024 {
                     return Err(ControlError::Protocol);
                 }
                 bytes.extend_from_slice(data);

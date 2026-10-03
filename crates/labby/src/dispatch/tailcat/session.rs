@@ -17,6 +17,7 @@ pub(crate) struct HelperArtifact {
 /// Delivery data is secret; the controller must use authenticated rendezvous.
 /// No Debug or Serialize implementation allows accidental log/HTML exposure.
 pub(crate) struct SessionDelivery {
+    pub sealed: Option<labby_tailcat::SealedDelivery>,
     pub address: String,
     pub port: u16,
     pub peer: String,
@@ -38,6 +39,7 @@ impl NativeSession {
         manager: &labby_gateway::gateway::manager::GatewayManager,
         authority: Arc<RequestAuthority>,
         artifact: HelperArtifact,
+        exchange_id: Option<String>,
         projection: F,
     ) -> Result<(Self, SessionDelivery), PairingError>
     where
@@ -46,10 +48,11 @@ impl NativeSession {
         labby_tailcat::ensure_platform_supported().map_err(|_| PairingError)?;
         let grant = GrantLease::issue_checked(runtime, manager, &authority).await?;
         let router = projection(authority.clone())?;
-        let listener = RestrictedListener::start_authorized(
+        let listener = RestrictedListener::start_authorized_with_activity(
             router,
             authority.clone(),
             grant.envelope().to_owned(),
+            exchange_id.is_some(),
         )
         .await?;
         let config = BridgeConfig {
@@ -69,7 +72,8 @@ impl NativeSession {
         if cancel.is_cancelled() {
             return Err(PairingError);
         }
-        let delivery = SessionDelivery {
+        let mut delivery = SessionDelivery {
+            sealed: None,
             peer: authority.approved.peer().into(),
             upstream: authority.approved.upstream().into(),
             address: bridge.capability().address().into(),
@@ -80,6 +84,23 @@ impl NativeSession {
             expires_at: authority.approved.expires_at(),
             derp_map_url: artifact.derp_map_url,
         };
+        if let Some(exchange_id) = exchange_id {
+            let payload = serde_json::to_string(&serde_json::json!({
+                "version":1, "id":delivery.generation, "address":delivery.address,
+                "port":delivery.port, "grant":delivery.envelope, "origin":delivery.origin,
+                "peer":delivery.peer, "upstream":delivery.upstream,
+                "generation":delivery.generation, "expiresAt":delivery.expires_at.saturating_mul(1000),
+                "derpMapURL":delivery.derp_map_url, "pairingId":exchange_id,
+            })).map_err(|_| PairingError)?;
+            delivery.sealed = Some(
+                bridge
+                    .seal_delivery(&payload)
+                    .await
+                    .map_err(|_| PairingError)?,
+            );
+            delivery.address.clear();
+            delivery.envelope.clear();
+        }
         let stopping = cancel.clone();
         let task = tokio::spawn(async move {
             loop {
@@ -96,7 +117,18 @@ impl NativeSession {
             // Cancellation of this owner drops the process guard and armed
             // grant even while either graceful cleanup future is pending.
             let _stopped = bridge.stop().await;
-            let _retired = grant.revoke().await;
+            if !matches!(
+                tokio::time::timeout(std::time::Duration::from_secs(5), grant.revoke()).await,
+                Ok(Ok(()))
+            ) {
+                // The listener and helper have already retired. Dropping the armed
+                // revoke future schedules bounded fallback credential retirement;
+                // this owner must not remain indefinitely stuck in `stopping`.
+                tracing::warn!(
+                    phase = "tailcat_session_retire",
+                    "native credential retirement unconfirmed"
+                );
+            }
         });
         Ok((Self { cancel, task }, delivery))
     }
@@ -181,6 +213,7 @@ mod tests {
             &manager,
             authority.clone(),
             artifact,
+            None,
             |_| Ok(axum::Router::new()),
         )
         .await

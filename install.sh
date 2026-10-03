@@ -24,6 +24,7 @@
 #   LABBY_INSTALL_ROLLBACK restore the previous verified binary offline (default: 0)
 #   LABBY_INSTALL_LOCAL_BINARY install an exact local candidate (requires SHA-256)
 #   LABBY_INSTALL_LOCAL_SHA256 expected digest for LABBY_INSTALL_LOCAL_BINARY
+#   LABBY_INSTALL_LOCAL_COMPANIONS version-matched Tailcat directory for a local candidate
 #   LABBY_INSTALL_NO_SETUP skip first-run setup after install (default: 0)
 #   LABBY_SETUP_ROLE      noninteractive role: server|client
 #   LABBY_SETUP_DEPLOYMENT server backend: native|incus
@@ -45,6 +46,7 @@ ROLLBACK="${LABBY_INSTALL_ROLLBACK:-0}"
 RECOVER_ONLY="${LABBY_INSTALL_RECOVER_ONLY:-0}"
 LOCAL_BINARY="${LABBY_INSTALL_LOCAL_BINARY:-}"
 LOCAL_SHA256="${LABBY_INSTALL_LOCAL_SHA256:-}"
+LOCAL_COMPANIONS="${LABBY_INSTALL_LOCAL_COMPANIONS:-}"
 NO_SETUP="${LABBY_INSTALL_NO_SETUP:-${LABBY_SKIP_SETUP:-0}}"
 SETUP_ROLE="${LABBY_SETUP_ROLE:-}"
 SETUP_DEPLOYMENT="${LABBY_SETUP_DEPLOYMENT:-}"
@@ -300,6 +302,29 @@ binary_sha256() {
     fi
 }
 
+# Pin the complete companion inventory when caching the verified release. This
+# receipt is outside the bundle, so rollback can detect modified cached files.
+companion_inventory() (
+    cd "$1" || exit 1
+    [ -z "$(find . -type l -print -quit)" ] || exit 1
+    find . -type d -print | LC_ALL=C sort
+    find . -type f -print | LC_ALL=C sort | while IFS= read -r companion_file; do
+        printf '%s %s\n' "$(binary_sha256 "$companion_file")" "$companion_file"
+    done
+)
+
+verify_cached_companions() {
+    [ -f "$1/tailcat.inventory" ] && [ ! -L "$1/tailcat.inventory" ] ||
+        fail "cached Tailcat inventory receipt is unavailable; reinstall the verified release"
+    companion_check=$(mktemp "$1/.inventory-check.XXXXXX")
+    companion_inventory "$1/tailcat" >"$companion_check" || fail "invalid cached Tailcat inventory"
+    cmp "$1/tailcat.inventory" "$companion_check" >/dev/null || {
+        rm -f "$companion_check"
+        fail "cached Tailcat companions differ from their verified inventory"
+    }
+    rm -f "$companion_check"
+}
+
 receipt_value() {
     # Receipt values are deliberately a restricted, non-executable format.
     case "$1" in
@@ -325,6 +350,7 @@ write_receipt() {
         printf 'requested_version=%s\n' "$receipt_requested"
         printf 'resolved_version=%s\n' "$receipt_resolved"
         printf 'sha256=%s\n' "$receipt_digest"
+        printf 'artifact_sha256=%s\n' "$artifact_identity"
         printf 'installed_at=%s\n' "$receipt_installed_at"
     } >"$receipt_tmp"
     mv -f "$receipt_tmp" "$destination"
@@ -347,6 +373,12 @@ recover_activation() {
     fi
     say "recovering interrupted installation transaction"
     recovery_failed=0
+    if [ -f "$ACTIVATION_JOURNAL/companions-managed" ]; then
+        rm -rf "$INSTALL_DIR/tailcat" || recovery_failed=1
+        if [ -f "$ACTIVATION_JOURNAL/old-tailcat.present" ]; then
+            cp -Rp "$ACTIVATION_JOURNAL/old-tailcat" "$INSTALL_DIR/tailcat" || recovery_failed=1
+        fi
+    fi
     for recovery_name in binary receipt previous; do
         case "$recovery_name" in
             binary) recovery_target="$INSTALL_DIR/labby"; recovery_mode=755 ;;
@@ -390,7 +422,9 @@ write_activation_state() {
 
 receipt_digest() {
     [ -f "$1" ] || return 0
-    sed -n 's/^sha256=//p' "$1" | head -n 1
+    identity=$(receipt_field artifact_sha256 "$1")
+    [ -n "$identity" ] || identity=$(receipt_field sha256 "$1")
+    printf '%s\n' "$identity"
 }
 
 prune_unreferenced_artifacts() {
@@ -410,11 +444,15 @@ install_binary_atomic() {
     source_binary=$1
     install_source=$2
     resolved_version=$3
+    source_companions=${4:-}
     mkdir -p "$INSTALL_DIR" "$ARTIFACTS_DIR"
     chmod 700 "$INSTALL_METADATA_DIR" "$ARTIFACTS_DIR"
     recover_activation || fail "activation recovery FAILED; journal retained at $ACTIVATION_JOURNAL"
     digest=$(binary_sha256 "$source_binary")
-    artifact_dir="$ARTIFACTS_DIR/$digest"
+    artifact_identity=${5:-$digest}
+    [ "${#artifact_identity}" -eq 64 ] || fail "invalid artifact identity"
+    case "$artifact_identity" in *[!0-9a-f]*) fail "invalid artifact identity" ;; esac
+    artifact_dir="$ARTIFACTS_DIR/$artifact_identity"
     artifact="$artifact_dir/labby"
     if [ ! -f "$artifact" ]; then
         mkdir -p "$artifact_dir"
@@ -425,6 +463,24 @@ install_binary_atomic() {
         durability_barrier
     elif [ "$(binary_sha256 "$artifact")" != "$digest" ]; then
         fail "cached artifact digest does not match its content: $digest"
+    fi
+    if [ -n "$source_companions" ]; then
+        [ -d "$source_companions" ] && [ ! -L "$source_companions" ] && [ -f "$source_companions/manifest.json" ] && [ ! -L "$source_companions/manifest.json" ] || fail "Tailcat companions have no regular manifest"
+        [ -z "$(find "$source_companions" -type l -print -quit)" ] || fail "Tailcat companions contain symlinks"
+        if [ -d "$artifact_dir/tailcat" ]; then
+            verify_cached_companions "$artifact_dir"
+            cmp "$source_companions/manifest.json" "$artifact_dir/tailcat/manifest.json" >/dev/null || fail "binary artifact already has different Tailcat companions"
+        else
+            companion_tmp=$(mktemp -d "$artifact_dir/.tailcat.XXXXXX")
+            cp -Rp "$source_companions/." "$companion_tmp/"
+            durability_barrier
+            mv "$companion_tmp" "$artifact_dir/tailcat"
+            companion_inventory "$artifact_dir/tailcat" >"$artifact_dir/tailcat.inventory" || fail "invalid Tailcat inventory"
+            chmod 600 "$artifact_dir/tailcat.inventory"
+            durability_barrier
+        fi
+    elif [ -d "$artifact_dir/tailcat" ]; then
+        fail "binary artifact already has Tailcat companions; refusing unmatched activation"
     fi
     activation_dir="$ACTIVATION_JOURNAL"
     mkdir "$activation_dir"
@@ -438,11 +494,21 @@ install_binary_atomic() {
     if [ -f "$INSTALL_DIR/labby" ]; then cp "$INSTALL_DIR/labby" "$activation_dir/old-binary"; : >"$activation_dir/old-binary.present"; fi
     if [ -f "$RECEIPT_PATH" ]; then cp "$RECEIPT_PATH" "$activation_dir/old-receipt"; : >"$activation_dir/old-receipt.present"; fi
     if [ -f "$PREVIOUS_RECEIPT_PATH" ]; then cp "$PREVIOUS_RECEIPT_PATH" "$activation_dir/old-previous"; : >"$activation_dir/old-previous.present"; fi
+    : >"$activation_dir/companions-managed"
+    if [ -e "$INSTALL_DIR/tailcat" ]; then
+        [ -d "$INSTALL_DIR/tailcat" ] && [ ! -L "$INSTALL_DIR/tailcat" ] || fail "installed Tailcat companions must be a regular directory"
+        cp -Rp "$INSTALL_DIR/tailcat" "$activation_dir/old-tailcat"
+        : >"$activation_dir/old-tailcat.present"
+    fi
+    if [ -n "$source_companions" ]; then cp -Rp "$artifact_dir/tailcat" "$activation_dir/new-tailcat"; fi
     write_activation_state prepared
 
     if ! (
         mv -f "$activation_dir/new-binary" "$INSTALL_DIR/labby" &&
         write_activation_state binary-activated &&
+        rm -rf "$INSTALL_DIR/tailcat" &&
+        { [ ! -d "$activation_dir/new-tailcat" ] || mv "$activation_dir/new-tailcat" "$INSTALL_DIR/tailcat"; } &&
+        write_activation_state companions-activated &&
         { [ ! -f "$activation_dir/new-previous" ] || mv -f "$activation_dir/new-previous" "$PREVIOUS_RECEIPT_PATH"; } &&
         write_activation_state previous-receipt-activated &&
         mv -f "$activation_dir/receipt" "$RECEIPT_PATH"
@@ -468,7 +534,7 @@ install_local_binary() {
     install -m 755 "$LOCAL_BINARY" "$local_staged"
     local_actual=$(binary_sha256 "$local_staged")
     [ "$local_actual" = "$LOCAL_SHA256" ] || fail "local candidate checksum verification FAILED"
-    install_binary_atomic "$local_staged" local "$VERSION"
+    install_binary_atomic "$local_staged" local "$VERSION" "$LOCAL_COMPANIONS"
 }
 
 rollback_offline() {
@@ -479,13 +545,18 @@ rollback_offline() {
     prior_resolved=$(receipt_field resolved_version "$PREVIOUS_RECEIPT_PATH")
     [ "${#prior_digest}" -eq 64 ] || fail "previous install receipt has an invalid artifact digest"
     case "$prior_digest" in *[!0-9a-f]*) fail "previous install receipt has an invalid artifact digest" ;; esac
-    prior_artifact="$ARTIFACTS_DIR/$prior_digest/labby"
+    prior_identity=$(receipt_digest "$PREVIOUS_RECEIPT_PATH")
+    [ "${#prior_identity}" -eq 64 ] || fail "invalid previous artifact identity"
+    case "$prior_identity" in *[!0-9a-f]*) fail "invalid previous artifact identity" ;; esac
+    prior_artifact="$ARTIFACTS_DIR/$prior_identity/labby"
     [ -f "$prior_artifact" ] || fail "previous verified artifact is unavailable: $prior_digest"
     actual_digest=$(binary_sha256 "$prior_artifact")
     [ "$actual_digest" = "$prior_digest" ] || fail "previous artifact digest does not match its receipt"
 
     VERSION=$prior_requested
-    install_binary_atomic "$prior_artifact" "$prior_source" "$prior_resolved"
+    prior_companions=
+    [ ! -d "$ARTIFACTS_DIR/$prior_identity/tailcat" ] || prior_companions="$ARTIFACTS_DIR/$prior_identity/tailcat"
+    install_binary_atomic "$prior_artifact" "$prior_source" "$prior_resolved" "$prior_companions" "$prior_identity"
     say "restored verified installation ${prior_resolved} (${prior_digest}) without network access"
 }
 
@@ -542,10 +613,12 @@ install_from_release() {
     verify_release_provenance "$tmp/$asset" "${resolved_version:-$VERSION}" "$provenance_bundle"
 
     tar -xzf "$tmp/$asset" -C "$tmp"
-    bin="$(find "$tmp" -type f -name labby | head -n 1)"
-    [ -n "$bin" ] || fail "archive $asset did not contain a 'labby' binary"
+    bin="$tmp/labby"
+    [ -f "$bin" ] && [ ! -L "$bin" ] || fail "archive $asset did not contain a 'labby' binary"
 
-    install_binary_atomic "$bin" release "${resolved_version:-$VERSION}"
+    companions=
+    if [ -d "$tmp/tailcat" ]; then companions="$tmp/tailcat"; fi
+    install_binary_atomic "$bin" release "${resolved_version:-$VERSION}" "$companions" "$(binary_sha256 "$tmp/$asset")"
 }
 
 run_first_run_setup() {
@@ -611,6 +684,7 @@ install_from_source() {
         cargo install --git "https://github.com/${REPO}" --tag "$VERSION" labby --bin labby --all-features --root "$cargo_root"
         source_identity="$VERSION"
     fi
+    say "Source fallback installs the binary only; Tailcat companion assets require a matching prebuilt release."
     install_binary_atomic "$cargo_root/bin/labby" source "$source_identity"
 }
 

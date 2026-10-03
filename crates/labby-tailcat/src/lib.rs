@@ -9,7 +9,7 @@ mod supervisor;
 pub use config::{BridgeConfig, ValidatedBridgeConfig};
 pub use error::BridgeError;
 #[cfg(unix)]
-pub use supervisor::{Bridge, BridgeStatus, ConnectionCapability};
+pub use supervisor::{Bridge, BridgeStatus, ConnectionCapability, SealedDelivery};
 
 /// Native transport availability is explicit, even when the lifecycle API is absent.
 /// Product adapters must check this before presenting pairing actions.

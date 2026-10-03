@@ -10412,6 +10412,9 @@
           "action": {
             "type": "string",
             "enum": [
+              "tailcat.enable",
+              "tailcat.enroll",
+              "tailcat.configure",
               "help",
               "schema",
               "mcp.verification.tools",
@@ -10744,6 +10747,62 @@
         "properties": {
           "services.built_in_upstream_apis_enabled": {
             "type": "boolean"
+          }
+        }
+      },
+      "SetupTailcatConfigureParams": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "public_resource",
+          "derp_map_url",
+          "node_path"
+        ],
+        "properties": {
+          "derp_map_url": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "node_path": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "public_resource": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupTailcatEnableParams": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "credential_id"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupTailcatEnrollParams": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
           }
         }
       },

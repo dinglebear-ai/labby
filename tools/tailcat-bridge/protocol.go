@@ -3,11 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"golang.org/x/crypto/curve25519"
 	"io"
 	"net/netip"
 	"net/url"
+	"unicode/utf8"
 
 	"tailscale.com/types/key"
 )
@@ -23,11 +26,46 @@ type Start struct {
 }
 
 type Event struct {
-	Version int    `json:"version"`
-	Type    string `json:"type"`
-	Address string `json:"address,omitempty"`
-	Port    uint16 `json:"port,omitempty"`
-	Code    string `json:"code,omitempty"`
+	Version    int    `json:"version"`
+	Type       string `json:"type"`
+	Address    string `json:"address,omitempty"`
+	Port       uint16 `json:"port,omitempty"`
+	Code       string `json:"code,omitempty"`
+	Sender     string `json:"sender,omitempty"`
+	Ciphertext string `json:"ciphertext,omitempty"`
+}
+
+const MaxDelivery = 16 << 10
+
+type deliverySealer struct {
+	sender key.NodePrivate
+	peer   key.NodePublic
+	used   bool
+}
+
+func (s *deliverySealer) command(frame []byte) (Event, bool, error) {
+	var command struct {
+		Version int     `json:"version"`
+		Type    string  `json:"type"`
+		Payload *string `json:"payload,omitempty"`
+	}
+	if decode(frame, &command) != nil || command.Version != 1 {
+		return Event{}, false, errors.New("invalid_control")
+	}
+	if command.Type == "stop" && command.Payload == nil {
+		return Event{}, true, nil
+	}
+	if command.Type != "seal" || command.Payload == nil || s.used || s.sender.IsZero() || s.peer.IsZero() || len(*command.Payload) == 0 || len(*command.Payload) > MaxDelivery || !utf8.ValidString(*command.Payload) || !json.Valid([]byte(*command.Payload)) {
+		return Event{}, false, errors.New("invalid_control")
+	}
+	s.used = true
+	// NaCl box's ScalarMult accepts low-order public keys. Reject them before
+	// sealing so an invalid approved peer cannot produce a publicly known key.
+	private := s.sender.Raw32()
+	if _, err := curve25519.X25519(private[:], s.peer.AppendTo(nil)); err != nil {
+		return Event{}, false, errors.New("invalid_control")
+	}
+	return Event{Version: 1, Type: "sealed", Sender: s.sender.Public().String(), Ciphertext: base64.StdEncoding.EncodeToString(s.sender.SealTo(s.peer, []byte(*command.Payload)))}, false, nil
 }
 
 func scanner(r io.Reader) *bufio.Scanner {
@@ -37,7 +75,7 @@ func scanner(r io.Reader) *bufio.Scanner {
 }
 
 func decode(frame []byte, dest any) error {
-	if len(frame) > MaxFrame {
+	if len(frame) > MaxFrame || !utf8.Valid(frame) {
 		return errors.New("frame_limit")
 	}
 	d := json.NewDecoder(bytes.NewReader(frame))

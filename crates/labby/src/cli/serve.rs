@@ -47,16 +47,27 @@ mod tailcat {
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("Tailcat requires an initialized installation"))?
             .to_owned();
-        let executable = preferences.helper_path.clone().ok_or_else(|| {
-            anyhow::anyhow!("configure tailcat.helper_path with the pinned native helper")
-        })?;
-        let checksum = preferences.helper_sha256.as_ref().ok_or_else(|| {
-            anyhow::anyhow!("configure tailcat.helper_sha256 from the pinned asset manifest")
-        })?;
-        let expected_sha256: [u8; 32] = hex::decode(checksum)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
-            .ok_or_else(|| anyhow::anyhow!("tailcat.helper_sha256 must be a SHA-256 digest"))?;
+        let (executable, expected_sha256) =
+            match (&preferences.helper_path, &preferences.helper_sha256) {
+                (Some(path), Some(checksum)) => {
+                    let digest: [u8; 32] = hex::decode(checksum)
+                        .ok()
+                        .and_then(|bytes| bytes.try_into().ok())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("tailcat.helper_sha256 must be a SHA-256 digest")
+                        })?;
+                    (path.clone(), digest)
+                }
+                (None, None) => {
+                    let root = preferences.bundle_path.clone();
+                    let bundle = tokio::task::spawn_blocking(move || {
+                        crate::dispatch::tailcat::assets::discover(root.as_deref())
+                    })
+                    .await??;
+                    (bundle.helper, bundle.helper_sha256)
+                }
+                _ => anyhow::bail!("configure both tailcat.helper_path and tailcat.helper_sha256"),
+            };
         let derp_map_url = preferences
             .derp_map_url
             .clone()
@@ -646,6 +657,22 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Arc::new(AccessRuntime::blocked_unavailable())
         }
     };
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    if installation_paths
+        .root()
+        .join("tailcat/enrollments")
+        .try_exists()?
+    {
+        // The daemon lifecycle lock is already held. Reconcile native custody
+        // before publishing HTTP or private control listeners.
+        let _writer = access_runtime.acquire_bootstrap_writer().await?;
+        let store = access_runtime.store().await?;
+        crate::dispatch::setup::tailcat_enrollment::reconcile_pending(&installation_paths, &store)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Tailcat credential custody requires recovery before startup")
+            })?;
+    }
     // Hermetic live-test binaries need a durable principal behind the static bearer so the
     // protected API/MCP/CLI adapters exercise their real authority paths. This hook is compiled
     // out of product builds and only active in test-support (`proxy-testkit`) builds, where it

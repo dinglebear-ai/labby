@@ -36,6 +36,45 @@ async fn graceful_stop_and_redacted_capability() {
 }
 
 #[tokio::test]
+async fn solicited_seal_is_redacted_single_use_and_preserves_stop() {
+    let script = format!(
+        "read start\necho '{{\"version\":1,\"type\":\"ready\",\"address\":\"tcpSecret\",\"port\":1}}'\nread seal\necho '{{\"version\":1,\"type\":\"sealed\",\"sender\":\"nodekey:{}\",\"ciphertext\":\"{}\"}}'\nread stop",
+        "a".repeat(64),
+        "A".repeat(64)
+    );
+    let (_dir, config) = fixture(&script);
+    let mut bridge = Bridge::start(config.validate().unwrap()).await.unwrap();
+    let sealed = bridge
+        .seal_delivery("{\"grant\":\"private\"}")
+        .await
+        .unwrap();
+    assert!(!format!("{sealed:?}").contains(&sealed.ciphertext));
+    assert!(bridge.seal_delivery("again").await.is_err());
+    assert_eq!(bridge.status(), BridgeStatus::Ready);
+    bridge.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn dropped_seal_future_kills_owned_process() {
+    let output = tempfile::tempdir().unwrap();
+    let pid_file = output.path().join("pid");
+    let script = format!(
+        "read start\necho $$ > '{}'\necho '{{\"version\":1,\"type\":\"ready\",\"address\":\"tcpSecret\",\"port\":1}}'\nread seal\nsleep 30",
+        pid_file.display()
+    );
+    let (_dir, config) = fixture(&script);
+    let mut bridge = Bridge::start(config.validate().unwrap()).await.unwrap();
+    let pid = pid_from(&pid_file).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(80), bridge.seal_delivery("private"))
+            .await
+            .is_err()
+    );
+    assert_dead(pid).await;
+    assert_eq!(bridge.status(), BridgeStatus::Failed);
+}
+
+#[tokio::test]
 async fn rejects_wrong_version_unknown_fields_and_missing_ready_fields() {
     for frame in [
         r#"{"version":2,"type":"ready","address":"tcpSecret","port":1}"#,

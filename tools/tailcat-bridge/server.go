@@ -104,24 +104,34 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		}
 	}()
 	encoder := json.NewEncoder(output)
-	if encoder.Encode(Event{Version: 1, Type: "ready", Address: string(info.Addr()), Port: 1}) != nil {
+	var outputMu sync.Mutex
+	emit := func(event Event) error {
+		outputMu.Lock()
+		defer outputMu.Unlock()
+		return encoder.Encode(event)
+	}
+	if emit(Event{Version: 1, Type: "ready", Address: string(info.Addr()), Port: 1}) != nil {
 		return errors.New("control_closed")
 	}
 	commands := make(chan error, 1)
 	go func() {
-		if !frames.Scan() {
-			if frames.Err() != nil {
-				commands <- errors.New("invalid_control")
+		sealer := deliverySealer{sender: pk.Private, peer: peer}
+		for frames.Scan() {
+			event, stop, err := sealer.command(frames.Bytes())
+			if err != nil {
+				commands <- err
 				return
 			}
-			commands <- nil
-			return
+			if stop {
+				commands <- nil
+				return
+			}
+			if emit(event) != nil {
+				commands <- errors.New("control_closed")
+				return
+			}
 		}
-		var stop struct {
-			Version int    `json:"version"`
-			Type    string `json:"type"`
-		}
-		if decode(frames.Bytes(), &stop) != nil || stop.Version != 1 || stop.Type != "stop" {
+		if frames.Err() != nil {
 			commands <- errors.New("invalid_control")
 			return
 		}
@@ -136,7 +146,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	}
 	listener.Close()
 	server.Close()
-	return encoder.Encode(Event{Version: 1, Type: "stopped"})
+	return emit(Event{Version: 1, Type: "stopped"})
 }
 
 type idleConn struct{ net.Conn }

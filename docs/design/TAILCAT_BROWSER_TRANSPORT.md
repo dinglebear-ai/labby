@@ -211,3 +211,31 @@ contract with explicit storage and revocation tests.
 
 Written-design approval is the next gate. Then produce the implementation plan
 and select execution before product code, as required by the brainstorming skill.
+
+## Planned file-free pairing completion
+
+The next pairing adapter uses the pinned Tailcat node-key implementation's
+`SealTo`/`OpenFrom` methods. No second authentication service or private-key
+export is introduced. This section describes work in progress.
+
+Depot creates a five-minute opaque pairing ID and a separate random exchange
+capability, retaining only the capability hash. The authenticated browser owns
+request creation, one-time delivery retrieval and discard. The native CLI asks
+for the exchange code through hidden input or stdin; codes never appear in URL
+queries, shell arguments, access logs or ordinary output. The code permits
+fetching public request metadata and depositing one ciphertext, and grants no
+native authority. Both surfaces show the same public-request fingerprint.
+
+After explicit local approval using the existing project authority, the running
+native helper seals the complete delivery to its already approved browser peer.
+The address contains a preshared key, so encrypting only the grant is insufficient.
+Depot receives only a version, sender node public key and bounded ciphertext.
+The browser's existing ephemeral identity opens it and checks the address's
+server public key against the sender. The decrypted receipt binds the pairing
+ID, origin, browser peer, upstream, generation, expiry and approved relay map.
+The normal protected MCP handshake follows; a rendezvous code cannot replace it.
+
+Deposit and retrieval are single-use and bounded by size, deadline, session and
+global capacity. Native publication failure or an uncertain deposit retires the
+session and its grant. Browser refresh, teardown, expiry and discard clear the
+exchange and in-memory keys. Existing private-file pairing remains a fallback.

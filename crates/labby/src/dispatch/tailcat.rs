@@ -1,5 +1,8 @@
 //! Native pairing policy. Transport keys never establish product authority.
 
+pub(crate) mod assets;
+#[cfg(all(feature = "tailcat", unix))]
+pub(crate) mod exchange;
 mod pairing;
 pub use pairing::{ApprovedPairing, PairingError, PairingRequest, PendingPairing};
 

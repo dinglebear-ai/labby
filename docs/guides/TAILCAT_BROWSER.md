@@ -1,7 +1,7 @@
 ---
 title: "Experimental Tailcat browser connection"
 created: "2026-10-02"
-updated: "2026-10-02"
+updated: "2026-10-03"
 ---
 
 # Experimental Tailcat browser connection
@@ -22,9 +22,9 @@ cleanup. It inspected disabled networking and empty mounts, denied unrelated VM
 cleanup, and verified the guest was absent afterward. The fixture uses local
 OAuth configuration. The actual Depot page also passed sign-in, pairing request,
 approved delivery import and tool discovery, and the cleanup response confirmed
-the identity-bound adapter was used. Final review findings were addressed;
-installed-controller setup, Google sign-in and production deployment have not
-been qualified. This remains an experimental integration.
+the identity-bound adapter was used. Those results predate the automatic encrypted delivery and native settings flow
+described below. Installed-controller setup, the complete encrypted handoff,
+Google sign-in and production deployment have not yet been qualified. This remains an experimental integration.
 
 ## Prerequisites
 
@@ -42,7 +42,7 @@ been qualified. This remains an experimental integration.
   An older runtime in the Microsandbox home directory can override the npm
   package runtime. Set upstream environment variables `MSB_PATH` and
   `MSB_LIBKRUNFW_PATH` to the matching executable and firmware when needed.
-- Pinned helper/browser assets built with
+- Matched packaged companion assets, or pinned helper/browser assets built with
   `scripts/build-tailcat-bridge.sh`, plus an approved HTTPS DERP map.
 - Authenticated Depot with the matching portable browser assets installed.
 
@@ -50,22 +50,55 @@ Microsandbox attaches to Labby as an MCP upstream. It is not attached directly
 to ChatGPT or Depot. A connection to the upstream alone does not prove VM
 isolation: guest creation must explicitly disable network and omit host mounts.
 
-## Enable native pairing
+## Prepare a packaged installation
 
-Add non-secret transport preferences to the existing Labby configuration:
+Release archives built from this checkout include a matched `tailcat/` companion directory next
+to the Labby executable. The npm installer retains that directory, and the shell
+installer activates and rolls back the executable and companions together.
+Source-only builds still require explicitly built assets.
 
-```toml
-[tailcat]
-enabled = true
-helper_path = "/absolute/path/to/tailcat-bridge"
-helper_sha256 = "SHA256_FROM_THE_PINNED_BUILD"
-derp_map_url = "https://approved-relay.example/derpmap.json"
+```bash
+labby setup --tailcat
 ```
 
-Start the authenticated hosted gateway normally. This publishes only the private
-same-user control socket, normally `$LABBY_HOME/tailcat/control.sock`. A helper
-and its restricted loopback MCP listener start only after local approval.
-Missing OAuth, native authority or a matching pinned helper prevents startup.
+This preparation verifies the installed assets, then reuses Labby's existing
+OAuth setup and persistent keys. It installs no daemon. It keeps the controller
+disabled and reports `authorization_required`: authenticated owner bootstrap,
+project/loadout/route configuration and local pairing are still required.
+`--dry-run` performs inspection without writing configuration. A missing,
+wrong-version, wrong-platform or modified bundle stops preparation.
+
+When enabled with no explicit `helper_path`/`helper_sha256` pair, native startup
+verifies the sibling bundle manifest and all files before using its helper.
+`bundle_path` can select an explicit companion directory. A partial explicit
+helper configuration fails rather than falling back. OAuth remains mandatory.
+
+## Configure and enable native pairing
+
+Sign in to the native Labby gateway with its configured administrator account.
+Open **Settings → Tailcat** and select a project you directly own.
+
+1. Configure the HTTPS MCP resource, approved HTTPS DERP map and absolute Node
+   executable. Labby creates a restricted Microsandbox upstream, loadout and
+   route using the verified packaged adapter. The controller stays disabled.
+2. Assign the exact displayed loadout using the existing authorized project
+   assignment flow, then restart the gateway to publish its policy. This is an
+   explicit project access change; setup does not silently replace an assignment.
+3. Enroll the project credential. Labby stores it in a private native file and
+   displays its path and public credential ID. The browser never receives the
+   bearer. Retrying enrollment uses the same request key.
+4. Enable pairing, then restart the gateway. Activation rechecks OAuth, direct
+   ownership, current credential, exact assignment, published policy and assets.
+   Saving the setting does not start a daemon or expose a listener.
+
+The shared actions are `setup.tailcat.configure`, `setup.tailcat.enroll` and
+`setup.tailcat.enable`; they require an authenticated native operator session,
+CSRF protection and direct project ownership.
+
+The authenticated gateway publishes only a private same-user control socket,
+normally `$LABBY_HOME/tailcat/control.sock`. A helper and restricted loopback
+MCP listener start after explicit local pairing approval. Missing OAuth, native
+authority or verified assets prevents startup.
 
 The CLI is local: an explicit remote `--server` or `--context` is refused.
 An explicit absolute `--socket` may select another same-host controller; it never
@@ -81,7 +114,8 @@ bash scripts/install-tailcat-depot-assets.sh \
   https://approved-relay.example/derpmap.json
 ```
 
-The installer checks `SHA256SUMS`, copies the matching Go runtime and WASM,
+The installer accepts a verified source build or extracted release companion directory.
+It checks the corresponding checksum manifest, copies the matching Go runtime and WASM,
 portable client/hook and notices, and writes a checksum manifest. The four
 generated JavaScript modules ship in Depot releases; regenerate them from Labby
 rather than editing the copies. WASM, the Go runtime and manifest remain
@@ -103,28 +137,38 @@ cannot open it. Leave the feature disabled until the deployment is qualified.
 
 1. Sign in to Depot and open `/ui/sandboxes` over HTTPS.
 2. Enter the configured Microsandbox upstream name and create a pairing request.
-   The browser downloads public request JSON; its private key stays in memory.
-3. On the Labby machine, keep the existing project credential in a private file
-   owned by the current user. Approve the request:
+   The page displays a local command, a pairing code and a fingerprint. Its
+   temporary private key stays in browser memory.
+3. Run the command on the Labby machine, using the private enrolled credential:
 
    ```bash
-   labby tailcat pair --request /path/to/labby-pairing.json \
-     --credential-file /private/path/project-credential \
-     --output /private/directory/labby-delivery.json
+   labby tailcat pair --rendezvous https://depot.example \
+     --pairing-id PUBLIC_PAIRING_ID \
+     --credential-file /private/path/project-credential
    ```
 
-   Review the displayed HTTPS origin, upstream and key/nonce fingerprint.
-   Noninteractive use requires explicit `--yes`. The output directory must
-   already be private; the delivery is a new private file and is never overwritten.
-4. Import that delivery file into the same browser page. Depot confirms only
-   public metadata against its pending authenticated session. The browser uses
-   its memory-held key and sealed grant to initialize MCP and list permitted tools.
-5. The native grant expires within 15 minutes. Refreshing/navigating away loses
-   the browser key; create a fresh request and approve again.
+   Enter the code at the hidden prompt. Compare the fingerprint with the page,
+   review the HTTPS origin and upstream, and explicitly approve. For scripted
+   approval, supply the code through stdin with `--pair-code-stdin --yes`.
+4. The page automatically receives and decrypts the delivery, checks its
+   bindings, initializes MCP and lists permitted tools. Depot relays ciphertext;
+   the address, preshared key and grant are encrypted to the requesting browser.
+5. Exchange codes expire after five minutes and delivery is single-use. Native
+   grants expire within 15 minutes. Refreshing or leaving loses the browser key;
+   create a new request and approve again.
 
-The delivery file is a sensitive capability. Keep it private and remove the
-owned file after importing it. Neither secret belongs in command arguments,
-logs, HTML attributes, query strings or Git.
+Codes grant rendezvous access only; native approval and project authorization
+remain mandatory. Keep codes out of shell arguments, logs and query strings.
+A failed deposit stops the native session; uncertain cleanup requires checking
+`labby tailcat status`. A sealed session with no browser activity retires after
+its 90-second activity window, including an abandoned handoff.
+
+### Private-file fallback
+
+The existing flow remains available: export a public request, then run
+`labby tailcat pair --request /path/request.json --credential-file /private/path/credential --output /private/directory/delivery.json`
+and import the new private delivery file into the same page. Keep that delivery
+private and remove the owned file after import. Never store it in Git or logs.
 
 ## Sandbox cleanup scope
 

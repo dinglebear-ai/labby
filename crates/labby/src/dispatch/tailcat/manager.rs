@@ -153,7 +153,16 @@ impl Manager {
         id: &str,
         nonce: &[u8; 32],
         request: PairingRequest,
+        exchange_id: Option<String>,
     ) -> Result<(String, SessionDelivery), PairingError> {
+        if exchange_id.as_ref().is_some_and(|id| {
+            id.len() != 43
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+        }) {
+            return Err(PairingError);
+        }
         // Removal burns the pending approval even when verification/start fails.
         let mut pending = self
             .pending
@@ -188,7 +197,7 @@ impl Manager {
         let (session, delivery) = tokio::select! {
             () = reservation.cancel.cancelled() => return Err(PairingError),
             result = NativeSession::start(self.owner.runtime.clone(), &self.owner.gateway,
-                authority, self.artifact.clone(), move |authority| projection(authority, route)) => result?,
+                authority, self.artifact.clone(), exchange_id, move |authority| projection(authority, route)) => result?,
         };
         reservation.publish(session)?;
         Ok((session_id, delivery))
@@ -342,13 +351,13 @@ pub(crate) mod tests {
         wrong[0] ^= 1;
         assert!(
             manager
-                .approve(&prepared.id, &wrong, request())
+                .approve(&prepared.id, &wrong, request(), None)
                 .await
                 .is_err()
         );
         assert!(
             manager
-                .approve(&prepared.id, &prepared.nonce, request())
+                .approve(&prepared.id, &prepared.nonce, request(), None)
                 .await
                 .is_err()
         );

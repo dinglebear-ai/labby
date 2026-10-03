@@ -3,6 +3,19 @@ let loadedManifest;
 const maximumBytes = 48 * 1024 * 1024;
 const hex = bytes => [...new Uint8Array(bytes)].map(b => b.toString(16).padStart(2, '0')).join('');
 
+/** One pairing owns one identity and one encrypted delivery attempt. */
+export function bindDeliveryIdentity(identity, open) {
+  let consumed = false;
+  return {...identity, openDelivery: (sender, ciphertext) => {
+    if (consumed || typeof open !== 'function' || typeof sender !== 'string' ||
+        !/^nodekey:[0-9a-f]{64}$/.test(sender) || typeof ciphertext !== 'string' || ciphertext.length > 21900) {
+      return Promise.reject(Error('Invalid delivery'));
+    }
+    consumed = true;
+    return Promise.resolve().then(() => open(identity.privateKey, sender, ciphertext));
+  }};
+}
+
 async function readArtifact(response) {
   if (!response.body || Number(response.headers.get('content-length')) > maximumBytes) {
     await response.body?.cancel();
@@ -78,7 +91,7 @@ export function loadTailcat({baseURL, wasmSha256, runtimeSha256}) {
         go.run(instance).then(() => reject(Error('Tailcat runtime exited')), () => reject(Error('Tailcat runtime failed')));
       });
       if (typeof globalThis.tailcatIdentity !== 'function' || typeof globalThis.tailcatSession !== 'function') throw Error('Tailcat exports unavailable');
-      return {identity: globalThis.tailcatIdentity, createSession: globalThis.tailcatSession};
+      return {identity: () => bindDeliveryIdentity(globalThis.tailcatIdentity(), globalThis.tailcatOpenDelivery), createSession: globalThis.tailcatSession};
     } catch (error) {
       script?.remove();
       // A running Go instance cannot safely restart in the same page.
