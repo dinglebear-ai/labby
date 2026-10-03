@@ -138,10 +138,45 @@ fn json_value_matches_schema_type(value: &Value, expected: &str) -> bool {
     }
 }
 
+/// A work allowance shared across validations; exhausted allowances fail closed.
+pub(crate) struct SchemaValidationBudget {
+    visits: usize,
+    limit: usize,
+}
+
+impl SchemaValidationBudget {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self {
+            visits: 0,
+            limit: limit.min(MAX_SCHEMA_VISITS),
+        }
+    }
+    pub(crate) fn is_exhausted(&self) -> bool {
+        self.visits > self.limit
+    }
+}
+
+pub(crate) fn validate_json_schema_value_with_budget(
+    value: &Value,
+    schema: &Value,
+    budget: &mut SchemaValidationBudget,
+) -> Result<(), ToolError> {
+    validate_json_schema_value_inner(
+        value,
+        schema,
+        schema,
+        "params",
+        0,
+        budget,
+        &mut BTreeSet::new(),
+    )
+    .map_err(SchemaCheck::into_tool_error)
+}
+
 fn validate_json_schema_value(value: &Value, schema: &Value, path: &str) -> Result<(), ToolError> {
     let mut seen_refs = BTreeSet::new();
-    let mut visits = 0usize;
-    validate_json_schema_value_inner(value, schema, schema, path, 0, &mut visits, &mut seen_refs)
+    let mut budget = SchemaValidationBudget::new(MAX_SCHEMA_VISITS);
+    validate_json_schema_value_inner(value, schema, schema, path, 0, &mut budget, &mut seen_refs)
         .map_err(SchemaCheck::into_tool_error)
 }
 
@@ -151,15 +186,15 @@ fn validate_json_schema_value_inner(
     root_schema: &Value,
     path: &str,
     depth: usize,
-    visits: &mut usize,
+    budget: &mut SchemaValidationBudget,
     seen_refs: &mut BTreeSet<String>,
 ) -> Result<(), SchemaCheck> {
     // Recursion protection: `seen_refs` is cloned per composition branch (so a
     // ref may legitimately reappear on a sibling path), which means cycle
     // detection alone cannot bound the work. The shared visit budget and the
     // depth cap turn any schema bomb into a fast structured rejection.
-    *visits += 1;
-    if *visits > MAX_SCHEMA_VISITS {
+    budget.visits = budget.visits.saturating_add(1);
+    if budget.visits > budget.limit {
         return Err(defect(
             path,
             "exceeds the schema validation work budget in inputSchema",
@@ -204,7 +239,7 @@ fn validate_json_schema_value_inner(
             root_schema,
             path,
             depth + 1,
-            visits,
+            budget,
             seen_refs,
         )?;
         seen_refs.remove(reference);
@@ -218,7 +253,7 @@ fn validate_json_schema_value_inner(
             root_schema,
             path,
             depth + 1,
-            visits,
+            budget,
             &mut branch_refs,
         ) {
             Ok(()) => return Err(mismatch(path, "must not match schema")),
@@ -236,7 +271,7 @@ fn validate_json_schema_value_inner(
             root_schema,
             path,
             depth + 1,
-            visits,
+            budget,
             &mut condition_refs,
         ) {
             Ok(()) => true,
@@ -256,7 +291,7 @@ fn validate_json_schema_value_inner(
                 root_schema,
                 path,
                 depth + 1,
-                visits,
+                budget,
                 seen_refs,
             )?;
         }
@@ -282,7 +317,7 @@ fn validate_json_schema_value_inner(
                 root_schema,
                 path,
                 depth + 1,
-                visits,
+                budget,
                 &mut seen_refs.clone(),
             ) {
                 Ok(()) => {
@@ -306,7 +341,7 @@ fn validate_json_schema_value_inner(
                 root_schema,
                 path,
                 depth + 1,
-                visits,
+                budget,
                 &mut seen_refs.clone(),
             ) {
                 Ok(()) => matches += 1,
@@ -326,7 +361,7 @@ fn validate_json_schema_value_inner(
                 root_schema,
                 path,
                 depth + 1,
-                visits,
+                budget,
                 seen_refs,
             )?;
         }
@@ -420,7 +455,7 @@ fn validate_json_schema_value_inner(
                             root_schema,
                             &format!("{path}.{key}"),
                             depth + 1,
-                            visits,
+                            budget,
                             seen_refs,
                         )?;
                     }
@@ -449,7 +484,7 @@ fn validate_json_schema_value_inner(
                         root_schema,
                         &format!("{path}.{key}"),
                         depth + 1,
-                        visits,
+                        budget,
                         seen_refs,
                     )?;
                 }
@@ -468,7 +503,7 @@ fn validate_json_schema_value_inner(
                     root_schema,
                     &format!("{path}.{key}"),
                     depth + 1,
-                    visits,
+                    budget,
                     seen_refs,
                 )?;
             }
@@ -513,7 +548,7 @@ fn validate_json_schema_value_inner(
                             root_schema,
                             &format!("{path}[{index}]"),
                             depth + 1,
-                            visits,
+                            budget,
                             seen_refs,
                         )?;
                     }
@@ -526,7 +561,7 @@ fn validate_json_schema_value_inner(
                         root_schema,
                         &format!("{path}[{index}]"),
                         depth + 1,
-                        visits,
+                        budget,
                         seen_refs,
                     )?;
                 }

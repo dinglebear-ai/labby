@@ -35,6 +35,33 @@ pub enum SnippetsCommand {
     Remove(SnippetRemoveArgs),
     /// Test with deterministic fixtures; use --live to contact upstreams.
     Test(SnippetTestArgs),
+    /// Generate an editable fixture from tool schemas without executing tools.
+    Fixture(SnippetFixtureArgs),
+}
+
+#[derive(Debug, Args)]
+pub struct SnippetFixtureArgs {
+    pub name: String,
+    /// Exact tool IDs for legacy snippets without declarations.
+    #[arg(long = "tool")]
+    pub tools: Vec<String>,
+    /// Compare current contracts with a saved fixture; never execute tools.
+    #[arg(long, conflicts_with_all = ["output", "results"])]
+    pub check: Option<PathBuf>,
+    /// Saved schema map keyed by upstream::tool; uses no gateway when supplied.
+    #[arg(long)]
+    pub schemas: Option<PathBuf>,
+    /// Synthetic result overrides keyed by upstream::tool.
+    #[arg(long)]
+    pub results: Option<PathBuf>,
+    /// Populate optional fields and one array item, or generate minimal values.
+    #[arg(long, default_value = "populated", value_parser = ["populated", "minimal"])]
+    pub variant: String,
+    /// Save the generated fixture to a new file; existing files are never overwritten.
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+    #[arg(long = "param", value_name = "KEY=VALUE")]
+    pub params: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -116,6 +143,9 @@ pub async fn run(
     config: &LabConfig,
     team_id: Option<&str>,
 ) -> Result<ExitCode> {
+    if let SnippetsCommand::Fixture(args) = args.command {
+        return generate_fixture(args, format, config, team_id).await;
+    }
     let needs_upstreams = matches!(&args.command, SnippetsCommand::Exec(_))
         || matches!(&args.command, SnippetsCommand::Test(test) if test.live);
     if needs_upstreams {
@@ -127,6 +157,7 @@ pub async fn run(
     }
 
     let (action, params, yes, dry_run) = match args.command {
+        SnippetsCommand::Fixture(_) => unreachable!("fixture generation handled above"),
         SnippetsCommand::List => ("snippets.list".to_string(), json!({}), true, false),
         SnippetsCommand::Get(args) => (
             "snippets.get".to_string(),
@@ -242,6 +273,45 @@ pub async fn run(
     } else {
         exit
     })
+}
+
+async fn generate_fixture(
+    args: SnippetFixtureArgs,
+    format: OutputFormat,
+    config: &LabConfig,
+    team_id: Option<&str>,
+) -> Result<ExitCode> {
+    let saved = args.schemas.is_some();
+    let schemas = read_fixture(args.schemas)?;
+    let results = read_fixture(args.results)?.unwrap_or_else(|| json!({}));
+    let params = json!({"name":args.name,"params":crate::cli::params::parse_kv_params(args.params)?,
+        "schemas":schemas,"results":results,"variant":args.variant,
+        "tools":if args.tools.is_empty() {None} else {Some(args.tools)}, "check":read_fixture(args.check)?});
+    let report = if !saved {
+        if let Some(live) = crate::live_gateway::detect(config, "cli").await? {
+            validate_remote_team_selection(team_id)?;
+            crate::dispatch::snippets::generate_remote_fixture(&live, params).await?
+        } else {
+            crate::cli::gateway::build_manager(config, true).await?;
+            crate::dispatch::snippets::dispatch("snippets.fixture", params).await?
+        }
+    } else {
+        crate::dispatch::snippets::dispatch("snippets.fixture", params).await?
+    };
+    if report["ready"] == true
+        && let Some(path) = args.output
+    {
+        use std::io::Write;
+        let bytes = serde_json::to_vec_pretty(&report["fixture"])?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        file.write_all(&bytes)?;
+        file.write_all(b"\n")?;
+    }
+    crate::output::print(&report, format)?;
+    Ok(remote_test_exit_code(report["ready"] == true))
 }
 
 fn read_fixture(path: Option<PathBuf>) -> Result<Option<Value>> {

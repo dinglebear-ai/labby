@@ -1,7 +1,7 @@
 ---
 title: Snippet development and testing
 created: 2026-09-27
-updated: 2026-09-29
+updated: 2026-10-02
 ---
 
 # Snippet development and testing
@@ -51,6 +51,119 @@ Live tests execute the snippet's real operations, which may include writes for
 other snippets. They preserve the caller and declared tool scope. Review a
 snippet before opting into live execution. The Unraid triage example is read-only.
 
+## Generating schema-backed fixtures
+
+`snippet fixture` creates a deterministic, editable draft without executing the
+snippet or invoking its tools. By default it reads caller-visible tool schemas
+over the selected gateway's authenticated MCP connection for the snippet's exact tool declarations. The snippet body and fixture generation remain local. Supply
+`--schemas` to use saved contracts entirely offline. Legacy snippets without
+tool declarations require `--tool upstream::tool` (repeat as needed) or an explicit saved schema map; dynamic JavaScript calls are not inferred. MCP operator schema resources require unscoped admin access. Remote discovery failures never fall back to local schemas.
+
+~~~sh
+# Discover schemas on the selected gateway and save a new fixture.
+labby --json snippet fixture example --param query=synthetic \
+  --output ./example.test.json
+
+# Generate entirely offline from a saved schema map.
+labby --json snippet fixture example --schemas ./schemas.json \
+  --variant minimal --output ./example.minimal.test.json
+
+# Explicit synthetic responses for missing or difficult output contracts.
+labby --json snippet fixture example --schemas ./schemas.json \
+  --results ./results.json --output ./example.test.json
+
+# Compare saved contracts with current gateway metadata; execute no tools.
+labby --json snippet fixture example --check ./example.test.json
+
+labby --json snippet test example --fixture ./example.test.json
+~~~
+
+The saved schema map is keyed by exact tool ID:
+
+~~~json
+{
+  "synthetic::lookup": {
+    "input_schema": {
+      "type": "object", "required": ["id"],
+      "properties": {"id": {"type": "integer"}}
+    },
+    "output_schema": {
+      "type": "object", "required": ["items"],
+      "properties": {"items": {"type": "array", "items": {"type": "string"}}}
+    }
+  }
+}
+~~~
+
+`results.json` is another map, for example
+`{"synthetic::lookup":{"items":["synthetic-item"]}}`. Explicit null responses
+are preserved. Missing output schemas require an explicit result; missing tool
+metadata requires a saved contract. Missing input schemas produce a warning.
+Unavailable generation returns `ready: false`, diagnostic failures and a partial
+draft, exits nonzero and does not write the requested output file. Existing
+output files are never overwritten.
+
+The default `populated` variant includes optional object fields and one array
+item when allowed. `minimal` includes required fields and minimum array lengths.
+Values are synthetic and deterministic; schema defaults and examples are not
+copied. Local references, enums, constants, objects, arrays, primitive types and
+simple bounds are supported. Constraint combinations the generator cannot
+satisfy, including `allOf` generation and some patterns/unions, require explicit
+response overrides. Unsupported validation keywords such as `format` and
+`multipleOf`, remote references and excessive depth/work fail explicitly.
+
+Generated contracts include a SHA-256 `fingerprint` over canonical input and output schemas. Offline tests reject a fingerprint that no longer matches its saved contract. `--check` compares saved and current contracts, lists changed or missing tool IDs in `changed_tools`, exits nonzero on drift, and leaves the saved fixture unchanged. A check never executes upstream tools and requires no execution inputs, including required snippet parameters. Saved fixtures are validated before discovery; current contracts must also pass structural validation. Older fixtures without fingerprints can still be checked using their saved schemas.
+
+Older gateways may omit output schemas from their schema resources even when native MCP tools expose them. The CLI can recover a native output contract when the namespaced identity matches exactly, or when a read-only bare name resolves uniquely to the requested tool and its input contract matches. Ambiguous names and Labby service identities are never used as upstream aliases. Otherwise an explicit synthetic result is required. JSON schemas are never inferred from TypeScript descriptions.
+
+The draft contains one response rule per selected tool and no invented assertions.
+Edit matching, repeated calls, conditional paths, pagination and expected output
+to reflect the workflow. `ready` means the fixture is structurally usable, not
+that it covers every branch or will pass before these edits.
+
+Fixtures may include a `schemas` map with the same shape. Successful mocked
+responses are validated before execution; synthetic error rules bypass output
+validation. Actual tool arguments are checked after execution, independently of
+subset `match` rules, using the production tool-argument validator's supported
+subset. A violated input contract fails the test even if the snippet returns
+success. Argument snapshots used internally for validation are bounded to
+512 KiB per run and are discarded from the public report and trace. Schema and
+value validation also enforce bounded aggregate work across the fixture; each
+response-validation and argument-validation phase allows at most 16,384 schema
+node visits across its rules or calls. A fixture that exceeds the work budget
+fails explicitly. The measured wall-clock budget includes schema validation
+before and after snippet execution. These saved
+contracts never trigger live catalog discovery and do not establish that a
+deployed upstream still follows the same schema.
+
+The shared `snippets.fixture` action takes `name`, optional `tools` (exact tool
+IDs), `check` (a saved fixture object), `params`, `schemas`, `results` and
+`variant`. It returns `fixture`, `ready`, `coverage`, `warnings` and `failures`,
+plus `changed_tools` when a contract check detects drift; it does not save files.
+For a shared-action check, pass the saved fixture as data rather than a filename:
+
+~~~json
+{
+  "action": "snippets.fixture",
+  "params": {
+    "name": "example",
+    "tools": ["synthetic::lookup"],
+    "check": {
+      "schemas": {
+        "synthetic::lookup": {
+          "input_schema": {"type": "object"},
+          "output_schema": {"type": "boolean"}
+        }
+      },
+      "calls": [{"tool": "synthetic::lookup", "result": true}]
+    }
+  }
+}
+~~~
+
+CLI, HTTP and MCP retain normal admin and caller/tool-scope checks for metadata
+discovery.
+
 ## Fixture contract
 
 ~~~json
@@ -82,8 +195,8 @@ Rules match an exact qualified tool identifier and, optionally, a subset of its
 top-level parameters. Nested values compare exactly and object key order does
 not matter. Rules are considered in declaration order. Every rule must be fully
 consumed, and `times` defaults to one. Omit `match` to accept any parameters for
-that exact tool. This is a response-matching contract, not automatic validation
-against a live upstream's input schema.
+that exact tool. Optional saved `schemas` separately check actual arguments;
+tests never fetch a live upstream's input schema.
 
 `params` supplies fixture input defaults; explicit CLI/API caller parameters
 override matching keys before production input validation and default merging.
