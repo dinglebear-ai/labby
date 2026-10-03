@@ -71,3 +71,28 @@ test('clear all removes notifications and shared badges until the disconnected i
     assert.equal(view.container.querySelector('output')?.textContent, '1')
   } finally { await view.unmount() }
 })
+
+test('warning acknowledgement survives unavailable inventory while runtime alerts still reconcile', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'partial-warning-review' }, expiresAt: 100, csrfToken: 'csrf', isAdmin: true })
+  const { ConsoleNotifications } = await import('./console-notifications')
+  const { useGatewayNotifications } = await import('@/lib/notification-acknowledgements')
+  const { renderClient } = await import('@/lib/testing/dom-test-utils')
+  function OtherSurface() { const { notifications } = useGatewayNotifications(); return <output>{notifications.map(item => item.key).join(',')}</output> }
+  const warning = { key: 'gateway:partial:warning:config', fingerprint: 'same-incident', gatewayName: 'partial', message: 'Configuration warning' }
+  const runtimeAlert = { key: 'gateway:partial:capability:resources', fingerprint: 'runtime-incident', gatewayName: 'partial', message: 'Resource discovery failed' }
+  const ready: ConsoleStatusState = { kind: 'ready', snapshot: { connected: 1, total: 1, tools: 1 }, alerts: [warning], runtimeAlerts: [] }
+  const content = (state: ConsoleStatusState) => <><ConsoleNotifications state={state}/><OtherSurface/></>
+  const view = await renderClient(content(ready))
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Notifications"]')!.click())
+    assert.match(view.container.querySelector('output')?.textContent ?? '', /warning:config/)
+    await act(async () => [...document.querySelectorAll('button')].find(button => button.textContent?.includes('Clear all'))!.click())
+    await view.rerender(content({ ...ready, alerts: undefined, runtimeAlerts: [runtimeAlert] }))
+    assert.equal(view.container.querySelector('output')?.textContent, runtimeAlert.key)
+    await view.rerender(content({ ...ready, runtimeAlerts: [runtimeAlert] }))
+    assert.equal(view.container.querySelector('output')?.textContent, runtimeAlert.key, 'acknowledged warning must not resurface on inventory recovery')
+    await view.rerender(content({ ...ready, alerts: [] }))
+    await view.rerender(content(ready))
+    assert.equal(view.container.querySelector('output')?.textContent, warning.key, 'real warning resolution and recurrence still produce a new incident')
+  } finally { await view.unmount() }
+})

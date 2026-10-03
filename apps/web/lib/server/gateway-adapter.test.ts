@@ -288,7 +288,6 @@ test('buildGatewayUpdatePayload clears auth when bearer_token_env is blanked', (
   assert.deepEqual(payload, {
     name: 'github',
     patch: {
-      url: null,
       command: null,
       args: [],
       bearer_token_env: null,
@@ -1185,4 +1184,27 @@ test('gateway saves send protected route changes with the write-only OAuth patch
   assert.equal((patch.patch as Record<string, unknown>).oauth, null)
   const add = buildGatewayCreatePayload({ name: 'new', transport: 'http', config: { url: 'https://example.test/mcp' }, protected_route })
   assert.equal(add.protected_route, protected_route)
+})
+
+test('stdio partial edits preserve omitted command and args while retaining transport cleanup', () => {
+  const patch = buildGatewayPatch({ transport: 'stdio', display_name: 'Updated label', config: { proxy_resources: false } })
+  assert.equal(Object.hasOwn(patch, 'command'), false, 'omitted command leaves stored executable untouched')
+  assert.equal(Object.hasOwn(patch, 'args'), false, 'omitted argv leaves stored credentials untouched')
+  assert.equal(patch.url, null, 'stdio still clears the opposite transport')
+  assert.equal(patch.display_name, 'Updated label')
+  assert.equal(patch.proxy_resources, false)
+})
+
+test('stdio explicit empty args clears stored argv without clearing an omitted command', () => {
+  assert.deepEqual(buildGatewayPatch({ transport: 'stdio', config: { args: [] } }), { url: null, args: [] })
+  assert.deepEqual(buildGatewayPatch({ transport: 'stdio', config: { command: 'python', args: ['server.py'] } }), { url: null, command: 'python', args: ['server.py'] })
+})
+
+test('HTTP edits preserve the stored credential URL when omitted and permit replacement or clear', () => {
+  const stored = { url: 'https://user:private-token@example.com/mcp?token=private-query' }
+  const unchanged = buildGatewayPatch({ transport: 'http', display_name: 'Renamed', config: {} })
+  assert.equal(Object.hasOwn(unchanged, 'url'), false)
+  assert.equal({ ...stored, ...unchanged }.url, stored.url)
+  assert.equal(buildGatewayPatch({ transport: 'http', config: { url: 'https://new.example/mcp' } }).url, 'https://new.example/mcp')
+  assert.equal(buildGatewayPatch({ transport: 'http', config: { url: null } }).url, null)
 })

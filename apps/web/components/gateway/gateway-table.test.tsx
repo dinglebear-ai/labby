@@ -338,3 +338,18 @@ test('scoped observations distinguish unavailable, stale and known empty catalog
     assert.match(markup,/0\/0/)
   }
 })
+
+test('credential servers without an observed failure stay visible outside attention', () => {
+  const observation = { state: 'unknown' as const, discovered: null, exposed: null }
+  const row: Gateway = {
+    ...gateway,
+    status: { ...gateway.status, connected: false, healthy: false, last_error: undefined,
+      capability_observation: { scope: 'credential', tools: observation, resources: observation, prompts: observation, skills: observation } },
+    warnings: [],
+  }
+  const markup = renderToStaticMarkup(<GatewayTable density="comfortable" gateways={[row]} onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />)
+  assert.match(markup, /Not checked/)
+  assert.match(markup, /Gateway beta Control Plane/)
+  assert.doesNotMatch(markup, />Disconnected<\/span>/)
+  assert.doesNotMatch(markup, />Needs attention<\/span>/)
+})

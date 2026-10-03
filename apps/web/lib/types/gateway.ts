@@ -227,7 +227,7 @@ export interface UpdateGatewayInput {
   /** `null` or blank clears the label; absent leaves it unchanged. */
   display_name?: string | null
   transport?: TransportType
-  config?: Partial<GatewayWriteConfig>
+  config?: Omit<Partial<GatewayWriteConfig>, 'url'> & { url?: string | null }
   protected_route?: GatewayProtectedRouteChange
 }
 

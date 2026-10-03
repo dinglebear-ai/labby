@@ -1388,3 +1388,81 @@ test('a display name fills the ID and both are saved', async () => {
     globalThis.fetch = originalFetch
   }
 })
+
+for (const argv of [
+  ['[REDACTED]'],
+  ['TOKEN=[redacted]'],
+  ['--token', '[redacted]'],
+]) {
+  test(`ordinary stdio edit omits unchanged masked argv ${JSON.stringify(argv)}`, async () => {
+    const window = installGatewayDialogDom()
+    const existing = gatewayFixture('masked-argv')
+    existing.transport = 'stdio'
+    existing.config = { command: 'node', args: argv, proxy_resources: true, proxy_prompts: true, proxy_mcp_ui: true }
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {})) as typeof fetch
+    const view = await renderOpenGatewayDialog(existing, async input => { inputs.push(input) })
+    try {
+      const label = document.querySelector('#display_name') as HTMLInputElement
+      assert.ok(label)
+      await setInputValue(window, label, 'Renamed label')
+      await clickSave()
+      await waitFor(() => assert.equal(inputs.length, 1))
+      assert.equal(Object.hasOwn(inputs[0].config ?? {}, 'command'), false)
+      assert.equal(Object.hasOwn(inputs[0].config ?? {}, 'args'), false)
+      assert.equal(inputs[0].display_name, 'Renamed label')
+    } finally { await view.unmount(); globalThis.fetch = originalFetch }
+  })
+}
+
+for (const replacement of ['node --safe', 'node', 'node --safe [REDACTED]']) {
+  test(`masked stdio argv edit ${replacement.includes('REDACTED') ? 'requires secret re-entry' : 'saves explicit replacement ' + replacement}`, async () => {
+    const window = installGatewayDialogDom()
+    const existing = gatewayFixture('masked-replacement')
+    existing.transport = 'stdio'
+    existing.config = { command: 'node', args: ['[REDACTED]'], proxy_resources: true, proxy_prompts: true, proxy_mcp_ui: true }
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {})) as typeof fetch
+    const view = await renderOpenGatewayDialog(existing, async input => { inputs.push(input) })
+    try {
+      const input = document.querySelector('#command') as HTMLInputElement
+      assert.ok(input)
+      await setInputValue(window, input, replacement)
+      await clickSave()
+      if (replacement.includes('REDACTED')) {
+        assert.equal(inputs.length, 0)
+        assert.match(document.body.textContent ?? '', /Re-enter.*redacted.*credentials/i)
+      } else {
+        await waitFor(() => assert.equal(inputs.length, 1))
+        assert.deepEqual(inputs[0].config?.args, replacement === 'node' ? [] : ['--safe'])
+      }
+    } finally { await view.unmount(); globalThis.fetch = originalFetch }
+  })
+}
+
+for (const projectedUrl of ['https://example.com/mcp?token=%5BREDACTED%5D', 'https://example.com/mcp']) for (const replacement of [undefined, 'https://new.example/mcp', 'https://new.example/mcp?token=%5BREDACTED%5D']) {
+  test(`HTTP edit ${projectedUrl} ${replacement?.includes('REDACTED') ? 'requires credential re-entry' : replacement ? 'sends intentional URL replacement' : 'omits unchanged projected credential URL'}`, async () => {
+    const window = installGatewayDialogDom()
+    const existing = gatewayFixture('masked-http')
+    existing.config.url = projectedUrl
+    const inputs: Array<CreateGatewayInput | UpdateGatewayInput> = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => gatewayActionResponse(init, {})) as typeof fetch
+    const view = await renderOpenGatewayDialog(existing, async input => { inputs.push(input) })
+    try {
+      await setInputValue(window, document.querySelector('#display_name') as HTMLInputElement, 'Renamed')
+      if (replacement) await setInputValue(window, document.querySelector('#url') as HTMLInputElement, replacement)
+      await clickSave()
+      if (replacement?.includes('REDACTED')) {
+        assert.equal(inputs.length, 0)
+        assert.match(document.body.textContent ?? '', /Re-enter.*redacted.*credentials/i)
+        return
+      }
+      await waitFor(() => assert.equal(inputs.length, 1))
+      assert.equal(Object.hasOwn(inputs[0].config ?? {}, 'url'), Boolean(replacement))
+      if (replacement) assert.equal(inputs[0].config?.url, replacement)
+    } finally { await view.unmount(); globalThis.fetch = originalFetch }
+  })
+}
