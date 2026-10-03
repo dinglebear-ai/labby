@@ -170,6 +170,8 @@ test('production Library displays real revision contents and exact upstream iden
     assert.equal(destination.searchParams.get('artifactProvider'), 'team-catalog')
     assert.equal(destination.searchParams.get('artifact'), 'original')
     assert.equal(dialog.querySelector('button[title="Add to Library"]'), null)
+    assert.equal(dialog.querySelector('[aria-label="Install command"]'), null)
+    assert.equal(dialog.querySelector('button[aria-label="Copy install command"]'), null)
   } finally { await view.unmount(); restore() }
 })
 

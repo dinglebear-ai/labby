@@ -193,7 +193,7 @@ function PreviewArtifactDetail({ artifact, fixtureContent, revisionComponents, u
   const kind = artifactKind(artifact)
   const { family, tone, color, icon: KindIcon } = discoverKindPresentation(kind)
   const description = artifact.description ?? artifact.descriptor?.description ?? 'No description supplied by this source.'
-  const installCommand = artifactInstallCommand(artifact)
+  const installCommand = fixtureContent ? artifactInstallCommand(artifact) : undefined
   const contents: ReadonlyArray<readonly [string, string]> = fixtureContent
     ? previewArtifactContents(artifact, specLabels)
     : (revisionComponents ?? []).flatMap(component => component.path ? [[component.path, component.kind ?? 'file'] as const] : [])

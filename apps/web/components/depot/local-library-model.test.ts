@@ -10,11 +10,20 @@ test('local acquired records preserve identity and revision without inventing re
 
 test('upstream navigation uses source identity and falls back to search when authority is absent', () => {
   const artifact = { id: 'child', providerId: 'team/catalog', lineage: { upstreamArtifactId: 'source & one' } }
-  const exact = new URL(libraryUpstreamHref(artifact), 'https://labby.example')
+  const exact = new URL(libraryUpstreamHref(artifact)!, 'https://labby.example')
   assert.equal(exact.searchParams.get('artifactProvider'), 'team/catalog')
   assert.equal(exact.searchParams.get('artifact'), 'source & one')
-  const unknown = new URL(libraryUpstreamHref({ ...artifact, providerId: undefined }), 'https://labby.example')
+  const unknown = new URL(libraryUpstreamHref({ ...artifact, providerId: undefined })!, 'https://labby.example')
   assert.equal(unknown.searchParams.get('q'), 'source & one')
   assert.equal(unknown.searchParams.has('artifact'), false)
   assert.equal(unknown.searchParams.has('artifactProvider'), false)
+})
+
+test('fallback links select a supported search term or remain unavailable', () => {
+  for (const id of ['x', 'x'.repeat(512)]) {
+    const href = libraryUpstreamHref({ id, name: 'Useful name' })!
+    assert.equal(new URL(href, 'https://labby.example').searchParams.get('q'), 'Useful name')
+    assert.equal(libraryUpstreamHref({ id }), undefined)
+    assert.equal(libraryUpstreamHref({ id, providerId: 'catalog' })?.includes('artifactProvider=catalog'), true)
+  }
 })

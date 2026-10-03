@@ -4,8 +4,10 @@ import type { SkillLibraryItem } from '@/lib/api/skill-library-client'
 /** Open exact source identity when supplied; otherwise search without guessing authority. */
 export function libraryUpstreamHref(artifact: DepotArtifact, sourceId = artifact.lineage?.upstreamArtifactId ?? artifact.lineage?.forkedFromArtifactId ?? artifact.id ?? artifact.descriptor?.id) {
   if (artifact.providerId && sourceId) return `/depot?${new URLSearchParams({ artifactProvider: artifact.providerId, artifact: sourceId })}`
-  const query = sourceId ?? artifact.name ?? artifact.descriptor?.name ?? ''
-  return `/depot?${new URLSearchParams({ q: query })}`
+  const query = [sourceId, artifact.name, artifact.descriptor?.name, artifact.title, artifact.descriptor?.title]
+    .map(value => value?.trim())
+    .find(value => value && value.length >= 3 && value.length <= 200)
+  return query ? `/depot?${new URLSearchParams({ q: query })}` : undefined
 }
 
 /** Presentation projection only; acquisition identity and access remain backend-owned. */

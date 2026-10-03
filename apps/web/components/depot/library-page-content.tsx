@@ -284,6 +284,7 @@ function SessionLibraryPage() {
     await copy('Share link', window.location.href)
   }, [copy])
   const previewDetail = useMemo(() => detail ? localLibraryFederatedArtifact(detail) : null, [detail])
+  const upstreamHref = detail ? libraryUpstreamHref(detail) : undefined
   const previewSpecLabels = useMemo(() => {
     if (!previewDetail) return []
     if (USE_MOCK_DATA) return mockDepotSpecLabels(previewDetail)
@@ -332,7 +333,7 @@ function SessionLibraryPage() {
       copied={copied}
       importing={false}
       onImport={async () => undefined}
-      onFork={detail ? () => { window.location.href = libraryUpstreamHref(detail) } : undefined}
+      onFork={upstreamHref ? () => { window.location.href = upstreamHref } : undefined}
       onSend={async () => { await shareArtifact() }}
       installFormats={['JSON']}
       onInstallFormat={() => { if (detail) exportArtifact(detail) }}
