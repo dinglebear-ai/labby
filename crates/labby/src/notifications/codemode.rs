@@ -230,6 +230,8 @@ fn filesystem_failure(operation: &'static str, error: &std::io::Error) -> Notice
 #[derive(Clone)]
 pub(crate) struct NoticeStore {
     connection: Option<Arc<Mutex<Connection>>>,
+    #[cfg(windows)]
+    windows_guard: Option<Arc<labby_winjob::fs::SqliteVerificationGuard>>,
     // At most one blocking operation per store can be queued or executing.
     permit: Arc<Semaphore>,
 }
@@ -249,6 +251,8 @@ impl NoticeStore {
     pub(crate) fn disabled() -> Self {
         Self {
             connection: None,
+            #[cfg(windows)]
+            windows_guard: None,
             permit: Arc::new(Semaphore::new(1)),
         }
     }
@@ -287,6 +291,8 @@ impl NoticeStore {
         connection.busy_timeout(Duration::from_millis(25))?;
         Ok(Self {
             connection: Some(Arc::new(Mutex::new(connection))),
+            #[cfg(windows)]
+            windows_guard: None,
             permit: Arc::new(Semaphore::new(1)),
         })
     }
@@ -349,16 +355,23 @@ impl NoticeStore {
             Err(error) => return Err(filesystem_failure("database_metadata", &error)),
         }
         #[cfg(windows)]
-        {
-            let file = labby_winjob::fs::open_sqlite_verification(&path)
+        let verified = {
+            let guard = labby_winjob::fs::open_sqlite_verification(&path)
                 .map_err(|error| filesystem_failure("verify_database", &error))?;
-            labby_winjob::fs::verify_private_acl(&file)
+            labby_winjob::fs::verify_private_acl(guard.file())
                 .map_err(|error| filesystem_failure("verify_database_acl", &error))?;
-        }
+            guard
+        };
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
             | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        Self::from_connection(Connection::open_with_flags(path, flags)?)
+        let store = Self::from_connection(Connection::open_with_flags(path, flags)?)?;
+        #[cfg(windows)]
+        let store = Self {
+            windows_guard: Some(Arc::new(verified)),
+            ..store
+        };
+        Ok(store)
     }
 
     async fn run<T: Send + 'static>(
@@ -366,6 +379,8 @@ impl NoticeStore {
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
         let db = self.connection.clone().ok_or(NoticeError::Unavailable)?;
+        #[cfg(windows)]
+        let guard = self.windows_guard.clone();
         let permit = Arc::clone(&self.permit)
             .try_acquire_owned()
             .map_err(|_| NoticeError::Busy)?;
@@ -373,6 +388,8 @@ impl NoticeStore {
         // retains its permit so a timeout cannot grow an unbounded work queue.
         let worker = tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            #[cfg(windows)]
+            let _guard = guard;
             let mut connection = db.lock().map_err(|_| NoticeError::Unavailable)?;
             work(&mut connection)
         });

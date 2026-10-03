@@ -467,6 +467,60 @@ fn notice_production_existing_schema_missing_constraints_is_refused() {
 
 #[cfg(windows)]
 #[test]
+fn notice_production_windows_verification_pins_file_and_ancestors() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("installation");
+    crate::installation::secure_file::create_private_dir(&root).unwrap();
+    drop(NoticeStore::open_at(&root).unwrap());
+    let parent = root.join("agent-notifications");
+    let path = parent.join("inbox.sqlite3");
+    let guard = labby_winjob::fs::open_sqlite_verification(&path).unwrap();
+    labby_winjob::fs::verify_private_acl(guard.file()).unwrap();
+
+    // Neither the final entry nor an ancestor can be moved out of the way to
+    // substitute a different database between verification and SQLite's open.
+    let moved_file = parent.join("moved.sqlite3");
+    assert!(std::fs::rename(&path, &moved_file).is_err());
+    assert!(std::fs::remove_file(&path).is_err());
+    assert!(std::fs::rename(&parent, root.join("moved-notifications")).is_err());
+    assert!(std::fs::rename(&root, dir.path().join("moved-installation")).is_err());
+
+    // The verification handle shares writes: SQLite must still open and commit.
+    let mut connection = Connection::open(&path).unwrap();
+    let key = who("alice").key().unwrap();
+    register_at(&mut connection, &key, "client", 1000).unwrap();
+    drop(connection);
+    drop(guard);
+    std::fs::rename(&path, &moved_file).unwrap();
+    std::fs::rename(&moved_file, &path).unwrap();
+    std::fs::rename(&parent, root.join("moved-notifications")).unwrap();
+    std::fs::rename(&root, dir.path().join("moved-installation")).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn notice_production_windows_store_keeps_path_pinned_until_last_clone_drops() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("installation");
+    crate::installation::secure_file::create_private_dir(&root).unwrap();
+    let store = NoticeStore::open_at(&root).unwrap();
+    let retained = store.clone();
+    drop(store);
+    let parent = root.join("agent-notifications");
+    let path = parent.join("inbox.sqlite3");
+    let moved_file = parent.join("moved.sqlite3");
+    assert!(std::fs::rename(&path, &moved_file).is_err());
+    assert!(std::fs::remove_file(&path).is_err());
+    assert!(std::fs::rename(&parent, root.join("moved-notifications")).is_err());
+    assert!(std::fs::rename(&root, dir.path().join("moved-installation")).is_err());
+    drop(retained);
+    std::fs::rename(&path, &moved_file).unwrap();
+    std::fs::rename(&parent, root.join("moved-notifications")).unwrap();
+    std::fs::rename(&root, dir.path().join("moved-installation")).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
 fn notice_production_windows_second_open_while_first_connection_is_live() {
     let dir = tempfile::tempdir().unwrap();
     let first = NoticeStore::open_at(dir.path()).unwrap();

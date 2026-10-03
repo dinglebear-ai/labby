@@ -147,16 +147,34 @@ pub fn open_read(path: &Path, delete_access: bool) -> io::Result<File> {
 
 /// Open a regular SQLite file for identity and ACL verification while another
 /// connection may write it. Reject reparse points and hard links, and prevent
-/// replacement/deletion while held. This handle does not provide a stable content
-/// snapshot; callers must use SQLite transactions for content validation.
-pub fn open_sqlite_verification(path: &Path) -> io::Result<File> {
+/// replacement/deletion of the file or its ancestors while held. This guard does
+/// not provide a stable content snapshot; callers must use SQLite transactions
+/// for content validation and retain the guard while using pathname-based SQLite.
+pub fn open_sqlite_verification(path: &Path) -> io::Result<SqliteVerificationGuard> {
+    let ancestors = AncestorGuard::for_file(path)?;
     let file = OpenOptions::new()
         .access_mode(GENERIC_READ)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
         .open(path)?;
     identity(&file, false)?;
-    Ok(file)
+    Ok(SqliteVerificationGuard {
+        file,
+        _ancestors: ancestors,
+    })
+}
+
+/// Pins a verified SQLite file and its ancestors while allowing SQLite writes.
+pub struct SqliteVerificationGuard {
+    file: File,
+    _ancestors: AncestorGuard,
+}
+
+impl SqliteVerificationGuard {
+    /// Borrow the pinned file for handle-based identity and ACL validation.
+    pub fn file(&self) -> &File {
+        &self.file
+    }
 }
 
 /// Open a directory without following or permitting replacement of its entry.

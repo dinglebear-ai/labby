@@ -60,7 +60,7 @@ pub(super) fn recipient(
     };
     Some(NoticeRecipient {
         actor,
-        route: server.route_scope.label().to_owned(),
+        route: server.route_scope.notification_authority_key(),
         consumer,
     })
 }
