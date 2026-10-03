@@ -52,7 +52,9 @@
     "plugins/scripts/cleanup-leaked-mcp.sh",
     "plugins/scripts/health-check",
     "plugins/scripts/link-claude-mds",
-    "plugins/scripts/protected-mcp-smoke"
+    "plugins/scripts/protected-mcp-smoke",
+    "scripts/build-tailcat-bridge.sh",
+    "scripts/install-tailcat-depot-assets.sh"
   ],
   "powershell": [
     "scripts/install.ps1"
