@@ -6,12 +6,12 @@
 
 #[path = "support/codemode_qualification/harness.rs"]
 mod codemode_harness;
-#[path = "support/codemode_qualification/queue_prewarm.rs"]
-mod queue_prewarm;
 #[path = "support/evidence.rs"]
 mod evidence;
 #[path = "support/live_labby.rs"]
 mod live_labby;
+#[path = "support/codemode_qualification/queue_prewarm.rs"]
+mod queue_prewarm;
 
 use codemode_harness::{CodeModeQualification, Limits, write_report};
 use serde_json::json;
