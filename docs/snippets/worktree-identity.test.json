@@ -1,4 +1,7 @@
 {
+  "params": {
+    "path": "/fixture/repo/worktrees/topic"
+  },
   "calls": [
     {
       "tool": "claude-example-host::Bash",

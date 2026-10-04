@@ -102,4 +102,3 @@ def repository_info(target: Path, override: str | None) -> tuple[Path, dict[str,
             "multiple_github_repositories": len(identities) > 1, "unraid_push_target": unraid_push,
             "network_contacted": False, "remote_refs_freshness": "Local configuration only; no fetch, pull, or remote health check was performed"}
     return root, info
-

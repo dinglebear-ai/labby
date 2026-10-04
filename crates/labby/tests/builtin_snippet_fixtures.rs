@@ -15,7 +15,7 @@ async fn every_builtin_declares_dependencies_and_passes_offline_fixture() {
     let snippets = store::list_snippets(home.path(), &builtin).expect("builtin catalog");
     assert_eq!(
         snippets.len(),
-        10,
+        11,
         "review fixture coverage when adding examples"
     );
     for snippet in &snippets {

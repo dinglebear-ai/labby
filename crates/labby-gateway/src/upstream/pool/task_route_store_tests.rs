@@ -511,3 +511,104 @@ async fn version_two_pending_intent_is_replayed_during_migration() {
     let upgraded = TaskRouteStore::open(path).await.unwrap();
     assert!(upgraded.get(&route.public_task_id).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn routed_task_resolution_obeys_cancellation_and_deadline_while_sqlite_is_blocked() {
+    use super::super::TaskCallContext;
+    use super::super::tasks::tests::{create_task_response, task_pool};
+    use rmcp::model::{
+        CallToolResponse, CancelTaskParams, GetTaskParams, InputResponses, UpdateTaskParams,
+    };
+
+    for operation in ["get", "update", "cancel"] {
+        for cancel in [false, true] {
+            let (mut pool, server, downstream, key) = task_pool().await;
+            pool.request_timeout = std::time::Duration::from_millis(60);
+            let authorization = TaskRouteAuthorization::root();
+            let response = pool
+                .register_task_response(
+                    &key,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    Some("alice"),
+                    authorization.clone(),
+                    create_task_response(),
+                )
+                .await
+                .unwrap();
+            let CallToolResponse::Task(created) = response else {
+                unreachable!()
+            };
+            let id = created.task.task_id;
+            let store = pool.task_route_store.as_ref().unwrap();
+            let held = store.connection.lock().await;
+            let context = TaskCallContext::default();
+            let call = async {
+                match operation {
+                    "get" => pool
+                        .get_task_routed_with_context(
+                            GetTaskParams::new(&id),
+                            Some("alice"),
+                            &authorization,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "update" => {
+                        pool.update_task_routed_with_context(
+                            UpdateTaskParams::new(&id, InputResponses::new()),
+                            Some("alice"),
+                            &authorization,
+                            &id,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                    }
+                    _ => {
+                        pool.cancel_task_routed_with_context(
+                            CancelTaskParams::new(&id),
+                            Some("alice"),
+                            &authorization,
+                            &id,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                    }
+                }
+            };
+            let cancellation = async {
+                if cancel {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    context.cancellation.cancel();
+                }
+            };
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                tokio::join!(call, cancellation)
+            })
+            .await
+            .expect("blocked durable lookup must respect the caller budget");
+            assert_eq!(
+                result.unwrap_err(),
+                if cancel {
+                    "task request cancelled"
+                } else {
+                    "task request completion timed out"
+                },
+                "{operation}, cancel={cancel}"
+            );
+            assert_eq!(
+                server.get_calls.load(std::sync::atomic::Ordering::SeqCst),
+                0
+            );
+            assert!(server.updates.lock().await.is_empty());
+            assert!(server.cancellations.lock().await.is_empty());
+            drop(held);
+            // Drain the uncancelled SQLite worker before fixture shutdown.
+            drop(store.connection.lock().await);
+            pool.close_task_companions("test.complete").await;
+            downstream.cancel().await.unwrap();
+        }
+    }
+}

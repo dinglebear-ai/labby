@@ -179,24 +179,27 @@ impl UpstreamPool {
         ),
         String,
     > {
-        let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
-        let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
-            tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
-            "task routing unavailable".to_string()
-        })?.ok_or_else(task_not_found)?;
-        if !record.authorized(caller, authorization)
-            || record.expired(unix_millis_now()?)
-            || !self.task_config_matches(&record.upstream_name, &record.config_fingerprint)
-        {
-            return Err(task_not_found());
-        }
-        let (peer, relay_routes, handler) = self
-            .acquire_task_companion(&record, downstream.clone(), context, start)
-            .await?;
-        // Downstream rebinding does not hold a fleet-wide task map write lock.
-        handler.rebind_downstream(downstream).await;
-        self.check_task_binding(&record).await?;
-        Ok((peer, record, relay_routes))
+        reconnect::finish_task_request(self.request_timeout, start, context, async {
+            let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
+            let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
+                tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
+                "task routing unavailable".to_string()
+            })?.ok_or_else(task_not_found)?;
+            if !record.authorized(caller, authorization)
+                || record.expired(unix_millis_now()?)
+                || !self.task_config_matches(&record.upstream_name, &record.config_fingerprint)
+            {
+                return Err(task_not_found());
+            }
+            let (peer, relay_routes, handler) = self
+                .acquire_task_companion(&record, downstream.clone(), context, start)
+                .await?;
+            // Downstream rebinding does not hold a fleet-wide task map write lock.
+            handler.rebind_downstream(downstream).await;
+            self.check_task_binding(&record).await?;
+            Ok((peer, record, relay_routes))
+        })
+        .await
     }
 
     pub async fn get_task_routed(
@@ -515,7 +518,7 @@ impl UpstreamPool {
 #[cfg(test)]
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
-mod tests {
+pub(in crate::upstream::pool) mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -535,9 +538,10 @@ mod tests {
     const NATIVE_TASK_ID: &str = "native-task-1";
 
     #[derive(Clone, Default)]
-    pub(super) struct TaskServer {
-        pub(super) updates: Arc<Mutex<Vec<String>>>,
-        pub(super) cancellations: Arc<Mutex<Vec<String>>>,
+    pub(in crate::upstream::pool) struct TaskServer {
+        pub(in crate::upstream::pool) get_calls: Arc<std::sync::atomic::AtomicUsize>,
+        pub(in crate::upstream::pool) updates: Arc<Mutex<Vec<String>>>,
+        pub(in crate::upstream::pool) cancellations: Arc<Mutex<Vec<String>>>,
         fail_get_task: Arc<std::sync::atomic::AtomicBool>,
         publication_gate: Arc<Mutex<Option<Arc<Mutex<()>>>>>,
         publication_holder: Arc<Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>>,
@@ -568,6 +572,8 @@ mod tests {
             request: GetTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<GetTaskResult, ErrorData> {
+            self.get_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.hold_publication_before_response().await;
             if self.fail_get_task.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(ErrorData::internal_error("task backend unavailable", None));
@@ -607,7 +613,7 @@ mod tests {
     }
 
     #[derive(Clone)]
-    pub(super) struct DownstreamServer;
+    pub(in crate::upstream::pool) struct DownstreamServer;
 
     impl ServerHandler for DownstreamServer {
         fn get_info(&self) -> ServerInfo {
@@ -615,7 +621,7 @@ mod tests {
         }
     }
 
-    pub(super) async fn task_pool() -> (
+    pub(in crate::upstream::pool) async fn task_pool() -> (
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
@@ -726,7 +732,7 @@ mod tests {
         (pool, server, downstream_server, key)
     }
 
-    pub(super) fn create_task_response() -> CallToolResponse {
+    pub(in crate::upstream::pool) fn create_task_response() -> CallToolResponse {
         CallToolResponse::Task(CreateTaskResult::new(Task::new(
             NATIVE_TASK_ID,
             TaskStatus::Working,
