@@ -1,12 +1,18 @@
 ---
 title: Phoenix Assistant UI and App Server Event Contract
 created: "2026-09-16"
-updated: 2026-09-16
+updated: 2026-09-30
 ---
 
 # Phoenix Assistant UI and App Server Event Contract
 
-Phoenix is the conversational surface inside Labby's web UI. Codex App Server is the event authority. The UI must preserve the event stream's chronology instead of grouping tool activity into a synthetic block before or after the response.
+Phoenix is the conversational surface inside Labby's web UI. This document
+describes its Codex App Server provider, where App Server is the event authority.
+The alternative OpenAI-compatible provider currently accepts text-only messages
+and does not support active-turn steering, Codex reviews, or Codex diagnostics;
+the status response reports provider-specific capabilities. The UI must preserve
+the selected provider's event chronology instead of grouping tool activity into
+a synthetic block before or after the response.
 
 Official protocol reference: https://developers.openai.com/codex/app-server.md
 
@@ -74,3 +80,48 @@ The focused suite covers:
 - status capabilities truthfully report supported inputs/events.
 
 Browser regression coverage should additionally exercise paste, steering while streaming, expansion/collapse, keyboard focus, and screenshot comparison against the approved Phoenix mock.
+
+## Provider and account controls
+
+The authenticated Phoenix HTTP surface supports caller-scoped provider overrides
+through `phoenix.provider.configure` and `phoenix.provider.reset`. Standard
+OpenAI-compatible providers use their models and chat-completions endpoints;
+they do not need Labby's legacy session-gateway routes. Overrides and API keys
+are held server-side until restart, never returned in status, and apply to new
+sessions. Existing sessions retain their backend. Codex executable/home/workspace
+paths remain operator configuration, never browser parameters.
+
+`phoenix.account.login.start`, `.read`, and `.cancel` implement Codex device-code
+sign-in. The UI must explicitly identify this as the **shared instance Codex
+account**, not a personal per-caller account. Only the caller who started a flow
+can inspect/cancel it. There is at most one pending flow; it expires after fifteen
+minutes. Verification URLs are restricted to HTTPS on `auth.openai.com`.
+
+## Revision and settings controls
+
+`phoenix.session.configure` changes subsequent-turn model/effort. Query
+`phoenix.models.list` with `session_id` to use that conversation's provider even
+after the caller changes their default. Legacy session gateways expose reasoning
+profiles through model IDs; incompatible effort changes are rejected. Standard
+providers receive `reasoning_effort` when selected.
+
+`phoenix.turn.revise` requires the user-message index and `expected_revision` from
+`phoenix.session.read`. It replaces that message and subsequent history. Codex
+uses `thread/read` and `thread/rollback`; standard providers rebuild the retained
+message history. Legacy gateways do not expose revision support. Attachment-bearing
+and steering messages cannot independently be revised. The UI must bind revision
+state to the session ID and honor both session/message `can_revise` values.
+
+## Interactive questions and runtime policy
+
+Codex `item/tool/requestUserInput` requests become
+`phoenix/userInputRequested` events. Submit one answer per question using
+`phoenix.input.respond`; successful responses produce `phoenix/userInputResolved`.
+Questions are bounded, caller/session scoped, and retire when the turn completes.
+The UI must only enable questions for `active_turn_id`. Responses are not copied
+into retained event payloads, including secret answers.
+
+The existing read-only sandbox and never-approval policy remain in force.
+Permission elevation, arbitrary dynamic tool execution, and MCP elicitation are
+explicitly declined; the audit event must remain visible. This adapter does not
+claim to support unrestricted App Server operations or realtime voice.

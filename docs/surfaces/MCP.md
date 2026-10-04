@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-10-03"
 ---
 
 # MCP Surface
@@ -37,6 +37,43 @@ Each service tool accepts:
 Every service also supports shared `help` and `schema` discovery. Generated
 MCP help lives in [../generated/mcp-help.md](../generated/mcp-help.md).
 
+## Code Mode advisory notices
+
+Write-capable Code Mode calls can register a durable inbox with
+`notification_inbox: true` and acknowledge previously offered notices through
+`ack_notifications`. Eligible results and executed-script failures may include
+bounded advisory notices alongside the original execution result. Read-only
+calls cannot register or acknowledge notices.
+
+Discover the controls through the connected tool descriptor and schemas before
+using them. Notice bodies supply information, never instructions or permission;
+do not replay a mutating script to recover a missing control receipt. Publication
+uses the authenticated HTTP API rather than a sandbox helper. See
+[Agent Notifications](../dev/AGENT_NOTIFICATIONS.md) for identity scope, retry,
+limits, and recovery, and the [canonical Code Mode reference](../../plugins/labby/.apm/skills/using-codemode/references/code-mode.md#response-notification-contract)
+for request and response examples.
+
+## Trace metadata
+
+The tool-call boundary accepts W3C/SEP-414 `traceparent`, `tracestate`, and
+`baggage` in request `_meta`. A valid parent continues the trace; a missing,
+malformed, or unsupported parent creates a fresh unsampled trace and drops its
+associated optional fields. Invalid or oversized optional fields are dropped
+independently without rejecting an otherwise authorized call.
+
+Direct upstream proxy calls and Code Mode calls derive a fresh child span
+through the same gateway helper, preserving unrelated `_meta`. A retry of the
+same prepared upstream request keeps that child context. The private
+`ai.dinglebear.labby/trace` value is host-owned: Code Mode supplies
+`execution_id` and `call_ordinal`; direct calls remove forged correlation
+instead of inventing Code Mode identifiers. Logs correlate trace/span IDs and
+host execution fields without flattening opaque baggage. None of these fields
+grants caller identity, scope, or permission.
+
+Source: [inbound policy](../../crates/labby/src/mcp/trace_context.rs),
+[shared outbound injection](../../crates/labby-gateway/src/trace_context.rs),
+and [bounded vocabulary](../../crates/labby-primitives/src/trace.rs).
+
 ## Tool Results And `outputSchema`
 
 Every builtin service tool returns the dispatch envelope as
@@ -59,12 +96,13 @@ Scope and caveats:
 
 - **On `tools/list` this is Raw-mode-only.** Builtins are suppressed from
   `tools/list` whenever Code Mode is enabled, so under Code Mode the only
-  builtin schema a client sees there is `server_logs`. The `codemode*` tools
+  service schemas retained there are `server_logs` and `gateway`. The `codemode*` tools
   advertise their own execution-trace schema instead. Under Code Mode,
-  builtin services instead join the **Code Mode catalog** as in-process
+  eligible context-free services instead join the **Code Mode catalog** as in-process
   peers (`__in_process__<service>` namespaces, root scope only), so the
-  envelope schema and the callable capability arrive together through
-  `codemode.search` / `codemode.describe`.
+  per-action descriptors arrive through `codemode.search` / `codemode.describe`.
+  Caller-bound services are excluded from this context-free peer path, and
+  the host filters actions again for the caller.
 - **Error envelopes are outside `outputSchema`.** An `isError: true` result
   carries the `{ "ok": false, … }` error envelope
   ([agent-error-contract.md](../contracts/agent-error-contract.md)). The
@@ -75,8 +113,10 @@ Scope and caveats:
 - **`mcp_app` advertises no schema** — its control payload is
   `{"kind": "mcp_app_control", …}`, not the envelope, and an inaccurate
   schema is a hard client-side error in strict SDKs.
-- Upstream tools relay their own `outputSchema` **shape** unchanged and their
-  **result payloads** byte-identically. Documentation strings inside those
+- Upstream tools relay their own `outputSchema` **shape** unchanged and preserve
+  successful result payloads. Completed error results gain diagnostic metadata
+  and retain original structured content under `upstream_structured_content`.
+  Documentation strings inside those
   schemas (`description`, `title`, `$comment`) are sanitized; schema-semantic
   keywords (`enum`, `const`, `default`, `examples`, `pattern`, `format`,
   `$ref`, property names) are not.
@@ -149,9 +189,11 @@ subject's cached connection, and a subject-scoped resource denial is terminal
 rather than falling back to a global connection. These passthrough rules are
 independent of Labby-owned app toggles.
 
-Code Mode may call exposed upstream MCP tools only. Lab actions are not callable
-from inside its sandbox. Large upstream results must be projected or sliced
-inside the sandbox before return.
+Code Mode may call exposed upstream tools and eligible catalog-admitted
+in-process actions. Reserved local providers have separate authority gates.
+Large results that fit the per-call ceiling should be reduced inside the sandbox
+before return; an oversized intermediate result is rejected before JavaScript
+receives it. See [the output contract](../contracts/mcp-tool-output.md#c7-truncation-and-shaping).
 
 ## Authentication And Routes
 
@@ -181,10 +223,10 @@ Authorization scope and confirmation are separate checks.
 
 ## Tool Annotations
 
-Labby forwards each upstream tool's `annotations` object **verbatim** — including
-`title`, unknown or future fields, and the absence of the block. It does not fill
-in missing hints, overwrite hints it disagrees with, strip fields it does not
-understand, or rename the tool while copying it. This holds on every listing path:
+Labby preserves upstream annotation hints and the absence of the block, without
+filling missing hints or replacing them with its derived safety classification.
+The annotation `title` is sanitized as documentation text at the cache boundary,
+alongside tool descriptions and schema documentation. This applies to listing paths:
 the aggregated path, the subject-scoped OAuth path, and through nested gateways.
 
 Upstream hints are attacker-controlled data from Labby's perspective. Per the MCP
@@ -204,7 +246,7 @@ service's actions and must not be read as a claim about a specific `action`; and
 in a labby → labby chain these hints feed the next hop's own gate, so they are
 advisory to clients but not inert.
 
-Per-action truth (`destructive`, `requires_admin`) is available for the seven
+Per-action truth (`destructive`, `requires_admin`) is available for
 registered service tools via `{"action": "help"}` or the `lab://<service>/actions`
 resource. It is **not** available for `codemode`, `codemode_ui`, `mcp_app`,
 `add_server`, `gateway_status`, or `settings`, which are not registry services.
@@ -333,8 +375,8 @@ this is not a complete resource catalog or evidence of successful onboarding.
 
 ## Agent Skills (SEP-2640)
 
-Labby implements the draft MCP Skills extension behind the `skills` cargo
-feature. The pinned draft revision, URI grammar, and verification requirements
+Labby implements the accepted MCP Skills extension behind the `skills` cargo
+feature. The pinned revision, URI grammar, and verification requirements
 live in [`docs/contracts/skills-extension.md`](../contracts/skills-extension.md),
 which is also published in-band as the `lab://contracts/skills-extension`
 resource so a client that does not speak the extension can still discover it.

@@ -15,7 +15,7 @@ The primary UX is Add to My Labby or Send to. The implementation must preserve t
 
 Availability is not ownership. Use permission is not copy permission.
 
-This is a dependent future milestone, not part of the first Project-bound MCP enforcement release. Implementation cannot begin until canonical identity, the authorization kernel, application-owned ArtifactStore wiring, and the cross-store recovery state machine are complete.
+This document specifies the broader distribution target, outside the first Project-bound MCP enforcement release. A local subset is implemented: `artifacts.transfer_options`, `artifacts.pin`, `artifacts.follow_managed`, `artifacts.follow_update`, and `artifacts.fork_personal` are registered in `crates/labby/src/dispatch/skill_library/catalog.rs`. AccessStore v9 persists local policy, mirror, and subscription state; `dispatch/skill_library/follow_reconciler.rs` owns background reconciliation. Paired personal-Labby destinations and the remote transfer protocol below remain proposed. Local support does not establish implementation of detached export, reshare, or every policy state described here.
 
 ## Protocol freeze gate
 

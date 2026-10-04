@@ -84,7 +84,7 @@ fn static_cookie_context(
     )
 }
 
-fn static_bearer_login_available(state: &AppState) -> bool {
+pub(super) fn static_bearer_login_available(state: &AppState) -> bool {
     let config = state
         .oauth_state
         .as_ref()

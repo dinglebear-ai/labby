@@ -16,6 +16,8 @@ use crate::api::{
 use crate::dispatch::depot::admin::{AdminError, Mutation};
 use crate::dispatch::depot::discovery::{self, DiscoveryError, DiscoveryRequest};
 use crate::dispatch::depot::{DepotError, error_body};
+#[path = "depot_readiness.rs"]
+mod catalog_readiness;
 #[path = "depot_publish.rs"]
 mod publishing;
 #[path = "depot_read_access.rs"]
@@ -158,6 +160,7 @@ async fn discover(
     let auth = auth.as_ref().map(|value| &value.0);
     let identity = identity.as_ref().map(|value| &value.0);
     let access = ReadAccess::begin(&state, &authority, auth, identity).await?;
+    let readiness = catalog_readiness::CatalogCheck::begin(&state, identity).await?;
     let result = discovery::discover_with_access_epoch(
         &state.depot_manager,
         &authority,
@@ -171,9 +174,23 @@ async fn discover(
     })
     .map(Json)
     .map_err(map_discovery_error);
-    access
+    match access
         .finish(&state, &authority, auth, identity, result)
         .await
+    {
+        Ok(result) => {
+            if let Some(readiness) = readiness {
+                readiness.finish(&result.0).await?;
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            if let Some(readiness) = readiness {
+                readiness.fail().await?;
+            }
+            Err(error)
+        }
+    }
 }
 
 #[derive(Deserialize)]

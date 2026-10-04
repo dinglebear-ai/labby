@@ -237,17 +237,26 @@ impl LabMcpServer {
                         (self.file_stash_principal(context, meta).await?, None)
                     };
                 principal.validate_before_commit().await?;
-                crate::dispatch::file_stash::dispatch_for_principal(
-                    &self.file_stash_service(),
-                    &principal,
-                    "mcp",
-                    action,
-                    params,
-                    validated_grantee
-                        .as_ref()
-                        .map(|(recipient, _lease)| recipient),
-                )
-                .await
+                let service = self.file_stash_service();
+                if action == "stash.save_text" {
+                    let action = action.to_owned();
+                    return tokio::spawn(async move {
+                        checked_stash_action(
+                            &service,
+                            principal,
+                            &action,
+                            params,
+                            validated_grantee,
+                        )
+                        .await
+                    })
+                    .await
+                    .map_err(|_| ToolError::Sdk {
+                        sdk_kind: "service_unavailable".into(),
+                        message: "Context save task failed; check Stash before retrying".into(),
+                    })?;
+                }
+                checked_stash_action(&service, principal, action, params, validated_grantee).await
             }
             _ => Err(ToolError::Sdk {
                 sdk_kind: "service_unavailable".to_owned(),
@@ -453,7 +462,7 @@ impl LabMcpServer {
                     .file_stash_principal(context, Some(&context.meta))
                     .await?;
                 let stash = self.file_stash_service();
-                let (_metadata, mut blob) = stash.open_download(&principal, &file_id, true).await?;
+                let (metadata, mut blob) = stash.open_download(&principal, &file_id, true).await?;
                 principal.validate_before_commit().await?;
                 let capacity = usize::try_from(blob.size).map_err(|_| ToolError::Sdk {
                     sdk_kind: "quota_exceeded".to_owned(),
@@ -480,17 +489,59 @@ impl LabMcpServer {
                     None,
                     Some(u64::try_from(bytes.len()).unwrap_or(u64::MAX)),
                 );
-                let contents = ResourceContents::blob(
-                    base64::engine::general_purpose::STANDARD.encode(bytes),
-                    uri.to_owned(),
-                )
-                .with_mime_type("application/octet-stream");
+                let contents = if matches!(
+                    metadata.content_type.as_str(),
+                    "text/markdown" | "text/plain"
+                ) {
+                    let text = String::from_utf8(bytes).map_err(|_| ToolError::Sdk {
+                        sdk_kind: "integrity_error".into(),
+                        message: "Context document is not UTF-8".into(),
+                    })?;
+                    ResourceContents::text(text, uri.to_owned())
+                        .with_mime_type(metadata.content_type)
+                } else {
+                    ResourceContents::blob(
+                        base64::engine::general_purpose::STANDARD.encode(bytes),
+                        uri.to_owned(),
+                    )
+                    .with_mime_type("application/octet-stream")
+                };
                 Ok(ReadResourceResult::new(vec![contents]).into())
             },
         )
         .await
         .map_err(|error| map_resource_read_error(&error, uri))
     }
+}
+
+/// Keep the caller and any grantee leases alive through the shared commit gate.
+async fn checked_stash_action(
+    service: &FileStashService,
+    principal: AuthorizedStashPrincipal,
+    action: &str,
+    params: serde_json::Value,
+    validated_grantee: Option<(
+        PrincipalId,
+        Option<crate::access::ActiveFileStashPrincipalLease>,
+    )>,
+) -> Result<serde_json::Value, ToolError> {
+    let owner = (*principal).clone();
+    let grantee = validated_grantee
+        .as_ref()
+        .map(|(recipient, _)| recipient.clone());
+    crate::dispatch::file_stash::dispatch_with_final_check(
+        service,
+        &owner,
+        "mcp",
+        action,
+        params,
+        grantee.as_ref(),
+        async move {
+            principal.validate_before_commit().await?;
+            Ok((principal, validated_grantee))
+        },
+    )
+    .await
 }
 
 /// Parse the optional `_meta` owner selection into `(owner_kind, owner_id)`
@@ -575,20 +626,26 @@ fn propagated_file_stash_principal(
 }
 
 fn resource_for_file(file: FileView) -> Resource {
-    Resource::new(file.uri, file.display_name)
+    let name = if file.folder.is_empty() {
+        file.display_name
+    } else {
+        format!("{}/{}", file.folder, file.display_name)
+    };
+    Resource::new(file.uri, name)
         .with_description(if file.owned {
             "File Stash file owned by the caller"
         } else {
             "File Stash file shared with the caller"
         })
-        .with_mime_type("application/octet-stream")
+        .with_mime_type(file.content_type)
         .with_size(file.size_bytes)
 }
 
 pub(crate) fn template() -> ResourceTemplate {
+    // The template covers both saved text and binary uploads. Each concrete
+    // resource and read response supplies its own MIME type.
     ResourceTemplate::new(TEMPLATE_URI, "stash/file")
         .with_description("Caller-authorized File Stash object by opaque ULID")
-        .with_mime_type("application/octet-stream")
 }
 
 fn forbidden() -> ToolError {
@@ -634,6 +691,160 @@ fn quota_exceeded(uri: &str) -> ErrorData {
 mod tests {
     use super::*;
     use labby_runtime::caller_auth::PropagatedCallerAuth;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn saved_context_reads_as_native_text_for_another_authenticated_session() {
+        assert!(
+            serde_json::to_value(template())
+                .unwrap()
+                .get("mimeType")
+                .is_none()
+        );
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let access = Arc::new(
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await,
+        );
+        let identity = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "owner",
+        )
+        .unwrap();
+        access
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity.clone(), "Local", "Default")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let principal = access
+            .resolve_file_stash_principal(identity.clone())
+            .await
+            .unwrap();
+        let runtime = Arc::new(
+            crate::file_stash::FileStashRuntime::initialize(directory.path().join("stash")).await,
+        );
+        let server = LabMcpServer {
+            registry: Arc::new(crate::registry::ToolRegistry::new()),
+            access_runtime: access,
+            installation_id: None,
+            file_stash_runtime: Arc::clone(&runtime),
+            #[cfg(feature = "gateway")]
+            gateway_manager: None,
+            peers: Default::default(),
+            code_mode_app_state: Default::default(),
+            last_listed_tool_contract: Default::default(),
+            route_runtime: Default::default(),
+            #[cfg(feature = "gateway")]
+            client_registry: Default::default(),
+            transport_label: "http",
+            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
+                crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
+            )),
+            route_scope: crate::mcp::route_scope::McpRouteScope::Root,
+            relay_session_id: 0,
+            code_mode_widget_callbacks_enabled_for_test: false,
+        };
+        let (transport, _client) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context_for = |request_id, identity: labby_auth::VerifiedIdentity| {
+            let mut context = RequestContext::new(
+                rmcp::model::NumberOrString::Number(request_id),
+                running.peer().clone(),
+            );
+            let (mut parts, _) = axum::http::Request::new(()).into_parts();
+            parts.extensions.insert(identity);
+            parts
+                .extensions
+                .insert(labby_auth::auth_context::AuthContext {
+                    sub: "owner".into(),
+                    issuer: "https://accounts.google.com".into(),
+                    scopes: vec!["lab".into()],
+                    actor_key: None,
+                    email: None,
+                    via_session: false,
+                    csrf_token: None,
+                });
+            context.extensions.insert(parts);
+            context
+        };
+        let content = "# Handoff\nExact café 🦀 context\n";
+        let writer = context_for(1, identity.clone());
+        let saved = running.service().dispatch_caller_bound_service("stash", "stash.save_text", serde_json::json!({"filename":"handoff.md","content":content,"folder":"dinglebear-ai/labby"}), &writer, None).await.unwrap();
+        let uri = saved["uri"].as_str().unwrap();
+        let reader = context_for(2, identity);
+        let result = running
+            .service()
+            .read_file_stash_resource(uri, &reader)
+            .await
+            .unwrap();
+        let rmcp::model::ReadResourceResponse::Complete(result) = result else {
+            panic!("expected complete resource")
+        };
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["contents"][0]["text"], content);
+        assert_eq!(json["contents"][0]["mimeType"], "text/markdown");
+        assert!(json["contents"][0].get("blob").is_none());
+        let service = running.service().file_stash_service();
+        let resources = collect_file_stash_resources(&service, &principal, 50)
+            .await
+            .unwrap();
+        let descriptor = serde_json::to_value(&resources[0]).unwrap();
+        assert_eq!(descriptor["name"], "dinglebear-ai/labby/handoff.md");
+        assert_eq!(descriptor["uri"], uri);
+        assert_eq!(descriptor["mimeType"], "text/markdown");
+
+        let (reservation, admission) = service
+            .reserve_upload(&principal, "binary.md", 2)
+            .await
+            .unwrap();
+        let binary_id = service
+            .finalize_upload(
+                reservation,
+                admission,
+                &b"\xff\x00"[..],
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let binary_uri = format!("stash://me/files/{binary_id}");
+        let result = running
+            .service()
+            .read_file_stash_resource(&binary_uri, &reader)
+            .await
+            .unwrap();
+        let rmcp::model::ReadResourceResponse::Complete(result) = result else {
+            panic!("expected complete resource")
+        };
+        let json = serde_json::to_value(result).unwrap();
+        assert_eq!(json["contents"][0]["blob"], "/wA=");
+        assert_eq!(json["contents"][0]["mimeType"], "application/octet-stream");
+        let stranger = context_for(
+            3,
+            labby_auth::VerifiedIdentity::external(
+                labby_auth::Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                "stranger",
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            running
+                .service()
+                .read_file_stash_resource(uri, &stranger)
+                .await
+                .unwrap_err()
+                .code,
+            rmcp::model::ErrorCode::RESOURCE_NOT_FOUND
+        );
+        running.cancel().await.unwrap();
+        runtime.shutdown().await;
+    }
 
     #[test]
     fn coco_stash_setup_gate_keeps_actionable_error_on_list_and_read() {

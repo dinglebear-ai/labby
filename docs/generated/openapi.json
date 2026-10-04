@@ -3286,6 +3286,15 @@
             }
           },
           {
+            "name": "folder",
+            "in": "query",
+            "description": "Exact virtual folder; empty selects Unfiled, omission selects all",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "limit",
             "in": "query",
             "required": false,
@@ -4369,6 +4378,130 @@
         ]
       }
     },
+    "/v1/stash/folders": {
+      "get": {
+        "tags": [
+          "stash"
+        ],
+        "summary": "List caller-visible File Stash folders",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "description": "Continuation from the preceding folder page",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Folder page with visible-file counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StashFolderPageDoc"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed File Stash request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File or grant was not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Filename or grant conflicts with existing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "File or request exceeds a configured limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "File Stash validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "File Stash capacity is busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "File Stash is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ]
+      }
+    },
     "/v1/stash/recipients": {
       "post": {
         "tags": [
@@ -4620,6 +4753,15 @@
             "name": "X-CSRF-Token",
             "in": "header",
             "description": "Required for cookie-authenticated mutations",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Labby-Stash-Folder",
+            "in": "header",
+            "description": "Percent-encoded virtual folder; omission uploads to Unfiled",
             "required": false,
             "schema": {
               "type": "string"
@@ -5045,6 +5187,847 @@
             "bearer_auth": []
           }
         ]
+      }
+    },
+    "/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Read browser session and access authority",
+        "description": "Standalone browser route, outside auth middleware; omitted in integrated trusted-host mode. Anonymous or invalid credentials normally return 200 with authenticated=false. Accepts OAuth/project session cookies (configured names), the static browser cookie, or the configured static bearer. The browser_session scheme shows the default OAuth cookie name. Development UI bypass returns a synthetic admin view, not durable authority. Ready, transport-only, and unprovisioned authenticated views have distinct authority_state values; owner_bootstrap_available is an offer, not a grant.",
+        "security": [
+          {},
+          {
+            "browser_session": []
+          },
+          {
+            "static_browser_session": []
+          },
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-side-effects": "May provision an allowlisted/configured-admin verified identity and its initial Team, default Project, and platform grants, then re-read authority.",
+        "responses": {
+          "200": {
+            "description": "Anonymous, authenticated authority, or development bypass session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "authenticated",
+                        "login_available",
+                        "bearer_login_available"
+                      ],
+                      "properties": {
+                        "authenticated": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "login_available": {
+                          "type": "boolean"
+                        },
+                        "bearer_login_available": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "authenticated",
+                        "login_available",
+                        "bearer_login_available",
+                        "authority_state",
+                        "authority",
+                        "is_admin",
+                        "is_configured_admin",
+                        "user",
+                        "project_id",
+                        "owner",
+                        "organization_id",
+                        "teams",
+                        "projects",
+                        "project",
+                        "capabilities",
+                        "authority_generation",
+                        "expires_at",
+                        "csrf_token",
+                        "owner_bootstrap_available"
+                      ],
+                      "properties": {
+                        "authenticated": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "login_available": {
+                          "type": "boolean"
+                        },
+                        "bearer_login_available": {
+                          "type": "boolean"
+                        },
+                        "authority_state": {
+                          "type": "string",
+                          "enum": [
+                            "ready",
+                            "transport",
+                            "unprovisioned"
+                          ]
+                        },
+                        "authority": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "required": [
+                            "principal_id",
+                            "organization_id",
+                            "authority_generation"
+                          ],
+                          "properties": {
+                            "principal_id": {
+                              "type": "string"
+                            },
+                            "organization_id": {
+                              "type": "string"
+                            },
+                            "authority_generation": {
+                              "type": "integer",
+                              "minimum": 0
+                            }
+                          }
+                        },
+                        "remediation": {
+                          "type": "string",
+                          "description": "Present for transport or unprovisioned authority."
+                        },
+                        "is_admin": {
+                          "type": "boolean",
+                          "description": "Durable platform.manage capability in ready state; transport admin ceiling in transport state."
+                        },
+                        "is_configured_admin": {
+                          "type": "boolean",
+                          "description": "Browser session email is in LABBY_AUTH_ADMIN_EMAIL; independent of is_admin."
+                        },
+                        "user": {
+                          "type": "object",
+                          "required": [
+                            "sub",
+                            "email"
+                          ],
+                          "properties": {
+                            "sub": {
+                              "type": "string"
+                            },
+                            "email": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          }
+                        },
+                        "project_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "owner": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "required": [
+                            "kind",
+                            "id"
+                          ],
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "personal"
+                              ]
+                            },
+                            "id": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "organization_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "teams": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "id",
+                              "role",
+                              "membership_epoch",
+                              "policy_epoch"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "role": {
+                                "type": "string"
+                              },
+                              "membership_epoch": {
+                                "type": "integer",
+                                "minimum": 0
+                              },
+                              "policy_epoch": {
+                                "type": "integer",
+                                "minimum": 0
+                              }
+                            }
+                          }
+                        },
+                        "projects": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "id",
+                              "role"
+                            ],
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "role": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        },
+                        "project": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "capabilities": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "authority_generation": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ],
+                          "minimum": 0
+                        },
+                        "expires_at": {
+                          "type": "integer",
+                          "format": "int64",
+                          "description": "Unix seconds."
+                        },
+                        "csrf_token": {
+                          "type": "string"
+                        },
+                        "owner_bootstrap_available": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "authenticated",
+                        "login_available",
+                        "is_admin",
+                        "is_configured_admin",
+                        "dev_authority_bypass",
+                        "user",
+                        "expires_at",
+                        "csrf_token"
+                      ],
+                      "properties": {
+                        "authenticated": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "login_available": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "is_admin": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "is_configured_admin": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "dev_authority_bypass": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "user": {
+                          "type": "object",
+                          "required": [
+                            "sub",
+                            "email"
+                          ],
+                          "properties": {
+                            "sub": {
+                              "type": "string"
+                            },
+                            "email": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          }
+                        },
+                        "expires_at": {
+                          "type": "integer",
+                          "format": "int64"
+                        },
+                        "csrf_token": {
+                          "type": "string",
+                          "enum": [
+                            ""
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicting static and OAuth/project browser sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session lookup or identity projection failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Durable access authority is unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/bearer-session": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Exchange the configured static bearer for a browser cookie",
+        "description": "Standalone mode only. No request body. Requires an enabled, matching static bearer; OAuth/project bearer credentials are not accepted. Transport admission requires a configured HTTPS public URL, or a loopback Host without forwarding headers. Refuses an existing OAuth/project session. Sets an HttpOnly SameSite=Strict static browser cookie (Secure when the configured public URL is HTTPS); returns no credential or CSRF token. Read /auth/session for session metadata.",
+        "security": [
+          {
+            "bearer_auth": []
+          }
+        ],
+        "x-labby-cache-posture": "private, no-store",
+        "x-labby-side-effects": "Creates an in-memory static bearer browser session and sets its cookie.",
+        "responses": {
+          "200": {
+            "description": "Browser cookie created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "HttpOnly session cookie; name and Secure attribute depend on session type and configuration.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Static bearer is missing, invalid, disabled, or unconfigured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Secure transport or direct loopback origin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Sign out of the existing OAuth/project browser session first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session lookup or creation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Static browser session state unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Revoke the current static or OAuth browser session",
+        "description": "Standalone mode only. No request body. Anonymous/no-auth requests succeed with 204. A live static or OAuth cookie requires its matching x-csrf-token. Clears the applicable cookie; does not revoke the source bearer credential. Project-bound local sessions use DELETE /auth/local-session. Success does not set Cache-Control; handler errors are private, no-store.",
+        "security": [
+          {},
+          {
+            "browser_session": []
+          },
+          {
+            "static_browser_session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": false,
+            "description": "Required when a live static or OAuth browser session is being revoked; not required for an anonymous no-op.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "x-labby-cache-posture": "204: no explicit Cache-Control; handler errors: private, no-store",
+        "x-labby-side-effects": "Revokes the current static/OAuth browser session and clears applicable cookies; anonymous no-op is allowed.",
+        "responses": {
+          "204": {
+            "description": "Session revoked or no active session; empty response",
+            "headers": {
+              "Set-Cookie": {
+                "description": "HttpOnly session cookie; name and Secure attribute depend on session type and configuration.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicting static and OAuth/project browser sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing or invalid CSRF token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "message"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session lookup or revocation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            },
+            "headers": {
+              "Cache-Control": {
+                "description": "private, no-store",
+                "schema": {
+                  "type": "string",
+                  "enum": [
+                    "private, no-store"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/access/owner-link/consume": {
+      "post": {
+        "tags": [
+          "access"
+        ],
+        "summary": "Consume offline approval to link the Google identity to an existing owner",
+        "description": "Requires a live Google browser authority, BrowserSession verified identity, lab:admin, configured admin email, and matching CSRF token. The server selects the exact offline approval for this identity and installation; callers cannot supply a target. Revalidates the published project route/resource/loadout with Depot publishing enabled and the active owner target. First consumption requires unexpired approval; an exact consumed approval can succeed again while the link and target remain valid. Handler denials are {kind,message}, not the agent-error envelope. The route descriptor declares private, no-store, but the current handler does not emit Cache-Control.",
+        "security": [
+          {
+            "browser_session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-csrf-token",
+            "in": "header",
+            "required": true,
+            "description": "CSRF token from the authenticated browser session.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-labby-cache-posture": "descriptor: private, no-store; handler: no explicit Cache-Control",
+        "x-labby-side-effects": "Atomically links the external identity to the existing owner, records approval consumption, and increments access revision; preserves original owner links and memberships. Exact accepted retry does not duplicate consumption.",
+        "responses": {
+          "200": {
+            "description": "Owner identity linked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "linked",
+                    "projectId"
+                  ],
+                  "properties": {
+                    "linked": {
+                      "type": "boolean",
+                      "enum": [
+                        true
+                      ]
+                    },
+                    "projectId": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON (Axum text rejection)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication middleware rejected credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Browser authority, CSRF, approval, target, or access-store denial",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "message"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the extraction limit"
+          },
+          "415": {
+            "description": "JSON Content-Type required (Axum text rejection)",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "CSRF middleware rejection (JSON), or invalid/unknown request fields (Axum text rejection)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "kind",
+                    "message"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -5520,6 +6503,7 @@
           "action": {
             "type": "string",
             "enum": [
+              "agents.models.list",
               "agents.create",
               "agents.list",
               "agents.get",
@@ -5609,6 +6593,21 @@
             "type": "string"
           },
           "limit": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentsAgentsModelsListParams": {
+        "type": "object",
+        "required": [
+          "owner_kind",
+          "owner_id"
+        ],
+        "properties": {
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
             "type": "string"
           }
         }
@@ -8013,6 +9012,9 @@
           "bearer_token_value": {
             "type": "string"
           },
+          "protected_route": {
+            "type": "object"
+          },
           "spec": {
             "type": "string"
           }
@@ -8794,6 +9796,9 @@
           },
           "patch": {
             "type": "string"
+          },
+          "protected_route": {
+            "type": "object"
           }
         }
       },
@@ -8872,6 +9877,9 @@
             "type": "string"
           },
           "include_facets": {
+            "type": "boolean"
+          },
+          "include_upstream_timeseries": {
             "type": "boolean"
           },
           "operation": {
@@ -9404,8 +10412,17 @@
           "action": {
             "type": "string",
             "enum": [
+              "tailcat.enable",
+              "tailcat.enroll",
+              "tailcat.configure",
               "help",
               "schema",
+              "mcp.verification.tools",
+              "mcp.verification.call",
+              "clients.session.start",
+              "clients.session.revoke",
+              "readiness.clients.defer",
+              "readiness.state",
               "state",
               "bootstrap",
               "schema.get",
@@ -9428,6 +10445,20 @@
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "SetupClientsSessionStartParams": {
+        "type": "object",
+        "required": [
+          "clients"
+        ],
+        "properties": {
+          "clients": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -9458,6 +10489,52 @@
         "properties": {
           "force": {
             "type": "boolean"
+          }
+        }
+      },
+      "SetupMcpVerificationCallParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "expected_url",
+          "tool",
+          "expected_fingerprint",
+          "arguments",
+          "approved"
+        ],
+        "properties": {
+          "approved": {
+            "type": "boolean"
+          },
+          "arguments": {
+            "type": "object"
+          },
+          "expected_fingerprint": {
+            "type": "string"
+          },
+          "expected_url": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupMcpVerificationToolsParams": {
+        "type": "object",
+        "required": [
+          "name",
+          "expected_url"
+        ],
+        "properties": {
+          "expected_url": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
           }
         }
       },
@@ -9673,6 +10750,62 @@
           }
         }
       },
+      "SetupTailcatConfigureParams": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "public_resource",
+          "derp_map_url",
+          "node_path"
+        ],
+        "properties": {
+          "derp_map_url": {
+            "type": "string"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "node_path": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "public_resource": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupTailcatEnableParams": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "credential_id"
+        ],
+        "properties": {
+          "credential_id": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SetupTailcatEnrollParams": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsActionRequest": {
         "type": "object",
         "required": [
@@ -9686,12 +10819,18 @@
               "schema",
               "snippets.list",
               "snippets.get",
+              "snippets.preview",
+              "snippets.replay",
               "snippets.exec",
+              "snippets.receipt",
+              "snippets.history",
+              "snippets.artifact",
               "snippets.create",
               "snippets.promote",
               "snippets.validate",
               "snippets.remove",
-              "snippets.test"
+              "snippets.test",
+              "snippets.fixture"
             ]
           },
           "params": {
@@ -9710,6 +10849,21 @@
           }
         }
       },
+      "SnippetsSnippetsArtifactParams": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "path"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsSnippetsCreateParams": {
         "type": "object",
         "required": [
@@ -9721,6 +10875,9 @@
             "type": "string"
           },
           "description": {
+            "type": "string"
+          },
+          "expected_digest": {
             "type": "string"
           },
           "force": {
@@ -9737,11 +10894,46 @@
           "name"
         ],
         "properties": {
+          "expected_preview_fingerprint": {
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
           "params": {
             "type": "object"
+          }
+        }
+      },
+      "SnippetsSnippetsFixtureParams": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "check": {
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          },
+          "results": {
+            "type": "object"
+          },
+          "schemas": {
+            "type": "object"
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "variant": {
+            "type": "string"
           }
         }
       },
@@ -9753,6 +10945,34 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "SnippetsSnippetsHistoryParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "SnippetsSnippetsPreviewParams": {
+        "type": "object",
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
           }
         }
       },
@@ -9780,6 +11000,17 @@
           }
         }
       },
+      "SnippetsSnippetsReceiptParams": {
+        "type": "object",
+        "required": [
+          "execution_id"
+        ],
+        "properties": {
+          "execution_id": {
+            "type": "string"
+          }
+        }
+      },
       "SnippetsSnippetsRemoveParams": {
         "type": "object",
         "required": [
@@ -9788,6 +11019,32 @@
         "properties": {
           "name": {
             "type": "string"
+          }
+        }
+      },
+      "SnippetsSnippetsReplayParams": {
+        "type": "object",
+        "required": [
+          "execution_id",
+          "params",
+          "expected_preview_fingerprint",
+          "acknowledged_drift"
+        ],
+        "properties": {
+          "acknowledged_drift": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "execution_id": {
+            "type": "string"
+          },
+          "expected_preview_fingerprint": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
           }
         }
       },
@@ -9907,6 +11164,10 @@
           "action": {
             "type": "string",
             "enum": [
+              "stash.save_text",
+              "stash.read_text",
+              "stash.folders",
+              "stash.move",
               "stash.list",
               "stash.search",
               "stash.stats",
@@ -9926,6 +11187,8 @@
       "StashFileDoc": {
         "type": "object",
         "required": [
+          "folder",
+          "content_type",
           "file_id",
           "uri",
           "display_name",
@@ -9935,6 +11198,9 @@
           "owned"
         ],
         "properties": {
+          "content_type": {
+            "type": "string"
+          },
           "created_at": {
             "type": "integer",
             "format": "int64"
@@ -9943,6 +11209,9 @@
             "type": "string"
           },
           "file_id": {
+            "type": "string"
+          },
+          "folder": {
             "type": "string"
           },
           "owned": {
@@ -9959,6 +11228,43 @@
           },
           "uri": {
             "type": "string"
+          }
+        }
+      },
+      "StashFolderDoc": {
+        "type": "object",
+        "required": [
+          "folder",
+          "file_count"
+        ],
+        "properties": {
+          "file_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "folder": {
+            "type": "string"
+          }
+        }
+      },
+      "StashFolderPageDoc": {
+        "type": "object",
+        "required": [
+          "folders"
+        ],
+        "properties": {
+          "folders": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StashFolderDoc"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -10109,6 +11415,27 @@
           }
         }
       },
+      "StashStashFoldersParams": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          }
+        }
+      },
       "StashStashGrantsCreateParams": {
         "type": "object",
         "required": [
@@ -10192,6 +11519,9 @@
           "cursor": {
             "type": "string"
           },
+          "folder": {
+            "type": "string"
+          },
           "limit": {
             "type": "integer"
           },
@@ -10228,6 +11558,55 @@
           }
         }
       },
+      "StashStashMoveParams": {
+        "type": "object",
+        "required": [
+          "file_id",
+          "folder"
+        ],
+        "properties": {
+          "file_id": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          }
+        }
+      },
+      "StashStashRead_textParams": {
+        "type": "object",
+        "required": [
+          "uri"
+        ],
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          },
+          "uri": {
+            "type": "string"
+          }
+        }
+      },
       "StashStashRenameParams": {
         "type": "object",
         "required": [
@@ -10253,6 +11632,41 @@
           }
         }
       },
+      "StashStashSave_textParams": {
+        "type": "object",
+        "required": [
+          "filename",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "folder": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "markdown",
+              "text"
+            ]
+          },
+          "owner_id": {
+            "type": "string"
+          },
+          "owner_kind": {
+            "type": "string",
+            "enum": [
+              "personal",
+              "team"
+            ]
+          }
+        }
+      },
       "StashStashSearchParams": {
         "type": "object",
         "required": [
@@ -10260,6 +11674,9 @@
         ],
         "properties": {
           "cursor": {
+            "type": "string"
+          },
+          "folder": {
             "type": "string"
           },
           "limit": {
@@ -10674,6 +12091,11 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "lab_session"
+      },
+      "static_browser_session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "labby_bearer_session"
       }
     }
   }

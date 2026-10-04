@@ -68,5 +68,5 @@ attested_names = sorted(
     + [row["name"] for row in auxiliary]
     + ["release-manifest.json"]
 )
-payload = {"schema": "ai.dinglebear.labby/release-manifest/v1", "repository": args.repository, "tag": args.tag, "subjects": subjects, "auxiliary": auxiliary, "attestations": [{"subject": name} for name in attested_names], "distributions": distributions}
+payload = {"schema": "ai.dinglebear.labby/release-manifest/v1", "repository": args.repository, "tag": args.tag, "subjects": subjects, "auxiliary": auxiliary, "attestations": [{"subject": name} for name in attested_names], "provenance_bundles": [{"subject": name, "name": name + ".sigstore.jsonl"} for name in attested_names], "distributions": distributions}
 args.output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")

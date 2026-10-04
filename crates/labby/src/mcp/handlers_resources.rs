@@ -822,6 +822,23 @@ impl LabMcpServer {
         let mut resources = CatalogSnapshotCollector::new(page_collector);
         let mut regular_resource_provenance = Vec::new();
 
+        #[cfg(feature = "gateway")]
+        if self.gateway_manager.is_some()
+            && self.route_scope.is_root()
+            && admin_app_resources_visible(auth)
+        {
+            for (uri, name) in [
+                ("lab://gateway/status", "Gateway status"),
+                ("lab://gateway/limits", "Code Mode limits"),
+                ("lab://capabilities", "Capability overview"),
+            ] {
+                resources.accept(Resource::new(uri, name).with_mime_type("application/json"));
+                if resources.finished() {
+                    break;
+                }
+            }
+        }
+
         for resource in self.file_stash_resources(&context).await? {
             resources.accept(resource);
             if resources.finished() {
@@ -1815,7 +1832,7 @@ impl LabMcpServer {
 
         // Branch 2: gateway-synthetic resources.
         #[cfg(feature = "gateway")]
-        if uri.starts_with("lab://gateway/") {
+        if uri.starts_with("lab://gateway/") || uri == "lab://capabilities" {
             return self
                 .read_gateway_resource_impl(&uri, &subject, start, &context)
                 .await
@@ -5296,6 +5313,30 @@ for (const value of [
     }
 
     #[test]
+    fn gateway_status_capabilities_distinguish_unknown_zero_stale_and_scope() {
+        let source = function_source(
+            GATEWAY_STATUS_APP_FALLBACK_HTML,
+            "function meta(item)",
+            "function markup(item)",
+        );
+        run_node(&format!(
+            r#"
+{source}
+const observation = (state, discovered, exposed) => ({{scope:'credential', tools:{{state,discovered,exposed}}, resources:{{state:'unknown'}}, prompts:{{state:'unknown'}}, skills:{{state:'unknown'}}}});
+for (const [state, discovered, exposed, expected] of [
+ ['unknown',null,null,'Not discovered: tools'], ['known',0,0,'0 discovered / 0 exposed tools'],
+ ['known',91,90,'91 discovered / 90 exposed tools'], ['stale',91,90,'tools (stale)'], ['failed',null,null,'Discovery failed: tools']
+]) {{
+ const text = meta({{capability_observation:observation(state,discovered,exposed)}});
+ if (!text.includes(expected) || !text.includes('Credential catalog')) throw new Error(state + ': ' + text);
+}}
+if (!meta({{}}).includes('Not discovered')) throw new Error('legacy missing metadata claims an empty catalog');
+if (!meta({{capability_observation:{{scope:'global',tools:{{state:'known',discovered:0,exposed:0}}}}}}).includes('Global catalog')) throw new Error('global scope hidden');
+"#
+        ));
+    }
+
+    #[test]
     fn gateway_status_app_handles_live_status_and_mobile_lifecycle() {
         let descriptor = GATEWAY_STATUS_APP_RESOURCE_DESCRIPTORS
             .iter()
@@ -5308,7 +5349,7 @@ for (const value of [
         for expected in [
             "warning.message",
             "warnings.map",
-            "exposed_tool_count??",
+            "capability_observation",
             "window.openai.toolOutput",
             "observer.disconnect()",
             ".badge.disabled",

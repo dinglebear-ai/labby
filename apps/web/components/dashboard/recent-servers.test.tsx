@@ -49,3 +49,10 @@ test('recent server status uses the shared discovering and attention semantics',
   )
   assert.match(stale, /aria-label="Needs attention"/)
 })
+test('scoped availability labels have room and never render unknown as zero', () => {
+ const unknown = {state:'unknown' as const, discovered:null, exposed:null}
+ const html = renderToStaticMarkup(<RecentServers gateways={[{...gateway,status:{...gateway.status,capability_observation:{scope:'credential',tools:unknown,resources:unknown,prompts:unknown,skills:unknown}}}]}/> )
+ assert.match(html,/Not discovered/)
+ assert.doesNotMatch(html,/w-\[30px\]/)
+ assert.match(html,/max-w-\[140px\]/)
+})

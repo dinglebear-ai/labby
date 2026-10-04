@@ -1,0 +1,124 @@
+{
+  "calls": [
+    {
+      "tool": "time::get_current_time",
+      "result": {
+        "datetime": "2026-10-01T12:00:00-04:00"
+      },
+      "match": {
+        "timezone": "America/New_York"
+      }
+    },
+    {
+      "tool": "context7::resolve-library-id",
+      "result": {
+        "libraries": [
+          {
+            "id": "/websites/rs_tokio_tokio"
+          }
+        ]
+      },
+      "match": {
+        "libraryName": "Tokio",
+        "query": "fixture blocking question"
+      }
+    },
+    {
+      "tool": "context7::query-docs",
+      "result": {
+        "content": "spawn_blocking isolates blocking work"
+      },
+      "match": {
+        "libraryId": "/websites/rs_tokio_tokio",
+        "query": "fixture blocking question"
+      }
+    },
+    {
+      "tool": "searxng::searxng_web_search",
+      "result": {
+        "results": [
+          {
+            "url": "https://modelcontextprotocol.io",
+            "title": "MCP"
+          }
+        ]
+      },
+      "match": {
+        "query": "Model Context Protocol Rust SDK",
+        "num_results": 3
+      }
+    },
+    {
+      "tool": "cloudflare-docs::search_cloudflare_documentation",
+      "result": {
+        "results": [
+          {
+            "title": "Durable Objects",
+            "url": "https://developers.cloudflare.com/durable-objects/",
+            "similarity": 0.9,
+            "text": "Stateful coordination"
+          }
+        ]
+      },
+      "match": {
+        "query": "fixture durable objects question"
+      }
+    },
+    {
+      "tool": "github::search_repositories",
+      "result": {
+        "total_count": 1,
+        "items": [
+          {
+            "full_name": "modelcontextprotocol/rust-sdk",
+            "description": "Rust MCP SDK",
+            "language": "Rust",
+            "stargazers_count": 5,
+            "html_url": "https://github.com/modelcontextprotocol/rust-sdk"
+          }
+        ]
+      },
+      "match": {
+        "query": "fixture rust sdk query",
+        "perPage": 3
+      }
+    },
+    {
+      "tool": "Axon::axon",
+      "result": {
+        "ok": true,
+        "data": {
+          "results": [
+            {
+              "title": "Rust SDK"
+            }
+          ]
+        }
+      },
+      "match": {
+        "action": "search",
+        "query": "Model Context Protocol Rust SDK",
+        "limit": 3
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/status": "ok",
+    "/calls/4/result/results/0/title": "Durable Objects",
+    "/calls/5/result/repositories/0/full_name": "modelcontextprotocol/rust-sdk",
+    "/input/libraryQuestion": "fixture blocking question",
+    "/input/cloudflareQuery": "fixture durable objects question",
+    "/input/githubRepoQuery": "fixture rust sdk query"
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 7,
+    "output_bytes": 16000
+  },
+  "params": {
+    "library_question": "fixture blocking question",
+    "cloudflare_query": "fixture durable objects question",
+    "github_repo_query": "fixture rust sdk query"
+  }
+}

@@ -6,11 +6,11 @@ updated: "2026-07-30"
 
 # Dispatch
 
-This document is the canonical dispatch-layer contract for `lab`.
+This document is the canonical dispatch-layer contract for Labby.
 
 It defines:
 
-- the layer model between product surfaces and `labby-apis`
+- the layer model between product surfaces and shared runtimes
 - which layer owns operation metadata and execution
 - the shared operation schema used across CLI, MCP, and API
 - allowed dependency direction
@@ -36,9 +36,10 @@ This prevents:
 
 ## Layer Model
 
-The stack is:
+The product adapters call shared dispatch or the owning extracted runtime:
 
-- `labby-apis`
+- `labby-primitives`, `labby-runtime`, `labby-gateway`, `labby-codemode`, and `labby-auth`
+- `labby-apis` where pure SDK/HTTP contracts are needed
 - `crates/labby/src/dispatch`
 - `crates/labby/src/cli`
 - `crates/labby/src/mcp`
@@ -48,12 +49,12 @@ The stack is:
 
 `labby-apis` owns:
 
-- upstream API clients
-- upstream request and response types
-- shared transport behavior
-- shared transport error taxonomy
+- pure setup, doctor, and provider-neutral Artifact control contracts
+- shared HTTP primitives, request/response types, and SDK error taxonomy
 
-It does not own product-surface dispatch.
+It does not own product-surface dispatch or the upstream MCP gateway. The latter
+lives in `labby-gateway`; services need not introduce an SDK client when their
+operation is owned by a local or extracted runtime.
 
 ### `crates/labby/src/dispatch`
 
@@ -66,7 +67,7 @@ It owns:
 - param metadata and validation
 - destructive-op metadata
 - client and instance resolution
-- calling the SDK client
+- invoking the owning runtime or SDK client
 - surface-neutral results
 - surface-neutral dispatch errors
 
@@ -79,10 +80,11 @@ It does not own:
 - axum response types
 - table rendering
 
-Synthetic gateway workflows such as Code Mode still follow this ownership rule:
-the schema-first IDs, search/schema composition, sandbox parent broker, and
-tool-call dispatch live in `dispatch/gateway/`; MCP and CLI only adapt their
-surface-specific inputs and outputs.
+Code Mode follows the same ownership rule across extracted crates:
+`labby-gateway/src/gateway/code_mode/` owns catalog/search and upstream host
+integration; `labby-codemode` owns the sandbox, parent broker, and runner
+protocol. `dispatch/gateway/` supplies product wiring. MCP and CLI adapt inputs
+and outputs; neither owns the shared execution engine.
 
 ### Surface Adapters
 
@@ -99,11 +101,10 @@ CLI owns:
 
 CLI does not own shared operation semantics.
 
-CLI must consume the shared operation schema for:
-
-- help text
-- validation consistency
-- destructive-op behavior
+CLI syntax, help, and completion derive from the Clap command graph. Shared
+dispatch still owns parameter validation and action metadata; CLI confirmation
+uses the shared destructive classification. Generated CLI help is therefore a
+separate projection from the action catalog, not a catalog-generated CLI.
 
 The CLI does not need to expose machine-oriented `action + params` syntax to humans in order to consume the shared schema.
 
@@ -138,9 +139,9 @@ API must use the shared operation schema for validation. When API documentation 
 
 Allowed:
 
-- `cli -> dispatch -> labby-apis`
-- `mcp -> dispatch -> labby-apis`
-- `api -> dispatch -> labby-apis`
+- `cli -> dispatch/owning runtime -> SDK where needed`
+- `mcp -> dispatch/owning runtime -> SDK where needed`
+- `api -> dispatch/owning runtime -> SDK where needed`
 
 Forbidden:
 
@@ -160,13 +161,18 @@ is also encoded in the `ALLOWED_EDGES` matrix in
 `crates/labby/tests/architecture_orchestrator.rs`, which fails the build if an
 unlisted `dispatch::<a> → dispatch::<b>` import appears.
 
-Currently sanctioned edges:
+The executable allowlist is authoritative and includes, for example:
 
 - **`setup → doctor`** — the Bootstrap orchestrator exception.
   `setup.draft.commit` invokes `doctor::dispatch("audit.full", _)` to gate the
   merge of `.env.draft` into `.env` on a clean health audit. The direction is
   strictly one-way: setup may depend on doctor; doctor must never depend on
   setup.
+
+- `gateway → snippets`, `doctor → gateway`, and `setup → gateway` for runtime
+  integration; `skills → skill_library` for library delegation; and
+  `tasks → agents` for pinned Agent execution. The matrix also includes Artifact
+  composition edges; do not treat this summary as its complete inventory.
 
 Surface adapters (CLI/MCP/HTTP) must not chain dispatch calls across services
 themselves — composite orchestration belongs in the shared dispatch layer so all
@@ -183,7 +189,7 @@ That catalog owns:
 - operation name
 - description
 - param schema metadata
-- destructive flag
+- destructive flag and independent admin requirement
 - result description
 
 Operation names must remain stable and machine-oriented. Dotted names such as `movie.get` or `sites.list` are appropriate for shared internal identity even when the CLI exposes a different typed syntax.
@@ -202,7 +208,8 @@ That schema must define:
 - destructive flag
 - result description
 
-One acceptable shape is a shared `OperationSpec` plus `ParamSpec` family, but the exact type names are less important than the ownership rule:
+The implementation uses `ActionSpec` and `ParamSpec` from `labby-primitives`
+(with compatibility re-exports). The ownership rule is:
 
 - the schema belongs to `dispatch`
 - surfaces project it
@@ -210,7 +217,7 @@ One acceptable shape is a shared `OperationSpec` plus `ParamSpec` family, but th
 
 The shared schema is the semantic contract that keeps:
 
-- typed CLI help and validation
+- typed CLI operation mapping and shared validation
 - MCP `help` and `schema`
 - API validation and documentation
 
@@ -232,7 +239,7 @@ In practice, this must be modeled as the shared operation schema rather than as 
 
 Transport layers may project that metadata into:
 
-- CLI help
+- action explanations used alongside Clap-owned CLI help
 - MCP `help`
 - MCP `schema`
 - API documentation
@@ -251,15 +258,19 @@ Those errors may represent:
 - missing or invalid params (`ToolError::MissingParam`, `ToolError::InvalidParam`)
 - unknown operations (`ToolError::UnknownAction`)
 - unknown instances (`ToolError::UnknownInstance`)
-- missing destructive confirmation (`ToolError::ConfirmationRequired`) — enforced by the API dispatch wrapper
+- missing destructive confirmation (`ToolError::ConfirmationRequired`) on
+  surfaces that implement confirmation; HTTP action dispatch does not add an
+  interactive confirmation gate
 
 Surface adapters receive `ToolError` directly and handle it for their transport:
 
 - CLI: serialize to JSON string or format for human display
 - MCP: already the native envelope type
-- API: `IntoResponse` impl on `ToolError` maps `kind()` to HTTP status
+- API: the local `ApiError` wrapper implements `IntoResponse` and maps `kind()`
+  to HTTP status while preserving the recovery envelope
 
-`ToolError` must not be constructed or pattern-matched inside `labby-apis`. It belongs to the `labby` product crate.
+`ToolError` must not be constructed or pattern-matched inside `labby-apis`. Its
+definition lives in `labby-runtime/src/error.rs` and product dispatch re-exports it.
 
 The canonical shared error vocabulary remains defined by [ERRORS.md](./ERRORS.md).
 
@@ -279,7 +290,7 @@ The canonical serialization rules remain defined by [design/SERIALIZATION.md](..
 
 ## Client Resolution
 
-Client and instance resolution belong below or inside `services`.
+Client and instance resolution belong below or inside shared dispatch.
 
 Rules:
 
@@ -303,12 +314,13 @@ The CLI remains free to choose ergonomic command names and flags as long as thos
 
 ## MCP Contract
 
-MCP remains the machine-facing one-tool-per-service contract.
+MCP defaults to the machine-facing router projection.
 
 Rules:
 
-- one tool per service
-- input remains `action + params`
+- router mode exposes one tool per service with `action + params`
+- atomic and combined projections derive flat per-action tools from the same
+  `ActionSpec`; `permanent_tools.rs` owns descriptor construction
 - `help` and `schema` are projections of the shared operation schema
 - elicitation behavior is driven by the shared destructive metadata
 
@@ -320,7 +332,8 @@ API mirrors the machine-facing dispatch model.
 
 Rules:
 
-- request shape remains `action + params`
+- generic service dispatch uses `action + params`; dedicated REST routes adapt
+  their own path/query/body shape to the same shared operations
 - API owns routing, extraction, and status mapping only
 - API must use the same semantic operation catalog and execution path as MCP and CLI
 
@@ -328,7 +341,7 @@ API must not call MCP dispatchers directly.
 
 ## Observability Boundary
 
-Dispatch observability must be centered around the shared `services` execution boundary.
+Dispatch observability must be centered around the shared operation execution boundary.
 
 That means:
 
@@ -361,9 +374,9 @@ Existing MCP service modules may be the source material for the shared dispatch 
 
 The target state is:
 
-- move shared orchestration into `services`
-- let MCP wrap `services`
-- let CLI wrap `services`
+- move shared orchestration into `dispatch` or its owning extracted runtime
+- let MCP wrap that shared operation
+- let CLI wrap that shared operation
 - let API wrap `dispatch`
 
 The end state must not preserve `CLI -> MCP` or `API -> MCP` dependencies.

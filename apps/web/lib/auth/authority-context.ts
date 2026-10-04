@@ -16,11 +16,13 @@ export function beginAuthorityRequest(snapshot: AuthoritySnapshot, contextGenera
   let bucket = controllers.get(generation)
   if (!bucket) { bucket = new Set(); controllers.set(generation, bucket) }
   bucket.add(controller)
+  const forwardAbort = () => controller.abort(callerSignal?.reason)
   if (callerSignal) {
     if (callerSignal.aborted) controller.abort(callerSignal.reason)
-    else callerSignal.addEventListener('abort', () => controller.abort(callerSignal.reason), { once: true })
+    else callerSignal.addEventListener('abort', forwardAbort, { once: true })
   }
   const finish = () => {
+    callerSignal?.removeEventListener('abort', forwardAbort)
     bucket?.delete(controller)
     if (bucket?.size === 0 && controllers.get(generation) === bucket) controllers.delete(generation)
   }

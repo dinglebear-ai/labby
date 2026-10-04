@@ -156,9 +156,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         helper = self.text("scripts/ci/verify-and-activate-release.sh")
         self.assertLess(helper.index("verify-release-provenance.sh"), helper.index('exec "$@"'))
         unix_installer = self.text("scripts/install.sh")
-        self.assertLess(unix_installer.index("gh attestation verify"), unix_installer.index("tar -xzf"))
+        self.assertLess(unix_installer.index('verify_release_provenance "$tmp/$asset"'), unix_installer.index('tar -xzf "$tmp/$asset"'))
         windows_installer = self.text("scripts/install.ps1")
-        self.assertLess(windows_installer.index("gh attestation verify"), windows_installer.index("Expand-Archive"))
+        self.assertLess(windows_installer.index("Test-LabbyGitHubCliCommand -Executable $Verifier -Arguments $arguments"), windows_installer.index("Expand-Archive"))
 
     def test_release_has_executable_n_minus_one_upgrade_qualification(self) -> None:
         workflow = self.text(".github/workflows/release.yml")
@@ -193,6 +193,19 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         release_contract = jobs["release-contract"]
         self.assertIn("needs.changes.outputs.workflow", release_contract["if"])
         self.assertIn("scripts.ci.test_release_hardening", str(release_contract["steps"]))
+
+    def test_first_use_harness_changes_run_their_release_contract_suites(self) -> None:
+        from scripts.ci.changed_paths import classify
+        ci = yaml.load(self.text(".github/workflows/ci.yml"), Loader=yaml.BaseLoader)
+        commands = "\n".join(step.get("run", "") for step in ci["jobs"]["release-contract"]["steps"])
+        for suite in ("test_first_use_qualification", "test_first_use_native_driver"):
+            self.assertIn("scripts.ci." + suite, commands)
+        for name in ("qualify-first-use.py", "first-use-native-driver.py", "test_first_use_qualification.py", "test_first_use_native_driver.py"):
+            with self.subTest(path=name):
+                gates = classify("pull_request", ["scripts/ci/" + name])
+                self.assertTrue(gates["workflow"])
+                self.assertTrue(gates["release"])
+                self.assertFalse(gates["rust_compile"])
 
     def test_release_preflight_checks_baselines_and_credentials_before_builds(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
@@ -858,8 +871,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_ci_runs_centralized_lifecycle_static_analysis(self) -> None:
         workflow = self.text(".github/workflows/ci.yml")
         self.assertIn("scripts/ci/check-lifecycle-scripts.sh", workflow)
-        self.assertIn("PSScriptAnalyzer", workflow)
-        self.assertIn("Invoke-ScriptAnalyzer", workflow)
+        self.assertNotIn("PSScriptAnalyzer", workflow)
+        self.assertNotIn("Invoke-ScriptAnalyzer", workflow)
 
 class PromotionDurabilityTests(unittest.TestCase):
     def npm_helper(self):
@@ -889,6 +902,19 @@ class PromotionDurabilityTests(unittest.TestCase):
             helper.verify_latest("@example/pkg", None)
 
     def test_incus_rollback_preserves_object_in_shallow_checkout(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=False)
+
+    def test_incus_image_ancestor_promotes_and_rolls_back_from_shallow_checkout(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=True)
+
+    def test_incus_image_newer_pointer_is_refused_from_shallow_checkout(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=True, newer_pointer=True)
+
+    def test_incus_image_history_fetch_failure_leaves_pointer_unchanged(self):
+        self.assert_incus_shallow_pointer_transaction(image_release=True, history_fetch_failure=True)
+
+    def assert_incus_shallow_pointer_transaction(self, *, image_release, newer_pointer=False,
+                                                 history_fetch_failure=False):
         import hashlib
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
@@ -909,8 +935,15 @@ class PromotionDurabilityTests(unittest.TestCase):
             (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.1.0"\n')
             git("commit", "-am", "candidate")
             candidate = git("rev-parse", "HEAD")
+            git("branch", "candidate", candidate)
+            if newer_pointer:
+                (source / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.0"\n')
+                git("commit", "-am", "newer stable")
+                git("tag", "-f", "-a", "labby-incus-latest", "-m", "newer annotated target")
+                previous = git("rev-parse", "refs/tags/labby-incus-latest")
             git("clone", "--bare", str(source), str(remote))
-            git("clone", "--depth=1", "--no-tags", remote.as_uri(), str(checkout))
+            git("clone", "--depth=1", "--no-tags", "--branch", "candidate", remote.as_uri(), str(checkout))
+            self.assertEqual("true", git("rev-parse", "--is-shallow-repository", cwd=checkout))
             missing = subprocess.run(["git", "cat-file", "-e", previous], cwd=checkout, capture_output=True)
             self.assertNotEqual(0, missing.returncode)
             # Rewrite the script's authenticated URL only inside this disposable
@@ -925,9 +958,37 @@ class PromotionDurabilityTests(unittest.TestCase):
             gh.write_text('#!/bin/sh\ncase "$*" in *--pattern*) exit 1;; esac\nif [ "$2" = download ]; then cp "$ASSETS/"* "$5/"; fi\n')
             gh.chmod(0o755)
             receipt = work / "receipt"
-            env = dict(os.environ, GH_TOKEN="test", GITHUB_REPOSITORY="example/repo", GITHUB_SHA=candidate, RELEASE_TAG="v1.1.0", INCUS_POINTER_RECEIPT=str(receipt), GH_BIN=str(gh), ASSETS=str(assets))
+            release_tag = f"incus-{candidate}" if image_release else "v1.1.0"
+            env = dict(os.environ, GH_TOKEN="test", GITHUB_REPOSITORY="example/repo", GITHUB_SHA=candidate, RELEASE_TAG=release_tag, INCUS_POINTER_RECEIPT=str(receipt), GH_BIN=str(gh), ASSETS=str(assets))
+            if history_fetch_failure:
+                import shutil
+                real_git = shutil.which("git")
+                self.assertIsNotNone(real_git)
+                bin_dir = work / "bin"
+                bin_dir.mkdir()
+                git_wrapper = bin_dir / "git"
+                git_wrapper.write_text('#!/bin/sh\nfor arg in "$@"; do [ "$arg" != --unshallow ] || exit 37; done\nexec "$REAL_GIT" "$@"\n')
+                git_wrapper.chmod(0o755)
+                env.update(PATH=str(bin_dir) + os.pathsep + env["PATH"], REAL_GIT=real_git)
             command = ["bash", str(ROOT / "scripts/ci/promote-incus-pointer.sh")]
-            subprocess.run(command + ["promote"], cwd=checkout, env=env, check=True, capture_output=True)
+            promoted = subprocess.run(command + ["promote"], cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
+            if history_fetch_failure:
+                self.assertNotEqual(0, promoted.returncode)
+                self.assertIn("unable to verify Incus ancestry: candidate history fetch failed", promoted.stderr)
+                self.assertEqual(previous, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+                self.assertFalse((receipt / "state").exists())
+                self.assertFalse((receipt / "candidate/generation.json").exists())
+                return
+            if image_release:
+                self.assertEqual("false", git("rev-parse", "--is-shallow-repository", cwd=checkout))
+            if newer_pointer:
+                self.assertNotEqual(0, promoted.returncode)
+                self.assertIn("refusing to replace a newer Incus stable generation", promoted.stderr)
+                self.assertEqual(previous, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
+                self.assertFalse((receipt / "state").exists(), "refusal must precede pointer preparation")
+                self.assertFalse((receipt / "candidate/generation.json").exists(), "refusal must precede candidate publication")
+                return
+            self.assertEqual(0, promoted.returncode, promoted.stdout + promoted.stderr)
             self.assertEqual(candidate, git("rev-parse", "refs/tags/labby-incus-latest", cwd=remote))
             # Overwrite FETCH_HEAD; the durable local recovery ref must survive.
             git("fetch", "origin", "main", cwd=checkout)
@@ -1139,14 +1200,14 @@ class ReleaseHelperTests(unittest.TestCase):
             work = Path(tmp)
             log = work / "calls"
             gh = work / "gh"
-            gh.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$CALL_LOG\"\n")
+            gh.write_text("#!/bin/sh\ncase \"$*\" in --version) echo 'gh version 2.102.0'; exit 0;; 'attestation verify --help') exit 0;; esac\nprintf '%s\\n' \"$*\" > \"$CALL_LOG\"\n")
             gh.chmod(0o755)
             artifact = work / "artifact"
             bundle = work / "bundle.jsonl"
             root = work / "trusted-root.jsonl"
             for path in (artifact, bundle, root):
                 path.write_text("fixture")
-            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log)}
+            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "CALL_LOG": str(log), "GH_VERIFIER": str(gh)}
             result = subprocess.run(
                 [
                     "bash", str(ROOT / "scripts/ci/verify-release-provenance.sh"),
@@ -1170,12 +1231,13 @@ class ReleaseHelperTests(unittest.TestCase):
             gh = work / "gh"
             gh.write_text(
                 "#!/bin/sh\n"
+                "case \"$*\" in --version) echo 'gh version 2.102.0'; exit 0;; 'attestation verify --help') exit 0;; esac\n"
                 "case \" $* \" in\n"
                 "*'--repo acme/labby '*'--signer-workflow acme/labby/.github/workflows/release.yml '*'--source-ref refs/tags/v1.2.3 '*) exit 0;;\n"
                 "*) exit 9;; esac\n"
             )
             gh.chmod(0o755)
-            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}"}
+            env = os.environ | {"PATH": f"{work}:{os.environ['PATH']}", "GH_VERIFIER": str(gh)}
             base = ["bash", str(ROOT / "scripts/ci/verify-release-provenance.sh"), "--workflow", "release.yml", "--ref", "refs/tags/v1.2.3", "--artifact", str(artifact)]
             self.assertEqual(0, subprocess.run(base + ["--repo", "acme/labby"], env=env, check=False).returncode)
             self.assertNotEqual(0, subprocess.run(base + ["--repo", "evil/labby"], env=env, check=False).returncode)
@@ -1801,22 +1863,36 @@ if authenticated_action; then exit 93; fi
         code = patch.split("<< 'PY'\n", 1)[1].split("\nPY", 1)[0]
         paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
                  "apps/tauri/package.json", "apps/tauri/src-tauri/Cargo.toml",
-                 "apps/tauri/src-tauri/tauri.conf.json"]
+                 "apps/tauri/src-tauri/tauri.conf.json",
+                 "packages/labby-microsandbox/package.json",
+                 "packages/labby-microsandbox/package-lock.json",
+                 "packages/labby-tailcat-browser/package.json",
+                 "packages/labby-tailcat-browser/package-lock.json"]
         # The verification workspace pins labby-model at the exact release
         # version; the patch script refuses to run without that manifest.
         pinned = "tools/verification/hosts/labby/Cargo.toml"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for path in paths + [pinned]:
+            for path in paths + [pinned, "scripts/sync-npm-release-version.py"]:
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(self.text(path))
+            locks = [path for path in paths if path.endswith("package-lock.json")]
+            dependencies = {
+                path: {key: value for key, value in json.loads((root / path).read_text())["packages"].items() if key}
+                for path in locks
+            }
             for version in ["1.19.0", "1.20.0"]:
                 subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
                 for path in paths:
                     text = (root / path).read_text()
                     if path.endswith(".json"):
-                        self.assertEqual(json.loads(text)["version"], version, path)
+                        document = json.loads(text)
+                        self.assertEqual(document["version"], version, path)
+                        if path in locks:
+                            self.assertEqual(document["packages"][""]["version"], version, path)
+                            self.assertEqual({key: value for key, value in document["packages"].items() if key},
+                                             dependencies[path], path)
                     else:
                         self.assertIn(f'version = "{version}"', text, path)
                 self.assertIn(f'labby-model = {{ version = "={version}"', (root / pinned).read_text(), pinned)

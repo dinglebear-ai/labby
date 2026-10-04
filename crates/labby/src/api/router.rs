@@ -11,6 +11,9 @@ mod platform_admin_elevation;
 #[path = "protected_mcp_route.rs"]
 mod protected_mcp_route;
 
+#[cfg(all(feature = "gateway", any(feature = "tailcat", test)))]
+pub(crate) use protected_mcp_route::protected_mcp_route_entry;
+
 #[cfg(feature = "gateway")]
 use protected_mcp_route::protected_mcp_intercept;
 #[cfg(all(test, feature = "gateway"))]
@@ -969,7 +972,11 @@ pub(crate) fn build_router_with_external_auth(
 
     let mcp_protected = mcp_router.map(|mcp| {
         if credential_auth_configured {
-            mcp.route_layer(make_auth_layer(false))
+            mcp.route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::dispatch::setup::client_evidence::middleware,
+            ))
+            .route_layer(make_auth_layer(false))
         } else {
             mcp
         }
@@ -1065,6 +1072,15 @@ pub(crate) fn build_router_with_external_auth(
                     RouteAuth::BrowserSession,
                 ),
                 get(crate::api::browser_session::auth_session),
+            )
+            .route(
+                crate::api::route_registry::setup_handoff_descriptor(false),
+                post(crate::api::setup_handoff::start),
+            )
+            .route(
+                crate::api::route_registry::setup_handoff_descriptor(true),
+                post(crate::api::setup_handoff::redeem)
+                    .layer(axum::extract::DefaultBodyLimit::max(1024)),
             )
             .route(
                 RouteDescriptor::new(
@@ -1634,6 +1650,14 @@ mod tests {
                 .replace("{name}", "default")
                 .replace(PATH_PLACEHOLDER, "mcp");
             let method = Method::from_bytes(route.method.as_bytes()).unwrap();
+            // Proof redemption validates its own token rather than the service
+            // action envelope. Use a well-formed denied proof to reach that
+            // authentication boundary instead of failing JSON extraction.
+            let request_body = if route.path == "/auth/setup-handoff/redeem" {
+                r#"{"token":"unissued-proof"}"#
+            } else {
+                r#"{"action":"help","params":{}}"#
+            };
             let response = build_router_with_bearer(
                 state.clone(),
                 Some("route-denominator-secret".into()),
@@ -1648,7 +1672,7 @@ mod tests {
                     .uri(&path)
                     .header(header::HOST, "lab.example.com")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(r#"{"action":"help","params":{}}"#))
+                    .body(Body::from(request_body))
                     .unwrap(),
             )
             .await
@@ -1679,6 +1703,14 @@ mod tests {
                 }
                 "/auth/logout" => {
                     assert_eq!(status, StatusCode::NO_CONTENT);
+                    continue;
+                }
+                "/auth/setup-handoff/start" | "/auth/setup-handoff/redeem" => {
+                    assert_eq!(
+                        status,
+                        StatusCode::FORBIDDEN,
+                        "local handoff rejects this non-loopback Host before dispatch"
+                    );
                     continue;
                 }
                 _ => {}
@@ -5357,7 +5389,15 @@ mod tests {
 
         let state = AppState::new().with_web_assets_dir(dir.path().to_path_buf());
         let app = build_router_with_bearer(state, None, None);
-        for route in ["/gateways/", "/browsers", "/browsers/", "/stash", "/stash/"] {
+        for route in [
+            "/gateways/",
+            "/browsers",
+            "/browsers/",
+            "/stash",
+            "/stash/",
+            "/projects",
+            "/projects/",
+        ] {
             let response = app
                 .clone()
                 .oneshot(
@@ -5375,6 +5415,22 @@ mod tests {
                 .unwrap();
             let text = String::from_utf8(body.to_vec()).unwrap();
             assert!(text.contains("Labby"));
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_routes_are_not_web_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("index.html"), "<html>Labby</html>").unwrap();
+        let state = AppState::new().with_web_assets_dir(dir.path().to_path_buf());
+        let app = build_router_with_bearer(state, None, None);
+        for route in ["/projects/unknown", "/v1/unknown", "/unknown"] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(route).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "route: {route}");
         }
     }
 

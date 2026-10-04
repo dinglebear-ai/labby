@@ -53,6 +53,10 @@ use super::types::CatalogChangeNotifier;
 
 #[derive(Clone)]
 pub(super) struct OauthStatusDiscoverySnapshot {
+    pub(super) config_fingerprint: String,
+    pub(super) lifecycle_epoch: Option<labby_auth::upstream::cache::OAuthLifecycleEpoch>,
+    pub(super) pool_identity: Option<usize>,
+    pub(super) observation: crate::gateway::view_models::CapabilityObservation,
     pub(super) completed_at: Instant,
     pub(super) summary: Option<crate::upstream::pool::UpstreamCachedSummary>,
     pub(super) tool_error: Option<String>,
@@ -95,6 +99,7 @@ mod prompt_discovery;
 mod protected_routes;
 mod publication;
 mod resource_discovery;
+mod snippet_receipts;
 #[cfg(test)]
 mod tests;
 mod usage;
@@ -145,6 +150,7 @@ pub struct GatewayManager {
     /// shared with non-gateway Labby code, so they cannot live in `labby-gateway`.
     pub(super) store: Arc<dyn GatewayConfigStore>,
     pub(super) runtime: GatewayRuntimeHandle,
+    pub(super) runtime_process_status_cache: Arc<super::runtime::RuntimeProcessSnapshotCache>,
     pub(super) config: Arc<RwLock<GatewayConfig>>,
     /// Serializes the short publication window spanning the live pool,
     /// config snapshot, protected-route index, and Code Mode flags. Readers
@@ -199,6 +205,7 @@ pub struct GatewayManager {
     pub(super) oauth_redirect_uri: Option<Arc<String>>,
     pub(super) resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     pub(super) usage_store: Option<Arc<crate::usage::UsageStore>>,
+    pub(super) task_route_store: Option<Arc<crate::upstream::pool::TaskRouteStore>>,
     /// Process-lifetime SEP-2243 recovery counters shared by every pool
     /// generation built by this manager.
     pub(super) header_recovery_metrics_store: HeaderRecoveryMetricsStore,

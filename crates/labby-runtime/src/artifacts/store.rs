@@ -1,9 +1,11 @@
 //! Canonical local Artifact store and persistence primitives.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use atomic_write_file::AtomicWriteFile;
 
@@ -96,6 +98,45 @@ pub struct ArtifactExportOptions {
 #[derive(Debug, Clone)]
 pub struct ArtifactStore {
     pub(crate) root: PathBuf,
+    catalog: Arc<Mutex<CatalogCache>>,
+}
+
+// File metadata must be checked for every query: a TTL would retain revoked
+// publication metadata after edits by another process. Unix change time catches
+// in-place writes even if their length and modification time are restored.
+const MAX_CATALOG_CACHE_BYTES: u64 = 32 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeadFingerprint {
+    len: u64,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64, i64, i64, u32),
+}
+
+impl HeadFingerprint {
+    fn from_metadata(metadata: &std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt as _;
+        Self {
+            len: metadata.len(),
+            #[cfg(unix)]
+            identity: (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.mode(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct CatalogCache {
+    heads: BTreeMap<PathBuf, (HeadFingerprint, Arc<ArtifactRecord>)>,
+    sorted: Vec<Arc<ArtifactRecord>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,12 +153,21 @@ pub(crate) enum LibraryPersistFault {
 }
 
 #[cfg(test)]
-fn library_faults()
--> &'static std::sync::Mutex<std::collections::BTreeMap<PathBuf, LibraryPersistFault>> {
-    static FAULTS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::BTreeMap<PathBuf, LibraryPersistFault>>,
-    > = std::sync::OnceLock::new();
+fn library_faults() -> &'static Mutex<BTreeMap<PathBuf, LibraryPersistFault>> {
+    static FAULTS: std::sync::OnceLock<Mutex<BTreeMap<PathBuf, LibraryPersistFault>>> =
+        std::sync::OnceLock::new();
     FAULTS.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+thread_local! {
+    static CATALOG_RECORD_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn read_catalog_record(path: &Path) -> Result<ArtifactRecord, ArtifactError> {
+    #[cfg(test)]
+    CATALOG_RECORD_READS.with(|reads| reads.set(reads.get() + 1));
+    read_json(path, MAX_RECORD_JSON_BYTES)
 }
 
 impl ArtifactStore {
@@ -134,7 +184,10 @@ impl ArtifactStore {
         ensure_private_dir(&root.join("artifacts"))?;
         ensure_private_dir(&root.join("locks"))?;
         ensure_private_dir(&root.join("library"))?;
-        Ok(Self { root })
+        Ok(Self {
+            root,
+            catalog: Arc::default(),
+        })
     }
 
     /// Canonical store root.
@@ -159,9 +212,23 @@ impl ArtifactStore {
     }
 
     /// Read all canonical local Artifact heads within the catalog safety budget.
+    ///
+    /// Clones share a bounded parsed-head cache. Every call enumerates current heads and
+    /// checks their file identity/change metadata before reuse, so external publication
+    /// edits and removals remain visible without a TTL or filesystem-watcher dependency.
+    /// On platforms without Unix change metadata, records are always read and validated.
     pub fn list_records(&self) -> Result<Vec<ArtifactRecord>, ArtifactError> {
+        let started = std::time::Instant::now();
+        let mut cache_hits = 0_usize;
+        let mut parsed_heads = 0_usize;
         let artifacts = self.root.join("artifacts");
-        let mut records = Vec::new();
+        let mut cache = self
+            .catalog
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut heads = BTreeMap::new();
+        let mut cache_bytes = 0_u64;
+        let mut unchanged = true;
         for (entry_count, entry) in std::fs::read_dir(&artifacts)?.enumerate() {
             if entry_count >= MAX_ARTIFACT_LIST_RECORDS {
                 return Err(ArtifactError::LimitExceeded {
@@ -178,27 +245,79 @@ impl ArtifactStore {
                 return Err(ArtifactError::UnsafePath("stored_entry"));
             }
             let path = entry.path().join("artifact.json");
-            // The atomically written head is the publication marker. A first
-            // import creates revision/workspace directories before publishing it;
-            // a pending or interrupted import is not yet a catalog record. Keep
-            // that recoverable tree for retry, without hiding corrupt committed
-            // records or dangling symlinks. Count all entries against the budget.
-            match std::fs::symlink_metadata(&path) {
+            // The atomically written head is the publication marker. Pending
+            // imports are absent; corrupt committed heads must fail closed.
+            let metadata = match std::fs::symlink_metadata(&path) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
-                Ok(_) => {}
+                Ok(metadata) => metadata,
+            };
+            if metadata.file_type().is_symlink() {
+                return Err(ArtifactError::UnsafePath("stored_symlink"));
             }
-            reject_symlink(&path).map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
-            let record: ArtifactRecord = read_json(&path, MAX_RECORD_JSON_BYTES)?;
-            record.validate()?;
-            let expected_key = storage_key(&record.descriptor.id);
-            if entry.file_name() != std::ffi::OsStr::new(&expected_key) {
-                return Err(ArtifactError::Conflict("record_identity_mismatch"));
+            if !metadata.is_file() {
+                return Err(ArtifactError::UnsafePath("stored_entry"));
             }
-            records.push(record);
+            let fingerprint = HeadFingerprint::from_metadata(&metadata);
+            cache_bytes = cache_bytes.saturating_add(fingerprint.len);
+            // Portable metadata lacks a trustworthy change counter. Always read
+            // there rather than risk caching a same-length/restored-mtime edit.
+            let cached = if cfg!(unix) {
+                cache
+                    .heads
+                    .get(&path)
+                    .filter(|(stamp, _)| *stamp == fingerprint)
+            } else {
+                None
+            };
+            let record = if let Some((_, record)) = cached {
+                cache_hits += 1;
+                Arc::clone(record)
+            } else {
+                unchanged = false;
+                parsed_heads += 1;
+                let record = read_catalog_record(&path)?;
+                record.validate()?;
+                let expected_key = storage_key(&record.descriptor.id);
+                if entry.file_name() != std::ffi::OsStr::new(&expected_key) {
+                    return Err(ArtifactError::Conflict("record_identity_mismatch"));
+                }
+                Arc::new(record)
+            };
+            heads.insert(path, (fingerprint, record));
         }
-        records.sort_by(|left, right| left.descriptor.id.cmp(&right.descriptor.id));
-        Ok(records)
+        unchanged &= heads.len() == cache.heads.len();
+        let sorted = if unchanged {
+            cache.sorted.clone()
+        } else {
+            let mut sorted: Vec<_> = heads
+                .values()
+                .map(|(_, record)| Arc::clone(record))
+                .collect();
+            sorted.sort_by(|left, right| left.descriptor.id.cmp(&right.descriptor.id));
+            sorted
+        };
+        if cfg!(unix) && cache_bytes <= MAX_CATALOG_CACHE_BYTES {
+            *cache = CatalogCache {
+                heads,
+                sorted: sorted.clone(),
+            };
+        } else {
+            *cache = CatalogCache::default();
+        }
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            records = sorted.len(),
+            cache_hits,
+            parsed_heads,
+            reused_order = unchanged,
+            cached = cfg!(unix) && cache_bytes <= MAX_CATALOG_CACHE_BYTES,
+            "local Artifact catalog refreshed"
+        );
+        Ok(sorted
+            .iter()
+            .map(|record| record.as_ref().clone())
+            .collect())
     }
 
     /// Read and verify an immutable revision.
@@ -801,6 +920,142 @@ mod tests {
                 .iter()
                 .any(|record| record.descriptor.kind == "agent")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_catalog_reuses_parsed_records_across_clones() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let source = data.path().join("source.txt");
+        std::fs::write(&source, "content").unwrap();
+        store
+            .import_local(
+                ArtifactImportRequest::new("prompt", "test", "cached"),
+                &source,
+            )
+            .unwrap();
+        CATALOG_RECORD_READS.with(|reads| reads.set(0));
+        let expected = store.list_records().unwrap();
+        assert_eq!(store.clone().list_records().unwrap(), expected);
+        assert_eq!(
+            CATALOG_RECORD_READS.with(std::cell::Cell::get),
+            1,
+            "a repeated unchanged query must not read and parse every head again"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "local catalog timing experiment; no timing threshold"]
+    fn catalog_cache_timings_for_1024_heads() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let source = data.path().join("source.txt");
+        std::fs::write(&source, "content").unwrap();
+        let mut record = store
+            .import_local(
+                ArtifactImportRequest::new("prompt", "test", "benchmark"),
+                &source,
+            )
+            .unwrap();
+        record.descriptor.description = Some("catalog metadata ".repeat(200));
+        for index in 0..1023 {
+            record.descriptor.id = format!("art_benchmark_{index:04}");
+            let dir = store.artifact_dir(&record.descriptor.id).unwrap();
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(
+                dir.join("artifact.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        }
+        CATALOG_RECORD_READS.with(|reads| reads.set(0));
+        let start = std::time::Instant::now();
+        assert_eq!(store.list_records().unwrap().len(), 1024);
+        let cold = start.elapsed();
+        assert_eq!(CATALOG_RECORD_READS.with(std::cell::Cell::get), 1024);
+        CATALOG_RECORD_READS.with(|reads| reads.set(0));
+        let start = std::time::Instant::now();
+        for _ in 0..10 {
+            assert_eq!(store.list_records().unwrap().len(), 1024);
+        }
+        assert_eq!(CATALOG_RECORD_READS.with(std::cell::Cell::get), 0);
+        eprintln!(
+            "1024 heads: cold={cold:?}, mean warm={:?}; cold parses=1024 warm parses=0",
+            start.elapsed() / 10
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn catalog_cache_observes_same_size_external_edit_with_restored_mtime() {
+        use super::super::model::Visibility;
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let source = data.path().join("source.txt");
+        std::fs::write(&source, "content").unwrap();
+        let mut record = store
+            .import_local(
+                ArtifactImportRequest::new("prompt", "test", "external"),
+                &source,
+            )
+            .unwrap();
+        record.publication.visibility = Visibility::Public;
+        store.persist_record(&record).unwrap();
+        assert_eq!(
+            store.list_records().unwrap()[0].publication.visibility,
+            Visibility::Public
+        );
+        let path = store
+            .artifact_dir(&record.descriptor.id)
+            .unwrap()
+            .join("artifact.json");
+        let bytes = std::fs::read_to_string(&path).unwrap();
+        let padded = format!("{bytes} ");
+        std::fs::write(&path, &padded).unwrap();
+        let before = std::fs::metadata(&path).unwrap();
+        store.list_records().unwrap();
+        // Both JSON strings have the same length, so length/mtime-only caches
+        // would incorrectly continue exposing a public record.
+        std::fs::write(&path, bytes.replace("\"public\"", "\"private\"")).unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().len(), before.len());
+        let file = OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(before.modified().unwrap()))
+            .unwrap();
+        assert_eq!(
+            store.list_records().unwrap()[0].publication.visibility,
+            Visibility::Private
+        );
+    }
+
+    #[test]
+    fn catalog_cache_observes_external_atomic_replacement_and_deletion() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let source = data.path().join("source.txt");
+        std::fs::write(&source, "content").unwrap();
+        let mut record = store
+            .import_local(
+                ArtifactImportRequest::new("prompt", "test", "replaced"),
+                &source,
+            )
+            .unwrap();
+        store.list_records().unwrap();
+        record.descriptor.title = Some("replacement".into());
+        let path = store
+            .artifact_dir(&record.descriptor.id)
+            .unwrap()
+            .join("artifact.json");
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, serde_json::to_vec(&record).unwrap()).unwrap();
+        std::fs::rename(&replacement, &path).unwrap();
+        assert_eq!(
+            store.list_records().unwrap()[0].descriptor.title.as_deref(),
+            Some("replacement")
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(store.list_records().unwrap().is_empty());
     }
 
     #[test]

@@ -98,6 +98,7 @@ fn supports_target(command: &super::Command) -> bool {
         #[cfg(feature = "gateway")]
         super::Command::Snippets(args) => {
             matches!(&args.command, super::snippets::SnippetsCommand::Exec(_))
+                || matches!(&args.command, super::snippets::SnippetsCommand::Fixture(args) if args.schemas.is_none())
                 || matches!(&args.command, super::snippets::SnippetsCommand::Test(test) if test.live)
         }
         #[cfg(feature = "gateway")]
@@ -149,6 +150,25 @@ mod snippet_target_tests {
             command: SnippetsCommand::List,
         });
         assert!(!supports_target(&command));
+    }
+
+    #[test]
+    fn generation_selects_daemon_only_for_live_schema_discovery() {
+        for saved in [false, true] {
+            let command = super::super::Command::Snippets(SnippetsArgs {
+                command: SnippetsCommand::Fixture(crate::cli::snippets::SnippetFixtureArgs {
+                    name: "example".into(),
+                    tools: vec![],
+                    check: None,
+                    schemas: saved.then(|| "schemas.json".into()),
+                    results: None,
+                    variant: "populated".into(),
+                    output: None,
+                    params: vec![],
+                }),
+            });
+            assert_eq!(supports_target(&command), !saved);
+        }
     }
 }
 

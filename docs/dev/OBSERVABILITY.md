@@ -1,7 +1,7 @@
 ---
 title: "Observability"
 created: "2026-07-30"
-updated: "2026-07-30"
+updated: "2026-09-29"
 ---
 
 # Observability
@@ -38,10 +38,13 @@ When a request fails, operators must be able to answer:
 
 ## Ownership
 
-Observability is split across two layers:
+Observability follows the owning execution boundary:
 
-- `lab` owns caller context and dispatch logging
-- `labby-apis` owns outbound request logging and transport failure detail
+- `labby` owns caller context and surface dispatch logging
+- `labby-apis::core::HttpClient` owns shared SDK HTTP request logs
+- `labby-gateway` owns upstream MCP request, catalog, and usage telemetry
+- `labby-codemode` owns runner/broker diagnostics; `labby-openapi` owns its
+  hardened outbound execution events
 
 That means:
 
@@ -74,9 +77,9 @@ Optional when applicable:
 
 Every MCP tool action must emit one dispatch event.
 
-If the client has opted into MCP logging notifications, any notification derived
-from that dispatch must reuse the same action context and apply the same
-redaction rules before shipping error text back to the client.
+Use local structured tracing. The current MCP surface does not advertise the
+removed legacy logging capability or deliver dispatch logs through
+`logging/setLevel` / `notifications/message`.
 
 Required fields:
 
@@ -91,7 +94,7 @@ Optional when applicable:
 - `operation = "health"`
 - `kind` on failure
 - `input_tokens` / `output_tokens` — estimated request/response token counts
-  (≈chars/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
+  (≈compact UTF-8 bytes/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
 
 ### API Dispatch
 
@@ -111,7 +114,7 @@ Optional when applicable:
 - `operation = "health"`
 - `kind` on failure
 - `input_tokens` / `output_tokens` — estimated request/response token counts
-  (≈chars/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
+  (≈compact UTF-8 bytes/4 heuristic; `output_tokens = 0` on failure) on the dispatch finish event
 
 This same contract applies to auth-adjacent HTTP handlers that are part of the
 product surface, including:
@@ -249,7 +252,14 @@ not `logging/setLevel` or `notifications/message`.
 
 ### Gateway usage telemetry (`UsageStore`)
 
-Every upstream tool/resource/prompt call outcome recorded by `upstream.request.finish`/`upstream.request.error` (above) is also durably persisted to a small SQLite store at `~/.labby/usage.db`, via `UpstreamPool`'s `timed_capability_call` choke point (`crates/labby-gateway/src/upstream/pool/capability_call.rs`). This is a fire-and-forget write (`tokio::spawn`) — it never adds latency or failure risk to the call it's observing, and a write failure is logged (`usage store record_call failed`) and dropped, never surfaced to the caller.
+Upstream tool/resource/prompt call outcomes schedule best-effort writes to
+`$LABBY_HOME/usage.db` (default `~/.labby/usage.db`) through the shared
+`pool/usage_record.rs` helper, including pooled and relayed paths. Writes are
+detached with `tokio::spawn`; they are not awaited by the observed call. Disabled
+capture, saturation, write failure, or process exit can leave missing rows. A
+write failure is logged (`usage store record_call failed`) and dropped rather
+than surfaced to the caller. Exact aggregates describe retained rows, not a
+guaranteed lossless audit of every request.
 
 Query it via `gateway.usage.metrics` and `gateway.usage.calls` — both admin-gated, same as `gateway.enrich.*`. `gateway.usage.metrics` computes complete-window totals, failures, latency percentiles, top/least/slow targets, actors, upstream distribution, throughput, hourly activity, time buckets, and optional stable filter facets from the durable store. Exact aggregation is limited to 250,000 matching rows; broader queries return `invalid_param` and must be narrowed. Optional facets also return `invalid_param` when any facet exceeds 1,000 distinct values rather than silently returning an incomplete inventory. Hourly activity accepts an IANA timezone for DST-correct local-hour buckets, with `timezone_offset_minutes` retained as a fixed-offset compatibility fallback in the inclusive range -1440 to 1440. `gateway.usage.calls` is the bounded keyset-paginated event explorer and supports the same upstream/target/capability/operation/subject-scope/actor/outcome/search filters. Metrics facets enumerate capability, operation, and shared-versus-subject scope alongside targets, actors, upstreams, and outcomes; slowest-target rows preserve that complete dimensional identity. CLI: `labby gateway usage metrics` / `labby gateway usage calls`; the CLI exposes the same filters and aggregate bucket/facet options as the shared action contract. Both actions enforce the same route-scope restriction as `gateway.enrich.*` — a route-scoped caller only sees usage data for the upstreams visible on their route.
 
@@ -257,13 +267,25 @@ Set `LABBY_GATEWAY_USAGE_DISABLED=1` to disable capture entirely (no store is op
 
 In-flight fire-and-forget writes are capped by a semaphore (`WRITE_SEMAPHORE_PERMITS`, 64 permits) — a saturated burst drops the write and logs a warning rather than queuing unboundedly or spawning an unbounded number of tasks. `~/.labby/usage.db` is created with owner-only (`0600`) permissions since `actor` is a stable per-user identifier, even though nothing in the store is a credential.
 
-This store intentionally does not capture CLI/HTTP/MCP dispatch-level events for the `gateway` service's own actions (e.g. `gateway.add`, `gateway.enrich.preview`) — only calls proxied through to upstreams. Schema version 2 records `ts_unix`, `upstream_name`, `tool_name`, `capability`, `operation`, `subject_scoped`, `actor`, `outcome`, `elapsed_ms`, and nullable `response_bytes` (see `crates/labby-gateway/src/usage/types.rs`). Existing version-1 databases migrate in place. `response_bytes` is present only when an upstream returned a complete response; queue, connection, upstream-error, and timeout outcomes keep it null.
+This store captures upstream calls, not dispatch-level events for gateway
+management actions such as `gateway.add`. Schema version 3 retains the v2
+timestamp, target, capability, operation, subject-scope, actor, outcome, latency,
+and nullable response-byte columns, and adds nullable attribution fields:
+inbound actor, actor kind, surface, client name/version, Agent, Task, and harness
+IDs, plus the upstream-subject-tag storage field. Older databases migrate in
+place; legacy rows can lack attribution. The current writer deliberately leaves
+`upstream_subject_tag` null: OAuth credential subject is not inbound actor
+identity. Client labels are bounded self-reported MCP metadata, not authenticated
+identity. Metrics and call queries also support client-name/version and Agent
+filters. See `usage/store.rs`, `usage/query.rs`, and
+`labby-runtime/src/usage_actor.rs`. `response_bytes` is present for complete
+responses and remains null for outcomes without one.
 
 The operator UI deliberately separates these two retention shapes:
 
 - **Usage** reads the 30-day SQLite store for durable upstream volume, latency, outcome, actor, capability, operation, OAuth-scope, and response-size analysis.
 - **Traces** reads a bounded admin-only `server_logs.query` window with `correlated_only` and `stop_after_limit` enabled, then groups emitted `trace_id`, `request_id`, or `execution_id` fields into request timelines. The log normalizer promotes those correlation identifiers plus `span_id` and numeric `call_ordinal` from tracing span context into the normalized event fields, so nested upstream events inherit the outer request identity without flattening arbitrary span metadata. Root request terminal events determine success/failure; child upstream finishes or warnings cannot complete or fail the parent request. When the retained query is truncated, the oldest correlation group is discarded because it may have been cut at the sample boundary.
-- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `chars / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
+- **Overview** combines the durable Usage totals with a bounded retained-log sample for dispatch-by-surface, estimated tokens-by-tool, and Code Mode fan-out. Its log query stops after the retained-entry limit and uses a small scan budget; the dashboard refreshes on a slower cadence than the live trace view so observability does not become a sustained log-scanning workload. Those panels must be labeled as retained samples; token values are the `compact UTF-8 bytes / 4` estimates emitted at dispatch boundaries, not provider billing totals. A successful empty log query is a collected zero, while an unavailable log query leaves only those three dimensions uncollected.
 
 Raw source IP is not a Usage or Traces metric. Do not add it merely to populate an operator card; retain the privacy-safe `actor_key` contract above unless a separately reviewed security requirement calls for network-source retention.
 
@@ -398,7 +420,7 @@ while a caller's turn was open, so it can invalidate a binding that caller is
 using. It is the difference between catalog movement and the flapping clients
 actually feel.
 
-**Notifications are coalesced and never delivered mid-turn.** Emitters call
+**Notifications are coalesced and deferred while calls are open.** Emitters call
 `catalog_coalesce::schedule_catalog_notification` rather than the fanout
 directly. A trigger starts a settle window (restarted by each new trigger), so
 a burst — a reload plus its follow-on enrichment and per-call triggers — is
@@ -425,8 +447,9 @@ state, or route-scope change is a real descriptor change and must produce a
 not change the host-cached `codemode`, `codemode_read`, or `codemode_ui`
 descriptors by themselves. Reconcile logs therefore separate namespace
 determinants from suppressed raw-tool churn. Final Code Mode responses are also
-capped at the documented byte budget after trace composition, so truncation is
-deterministic and visible instead of surfacing as a client transport failure.
+shaped against the configured budget after trace composition. Truncation is
+visible, but retained call metadata can still exceed that best-effort envelope
+budget; see [Code Mode](CODE_MODE.md#final-result-shaping).
 Code Mode result-ack reserve activation logs once per execution at DEBUG as
 `action = "codemode.result_ack.reserve"`, `event = "armed"`, with `reserve_ms`
 and monotonic `result_ack_reserve_use_count`. Only a genuine full settlement
@@ -478,8 +501,9 @@ upstreams are flapping and clients are being shielded from it.
 
 Notification field values include upstream-controlled tool names, so they are
 subject to the sanitization rule in **Redaction Rules** below. Code Mode
-namespace names and hints are not part of the host-facing descriptor snapshot
-and therefore do not appear in these catalog delta fields.
+namespace names and normalized hints are part of the host-facing synthetic
+descriptor. Their changes can invalidate the contract even though individual
+upstream tool churn is suppressed.
 
 ### MCP App visibility and runtime diagnostics
 
@@ -521,6 +545,38 @@ A client that makes only sessionless HTTP requests has no registered peer for
 server-initiated tools/list_changed or resources/list_changed delivery. In that
 case app_disabled responses and fresh list evidence are the authoritative
 signals for diagnosing a host that retained old widget metadata.
+
+## Operator notifications
+
+`crates/labby/src/notifications.rs` implements a bounded operator feed and
+Depot ingestion-failure monitor. `GET /v1/notifications` returns
+`{ "notifications": [...] }` and requires `lab:admin`. This feed is separate
+from MCP catalog notifications and the server-log stream.
+
+The monitor starts with `labby serve` when Depot is configured and
+`LABBY_NOTIFICATIONS_ENABLED` is enabled (the default). Disabling it prevents
+monitor startup; it does not remove the read route or erase retained records.
+`LABBY_DEPOT_MONITOR_INTERVAL_SECONDS` defaults to 30 and clamps to 10–3600.
+`LABBY_NOTIFICATION_RETENTION` defaults to 200 and clamps to 10–2000 records.
+Records, source cursors, and pending Apprise deliveries persist in
+`notifications.json` under the selected installation root; failure to open it
+logs a warning and falls back to an in-memory center.
+
+Optional `APPRISE_URL` delivery posts beneath the configured base path to
+`/notify`, or `/notify/{KEY}` when `APPRISE_TOKEN` supplies a configuration key.
+The token is a path key, not a bearer header. Delivery disables redirects and
+uses a 3-second connect timeout and 8-second request timeout. Pending deliveries
+are retried on later polls, with at most four attempts per poll; the queue is
+bounded to 2000 entries and logs overflow when it drops the oldest. Settings
+metadata is owned by `dispatch/setup/settings.rs`; runtime and setup documentation
+own the full configuration contract.
+
+Monitor and delivery diagnostics use `subsystem = "notifications"`, including
+`source = "depot"`, `"depot_ingest"`, or `"apprise"` where supplied. Delivery
+errors omit the endpoint URL so the configuration key cannot leak into logs.
+The retained notification body is bounded to 2000 characters, but this module
+does not redact the Depot source label or ingestion error text before storing
+and forwarding it. Do not treat the body-length cap as secret redaction.
 
 ## Required Fields
 
@@ -585,12 +641,6 @@ The practical result must be:
 - outbound RMCP proxy activity can be tied back to the invoking surface and
   request when one exists
 
-For device-runtime uploads, operators must be able to correlate:
-
-- the non-master startup or flush attempt
-- the outbound request to the master
-- the master-side device ingest handler
-
 ## Error Classification
 
 The public error taxonomy remains the stable contract.
@@ -648,14 +698,14 @@ Additional rules:
   tab and newline to prevent ANSI escape injection. `sanitize_field_value()` in
   `log_fmt/formatter.rs` is the canonical implementation; apply it before any terminal styling.
 - `resource_uri` field values must have query strings and fragments stripped before logging
-  (`redact_resource_uri_for_logging()` in `dispatch/upstream/pool.rs`). Pre-signed S3 tokens,
+  (`redact_resource_uri_for_logging()` in `crates/labby-gateway/src/upstream/pool/helpers.rs`). Pre-signed S3 tokens,
   OAuth params, and similar credential-bearing query parameters must not appear in log output.
 - upstream URL values must have userinfo (username:password) stripped before logging
-  (`upstream_target_redacted()` in `dispatch/upstream/pool.rs`).
+  (`upstream_target_redacted()` in the same gateway helper module).
 
-Shell wrapper boundary: the user-installed `lab` shell wrapper emits CLI-PREFLIGHT output via `printf` to
-stderr before the Rust binary starts. This output is pre-binary and therefore not processed by
-`init_tracing()` or any redaction rules. Treat it as an unstructured stderr boundary — it must not emit credential-bearing content.
+External shell wrappers run before Rust tracing initialization. Any such wrapper
+must redact its own stderr; Labby's tracing subscriber cannot sanitize output
+emitted before the binary starts.
 
 ### Upstream OAuth Redaction
 
@@ -820,3 +870,55 @@ prefers the nearest host span over event fields and omits event baggage. Baggage
 is opaque propagation data and must never be logged or used as identity,
 authorization, routing, or tenant context. This supplies correlation metadata;
 it does not configure an OpenTelemetry exporter.
+
+## Overview freshness and client observations
+
+The Overview defaults to a one-hour activity window. While visible and online,
+its cheap change detector queries `gateway.usage.calls` with `limit: 1` and
+`include_total: false`. The additive `latest_ingested_call_id` watermark distinguishes insertions
+even when timestamps are equal or writes arrive out of timestamp order. The detector does not dispatch upstream tools or record itself
+as upstream usage. An older gateway without row IDs uses the slower fallback.
+
+Activity changes are coalesced: complete-window aggregates refresh no more often
+than every 10 seconds for 1h, 30 seconds for 24h, and 60 seconds for 7d/30d. A
+minute refresh also ages idle windows. These are scheduling targets, not a
+latency guarantee: network, database, and tab suspension can delay publication.
+Hidden/offline views pause automatic work and catch up when active again.
+The page reports freshness and errors rather than claiming a continuously live
+stream. Requests and caches are scoped to the browser authority and API target.
+
+The default volume chart reuses the aggregate. The optional per-server breakdown
+is fetched only when selected and carries its own sample timestamp. A single
+`gateway.usage.metrics` request with `include_upstream_timeseries: true` returns
+at most four server series and the total series from the same SQLite read
+transaction. The flag defaults to false so ordinary aggregates do not pay for
+that grouping. The chart uses those transactional totals, never an older main
+counter sample, and reports unsupported older gateways rather than combining
+inconsistent snapshots. Its authority-scoped sampler coalesces in-flight work
+and applies a one-minute settled-sample cooldown across timers, view toggles,
+focus, and reconnect triggers.
+
+Host resources and retained-log enrichment also use slower sampling. Log
+observations start alongside, rather than before, the core aggregate. A per-hook
+log sample or failed attempt is reused for up to one minute and bounded to
+500 rows / 2 MiB. Aborted or stale-authority attempts cannot populate the cache,
+and authentication or authorization failures remain typed errors. Token, surface,
+and Code Mode values derived from logs are sampled observations, not
+complete-window totals. Successful sampling provenance is informational, not a
+degradation warning. Unavailable token telemetry displays an unavailable value,
+not a fabricated zero.
+
+`gateway.clients.list` is a bounded recent-observation registry, not a count of
+active sessions. Legacy initialization and subsequent MCP requests refresh
+observations; `last_seen_at` and `observation_count` are additive fields.
+Repeated observations use private actor/connection identity for deduplication,
+never a short redacted display tag. At most 500 entries are retained. The UI
+shows the most recently observed entries first in a bounded, scrollable panel.
+
+Client name/version are self-reported metadata. Bridge forwarding preserves
+legacy and request-scoped client information, and Labby's own bridges identify
+as `labby-bridge` rather than a generic SDK. A verified OAuth client ID is shown
+separately. SDK-only metadata such as `rmcp` cannot establish the originating
+application or agent; historical rows cannot be retroactively attributed without
+additional trustworthy evidence. None of these descriptive fields grants
+permissions or changes authenticated caller scope.

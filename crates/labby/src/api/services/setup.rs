@@ -60,13 +60,98 @@ async fn handle(
     let mut dispatch_meta =
         dispatch_meta_from_headers(&headers, auth.as_ref().map(|value| &value.0), peer_addr);
     apply_local_bootstrap_capability(&mut dispatch_meta, &req.action, has_local_capability);
+    let access_runtime = state.access_runtime.clone();
+    let authenticated_identity = identity.map(|Extension(identity)| identity);
+    let request_auth = auth.as_ref().map(|Extension(auth)| auth.clone());
+    let request_headers = headers.clone();
+    #[cfg(feature = "gateway")]
+    let gateway_manager = state.gateway_manager.clone();
+    #[cfg(feature = "gateway")]
+    let installation_id = state.installation_id.as_deref().map(str::to_owned);
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    let tailcat_oauth_enabled = !state.web_ui_auth_disabled
+        && state.oauth_state.is_some()
+        && state
+            .auth_config
+            .as_ref()
+            .is_some_and(|config| config.mode == labby_auth::config::AuthMode::OAuth);
     handle_action_with_meta(
         "setup",
         "api",
         dispatch_meta,
         req,
         ACTIONS,
-        |action, params| async move {
+        move |action, params| async move {
+            #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+            if action == "tailcat.enable" {
+                super::require_session_csrf(&action,&request_headers,request_auth.as_ref())?;
+                let identity=authenticated_identity.ok_or_else(|| ToolError::Forbidden { message:"Tailcat activation requires native identity".into(),required_scopes:vec![] })?;
+                if request_headers.contains_key("x-labby-team-id") || request_auth.as_ref().is_none_or(|auth| !auth.scopes.iter().any(|scope| scope=="lab" || scope=="lab:admin")) { return Err(ToolError::Forbidden { message:"Tailcat activation requires native operator context".into(),required_scopes:vec![] }); }
+                let request=serde_json::from_value::<crate::dispatch::setup::tailcat_enrollment::EnableRequest>(params).map_err(|_| ToolError::InvalidParam {param:"params".into(),message:"Invalid Tailcat activation request".into()})?;
+                let manager=gateway_manager.ok_or_else(|| ToolError::Sdk {sdk_kind:"service_unavailable".into(),message:"Native gateway is unavailable".into()})?;
+                return crate::dispatch::setup::tailcat_enrollment::enable(caller,access_runtime.as_ref().clone(),manager.as_ref().clone(),identity,installation_id.ok_or_else(|| ToolError::Sdk {sdk_kind:"service_unavailable".into(),message:"Native installation identity unavailable".into()})?,tailcat_oauth_enabled,request).await;
+            }
+            #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+            if action == "tailcat.enroll" {
+                super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "Tailcat enrollment requires host-established identity".into(), required_scopes: vec![] })?;
+                if request_auth.as_ref().is_none_or(|auth| !auth.scopes.iter().any(|scope| scope == "lab" || scope == "lab:admin")) || request_headers.contains_key("x-labby-team-id") { return Err(ToolError::Forbidden { message: "Tailcat enrollment requires the native operator context".into(), required_scopes: vec![] }); }
+                let request = serde_json::from_value::<crate::dispatch::setup::tailcat_enrollment::EnrollmentRequest>(params)
+                    .map_err(|_| ToolError::InvalidParam { param: "params".into(), message: "Invalid Tailcat enrollment request".into() })?;
+                let manager = gateway_manager.ok_or_else(|| ToolError::Sdk { sdk_kind: "service_unavailable".into(), message: "Native gateway is unavailable".into() })?;
+                return crate::dispatch::setup::tailcat_enrollment::enroll(caller, access_runtime.as_ref().clone(), manager.as_ref().clone(), identity, installation_id.ok_or_else(|| ToolError::Sdk { sdk_kind: "service_unavailable".into(), message: "Native installation identity is unavailable".into() })?, request).await;
+            }
+            #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+            if action == "tailcat.configure" {
+                super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "Tailcat setup requires host-established identity".into(), required_scopes: vec![] })?;
+                let auth = request_auth.as_ref().ok_or_else(|| ToolError::Forbidden { message: "Tailcat setup requires authentication".into(), required_scopes: vec![] })?;
+                if request_headers.contains_key("x-labby-team-id") { return Err(ToolError::Forbidden { message: "Tailcat setup requires the native installation context".into(), required_scopes: vec![] }); }
+                let request = serde_json::from_value::<crate::dispatch::setup::tailcat::ConfigureRequest>(params)
+                    .map_err(|_| ToolError::InvalidParam { param: "params".into(), message: "Invalid Tailcat setup request".into() })?;
+                let store = access_runtime.store().await.map_err(|error| crate::dispatch::access_errors::map_runtime_error("setup", error))?;
+                return crate::dispatch::setup::tailcat::configure(caller, store, identity, crate::access::AuthorityCeiling::from_auth_context(auth), crate::config::config_toml_path().map_err(|_| ToolError::Sdk { sdk_kind: "configuration_io_error".into(), message: "Native configuration path is unavailable".into() })?, request).await;
+            }
+            if matches!(action.as_str(), "clients.session.start" | "clients.session.revoke") {
+                super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "Client observation requires authenticated identity".into(), required_scopes: vec![] })?;
+                let store = access_runtime.store().await.map_err(|error| crate::dispatch::access_errors::map_runtime_error("setup", error))?;
+                if action == "clients.session.start" { return crate::dispatch::setup::client_evidence::start(store, identity, params).await; }
+                if params.as_object().is_none_or(|row|!row.is_empty()) { return Err(ToolError::InvalidParam { param: "params".into(), message: "Revocation uses the authenticated user's session; no parameters are accepted".into() }); }
+                return crate::dispatch::setup::client_evidence::revoke(store, identity).await;
+            }
+            if matches!(action.as_str(), "readiness.state" | "readiness.clients.defer") {
+                if params.as_object().is_none_or(|params| !params.is_empty()) {
+                    return Err(ToolError::InvalidParam { param: "params".into(), message: "Readiness always uses the authenticated user; no parameters are accepted".into() });
+                }
+                if action == "readiness.clients.defer" {
+                    super::require_session_csrf(&action, &request_headers, request_auth.as_ref())?;
+                }
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "First-use evidence requires host-established identity".into(), required_scopes: vec![] })?;
+                let store = access_runtime.store().await.map_err(|error| crate::dispatch::access_errors::map_runtime_error("setup", error))?;
+                return if action == "readiness.clients.defer" {
+                    crate::dispatch::setup::readiness::defer_clients_for_identity(store, identity).await
+                } else {
+                    crate::dispatch::setup::readiness::state_for_identity(store, identity).await
+                };
+            }
+            #[cfg(feature = "gateway")]
+            if matches!(action.as_str(), "mcp.verification.tools" | "mcp.verification.call") {
+                if request_headers.contains_key("x-labby-team-id") || ["owner", "owner_kind", "owner_id", "team_id", "principal_id"].iter().any(|key| params.get(*key).is_some()) {
+                    return Err(ToolError::Forbidden { message: "First-tool verification requires the installation gateway context".into(), required_scopes: vec![] });
+                }
+                let identity = authenticated_identity.ok_or_else(|| ToolError::Forbidden { message: "First-tool verification requires host-established identity".into(), required_scopes: vec![] })?;
+                let auth = request_auth.as_ref().ok_or_else(|| ToolError::Forbidden { message: "First-tool verification requires authentication".into(), required_scopes: vec![] })?;
+                if action == "mcp.verification.call" { super::require_session_csrf(&action, &request_headers, Some(auth))?; }
+                let store = access_runtime.store().await.map_err(|error| crate::dispatch::access_errors::map_runtime_error("setup", error))?;
+                let installation = match installation_id { Some(id) => id, None => store.installation_id().await.ok().flatten().unwrap_or_else(|| "installation".into()) };
+                let authority = crate::access::authorize_gateway_action(&access_runtime, identity.clone(), crate::access::AuthorityCeiling::from_auth_context(auth), &installation, None, &format!("gateway.setup.{action}")).await?.ok_or_else(|| ToolError::Forbidden { message: "Gateway verification is not authorized".into(), required_scopes: vec![] })?;
+                authority.validate_before_external_effect().await?;
+                let manager = gateway_manager.ok_or_else(|| ToolError::Sdk { sdk_kind: "service_unavailable".into(), message: "The gateway runtime is unavailable".into() })?;
+                if action == "mcp.verification.tools" { return crate::dispatch::setup::mcp_verification::tools(&manager, &params).await; }
+                let principal = store.resolve_file_stash_principal(identity).await.map_err(|error| crate::dispatch::access_errors::map_store_error("setup", error, || ToolError::Forbidden { message: "Gateway verification is not authorized".into(), required_scopes: vec![] }))?;
+                return crate::dispatch::setup::mcp_verification::call(&manager, store, principal.as_str().into(), params, authority).await;
+            }
             crate::dispatch::setup::dispatch_for_caller(caller, &action, params).await
         },
     )
@@ -183,6 +268,10 @@ fn request_has_local_capability(peer: Option<SocketAddr>, headers: &HeaderMap) -
             .is_some_and(crate::api::host_validation::is_loopback_host_value)
 }
 
+#[cfg(all(test, feature = "tailcat", feature = "gateway", unix))]
+#[path = "setup/tailcat_tests.rs"]
+mod tailcat_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -199,6 +288,97 @@ mod tests {
         })
     }
 
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn mcp_verification_http_payloads_reach_authenticated_operations() {
+        use axum::{Router, body::Body, http::Request};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+        let directory = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        let root = directory.path().canonicalize().unwrap();
+        let runtime =
+            Arc::new(crate::access::AccessRuntime::initialize(root.join("access.db")).await);
+        let identity = labby_auth::VerifiedIdentity::external(
+            labby_auth::Authenticator::BrowserSession,
+            "https://accounts.google.com",
+            "tester@example.com",
+        )
+        .unwrap();
+        runtime
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity.clone(), "Local", "Default")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                root.join("config.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let state = AppState::new()
+            .with_access_runtime(runtime)
+            .with_gateway_manager(manager);
+        let mut context = auth(&["lab:admin"]).0;
+        context.issuer = "https://accounts.google.com".into();
+        context.csrf_token = Some("fixture-csrf".into());
+        let router = Router::new()
+            .route("/v1/setup", post(handle))
+            .with_state(state)
+            .layer(Extension(identity))
+            .layer(Extension(context));
+        for action in ["mcp.verification.tools", "mcp.verification.call"] {
+            for prefix in ["", "setup."] {
+                let payload = serde_json::json!({"action":format!("{prefix}{action}"), "params":{
+                    "name":"invalid:name", "expected_url":"https://example.org/mcp",
+                    "tool":"version", "expected_fingerprint":"a".repeat(64), "arguments":{}, "approved":true
+                }});
+                let mut payload = payload;
+                if action.ends_with("tools") {
+                    for key in ["tool", "expected_fingerprint", "arguments", "approved"] {
+                        payload["params"].as_object_mut().unwrap().remove(key);
+                    }
+                }
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri("/v1/setup")
+                            .header("content-type", "application/json")
+                            .header("x-csrf-token", "fixture-csrf")
+                            .body(Body::from(payload.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert!(!response.status().is_success());
+                let bytes = axum::body::to_bytes(response.into_body(), 16384)
+                    .await
+                    .unwrap();
+                let body = String::from_utf8(bytes.to_vec()).unwrap();
+                if prefix.is_empty() {
+                    assert!(
+                        body.contains("Server identity exceeds its supported bounds"),
+                        "{action}: {body}"
+                    );
+                } else {
+                    assert!(
+                        body.contains("Unknown action") || body.contains("unknown_action"),
+                        "{action}: {body}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn credential_bootstrap_and_proxy_configuration_are_local_only() {
         assert!(local_only_action("bootstrap"));
@@ -210,6 +390,25 @@ mod tests {
         assert!(request_is_loopback(Some("[::1]:1234".parse().unwrap())));
         assert!(!request_is_loopback(Some("10.0.0.5:1234".parse().unwrap())));
         assert!(!request_is_loopback(None));
+    }
+
+    #[test]
+    fn readiness_uses_authenticated_self_access_without_platform_admin_requirement() {
+        let reader = auth(&["lab:read"]);
+        assert!(require_setup_admin("readiness.state", None, Some(&reader), false).is_ok());
+        assert!(require_setup_admin("readiness.clients.defer", None, Some(&reader), false).is_ok());
+        // Host-established identity is enforced separately inside the adapter.
+        assert!(!local_bootstrap_capability("readiness.state", true));
+        assert!(!local_bootstrap_capability("readiness.clients.defer", true));
+    }
+
+    #[test]
+    fn first_tool_verification_retains_the_platform_admin_transport_gate() {
+        for action in ["mcp.verification.tools", "mcp.verification.call"] {
+            assert!(require_setup_admin(action, None, Some(&auth(&["lab:read"])), false).is_err());
+            assert!(require_setup_admin(action, None, Some(&auth(&["lab:admin"])), false).is_ok());
+            assert!(!local_bootstrap_capability(action, true));
+        }
     }
 
     #[test]

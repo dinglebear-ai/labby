@@ -38,3 +38,36 @@ test('cancel is session credentialed and CSRF protected', async () => {
   assert.equal(request?.method, 'DELETE')
   assert.equal(new Headers(request?.headers).get('x-csrf-token'), 'csrf')
 })
+
+for (const change of ['epoch', 'abort'] as const) {
+  test(`completed proof is rejected when ${change} changes while the poll is pending`, async () => {
+    let epoch = 4
+    const controller = new AbortController()
+    let complete!: (response: Response) => void
+    const pending = waitForReauthProof('opaque', 4, {
+      epoch: () => epoch,
+      signal: controller.signal,
+      fetcher: async (_url, init) => {
+        assert.equal(init?.signal, controller.signal)
+        return new Promise<Response>(resolve => { complete = resolve })
+      },
+    })
+    if (change === 'epoch') epoch = 5
+    else controller.abort()
+    complete(Response.json({ status: 'Completed', proof: 'stale-proof' }))
+    await assert.rejects(pending, change === 'epoch' ? /session changed/ : /abort/i)
+  })
+}
+
+test('proof polling stops promptly during its default delay when cancelled', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  const pending = waitForReauthProof('opaque', 4, {
+    epoch: () => 4, signal: controller.signal,
+    fetcher: async () => { calls += 1; return Response.json({ status: 'Pending' }) },
+  })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  controller.abort()
+  await assert.rejects(pending, /abort/i)
+  assert.equal(calls, 1)
+})

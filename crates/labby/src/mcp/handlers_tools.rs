@@ -28,12 +28,12 @@ use crate::mcp::bound_access::{
 };
 #[cfg(feature = "gateway")]
 use crate::mcp::call_tool_codemode::CodeModeUpstreamDescription;
+use crate::mcp::catalog::ToolCatalogSnapshot;
 #[cfg(feature = "gateway")]
 use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
-use crate::mcp::catalog::{SERVER_LOGS_TOOL_NAME, ToolCatalogSnapshot};
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::request_openai_session_fingerprint;
@@ -198,11 +198,11 @@ impl LabMcpServer {
         let mut upstream_tool_error_count = 0usize;
         let mut open_upstream_count = 0usize;
         // FU-2 (issue #210, lab-ecxfl): one PeerContract for the whole listing.
-        // The three consumers below (visibility, Code Mode upstream
-        // descriptions, upstream pool) are audience-independent, so hoisting
-        // is behavior-neutral. The clone cost is only real on ProtectedSubset
+        // Retain the actual request audience so native Stash visibility agrees
+        // with the subscription contract and its tools/list_changed hashes.
+        // The clone cost is only real on ProtectedSubset
         // routes — `Root` is a unit variant.
-        let peer_contract = self.peer_contract();
+        let peer_contract = self.peer_contract_for_request(&context);
         let visibility = peer_contract.code_mode_visibility().await;
         let manager_code_mode_enabled = visibility.exposes_synthetic_tools();
         let process_code_mode_enabled = crate::config::process_code_mode_enabled();
@@ -283,7 +283,11 @@ impl LabMcpServer {
                 }
                 if tool_projection_mode.includes_router() {
                     builtin_names.insert(svc.name.to_string());
-                    if hide_raw_tools && !matches!(svc.name, SERVER_LOGS_TOOL_NAME | "gateway") {
+                    if !crate::mcp::peer_contract::native_router_visible(
+                        visibility,
+                        svc.name,
+                        peer_contract.audience.native_stash_caller,
+                    ) {
                         suppressed_builtin_tool_count += 1;
                     } else {
                         advertised_names.insert(svc.name.to_string());
@@ -400,7 +404,9 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let mcp_app_callback_visible = code_mode_read_scope_allowed(auth);
         #[cfg(feature = "gateway")]
-        if mcp_app_model_visible || mcp_app_callback_visible {
+        if !self.registry.is_proxy_aggregate()
+            && (mcp_app_model_visible || mcp_app_callback_visible)
+        {
             descriptors.push(self.registry.permanent_tools().mcp_app_tool(
                 mcp_apps_config.manager && mcp_app_model_visible,
                 mcp_app_model_visible,
@@ -432,7 +438,8 @@ impl LabMcpServer {
         }
 
         #[cfg(feature = "gateway")]
-        if settings_app_visible
+        if !self.registry.is_proxy_aggregate()
+            && settings_app_visible
             && (!matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
                 || project_shadow.allows_builtin_service("setup", SystemTime::now()) == Some(true))
         {
@@ -487,12 +494,17 @@ impl LabMcpServer {
                 if hide_raw_tools && !tool_execute_scope_allowed(auth) && ut.destructive {
                     continue;
                 }
-                let tool_name = ut.tool.name.as_ref();
+                let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
+                    &self.registry,
+                    &ut.upstream_name,
+                    ut.tool.clone(),
+                );
+                let tool_name = descriptor.name.as_ref();
                 if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
                     project_shadow_checked_tool_count += 1;
                     if project_shadow.allows_upstream_tool(
                         ut.upstream_name.as_ref(),
-                        tool_name,
+                        ut.tool.name.as_ref(),
                         SystemTime::now(),
                     ) != Some(true)
                     {
@@ -513,7 +525,7 @@ impl LabMcpServer {
                     );
                     continue;
                 }
-                descriptors.push(crate::mcp::permanent_tools::with_labby_security(ut.tool));
+                descriptors.push(descriptor);
                 upstream_tool_count += 1;
             }
             if !hide_raw_tools
@@ -1151,6 +1163,15 @@ pub(crate) fn code_mode_execute_schema() -> Arc<serde_json::Map<String, Value>> 
         || match serde_json::json!({
             "type": "object",
             "properties": {
+                "notification_inbox": {
+                    "type": "boolean", "default": false,
+                    "description": "Write-capable Code Mode only: return/register this authenticated consumer's durable notification address. Not a secret or a grant of receive/send authority."
+                },
+                "ack_notifications": {
+                    "type": "array", "maxItems": 32,
+                    "items": { "type": "string", "pattern": "^notice_[0-9A-HJKMNP-TV-Z]{26}$" },
+                    "description": "Write-capable Code Mode only: acknowledge notice IDs already considered. Piggyback on the next normal call; not proof of human reading or completed work."
+                },
                 "code": {
                     "type": "string",
                     "minLength": 1,
@@ -1181,6 +1202,28 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
     static TRACE_OUTPUT_SCHEMA: LazyLock<Arc<serde_json::Map<String, Value>>> = LazyLock::new(
         || match serde_json::json!({
         "type": "object",
+        "properties": {
+            "notifications": { "type": "array", "maxItems": 3, "items": {
+                "type": "object", "properties": {
+                    "id": { "type": "string", "pattern": "^notice_[0-9A-HJKMNP-TV-Z]{26}$" },
+                    "source": { "type": "string", "maxLength": 64 },
+                    "level": { "type": "string", "enum": ["info", "warning"] },
+                    "message": { "type": "string", "maxLength": 384 },
+                    "delivery_attempt": { "type": "integer", "minimum": 1 },
+                    "expires_at_unix_ms": { "type": "integer", "minimum": 0 }
+                }, "required": ["id", "source", "level", "message", "delivery_attempt", "expires_at_unix_ms"],
+                "additionalProperties": false
+            } },
+            "notifications_remaining": { "type": "integer", "minimum": 0 },
+            "notifications_are_advisory": { "const": true },
+            "acknowledged_notifications": { "type": "array", "maxItems": 32, "items": { "type": "string" } },
+            "notification_inbox": { "type": "object", "properties": {
+                "id": { "type": "string", "pattern": "^inbox_[0-9A-HJKMNP-TV-Z]{26}$" },
+                "scope": { "type": "string", "enum": ["authenticated_client", "authenticated_credential", "conversation_routing", "stdio_connection"] },
+                "delivery": { "const": "at_least_once_until_ack_or_expiry" },
+                "expires_at_unix_ms": { "type": "integer", "minimum": 0 }
+            }, "required": ["id", "scope", "delivery", "expires_at_unix_ms"], "additionalProperties": false }
+        },
         "oneOf": [
             {
                 "type": "object",

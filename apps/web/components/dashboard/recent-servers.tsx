@@ -1,5 +1,6 @@
 'use client'
 
+import { capabilityLabel } from '@/lib/gateway-capabilities'
 import Link from 'next/link'
 import { ArrowRight, Server } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -8,7 +9,7 @@ import { describeGatewayOperationalState } from '@/lib/gateway-operational-state
 import type { Gateway } from '@/lib/types/gateway'
 
 export type RecentServer = Pick<Gateway, 'id' | 'name' | 'transport' | 'enabled' | 'warnings'> & {
-  status: Pick<Gateway['status'], 'healthy' | 'connected' | 'exposed_tool_count' | 'catalog_warming' | 'last_error' | 'likely_stale_count'>
+  status: Pick<Gateway['status'], 'healthy' | 'connected' | 'exposed_tool_count' | 'catalog_warming' | 'last_error' | 'likely_stale_count' | 'capability_observation'>
 }
 
 export function RecentServers({ gateways, loading = false, error = false }: { gateways: RecentServer[]; loading?: boolean; error?: boolean }) {
@@ -25,7 +26,7 @@ export function RecentServers({ gateways, loading = false, error = false }: { ga
       : gateways.length === 0 ? <div className="px-[14px] py-3 text-xs text-aurora-text-muted"><p>No servers configured.</p><Link href="/gateways" className="mt-2 inline-block text-aurora-accent-strong underline">Add server</Link></div>
       : <ul>{gateways.slice(0, 5).map(gateway => {
         const operational = describeGatewayOperationalState(gateway)
-        const color = operational.kind === 'disabled'
+        const color = (operational.kind === 'disabled' || operational.kind === 'idle')
           ? 'bg-aurora-text-muted'
           : operational.kind === 'disconnected'
             ? 'bg-aurora-error'
@@ -38,7 +39,7 @@ export function RecentServers({ gateways, loading = false, error = false }: { ga
           <span title={operational.reason} aria-label={operational.label} className={`size-1.5 shrink-0 rounded-full ${color}`}/>
           <span className="min-w-0 flex-1 truncate font-display text-[12.5px] font-bold text-aurora-text-primary">{gateway.name}</span>
           <span className="shrink-0 text-[9.5px] font-semibold uppercase tracking-[.1em] text-aurora-text-muted">{gateway.transport === 'in_process' ? 'Lab' : gateway.transport}</span>
-          <span title="Exposed downstream tools" aria-label={`${gateway.status.exposed_tool_count} exposed downstream tools`} className="w-[30px] shrink-0 text-right text-[11.5px] font-semibold tabular-nums text-aurora-text-primary">{gateway.status.exposed_tool_count}</span>
+          <span title={gateway.status.capability_observation ? `${capabilityLabel(gateway.status as Gateway['status'], 'tools')} exposed/discovered tools` : 'Exposed downstream tools'} aria-label={gateway.status.capability_observation ? `${capabilityLabel(gateway.status as Gateway['status'], 'tools')} exposed/discovered tools` : `${gateway.status.exposed_tool_count} exposed downstream tools`} className="max-w-[140px] shrink-0 break-words text-right text-[11.5px] font-semibold tabular-nums text-aurora-text-primary">{gateway.status.capability_observation ? capabilityLabel(gateway.status as Gateway['status'], 'tools') : gateway.status.exposed_tool_count}</span>
         </Link></li>
       })}</ul>}
   </section>

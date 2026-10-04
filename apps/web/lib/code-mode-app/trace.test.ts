@@ -434,3 +434,13 @@ test('rejects unknown trace shapes', () => {
     null,
   )
 })
+
+
+test('advisory response notices do not replace the original trace result', () => {
+  const trace = parseCodeModeTrace({kind: 'code_mode_execute_trace', call_count: 0,
+    calls: [], result: {ok: true}, result_shape: {type: 'object'}, logs_count: 0,
+    notifications: [{id: 'test-notice', source: 'test', level: 'info', message: 'Advisory only'}],
+    notifications_are_advisory: true, notifications_remaining: 0})
+  assert.equal(trace?.kind, 'code_mode_execute_trace')
+  if (trace?.kind === 'code_mode_execute_trace') assert.deepEqual(trace.result, {ok: true})
+})

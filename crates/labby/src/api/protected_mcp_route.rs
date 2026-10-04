@@ -56,7 +56,7 @@ fn team_admission_unavailable(stage: &'static str) -> axum::response::Response {
         .into_response()
 }
 
-async fn protected_mcp_route_entry(
+pub(crate) async fn protected_mcp_route_entry(
     state: AppState,
     mut request: Request<Body>,
     route: crate::config::ProtectedMcpRouteConfig,

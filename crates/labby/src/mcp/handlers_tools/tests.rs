@@ -659,6 +659,20 @@ fn scoped_context(
     context
 }
 
+fn durable_scoped_context(
+    peer: rmcp::service::Peer<rmcp::RoleServer>,
+    scopes: &[&str],
+) -> rmcp::service::RequestContext<rmcp::RoleServer> {
+    let mut context = scoped_context(peer, scopes);
+    context
+        .extensions
+        .get_mut::<axum::http::request::Parts>()
+        .unwrap()
+        .extensions
+        .insert(primary_static_bearer_identity());
+    context
+}
+
 fn request_context_with_peer(
     peer: rmcp::service::Peer<rmcp::RoleServer>,
 ) -> rmcp::service::RequestContext<rmcp::RoleServer> {
@@ -2691,12 +2705,13 @@ async fn gateway_tool_reports_a_blocked_access_store_as_a_service_outage() {
 
 #[tokio::test]
 async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
-    let server = test_server(
+    let mut server = test_server(
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    server.access_runtime = authorized_test_access_runtime().await;
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
@@ -2704,7 +2719,10 @@ async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
 
     let denied_tools = running
         .service()
-        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .list_tools_impl(
+            None,
+            durable_scoped_context(running.peer().clone(), &["lab:read"]),
+        )
         .await
         .expect("read-scope tools");
     assert!(
@@ -2717,7 +2735,7 @@ async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
         .service()
         .call_tool_impl(
             CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
-            scoped_context(running.peer().clone(), &["lab:read"]),
+            durable_scoped_context(running.peer().clone(), &["lab:read"]),
         )
         .await
         .expect("hidden status call");
@@ -2725,7 +2743,10 @@ async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
 
     let admin_tools = running
         .service()
-        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .list_tools_impl(
+            None,
+            durable_scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
         .await
         .expect("admin tools");
     let status_tool = admin_tools
@@ -2751,7 +2772,7 @@ async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
                         ("params".to_string(), serde_json::json!({})),
                     ]),
                 ),
-                scoped_context(running.peer().clone(), &["lab:admin"]),
+                durable_scoped_context(running.peer().clone(), &["lab:admin"]),
             )
             .await
             .expect("admin status callback");
@@ -2859,7 +2880,7 @@ async fn gateway_status_app_returns_only_route_visible_upstreams() {
         pool,
     )
     .await;
-    let server = test_server(
+    let mut server = test_server(
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::protected_subset(
@@ -2870,6 +2891,7 @@ async fn gateway_status_app_returns_only_route_visible_upstreams() {
         ),
         crate::mcp::logging::LoggingLevel::Emergency,
     );
+    server.access_runtime = authorized_test_access_runtime().await;
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
@@ -2879,7 +2901,7 @@ async fn gateway_status_app_returns_only_route_visible_upstreams() {
         .service()
         .call_tool_impl(
             CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
-            scoped_context(running.peer().clone(), &["lab:admin"]),
+            durable_scoped_context(running.peer().clone(), &["lab:admin"]),
         )
         .await
         .expect("route-scoped status result");
@@ -2893,6 +2915,69 @@ async fn gateway_status_app_returns_only_route_visible_upstreams() {
         .filter_map(|row| row["id"].as_str())
         .collect::<Vec<_>>();
     assert_eq!(ids, vec!["visible"]);
+    assert_eq!(rows[0]["capability_observation"]["scope"], "global");
+    assert_eq!(
+        rows[0]["capability_observation"]["tools"]["state"],
+        "unknown"
+    );
+    assert!(rows[0]["capability_observation"]["tools"]["discovered"].is_null());
+    assert!(rows[0]["capability_observation"]["tools"]["exposed"].is_null());
+}
+
+#[tokio::test]
+#[cfg(feature = "proxy-testkit")]
+async fn gateway_status_app_preserves_credential_catalog_scope() {
+    let mut upstream = fixture_oauth_upstream_config("oauth-status");
+    upstream.expose_tools = Some((0..90).map(|index| format!("tool-{index}")).collect());
+    let pool = Arc::new(UpstreamPool::new());
+    pool.install_test_subject_tools_for_upstream(
+        &upstream,
+        crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT,
+        (0..91)
+            .map(|index| {
+                Tool::new(
+                    format!("tool-{index}"),
+                    "fixture",
+                    Arc::new(serde_json::Map::new()),
+                )
+            })
+            .collect(),
+    )
+    .await;
+    let manager = code_mode_manager_with_pool(true, upstream, pool).await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = authorized_test_access_runtime().await;
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(GATEWAY_STATUS_TOOL_NAME),
+            durable_scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect("subject-scoped status");
+    let rows = result
+        .structured_content
+        .as_ref()
+        .and_then(|value| value["data"].as_array())
+        .expect("status rows");
+    let observation = &rows[0]["capability_observation"];
+    assert_eq!(observation["scope"], "credential");
+    assert_eq!(observation["tools"]["state"], "known");
+    assert_eq!(observation["tools"]["discovered"], 91);
+    assert_eq!(observation["tools"]["exposed"], 90);
+    assert!(
+        !observation.to_string().contains("reader"),
+        "credential identity must not leak"
+    );
 }
 
 #[tokio::test]
@@ -6633,6 +6718,60 @@ async fn authenticated_http_gets_scoped_artifact_management_while_local_peers_do
 }
 
 #[tokio::test]
+async fn proxy_aggregate_catalog_matches_peer_contract_and_preserves_collisions() {
+    let pool = Arc::new(UpstreamPool::new());
+    for name in ["alpha", "beta"] {
+        let upstream_name: Arc<str> = Arc::from(name);
+        pool.insert_entry_for_test(
+            name,
+            fixture_upstream_entry(
+                name,
+                HashMap::from([(
+                    "fixture.echo".to_string(),
+                    fixture_upstream_tool(&upstream_name, "fixture.echo", None),
+                )]),
+            ),
+        )
+        .await;
+    }
+    let manager = code_mode_manager_with_pool_multi(
+        false,
+        vec![
+            fixture_upstream_config("alpha"),
+            fixture_upstream_config("beta"),
+        ],
+        pool,
+    )
+    .await;
+    let server = test_server(
+        ToolRegistry::proxy_aggregate(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = request_context_with_peer(running.peer().clone());
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .unwrap()
+        .tools;
+    assert_eq!(listed, contract);
+    let mut names: Vec<_> = listed.iter().map(|tool| tool.name.as_ref()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["alpha::fixture.echo", "beta::fixture.echo"]);
+}
+
+#[tokio::test]
 async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths() {
     let upstream_name: Arc<str> = Arc::from("annotated");
     let mut expected = rmcp::model::ToolAnnotations::new()
@@ -7383,4 +7522,643 @@ async fn codemode_call_to_disabled_upstream_reports_unavailable() {
 
     assert!(text.contains("unavailable"), "{text}");
     assert!(text.contains("configured but disabled"), "{text}");
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch() {
+    let mut registry = crate::registry::build_default_registry();
+    registry.set_tool_projection_mode(crate::mcp::permanent_tools::ToolProjectionMode::Both);
+    let stash = registry
+        .services()
+        .iter()
+        .find(|service| service.name == "stash")
+        .unwrap();
+    let action = stash
+        .actions
+        .iter()
+        .find(|action| action.name == "stash.list")
+        .unwrap();
+    let atomic_name = format!("{}.{}", stash.name, action.name);
+    assert!(
+        registry
+            .permanent_tools()
+            .atomic_action_tool(stash, action)
+            .is_none(),
+        "caller-bound Stash has no atomic output-schema contract"
+    );
+    assert!(
+        registry.resolve_atomic_action(&atomic_name).is_none(),
+        "caller-bound Stash is excluded from context-free atomic resolution"
+    );
+    let mut server = test_server(
+        registry,
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "http";
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+    let mut context = scoped_context(peer.clone(), &["lab:read"]);
+    context.extensions.insert(primary_static_bearer_identity());
+    let retained = running.service().peer_contract_for_request(&context);
+    let descriptors = retained.visible_tool_descriptors().await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed.tools, descriptors,
+        "live and stored descriptors must match"
+    );
+    for name in ["stash", "gateway", "server_logs", "codemode_read"] {
+        assert!(
+            listed.tools.iter().any(|tool| tool.name == name),
+            "missing {name}"
+        );
+    }
+    assert!(
+        !listed.tools.iter().any(|tool| tool.name == atomic_name),
+        "Stash atomic actions remain hidden in Code Mode"
+    );
+    let mut atomic_caller = scoped_context(peer.clone(), &["lab:read"]);
+    atomic_caller
+        .extensions
+        .insert(primary_static_bearer_identity());
+    let atomic = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new(atomic_name).with_arguments(Default::default()),
+        atomic_caller,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(atomic.is_error, Some(true));
+    assert!(
+        atomic.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("hidden while code_mode"),
+        "native exception applies only to the service router"
+    );
+    assert!(retained.audience.native_stash_caller);
+    assert_eq!(
+        descriptors,
+        retained.visible_tool_descriptors().await,
+        "notification rebuild must retain native caller visibility"
+    );
+    let mut caller = scoped_context(peer.clone(), &["lab:read"]);
+    caller.extensions.insert(primary_static_bearer_identity());
+    let result = Box::pin(
+        running.service().call_tool_impl(
+            CallToolRequestParams::new("stash").with_arguments(
+                serde_json::json!({"action":"stash.list", "params":{}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            caller,
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.is_error,
+        Some(true),
+        "blocked access fixture must still fail closed"
+    );
+    let text = &result.content[0].as_text().unwrap().text;
+    assert!(
+        !text.contains("hidden while code_mode"),
+        "native call must reach caller authorization"
+    );
+    let envelope: Value = serde_json::from_str(text).unwrap();
+    assert!(
+        matches!(
+            envelope["error"]["kind"].as_str(),
+            Some("forbidden" | "service_unavailable" | "not_found")
+        ),
+        "unexpected denial: {envelope}"
+    );
+    let mut spoofed = scoped_context(peer.clone(), &["lab:read"]);
+    spoofed.meta.0.insert(
+        "verified_identity".into(),
+        serde_json::json!({"subject":"owner"}),
+    );
+    let mut insufficient = scoped_context(peer.clone(), &[]);
+    insufficient
+        .extensions
+        .insert(primary_static_bearer_identity());
+    for denied in [
+        request_context_with_peer(peer.clone()),
+        scoped_context(peer.clone(), &["lab:read"]),
+        spoofed,
+        insufficient,
+    ] {
+        let retained = running.service().peer_contract_for_request(&denied);
+        assert!(!retained.audience.native_stash_caller);
+        let result = Box::pin(
+            running.service().call_tool_impl(
+                CallToolRequestParams::new("stash").with_arguments(
+                    serde_json::json!({"action":"stash.list", "params":{}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                denied.clone(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = &result.content[0].as_text().unwrap().text;
+        let envelope: Value = serde_json::from_str(text).unwrap();
+        assert!(
+            matches!(
+                envelope["error"]["kind"].as_str(),
+                Some("not_found" | "forbidden")
+            ),
+            "denied caller must fail discovery or scope authorization"
+        );
+        if envelope["error"]["kind"] == "not_found" {
+            assert!(text.contains("hidden while code_mode"));
+        }
+        let listed = running
+            .service()
+            .list_tools_impl(None, denied)
+            .await
+            .unwrap();
+        assert!(!listed.tools.iter().any(|tool| tool.name == "stash"));
+        assert_eq!(listed.tools, retained.visible_tool_descriptors().await);
+    }
+    assert!(
+        !running
+            .service()
+            .peer_contract()
+            .visible_tool_descriptors()
+            .await
+            .iter()
+            .any(|tool| tool.name == "stash"),
+        "context-free catalog excludes Stash"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn code_mode_stash_exception_does_not_admit_in_process_peers() {
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "in-process";
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+    // Even propagated-looking scope metadata cannot turn this into a native
+    // transport; Stash remains excluded from the context-free execution hop.
+    let mut context = scoped_context(peer.clone(), &["lab:admin"]);
+    context.extensions.insert(primary_static_bearer_identity());
+    let retained = running.service().peer_contract_for_request(&context);
+    assert!(!retained.audience.native_stash_caller);
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .unwrap();
+    assert!(!listed.tools.iter().any(|tool| tool.name == "stash"));
+    assert_eq!(listed.tools, retained.visible_tool_descriptors().await);
+    let result = Box::pin(
+        running.service().call_tool_impl(
+            CallToolRequestParams::new("stash").with_arguments(
+                serde_json::json!({"action":"stash.list", "params":{}})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            scoped_context(peer, &["lab:admin"]),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    assert!(
+        result.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("hidden while code_mode")
+    );
+}
+
+mod codemode_notices;
+
+#[tokio::test]
+async fn synthetic_gateway_callbacks_require_current_durable_authority() {
+    for unavailable in [false, true] {
+        let runtime = if unavailable {
+            Arc::new(crate::access::AccessRuntime::blocked_unavailable())
+        } else {
+            let runtime = authorized_test_access_runtime().await;
+            runtime
+                .store()
+                .await
+                .unwrap()
+                .execute_test_statement(
+                    "UPDATE platform_administrators SET status='revoked', revoked_at=11",
+                )
+                .await
+                .unwrap();
+            runtime
+        };
+        let mut server = test_server(
+            crate::registry::build_default_registry(),
+            Some(code_mode_manager(true).await),
+            crate::mcp::route_scope::McpRouteScope::Root,
+            crate::mcp::logging::LoggingLevel::Emergency,
+        );
+        server.access_runtime = runtime;
+        let (transport, _client) = tokio::io::duplex(256 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        for (tool, action) in [
+            ("add_server", "test"),
+            ("add_server", "create"),
+            ("gateway_status", "open"),
+            ("gateway_status", "refresh"),
+        ] {
+            let mut context = scoped_context(running.peer().clone(), &["lab:admin"]);
+            context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .unwrap()
+                .extensions
+                .insert(primary_static_bearer_identity());
+            let result = Box::pin(running.service().call_tool_impl(
+                CallToolRequestParams::new(tool).with_arguments(serde_json::Map::from_iter([
+                    ("action".into(), serde_json::json!(action)),
+                    ("params".into(), serde_json::json!({})),
+                ])),
+                context,
+            ))
+            .await
+            .unwrap();
+            let payload = result.content[0].as_text().unwrap().text.as_str();
+            assert!(
+                result.is_error.unwrap_or(false),
+                "{tool}/{action}: {payload}"
+            );
+            assert!(
+                payload.contains(if unavailable {
+                    "service_unavailable"
+                } else {
+                    "forbidden"
+                }),
+                "{tool}/{action}: {payload}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gateway_mcp_fences_revocation_during_discovery() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    let provider = MockServer::start().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let responder_entered = entered.clone();
+    let responder_gate = gate.clone();
+    let response = ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "issuer": format!("{}/mcp", provider.uri()),
+        "authorization_endpoint": format!("{}/authorize", provider.uri()),
+        "token_endpoint": format!("{}/token", provider.uri()),
+        "code_challenge_methods_supported": ["S256"]
+    }));
+    Mock::given(method("GET"))
+        .respond_with(move |_: &wiremock::Request| {
+            responder_entered.notify_one();
+            let (lock, ready) = &*responder_gate;
+            let released = lock.lock().unwrap();
+            let (released, timeout) = ready
+                .wait_timeout_while(released, std::time::Duration::from_secs(5), |released| {
+                    !*released
+                })
+                .unwrap();
+            assert!(
+                *released && !timeout.timed_out(),
+                "authority test barrier was not released"
+            );
+            response.clone()
+        })
+        .mount(&provider)
+        .await;
+    let dir = tempfile::Builder::new()
+        .prefix("labby-code-mode-oauth-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+        .await
+        .unwrap();
+    let config: labby_runtime::gateway_config::UpstreamConfig =
+        serde_json::from_value(serde_json::json!({
+            "name": "personal", "enabled": true,
+            "url": format!("{}/mcp", provider.uri()),
+            "oauth": {"mode": "authorization_code_pkce", "registration": {
+                "strategy": "preregistered", "client_id": "fixture"
+            }}
+        }))
+        .unwrap();
+    let key = crate::oauth::upstream::encryption::load_key(
+        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    )
+    .unwrap();
+    let callback = "https://lab.example.com/auth/upstream/callback";
+    let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+        store.clone(),
+        key.clone(),
+        config.clone(),
+        callback.into(),
+    );
+    let managers = Arc::new(dashmap::DashMap::new());
+    managers.insert("personal".to_owned(), oauth);
+    let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
+        dir.path().join("lab.toml"),
+        Default::default(),
+    )
+    .with_oauth_resources(store.clone(), key, callback.into())
+    .with_upstream_oauth_managers(managers);
+    manager.replace_config_for_tests(vec![config]).await;
+    let mut gateway_config = manager.current_config().await;
+    gateway_config.code_mode.enabled = false;
+    manager
+        .seed_config_unchecked_for_tests(gateway_config)
+        .await;
+
+    let manager = Arc::new(manager);
+    let access = authorized_test_access_runtime().await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = access.clone();
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = scoped_context(running.peer().clone(), &["lab"]);
+    context
+        .extensions
+        .get_mut::<axum::http::request::Parts>()
+        .unwrap()
+        .extensions
+        .insert(primary_static_bearer_identity());
+    use tracing::instrument::WithSubscriber as _;
+    let logs = crate::test_support::SharedBuf::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(logs.clone())
+        .finish();
+    let operation = tokio::spawn(
+        async move {
+            Box::pin(running.service().call_tool_impl(
+                CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+                    (
+                        "action".into(),
+                        serde_json::json!("gateway.oauth.authorize"),
+                    ),
+                    ("params".into(), serde_json::json!({"upstream":"personal"})),
+                ])),
+                context,
+            ))
+            .await
+            .unwrap()
+        }
+        .with_subscriber(subscriber),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .unwrap();
+    access
+        .store()
+        .await
+        .unwrap()
+        .execute_test_statement("UPDATE principals SET status='disabled', updated_at=12")
+        .await
+        .unwrap();
+    {
+        let (lock, ready) = &*gate;
+        *lock.lock().unwrap() = true;
+        ready.notify_all();
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), operation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.is_error.unwrap_or(false));
+    let envelope: Value = serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(envelope["error"]["kind"], "authority_changed", "{envelope}");
+    assert_eq!(
+        envelope["error"]["original_kind"], "forbidden",
+        "{envelope}"
+    );
+    assert_eq!(
+        envelope["error"]["action"], "gateway.oauth.authorize",
+        "{envelope}"
+    );
+    assert_eq!(envelope["error"]["side_effects"], "possible");
+    assert_eq!(
+        envelope["error"]["recovery"]["same_arguments"],
+        "discouraged"
+    );
+    let output = crate::test_support::captured_logs(&logs);
+    assert!(
+        output.lines().any(|line| line.contains("dispatch error")
+            && line.contains("authority_changed")
+            && line.contains("gateway.oauth.authorize")),
+        "missing completion failure log: {output}"
+    );
+}
+
+#[tokio::test]
+async fn synthetic_gateway_create_retains_authorized_admin_success() {
+    let directory = tempfile::tempdir().unwrap();
+    let config_path = directory.path().join("config.toml");
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            config_path.clone(),
+            Default::default(),
+        ),
+    );
+    manager
+        .seed_config_unchecked_for_tests(
+            crate::config::LabConfig {
+                mcp_apps: crate::config::McpAppsConfig {
+                    add_server: true,
+                    gateway_status: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+            .to_gateway_config(),
+        )
+        .await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager.clone()),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = authorized_test_access_runtime().await;
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = Box::pin(running.service().call_tool_impl(CallToolRequestParams::new("add_server")
+        .with_arguments(serde_json::Map::from_iter([
+            ("action".into(), serde_json::json!("create")),
+            ("params".into(), serde_json::json!({"spec":{"name":"authorized-fixture", "enabled":false, "url":"https://example.test/mcp"}}))
+        ])), durable_scoped_context(running.peer().clone(), &["lab:admin"]))).await.unwrap();
+    assert!(!result.is_error.unwrap_or(false), "{:?}", result.content);
+    assert!(config_path.exists());
+    assert_eq!(
+        manager.current_config().await.upstream[0].name,
+        "authorized-fixture"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn synthetic_gateway_test_fences_revocation_during_probe() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    let provider = MockServer::start().await;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    let responder_entered = entered.clone();
+    let responder_gate = gate.clone();
+    let response = ResponseTemplate::new(500);
+    Mock::given(method("POST"))
+        .respond_with(move |_: &wiremock::Request| {
+            responder_entered.notify_one();
+            let (lock, ready) = &*responder_gate;
+            let released = lock.lock().unwrap();
+            let (released, timeout) = ready
+                .wait_timeout_while(released, std::time::Duration::from_secs(5), |released| {
+                    !*released
+                })
+                .unwrap();
+            assert!(
+                *released && !timeout.timed_out(),
+                "authority test barrier was not released"
+            );
+            response.clone()
+        })
+        .mount(&provider)
+        .await;
+    let dir = tempfile::Builder::new()
+        .prefix("labby-code-mode-oauth-")
+        .tempdir_in(std::env::current_dir().unwrap())
+        .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
+        dir.path().join("config.toml"),
+        Default::default(),
+    );
+    let mut gateway_config = manager.current_config().await;
+    gateway_config.mcp_apps.add_server = true;
+    manager
+        .seed_config_unchecked_for_tests(gateway_config)
+        .await;
+    let manager = Arc::new(manager);
+    let access = authorized_test_access_runtime().await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.access_runtime = access.clone();
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let mut context = scoped_context(running.peer().clone(), &["lab:admin"]);
+    context
+        .extensions
+        .get_mut::<axum::http::request::Parts>()
+        .unwrap()
+        .extensions
+        .insert(primary_static_bearer_identity());
+    let upstream_url = format!("{}/mcp", provider.uri());
+    let operation = tokio::spawn(async move {
+        Box::pin(running.service().call_tool_impl(
+            CallToolRequestParams::new("add_server").with_arguments(serde_json::Map::from_iter([
+                ("action".into(), serde_json::json!("test")),
+                (
+                    "params".into(),
+                    serde_json::json!({"spec":{"name":"probe-fixture","url":upstream_url}}),
+                ),
+            ])),
+            context,
+        ))
+        .await
+        .unwrap()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+        .await
+        .unwrap();
+    access
+        .store()
+        .await
+        .unwrap()
+        .execute_test_statement(
+            "UPDATE platform_administrators SET status='revoked', revoked_at=12",
+        )
+        .await
+        .unwrap();
+    {
+        let (lock, ready) = &*gate;
+        *lock.lock().unwrap() = true;
+        ready.notify_all();
+    }
+    let result = tokio::time::timeout(std::time::Duration::from_secs(10), operation)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(result.is_error.unwrap_or(false));
+    let envelope: Value = serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(envelope["error"]["kind"], "authority_changed", "{envelope}");
+    assert_eq!(
+        envelope["error"]["original_kind"], "forbidden",
+        "{envelope}"
+    );
+    assert_eq!(envelope["error"]["action"], "test", "{envelope}");
+    assert_eq!(
+        envelope["error"]["canonical_action"], "gateway.test",
+        "{envelope}"
+    );
+    assert_eq!(envelope["error"]["side_effects"], "possible");
+    assert_eq!(
+        envelope["error"]["recovery"]["same_arguments"],
+        "discouraged"
+    );
 }

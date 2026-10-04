@@ -79,6 +79,10 @@ mod read;
 mod resolver;
 mod runtime;
 mod store;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+mod tailcat_enrollment;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+pub(crate) use tailcat_enrollment::TailcatEnrollmentInput;
 mod task;
 pub(crate) mod task_schedule;
 pub(crate) use task::TaskRecord;
@@ -180,8 +184,8 @@ pub(crate) use domain::{Permission, ProjectRole, TeamRole};
 pub(crate) use error::AccessStoreError;
 #[cfg(feature = "gateway")]
 pub(crate) use gateway_authority::{
-    authorize_gateway_action, filter_team_gateway_projection, gateway_runtime_subject,
-    gateway_transport_requires_admin, qualify_team_gateway_params,
+    GatewayActionAuthorization, authorize_gateway_action, filter_team_gateway_projection,
+    gateway_runtime_subject, gateway_transport_requires_admin, qualify_team_gateway_params,
 };
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]

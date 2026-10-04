@@ -6,7 +6,9 @@ updated: "2026-08-05"
 
 # Serialization
 
-This document is the canonical serialization contract for `lab`.
+This document is the serialization contract for Labby-owned product actions.
+Native upstream MCP responses retain their upstream protocol shapes; they are
+not universally wrapped in the product dispatch envelope below.
 
 It defines:
 
@@ -33,8 +35,9 @@ Serialization rules should keep the project consistent across:
 
 The main boundary is simple:
 
-- `labby-apis` owns typed service data and wire-level serde models
-- `lab` owns product-surface envelopes and presentation formats
+- `labby-apis` owns SDK contracts for core, setup, doctor, and artifact control;
+  extracted runtime crates own their respective transport and domain models
+- `labby` owns product-surface envelopes and presentation formats
 
 ## Ownership
 
@@ -42,8 +45,8 @@ The main boundary is simple:
 
 `labby-apis` owns:
 
-- request and response structs used against upstream services
-- serde derives and field mappings needed to talk to those services
+- request and response structs for its supported SDK contracts
+- serde derives and field mappings for those contracts
 - typed SDK data returned to the binary
 
 `labby-apis` does not own:
@@ -55,7 +58,7 @@ The main boundary is simple:
 
 ### `labby`
 
-`lab` owns:
+`labby` owns:
 
 - MCP success and error envelopes
 - HTTP request/response envelope shaping for the product API
@@ -81,8 +84,8 @@ Canonical success shape:
 ```json
 {
   "ok": true,
-  "service": "marketplace",
-  "action": "mcp.list",
+  "service": "gateway",
+  "action": "gateway.list",
   "data": []
 }
 ```
@@ -95,16 +98,17 @@ Rules:
 
 ### MCP Error Envelope
 
-Canonical error shape:
+Abbreviated error shape (the required versioned recovery fields are omitted
+here; use the linked agent-error contract for the complete wire schema):
 
 ```json
 {
   "ok": false,
-  "service": "setup",
-  "action": "plugin.install",
+  "service": "gateway",
+  "action": "gateway.get",
   "error": {
-    "kind": "missing_param",
-    "message": "missing parameter: name"
+    "kind": "invalid_param",
+    "message": "invalid gateway params: missing field `name`"
   }
 }
 ```
@@ -169,10 +173,14 @@ Rules:
 
 ## Product Input Shapes
 
-For MCP and HTTP dispatch:
+For service-router MCP tools and HTTP action dispatch:
 
 - `action` is the stable operation selector
 - `params` is the action-specific object
+
+Atomic MCP projections instead expose the selected action's parameter schema
+directly. Both forms derive from shared action metadata and reach the same
+dispatcher; atomic callers do not send an extra `action`/`params` wrapper.
 
 Do not invent service-specific top-level request shapes that bypass the shared dispatcher model.
 

@@ -1,7 +1,7 @@
 ---
 title: "Operations"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-09-29"
 ---
 
 # Operations
@@ -12,9 +12,9 @@ This document covers operator-facing workflows, verification surfaces, CI, and r
 
 The Justfile is the source of truth for repo-local operator/developer helpers. High-value current helpers include:
 
-- `just mcp-token` — generate or rotate `LABBY_MCP_HTTP_TOKEN` and update the env file safely
+- `just mcp-token` — rotate the checkout's `./.env` token and print it to stdout; this is not a production secret-rotation workflow and does not update the daemon's selected dotenv file
 - `just docs-check` — verify code-generated documentation remains fresh
-- `just validate-plugin` — validate the checked-in Labby plugin setup lifecycle against a temporary `LABBY_HOME`
+- `just validate-plugin` — run `labby setup check --json` against a temporary `LABBY_HOME`; it does not validate plugin manifests or perform an MCP connection smoke
 - `just host-sync` — rebuild/reinstall/restart the source checkout on the supported system-container host path
 
 For health/auth verification, use the shipped `labby gateway status` and `labby doctor ...` commands plus focused integration tests. The repository does not currently ship `bin/health-check` or a top-level `scripts/check-oauth.sh` product interface. A legacy compatibility probe remains at `plugins/scripts/check-oauth.sh`, but it is not the canonical operator contract; do not substitute it for the built-in doctor surfaces in deployment guidance.
@@ -23,8 +23,8 @@ For health/auth verification, use the shipped `labby gateway status` and `labby 
 
 When `LABBY_AUTH_MODE=oauth`, Labby persists local auth state on disk:
 
-- SQLite database: `~/.labby/auth.db` by default
-- JWT signing key: `~/.labby/auth-jwt.pem` by default
+- SQLite database: `$LABBY_HOME/auth.db` (`~/.labby/auth.db` without an override)
+- JWT signing key: `$LABBY_HOME/auth-jwt.pem` (`~/.labby/auth-jwt.pem` without an override)
 - Secret files use single-user permissions on every supported host: mode 0600
   on Unix and a protected DACL containing only a FullControl rule for the
   current user on Windows. This includes `.env`, drafts/backups, the auth
@@ -32,16 +32,16 @@ When `LABBY_AUTH_MODE=oauth`, Labby persists local auth state on disk:
 
 Rules:
 
-- `LABBY_AUTH_ADMIN_EMAIL` must be set to the bootstrap admin's Google email; startup fails closed if it is missing so no Google account can authenticate without explicit permission
+- `LABBY_AUTH_ADMIN_EMAIL` must name one or more administrators' verified email addresses; OAuth selects exactly one Google or Authelia provider and fails closed without this admission configuration
 - both files must use restrictive permissions; on Unix, Labby requires they are not group- or world-readable
 - new files are created with `0600` permissions on Unix
 - the SQLite store is opened in WAL mode with a non-zero busy timeout
 - the current auth store opens a small local SQLite pool, so login/code/token traffic is no longer funneled through one in-process mutex lane
-- Google tokens stay server-side only; clients always receive Labby access tokens and receive Labby refresh tokens only when Google granted an upstream refresh token
+- Provider tokens stay server-side. Google renewable grants require a reusable Google refresh credential; Authelia renews Labby refresh grants through local policy without an IdP refresh token
 
 Recovery guidance:
 
-- deleting `auth-jwt.pem` invalidates every previously issued `labby` access token and refresh token exchange path tied to those access tokens
+- replacing `auth-jwt.pem` and restarting all issuers invalidates access JWTs signed with the old key; it does not itself revoke database-backed refresh grants or browser sessions, which require separate invalidation
 - deleting `auth.db` removes registered clients, pending authorization requests, authorization codes, and refresh tokens
 - if you back up either file, back up both together to preserve a coherent auth state snapshot
 
@@ -172,34 +172,56 @@ For the full cutover and rollback runbook, see
 
 `labby doctor` is the main read-only validation command.
 
-It should audit:
-
-- required env vars
-- URL validity
-- connectivity
-- auth
-- version visibility
-
-It should support:
-
-- all services
-- single-service runs
-- JSON output
-- quick mode
-
-Typical checks include:
-
-- required env presence
-- optional env visibility
-- DNS/URL validity
-- TCP reachability
-- health endpoint success
-- auth acceptance
-- version reporting
+With no subcommand it runs the full system/auth/gateway/relay audit. Focused
+commands are `labby doctor system`, `labby doctor auth`, `labby doctor proxy`,
+and `labby doctor relay`. Use `--json` for machine output, `auth --live` for
+provider discovery/JWKS probes, and `relay --probe-targets` for target sockets.
+The CLI has no generic single-service selector or quick-mode flag. Exit codes
+are 0 for success, 1 for warnings, and 2 for failures.
 
 ### `labby gateway status`
 
-`labby gateway status` should expose normalized health status using shared service contracts.
+`labby gateway status` reports authoritative daemon reachability and upstream
+runtime state. `labby server status` reports upstream discovery and process
+state through the shared gateway lifecycle operation.
+
+## Operator notifications
+
+Settings → Notifications provides a recent-event inbox and delivery settings.
+`GET /v1/notifications` requires `lab:admin` and returns the bounded inbox;
+it is separate from MCP catalog-change subscriptions. The current producer
+polls Depot source history for failed ingestion events. It does not subscribe
+to every operational log or implement the proposed task-activity timeline.
+
+`labby serve` opens `$LABBY_HOME/notifications.json` (normally
+`~/.labby/notifications.json`) for records, source cursors, and pending Apprise
+deliveries. If that store cannot be opened, it warns and uses an in-memory
+inbox, which does not survive restart. The default retention is 200 records.
+The UI loads the feed on entry and offers Refresh; it is not a live push feed.
+
+The monitor currently uses the legacy environment-backed Depot client:
+`LABBY_DEPOT_ENABLED=1`, a valid `LABBY_DEPOT_URL`, and a nonempty
+`LABBY_DEPOT_TOKEN`. Configuring a named discovery provider alone does not
+activate this monitor. Polling uses the authenticated operation catalog and
+`depot.sources.list` with read authority; it does not mutate Depot sources.
+The first poll considers the returned history, including earlier failures.
+Later polls use persisted source cursors and deduplication keys. If a cursor
+falls outside Depot's retained history, the monitor warns and resumes by
+timestamp; this cannot recover events Depot no longer returns.
+
+Optional Apprise delivery posts to the configured base URL plus `/notify`, or
+`/notify/{KEY}` when `APPRISE_TOKEN` is set. The key is a stateful configuration
+key, not an Authorization bearer header. Failed deliveries remain queued for
+later polls, with at most four attempts per poll and 2,000 pending records;
+overflow drops the oldest pending delivery and logs an error. Delivery is not
+exactly once: a remote success followed by a local persistence failure can be
+retried. Records collected without an Apprise target are not queued retroactively.
+See [notification environment settings](runtime/ENV.md#operator-notifications)
+for defaults and restart requirements.
+
+Source: [notification runtime](../crates/labby/src/notifications.rs),
+[HTTP feed](../crates/labby/src/api/services/notifications.rs), and
+[server startup](../crates/labby/src/cli/serve.rs).
 
 ## Code Mode Operations
 
@@ -232,10 +254,12 @@ Symptoms:
 Actions:
 
 1. Split large snippets into smaller executions and reduce tool fan-out.
-2. Inspect `[code_mode]` timeout and pool settings in `~/.labby/config.toml`.
-3. Temporarily disable pooling only for diagnosis by restarting with the
-   smallest configured pool size and watching whether failures become runner
-   startup failures or snippet timeouts.
+2. Inspect `[code_mode]` execution limits and the process environment's
+   `LABBY_CODE_MODE_POOL_SIZE`, `LABBY_CODE_MODE_POOL_MAX_OVERFLOW`, and
+   `LABBY_CODE_MODE_POOL_RECYCLE_AFTER` settings.
+3. For a bounded diagnostic, restart with `LABBY_CODE_MODE_POOL_SIZE=0` to
+   disable pooling and use a fresh runner per execution. A smaller positive
+   value only reduces warm capacity; restore the intended settings afterward.
 4. Restart the gateway service if pooled child processes are wedged.
 
 ### Semantic Search Degradation
@@ -286,32 +310,30 @@ To roll back Code Mode behavior quickly:
 3. Re-enable only after `labby doctor`, `labby server list`, and a one-line
    `code run` smoke pass.
 
-## Install and Patch Workflows
+## Installation ownership
 
-Install and uninstall operations should:
-
-- validate env requirements
-- prompt for missing values when appropriate
-- patch `.mcp.json` atomically
-- back up before write
-- support dry-run behavior
+The `install-labby` plugin supplies the guided installer skill and client MCP
+configuration; the `labby` plugin supplies usage skills. Neither ships a binary
+or automatic lifecycle hooks. The binary owns durable setup, credentials,
+provisioning, host services, and repair. Installing a client plugin does not
+provision or mutate a remote host. See [Plugins](PLUGINS.md).
 
 ## CI
 
-CI should verify:
+Required CI verifies, according to changed-path routing:
 
 - workspace builds
 - formatting
 - linting
 - deny checks
 - CI-safe tests
-- docs when rustdoc verification is enabled
+- generated documentation and strict Rustdoc/doctest correctness
 
-Expected job split:
+The implemented job split is:
 
 - fast correctness and style checks on pushes and PRs
 - release builds on tags
-- publishing after successful release builds
+- publishing after candidate build, provenance, and stateful upgrade/rollback qualification
 
 Live service integration tests are intentionally excluded from normal CI.
 Rust coverage runs on pushes to `main`, schedules, and manual dispatch, not on
@@ -375,8 +397,12 @@ Locked release expectations:
 - tagged releases
 - release artifacts per supported platform
 - GitHub Releases as the artifact distribution surface
-- `cargo-release` for version bumps and tagging
-- GitHub-generated release notes
+- Release Please for version/changelog PRs, stable tags, and draft releases
+- `release.yml` for candidate qualification and final draft promotion
+
+The legacy `just release` recipe invokes `cargo release`; it is not the
+automated release workflow. Follow [CI/CD](runtime/CICD.md#release-process)
+for publication and recovery rather than manually promoting a draft.
 
 Tag format should stay `vX.Y.Z`.
 

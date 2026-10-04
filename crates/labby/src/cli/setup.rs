@@ -22,7 +22,13 @@ use serde_json::json;
 use crate::output::theme::CliTheme;
 use crate::output::{OutputFormat, print};
 
+mod browser_handoff;
+#[cfg(feature = "gateway")]
+mod chatgpt;
+mod client_registration;
 mod onboarding;
+#[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+mod tailcat;
 
 const DEFAULT_INCUS_SSH_KEY_PATH: &str = "/home/labby/.ssh/id_ed25519";
 
@@ -40,15 +46,31 @@ pub struct SetupArgs {
     #[arg(short = 'y', long, alias = "no-confirm")]
     pub yes: bool,
 
-    /// Skip runtime dependency installation and only converge user/service state.
+    /// Skip dependency installation offers for ChatGPT setup, or runtime installation when provisioning.
     #[arg(long)]
     pub skip_deps: bool,
 
-    /// Configure this machine as a Labby server or as a client of another server.
+    /// Configure server authentication or a client; server service installation requires --deployment.
     #[arg(long, value_enum)]
     pub role: Option<SetupRoleArg>,
 
-    /// Server deployment backend. Native is the fastest path; Incus is isolated.
+    /// Connect ChatGPT to local Microsandbox sandboxes through Google OAuth and Tailscale Funnel.
+    #[arg(long, conflicts_with_all = ["role", "deployment", "provision", "config_only", "desktop", "clients", "apply_plan", "bootstrap_static_owner"])]
+    pub chatgpt: bool,
+
+    /// Prepare native dashboard access through Tailcat without installing a daemon.
+    #[arg(long, conflicts_with_all = ["role", "deployment", "provision", "config_only", "desktop", "clients", "apply_plan", "bootstrap_static_owner", "chatgpt"])]
+    pub tailcat: bool,
+
+    /// Ask about deployment, listen address, port, and authentication instead of using local defaults.
+    #[arg(long)]
+    pub advanced: bool,
+
+    /// Prepare server authentication in LABBY_HOME without installing or starting a service.
+    #[arg(long, requires = "role", conflicts_with_all = ["provision", "deployment", "desktop", "apply_plan", "bootstrap_static_owner"])]
+    pub config_only: bool,
+
+    /// Install a managed server explicitly: native service or isolated Incus container.
     #[arg(long, value_enum, requires = "role")]
     pub deployment: Option<SetupDeploymentArg>,
 
@@ -56,7 +78,7 @@ pub struct SetupArgs {
     #[arg(long)]
     pub host: Option<String>,
 
-    /// Server listen or published port. Defaults to 8765.
+    /// Server listen or published port. Fresh local setup uses 8765 when available, otherwise an available port.
     #[arg(long)]
     pub port: Option<u16>,
 
@@ -75,6 +97,10 @@ pub struct SetupArgs {
     /// OAuth identity provider to configure during setup. Selects exactly one inbound provider.
     #[arg(long, value_enum)]
     pub oauth: Option<SetupOauthArg>,
+
+    /// Register selected installed MCP clients through Labby's protected local bridge.
+    #[arg(long, value_enum, value_delimiter = ',')]
+    pub clients: Vec<client_registration::ClientArg>,
 
     /// Install the Labby desktop app when a published package is available for this platform.
     #[arg(long, conflicts_with = "no_desktop")]
@@ -138,6 +164,8 @@ pub enum SetupOauthArg {
 
 #[derive(Debug, Subcommand)]
 pub enum SetupCommand {
+    /// Detect or safely register selected external MCP clients on this computer.
+    Clients(client_registration::ClientsArgs),
     /// Show the redacted setup and draft snapshot without changing configuration.
     State,
     /// Manage the local setup draft.
@@ -495,6 +523,9 @@ fn install_self() -> Result<PathBuf> {
 }
 
 pub async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
+    if (args.config_only || args.chatgpt) && args.command.is_some() {
+        anyhow::bail!("--config-only and --chatgpt cannot be combined with a setup subcommand");
+    }
     if args.bootstrap_static_owner {
         let paths = crate::installation::InstallationPaths::resolve()?;
         onboarding::bootstrap_static_owner_at(paths.root()).await?;
@@ -519,8 +550,8 @@ pub async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> 
         );
         return Ok(ExitCode::SUCCESS);
     }
-    if args.skip_deps {
-        anyhow::bail!("--skip-deps is only valid with --provision");
+    if args.skip_deps && !args.chatgpt && args.role.is_some() {
+        anyhow::bail!("--skip-deps is only valid with --provision or ChatGPT sandbox setup");
     }
 
     onboarding::run(args, format).await
@@ -575,6 +606,9 @@ async fn run_provision(args: SetupArgs, format: OutputFormat) -> Result<ExitCode
 
 async fn run_command(command: SetupCommand, format: OutputFormat) -> Result<ExitCode> {
     match command {
+        SetupCommand::Clients(args) => {
+            client_registration::run(args, format).await?;
+        }
         SetupCommand::State => {
             let snapshot = crate::dispatch::setup::dispatch("state", json!({})).await?;
             print(&snapshot, format)?;
@@ -775,16 +809,18 @@ fn prompt_proxy_preferences(
     let exposure = prompt_value(
         input,
         output,
-        "Exposure (tailscale/local)",
+        "Exposure (tailscale/funnel/local)",
         match preferences.exposure {
             ProxyExposure::Tailscale => "tailscale",
+            ProxyExposure::Funnel => "funnel",
             ProxyExposure::Local => "local",
         },
     )?;
     preferences.exposure = match exposure.to_ascii_lowercase().as_str() {
         "tailscale" => ProxyExposure::Tailscale,
+        "funnel" => ProxyExposure::Funnel,
         "local" => ProxyExposure::Local,
-        _ => anyhow::bail!("exposure must be `tailscale` or `local`"),
+        _ => anyhow::bail!("exposure must be `tailscale`, `funnel`, or `local`"),
     };
     let auth = prompt_value(
         input,

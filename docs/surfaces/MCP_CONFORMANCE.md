@@ -115,7 +115,7 @@ unroutable.
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
 | MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |
-| Tasks | Gateway-owned handles route get/update/cancel and translate task-status IDs | task routing tests and relay task-status regression |
+| Tasks | Opaque, durable-before-ack handles; shared owner/config authorization on get/update/cancel; retained relay still required | task routing, durable-store, registration-race, and relay task-status regressions |
 | Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
 | Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
 | Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | relay connector/route tests plus the multi-hop driver |
@@ -136,11 +136,49 @@ Destructive actions return an MRTR `input_required` result with an elicitation
 form. The client resubmits normal MCP input responses; Labby does not replace
 this with a private confirmation protocol.
 
-Labby also does not create a second task scheduler. An upstream task receives a
-subject-bound gateway handle. Subsequent `tasks/get`, `tasks/update`, and
-`tasks/cancel` calls route over the connection that created it. Incoming
-`notifications/tasks` messages translate the native task ID back to the
-gateway handle before reaching the downstream client.
+Labby does not create a second task scheduler. An upstream task receives an
+opaque, UUIDv4-backed gateway handle. Before returning `CreateTaskResult`, Labby
+commits its native-task mapping and authorization metadata to
+`$LABBY_HOME/task-routes.db`, then installs the live relay companion. Native-to-public
+ID translation and early task notifications are published only after both routes
+are ready. Missing storage, failed commits, expired metadata, and unusable owner
+bindings prevent acknowledgement. This rejection does not prove that work already
+accepted by the upstream was cancelled.
+
+Every `tasks/get`, `tasks/update`, and `tasks/cancel` operation resolves the durable
+record and checks the caller, route snapshot, allowed upstreams, expiry, and
+creating configuration fingerprint. Wrong callers and stale route bindings receive
+the same not-found response. The store contains native/public IDs, upstream and
+OAuth-subject references, owner/route metadata, timestamps, a SHA-256 configuration
+fingerprint, and TTL/poll hints. It contains no peers, access-token fields, task
+results, or serialized upstream configuration. SQLite uses WAL, `synchronous=FULL`,
+and owner-only file protection; malformed or unsupported schemas fail closed.
+
+TTL is measured from the upstream task creation timestamp, not gateway
+registration time. A null TTL remains unlimited. Changed retention hints must
+commit before a successful poll advertises them. Admission is bounded to 4,096
+routes globally, 256 per caller (including the unattributed caller group), and
+32 pending store operations. Capacity exhaustion rejects new acknowledgements
+rather than evicting unexpired tasks. Admission cleans at most 256 expired rows
+per transaction. There is no task-route idle timeout or LRU eviction. If startup
+cannot open the store, `task_routes_unavailable` appears in subsystem health:
+synchronous gateway work can continue, but task creation has no in-memory fallback.
+
+**First-slice boundary for issue #771:** route metadata survives closing and
+reopening SQLite, but task RPCs still require the original retained relay
+connection. Reacquiring authenticated connections after pool replacement or
+process restart, terminal-state garbage collection, and reconnectable task
+subscriptions remain later workstreams. This slice does not claim end-to-end
+restart or reconnect durability. Incoming `notifications/tasks` messages still
+translate native IDs through the live companion.
+
+Focused checks, run from the repository root with its pinned Rust toolchain:
+
+```bash
+cargo test -p labby-gateway upstream::pool::task
+cargo nextest run -p labby-gateway --all-features
+cargo clippy -p labby-gateway --all-features --all-targets -- -D warnings
+```
 
 Request-scoped relay connections intercept progress and task-status
 notifications at the upstream transport's sequential receive boundary and
@@ -195,7 +233,8 @@ MCP candidates in this order: `/.well-known/oauth-protected-resource/<path>`,
 `/.well-known/oauth-protected-resource`. Authorization-server discovery keeps
 the selected issuer path and tries RFC 8414 metadata, path-scoped OIDC metadata,
 then the issuer-path OIDC form. Published `issuer` values are compared exactly;
-only the explicitly tested Google issuer/token-origin split is permitted.
+endpoint origins must match the issuer origin or explicitly configured
+`additional_endpoint_origins` (including split-origin providers such as Google).
 
 Trusted enterprise issuers may be configured for enterprise-managed
 authorization. Labby validates `oauth-id-jag+jwt` assertions against pinned

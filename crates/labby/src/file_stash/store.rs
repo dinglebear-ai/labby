@@ -37,6 +37,30 @@ pub(crate) enum FileStashStoreError {
     Unavailable,
 }
 
+/// Metadata changes that must remain unpublished until the caller gate passes.
+pub(crate) enum MetadataMutation {
+    Rename {
+        display_name: String,
+        collision_key: String,
+    },
+    Move {
+        folder: String,
+    },
+    Delete,
+    CreateGrant {
+        grantee: String,
+    },
+    RevokeGrant {
+        grant_id: String,
+    },
+}
+pub(crate) enum MetadataReceipt {
+    File(StashFile),
+    Deleted(String),
+    Grant(StashGrant),
+    Revoked,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct UploadReservation {
     pub(crate) upload_id: String,
@@ -56,6 +80,8 @@ pub(crate) struct StashUsage {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StashFile {
+    pub(crate) folder: String,
+    pub(crate) content_type: String,
     pub(crate) file_id: String,
     pub(crate) display_name: String,
     pub(crate) size_bytes: u64,
@@ -360,6 +386,18 @@ impl FileStashStore {
         .await
     }
 
+    pub(crate) async fn set_upload_metadata(
+        &self,
+        upload_id: String,
+        folder: String,
+        content_type: String,
+    ) -> Result<()> {
+        self.with_connection(move |connection| {
+            let changed = connection.execute("UPDATE pending_uploads SET folder=?2,content_type=?3 WHERE upload_id=?1 AND state='pending'", params![upload_id,folder,content_type]).map_err(FileStashStoreError::sqlite)?;
+            if changed == 1 { Ok(()) } else { Err(FileStashStoreError::Integrity) }
+        }).await
+    }
+
     pub(crate) async fn mark_blob_published(&self, upload_id: String) -> Result<()> {
         self.with_connection(move |connection| {
             let changed = connection.execute(
@@ -373,18 +411,18 @@ impl FileStashStore {
     pub(crate) async fn commit_upload(&self, upload_id: String) -> Result<String> {
         self.with_connection(move |connection| {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(FileStashStoreError::sqlite)?;
-            let pending: Option<(String,String,String,i64,String)> = tx.query_row(
-                "SELECT owner_principal_id,display_name,collision_key,reserved_bytes,state FROM pending_uploads WHERE upload_id=?1",
+            let pending: Option<(String,String,String,i64,String,String,String)> = tx.query_row(
+                "SELECT owner_principal_id,display_name,collision_key,reserved_bytes,state,folder,content_type FROM pending_uploads WHERE upload_id=?1",
                 [&upload_id],
-                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)),
+                |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?)),
             ).optional().map_err(FileStashStoreError::sqlite)?;
-            let Some((owner,name,key,size,state)) = pending else { return Err(FileStashStoreError::Integrity) };
+            let Some((owner,name,key,size,state,folder,content_type)) = pending else { return Err(FileStashStoreError::Integrity) };
             if state != "blob_published" { return Err(FileStashStoreError::Integrity); }
             // Delete pending first so its cross-table name claim is released in this transaction.
             tx.execute("DELETE FROM pending_uploads WHERE upload_id=?1", [&upload_id]).map_err(FileStashStoreError::sqlite)?;
             tx.execute(
-                "INSERT INTO files(file_id,owner_principal_id,display_name,collision_key,size_bytes,blob_key,ready,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?1,1,unixepoch(),unixepoch())",
-                params![upload_id,owner,name,key,size],
+                "INSERT INTO files(file_id,owner_principal_id,display_name,collision_key,size_bytes,blob_key,ready,created_at,updated_at,folder,content_type) VALUES(?1,?2,?3,?4,?5,?1,1,unixepoch(),unixepoch(),?6,?7)",
+                params![upload_id,owner,name,key,size,folder,content_type],
             ).map_err(map_constraint)?;
             tx.commit().map_err(FileStashStoreError::sqlite)?;
             Ok(upload_id)
@@ -394,15 +432,13 @@ impl FileStashStore {
     pub(crate) async fn cancel_upload(&self, upload_id: String) -> Result<()> {
         #[cfg(all(test, target_os = "linux"))]
         {
-            let mut injected = FAIL_CANCEL_ID
+            let mut injected = FAIL_CANCEL_IDS
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((id, remaining)) = injected.as_mut()
-                && id == upload_id.as_str()
-            {
+            if let Some(remaining) = injected.get_mut(&upload_id) {
                 *remaining = remaining.saturating_sub(1);
                 if *remaining == 0 {
-                    *injected = None;
+                    injected.remove(&upload_id);
                 }
                 return Err(FileStashStoreError::Busy);
             }
@@ -435,24 +471,35 @@ impl FileStashStore {
         after: Option<StashCursor>,
         limit: usize,
     ) -> Result<Vec<StashFile>> {
+        self.list_files_in_folder(principal, after, limit, None)
+            .await
+    }
+
+    pub(crate) async fn list_files_in_folder(
+        &self,
+        principal: String,
+        after: Option<StashCursor>,
+        limit: usize,
+        folder: Option<String>,
+    ) -> Result<Vec<StashFile>> {
         self.with_read_connection(move |connection| {
             let (after_created, after_id) = after
                 .map(|cursor| (cursor.created_at, cursor.id))
                 .unwrap_or((i64::MAX, String::new()));
             let mut statement = connection.prepare(
                 "SELECT f.file_id,f.display_name,f.size_bytes,f.blob_key,f.created_at,f.updated_at,\
-                 CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END \
+                 CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END,f.folder,f.content_type \
                  FROM files f WHERE f.ready=1 \
                  AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active')) \
                  AND (f.created_at<?2 OR (f.created_at=?2 AND (?3='' OR f.file_id<?3))) \
-                 ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?4"
+                 AND (?5 IS NULL OR f.folder=?5) ORDER BY f.created_at DESC,f.file_id DESC LIMIT ?4"
             ).map_err(FileStashStoreError::sqlite)?;
             let rows = statement.query_map(
-                params![principal, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX)],
+                params![principal, after_created, after_id, i64::try_from(limit).unwrap_or(i64::MAX),folder],
                 |row| Ok(StashFile {
                     file_id: row.get(0)?, display_name: row.get(1)?,
                     size_bytes: row.get::<_, i64>(2)? as u64, blob_key: row.get(3)?,
-                    created_at: row.get(4)?, updated_at: row.get(5)?, owned: row.get::<_, i64>(6)? != 0,
+                    created_at: row.get(4)?, updated_at: row.get(5)?, owned: row.get::<_, i64>(6)? != 0, folder: row.get(7)?, content_type: row.get(8)?,
                 }),
             ).map_err(FileStashStoreError::sqlite)?;
             rows.collect::<std::result::Result<Vec<_>, _>>().map_err(FileStashStoreError::sqlite)
@@ -466,11 +513,58 @@ impl FileStashStore {
     ) -> Result<StashFile> {
         self.with_read_connection(move |connection| {
             connection.query_row(
-                "SELECT f.file_id,f.display_name,f.size_bytes,f.blob_key,f.created_at,f.updated_at,CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END FROM files f WHERE f.file_id=?2 AND f.ready=1 AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active'))",
+                "SELECT f.file_id,f.display_name,f.size_bytes,f.blob_key,f.created_at,f.updated_at,CASE WHEN f.owner_principal_id=?1 THEN 1 ELSE 0 END,f.folder,f.content_type FROM files f WHERE f.file_id=?2 AND f.ready=1 AND (f.owner_principal_id=?1 OR EXISTS(SELECT 1 FROM grants g WHERE g.file_id=f.file_id AND g.grantee_principal_id=?1 AND g.state='active'))",
                 params![principal,file_id],
-                |row| Ok(StashFile { file_id:row.get(0)?,display_name:row.get(1)?,size_bytes:row.get::<_,i64>(2)? as u64,blob_key:row.get(3)?,created_at:row.get(4)?,updated_at:row.get(5)?,owned:row.get::<_,i64>(6)? != 0 }),
+                |row| Ok(StashFile { file_id:row.get(0)?,display_name:row.get(1)?,size_bytes:row.get::<_,i64>(2)? as u64,blob_key:row.get(3)?,created_at:row.get(4)?,updated_at:row.get(5)?,owned:row.get::<_,i64>(6)? != 0,folder:row.get(7)?,content_type:row.get(8)? }),
             ).optional().map_err(FileStashStoreError::sqlite)?.ok_or(FileStashStoreError::NotFound)
         }).await
+    }
+
+    /// The gate runs inside the unpublished transaction, immediately before
+    /// commit. A denied gate returns its original error and drops the transaction.
+    /// The caller bounds the callback; the owned blocking task finishes even if
+    /// its awaiting request disappears.
+    pub(crate) async fn mutate_metadata_checked<E: Send + 'static, G: Send + 'static>(
+        &self,
+        owner: String,
+        file_id: String,
+        mutation: MetadataMutation,
+        check: impl FnOnce() -> std::result::Result<G, E> + Send + 'static,
+    ) -> Result<std::result::Result<MetadataReceipt, E>> {
+        self.with_connection(move |connection| {
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(FileStashStoreError::sqlite)?;
+            let receipt = stage_metadata_mutation(&tx, &owner, &file_id, mutation)?;
+            let authority_guard = match check() {
+                Ok(guard) => guard,
+                Err(error) => return Ok(Err(error)),
+            };
+            tx.commit().map_err(FileStashStoreError::sqlite)?;
+            // Successful gates may return leases: keep them until publication.
+            drop(authority_guard);
+            Ok(Ok(receipt))
+        })
+        .await
+    }
+
+    // Trusted internal operations (fixtures and compensating cleanup) use the
+    // same SQL/transaction path; caller-facing adapters supply a real gate.
+    async fn mutate_metadata(
+        &self,
+        owner: String,
+        file_id: String,
+        mutation: MetadataMutation,
+    ) -> Result<MetadataReceipt> {
+        match self
+            .mutate_metadata_checked(owner, file_id, mutation, || {
+                Ok::<(), std::convert::Infallible>(())
+            })
+            .await?
+        {
+            Ok(receipt) => Ok(receipt),
+            Err(never) => match never {},
+        }
     }
 
     pub(crate) async fn rename_file(
@@ -480,54 +574,85 @@ impl FileStashStore {
         display_name: String,
         collision_key: String,
     ) -> Result<StashFile> {
-        self.with_connection(move |connection| {
-            let changed = connection.execute(
-                "UPDATE files SET display_name=?3,collision_key=?4,updated_at=unixepoch() WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1",
-                params![owner,file_id,display_name,collision_key],
-            ).map_err(map_constraint)?;
-            if changed != 1 { return Err(FileStashStoreError::NotFound); }
-            connection.query_row("SELECT file_id,display_name,size_bytes,blob_key,created_at,updated_at FROM files WHERE file_id=?1", [&file_id], |row| Ok(StashFile { file_id:row.get(0)?,display_name:row.get(1)?,size_bytes:row.get::<_,i64>(2)? as u64,blob_key:row.get(3)?,created_at:row.get(4)?,updated_at:row.get(5)?,owned:true })).map_err(FileStashStoreError::sqlite)
+        match self
+            .mutate_metadata(
+                owner,
+                file_id,
+                MetadataMutation::Rename {
+                    display_name,
+                    collision_key,
+                },
+            )
+            .await?
+        {
+            MetadataReceipt::File(file) => Ok(file),
+            _ => Err(FileStashStoreError::Integrity),
+        }
+    }
+    pub(crate) async fn move_file(
+        &self,
+        owner: String,
+        file_id: String,
+        folder: String,
+    ) -> Result<StashFile> {
+        match self
+            .mutate_metadata(owner, file_id, MetadataMutation::Move { folder })
+            .await?
+        {
+            MetadataReceipt::File(file) => Ok(file),
+            _ => Err(FileStashStoreError::Integrity),
+        }
+    }
+    pub(crate) async fn list_folders(
+        &self,
+        principal: String,
+        after: Option<String>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>> {
+        self.with_read_connection(move |connection| {
+            // Enumerate owned and granted rows through their existing indexes.
+            // UNION retains one row per file even if visibility sources overlap.
+            let mut statement = connection.prepare("SELECT folder,COUNT(*) FROM (SELECT file_id,folder FROM files WHERE ready=1 AND owner_principal_id=?1 UNION SELECT f.file_id,f.folder FROM grants g JOIN files f ON f.file_id=g.file_id WHERE g.grantee_principal_id=?1 AND g.state='active' AND f.ready=1) WHERE (?2 IS NULL OR folder>?2) GROUP BY folder ORDER BY folder LIMIT ?3").map_err(FileStashStoreError::sqlite)?;
+            let rows = statement.query_map(params![principal,after,limit as i64], |row| Ok((row.get(0)?,row.get::<_,i64>(1)? as u64))).map_err(FileStashStoreError::sqlite)?;
+            rows.collect::<std::result::Result<Vec<_>,_>>().map_err(FileStashStoreError::sqlite)
         }).await
     }
-
     pub(crate) async fn delete_file(&self, owner: String, file_id: String) -> Result<String> {
-        self.with_connection(move |connection| {
-            let tx=connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(FileStashStoreError::sqlite)?;
-            let blob:Option<String>=tx.query_row("SELECT blob_key FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1",params![owner,file_id],|r|r.get(0)).optional().map_err(FileStashStoreError::sqlite)?;
-            let Some(blob)=blob else{return Err(FileStashStoreError::NotFound)};
-            tx.execute("DELETE FROM files WHERE file_id=?1",[&file_id]).map_err(FileStashStoreError::sqlite)?;
-            tx.commit().map_err(FileStashStoreError::sqlite)?;
-            Ok(blob)
-        }).await
+        match self
+            .mutate_metadata(owner, file_id, MetadataMutation::Delete)
+            .await?
+        {
+            MetadataReceipt::Deleted(blob_key) => Ok(blob_key),
+            _ => Err(FileStashStoreError::Integrity),
+        }
     }
-
     pub(crate) async fn create_grant(
         &self,
         owner: String,
         file_id: String,
         grantee: String,
     ) -> Result<StashGrant> {
-        let grant_id = ulid::Ulid::new().to_string();
-        self.with_connection(move|connection|{
-            if owner==grantee{return Err(FileStashStoreError::Conflict)}
-            let owns:bool=connection.query_row("SELECT EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)",params![owner,file_id],|r|r.get(0)).map_err(FileStashStoreError::sqlite)?;
-            if !owns{return Err(FileStashStoreError::NotFound)}
-            let now=unix_now();
-            connection.execute("INSERT INTO grants(grant_id,file_id,grantee_principal_id,state,created_at,revoked_at) VALUES(?1,?2,?3,'active',?4,NULL)",params![grant_id,file_id,grantee,now]).map_err(map_constraint)?;
-            Ok(StashGrant{grant_id,file_id,grantee_principal_id:grantee,created_at:now})
-        }).await
+        match self
+            .mutate_metadata(owner, file_id, MetadataMutation::CreateGrant { grantee })
+            .await?
+        {
+            MetadataReceipt::Grant(grant) => Ok(grant),
+            _ => Err(FileStashStoreError::Integrity),
+        }
     }
-
     pub(crate) async fn revoke_grant(
         &self,
         owner: String,
         file_id: String,
         grant_id: String,
     ) -> Result<()> {
-        self.with_connection(move|connection|{
-            let changed=connection.execute("UPDATE grants SET state='revoked',revoked_at=unixepoch() WHERE grant_id=?3 AND file_id=?2 AND state='active' AND EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)",params![owner,file_id,grant_id]).map_err(FileStashStoreError::sqlite)?;
-            if changed==1{Ok(())}else{Err(FileStashStoreError::NotFound)}
-        }).await
+        match self
+            .mutate_metadata(owner, file_id, MetadataMutation::RevokeGrant { grant_id })
+            .await?
+        {
+            MetadataReceipt::Revoked => Ok(()),
+            _ => Err(FileStashStoreError::Integrity),
+        }
     }
 
     pub(crate) async fn list_grants(
@@ -636,17 +761,18 @@ impl FileStashStore {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-static FAIL_CANCEL_ID: std::sync::LazyLock<Mutex<Option<(String, u32)>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
+static FAIL_CANCEL_IDS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, u32>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Reject the next `times` cancel attempts for `upload_id` with `Busy`. The
 /// caller retries admission failures, so a test that needs the janitor
 /// fallback must exhaust every attempt.
 #[cfg(all(test, target_os = "linux"))]
 pub(super) fn inject_cancel_failure(upload_id: String, times: u32) {
-    *FAIL_CANCEL_ID
+    FAIL_CANCEL_IDS
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((upload_id, times.max(1)));
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(upload_id, times.max(1));
 }
 
 fn unix_now() -> i64 {
@@ -656,6 +782,64 @@ fn unix_now() -> i64 {
         .as_secs()
         .try_into()
         .unwrap_or(i64::MAX)
+}
+
+fn stage_metadata_mutation(
+    c: &Connection,
+    owner: &str,
+    file_id: &str,
+    mutation: MetadataMutation,
+) -> Result<MetadataReceipt> {
+    match mutation {
+        MetadataMutation::Rename {
+            display_name,
+            collision_key,
+        } => {
+            let changed = c.execute("UPDATE files SET display_name=?3,collision_key=CASE WHEN folder='' THEN ?4 ELSE folder||'/'||?4 END,updated_at=unixepoch() WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1", params![owner,file_id,display_name,collision_key]).map_err(map_constraint)?;
+            if changed != 1 {
+                return Err(FileStashStoreError::NotFound);
+            }
+        }
+        MetadataMutation::Move { folder } => {
+            let changed = c.execute("UPDATE files SET collision_key=(CASE WHEN ?3='' THEN '' ELSE ?3||'/' END)||(CASE WHEN folder='' THEN collision_key ELSE substr(collision_key,length(folder)+2) END),folder=?3,updated_at=unixepoch() WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1", params![owner,file_id,folder]).map_err(map_constraint)?;
+            if changed != 1 {
+                return Err(FileStashStoreError::NotFound);
+            }
+        }
+        MetadataMutation::Delete => {
+            let key = c.query_row("SELECT blob_key FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1", params![owner,file_id], |row| row.get(0)).optional().map_err(FileStashStoreError::sqlite)?.ok_or(FileStashStoreError::NotFound)?;
+            c.execute("DELETE FROM files WHERE file_id=?1", [file_id])
+                .map_err(FileStashStoreError::sqlite)?;
+            return Ok(MetadataReceipt::Deleted(key));
+        }
+        MetadataMutation::CreateGrant { grantee } => {
+            if owner == grantee {
+                return Err(FileStashStoreError::Conflict);
+            }
+            let owns: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)", params![owner,file_id], |row| row.get(0)).map_err(FileStashStoreError::sqlite)?;
+            if !owns {
+                return Err(FileStashStoreError::NotFound);
+            }
+            let grant_id = ulid::Ulid::new().to_string();
+            let now = unix_now();
+            c.execute("INSERT INTO grants(grant_id,file_id,grantee_principal_id,state,created_at,revoked_at) VALUES(?1,?2,?3,'active',?4,NULL)", params![grant_id,file_id,grantee,now]).map_err(map_constraint)?;
+            return Ok(MetadataReceipt::Grant(StashGrant {
+                grant_id,
+                file_id: file_id.to_owned(),
+                grantee_principal_id: grantee,
+                created_at: now,
+            }));
+        }
+        MetadataMutation::RevokeGrant { grant_id } => {
+            let changed = c.execute("UPDATE grants SET state='revoked',revoked_at=unixepoch() WHERE grant_id=?3 AND file_id=?2 AND state='active' AND EXISTS(SELECT 1 FROM files WHERE file_id=?2 AND owner_principal_id=?1 AND ready=1)", params![owner,file_id,grant_id]).map_err(FileStashStoreError::sqlite)?;
+            return if changed == 1 {
+                Ok(MetadataReceipt::Revoked)
+            } else {
+                Err(FileStashStoreError::NotFound)
+            };
+        }
+    }
+    c.query_row("SELECT file_id,display_name,size_bytes,blob_key,created_at,updated_at,folder,content_type FROM files WHERE file_id=?1", [file_id], |row| Ok(MetadataReceipt::File(StashFile { file_id:row.get(0)?,display_name:row.get(1)?,size_bytes:row.get::<_,i64>(2)? as u64,blob_key:row.get(3)?,created_at:row.get(4)?,updated_at:row.get(5)?,owned:true,folder:row.get(6)?,content_type:row.get(7)? }))).map_err(FileStashStoreError::sqlite)
 }
 
 fn map_constraint(error: rusqlite::Error) -> FileStashStoreError {
@@ -724,6 +908,59 @@ mod tests {
             .await
             .unwrap();
         (temp, store)
+    }
+
+    #[tokio::test]
+    async fn cancel_failure_budgets_are_independent_for_two_uploads() {
+        let (_temp, store) = store().await;
+        let first = store
+            .reserve_upload(
+                "owner".into(),
+                "a".into(),
+                "a".into(),
+                2,
+                i64::MAX,
+                16,
+                32,
+                8,
+            )
+            .await
+            .unwrap();
+        let second = store
+            .reserve_upload(
+                "owner".into(),
+                "b".into(),
+                "b".into(),
+                3,
+                i64::MAX,
+                16,
+                32,
+                8,
+            )
+            .await
+            .unwrap();
+        inject_cancel_failure(first.upload_id.clone(), 3);
+        inject_cancel_failure(second.upload_id.clone(), 1);
+        assert!(matches!(
+            store.cancel_upload(first.upload_id.clone()).await,
+            Err(FileStashStoreError::Busy)
+        ));
+        assert!(matches!(
+            store.cancel_upload(second.upload_id.clone()).await,
+            Err(FileStashStoreError::Busy)
+        ));
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 5);
+        store.cancel_upload(second.upload_id).await.unwrap();
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
+        for _ in 0..2 {
+            assert!(matches!(
+                store.cancel_upload(first.upload_id.clone()).await,
+                Err(FileStashStoreError::Busy)
+            ));
+        }
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 2);
+        store.cancel_upload(first.upload_id).await.unwrap();
+        assert_eq!(store.usage("owner".into()).await.unwrap().reserved_bytes, 0);
     }
 
     #[tokio::test]

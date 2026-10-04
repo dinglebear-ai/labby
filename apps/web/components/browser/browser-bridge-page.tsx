@@ -79,7 +79,7 @@ export function BrowserBridgePage() {
         issue('browser sessions unavailable', sessionResult),
         ...(sessionResult.status === 'fulfilled' ? sessionResult.value.detail_warnings : []),
       ].filter((message): message is string => Boolean(message))
-      const allFailed = nextWarnings.length === 3
+      const allFailed = [browserResult, pairingResult, sessionResult].every(result => result.status === 'rejected')
 
       setData((current) => ({
         browsers: browserResult.status === 'fulfilled' ? browserResult.value : current.browsers,

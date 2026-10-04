@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-09-19"
+updated: "2026-10-01"
 ---
 
 # Gateway Management
@@ -41,6 +41,81 @@ definition. In particular, clearing OAuth tokens, enabling/disabling an
 upstream, and killing restartable upstream processes do not require destructive
 confirmation.
 
+Runtime views include optional `server_name`, `server_version`, and
+`protocol_version` from the connected upstream's negotiated server information.
+These are peer-reported metadata; missing values do not prove the upstream is
+absent. Runtime inspection does not start a connection just to fill them in.
+
+### Capability Observation
+
+Gateway inspection distinguishes a catalog that has been observed to contain
+zero items from a catalog that has not been discovered. The
+`capability_observation` object accompanies server, runtime, and OAuth status
+views. Its `scope` is `global` for ordinary upstreams or `credential` for an
+OAuth credential scope. It does not disclose the credential subject.
+
+Each family (`tools`, `resources`, `prompts`, and `skills`) carries a `state`
+and nullable `discovered` and `exposed` counts:
+
+| State | Meaning |
+| --- | --- |
+| `known` | The applicable catalog was observed; zero is a valid result. |
+| `unknown` | No applicable observation is available; counts are not confirmed. |
+| `stale` | A retained observation no longer describes a current connection or catalog. |
+| `failed` | Discovery failed; do not interpret missing counts as an empty catalog. |
+
+A completed initialization that explicitly does not advertise skills is a known
+empty skills observation. While a catalog is retained, a failed refresh keeps
+its previous measurement and failure diagnostic until a successful refresh
+supersedes it. Retained counts do not confer exposure when the transport is
+unavailable.
+
+The older numeric count fields remain for compatibility. Clients that understand
+`capability_observation` use its availability and scope when rendering counts
+and totals, rather than treating a compatibility zero as proof of an empty
+catalog. An incomplete total identifies the families whose counts are unknown,
+stale, or failed.
+
+`gateway.list`, `gateway.server.get`, `gateway.get`, and `gateway.mcp.list`
+inspect the applicable cached observation without starting discovery. Explicit
+`gateway.status` refresh discovers capabilities with the configured concurrency
+and deadline bounds. OAuth status for a configured upstream observes the same
+runtime credential catalog; temporary onboarding probes remain private.
+Connection tests for OAuth upstreams label that private catalog as credential
+scoped, including when the test discovers no capabilities.
+Discovered tool, resource, and prompt inventories use the same credential scope
+as their counts and retain the configured exposure rules.
+
+Authentication, a live transport, and a known catalog are separate facts.
+Optional resource or prompt discovery failures do not hide working tools.
+Credential replacement or revocation and configuration changes invalidate or
+fence observations; subject-specific catalogs are never published into the
+global catalog. Installation, personal, Team, and protected-route authorization
+continue to select the credential scope before inspection.
+
+### Saving An Upstream And Protected Route
+
+`gateway.add` and `gateway.update` accept an optional `protected_route` mutation
+alongside the upstream `spec` or `patch`. The backend validates both drafts,
+then commits configuration, credentials, and runtime reconciliation under one
+configuration lease. A validation failure changes neither resource. A failed
+reconciliation restores the previous configuration, including private OAuth
+registration and scopes; browser read responses still expose only
+`oauth_enabled`.
+
+Use `{ "operation": "upsert", "route": { ... } }` to add a route or update an
+existing route of that name. Include `name` to address an existing route with a
+different replacement name. Use `{ "operation": "remove", "name": "route" }`
+to remove one. Omitting `protected_route` leaves route policy unchanged; upstream
+renames still update existing upstream references.
+
+Combined saves currently support installation routes only. A selected Team or
+a Team-qualified route returns `invalid_param` before any write; use the
+separately scoped `gateway.protected_route.*` workflow for Team route changes.
+Ordinary gateway edits with an unchanged route omit the nested mutation and
+remain available with a Team selected. Startup-mounted `gateway_subset` routes
+continue to require staged route actions and a restart.
+
 ### Restarting An Upstream Connection
 
 `gateway.mcp.restart` replaces one enabled upstream's live connection without
@@ -68,6 +143,13 @@ runtime `last_error`, and the action still completes with the view reporting
 failed probe. The action fails only when the transaction cannot run: the
 upstream is unknown or disabled, the gateway runtime is not initialized, the
 configuration changed under the connect gate, or the process cleanup failed.
+
+On Linux, cleanup snapshots registered runtime ownership after scanning
+processes. It excludes another live upstream's PID, process group, and
+descendants even when command fragments overlap, including aggressive cleanup.
+Persisted runtime identities also record process start ticks to fence PID reuse; older
+journal rows retain the PID/PGID fallback until rewritten. Source:
+[gateway runtime](../../crates/labby-gateway/src/gateway/runtime.rs).
 
 OAuth upstreams are projected per calling subject: `gateway.get`,
 `gateway.list`, and `gateway.mcp.list` report that subject's connection,
@@ -117,7 +199,17 @@ browser's filesystem. Missing SSH config yields an empty device list.
 name = "remote-mcp"
 transport = "stdio"
 command = "/usr/bin/ssh"
-args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "user@example.test", "/usr/local/bin/remote-mcp", "mcp"]
+args = [
+  "-F", "/dev/null",
+  "-i", "/var/lib/labby-upstreams/remote-ssh/identity",
+  "-o", "UserKnownHostsFile=/var/lib/labby-upstreams/remote-ssh/known-hosts",
+  "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+  "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+  "user@example.test", "exec /usr/local/bin/remote-mcp mcp",
+]
+
+[upstream.env]
+UPSTREAM_READ_ONLY_PATHS = "/var/lib/labby-upstreams/remote-ssh/identity:/var/lib/labby-upstreams/remote-ssh/known-hosts"
 ```
 
 ```toml
@@ -169,9 +261,10 @@ name = "claude-remote"
 enabled = true
 command = "/usr/bin/ssh"
 args = [
-  "-i", "/home/labby/.ssh/labby-claude-remote",
+  "-F", "/dev/null",
+  "-i", "/var/lib/labby-upstreams/claude-ssh/identity",
   "-o", "IdentitiesOnly=yes",
-  "-o", "UserKnownHostsFile=/home/labby/.ssh/known_hosts.claude-remote",
+  "-o", "UserKnownHostsFile=/var/lib/labby-upstreams/claude-ssh/known-hosts",
   "-T", "-S", "none",
   "-o", "ControlMaster=no",
   "-o", "BatchMode=yes",
@@ -180,12 +273,27 @@ args = [
   "-o", "ServerAliveCountMax=3",
   "-o", "StrictHostKeyChecking=yes",
   "user@remote-host",
-  "/absolute/path/to/claude", "mcp", "serve",
+  "exec /absolute/path/to/claude mcp serve",
 ]
 proxy_resources = true
 proxy_prompts = true
 proxy_skills = false
+
+[upstream.env]
+UPSTREAM_READ_ONLY_PATHS = "/var/lib/labby-upstreams/claude-ssh/identity:/var/lib/labby-upstreams/claude-ssh/known-hosts"
 ```
+
+On the Linux host service, stdio children also run in the required filesystem
+sandbox. Create the selected key and known-hosts files before testing, owned by
+and readable only as needed by the service account. They must be outside both
+the service user's home and `LABBY_HOME`, including after resolving symlinks.
+Project only these files through `UPSTREAM_READ_ONLY_PATHS`; the sandbox cannot
+use credentials from `~/.ssh` or SSH aliases in that directory. `/dev/null`
+disables local SSH configuration for these examples. The remote command is one
+fixed shell command beginning with `exec`, so its remote absolute executable is
+not interpreted as a local filesystem input. Adjust that literal only to a
+trusted, shell-quoted remote executable; do not interpolate untrusted values.
+See [Upstream configuration](./UPSTREAM.md#configuration) for the filesystem contract.
 
 The same definition can be created with `labby server add --command /usr/bin/ssh`
 and repeated `--arg` options. Validate the raw non-interactive SSH command as
@@ -326,10 +434,12 @@ MCP `codemode` call shape:
 { "code": "async () => { const matches = await codemode.search(\"github issues\"); const docs = await codemode.describe(matches.results[0].path); return { docs, issues: await codemode.github.search_issues({ q: \"repo:dinglebear-ai/labby gateway\" }) }; }" }
 ```
 
-Execution runs in a short-lived child process with an embedded JavaScript engine.
+Execution runs in a Javy/QuickJS child process. A bounded warm pool reuses
+processes while constructing a fresh JavaScript runtime and working directory
+for every execution; overflow and disabled-pool paths use ephemeral runners.
 The child gets an empty environment, a temporary working directory, no Node/Deno
-host APIs, and no direct access to the Labby runtime. The only host capability is
-the injected `codemode.<upstream>.<tool>()` typed helpers and the escape-hatch
+host APIs, and no direct access to the Labby runtime. Host access uses
+the injected `codemode.<namespace>.<tool>()` typed helpers and the escape-hatch
 `callTool(id, params)` function, which sends each requested call back to the
 parent gateway for normal visibility, scope, destructive-action, and upstream
 exposure checks. `params` must be JSON-serializable.
@@ -445,7 +555,7 @@ already-running service binary.
 
 ### Settings MCP App
 
-Admin-capable MCP Apps hosts receive a synthetic `settings` tool bound to
+When `mcp_apps.settings = true`, admin-capable MCP Apps hosts receive a synthetic `settings` tool bound to
 `ui://lab/settings/editor`. The responsive app reads Labby's canonical settings
 schema and presents section-scoped controls for Code Mode, proxying, surfaces,
 features, and other safe scalar settings. Read-only and advanced values remain
@@ -469,9 +579,11 @@ same shaped response. This does not retain the raw result for audit; use
 `writeArtifact()` for large detailed payloads. The truncate policy is an output
 bound, not redaction, and must not be used to sanitize secrets.
 
-Code Mode execution handles upstream MCP tools only. Lab actions are not callable
-from inside the Code Mode sandbox. Upstream ids use
-`<upstream-name>::<tool-name>`.
+Code Mode resolves configured upstream tools and eligible in-process service
+projections through its caller-filtered catalog. Discover exact IDs rather than
+guessing service actions. Reserved `state`, `git`, and `openapi` providers have
+separate host-enforced authority rules; see [Code Mode](../dev/CODE_MODE.md).
+Upstream IDs use `<upstream-name>::<tool-name>`.
 
 Advertised tools per active mode:
 
@@ -495,7 +607,8 @@ Rules:
 - `codemode` requires a non-empty `code` string
 - `codemode` and `codemode_ui` require `lab` or `lab:admin`; `codemode_read`
   also accepts `lab:read` and rechecks explicit live read-only annotations
-- Lab actions are not supported inside Code Mode `callTool`
+- only catalog-admitted in-process actions are callable; caller-bound services
+  do not gain a context-free execution path through Code Mode
 - gateway action provenance fields (`origin` and `owner`) are reserved in Code Mode and are overwritten by the broker
 - `codemode` enforces `timeout_ms` by killing the child process; tool calls are
   bounded by the run deadline, host-side policy, and a configurable per-run
@@ -513,15 +626,21 @@ Tool-search observability:
   `has_next_cursor`
 - in-process Labby service peer discovery logs `in_process.list_tools.start` and
   `in_process.list_tools.finish` with `process_code_mode_enabled` and
-  `tool_count`; when root code mode is enabled, built-in peers should report
-  `tool_count=0`
+  `tool_count`; internal peers use their own raw projection even when root
+  Code Mode is enabled, with caller filtering applied by the gateway host
 - process-wide enablement changes log `code_mode.process_enablement` with
   `previous_enabled` and `enabled`
 
 ## Validation
 
-- exactly one of `url` or `command` must be set
-- `url` must use `http://` or `https://`
+- select HTTP, WebSocket, stdio, or explicit Unix-socket transport with matching
+  fields; URL/command inference remains supported for legacy entries
+- HTTP uses `http://` or `https://`; WebSocket uses `ws://` or `wss://`;
+  Unix sockets require `socket_path` plus an HTTP(S) URL for request authority
+- the runtime configuration supports WebSocket upstreams, but gateway mutation
+  validation still applies the HTTP-only `validate_gateway_url` check after
+  transport validation. `gateway.add`/`update` therefore reject WebSocket URLs;
+  runtime transport support does not imply those actions accept them
 - bind-all addresses (`0.0.0.0`, `::`) are rejected
 - RFC1918 and other private-network URLs are allowed
 - stdio gateways are allowed. Proposed or persisted enabled stdio specs can
@@ -1135,8 +1254,11 @@ Expected:
 For upstreams configured with `[upstream.oauth]` (see
 [CONFIG.md](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce) and
 [UPSTREAM.md](./UPSTREAM.md#upstream-oauth-authorization_code--pkce)), the
-hosted HTTP gateway mounts four master-only HTTP routes. All four require an authenticated
-session and the master-only middleware; non-master sessions get `403`.
+hosted HTTP gateway mounts admin-gated routes under `/v1/gateway/oauth`
+(`upstreams`, `probe`, `start`, `status`, `clear`, and `google/revoke`). They
+use ordinary `/v1` authentication and require verified durable platform management authority plus `lab:admin`; cookie-authenticated
+mutations also require CSRF. The callback and result page are public browser
+routes with the state and subject checks below. There is no master-node gate.
 
 The `labby mcp` stdio surface uses the same managers and encrypted credential
 store without requiring the hosted HTTP server. It starts a loopback-only
@@ -1149,7 +1271,7 @@ ephemeral port. Stdio OAuth always uses the trusted shared subject `gateway`.
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/v1/gateway/oauth/start` | Begin authorization for the shared gateway subject `gateway`. Body `{ "upstream": "<name>" }`. Returns `{ "authorization_url": "..." }` (JSON only — no browser-redirect mode). |
-| `GET` | `/auth/upstream/callback` | Authorization-code callback. Validates the authenticated session, atomically takes the pending state row (bound to `(upstream, subject)`), exchanges the code, persists encrypted credentials, redirects to `/gateway/oauth/result?upstream=<name>&status=<ok\|fail>`. |
+| `GET` | `/auth/upstream/callback` | Authorization-code callback. Resolves `(upstream, subject)` from the expiring `state`; shared grants need no session cookie, while personal grants require the initiating browser identity. Atomically consumes pending state, exchanges the code, persists encrypted credentials, redirects to `/gateway/oauth/result?upstream=<name>&status=<ok\|fail>`. |
 | `GET` | `/v1/gateway/oauth/status?upstream=<name>` | Returns `{ "authenticated": bool, "upstream": "<name>", "expires_within_5m": bool }`. Deliberately omits subject and raw expiry timestamp to avoid enumeration and fingerprinting. |
 | `POST` | `/v1/gateway/oauth/clear?upstream=<name>` | Requires `upstream` (the upstream name). Deletes persisted credentials and evicts the cached `AuthClient`. Matching cached clients and live peers are invalidated. Peer cleanup runs asynchronously; active calls may fail and callers must check side effects before retrying. |
 
@@ -1184,26 +1306,37 @@ after authorization.
 
 Callback security invariants (enforced in code, spec-required):
 
-- The callback is a browser-facing redirect endpoint. Subject is resolved from
-  the authenticated browser session cookie, **not** from the `state` parameter
-  or the pending state row. No session → `oauth_state_invalid`.
-- The `upstream` query parameter is forwarded to the manager, which enforces it
-  against the pending state row's upstream name via the SQL primary key
-  (`(upstream_name, subject, csrf_token)`).
+- The callback accepts the provider's `code` and `state`; it does not require
+  an `upstream` query parameter. The expiring server-stored state identifies
+  both the upstream and credential owner; caller-supplied identity cannot
+  select a different owner.
+- Shared `gateway` grants can complete without a browser session cookie.
+  Personal grants require a browser identity matching the subject stored
+  when that authorization began.
 - `state` is matched via a single `DELETE ... RETURNING` to prevent replay
   across connection-pool races.
 - The result page HTML-escapes the operator-controlled `upstream` name.
 
 ### Reload And Credential Lifecycle
 
+- Bearer-token values supplied with gateway add/update are committed with the
+  configuration transaction. A failed commit restores that credential key
+  without replacing unrelated `.env` entries. A successful change reconnects
+  upstreams referencing the key, even when their TOML configuration is unchanged.
+- `gateway.reload` reconnects bearer upstreams and reads current file-managed
+  credentials from the selected installation's `.env`. Values provided by the
+  external process environment before startup dotenv loading remain authoritative
+  for that process; replacing those requires changing the service environment
+  and restarting it.
 - `gateway.reload` eagerly evicts all cached `AuthClient` entries for every
   OAuth upstream in the current config, then rebuilds a fresh upstream pool.
   OAuth upstreams are rediscovered with the shared `gateway` subject when the
   upstream OAuth runtime is configured.
   It does **not** delete persisted credential rows — `AuthClient`s are rebuilt
   on the next request using whatever credentials are in the store.
-- `clear_credentials` is the only way to invalidate a persisted credential.
-  It evicts the cache entry and deletes the row. Matching peers are detached
+- `clear_credentials` deletes the selected persisted row and evicts its cache
+  entry. Shared-provider revocation and terminal refresh invalidation are other
+  credential lifecycle paths. Matching peers are detached
   immediately and shut down asynchronously; in-flight calls may be interrupted.
   Check operation outcomes before retrying a mutation. Late refresh responses
   cannot restore a deleted or newly authorized credential.
@@ -1221,7 +1354,9 @@ the raw authenticated subject — see [OBSERVABILITY.md](../dev/OBSERVABILITY.md
 for the `actor_key` redaction convention this reuses), the client's
 self-declared MCP client name/version from `server/discover` request metadata,
 the transport (`stdio`, `http`, `in-process`, or `test`), and a connect
-timestamp.
+timestamp. An optional `authorized_client_id` separately records the validated
+OAuth access token's `azp` (authorized-party client ID); static bearer and
+unauthenticated observations do not gain that field from MCP client metadata.
 
 ```json
 { "action": "gateway.clients.list", "params": {} }
@@ -1236,7 +1371,8 @@ Two things this is explicitly **not**:
 - **Not authenticated identity.** `client_name`/`client_version` are
   self-declared by the peer during the MCP handshake and are not verified —
   treat them as a display label, not an identity claim. The redacted subject
-  tag is the only field backed by actual auth state.
+  tag and optional `authorized_client_id` are backed by authentication state;
+  neither makes the self-declared name/version trustworthy.
 
 The registry is bounded (drop-oldest past a fixed entry cap) and truncates
 every peer-controlled string field before storage, since a client is
@@ -1245,7 +1381,9 @@ peer must not be able to grow this list, or any one field in it, unbounded.
 
 ## Limitations
 
-- `gateway.reload` is the only action that promises to pick up changed bearer-token env vars.
-- The product HTTP API exposes `/v1/gateway` for gateway management, but it still does not proxy arbitrary upstream MCP tools through `/v1/*`.
+- Bearer-token changes in an externally supplied process environment require a new process. Gateway credential updates and reload refresh file-managed values; they do not replace external environment overrides.
+- The HTTP API exposes `/v1/gateway` for management and `/v1/palette/execute`
+  for authenticated, contract-checked upstream execution; it is not a generic
+  URL-selectable upstream proxy.
 - Runtime counts depend on current discovery state; an unreachable upstream can remain configured while reporting zero discovered items.
-- Gateway mutations rewrite `config.toml` by serializing the full `LabConfig` struct. TOML comments and unknown keys not represented in the struct are dropped on write. A migration to `toml_edit` for comment-preserving round-trips is deferred.
+- Gateway mutations replace gateway-owned TOML sections using `toml_edit` and preserve supported foreign top-level tables. Formatting or comments inside replaced owned sections may change. Unknown owned fields and foreign top-level scalars are rejected; see [configuration ownership](../runtime/CONFIG.md).

@@ -22,9 +22,28 @@ test('compact catalog filters exposure and saves a precise per-tool allowlist', 
   await view.unmount()
 })
 
+test('compact tabs show observation availability rather than empty inventory lengths', async () => {
+  const unknown = { state: 'unknown' as const, discovered: null, exposed: null }
+  const scoped = { ...gateway, discovery: { tools: [], resources: [], prompts: [] }, status: { ...gateway.status,
+    discovered_skill_count: 999, capability_observation: { scope: 'credential' as const, tools: unknown,
+      resources: { ...unknown, state: 'failed' as const }, prompts: { state: 'stale' as const, discovered: 2, exposed: 1 },
+      skills: { state: 'known' as const, discovered: 0, exposed: 0 } } } }
+  const view = await renderClient(<GatewayCompactCatalog gateway={scoped} onSave={async () => {}} onAdvanced={() => {}} />)
+  try {
+    const tab = (name: string) => [...view.container.querySelectorAll('button')].find(button => button.textContent?.startsWith(name))!
+    assert.match(tab('tools').textContent ?? '', /Not discovered/)
+    assert.match(tab('resources').textContent ?? '', /Discovery failed/)
+    assert.match(tab('prompts').textContent ?? '', /1\/2 · stale/)
+    assert.match(tab('skills').textContent ?? '', /0\/0/)
+    await act(async () => tab('skills').click())
+    assert.match(view.container.textContent ?? '', /Nothing of this type discovered/)
+    assert.doesNotMatch(view.container.textContent ?? '', /reports a skill count/)
+  } finally { await view.unmount() }
+})
+
 test('catalog cannot imply a disabled resource proxy exposes a resource', async () => {
   const view = await renderClient(<GatewayCompactCatalog gateway={gateway} onSave={async () => assert.fail('must not save')} onAdvanced={() => {}} />)
-  const resources = [...view.container.querySelectorAll('button')].find((button) => button.textContent === 'resources1')!
+  const resources = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.startsWith('resources'))!
   await act(async () => resources.click())
   assert.equal(view.container.querySelector<HTMLButtonElement>('[aria-label="Expose memory"]')?.disabled, true)
   await view.unmount()

@@ -1,7 +1,7 @@
 ---
 title: "Architecture"
 created: "2026-07-30"
-updated: "2026-09-27"
+updated: "2026-09-30"
 ---
 
 # Architecture
@@ -14,7 +14,7 @@ updated: "2026-09-27"
 - Reusable `labby-*` crates plus one product binary crate
 - One `labby` binary
 - A small set of feature-gated product slices
-- One MCP tool per service
+- Service-router MCP tools by default, with optional atomic projections derived from the same action metadata
 
 ## Crate Split
 
@@ -32,7 +32,7 @@ service modules to pull in gateway/runtime machinery just to declare
 
 ### `crates/labby-apis`
 
-`labby-apis` is the pure SDK layer for shared core primitives and the current setup/doctor contracts, not a general one-module-per-external-service SDK. It owns:
+`labby-apis` is the pure SDK layer for shared core primitives, setup/doctor contracts, and the provider-neutral Artifact control-plane client, not a general one-module-per-external-service SDK. It owns:
 
 - typed service clients
 - request and response models
@@ -91,6 +91,19 @@ group, and Windows Job Object ownership without routing through the aggregate
 gateway catalog. It does not own product config rendering or `.env` writes;
 those are injected by the host through `GatewayConfigStore`.
 
+### `crates/labby-tailcat`
+
+`labby-tailcat` is an experimental native supervisor for the pinned Go Tailcat
+helper and its bounded control protocol. It reuses the gateway's process-group
+guard. The matching browser transport lives in `packages/labby-tailcat-browser`;
+Go source and its dependency lock live in `tools/tailcat-bridge`.
+
+The supervisor crate does not mount product routes or authorize browser access.
+The `labby` product implements pairing and the restricted MCP projection; the
+browser transport and Depot assets provide the integration described in the
+[Tailcat browser guide](guides/TAILCAT_BROWSER.md). The experimental transport
+remains explicitly enabled by the operator.
+
 ### `crates/labby-browser`
 
 `labby-browser` owns the surface-neutral browser bridge runtime and persistence. Product registration and HTTP/MCP adapters remain in `labby`.
@@ -139,7 +152,7 @@ If behavior is shared across product surfaces, it belongs in one shared executio
 That rule is structural, not aspirational:
 
 - `labby-apis` has no `clap`, `rmcp`, or `axum`
-- `labby-auth` has no `clap` or `rmcp`
+- `labby-auth` has no `clap`; its optional `rmcp-client` dependency supports upstream OAuth through the `upstream-oauth-rmcp` feature, not product MCP server handlers
 - `labby-runtime` has no product-surface transport dependencies
 - `labby` depends on extracted crates rather than duplicating runtime logic
 
@@ -151,7 +164,7 @@ The workspace uses modern Rust module layout:
 - a module `foo` is declared in `foo.rs`
 - its submodules live in `foo/`
 
-`labby-apis` contains `core`, `doctor`, and `setup`. Do not add a new SDK module merely to connect another external capability: normally configure an upstream MCP server. For a genuine Labby-owned lifecycle, follow [Service Onboarding](./dev/SERVICE_ONBOARDING.md).
+`labby-apis` contains `core`, `doctor`, `setup`, and the provider-neutral `artifact_control` client contracts. Do not add a new SDK module merely to connect another external capability: normally configure an upstream MCP server. For a genuine Labby-owned lifecycle, follow [Service Onboarding](./dev/SERVICE_ONBOARDING.md).
 
 Per-service layout in `labby` typically includes:
 
@@ -268,8 +281,8 @@ Direct proxy flow:
 2. Bind a Streamable HTTP router to loopback with exact Host/Origin policy.
 3. Apply tailnet, bearer, OAuth, or explicit no-auth policy.
 4. For OAuth, lease the exact public resource through the live daemon.
-5. Publish and supervise one exact Tailscale Serve mapping when selected.
-6. On Ctrl+C or component failure, clean owned HTTP, Serve, lease, and process
+5. Publish and supervise one exact Tailscale Serve or public Funnel mapping when selected.
+6. On Ctrl+C or component failure, clean owned HTTP, Tailscale mapping, lease, and process
    resources without touching aggregate gateway state.
 
 See [guides/STDIO_MCP_PROXY.md](./guides/STDIO_MCP_PROXY.md) for the operator

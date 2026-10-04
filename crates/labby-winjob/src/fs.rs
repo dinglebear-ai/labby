@@ -93,6 +93,46 @@ impl AncestorGuard {
     }
 }
 
+/// Publish a regular same-directory temporary without replacing an existing
+/// destination. Unlike a hard link, this never exposes two links to a secret.
+pub fn publish_file_no_replace(source: &Path, destination: &Path) -> io::Result<bool> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::MoveFileW;
+    if !source.is_absolute()
+        || !destination.is_absolute()
+        || source.parent() != destination.parent()
+    {
+        return Err(io::Error::other(
+            "publication requires absolute same-directory paths",
+        ));
+    }
+    let _ancestors = AncestorGuard::for_file(source)?;
+    let verified = open_read(source, false)?;
+    drop(verified);
+    let source_wide: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    if source_wide[..source_wide.len() - 1].contains(&0)
+        || destination_wide[..destination_wide.len() - 1].contains(&0)
+    {
+        return Err(io::Error::other("publication path contains NUL"));
+    }
+    // SAFETY: both buffers are NUL-terminated and live throughout this call.
+    // MoveFileW never replaces a destination and has no copy fallback flags.
+    if unsafe { MoveFileW(source_wide.as_ptr(), destination_wide.as_ptr()) } != 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::AlreadyExists {
+        Ok(false)
+    } else {
+        Err(error)
+    }
+}
+
 /// Open a regular file without following its final reparse point. While held,
 /// other handles cannot write, replace, or delete the verified file.
 pub fn open_read(path: &Path, delete_access: bool) -> io::Result<File> {
@@ -103,6 +143,38 @@ pub fn open_read(path: &Path, delete_access: bool) -> io::Result<File> {
         .open(path)?;
     identity(&file, false)?;
     Ok(file)
+}
+
+/// Open a regular SQLite file for identity and ACL verification while another
+/// connection may write it. Reject reparse points and hard links, and prevent
+/// replacement/deletion of the file or its ancestors while held. This guard does
+/// not provide a stable content snapshot; callers must use SQLite transactions
+/// for content validation and retain the guard while using pathname-based SQLite.
+pub fn open_sqlite_verification(path: &Path) -> io::Result<SqliteVerificationGuard> {
+    let ancestors = AncestorGuard::for_file(path)?;
+    let file = OpenOptions::new()
+        .access_mode(GENERIC_READ)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    identity(&file, false)?;
+    Ok(SqliteVerificationGuard {
+        file,
+        _ancestors: ancestors,
+    })
+}
+
+/// Pins a verified SQLite file and its ancestors while allowing SQLite writes.
+pub struct SqliteVerificationGuard {
+    file: File,
+    _ancestors: AncestorGuard,
+}
+
+impl SqliteVerificationGuard {
+    /// Borrow the pinned file for handle-based identity and ACL validation.
+    pub fn file(&self) -> &File {
+        &self.file
+    }
 }
 
 /// Open a directory without following or permitting replacement of its entry.
@@ -411,10 +483,10 @@ fn verify_acl_policy(
             }
         }
     }
-    let denied = || {
+    let denied = |reason: &str| {
         io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "protected object owner or ACL is unsafe",
+            format!("protected object owner or ACL is unsafe: {reason}"),
         )
     };
     with_current_user(|user| {
@@ -450,9 +522,11 @@ fn verify_acl_policy(
                 || dacl.is_null()
                 || IsValidSid(owner) == 0
                 || IsValidAcl(dacl) == 0
-                || (require_owner && !trusted(owner))
             {
-                return Err(denied());
+                return Err(denied("invalid_security_descriptor"));
+            }
+            if require_owner && !trusted(owner) {
+                return Err(denied("foreign_owner"));
             }
             let mut control = 0;
             let mut revision = 0;
@@ -460,7 +534,7 @@ fn verify_acl_policy(
                 return Err(io::Error::last_os_error());
             }
             if !directory && control & SE_DACL_PROTECTED == 0 {
-                return Err(denied());
+                return Err(denied("dacl_not_protected"));
             }
             let mut size = std::mem::MaybeUninit::<ACL_SIZE_INFORMATION>::uninit();
             if GetAclInformation(
@@ -474,7 +548,7 @@ fn verify_acl_policy(
             }
             let count = size.assume_init().AceCount;
             if count > 1024 || (!directory && count != 1) {
-                return Err(denied());
+                return Err(denied("ace_count"));
             }
             for index in 0..count {
                 let mut ace = std::ptr::null_mut();
@@ -482,7 +556,7 @@ fn verify_acl_policy(
                     return Err(io::Error::last_os_error());
                 }
                 if ace.is_null() {
-                    return Err(denied());
+                    return Err(denied("null_ace"));
                 }
                 // GetAce guarantees that a successful non-null result points
                 // at an ACE inside the already validated ACL. Copy the fixed
@@ -494,7 +568,7 @@ fn verify_acl_policy(
                 if require_inheritance
                     && (header.AceFlags & 0x3 != 0x3 || header.AceFlags & 0x0c != 0)
                 {
-                    return Err(denied());
+                    return Err(denied("child_inheritance"));
                 }
                 if directory && header.AceType == 1 {
                     continue;
@@ -502,13 +576,13 @@ fn verify_acl_policy(
                 if header.AceType != 0
                     || usize::from(header.AceSize) < std::mem::size_of::<ACCESS_ALLOWED_ACE>()
                 {
-                    return Err(denied());
+                    return Err(denied("ace_type_or_size"));
                 }
                 if !directory && header.AceFlags & 0x18 != 0 {
-                    return Err(denied());
+                    return Err(denied("file_inherited_ace"));
                 } // INHERIT_ONLY / INHERITED
                 if !require_owner && !require_inheritance && header.AceFlags != 0 {
-                    return Err(denied());
+                    return Err(denied("unexpected_ace_flags"));
                 }
                 if directory && header.AceFlags & 0x08 != 0 {
                     continue;
@@ -516,16 +590,16 @@ fn verify_acl_policy(
                 let allowed = ace.cast::<ACCESS_ALLOWED_ACE>().read_unaligned(); // lgtm[rust/access-invalid-pointer]
                 let sid_offset = std::mem::offset_of!(ACCESS_ALLOWED_ACE, SidStart);
                 if usize::from(header.AceSize) < sid_offset + 8 {
-                    return Err(denied());
+                    return Err(denied("sid_header_size"));
                 }
                 let sid_bytes = ace.cast::<u8>().add(sid_offset);
                 let sid_len = 8 + usize::from(sid_bytes.add(1).read()) * 4;
                 if usize::from(header.AceSize) < sid_offset + sid_len {
-                    return Err(denied());
+                    return Err(denied("sid_size"));
                 }
                 let sid = sid_bytes.cast();
                 if IsValidSid(sid) == 0 {
-                    return Err(denied());
+                    return Err(denied("invalid_sid"));
                 }
                 if directory {
                     // Generic masks are included as well as expanded file rights.
@@ -539,12 +613,15 @@ fn verify_acl_policy(
                         | WRITE_OWNER
                         | 0x5000_0000;
                     if allowed.Mask & writes != 0 && !trusted(sid) {
-                        return Err(denied());
+                        return Err(denied("foreign_directory_writer"));
                     }
-                } else if EqualSid(sid, user) == 0
-                    || allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS
-                {
-                    return Err(denied());
+                } else {
+                    if EqualSid(sid, user) == 0 {
+                        return Err(denied("foreign_file_principal"));
+                    }
+                    if allowed.Mask & FILE_ALL_ACCESS != FILE_ALL_ACCESS {
+                        return Err(denied("incomplete_file_rights"));
+                    }
                 }
             }
             Ok(())
@@ -554,6 +631,24 @@ fn verify_acl_policy(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publication_never_replaces_a_winner_and_keeps_one_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("secret");
+        let first = dir.path().join("first");
+        std::fs::write(&first, b"winner").unwrap();
+        assert!(super::publish_file_no_replace(&first, &destination).unwrap());
+        assert!(!first.exists());
+        let file = super::open_read(&destination, false).unwrap();
+        assert_eq!(super::identity(&file, false).unwrap().links, 1);
+        drop(file);
+        let second = dir.path().join("second");
+        std::fs::write(&second, b"loser").unwrap();
+        assert!(!super::publish_file_no_replace(&second, &destination).unwrap());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"winner");
+        assert_eq!(std::fs::read(&second).unwrap(), b"loser");
+    }
+
     use super::*;
 
     fn owner_sid(file: &File) -> Vec<u8> {

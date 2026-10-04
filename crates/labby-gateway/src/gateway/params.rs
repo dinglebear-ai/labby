@@ -168,6 +168,20 @@ pub(crate) struct GatewayTestParams {
     pub spec: Option<UpstreamConfig>,
 }
 
+/// Desired route change committed with an upstream add/update under one lease.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum GatewayProtectedRouteMutation {
+    Upsert {
+        #[serde(default)]
+        name: Option<String>,
+        route: Box<ProtectedMcpRouteConfig>,
+    },
+    Remove {
+        name: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GatewayAddParams {
     pub spec: UpstreamConfig,
@@ -177,6 +191,8 @@ pub(crate) struct GatewayAddParams {
     pub origin: Option<String>,
     #[serde(default)]
     pub owner: Option<GatewayRuntimeOwnerParams>,
+    #[serde(default)]
+    pub protected_route: Option<GatewayProtectedRouteMutation>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -238,6 +254,8 @@ pub struct GatewayUsageMetricsParams {
     pub timezone_offset_minutes: Option<i32>,
     #[serde(default)]
     pub include_facets: Option<bool>,
+    #[serde(default)]
+    pub include_upstream_timeseries: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -396,6 +414,8 @@ pub(crate) struct GatewayUpdateParams {
     pub origin: Option<String>,
     #[serde(default)]
     pub owner: Option<GatewayRuntimeOwnerParams>,
+    #[serde(default)]
+    pub protected_route: Option<GatewayProtectedRouteMutation>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

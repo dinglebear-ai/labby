@@ -45,6 +45,7 @@ packages:
         - python3
         - zsh
         - ffmpeg
+        - libcap-ng0
 
 actions:
   - trigger: post-packages

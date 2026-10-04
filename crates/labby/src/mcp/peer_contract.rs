@@ -77,6 +77,19 @@ pub(crate) fn route_allows_mcp_service(route_scope: &McpRouteScope, service: &st
     route_scope.allows_service(service) && (service != "skills" || route_scope.exposes_skills())
 }
 
+/// Native router tools that retain their own caller context in Code Mode.
+/// Stash must never be advertised by a context-free broker or synthetic peer.
+/// Atomic tools and upstream tools keep their separate visibility gates.
+pub(crate) fn native_router_visible(
+    visibility: CodeModeVisibility,
+    service: &str,
+    native_stash_caller: bool,
+) -> bool {
+    !visibility.hides_raw_tools()
+        || matches!(service, "gateway" | SERVER_LOGS_TOOL_NAME)
+        || (service == "stash" && native_stash_caller)
+}
+
 /// Whether `service` is exposed on the MCP surface for this route scope.
 #[cfg(feature = "gateway")]
 pub(crate) async fn mcp_service_visible(
@@ -201,6 +214,7 @@ pub(crate) struct PeerCatalogAudience {
     pub(crate) code_mode_read_allowed: bool,
     pub(crate) code_mode_execute_allowed: bool,
     pub(crate) admin_apps_visible: bool,
+    pub(crate) native_stash_caller: bool,
     pub(crate) skill_library_management_visible: bool,
     pub(crate) skill_library_app_visible: bool,
     #[cfg(feature = "gateway")]
@@ -301,6 +315,7 @@ impl Default for PeerCatalogAudience {
             code_mode_read_allowed: true,
             code_mode_execute_allowed: true,
             admin_apps_visible: true,
+            native_stash_caller: false,
             skill_library_management_visible: false,
             skill_library_app_visible: false,
             #[cfg(feature = "gateway")]
@@ -591,7 +606,11 @@ impl PeerContract {
                 }
                 if tool_projection_mode.includes_router() {
                     builtin_names.insert(service.name.to_string());
-                    if !(hide_raw_tools && service.name != SERVER_LOGS_TOOL_NAME) {
+                    if native_router_visible(
+                        visibility,
+                        service.name,
+                        self.audience.native_stash_caller,
+                    ) {
                         advertised_names.insert(service.name.to_string());
                         descriptors.push(self.registry.permanent_tools().builtin_service_tool(
                             service,
@@ -680,7 +699,7 @@ impl PeerContract {
             let model_visible =
                 self.route_scope.is_root() && self.audience.code_mode_execute_allowed;
             let callback_visible = self.audience.code_mode_read_allowed;
-            if model_visible || callback_visible {
+            if !self.registry.is_proxy_aggregate() && (model_visible || callback_visible) {
                 let tool = self
                     .registry
                     .permanent_tools()
@@ -708,7 +727,8 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if self.audience.admin_apps_visible
+        if !self.registry.is_proxy_aggregate()
+            && self.audience.admin_apps_visible
             && mcp_apps_config.settings
             && self.route_scope.allows_service("setup")
             && self.service_visible_on_mcp("setup").await
@@ -754,11 +774,16 @@ impl PeerContract {
                 {
                     continue;
                 }
-                let name = upstream_tool.tool.name.as_ref();
+                let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
+                    &self.registry,
+                    &upstream_tool.upstream_name,
+                    upstream_tool.tool.clone(),
+                );
+                let name = descriptor.name.as_ref();
                 if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
                     && project_shadow.allows_upstream_tool(
                         &upstream_tool.upstream_name,
-                        name,
+                        upstream_tool.tool.name.as_ref(),
                         project_started_at,
                     ) != Some(true)
                 {
@@ -770,9 +795,7 @@ impl PeerContract {
                 {
                     continue;
                 }
-                descriptors.push(crate::mcp::permanent_tools::with_labby_security(
-                    upstream_tool.tool,
-                ));
+                descriptors.push(descriptor);
                 upstream_tool_count += 1;
             }
 
@@ -848,6 +871,33 @@ mod tests {
         );
     }
     use std::sync::Arc;
+
+    #[test]
+    fn native_router_visibility_preserves_caller_bound_stash_boundary() {
+        use super::{CodeModeVisibility, native_router_visible};
+        for visibility in [
+            CodeModeVisibility::Raw,
+            CodeModeVisibility::RootSynthetic,
+            CodeModeVisibility::InProcessPeer,
+        ] {
+            assert!(native_router_visible(visibility, "gateway", false));
+            assert!(native_router_visible(visibility, "server_logs", false));
+            assert!(native_router_visible(visibility, "stash", true));
+            assert_eq!(
+                native_router_visible(visibility, "stash", false),
+                visibility == CodeModeVisibility::Raw
+            );
+            assert_eq!(
+                native_router_visible(visibility, "doctor", true),
+                visibility == CodeModeVisibility::Raw
+            );
+            assert_eq!(
+                native_router_visible(visibility, "stash.save_text", true),
+                visibility == CodeModeVisibility::Raw,
+                "atomic tools retain their own gate"
+            );
+        }
+    }
 
     fn contract(route_scope: McpRouteScope) -> PeerContract {
         PeerContract {
@@ -982,6 +1032,7 @@ mod tests {
                 code_mode_read_allowed: false,
                 code_mode_execute_allowed: false,
                 admin_apps_visible: false,
+                native_stash_caller: false,
                 skill_library_management_visible: false,
                 skill_library_app_visible: false,
                 oauth_subject: Some("reader".to_string()),

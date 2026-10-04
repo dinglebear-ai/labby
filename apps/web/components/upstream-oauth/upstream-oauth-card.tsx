@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -15,6 +15,14 @@ interface UpstreamOauthCardProps {
 export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
   const [connecting, setConnecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const connection = useRef<{ controller: AbortController; popup: Window } | null>(null)
+
+  useEffect(() => () => {
+    const current = connection.current
+    connection.current = null
+    current?.controller.abort()
+    current?.popup.close()
+  }, [name])
 
   const { data: status, mutate } = useUpstreamOauthStatus(name, {
     pollWhilePending: connecting,
@@ -22,23 +30,35 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
 
   useEffect(() => {
     if (connecting && status?.authenticated) {
+      const current = connection.current
+      connection.current = null
+      current?.controller.abort()
+      current?.popup.close()
       setConnecting(false)
     }
   }, [connecting, status?.authenticated])
 
   async function handleConnect() {
+    if (connection.current) return
     setError(null)
+    // Create the tab in the click handler while transient activation is live.
+    const popup = openIsolatedOauthPopup()
+    if (!popup) {
+      setError('Popup blocked — please allow popups for this site and try again')
+      return
+    }
+    const current = { controller: new AbortController(), popup }
+    connection.current = current
     setConnecting(true)
     try {
-      const { authorization_url } = await upstreamOauthApi.start(name)
-      const popup = openIsolatedOauthPopup()
-      if (!popup) {
-        setConnecting(false)
-        setError('Popup blocked — please allow popups for this site and try again')
-      } else {
-        popup.location.href = authorization_url
-      }
+      const { authorization_url } = await upstreamOauthApi.start(name, current.controller.signal)
+      if (connection.current !== current || current.controller.signal.aborted) return
+      if (popup.closed) throw new Error('Authorization tab was closed. Please try again.')
+      popup.location.href = authorization_url
     } catch (err: unknown) {
+      if (connection.current !== current || current.controller.signal.aborted) return
+      connection.current = null
+      popup.close()
       setConnecting(false)
       setError(err instanceof Error ? err.message : 'Failed to start authorization')
     }

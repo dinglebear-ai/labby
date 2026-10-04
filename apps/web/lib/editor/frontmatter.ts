@@ -15,10 +15,12 @@ function detectCategory(path: string): keyof typeof REQUIRED_BY_CATEGORY | null 
 }
 
 function parseFrontmatter(value: string): { attributes: Record<string, string>; bodyStart: number } | null {
-  if (!value.startsWith('---\n')) return null
-  const end = value.indexOf('\n---', 4)
-  if (end === -1) return null
-  const raw = value.slice(4, end)
+  const opening = /^---\r?\n/.exec(value)
+  if (!opening) return null
+  const closing = /^---(?:\r?\n|$)/m.exec(value.slice(opening[0].length))
+  if (!closing) return null
+  const end = opening[0].length + closing.index
+  const raw = value.slice(opening[0].length, end)
   const attributes: Record<string, string> = {}
   for (const line of raw.split('\n')) {
     const trimmed = line.trim()
@@ -29,7 +31,7 @@ function parseFrontmatter(value: string): { attributes: Record<string, string>; 
     const val = trimmed.slice(split + 1).trim()
     attributes[key] = val
   }
-  return { attributes, bodyStart: end + 4 }
+  return { attributes, bodyStart: end + closing[0].length }
 }
 
 export function validateClaudeFrontmatter(path: string, value: string): EditorDiagnostic[] {

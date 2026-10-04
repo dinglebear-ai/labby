@@ -9,7 +9,8 @@
         "gateway-host",
         "fs",
         "systemd",
-        "skills"
+        "skills",
+        "tailcat"
       ],
       "included_in_default": false,
       "included_in_all": false,
@@ -28,6 +29,19 @@
       "classification": "helper_internal",
       "mapped_crate_feature": null,
       "exception_reason": "helper/internal feature"
+    },
+    {
+      "crate_name": "labby",
+      "feature": "codemode-microsandbox",
+      "dependencies": [
+        "gateway",
+        "labby-codemode/microsandbox-sdk"
+      ],
+      "included_in_default": false,
+      "included_in_all": false,
+      "classification": "intentional_exception",
+      "mapped_crate_feature": null,
+      "exception_reason": "intentional crate-local exception"
     },
     {
       "crate_name": "labby",
@@ -143,6 +157,19 @@
     },
     {
       "crate_name": "labby",
+      "feature": "tailcat",
+      "dependencies": [
+        "gateway",
+        "dep:labby-tailcat"
+      ],
+      "included_in_default": false,
+      "included_in_all": true,
+      "classification": "helper_internal",
+      "mapped_crate_feature": null,
+      "exception_reason": "helper/internal feature"
+    },
+    {
+      "crate_name": "labby",
       "feature": "web-ui",
       "dependencies": [
         "dep:labby-web"
@@ -233,13 +260,15 @@
     },
     {
       "crate_name": "labby-codemode",
-      "feature": "no_features",
-      "dependencies": [],
-      "included_in_default": true,
-      "included_in_all": true,
+      "feature": "microsandbox-sdk",
+      "dependencies": [
+        "dep:microsandbox"
+      ],
+      "included_in_default": false,
+      "included_in_all": false,
       "classification": "extracted_crate",
       "mapped_crate_feature": null,
-      "exception_reason": "extracted crate has no Cargo features"
+      "exception_reason": "extracted crate feature"
     },
     {
       "crate_name": "labby-gateway",

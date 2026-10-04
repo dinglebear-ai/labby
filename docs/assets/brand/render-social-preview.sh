@@ -9,11 +9,11 @@
 # viewer having Manrope, which is why this ships as a PNG and not an SVG with
 # live text.
 #
-# Reproducibility: the font is pinned by commit SHA and verified by digest, and
-# Pillow is pinned. Chrome is NOT pinned -- it is whatever is on PATH -- so the
-# output is byte-identical only for a given Chrome build. The committed PNG was
-# rendered with Chrome 151. A different major version may re-rasterise the text
-# slightly; that is a visual no-op but will change the file hash.
+# Reproducibility: the font is pinned by commit SHA and verified by digest.
+# Only the uv fallback pins Pillow; an importable system Pillow is accepted.
+# Chrome is selected through CHROME or PATH, not pinned. Browser, platform, and
+# Pillow differences can change output bytes, so inspect the image as well as
+# its hash. Chrome 151 is the recorded render, not an enforced requirement.
 #
 # Uploading the result is a MANUAL step -- see README.md in this directory.
 #

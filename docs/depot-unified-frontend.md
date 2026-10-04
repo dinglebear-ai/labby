@@ -20,7 +20,10 @@ Set these only on the Labby server process:
 | `LABBY_DEPOT_URL` | Pinned Depot origin. Redirects are rejected. |
 | `LABBY_DEPOT_TOKEN` | Server-held Depot bearer credential. It is never serialized into frontend assets or responses. |
 
-The browser calls only `/v1/depot/*` on Labby. Labby uses one pooled HTTP client
+Depot catalog and control calls go through `/v1/depot/*` on Labby; related
+Labby-owned identity and Library actions use their own authenticated Labby
+routes. The browser does not receive the Depot credential or call Depot directly.
+Labby uses one pooled HTTP client
 with a five-second connect timeout, fifteen-second request timeout, no redirects,
 a 1 MiB JSON response ceiling, and at most sixteen concurrent interactive
 requests.

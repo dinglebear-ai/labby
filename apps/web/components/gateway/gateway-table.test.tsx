@@ -72,6 +72,22 @@ test('gateway table uses aurora lifted surfaces and muted operational pills', ()
   assert.doesNotMatch(markup, /Reload required to apply policy changes/)
 })
 
+test('server table, list and card modes each have a distinct visible presentation', () => {
+  const render = (presentation: 'table' | 'list' | 'cards') => renderToStaticMarkup(
+    <GatewayTable gateways={[gateway]} density="comfortable" presentation={presentation} onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />,
+  )
+  const table = render('table')
+  const list = render('list')
+  const cards = render('cards')
+  assert.match(table, /aria-label="Server inventory cards" class="[^"]*hidden/)
+  const tableSectionClass = (markup: string) => markup.match(/<section aria-label="Server inventory"[^>]*class="([^"]*)"/)?.[1]?.split(' ') ?? []
+  assert.ok(!tableSectionClass(table).includes('hidden'))
+  assert.ok(tableSectionClass(list).includes('hidden'))
+  assert.match(list, /14\/18 tools/)
+  assert.doesNotMatch(list, /data-mobile-metric="tools"/)
+  assert.match(cards, /data-mobile-metric="tools"/)
+})
+
 test('gateway table sorts servers by name and shows full stdio command line', () => {
   const stdioGateway: Gateway = {
     ...gateway,
@@ -124,7 +140,7 @@ test('gateway table sorts servers by name and shows full stdio command line', ()
   assert.match(markup, /Sort by server/)
   assert.match(markup, /Sort by connection[\s\S]*Sort by exposed[\s\S]*Sort by endpoint[\s\S]*Sort by runtime/)
   assert.match(markup, /Sort by runtime/)
-  assert.match(markup, /aria-sort="none"[^>]*><span>Runtime<\/span>/)
+  assert.match(markup, /role="columnheader" aria-colindex="5" aria-sort="none"[^>]*data-gateway-column="uptime"/)
   assert.doesNotMatch(markup, /data-gateway-column="clients"/)
   assert.match(markup, /data-gateway-column="exposed"/)
   assert.match(markup, /data-gateway-column="endpoint"/)
@@ -264,4 +280,76 @@ test('disabled servers have a separate group and never claim a connected or disc
   assert.doesNotMatch(markup, />Disconnected<\/span>/)
   assert.match(markup, /Sort by connection/)
   assert.doesNotMatch(markup, /Reorder clients column/)
+})
+
+
+test('inventory supplies complete table, header, row and cell relationships', () => {
+  const markup = renderToStaticMarkup(<GatewayTable gateways={[gateway]} density="comfortable" presentation="table" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />)
+  assert.match(markup, /role="table" aria-label="Server inventory" aria-colcount="5"/)
+  assert.equal((markup.match(/role="columnheader"/g) ?? []).length, 5)
+  const row = markup.slice(markup.indexOf('data-gwrow="1"'), markup.indexOf('</section>', markup.indexOf('data-gwrow="1"')))
+  for (let column = 1; column <= 5; column++) assert.ok(row.includes(`role="cell" aria-colindex="${column}"`))
+  assert.match(markup, /role="columnheader" aria-colindex="1" aria-sort="ascending"/)
+})
+
+test('reordering a column updates header and cell positions together', async () => {
+  const { act } = await import('react')
+  const { installTestDom, renderClient } = await import('../../lib/testing/dom-test-utils')
+  installTestDom()
+  const originalSelf = Object.getOwnPropertyDescriptor(globalThis, 'self')
+  Object.defineProperty(globalThis, 'self', { configurable: true, value: window })
+  window.localStorage.clear()
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1512 })
+  const view = await renderClient(<GatewayTable gateways={[gateway]} density="comfortable" presentation="table" onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />)
+  try {
+    const table = view.container.querySelector('[role="table"]')!
+    const columns = () => [...table.querySelectorAll('[role="columnheader"][data-gateway-column]')].map(header => header.getAttribute('data-gateway-column'))
+    assert.deepEqual(columns(), ['exposed', 'endpoint', 'uptime'])
+    const handle = table.querySelector<HTMLButtonElement>('[aria-label="Reorder exposed column"]')!
+    await act(async () => { handle.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })) })
+    assert.deepEqual(columns(), ['endpoint', 'exposed', 'uptime'])
+    const cells = [...table.querySelectorAll('[data-gwrow] > [role="cell"]')]
+    assert.deepEqual(cells.map(cell => cell.getAttribute('aria-colindex')), ['1', '2', '3', '4', '5'])
+    assert.ok(cells[2].querySelector('[data-gateway-cell="endpoint"]'))
+    assert.ok(cells[3].querySelector('[data-gateway-cell="exposed"]'))
+    for (const row of table.children) assert.equal(row.getAttribute('role'), 'row')
+  } finally {
+    await view.unmount()
+    if (originalSelf) Object.defineProperty(globalThis, 'self', originalSelf)
+    else Reflect.deleteProperty(globalThis, 'self')
+  }
+})
+
+test('scoped observations distinguish unavailable, stale and known empty catalogs across presentations', () => {
+  const unknown = { state: 'unknown' as const, discovered: null, exposed: null }
+  const row: Gateway = { ...gateway, status: { ...gateway.status, capability_observation: {
+    scope: 'credential', tools: {state:'known',discovered:91,exposed:91},
+    resources: unknown, prompts: {state:'stale',discovered:2,exposed:1}, skills: {state:'known',discovered:0,exposed:0},
+  } } }
+  for (const presentation of ['table','cards','list'] as const) {
+    const markup = renderToStaticMarkup(React.createElement(GatewayTable, {
+      gateways:[row], presentation, density:'comfortable', onEdit:()=>{},onTest:()=>{},onReload:()=>{},
+      onCleanup:()=>{},onClearCleanupHistory:()=>{},onToggleEnabled:()=>{},onDelete:()=>{},
+    }))
+    assert.match(markup,/Credential catalog/)
+    assert.match(markup,/91\/91/)
+    assert.match(markup,/Not discovered/)
+    assert.match(markup,/1\/2 · stale/)
+    assert.match(markup,/0\/0/)
+  }
+})
+
+test('credential servers without an observed failure stay visible outside attention', () => {
+  const observation = { state: 'unknown' as const, discovered: null, exposed: null }
+  const row: Gateway = {
+    ...gateway,
+    status: { ...gateway.status, connected: false, healthy: false, last_error: undefined,
+      capability_observation: { scope: 'credential', tools: observation, resources: observation, prompts: observation, skills: observation } },
+    warnings: [],
+  }
+  const markup = renderToStaticMarkup(<GatewayTable density="comfortable" gateways={[row]} onEdit={() => {}} onTest={() => {}} onReload={() => {}} onCleanup={() => {}} onClearCleanupHistory={() => {}} onToggleEnabled={() => {}} onDelete={() => {}} />)
+  assert.match(markup, /Not checked/)
+  assert.match(markup, /Gateway beta Control Plane/)
+  assert.doesNotMatch(markup, />Disconnected<\/span>/)
+  assert.doesNotMatch(markup, />Needs attention<\/span>/)
 })

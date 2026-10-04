@@ -191,12 +191,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 code,
                 execution_timeout(config.timeout_ms),
                 max_source_bytes,
-                caller,
+                caller.clone(),
                 surface,
                 config.max_log_entries,
                 config.max_log_bytes,
                 config.trace_params,
-                scope,
+                scope.clone(),
                 execution_id,
                 trace_context,
             )
@@ -206,6 +206,31 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // Done before truncation so the (tiny) `ui` field is preserved while
         // `result` may be capped.
         self.apply_ui_opt_in(&mut response);
+        // Preserve only outputs that the configured shaping/truncation path would change.
+        let candidate = truncate_execution_response(
+            response.clone(),
+            config.max_response_bytes,
+            config.max_response_tokens,
+            config.token_estimate_divisor,
+        );
+        if candidate.result != response.result {
+            if let Some(value) = response.result.as_ref() {
+                let run_id = ulid::Ulid::new().to_string();
+                let _active = crate::artifacts::ActiveArtifactRun::register(&run_id);
+                let root = crate::artifacts::code_mode_artifact_root(&run_id);
+                if let Some(receipt) = crate::response_artifacts::preserve(
+                    &root,
+                    "automatic/final-result.json".into(),
+                    value,
+                    &caller,
+                    &scope,
+                )
+                .await
+                {
+                    response.artifacts.push(receipt);
+                }
+            }
+        }
         let raw_response = response.clone();
         let shaped = shape_final_result(
             response.result.take(),
@@ -282,7 +307,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     ) -> Result<String, ToolError> {
         let Some(host) = self.host else {
             return Ok(if local_providers_allowed(caller, scope) {
-                super::preamble::generate_local_provider_js()
+                format!(
+                    "{}\n{}",
+                    super::preamble::generate_local_provider_js(),
+                    crate::sandbox::javascript()
+                )
             } else {
                 String::new()
             });
@@ -338,7 +367,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 }
             })?;
         let local_provider_js = if local_providers_allowed(caller, scope) {
-            super::preamble::generate_local_provider_js()
+            format!(
+                "{}\n{}",
+                super::preamble::generate_local_provider_js(),
+                crate::sandbox::javascript()
+            )
         } else {
             String::new()
         };
@@ -556,6 +589,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             });
         };
         match tool {
+            "read_artifact" | "artifact_info" | "list_artifacts" => {
+                crate::artifact_access::dispatch(tool, &params, caller, scope).await
+            }
             "list_resources" => {
                 let upstream = params
                     .get("upstream")
@@ -729,7 +765,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                let mut entries = host
+                let search = host
                     .search_artifacts(
                         query,
                         limit.saturating_add(1),
@@ -738,7 +774,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         surface,
                         scope,
                     )
-                    .await?
+                    .await?;
+                let mut entries = search
+                    .entries
                     .into_iter()
                     .filter(|entry| discovery_entry_visible(entry, scope))
                     .take(limit.saturating_add(1))
@@ -752,7 +790,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         break;
                     }
                 }
-                Ok(serde_json::json!({ "entries": entries }))
+                Ok(
+                    serde_json::json!({ "entries": entries, "incompleteSources": search.incomplete_sources }),
+                )
             }
             "describe_types" => {
                 let id = params
@@ -1724,14 +1764,17 @@ mod tests {
             _caller: &CodeModeCaller,
             _surface: CodeModeSurface,
             _scope: &ToolScope,
-        ) -> Result<Vec<CatalogDescriptor>, ToolError> {
-            Ok(self
-                .search_entries
-                .iter()
-                .filter(|entry| kinds.is_empty() || kinds.contains(&entry.kind))
-                .take(limit)
-                .cloned()
-                .collect())
+        ) -> Result<crate::ArtifactSearchResult, ToolError> {
+            Ok(crate::ArtifactSearchResult {
+                entries: self
+                    .search_entries
+                    .iter()
+                    .filter(|entry| kinds.is_empty() || kinds.contains(&entry.kind))
+                    .take(limit)
+                    .cloned()
+                    .collect(),
+                incomplete_sources: Vec::new(),
+            })
         }
 
         async fn config(&self) -> CodeModeConfig {
@@ -1777,6 +1820,7 @@ mod tests {
 
         assert_eq!(value["entries"][0]["id"], "depot:skill:fixture");
         assert_eq!(value["entries"][0]["kind"], "skill");
+        assert_eq!(value["incompleteSources"], json!([]));
         assert_eq!(
             value["entries"][0]["path"],
             "skill.public_depot.fixture_skill"

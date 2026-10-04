@@ -1,7 +1,7 @@
 ---
 title: "HTTP Auth Modes"
 created: "2026-07-30"
-updated: "2026-09-18"
+updated: "2026-09-29"
 ---
 
 # HTTP Auth Modes
@@ -546,8 +546,14 @@ automatically. Old and new clients remain safe during a rolling upgrade.
 Google-specific notes:
 
 - Labby sends `access_type=offline` when redirecting to Google so the provider can issue a refresh token
-- Labby also sends `prompt=consent` so a fresh Google consent flow can return a new refresh token after the app was previously authorized without offline access
-- if Google still does not return an upstream refresh token, Labby omits `refresh_token` from its token response and later refresh grants fail closed
+- Labby sends `prompt=consent` unless exactly one allowed email already has a
+  reusable provider credential for the configured Google client ID. That
+  credential is shared across downstream DCR/CIMD clients for the same subject.
+- if Google does not return an upstream refresh token, Labby reuses the subject's
+  stored credential only when it matches the configured Google client ID. Without
+  either credential, the callback fails with `server_error` and requests
+  reconnection with offline access; it does not complete login without a
+  renewable credential.
 - Labby validates the Google `id_token` cryptographically against Google JWKS and rejects tokens with the wrong issuer, audience, or expiry before minting any local identity
 
 ## Browser-Local Callback Forwarding
@@ -753,7 +759,10 @@ Use this only for redirect URIs you explicitly operate or trust.
 
 ## Runtime JWT Validation
 
-Every request to a protected route (`/v1/*`, `/mcp`) must include an `Authorization: Bearer <token>` header.
+Bearer clients send `Authorization: Bearer <token>` to protected routes.
+Browser-capable routes also accept authenticated session cookies, with CSRF
+checks on mutations. Project credentials use their separate access-store
+validation path; the JWT steps below describe OAuth bearer validation.
 
 Validation steps:
 
@@ -764,6 +773,14 @@ Validation steps:
 5. Validate the `iss` claim matches the configured issuer.
 6. Validate the `aud` claim matches the configured audience.
 7. Extract scopes from the `scope` claim (space-separated string) or the `scp` claim (JSON array).
+
+Labby-issued access JWTs also require a nonempty `azp` authorized-party client
+ID with no leading or trailing whitespace. The verified value is carried in a
+separate request extension and exposed as optional `authorized_client_id` in
+[gateway client observations](../services/GATEWAY.md#inbound-clients). It is
+not derived from the self-declared MCP client name/version. Source:
+[JWT validation](../../crates/labby-auth/src/jwt.rs) and
+[auth middleware](../../crates/labby-auth/src/middleware.rs).
 
 ### Supported Algorithms
 
@@ -804,10 +821,12 @@ failure rather than falling back to this legacy-token behavior.
 Current constraints:
 
 - authorization-code redemption is atomic and single-use
-- `refresh_token` is only issued when Google returned an upstream refresh token
-- refresh grants are rejected if the local token is not backed by an upstream refresh token
+- Google renewable grants require a reusable subject-scoped Google refresh
+  credential; Authelia grants renew against local policy without an IdP refresh token
 - successful refresh grants atomically rotate the local refresh token; the old
-  token is invalid immediately
+  token cannot initiate another rotation. An exact bounded retry may return
+  the persisted successor response after current authorization is revalidated;
+  this recovery path does not mint another token
 - `POST /revoke` implements idempotent refresh-token revocation
 - machine clients are preregistered out of band with
   `LABBY_AUTH_MACHINE_CLIENTS_JSON` and authenticate with `client_secret_basic`
@@ -1337,8 +1356,8 @@ route-visible upstreams. Every operation that names a single upstream rejects
 one outside the subset as unknown: configuration, status, discovery,
 client-config, test, update, and remove, plus the MCP lifecycle operations
 (`enable`, `disable`, `restart`, `cleanup`), the `gateway.oauth.*` family, and
-the import and tombstone operations. A subset route additionally refuses two
-operation rather than scoping it: `gateway.test` with an unsaved inline `spec`,
+the import and tombstone operations. A subset route additionally refuses
+`gateway.test` with an unsaved inline `spec`,
 which would otherwise execute an arbitrary stdio command outside the mounted
 subset. These restrictions apply even when the token has an admin scope; the
 route remains an authority boundary, not merely a catalog filter.
@@ -1351,10 +1370,16 @@ them the gateway-global mutation surface — `gateway.reload`,
 `gateway.protected_route.*`,
 `gateway.loadout.*`, `gateway.virtual_server.*`, `gateway.service_config.set`,
 `gateway.code_mode.set`, `gateway.discover`, and `gateway.import` with
-`all: true` — is gated by scope alone, not by the route's upstream allowlist. A
-subset route whose token carries an admin scope can still reach those. Do not
-issue admin-scoped tokens for subset routes and treat the allowlist as the only
-boundary.
+`all: true` — is not bounded by the route's upstream allowlist. That exemption
+does not grant mutation authority: the token's transport scope is a ceiling,
+and the caller must also hold durable `platform.manage` authority for changes
+owned by the installation, or `scope.manage` authority for an explicitly
+selected Team's loadouts and protected routes. Team selection does not grant
+installation authority. An admin-scoped subset token alone cannot authorize
+these mutations. See [durable authority and transport scopes](#browser-session-scopes-and-domain-admission)
+and [selecting the authority context](../access-control/MULTI_USER_AUTHORITY.md#selecting-the-authority-context).
+Do not treat a subset allowlist as the only authority boundary.
+
 
 Synthetic Code Mode keeps ordinary raw upstream tools out of the approval-facing
 catalog. Upstream MCP App owners and callbacks pass through only when the same
@@ -1378,7 +1403,9 @@ browser callback confirms that flow completed; it does not prove that a particul
 MCP connector can use the grant. Admin callers (`lab:admin`) use the shared gateway
 identity. Authenticated non-admin callers use their own subject and cannot borrow
 that shared grant. Repeating the browser authorization does not populate their
-personal credential entry.
+personal credential entry. Missing, empty, or whitespace-only non-admin
+subjects fail closed, including Code Mode callers wrapped in host authority;
+that wrapper does not promote the caller to the shared operator grant.
 
 The same subject boundary applies to Code Mode OpenAPI specs configured with
 `oauth_upstream`. The OpenAPI registry stores only the upstream name. At dispatch,
@@ -1446,6 +1473,7 @@ LABBY_PUBLIC_URL=https://lab.example.com
 # LABBY_GOOGLE_CALLBACK_URL=https://labby.example.com/auth/google/callback
 LABBY_GOOGLE_CLIENT_ID=google-client-id
 LABBY_GOOGLE_CLIENT_SECRET=google-client-secret
+LABBY_AUTH_ADMIN_EMAIL=admin@example.com
 # Generate and persist this secret as described below; do not use this placeholder.
 LABBY_TOKEN_ENCRYPTION_KEY=<64-lowercase-hex-digits>
 
@@ -1514,15 +1542,17 @@ SELECT 'browser_sessions', identity_issuer, provider_generation, COUNT(*)
 FROM browser_sessions GROUP BY identity_issuer, provider_generation;
 ```
 
-The expected final `user_version` is `16`: provider metadata and identity
-backfill are installed by v15, then v16 adds expiry-leading cleanup indexes.
+The expected final `user_version` is `18`: provider metadata and identity
+backfill are installed by v15, v16 adds expiry-leading cleanup indexes, v17
+adds desktop login/handoff state, and v18 constrains allowed-user roles to
+`member` or `admin`. Existing unknown roles make the v18 migration fail closed.
 `integrity_check` must return `ok`,
 `foreign_key_check` must return no rows, and the singleton provider query must
 return exactly one row matching the selected provider. Compare each grouped
 identity-bearing row count with its pre-migration table count; v14 rows must be
 mapped to Google's canonical issuer and generation `1`.
 
-Rollback after the v15/v16 migration sequence requires stopping all writers and restoring the matching
+Rollback after the migration sequence requires stopping all writers and restoring the matching
 pre-cutover database backup; changing only the binary or provider environment
 is not a supported downgrade.
 
@@ -1541,19 +1571,21 @@ database/key backup or revoke the affected Google grants and rebuild the auth
 database, then require users to authorize again. Do not generate a replacement
 over the existing encrypted database and expect old credentials to survive.
 
-Key rotation is an offline migration, not an environment-only edit:
+There is no shipped encryption-key rotation command or migration tool. A
+separately implemented and reviewed offline migration would need to:
 
 1. Stop or drain Labby OAuth writes.
 2. Create and verify a consistent backup of the database, old key, environment,
    and JWT signing key.
-3. Decrypt every encrypted provider credential with the old key and re-encrypt
-   it with the new key in one transaction using a supported migration tool.
+3. Decrypt every encrypted provider credential and persisted refresh-retry
+   response with the old key and re-encrypt it with the new key in one
+   transaction.
 4. Atomically update the environment to the new key, restart, run `labby doctor`,
    and perform a read-only OAuth smoke test.
 5. Retain the old recovery set until the new database/key pair is verified.
 
-There is currently no supported online key-rotation command. Never rotate by
-editing only `LABBY_TOKEN_ENCRYPTION_KEY`; that makes existing ciphertext
+These are migration requirements, not an available operator procedure. Never
+rotate by editing only `LABBY_TOKEN_ENCRYPTION_KEY`; that makes existing ciphertext
 undecryptable and OAuth startup/use will fail closed.
 
 Current verification is owned by Labby's built-in health/doctor surfaces and focused integration tests. The repository retains `plugins/scripts/check-oauth.sh` as a compatibility probe, but there is no top-level `scripts/check-oauth.sh` product contract and deployment guidance must use the built-in doctor surfaces as the source of truth.

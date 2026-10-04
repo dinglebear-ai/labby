@@ -46,3 +46,12 @@ test("allows release tag override", () => {
     "https://example.test/releases/v9.9.9/lab-x86_64-unknown-linux-gnu.tar.gz",
   );
 });
+
+test("companion root is anchored beside the npm installed binary", () => {
+  const { binaryPath, companionRoot } = require("../lib/platform");
+  const path = require("node:path");
+  assert.equal(
+    companionRoot(),
+    path.join(path.dirname(binaryPath("linux", "x64")), "tailcat"),
+  );
+});

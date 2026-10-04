@@ -1,7 +1,8 @@
 'use client'
 
+import { summarizeCapabilities } from '@/lib/gateway-capabilities'
 import dynamic from 'next/dynamic'
-import { useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft,
   Download,
@@ -19,7 +20,9 @@ import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GatewayFleetMetadata } from './gateway-fleet-metadata'
 import { useGateways, useGatewayMutations } from '@/lib/hooks/use-gateways'
-import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer } from '@/lib/types/gateway'
+import { useGatewayProbe } from '@/lib/hooks/use-gateway-probe'
+import type { Gateway, CreateGatewayInput, UpdateGatewayInput, DiscoveredMcpServer, GatewayImportResult } from '@/lib/types/gateway'
+import { fetchGateway } from '@/lib/hooks/use-gateways'
 import { cn, getErrorMessage } from '@/lib/utils'
 import {
   AURORA_PAGE_FRAME,
@@ -57,6 +60,11 @@ import { describeGatewayOperationalState } from '@/lib/gateway-operational-state
 const DEFAULT_GATEWAY_LENS: GatewayPrimaryLens = 'enabled'
 const DEFAULT_DENSITY: 'comfortable' | 'condensed' = 'comfortable'
 const BULK_RELOAD_CONCURRENCY = 4
+const IMPORT_SKIP_LABELS = {
+  already_configured: 'already configured',
+  conflict: 'configuration conflicts with an existing server',
+  tombstoned: 'previously removed; restore it to import again',
+} as const
 type GatewayLayout = CollectionViewMode
 const GatewayFormDialog = dynamic(
   () => import('./gateway-form-dialog').then((module) => module.GatewayFormDialog),
@@ -91,6 +99,7 @@ type CleanupHistoryEntry = {
 }
 
 interface GatewaySummary {
+  incompleteCapabilities?: number
   enabled: number
   healthy: number
   disconnected: number
@@ -153,13 +162,32 @@ export interface GatewayListViewProps {
   onDelete: (gateway: Gateway) => void
 }
 
+export function GatewayRuntimeRefreshNotice({
+  error,
+  updatedAt,
+  onRetry,
+}: { error?: unknown; updatedAt?: number; onRetry: () => void }) {
+  if (!error) return null
+  return (
+    <div role="alert" className="flex flex-wrap items-center gap-3 px-4 py-2 text-sm text-aurora-warn">
+      <div>
+        <p>Connection status may be out of date. {getErrorMessage(error, 'The latest runtime refresh failed.')}</p>
+        <p className="text-xs text-aurora-text-muted">
+          {updatedAt !== undefined ? <>Last successful refresh: <time dateTime={new Date(updatedAt).toISOString()}>{new Date(updatedAt).toLocaleTimeString()}</time>.</> : 'No successful runtime refresh yet.'}
+        </p>
+      </div>
+      <Button variant="outline" size="sm" onClick={onRetry}>Retry connection status</Button>
+    </div>
+  )
+}
+
 export function GatewayListContent() {
   const [primaryView, setPrimaryView] = useState<GatewayPrimaryLens | 'tools'>(DEFAULT_GATEWAY_LENS)
-  const { data: gateways, isLoading, error, catalogWarmError, retryCatalogWarm } = useGateways(
+  const { data: gateways, isLoading, error, runtimeError, runtimeUpdatedAt, retryRuntime, catalogWarmError, retryCatalogWarm, toolInventoryError, retryToolInventory } = useGateways(
     true,
     primaryView === 'tools',
   )
-  const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, enableGateway, disableGateway } =
+  const { testGateway, reloadGateway, cleanupGateway, removeGateway, removeVirtualServer, createGateway, discoverExternalConfigs, importExternalConfigs, restoreImportTombstone, updateGateway, invalidateGatewayDetail, enableGateway, disableGateway } =
     useGatewayMutations()
 
   const batchActions = gatewayBatchActions({ enable: enableGateway, disable: disableGateway, reload: reloadGateway })
@@ -174,14 +202,16 @@ export function GatewayListContent() {
 
   const [formOpen, setFormOpen] = useState(false)
   const [editingGateway, setEditingGateway] = useState<Gateway | null>(null)
+  const editRequest = useRef<AbortController | null>(null)
+  const [loadingEditId, setLoadingEditId] = useState<string | null>(null)
+  const [editError, setEditError] = useState<string | null>(null)
+  const [importResult, setImportResult] = useState<GatewayImportResult | null>(null)
+  useEffect(() => () => editRequest.current?.abort(), [])
   const [discoveredConfigs, setDiscoveredConfigs] = useState<DiscoveredMcpServer[] | null>(null)
   const [isDiscoveringConfigs, setIsDiscoveringConfigs] = useState(false)
   const [isImportingConfigs, setIsImportingConfigs] = useState(false)
   const [isReloadingVisible, setIsReloadingVisible] = useState(false)
-  const [testResult, setTestResult] = useState<{
-    gateway: Gateway
-    result: Awaited<ReturnType<typeof testGateway>>
-  } | null>(null)
+  const { run: runProbe, close: closeProbe, result: testResult } = useGatewayProbe(testGateway)
 
   useEffect(() => {
     if (!catalogWarmError) return
@@ -208,13 +238,13 @@ export function GatewayListContent() {
     const operationalStates = items.map((gateway) => describeGatewayOperationalState(gateway))
     const healthy = operationalStates.filter((state) => state.kind === 'healthy').length
     const disconnected = operationalStates.filter((state) => state.kind === 'disconnected').length
-    const sum = (pick: (gateway: Gateway) => number) =>
-      items.reduce((total, gateway) => total + pick(gateway), 0)
-    const tools = sum((gateway) => gateway.status.discovered_tool_count)
+    const capabilities = Object.fromEntries(['tools', 'resources', 'prompts', 'skills'].map(kind => [kind, summarizeCapabilities(items.map(gateway => gateway.status), kind as 'tools' | 'resources' | 'prompts' | 'skills')]))
+    const tools = capabilities.tools.discovered
 
     const serverStates = items.map((gateway) => {
       const base = { id: gateway.id, name: gatewayDisplayName(gateway.name) }
       const operational = describeGatewayOperationalState(gateway)
+      if (operational.kind === 'idle') return { ...base, color: 'var(--aurora-text-muted)', state: operational.label.toLowerCase() }
       if (operational.kind === 'disabled') return { ...base, color: 'var(--aurora-text-muted)', state: 'disabled' }
       if (operational.kind === 'disconnected') return { ...base, color: 'var(--aurora-error)', state: 'disconnected' }
       if (operational.kind === 'degraded') return { ...base, color: 'var(--aurora-warn)', state: 'needs attention' }
@@ -228,13 +258,14 @@ export function GatewayListContent() {
       disconnected,
       tools,
       totalServers: items.length,
-      exposedTools: sum((gateway) => gateway.status.exposed_tool_count),
-      discoveredPrompts: sum((gateway) => gateway.status.discovered_prompt_count),
-      exposedPrompts: sum((gateway) => gateway.status.exposed_prompt_count),
-      discoveredResources: sum((gateway) => gateway.status.discovered_resource_count),
-      exposedResources: sum((gateway) => gateway.status.exposed_resource_count),
-      discoveredSkills: sum((gateway) => gateway.status.discovered_skill_count ?? 0),
-      exposedSkills: sum((gateway) => gateway.status.exposed_skill_count ?? 0),
+      exposedTools: capabilities.tools.exposed,
+      discoveredPrompts: capabilities.prompts.discovered,
+      exposedPrompts: capabilities.prompts.exposed,
+      discoveredResources: capabilities.resources.discovered,
+      exposedResources: capabilities.resources.exposed,
+      discoveredSkills: capabilities.skills.discovered,
+      exposedSkills: capabilities.skills.exposed,
+      incompleteCapabilities: Object.values(capabilities).reduce((sum, capability) => sum + capability.incomplete, 0),
       serverStates,
     }
   }, [items])
@@ -363,6 +394,9 @@ export function GatewayListContent() {
   }
 
   const handleCreate = () => {
+    editRequest.current?.abort()
+    setLoadingEditId(null)
+    setEditError(null)
     setEditingGateway(null)
     setFormOpen(true)
   }
@@ -385,10 +419,18 @@ export function GatewayListContent() {
     setIsImportingConfigs(true)
     try {
       const result = await importExternalConfigs(names)
-      const importedNames = result.imported.map((item) => item.config.name)
-      toast.success(`${importedNames.length} servers imported disabled`)
-      const refreshed = await discoverExternalConfigs()
-      setDiscoveredConfigs(refreshed)
+      setImportResult(result)
+      const message = `${result.imported.length} imported, ${result.skipped.length} skipped, ${result.errors.length} failed`
+      if (result.errors.length) {
+        if (result.imported.length) toast.warning(message)
+        else toast.error(message)
+      } else if (result.skipped.length || !result.imported.length) toast.info(message)
+      else toast.success(`${result.imported.length} servers imported disabled`)
+      try {
+        setDiscoveredConfigs(await discoverExternalConfigs())
+      } catch (requestError) {
+        toast.error(getErrorMessage(requestError, 'Import finished, but scanning configs again failed'))
+      }
     } catch (requestError) {
       toast.error(getErrorMessage(requestError, 'Failed to import MCP configs'))
     } finally {
@@ -410,15 +452,32 @@ export function GatewayListContent() {
     }
   }
 
-  const handleEdit = (gateway: Gateway) => {
-    setEditingGateway(gateway)
-    setFormOpen(true)
+  const handleEdit = async (gateway: Gateway) => {
+    editRequest.current?.abort()
+    const controller = new AbortController()
+    editRequest.current = controller
+    setLoadingEditId(gateway.id)
+    setEditError(null)
+    setFormOpen(false)
+    try {
+      const fullGateway = await fetchGateway(gateway.id, controller.signal)
+      if (controller.signal.aborted || editRequest.current !== controller) return
+      setEditingGateway(fullGateway)
+      setFormOpen(true)
+    } catch (error) {
+      if (controller.signal.aborted || editRequest.current !== controller) return
+      const message = getErrorMessage(error, 'Failed to load server configuration for editing')
+      setEditError(message)
+      toast.error(message)
+    } finally {
+      if (editRequest.current === controller) setLoadingEditId(null)
+    }
   }
 
   const handleTest = async (gateway: Gateway) => {
     try {
-      const result = await testGateway(gateway.id)
-      setTestResult({ gateway, result })
+      const result = await runProbe(gateway)
+      if (!result) return
       if (result.severity === 'warning') {
         toast.warning(result.detail || result.message)
       } else if (result.success) {
@@ -575,19 +634,15 @@ export function GatewayListContent() {
   ): Promise<GatewaySaveRollback> => {
     if (editingGateway) {
       const previous = editingGateway
-      await updateGateway(editingGateway.id, input as UpdateGatewayInput)
-      return async () => {
-        await updateGateway(previous.id, {
-          name: previous.name,
-          transport: previous.transport,
-          config: previous.config,
-        })
+      const saved = await updateGateway(editingGateway.id, input as UpdateGatewayInput)
+      return {
+        commit: () => {
+          if (saved.id !== previous.id) void invalidateGatewayDetail(previous.id)
+        },
       }
     } else {
-      const created = await createGateway(input as CreateGatewayInput)
-      return async () => {
-        await removeGateway(created.id)
-      }
+      await createGateway(input as CreateGatewayInput)
+      return {}
     }
   }
 
@@ -595,6 +650,25 @@ export function GatewayListContent() {
 
   return (
     <>
+      <GatewayRuntimeRefreshNotice error={runtimeError} updatedAt={runtimeUpdatedAt} onRetry={() => { void retryRuntime().catch(() => undefined) }} />
+      {loadingEditId ? <p role="status" className="px-4 py-2 text-sm text-aurora-text-muted">Loading configuration for {loadingEditId}…</p> : null}
+      {editError ? <p role="alert" className="px-4 py-2 text-sm text-destructive">{editError}</p> : null}
+      {primaryView === 'tools' && (toolInventoryError || items.some(item => item.warnings.some(warning => warning.code === 'tool_inventory_unavailable'))) ? (
+        <div role="status" className="flex items-center gap-3 px-4 py-2 text-sm text-aurora-text-muted">
+          Tool inventory is incomplete. <Button variant="outline" size="sm" onClick={() => void retryToolInventory()}>Retry tool inventory</Button>
+        </div>
+      ) : null}
+      {importResult ? (
+        <section aria-label="MCP config import results" className={cn(AURORA_STRONG_PANEL, 'm-4 p-4 space-y-2')}>
+          <div className="flex items-center justify-between gap-3">
+            <p role="status" className="text-sm font-medium">{importResult.imported.length} imported, {importResult.skipped.length} skipped, {importResult.errors.length} failed</p>
+            <Button variant="ghost" size="sm" onClick={() => setImportResult(null)}>Dismiss import results</Button>
+          </div>
+          {importResult.imported.length ? <p className="text-sm text-aurora-text-muted">Imported disabled: {importResult.imported.map(item => item.config.name).join(', ')}</p> : null}
+          {importResult.errors.map((item, index) => <p key={`error-${index}`} className="text-sm text-destructive">{item.name}: {item.message}</p>)}
+          {importResult.skipped.map((item, index) => <p key={`skip-${index}`} className="text-sm text-aurora-text-muted">{item.name}: skipped — {IMPORT_SKIP_LABELS[item.reason] ?? item.reason}</p>)}
+        </section>
+      ) : null}
       <GatewayListView
         summary={summary}
         showToolsView={showToolsView}
@@ -647,7 +721,7 @@ export function GatewayListContent() {
         />
       )}
 
-      <TestResultPanel result={testResult} onClose={() => setTestResult(null)} />
+      <TestResultPanel result={testResult} onClose={closeProbe} />
       <CleanupResultPanel result={cleanupResult} onClose={() => setCleanupResult(null)} />
     </>
   )
@@ -771,6 +845,7 @@ export function GatewayListView({
       >
         <div className={cn(AURORA_PAGE_FRAME, 'relative z-10 gap-[30px]')}>
           <div>
+            {(summary.incompleteCapabilities ?? 0) > 0 ? <p className="text-xs text-aurora-text-muted" role="status">Capability totals are incomplete; some catalogs have not been discovered or need refresh.</p> : null}
             <GatewayHero
               totalServers={summary.totalServers}
               healthy={summary.healthy}
@@ -790,27 +865,30 @@ export function GatewayListView({
               onLensChange={onPrimaryLensChange}
               actions={
                 <div className="flex flex-col items-end gap-[9px]">
-                  <div className="inline-flex gap-1">
-                    <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Reload visible servers" aria-label="Reload visible servers" disabled={isReloadingVisible || filteredGateways.length === 0} onClick={() => onReloadVisible(filteredGateways)}><RefreshCw className={cn('size-3', isReloadingVisible && 'animate-spin')} /></Button>
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild><Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Gateway actions" aria-label="Gateway actions, search and filters"><MoreHorizontal className="size-3" /></Button></DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={onCreate}><Plus className="size-3.5"/>Add server</DropdownMenuItem>
-                        <DropdownMenuItem disabled={isDiscoveringConfigs || isImportingConfigs} onClick={onDiscoverConfigs}><Search className="size-3.5"/>Scan MCP configs</DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setShowToolbar((value) => !value)}><SlidersHorizontal className="size-3.5"/>{showToolbar ? 'Hide search and view controls' : 'Search, filters and views'}</DropdownMenuItem>
-                        <DropdownMenuSeparator/>
-                        <div className="px-2 py-1.5"><CodeModeHeaderToggle /></div>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                    <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Download gateway diagnostics snapshot" aria-label="Download gateway diagnostics snapshot" onClick={() => {
-                      const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
-                      const href = URL.createObjectURL(blob)
-                      const anchor = document.createElement('a')
-                      anchor.href = href
-                      anchor.download = 'labby-gateway-snapshot.json'
-                      anchor.click()
-                      URL.revokeObjectURL(href)
-                    }}><Download className="size-3" /></Button>
+                  <div className="flex flex-wrap items-center justify-end gap-2" data-gateway-hero-controls="1">
+                    {!showToolsView ? <CollectionViewToggle value={layout} onChange={selectLayout} ariaLabel="Server view" /> : null}
+                    <div className="inline-flex gap-1">
+                      <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Reload visible servers" aria-label="Reload visible servers" disabled={isReloadingVisible || filteredGateways.length === 0} onClick={() => onReloadVisible(filteredGateways)}><RefreshCw className={cn('size-3', isReloadingVisible && 'animate-spin')} /></Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild><Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Gateway actions" aria-label="Gateway actions, search and filters"><MoreHorizontal className="size-3" /></Button></DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={onCreate}><Plus className="size-3.5"/>Add server</DropdownMenuItem>
+                          <DropdownMenuItem disabled={isDiscoveringConfigs || isImportingConfigs} onClick={onDiscoverConfigs}><Search className="size-3.5"/>Scan MCP configs</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => setShowToolbar((value) => !value)}><SlidersHorizontal className="size-3.5"/>{showToolbar ? 'Hide search and filters' : 'Search and filters'}</DropdownMenuItem>
+                          <DropdownMenuSeparator/>
+                          <div className="px-2 py-1.5"><CodeModeHeaderToggle /></div>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                      <Button variant="outline" size="icon" data-visible-label className="size-6 rounded-lg" title="Download gateway diagnostics snapshot" aria-label="Download gateway diagnostics snapshot" onClick={() => {
+                        const blob = new Blob([JSON.stringify(filteredGateways, null, 2)], { type: 'application/json' })
+                        const href = URL.createObjectURL(blob)
+                        const anchor = document.createElement('a')
+                        anchor.href = href
+                        anchor.download = 'labby-gateway-snapshot.json'
+                        anchor.click()
+                        URL.revokeObjectURL(href)
+                      }}><Download className="size-3" /></Button>
+                    </div>
                   </div>
                   <GatewayFleetMetadata />
                 </div>
@@ -819,7 +897,7 @@ export function GatewayListView({
           </div>
 
           <div className="grid gap-4">
-            {showToolbar || activeSearch || mobileSheetOpen || !showToolsView ? (
+            {showToolbar || activeSearch || mobileSheetOpen ? (
               <div className="flex min-w-0 flex-col items-stretch gap-2 sm:flex-row sm:items-start">
                 {showToolbar || activeSearch || mobileSheetOpen ? (
                   <div data-gateway-filters="all-viewports" className="min-w-0 sm:flex-1">
@@ -843,14 +921,6 @@ export function GatewayListView({
                     />
                   </div>
                 ) : null}
-                {!showToolsView ? (
-                  <CollectionViewToggle
-                    value={layout}
-                    onChange={selectLayout}
-                    ariaLabel="Server view"
-                    className="self-end sm:self-start lg:mt-3.5"
-                  />
-                ) : null}
               </div>
             ) : null}
 
@@ -865,7 +935,7 @@ export function GatewayListView({
                 />
               ) : null}
               {isLoading ? (
-                <GatewayTableSkeleton />
+                <GatewayTableSkeleton presentation={layout} />
               ) : errorMessage ? (
                 <div className={cn(AURORA_STRONG_PANEL, 'p-8 text-center')}>
                   <p className="text-aurora-error">Failed to load servers</p>

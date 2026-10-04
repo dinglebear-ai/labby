@@ -3,6 +3,11 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import http from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
+import os from 'node:os'
+import { publishPreviewExport, exportPath } from './preview-export.ts'
 
 import { chromium } from 'playwright'
 
@@ -12,6 +17,12 @@ let previewServer: ChildProcess | null = null
 let previewServerReady: Promise<void> | null = null
 let buildReady: Promise<void> | null = null
 let previewStderr = ''
+let previewRoot: string | null = null
+
+async function snapshotPreviewExport() {
+  previewRoot ??= await mkdtemp(path.join(os.tmpdir(), 'labby-browser-preview-'))
+  await publishPreviewExport(path.join(fileURLToPath(APP_DIR), 'out'), exportPath(previewRoot))
+}
 
 function buildApplication(buildId?: string) {
   return new Promise<void>((resolve, reject) => {
@@ -31,7 +42,7 @@ function buildApplication(buildId?: string) {
     child.stderr?.on('data', (chunk) => { output += String(chunk) })
     child.once('error', reject)
     child.once('exit', (code, signal) => {
-      if (code === 0) resolve()
+      if (code === 0) snapshotPreviewExport().then(resolve, reject)
       else reject(new Error(`Gateway Admin build failed (${code ?? signal}):\n${output.slice(-12_000)}`))
     })
   })
@@ -52,7 +63,7 @@ async function allocatePort(): Promise<number> {
 function buildApplicationOnce() {
   if (buildReady) return buildReady
   if (process.env.GATEWAY_ADMIN_BROWSER_SKIP_BUILD === 'true') {
-    buildReady = Promise.resolve()
+    buildReady = snapshotPreviewExport()
     return buildReady
   }
   buildReady = buildApplication()
@@ -97,7 +108,7 @@ async function startPreviewServer() {
     baseUrl = `http://127.0.0.1:${port}`
     previewServer = spawn(
       'python3',
-      ['-m', 'http.server', String(port), '--directory', 'out', '--bind', '127.0.0.1'],
+      ['-m', 'http.server', String(port), '--directory', exportPath(previewRoot!), '--bind', '127.0.0.1'],
       { cwd: APP_DIR, stdio: ['ignore', 'pipe', 'pipe'], env: process.env },
     )
     previewServer.stdout?.on('data', (chunk) => { previewStderr += String(chunk) })
@@ -112,6 +123,7 @@ async function startPreviewServer() {
 
 test.after(async () => {
   if (!previewServer) {
+    if (previewRoot) await rm(previewRoot, { recursive: true, force: true })
     return
   }
 
@@ -125,6 +137,65 @@ test.after(async () => {
     previewServer.kill('SIGKILL')
     await once(previewServer, 'exit').catch(() => undefined)
   }
+  if (previewRoot) await rm(previewRoot, { recursive: true, force: true })
+})
+
+test('Stash repo folders support filtering and moving with a stable URI on mobile', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  let releaseFolderFailure!: () => void
+  const folderFailure = new Promise<void>(resolve => { releaseFolderFailure = resolve })
+  t.after(() => { releaseFolderFailure() })
+  let folder = 'org/repo'
+  const uri = 'stash://me/files/context-1'
+  const selected: Array<string | null> = []
+  await page.route('**/v1/stash**', async route => {
+    const request = route.request()
+    const url = new URL(request.url())
+    if (url.searchParams.get('folder') === 'org/unavailable') {
+      await folderFailure
+      await route.fulfill({ status: 429, contentType: 'application/json', body: JSON.stringify({ kind: 'busy', message: 'Folder unavailable' }) })
+      return
+    }
+    let body: unknown
+    if (url.pathname.endsWith('/stats')) body = { owned_file_count: 1, owned_shared_file_count: 0, owned_committed_bytes: 5, owned_reserved_bytes: 0 }
+    else if (url.pathname.endsWith('/folders')) body = { folders: [{ folder, file_count: 1 }], next_cursor: null }
+    else if (url.pathname.endsWith('/grants')) body = { grants: [], next_cursor: null }
+    else if (request.method() === 'POST') {
+      const action = request.postDataJSON()
+      assert.equal(action.action, 'stash.move')
+      folder = action.params.folder
+      body = { file_id: 'context-1', uri, folder, display_name: 'handoff.md', size_bytes: 5, created_at: 1, updated_at: 2, owned: true }
+    } else {
+      selected.push(url.searchParams.get('folder'))
+      body = { files: url.searchParams.has('folder') && url.searchParams.get('folder') !== folder ? [] : [{ file_id: 'context-1', uri, folder, display_name: 'handoff.md', size_bytes: 5, created_at: 1, updated_at: 1, owned: true }], next_cursor: null }
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+  })
+  await page.goto(`${baseUrl}/stash/`, { waitUntil: 'networkidle' })
+  const filtered = page.waitForResponse(response => new URL(response.url()).searchParams.get('folder') === 'org/repo')
+  await page.getByRole('combobox', { name: 'Document folder' }).selectOption('folder:org/repo')
+  await filtered
+  await page.getByText('Uploads go to org/repo.', { exact: false }).waitFor()
+  await page.getByRole('button', { name: 'Actions for handoff.md' }).click()
+  await page.getByRole('menuitem', { name: 'Manage file' }).click()
+  await page.getByRole('textbox', { name: 'Folder', exact: true }).fill('org/other-repo')
+  await page.getByRole('button', { name: 'Move to folder' }).click()
+  await page.getByRole('combobox', { name: 'Document folder' }).selectOption('all')
+  await page.getByText('org/other-repo', { exact: true }).first().waitFor()
+  assert.ok(selected.includes('org/repo'))
+  assert.equal(await page.locator('article code').textContent(), uri)
+  await page.getByRole('textbox', { name: 'Open a repo or folder' }).fill('org/unavailable')
+  await page.getByRole('button', { name: 'Open folder', exact: true }).click()
+  await page.getByText('Loading your files…', { exact: true }).waitFor()
+  assert.equal(await page.locator('article').count(), 0, 'opening a folder must immediately remove the previous folder rows')
+  releaseFolderFailure()
+  await page.getByRole('alert').filter({ hasText: 'Stash is busy' }).waitFor()
+  assert.equal(await page.locator('article').count(), 0, 'a failed folder request must not revive earlier rows')
+  assert.equal(await page.getByRole('button', { name: 'Load more', exact: true }).count(), 0)
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'folder controls must fit the mobile viewport')
 })
 
 test('gateway manage tools flow persists after a full reload in mock preview', { concurrency: false }, async (t) => {
@@ -253,6 +324,19 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   })
   await page.reload({ waitUntil: 'networkidle' })
 
+  const viewControls = page.locator('[data-gateway-hero-controls="1"]')
+  assert.equal(await viewControls.getByRole('group', { name: 'Server view' }).count(), 1)
+  for (const view of ['List view', 'Card view', 'Table view']) {
+    await viewControls.getByRole('button', { name: view, exact: true }).click()
+    assert.equal(await viewControls.getByRole('button', { name: view, exact: true }).getAttribute('aria-pressed'), 'true')
+  }
+  await page.reload({ waitUntil: 'networkidle' })
+  assert.equal(await viewControls.getByRole('button', { name: 'Table view', exact: true }).getAttribute('aria-pressed'), 'true')
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((value) => { document.documentElement.classList.remove('dark', 'light'); document.documentElement.classList.add(value) }, theme)
+    if (process.env.LABBY_UI_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.LABBY_UI_SCREENSHOT_DIR, `labby-gateway-polish-${theme}.png`) })
+  }
+
   const totalStat = page.locator('[data-gateway-stat="total"]')
   const toolsStat = page.locator('[data-gateway-stat="tools"]')
   await assert.doesNotReject(() => totalStat.waitFor())
@@ -267,6 +351,19 @@ test('gateway list stays compact without horizontal overflow in mock preview', {
   })
 
   assert.equal(hasHorizontalOverflow, false)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await viewControls.getByRole('button', { name: 'List view', exact: true }).focus()
+  await page.keyboard.press('Enter')
+  assert.equal(await viewControls.getByRole('button', { name: 'List view', exact: true }).getAttribute('aria-pressed'), 'true')
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+  if (process.env.LABBY_UI_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.LABBY_UI_SCREENSHOT_DIR, 'labby-gateway-polish-mobile.png') })
+  await page.setViewportSize({ width: 1360, height: 960 })
+  await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((value) => { document.documentElement.classList.remove('dark', 'light'); document.documentElement.classList.add(value) }, theme)
+    if (process.env.LABBY_UI_SCREENSHOT_DIR) await page.screenshot({ path: path.join(process.env.LABBY_UI_SCREENSHOT_DIR, `labby-overview-polish-${theme}.png`) })
+  }
+
 })
 
 test('Depot Administration renders live schemas and guards destructive operations', { concurrency: false }, async (t) => {
@@ -398,27 +495,41 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   const page = await browser.newPage({ viewport: { width: 1360, height: 960 } })
   const fixtureNow = 1_800_086_400_000
   await page.addInitScript((now) => { Date.now = () => now }, fixtureNow)
-  const summaryRequests: string[] = []
+  const summaryRequests: unknown[] = []
+  const serverCalls = { alpha: 3, beta: 2, gamma: 1, delta: 1 }
+  const buckets = (calls: number) => Array.from({ length: 24 }, (_, index) => ({
+    ts_unix: 1_800_000_000 + index * 3600, calls: index === 0 ? calls : 0, failed: 0,
+  }))
   await page.route('**/v1/gateway', async (route) => {
-    const call = route.request().postDataJSON() as { action: string; params: { upstream?: string; since_unix?: number; until_unix?: number; bucket_count?: number } }
-    if (call.action !== 'gateway.usage.metrics' || !call.params.upstream) { await route.continue(); return }
+    const call = route.request().postDataJSON() as { action: string; params: { upstream?: string; since_unix?: number; until_unix?: number; bucket_count?: number; include_upstream_timeseries?: boolean } }
+    if (call.action !== 'gateway.usage.metrics' || !call.params.include_upstream_timeseries) { await route.continue(); return }
+    assert.equal(call.params.upstream, undefined, 'one transactional request replaces per-server fan-out')
     assert.equal(call.params.since_unix, 1_800_000_000)
     assert.equal(call.params.until_unix, 1_800_086_400)
     assert.equal(call.params.bucket_count, 24)
-    summaryRequests.push(call.params.upstream)
+    summaryRequests.push(call.params)
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({
-      total_calls: 0, error_calls: 0,
-      timeseries: Array.from({ length: 24 }, (_, index) => ({ ts_unix: 1_800_000_000 + index * 3600, calls: 0, failed: 0 })),
+      total_calls: 10, error_calls: 0,
+      upstreams: Object.entries(serverCalls).map(([upstream, calls]) => ({ upstream, calls })),
+      timeseries: buckets(10),
+      upstream_timeseries: Object.fromEntries(Object.entries(serverCalls).map(([name, calls]) => [name, buckets(calls)])),
     }) })
   })
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  assert.equal(await page.getByRole('tab', { name: '1h', exact: true }).getAttribute('aria-selected'), 'true')
+  assert.equal(summaryRequests.length, 0, 'the default volume chart needs no optional server request')
+  await page.getByRole('tab', { name: '24h', exact: true }).click()
+  await page.getByRole('button', { name: 'Overview chart', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Calls by server', exact: true }).click()
 
   const chart = page.locator('[aria-label="Calls by server"]')
   await chart.waitFor({ state: 'visible' })
-  assert.equal(new Set(summaryRequests).size, 4, 'default chart requests the four busiest server summaries')
+  assert.equal(summaryRequests.length, 1, 'one selected-chart request returns totals and all four server series')
   const firstBucket = chart.getByRole('button').first()
+  await firstBucket.waitFor({ state: 'visible' })
   assert.equal(await chart.getByRole('button').count(), 24)
-  assert.match(await firstBucket.getAttribute('aria-label') ?? '', /calls$/)
+  assert.match(await firstBucket.getAttribute('aria-label') ?? '', /10 calls$/)
+  assert.match(await firstBucket.getAttribute('title') ?? '', /Other: 3/)
   await firstBucket.focus()
   await page.keyboard.press('Enter')
   await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.has('from') && url.searchParams.has('to'))
@@ -430,6 +541,7 @@ test('overview metrics and volume bars drill into exact Usage slices', { concurr
   assert.equal(to - from, 3_599_000, '24h buckets should stop one stored second before the next inclusive bucket')
 
   await page.goto(`${baseUrl}/`, { waitUntil: 'networkidle' })
+  await page.getByRole('tab', { name: '24h', exact: true }).click()
   await page.getByTitle('Upstream calls — open details').click()
   await page.waitForURL((url) => url.pathname === '/usage/' && url.searchParams.get('window') === '24h')
 })
@@ -629,7 +741,10 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
       '/settings/extract/',
       '/settings/features/',
       '/settings/services/',
-      '/settings/services/adguard/',
+      '/settings/agents/',
+      '/settings/authentication/',
+      '/settings/depot/',
+      '/settings/notifications/',
       '/settings/surfaces/',
       '/skills/',
       '/snippets/',
@@ -681,11 +796,36 @@ test('every admin route stays overflow-free on narrow phone, phone, and tablet',
     await page.locator('[data-mobile-nav-backdrop]').click({ position: { x: viewport.width - 2, y: 2 } })
     await page.waitForFunction(() => document.querySelector('aside[data-console-sidebar]')?.getAttribute('data-mobile-open') === '0')
     await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    await page.getByRole('group', { name: 'Server view' }).getByRole('button', { name: 'Card view' }).click()
     await assert.doesNotReject(() => page.getByRole('link', { name: 'Open', exact: true }).first().waitFor())
     await page.goto(`${baseUrl}/usage/?focus=latency&percentile=p95&outcome=failed`, { waitUntil: 'networkidle' })
     await assert.doesNotReject(() => page.getByText(/Metric drill-down:/).waitFor())
     assert.equal(new URL(page.url()).searchParams.get('focus'), 'latency')
     assert.equal(new URL(page.url()).searchParams.get('outcome'), 'failed')
+    await page.close()
+  }
+})
+
+test('server list, card, and table choices persist on phone and tablet', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  for (const width of [390, 768]) {
+    const page = await browser.newPage({ viewport: { width, height: 844 } })
+    await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    for (const [label, section] of [
+      ['List view', 'Server inventory cards'],
+      ['Card view', 'Server inventory cards'],
+      ['Table view', 'Server inventory'],
+    ] as const) {
+      await page.getByRole('group', { name: 'Server view' }).getByRole('button', { name: label }).click()
+      await page.reload({ waitUntil: 'networkidle' })
+      assert.equal(await page.getByRole('button', { name: label, exact: true }).getAttribute('aria-pressed'), 'true', `${width}px ${label} did not persist`)
+      await page.getByRole('region', { name: section, exact: true }).waitFor({ state: 'visible' })
+      assert.ok(await page.getByRole('region', { name: section, exact: true }).count() > 0)
+      if (label === 'Card view') await page.getByRole('region', { name: section }).getByRole('link', { name: 'Open', exact: true }).first().waitFor()
+      if (label === 'List view') assert.equal(await page.getByRole('region', { name: section }).getByRole('link', { name: 'Open', exact: true }).count(), 0)
+    }
     await page.close()
   }
 })
@@ -1225,4 +1365,175 @@ test('Discovery table labels align with rows and remain usable on phones', { con
   await page.getByRole('button', { name: 'Card view', exact: true }).click()
   await page.reload({ waitUntil: 'networkidle' })
   assert.equal(await page.getByRole('button', { name: 'Card view', exact: true }).getAttribute('aria-pressed'), 'true')
+})
+
+
+test('Overview repacks the same page across breakpoints and growing replacement content', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 768, height: 1024 } })
+  await page.goto(baseUrl, { waitUntil: 'networkidle' })
+  for (const width of [768, 390, 768]) {
+    await page.setViewportSize({ width, height: 1024 })
+    await page.waitForTimeout(150)
+    const positions = await page.locator('[data-overview-lane="telemetry"] > [data-overview-card]').evaluateAll(cards => cards.map(card => ({ left: card.getBoundingClientRect().left, right: card.getBoundingClientRect().right, top: card.getBoundingClientRect().top, bottom: card.getBoundingClientRect().bottom })))
+    assert.equal(new Set(positions.map(card => Math.round(card.left))).size, width === 390 ? 1 : 2)
+    assert.ok(positions.every(card => card.left >= 0 && card.right <= width), 'cards stay inside the viewport')
+    for (let i = 0; i < positions.length; i++) for (const other of positions.slice(i + 1)) {
+      const card = positions[i]
+      assert.ok(card.right <= other.left || other.right <= card.left || card.bottom <= other.top || other.bottom <= card.top)
+    }
+  }
+  const card = page.locator('[data-overview-card="Top Tools"]')
+  await card.evaluate(card => {
+    const panel = card.querySelector('[data-overview-content]')?.firstElementChild ?? card.lastElementChild!
+    panel.replaceWith(Object.assign(document.createElement('div'), { textContent: 'Replacement panel' }))
+  })
+  await page.waitForTimeout(100)
+  const before = await card.boundingBox()
+  await card.evaluate(card => { ((card.querySelector('[data-overview-content]')?.firstElementChild ?? card.lastElementChild) as HTMLElement).style.height = '900px' })
+  await page.waitForTimeout(150)
+  const after = await card.boundingBox()
+  assert.ok(after!.height > before!.height + 500)
+  const geometry = await page.locator('[data-overview-lane="telemetry"] > [data-overview-card]').evaluateAll(cards => cards.map(card => ({ ...card.getBoundingClientRect().toJSON(), content: card.lastElementChild!.getBoundingClientRect().toJSON() })))
+  for (let i = 0; i < geometry.length; i++) for (const other of geometry.slice(i + 1)) {
+    const card = geometry[i]
+    if (card.left < other.right && other.left < card.right) {
+      assert.ok(card.bottom <= other.top || other.bottom <= card.top)
+      const [upper, lower] = card.top < other.top ? [card, other] : [other, card]
+      assert.ok(lower.content.top - upper.content.bottom >= 11, 'replacement growth preserves the panel gap')
+    }
+  }
+})
+
+test('phone table has operable targets and ordered table relationships', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+  await page.getByRole('button', { name: 'Table view', exact: true }).click()
+  const table = page.getByRole('table', { name: 'Server inventory' })
+  await table.waitFor()
+  const row = table.locator('[data-gwrow]').first()
+  const select = row.getByRole('checkbox')
+  for (const target of [select, row.getByRole('button', { name: 'More actions', exact: true }), row.getByRole('link', { name: /View logs for/ }), table.getByRole('button', { name: 'Reorder exposed column' })]) {
+    const rect = await target.boundingBox()
+    assert.ok(rect && rect.width >= 44 && rect.height >= 44, JSON.stringify(rect))
+  }
+  await select.tap()
+  assert.equal(await select.getAttribute('aria-checked'), 'true')
+  await row.getByRole('button', { name: 'More actions', exact: true }).tap()
+  await page.getByRole('menuitem', { name: 'Expand runtime details' }).waitFor()
+  await page.keyboard.press('Escape')
+  const reorder = table.getByRole('button', { name: 'Reorder exposed column' })
+  await reorder.focus()
+  await page.keyboard.press('ArrowRight')
+  const headers = await table.getByRole('columnheader').allTextContents()
+  assert.ok(headers.findIndex(value => value.includes('Endpoint')) < headers.findIndex(value => value.includes('Exposed')))
+  const cells = await row.getByRole('cell').evaluateAll(cells => cells.map(cell => cell.getAttribute('aria-colindex')))
+  assert.deepEqual(cells, headers.map((_, index) => String(index + 1)))
+  assert.match(await table.ariaSnapshot(), /columnheader/)
+})
+
+test('scoped catalogs render known zero and unavailable counts without overflow', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  await page.addInitScript(() => {
+    const unknown = {state:'unknown',discovered:null,exposed:null}
+    localStorage.setItem('labby.mock.gateway-overrides.v1', JSON.stringify({'gw-2':{
+      capabilityObservation:{scope:'credential',tools:{state:'known',discovered:0,exposed:0},resources:unknown,prompts:{state:'stale',discovered:2,exposed:1},skills:unknown},
+    }}))
+  })
+  await page.goto(`${baseUrl}/gateways/`, {waitUntil:'networkidle'})
+  // The fixture's display name can evolve; the scoped label locates its current-account row.
+  const scopedRow = page.locator('article').filter({hasText:'Credential catalog'}).first()
+  await scopedRow.waitFor()
+  assert.match(await scopedRow.innerText(), /0\/0/)
+  assert.match(await scopedRow.innerText(), /Not discovered/)
+  assert.match(await scopedRow.innerText(), /1\/2 · stale/)
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+  assert.match(await page.locator('body').innerText(), /totals are incomplete/)
+  await page.goto(`${baseUrl}/gateway/?id=gw-2`, {waitUntil:'networkidle'})
+  assert.match(await page.locator('body').innerText(), /Credential catalog/)
+  assert.match(await page.locator('body').innerText(), /Not discovered/)
+  const skillsRow = page.locator('span').filter({ hasText: /^Skills$/ }).first().locator('..')
+  assert.match(await skillsRow.innerText(), /Not discovered/)
+  await page.getByRole('tab', { name: /^Catalog/ }).click()
+  for (const width of [390, 1360]) {
+    await page.setViewportSize({ width, height: 844 })
+    await page.getByRole('button', { name: /tools.*0\/0/i }).waitFor()
+    await page.getByRole('button', { name: /resources.*Not discovered/i }).waitFor()
+    await page.getByRole('button', { name: /prompts.*1\/2 · stale/i }).waitFor()
+    await page.getByRole('button', { name: /skills.*Not discovered/i }).waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+  }
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+})
+
+test('Snippets show persisted history and schema forms enforce required tool mappings', { concurrency: false }, async (t) => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true }); t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  const snippet = { name: 'pulse', source: 'user', path: '/user/pulse.md', description: 'Pulse workflow', tags: [], shadowed: false, content_digest: 'digest', body: 'async () => ({ok:true})' }
+  const receipt = { execution_id: 'run-ui-1', snippet_name: 'pulse', snippet_digest: 'digest', input_digest: 'input', effective_scope_fingerprint: 'scope', runtime_version: '3.0.0', surface: 'api', created_at_ms: 100, elapsed_ms: 17, status: 'failed', error_kind: 'tool_error', result_digest: null, result_bytes: null, tool_calls: 1, omitted_calls: 0, calls: [{ tool: 'host::status', ok: false, elapsed_ms: 8, params_digest: null, error_kind: 'timeout' }], artifacts: [{ path: 'runs/run-ui-1/output.json', sha256: 'hash', bytes: 2, content_type: 'application/json' }] }
+  let historyCalls = 0
+  const executions: Array<{action:string;params:Record<string,unknown>}> = []
+  await page.route('**/v1/snippets', async route => {
+    const { action,params } = route.request().postDataJSON()
+    if(action==='snippets.exec'||action==='snippets.replay')executions.push({action,params})
+    if (action === 'snippets.artifact') { await route.fulfill({ status: 404, json: { message: 'Artifact is no longer retained', code: 'artifact_unavailable' } }); return }
+    const value = action === 'snippets.list' ? { snippets: [snippet] } : action === 'snippets.get' ? snippet : action === 'snippets.history' ? (historyCalls++, { receipts: [receipt], next_cursor: null, receipt_status: 'persisted' }) : action === 'snippets.receipt' ? receipt : action === 'snippets.preview' ? {name:'pulse',mode:'metadata',dynamic_unknown:true,coverage:'declared_tools_only',can_execute:true,input_summary:{keys:[],provided_keys:[],defaulted_keys:[]},declared_tools:[],fingerprints:{},preview_fingerprint:'guard',drift:[],warnings:[]} : { result: { ok: true }, execution_id: 'run-ui-2', receipt_status: 'persisted' }
+    await route.fulfill({ json: value })
+  })
+  await page.route('**/v1/gateway/codemode/tools/search', async route=>route.fulfill({json:{results:[{path:'host.status',id:'host::status',kind:'tool',namespace:'host',name:'status',description:'Host status',signature:'()',tags:[],score:1}],total:1,truncated:false}}))
+  await page.route('**/v1/gateway/codemode/tools/describe', async route => route.fulfill({ json: { path: 'host.status', id: 'host::status', namespace: 'host', name: 'status', description: 'Host status', helper: 'host.status', signature: '()', tags: [], input_schema: { type: 'object', required: ['host'], properties: { host: { type: 'string' }, verbose: { type: 'boolean' } } } } }))
+  await page.goto(`${baseUrl}/snippets/`, { waitUntil: 'networkidle' })
+  await page.getByRole('button').filter({ hasText: 'run-ui-1' }).click()
+  await page.getByText('1. host::status · failed (timeout) · 8 ms', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Download artifact', exact: true }).click()
+  await page.getByText('Artifact is no longer retained', { exact: true }).waitFor()
+  await page.getByRole('button',{name:'Preview replay',exact:true}).click()
+  await page.getByRole('button',{name:'Run now',exact:true}).waitFor()
+  await page.getByText('Starts a new run of the whole workflow; it does not resume the earlier run.',{exact:false}).waitFor()
+  assert.equal(executions.length,0,'preview must never execute')
+  const replayHistoryRefresh=page.waitForResponse(response=>response.url().endsWith('/v1/snippets')&&response.request().postDataJSON()?.action==='snippets.history')
+  await page.getByRole('button',{name:'Run now',exact:true}).click()
+  await replayHistoryRefresh
+  await page.waitForFunction(()=>!document.querySelector('#preview-inputs'))
+  assert.equal(executions[0].action,'snippets.replay')
+  assert.equal(executions[0].params.expected_preview_fingerprint,'guard')
+  const beforeExecute = historyCalls
+  await page.getByRole('button', { name: 'Execute', exact: true }).click()
+  const executionHistoryRefresh=page.waitForResponse(response=>response.url().endsWith('/v1/snippets')&&response.request().postDataJSON()?.action==='snippets.history')
+  await page.getByRole('button',{name:'Run now',exact:true}).click()
+  await executionHistoryRefresh
+  await page.waitForFunction(() => document.querySelector('[aria-label="Run history for pulse"]')?.textContent?.includes('run-ui-1'))
+  assert.ok(historyCalls > beforeExecute, 'execution must refresh persisted history')
+  await page.getByRole('button', { name: 'New snippet', exact: true }).click()
+  await page.getByRole('button', { name: 'Gather in parallel' }).click()
+  await page.getByRole('button', { name: 'Use this pattern' }).click()
+  await page.getByLabel('Workflow name', { exact: true }).fill('guided-pulse')
+  await page.getByLabel('Find a tool', { exact: true }).fill('host')
+  await page.getByRole('button',{name:'Add host::status · Host status',exact:true}).click()
+  await page.getByLabel('host *', { exact: true }).waitFor()
+  await page.getByRole('button', { name: 'Build draft', exact: true }).click()
+  await page.getByText('step-1: Required parameter "host" is missing.', { exact: true }).waitFor()
+  await page.getByRole('button',{name:'Declare input for host',exact:true}).click()
+  await page.getByRole('button',{name:'Build draft',exact:true}).click()
+  await page.getByText('Runnable draft',{exact:true}).waitFor()
+  assert.match(await page.locator('pre').last().innerText(),/host:\n {4}type: string\n {4}required: true/)
+  assert.doesNotMatch(await page.locator('pre').last().innerText(),/host:\n {4}type: string\n {4}required: true\n {4}default:/)
+  await page.getByRole('button',{name:'Back',exact:true}).click()
+  await page.getByLabel('Example inputs', { exact: true }).fill('{"hostInput":"node-a"}')
+  await page.getByRole('combobox', { name: 'Value source for host::status host', exact: true }).click()
+  await page.getByRole('option', { name: 'Snippet input: hostInput', exact: true }).click()
+  await page.getByRole('button', { name: 'Build draft', exact: true }).click()
+  await page.getByText('Runnable draft', { exact: true }).waitFor()
+  assert.match(await page.locator('pre').last().innerText(), /"host":"\$input.hostInput"/)
+  assert.match(await page.locator('pre').last().innerText(), /codemode.batch/)
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth > document.documentElement.clientWidth),false)
 })

@@ -10,6 +10,8 @@ mod codemode_harness;
 mod evidence;
 #[path = "support/live_labby.rs"]
 mod live_labby;
+#[path = "support/codemode_qualification/queue_prewarm.rs"]
+mod queue_prewarm;
 
 use codemode_harness::{CodeModeQualification, Limits, write_report};
 use serde_json::json;
@@ -82,7 +84,11 @@ async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
 
 #[tokio::test]
 async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
-    let limits = Limits::default();
+    // Allow cold-start preparation before checking partial failure and exact effects.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
@@ -104,7 +110,11 @@ async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
         )
         .await
         .expect("fanout response");
-    assert!(!execution.is_error, "fanout top-level result must succeed");
+    assert!(
+        !execution.is_error,
+        "fanout top-level result must succeed: {}",
+        execution.structured
+    );
     assert_eq!(
         execution.structured["result"][0]["status"],
         json!("fulfilled")
@@ -145,7 +155,11 @@ async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
 
 #[tokio::test]
 async fn q3_dependent_call_consumes_actual_first_result() {
-    let limits = Limits::default();
+    // Allow cold-start preparation before checking result-dependent calls.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
@@ -206,10 +220,12 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
     const WORKLOAD: u64 = 12;
     const EXPECTED_ERRORS: u64 = 3;
     // This fixture verifies fanout accounting, not the deadline boundary.
-    // Leave room for twelve concurrent calls under the full CI test matrix;
-    // the timeout-specific case below exercises the strict budget.
+    // Twelve real stdio calls on hosted Windows can consume more than three
+    // seconds after runner startup. Keep this below the harness's 10s request
+    // guard while reserving room for startup and response delivery; the
+    // timeout-specific case below exercises the strict budget.
     let limits = Limits {
-        timeout_ms: 5_000,
+        timeout_ms: 8_000,
         ..Limits::default()
     };
     let runner = CodeModeQualification::start(limits)
@@ -279,16 +295,16 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
 #[tokio::test]
 async fn q3_execution_timeout_is_typed_and_does_not_duplicate_the_effect() {
     let limits = Limits {
-        // Use the normal two-second request budget. Code Mode reserves 500ms
-        // for response delivery, leaving 1.5s for cold proxy generation and
-        // execution; the deliberately pending upstream still takes 10s.
-        timeout_ms: 2_000,
+        // Leave cold proxy generation enough time on native Windows runners.
+        // The deliberately pending upstream takes ten seconds, so this
+        // five-second budget still exercises execution cancellation.
+        timeout_ms: 5_000,
         ..Limits::default()
     };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
-    assert_eq!(runner.limits.timeout_ms, 2_000);
+    assert_eq!(runner.limits.timeout_ms, 5_000);
     let prewarm = runner
         .execute(
             r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
@@ -345,7 +361,10 @@ async fn q3_execution_timeout_is_typed_and_does_not_duplicate_the_effect() {
 
 #[tokio::test]
 async fn q3_output_limit_returns_literal_truncation_marker() {
+    // This is the output-budget oracle, not the runtime deadline oracle.
+    // Allow the >1 MiB fixture to serialize under the full Windows CI matrix.
     let limits = Limits {
+        timeout_ms: 5_000,
         max_response_bytes: 4_096,
         max_response_tokens: 1_024,
         ..Limits::default()
@@ -361,7 +380,11 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
         .execute(r#"async () => await callTool("forge::forge.large", {})"#)
         .await
         .expect("bounded output response");
-    assert!(!execution.is_error);
+    assert!(
+        !execution.is_error,
+        "output fixture failed: {}",
+        execution.structured
+    );
     assert_eq!(execution.structured["result"]["truncated"], json!(true));
     assert!(
         execution.structured["result"]["original_size"]
@@ -462,17 +485,9 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
-    let prewarm = runner
-        .execute(
-            r#"async () => await callTool("forge::forge.safe", {query:"prewarm",limit:1,enabled:true})"#,
-        )
+    queue_prewarm::prewarm_queue_fixture(&runner)
         .await
-        .expect("prewarm Code Mode and the upstream tool path");
-    assert!(
-        !prewarm.is_error,
-        "prewarm must complete before the queue oracle: {}",
-        prewarm.structured
-    );
+        .expect("safe prewarm must complete and settle before the queue oracle");
     let before = runner
         .fixture_invocation_count()
         .await

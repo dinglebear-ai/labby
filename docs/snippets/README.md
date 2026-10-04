@@ -1,6 +1,9 @@
 # Code Mode Snippets
 
-Code Mode snippets are reusable JavaScript workflows for Labby's single `codemode` MCP tool. They let an agent run many upstream MCP calls from one controlled async function, combine the results, and return a structured answer that is easier to reuse than a one-off chat transcript.
+Code Mode snippets are reusable JavaScript workflows executed through full
+Code Mode or the snippets service. Saved snippet execution requires an admin or
+trusted-local caller; `codemode_read` does not grant snippet execution. They let
+an agent combine upstream calls in one async function and return a compact result.
 
 This document is only about snippets that run inside Code Mode.
 
@@ -51,19 +54,32 @@ Before writing or running a snippet, use `codemode.search()` and `codemode.descr
 
 ## How Users Should Build Snippets
 
+The following schema-driven builder is an authoring design, not a description of
+a shipped schema-driven call-plan editor. The current Snippets UI lists,
+inspects, edits, and runs saved source, and builds drafts from manually entered
+tool IDs, snippet inputs, and a separate parameter mapping for each tool. Parallel
+drafts defer calls through `codemode.batch` and retain each call's success or
+failure. The UI offers editable offline fixtures alongside explicit live tests. Runtime
+syntax/frontmatter/input validation is implemented;
+`snippet validate` does not execute tools or statically prove every embedded
+call's parameters against live upstream schemas.
+
 The snippet builder should make authoring feel like assembling a small checklist, not writing JavaScript.
 
 ### 1. Search the live gateway tools
 
-The gateway already knows every connected upstream tool. Each catalog entry includes:
+The full host catalog can carry schemas and TypeScript declarations. The reduced
+in-sandbox `codemode.search()` result instead includes:
 
 - `id`, such as `time::get_current_time` or `Axon::axon`
-- `upstream`, such as `time` or `axon`
+- `namespace`, such as `time` or `Axon`
 - `name`, such as `get_current_time` or `axon`
 - `description`
-- input `schema`
-- output schema when the upstream provides one
-- generated TypeScript signature and DTS help text
+- `kind`, `path`, `helper`, tags, and a compact signature
+- optional intrinsic tool safety facts
+
+Use `codemode.describe()` for the selected tool's focused type declaration and
+its `schema_status`; search does not inject full input/output schemas or DTS.
 
 The user should search this live catalog with in-sandbox `codemode.search()` by service, tool name, or description, then select the tools they want the snippet to call.
 
@@ -208,15 +224,33 @@ executing it, or pass `--file` / `--code` to validate an unsaved body:
 labby snippet validate draft --file draft-snippet.md
 ```
 
-Use `labby snippet test <name>` to execute one snippet as a smoke test, or
-`labby snippet test --all` to run every listed snippet with its declared
-defaults. MCP/API callers use `snippets.test` with `{ "all": true }` for the
-same all-snippet check.
+Use `labby snippet test <name>` for offline execution with the selected
+snippet's adjacent `<name>.test.json`, or pass `--fixture` for another fixture.
+`labby snippet test --all` tests all listed names sequentially (at most 100).
+Missing, malformed, or incomplete fixtures fail without contacting upstreams.
+MCP/API callers use `snippets.test` with `name` or `{ "all": true }`; a named
+test can supply an inline `fixture` object. A failed report produces a nonzero
+CLI exit status, with structured stdout preserved under `--json`.
 
-When Code Mode final-result shaping is enabled, `snippets.exec` returns the
-same shaped display response as Code Mode. `snippets.test` evaluates pass/fail
-from the pre-shape result, so `{ "ok": true }` and `{ "ok": false }` remain
-reliable even when the displayed response is shaped into a bounded string.
+The fixture harness uses the production parser and isolated QuickJS runner,
+with synthetic `callTool()` responses and native `codemode.batch()`. Discovery,
+generated helpers, resources, artifact writes, and nested snippets are not
+mocked. Older examples using those helpers need explicit live verification or
+a separately designed fixture-compatible workflow; `--all` does not skip them
+or silently execute them live. See [Snippet development and testing](../dev/SNIPPET_TESTING.md)
+for assertions, snapshots, and budgets.
+
+Real upstream smoke tests require `labby snippet test <name> --live` or
+`live: true` in the shared action. `--all --live` can contact SSH hosts,
+registries, and research providers; review each snippet and supply required
+inputs before requesting that work. `snippet validate` remains a non-executing
+source check.
+
+When final-result shaping is enabled, `snippets.exec` returns the shaped Code
+Mode response. A live `snippets.test` checks the raw result, requires a result
+and no failed tool calls, and also fails if shaping/truncation changes that
+result. Offline tests assert against raw output and fail their own output-byte
+budget; an explicit `"/ok": false` assertion can test an expected failure.
 
 `snippets.list`, `help`, and `schema` are read-only discovery actions. Actions
 that expose snippet bodies or execute/manage snippets require `lab:admin`.
@@ -471,4 +505,32 @@ A snippet is ready to reuse when:
 - [`cross-server-docs-brief.md`](./cross-server-docs-brief.md) combines Context7, SearXNG, Cloudflare docs, GitHub, Axon, and time into a compact documentation brief.
 - [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, current Octocode lexical search, and GitHub issue/file lookups for repo orientation.
 - [`repo-status-gh-pulse.md`](./repo-status-gh-pulse.md) collects the GitHub PR/CI side of a repo-status evidence sweep and returns equivalent `gh` commands for shell parity.
-- [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Gotify, Synapse, and time for a read-only homelab status pulse.
+- [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Synapse, and time for a read-only homelab status pulse.
+- [`homelab-ssh-targets.md`](./homelab-ssh-targets.md) discovers and probes SSH aliases through the configured controller.
+- [`docker-host-inventory.md`](./docker-host-inventory.md) inventories one SSH-reachable Docker host, including optional registry digest checks.
+- [`homelab-docker-inventory.md`](./homelab-docker-inventory.md) composes those primitives and writes a combined artifact.
+- [`unraid-linear-pr-triage.md`](./unraid-linear-pr-triage.md) provides bounded issue/PR matching with default and deep offline fixtures.
+- [`unraid-linear-pr-triage-v2.md`](./unraid-linear-pr-triage-v2.md) adds bounded GitHub pagination, shared PR references, coverage gaps, and a separate fixture matrix.
+
+Upstream names and schemas in these examples are deployment-specific snapshots,
+not built-in Labby capabilities. Rediscover them on the intended gateway before
+execution. Dated smoke-test notes record prior evidence, not current health.
+
+## Built-in offline coverage
+
+Every executable example declares its exact upstream tool dependencies and has
+an adjacent `.test.json` fixture. Run `labby snippet test --all --json` in an
+isolated Labby home to execute the examples without contacting upstreams.
+The product integration test `builtin_snippet_fixtures` keeps this coverage in CI.
+
+The SSH fixture exercises identity, config parsing, effective configuration, and
+a reachable host. The Docker primitive exercises a discovered container whose
+inspect stage fails, verifying that the failure survives into the result. The
+fleet orchestration fixture supplies synthetic child outputs and checks its
+artifact content; it does not execute those child workflows itself. The child
+primitives have their own fixtures. Axon coverage includes discovery, source
+selection, evidence calls, and a checked synthetic Markdown artifact.
+
+These synthetic scenarios validate workflow behavior and output contracts. They
+do not establish current upstream schemas, SSH reachability, registry access,
+or production performance.

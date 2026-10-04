@@ -124,10 +124,12 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 // four desktop handoff routes, owner-link consume, the GET/POST Depot publish
 // pair, native CLI metadata, and the handler-authenticated
 // POST /auth/bearer-session exchange, and the admin-only GET /v1/notifications
-// inbox route.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 136;
+// inbox route and POST /v1/notifications/agent publication, the caller-authenticated
+// GET /v1/stash/folders listing, and
+// local setup handoff minting plus one-shot redemption.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 140;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "76e5760d25bcc705831e5280771b2e9f038b43f973d3ab2a07b003e03a6caaa4";
+    "4b2d8fc7e23b60bcb11a406f9d020a0b07971fd38a4e8a1f8e22a82f3ce31cd5";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -248,6 +250,9 @@ fn classify(route: &RouteDescriptor) -> RequestClass {
         RequestClass::Mcp
     } else if route.handler_group == "oauth_relay" && route.auth_required {
         RequestClass::RelayAdmin
+    } else if route.path == "/auth/setup-handoff/start" {
+        // This local bearer capability mint is not a browser OAuth protocol route.
+        RequestClass::HostValidated
     } else if route.handler_group == "oauth" {
         RequestClass::OAuthProtocol
     } else if route.handler_group == "dev" {
@@ -277,6 +282,15 @@ fn feature_is_compiled(feature: &str) -> bool {
 }
 
 fn request_body(route: &RouteDescriptor) -> Option<&'static str> {
+    if route.method == "POST" && route.path == "/v1/notifications/agent" {
+        return Some(
+            r#"{"inbox_id":"inbox_01ARZ3NDEKTSV4RRFFQ69G5FAV","source":"route-matrix","level":"info","message":"Qualification notice","dedupe_key":"route-matrix-event"}"#,
+        );
+    }
+    if route.method == "POST" && route.path == "/auth/setup-handoff/redeem" {
+        // Reach the one-shot proof boundary with a valid schema and unissued token.
+        return Some(r#"{"token":"unissued-route-matrix-proof"}"#);
+    }
     match (route.method.as_str(), route.handler_group.as_str()) {
         ("POST", "mcp") => Some(
             r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"route-matrix","version":"1"}}}"#,
@@ -353,6 +367,28 @@ mod tests {
     }
 
     #[test]
+    fn agent_notification_publication_has_an_authenticated_mutation_recipe() {
+        let cases = route_cases().expect("route cases");
+        let publish = cases
+            .iter()
+            .find(|case| case.key() == "POST /v1/notifications/agent")
+            .expect("agent notification publication recipe");
+        assert_eq!(publish.class, RequestClass::BrowserSession);
+        assert_eq!(publish.descriptor.handler_identity, "publish_agent");
+        assert!(publish.descriptor.auth_required);
+        assert!(publish.descriptor.master_only);
+        assert!(publish.descriptor.csrf_required);
+        invariant_for(publish.class)
+            .validate_descriptor(&publish.descriptor)
+            .expect("publication security axes");
+        let body: serde_json::Value = serde_json::from_str(publish.body.expect("publication body"))
+            .expect("valid JSON recipe");
+        assert_eq!(body["level"], "info");
+        assert!(body["inbox_id"].as_str().unwrap().starts_with("inbox_"));
+        assert!(body["dedupe_key"].as_str().is_some());
+    }
+
+    #[test]
     fn bearer_session_exchange_uses_the_handler_authenticated_protocol_recipe() {
         let cases = route_cases().expect("route cases");
         let exchange = cases
@@ -367,6 +403,59 @@ mod tests {
         invariant_for(exchange.class)
             .validate_descriptor(&exchange.descriptor)
             .expect("protocol security axes");
+    }
+
+    #[test]
+    fn local_setup_handoff_preserves_separate_mint_and_consume_authorities() {
+        let cases = route_cases().expect("route cases");
+        for (path, class, master, effect) in [
+            (
+                "/auth/setup-handoff/start",
+                RequestClass::HostValidated,
+                true,
+                "creates short-lived local setup capability",
+            ),
+            (
+                "/auth/setup-handoff/redeem",
+                RequestClass::BootstrapProof,
+                false,
+                "consumes one-shot capability and creates browser session",
+            ),
+        ] {
+            let case = cases
+                .iter()
+                .find(|case| case.descriptor.path == path)
+                .expect("handoff route recipe");
+            assert_eq!(case.descriptor.method, "POST");
+            assert_eq!(case.class, class);
+            assert_eq!(case.descriptor.master_only, master);
+            assert_eq!(case.descriptor.cache_posture, "private, no-store");
+            assert_eq!(
+                case.descriptor.failure_disclosure,
+                "uniform non-enumerating denial"
+            );
+            assert_eq!(case.descriptor.side_effects, effect);
+            let invariant = invariant_for(class);
+            invariant
+                .validate_descriptor(&case.descriptor)
+                .expect("explicit handoff authority axes");
+            invariant
+                .validate_invalid_outcome(&case.descriptor, reqwest::StatusCode::FORBIDDEN)
+                .expect("unissued or unauthorized handoff denied");
+            assert!(
+                invariant
+                    .validate_invalid_outcome(&case.descriptor, reqwest::StatusCode::OK)
+                    .is_err()
+            );
+        }
+        let redeem = cases
+            .iter()
+            .find(|case| case.descriptor.path == "/auth/setup-handoff/redeem")
+            .unwrap();
+        assert_eq!(
+            redeem.body,
+            Some(r#"{"token":"unissued-route-matrix-proof"}"#)
+        );
     }
 
     #[test]

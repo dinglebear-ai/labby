@@ -243,6 +243,60 @@ async fn code_mode_resource_read_rejects_tool_ids_before_connecting() {
 }
 
 #[tokio::test]
+async fn code_mode_local_resources_enforce_scope_and_report_limits() {
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
+    let listing = CodeModeHost::list_resources(
+        &manager,
+        "labby".into(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default(),
+    )
+    .await
+    .expect("local resource listing");
+    assert!(
+        listing["resources"]
+            .as_array()
+            .expect("resources")
+            .iter()
+            .any(|r| r["uri"] == "lab://gateway/limits")
+    );
+    let read = CodeModeHost::read_resource(
+        &manager,
+        "lab://gateway/limits".into(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &ToolScope::default().read_only(),
+    )
+    .await
+    .expect("local limits");
+    let limits: serde_json::Value =
+        serde_json::from_str(read["contents"][0]["text"].as_str().expect("text")).expect("json");
+    assert_eq!(
+        limits["max_response_bytes"],
+        manager.code_mode_config().await.max_response_bytes
+    );
+    assert!(
+        limits["storage"]["max_calls_per_run"]
+            .as_u64()
+            .expect("effective calls")
+            > 0
+    );
+    let scope = ToolScope::scoped_namespaces(vec!["alpha".into()], vec![]);
+    let denied = CodeModeHost::read_resource(
+        &manager,
+        "lab://gateway/servers".into(),
+        &CodeModeCaller::TrustedLocal,
+        CodeModeSurface::Mcp,
+        &scope,
+    )
+    .await
+    .expect_err("scoped operator reads denied");
+    assert_eq!(denied.kind(), "forbidden");
+    assert_eq!(pool.connection_count_for_tests().await, 0);
+}
+
+#[tokio::test]
 async fn code_mode_host_resource_read_connects_a_cold_upstream() {
     let mut upstream = fixture_http_upstream("alpha");
     upstream.proxy_resources = true;
@@ -662,7 +716,10 @@ async fn advertised_subject_scoped_oauth_tool_normalizes_metadata_and_executes()
 
 #[tokio::test]
 async fn annotated_read_only_fixture_is_searchable_describable_and_callable() {
-    let upstream = fixture_oauth_upstream("fixture", "http://unused.invalid/mcp");
+    let mut upstream = fixture_oauth_upstream("fixture", "http://unused.invalid/mcp");
+    // This positive fixture exercises both tool annotations and an exposed
+    // resource; advertising tools alone does not enable resource proxying.
+    upstream.proxy_resources = true;
     let (manager, pool) = code_mode_manager_with_pool(upstream.clone()).await;
     let annotated = |name: &str, annotations: rmcp::model::ToolAnnotations| {
         let mut tool = rmcp::model::Tool::new(
@@ -4061,4 +4118,53 @@ async fn code_mode_example_upstream_does_not_move_when_an_earlier_one_connects()
         .await
         .expect("example");
     assert_eq!(scoped, "alpha");
+}
+
+#[tokio::test]
+async fn admin_describe_and_lexical_search_do_not_contact_cold_tei() {
+    let tei = wiremock::MockServer::start().await;
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/info"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(json!({"max_client_batch_size":1})),
+        )
+        .mount(&tei)
+        .await;
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/embed"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(json!([[1.0, 0.0]]))
+                .set_delay(Duration::from_secs(5)),
+        )
+        .mount(&tei)
+        .await;
+    let (manager, pool) = code_mode_manager_with_pool(fixture_http_upstream("alpha")).await;
+    pool.insert_entry_for_tests("alpha", healthy_entry_with_tool("alpha", "ping"))
+        .await;
+    let mut cfg = manager.current_config().await;
+    cfg.code_mode.semantic_search.tei_url = Some(tei.uri());
+    manager.seed_config_unchecked_for_tests(cfg).await;
+    for _ in 0..2 {
+        let described = tokio::time::timeout(
+            Duration::from_millis(250),
+            manager.describe_admin_tool(Some("admin".into()), "alpha::ping"),
+        )
+        .await
+        .expect("descriptor must not wait for optional TEI")
+        .unwrap();
+        assert_eq!(described.id, "alpha::ping");
+        let searched = tokio::time::timeout(
+            Duration::from_millis(250),
+            manager.search_admin_tools(Some("admin".into()), "alpha ping", 50),
+        )
+        .await
+        .expect("lexical search must not wait for optional TEI")
+        .unwrap();
+        assert_eq!(searched.results[0].id, "alpha::ping");
+    }
+    assert!(
+        tei.received_requests().await.unwrap().is_empty(),
+        "catalog reads must not warm TEI"
+    );
 }

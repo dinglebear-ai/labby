@@ -12,7 +12,7 @@ test('connection ages are bounded and render elapsed units', () => {
 test('host panel keeps metrics unavailable while showing supplied health and inbound count', () => {
   const html = renderToStaticMarkup(<GatewayHostPanel health={{ status: 'ok', pid: 4321, uptime_s: 3660 }} clients={[]} />)
   assert.ok(html.includes('up 1h 1m'))
-  assert.ok(html.includes('0 observed MCP sessions'))
+  assert.ok(html.includes('0 observed MCP identities'))
   assert.equal((html.match(/Unavailable/g) ?? []).length, 5)
   assert.doesNotMatch(html, /tootie|linux\/amd64|14d 6h/)
 })
@@ -26,13 +26,28 @@ test('host panel reports initial sampling without claiming measurements are unav
 test('client rows preserve observed transport and version without displaying subject', () => {
   const html = renderToStaticMarkup(<ConnectedClientsPanel clients={[{ subject: 'private-subject', authorized_client_id: null, client_name: 'Example client', client_version: '1.2', transport: 'http', connected_at: 'invalid' }]} />)
   assert.ok(html.includes('Example client'))
-  assert.ok(html.includes('v1.2 · http'))
+  assert.ok(html.includes('reported v1.2 · http'))
   assert.doesNotMatch(html, /private-subject/)
+})
+
+test('generic SDK names remain visible only as self-reported metadata', () => {
+  const html = renderToStaticMarkup(<ConnectedClientsPanel clients={[{ subject: null, authorized_client_id: null, client_name: 'rmcp', client_version: '3.3', transport: 'http', connected_at: 'invalid' }]} />)
+  assert.match(html, /Unidentified MCP client/)
+  assert.match(html, /Self-reported client metadata: rmcp/)
+  assert.doesNotMatch(html, />rmcp<\/span>/)
+  assert.match(html, /recent observations/)
+})
+
+test('verified OAuth client ID is distinct from self-reported SDK metadata', () => {
+  const html = renderToStaticMarkup(<ConnectedClientsPanel clients={[{ subject: null, authorized_client_id: 'oauth-app-42', client_name: 'rmcp', client_version: '3.3', transport: 'http', connected_at: 'invalid' }]} />)
+  assert.match(html, /OAuth client oauth-app-42/)
+  assert.match(html, /Unidentified MCP client/)
+  assert.match(html, /reported v3.3/)
 })
 
 test('unavailable clients never render as an empty live population', () => {
   const html = renderToStaticMarkup(<ConnectedClientsPanel unavailable />)
-  assert.ok(html.includes('Connected clients are unavailable.'))
+  assert.ok(html.includes('Client observation history is unavailable.'))
   assert.doesNotMatch(html, /No connected clients observed/)
 })
 
@@ -64,4 +79,21 @@ test('host panel renders measured resources and network units', () => {
   assert.ok(html.includes('1.0 GiB'))
   assert.ok(html.includes('1.0 KiB/s'))
   assert.ok(html.includes('2.0 KiB/s'))
+})
+
+
+test('observed client history is bounded visually, newest-first, and keyboard scrollable', () => {
+  const clients = Array.from({ length: 500 }, (_, index) => ({
+    subject: 'private-subject', authorized_client_id: null,
+    client_name: `client-${index}`, client_version: '1.0', transport: 'http',
+    connected_at: new Date(Date.UTC(2026, 8, 29, 0, 0, index)).toISOString(),
+    observation_count: 1,
+  }))
+  const html = renderToStaticMarkup(<ConnectedClientsPanel clients={clients} />)
+  assert.match(html, /aria-label="Observed MCP clients" tabindex="0"/)
+  assert.match(html, /max-h-80/)
+  assert.match(html, /overflow-y-auto/)
+  assert.equal((html.match(/<li /g) ?? []).length, 500)
+  assert.ok(html.indexOf('Reported: client-499') < html.indexOf('Reported: client-0'))
+  assert.doesNotMatch(html, /private-subject/)
 })

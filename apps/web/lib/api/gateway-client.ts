@@ -43,6 +43,7 @@ import {
 } from '../server/gateway-adapter.ts'
 import { testResultFromProbe } from '../server/gateway-test-result.ts'
 import { gatewayActionUrl } from './gateway-config'
+import { getBrowserSessionContextIdentity, getBrowserSessionEpoch } from '../auth/session-store'
 import { confirmGatewayParams } from './gateway-request'
 import { EXPOSE_NONE_PATTERN, stripExposeNonePattern } from './tool-exposure-draft'
 import { synthesizeLabGateway } from './gateway-list-model'
@@ -286,6 +287,7 @@ function applyRuntimeRow(gateway: Gateway, runtime: BackendGatewayMcpRuntimeView
         && !gateway.status.last_error
         && gateway.warnings.length === 0
       ),
+      capability_observation: runtime.capability_observation ?? gateway.status.capability_observation,
       discovered_tool_count: discoveredToolCount,
       exposed_tool_count: exposedToolCount,
       discovered_resource_count: discoveredResourceCount,
@@ -512,6 +514,16 @@ export const gatewayApi = {
     return gateways
   },
 
+  async refreshRuntime(gateway: Gateway, signal?: AbortSignal): Promise<Gateway> {
+    if (gateway.source === 'in_process') return gateway
+    const rows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', { name: gateway.id }, signal)
+    const refreshed = applyRuntimeRow(gateway, rows.find(row => row.name === gateway.id))
+    // The cheap runtime response does not contain complete health observations.
+    // Full reconciliation is required before clearing a recorded unhealthy state.
+    return { ...refreshed, status: { ...refreshed.status,
+      healthy: gateway.status.healthy && refreshed.status.healthy } }
+  },
+
   async hydrateRuntime(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
     const runtimeRows = await gatewayAction<BackendGatewayMcpRuntimeView[]>('gateway.mcp.list', {}, signal)
     const runtimeByName = new Map(runtimeRows.map((row) => [row.name, row]))
@@ -521,27 +533,51 @@ export const gatewayApi = {
   },
 
   async hydrateToolInventory(gateways: Gateway[], signal?: AbortSignal): Promise<Gateway[]> {
+    const context = getBrowserSessionContextIdentity()
+    const epoch = getBrowserSessionEpoch()
+    const url = gatewayActionUrl()
+    // A bounded queue may outlive the caller that created its row snapshot.
+    // Never start its remaining rows under a replacement owner or target.
+    const assertCurrent = () => {
+      signal?.throwIfAborted()
+      if (context !== getBrowserSessionContextIdentity() || epoch !== getBrowserSessionEpoch() || url !== gatewayActionUrl()) {
+        throw new DOMException('Authority or gateway context changed', 'AbortError')
+      }
+    }
     const results = await safeFanout(
       gateways,
-      async (gateway) => gateway.source === 'in_process'
-        ? gateway.discovery.tools
-        : (await gatewayAction<Array<string | BackendGatewayToolRow>>(
-            'gateway.discovered_tools',
-            { name: gateway.id },
-            signal,
-          )).map((tool) => ({
-            name: typeof tool === 'string' ? tool : tool.name,
+      async (gateway) => {
+        assertCurrent()
+        if (gateway.source === 'in_process') return gateway.discovery.tools
+        const tools = await gatewayAction<Array<string | BackendGatewayToolRow>>(
+          'gateway.discovered_tools', { name: gateway.id }, signal,
+        )
+        assertCurrent()
+        let policy = gateway.config.expose_tools
+        // Older backends omit exposure, including on structured rows. A fleet
+        // summary omits policy, so read full config before interpreting them.
+        if (policy === undefined && tools.some(tool => typeof tool === 'string' || tool.exposed === undefined)) {
+          policy = (await gatewayAction<BackendGatewayView>(
+            'gateway.get', { name: gateway.id }, signal,
+          )).config.expose_tools
+        }
+        return tools.map((tool) => {
+          const name = typeof tool === 'string' ? tool : tool.name
+          const inferredMatch = typeof tool === 'string' || tool.exposed === undefined
+            ? matchTool(name, policy)
+            : null
+          return {
+            name,
             description: typeof tool === 'string' ? undefined : tool.description ?? undefined,
-            exposed: matchTool(
-              typeof tool === 'string' ? tool : tool.name,
-              gateway.config.expose_tools,
-            ) !== null,
-            matched_by: matchTool(
-              typeof tool === 'string' ? tool : tool.name,
-              gateway.config.expose_tools,
-            ),
-          })),
+            exposed: typeof tool === 'string' ? inferredMatch !== null : tool.exposed ?? (inferredMatch !== null),
+            matched_by: typeof tool === 'string' || tool.matched_by === undefined ? inferredMatch : tool.matched_by,
+          }
+        })
+      },
+      4,
     )
+
+    assertCurrent()
 
     return results.map((result) => {
       if (result.ok) {

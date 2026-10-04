@@ -207,6 +207,29 @@ async fn assert_mcp_transition_readback(
             );
             true
         }
+        "snippets:snippets.replay" => {
+            let run: serde_json::Value = serde_json::from_str(mutation_text).expect("replay JSON");
+            let run = action_scenarios::snippet_response_data("snippets.replay", &run);
+            assert_eq!(run["receipt_status"], "persisted", "replay receipt: {run}");
+            let id = run["execution_id"]
+                .as_str()
+                .expect("replay execution identifier");
+            let (ok, text) = read(
+                "snippets",
+                "snippets.receipt",
+                serde_json::json!({"execution_id":id}),
+            )
+            .await;
+            assert!(ok, "{key} retained replay readback: {text}");
+            let response: serde_json::Value =
+                serde_json::from_str(&text).expect("replay receipt JSON");
+            let receipt = action_scenarios::snippet_response_data("snippets.receipt", &response);
+            assert_eq!(
+                receipt["execution_id"], id,
+                "{key} retained replay identifier"
+            );
+            true
+        }
         "snippets:snippets.create" => {
             let (ok, text) = read(
                 "snippets",
@@ -517,7 +540,15 @@ async fn code_mode_hides_raw_service_tools_without_testing_code_mode_primitives(
         .collect::<BTreeSet<_>>();
     assert_eq!(
         visible_services,
-        BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
+        if cfg!(target_os = "linux") {
+            BTreeSet::from([
+                "gateway".to_string(),
+                "server_logs".to_string(),
+                "stash".to_string(),
+            ])
+        } else {
+            BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
+        }
     );
     assert!(advertised.contains("codemode"));
     let hidden = runner
@@ -567,14 +598,77 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         .collect::<Vec<_>>();
     let expected_count = expected.len();
 
+    // Also prove guarded receipts on a separate owned admin operator route
+    // that exposes native Snippets while the synthetic MCP surface is enabled.
+    // The raw root runner covers the disabled advertisement regime. The scoped
+    // route does not opt into Project asset execution; one verified credential
+    // and route own every receipt.
+    let snippet_identity =
+        live_identity::LiveIdentity::bootstrap_snippet_receipt_harness("mcp-matrix-snippet-replay")
+            .await
+            .expect("isolated snippet receipt identity");
+    let snippet_runner = BuiltinMcpRunner::connect_project(
+        snippet_identity.base(),
+        snippet_identity.credential_for_request(),
+        mcp_action_runner::IdentityTuple::from_public(&snippet_identity.identity),
+    )
+    .await
+    .expect("raw scoped snippet receipt MCP route");
+    assert_eq!(
+        snippet_runner
+            .list_tool_names()
+            .await
+            .expect("snippet route tools/list"),
+        BTreeSet::from([
+            "gateway".to_owned(),
+            "snippets".to_owned(),
+            "mcp_app".to_owned()
+        ])
+    );
+
     let mut consumed = BTreeSet::new();
     for intent in expected {
         prepare_mcp_transition(&runner, intent).await;
-        let params = action_scenarios::fixture_params(intent)
+        let action_runner = if matches!(
+            intent.action.as_str(),
+            "snippets.preview" | "snippets.replay"
+        ) {
+            &snippet_runner
+        } else {
+            &runner
+        };
+        let fixture_runner = action_runner;
+        let prepared = action_scenarios::prepare_snippet_receipt_case(
+            &intent.action,
+            |action, params| async move {
+                let result = fixture_runner
+                    .call(
+                        "snippets",
+                        action,
+                        params.as_object().cloned().expect("snippet fixture params"),
+                    )
+                    .await
+                    .expect("snippet fixture transport");
+                let text = result_text(&result);
+                assert_ne!(
+                    result.is_error,
+                    Some(true),
+                    "{action} receipt fixture failed: {text}"
+                );
+                action_scenarios::snippet_mcp_action_data(
+                    serde_json::from_str(&text).expect("snippet fixture JSON"),
+                    action,
+                )
+            },
+        )
+        .await;
+        let prepared_case = prepared.is_some();
+        let params = prepared
+            .unwrap_or_else(|| action_scenarios::fixture_params(intent))
             .as_object()
             .cloned()
             .expect("fixture params are an object");
-        let result = runner
+        let result = action_runner
             .call(&intent.service, &intent.action, params)
             .await
             .unwrap_or_else(|error| panic!("{} wire failure: {error}", intent.key()));
@@ -589,13 +683,20 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             "{} reflected the bearer secret",
             intent.key()
         );
+        if prepared_case && result.is_error != Some(true) {
+            let value = action_scenarios::snippet_mcp_action_data(
+                serde_json::from_str(&text).expect("snippet action JSON"),
+                &intent.action,
+            );
+            action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
+        }
         let succeeded = result.is_error != Some(true);
         let transition_observed = succeeded
             && matches!(
                 intent.scenario_kind,
                 ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated
             )
-            && assert_mcp_transition_readback(&runner, intent, &text).await;
+            && assert_mcp_transition_readback(action_runner, intent, &text).await;
         let evidence = if succeeded {
             match intent.scenario_kind {
                 ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,
@@ -660,6 +761,21 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     }
     assert_eq!(consumed.len(), expected_count);
 
+    let cleanup = snippet_runner.finish().await;
+    assert!(
+        cleanup.is_clean(),
+        "snippet client cleanup: {:?}",
+        cleanup.failures
+    );
+    let cleanup = snippet_identity
+        .cleanup()
+        .await
+        .expect("snippet identity cleanup");
+    assert!(
+        cleanup.is_clean(),
+        "snippet identity cleanup: {:?}",
+        cleanup.failures
+    );
     let cleanup = runner.finish().await;
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
 }

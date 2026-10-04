@@ -108,6 +108,8 @@ pub(crate) use skills::OperatorSkillRejection;
 pub(crate) use skills::OperatorSkills;
 #[cfg(all(test, feature = "skills"))]
 pub(crate) use skills_exposure::{SkillExposureDecision, SkillExposureReason};
+mod capability_observation;
+mod scoped_inventory;
 mod scoped_summary;
 mod skills_cache;
 #[cfg(feature = "skills")]
@@ -116,13 +118,19 @@ mod skills_list;
 #[cfg(feature = "skills")]
 mod skills_provider;
 #[cfg(feature = "skills")]
-pub use skills_provider::SepSkillProvider;
+mod skills_targeted;
+mod subject_tool_observation;
+#[cfg(feature = "skills")]
+pub use skills_provider::{SepSkillProvider, SkillSearchResult};
 mod skills_tests;
 mod spawn_lock;
 mod stdio_stderr;
 mod stdio_transport;
 mod subscription_schedule;
 mod task_route;
+mod task_route_record;
+mod task_route_schema;
+mod task_route_store;
 mod tasks;
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) mod testsupport;
@@ -172,6 +180,7 @@ pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate}
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
 pub use task_route::TaskRouteAuthorization;
+pub use task_route_store::TaskRouteStore;
 #[cfg(test)]
 pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
 pub use tools::{
@@ -324,10 +333,9 @@ pub struct UpstreamPool {
     notification_tx: tokio::sync::broadcast::Sender<UpstreamNotificationEvent>,
     /// Cancellation tokens for one active subscriptions/listen stream per upstream.
     subscription_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
-    /// Single-flight gate for resource snapshot warm-ups, so concurrent
-    /// `resources/list` calls that find the same cold upstreams issue one
-    /// fan-out instead of one per caller.
-    resource_snapshot_warmup: Arc<Mutex<()>>,
+    /// Per-upstream single-flight gates. Only registry lookup holds this mutex;
+    /// disjoint snapshots never queue behind another upstream's network I/O.
+    resource_snapshot_warmup: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
     /// Upstreams already queued for a background subscription reconcile.
     subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
     /// Cancels queued/in-flight subscription reconcile batches during pool drain.
@@ -414,9 +422,12 @@ pub struct UpstreamPool {
     /// Single-flight locks for the relay-connection cache, mirroring
     /// `subject_connect_locks`. Keyed identically to `relay_connections`.
     relay_connect_locks: Arc<RwLock<HashMap<relay_cache::RelayCacheKey, Arc<Mutex<()>>>>>,
-    /// Gateway-owned task handles and the relay connections that created them.
-    /// Shared across stateless HTTP requests through the pool.
+    /// Ephemeral live relay companions for tasks created by this pool generation.
+    /// Durable routing/authorization metadata lives in task_route_store.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,
+    /// Durable public-to-native task routing metadata. This store never owns
+    /// live peers, relay connections, access tokens, or secrets.
+    task_route_store: Option<Arc<TaskRouteStore>>,
     /// Cancellation token for the background subject-connection sweep task.
     /// `None` until the first subject-scoped connect arms it; cancelled and
     /// cleared on `drain_for_swap` (P-H2). Mirrors the `probe_tasks` lifecycle.
@@ -647,7 +658,7 @@ impl UpstreamPool {
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
-            resource_snapshot_warmup: Arc::new(Mutex::new(())),
+            resource_snapshot_warmup: Arc::new(Mutex::new(HashMap::new())),
             subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
             subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
@@ -677,6 +688,7 @@ impl UpstreamPool {
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             task_routes: Arc::new(RwLock::new(HashMap::new())),
+            task_route_store: None,
             subject_sweep_task: Arc::new(RwLock::new(None)),
             runtime_origin: None,
             runtime_owner: None,
@@ -889,6 +901,14 @@ impl UpstreamPool {
     #[must_use]
     pub fn with_usage_store(mut self, store: Option<Arc<crate::usage::UsageStore>>) -> Self {
         self.usage_store = store;
+        self
+    }
+
+    /// Attach the durable MCP task route store. Task creation fails closed when
+    /// no store is configured or when its write cannot commit.
+    #[must_use]
+    pub fn with_task_route_store(mut self, store: Arc<TaskRouteStore>) -> Self {
+        self.task_route_store = Some(store);
         self
     }
 

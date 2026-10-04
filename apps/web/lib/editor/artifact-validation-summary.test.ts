@@ -27,10 +27,10 @@ Invoke when the user asks to triage, group, or summarize open work in a reposito
 
 test('generic summary counts fields once even when a field has multiple issues', () => {
   const issue: ArtifactIssue = { field: 'name', severity: 'error', message: 'Invalid name', from: 0, to: 1 }
-  assert.deepEqual(artifactValidationSummary([]), { passing: 7, total: 7 })
-  assert.deepEqual(artifactValidationSummary([issue, issue]), { passing: 6, total: 7 })
-  assert.deepEqual(artifactValidationSummary([issue, { ...issue, field: 'content', severity: 'warning' }]), { passing: 5, total: 7 })
-  assert.deepEqual(artifactValidationSummary([{ ...issue, field: 'tags' }]), { passing: 6, total: 7 })
+  assert.deepEqual(artifactValidationSummary([]), { passing: 8, total: 8 })
+  assert.deepEqual(artifactValidationSummary([issue, issue]), { passing: 7, total: 8 })
+  assert.deepEqual(artifactValidationSummary([issue, { ...issue, field: 'content', severity: 'warning' }]), { passing: 6, total: 8 })
+  assert.deepEqual(artifactValidationSummary([{ ...issue, field: 'tags' }]), { passing: 7, total: 8 })
 })
 
 test('skill authoring checks match the reference six-check model from real draft data', () => {
@@ -63,4 +63,14 @@ test('validator errors override a passing skill authoring check so blocking prob
   const warned = skillAuthoringChecks(metadata, content, [{ field: 'tags', severity: 'warning', message: 'nit', from: 0, to: 0 }]).find(check => check.id === 'tags')!
   assert.equal(warned.passing, true)
   assert.equal(skillAuthoringSummary(metadata, content, [{ field: 'tags', severity: 'error', message: 'too many', from: 0, to: 0 }]).passing, skillAuthoringSummary(metadata, content).passing - 1)
+})
+
+test('skill checks include otherwise unrepresented blocking metadata', () => {
+  for (const field of ['license', 'compatibility', 'allowedTools', 'frontmatter'] as const) {
+    const issues: ArtifactIssue[] = [{ field, severity: 'error', message: 'Invalid metadata', from: 0, to: 0 }]
+    const checks = skillAuthoringChecks(metadata, body, issues)
+    assert.equal(checks.length, 7)
+    assert.equal(checks.find(check => check.field === field)?.passing, false)
+    assert.deepEqual(artifactValidationSummary(issues), { passing: 7, total: 8 })
+  }
 })

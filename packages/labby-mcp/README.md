@@ -60,34 +60,25 @@ through the `artifacts` control-plane service does not restore those products.
 
 ## Quick Start
 
-### Proxy One Stdio MCP Server
+### Install Labby
 
-After installing Labby, configure proxy defaults once and launch a JavaScript
-stdio server without proxy flags:
-
-```bash
-labby config proxy set
-labby doctor proxy
-labby proxy /path/to/dist.js
-```
-
-The built-in zero-flag policy is Tailscale Serve plus tailnet authorization on
-a random high port. Child flags follow the first child token unchanged, and an
-explicit separator is available for unusual commands:
+Download the reviewed installer snapshot over canonical HTTPS, then run it locally:
 
 ```bash
-labby proxy /path/to/dist.js --workspace /srv/data --read-only
-labby proxy -- npx -y @modelcontextprotocol/server-filesystem /srv/data
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSLo labby-install.sh \
+  https://raw.githubusercontent.com/dinglebear-ai/labby/5ee609bb255bebfbd9eef4d805998ac1e084b878/scripts/install.sh
+sh labby-install.sh
 ```
 
-Use `labby proxy --local --auth none ...` for explicit loopback-only
-development. Bearer and OAuth setup, exact-port resource audiences, safe Serve
-ownership, configuration precedence, output modes, and recovery are covered in
-the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
+This initial script is trusted through canonical HTTPS delivery and the explicitly reviewed commit snapshot above; the download does not follow a mutable branch. Its reviewed, embedded SHA-256 pins authenticate the verifier bootstrap; the installer never downloads a replacement checksum to decide which verifier to trust. It uses an installed GitHub CLI **2.102.0 or newer**, or downloads and verifies pinned 2.102.0 into a private temporary directory. It does not change your PATH or install that helper globally. Required system tools are `curl`, `tar`, and `sha256sum` or `shasum`; macOS bootstrap also uses `unzip`.
 
-### Install Labby with `$install-labby`
+Labby release archives still require checksum and provenance verification against the exact repository, release workflow, immutable tag and hosted-runner policy. Releases with `<archive>.sigstore.jsonl` bundles need no GitHub account: verification runs without tokens and with an empty credential store. Older releases without bundles require your own GitHub authentication; the installer stops before downloading their archive if authentication is unavailable. No privileged credential is supplied or shared. Installing a binary does not establish complete onboarding; the subsequent product-owned setup checks remain required.
 
-The first-class guided install path is the checked-in `install-labby` Agent Skill. Install that one skill, then ask a skill-aware agent to run it:
+The recommended local setup uses a native service, loopback listener, generated protected credentials, and a short-lived browser handoff. In Settings, connect your Agent provider, choose a discovered model and complete a starter Agent test, register selected supported clients, then use Discover to add and verify an MCP server. Required failures remain visible and resumable; installation alone is not full readiness. No manual configuration-file edits are needed on this path.
+
+#### Optional agent-assisted guidance
+
+The checked-in `install-labby` skill helps with guided installation, advanced deployments, and repair. It is optional. To add it to a skill-aware agent:
 
 ```bash
 npx skills add https://github.com/dinglebear-ai/labby --skill install-labby
@@ -97,7 +88,7 @@ npx skills add https://github.com/dinglebear-ai/labby --skill install-labby
 $install-labby
 ```
 
-The skill inspects the machine, asks for authentication/listener/deployment choices, drives the verified release installer plus `labby setup`, configures supported persistence and HTTPS exposure, helps register Labby in installed agents, and does not declare success until `labby doctor` plus a live MCP smoke pass. Security-sensitive durable writes remain owned by the Labby binary rather than duplicated in skill prose.
+The skill inspects the selected host, follows binary-owned setup operations, helps with explicitly requested advanced deployment choices, and verifies the same required first-use checks. Built-in Agent configuration and external-client registration are separate steps. Security-sensitive durable writes remain owned by the Labby binary.
 
 See [`skills/install-labby/SKILL.md`](./skills/install-labby/SKILL.md) for the canonical APM orchestration skill and [`docs/adr/0001-install-labby-first-class-install-orchestrator.md`](./docs/adr/0001-install-labby-first-class-install-orchestrator.md) for the architecture decision.
 
@@ -115,12 +106,12 @@ That deploys `install-labby`, `using-labby`, `using-codemode`, and `using-snippe
 server (`npx -y @dinglebear/labby mcp`) for Claude Code and Codex; `apm.yml` at
 the repository root is the manifest and `apm outdated -g` reports new
 releases. APM does not install the `labby` binary or provision a gateway host:
-run `$install-labby` (or the verified release installer below) and
-`labby setup` for that.
+use the standalone installer above and `labby setup` for that. The optional
+`$install-labby` skill can guide those steps.
 
 #### Manual Verified Release
 
-Prerequisites for the verified release path are `curl`, `tar`, a SHA-256 tool (`sha256sum` or `shasum`), and an authenticated GitHub CLI (`gh`) build that supports `gh attestation verify`. The installer checks all of these before resolving or downloading any Labby release, so a fresh machine fails fast with an actionable dependency message rather than downloading an artifact it cannot verify (the `gh auth status` probe itself contacts GitHub, so the guarantee is about release downloads, not all network use). Ubuntu 26.04's distro package currently ships `gh 2.46.0`, which is too old for this trust path; install or upgrade GitHub CLI from GitHub's current official packages/releases, verify `gh attestation verify --help`, then run `gh auth login` (or provide `GH_TOKEN` for headless automation).
+For independent verification of the installer itself, use GitHub CLI **2.102.0 or newer**. Older versions are rejected by Labby's installer and release gates because they lack the corrected signer and source-ref verification policy. Public provenance bundles allow this verification without GitHub login; legacy attestation lookup requires your own `gh auth login` or `GH_TOKEN`.
 
 Linux/macOS:
 
@@ -131,7 +122,10 @@ version=vX.Y.Z
 base="https://github.com/dinglebear-ai/labby/releases/download/$version"
 curl -fSLO "$base/labby-install.sh"
 curl -fSLO "$base/labby-install.sh.sha256"
+# For releases publishing bundles; older releases require authenticated verification.
+curl -fSLO "$base/labby-install.sh.sigstore.jsonl"
 gh attestation verify labby-install.sh \
+  --bundle labby-install.sh.sigstore.jsonl \
   --repo dinglebear-ai/labby \
   --signer-workflow dinglebear-ai/labby/.github/workflows/release.yml \
   --source-ref "refs/tags/$version" \
@@ -152,10 +146,12 @@ downloads the release archive for the current platform and verifies only the
 same release; it does not require `gh` and does not verify GitHub build
 provenance. Use `labby-install.sh` on Linux or macOS when provenance
 verification matters. Current releases do not publish Windows binaries or
-installers.
+installers. The Windows installer source uses the same reviewed verifier pins,
+protected temporary extraction, and account-free bundle policy; Windows runtime
+qualification is still required before a Windows release claim.
 
 The separately downloaded and attested install scripts resolve an immutable GitHub Release containing the current
-platform asset, require `gh`, verify the archive's attestation against the
+platform asset, prepare a verified GitHub CLI, verify the archive's attestation against the
 Labby repository, `release.yml`, exact tag, and hosted-runner policy, verify its checksum, and install `labby` onto the
 user PATH. The shell installer then runs `labby setup`, which
 asks whether this machine should run a server or connect to an existing one.
@@ -227,8 +223,8 @@ labby host update auto status
 labby host update auto disable
 ```
 
-Both modes require Apple Silicon and GitHub CLI (`gh`) for release attestation
-verification. They skip drafts, prereleases, missing platform assets, and versions
+Both modes require Apple Silicon. The installer uses a suitable existing GitHub
+CLI or bootstraps its pinned verifier in a private temporary directory. They skip drafts, prereleases, missing platform assets, and versions
 equal to or older than the installed binary. The installer verifies attestations
 and checksums before atomic replacement. No separate language runtime is required.
 Use `labby host update --automatic --dry-run` to check without installing.
@@ -324,7 +320,7 @@ gateway host or VM. Labby does not ship a Docker image or Compose deployment;
 stdio MCP servers and agent CLIs are installed and launched at runtime.
 
 ```bash
-scripts/incus-bootstrap.sh --version vX.Y.Z
+labby host incus setup --version vX.Y.Z
 incus exec labby -- systemctl status labby --no-pager
 incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 ```
@@ -332,6 +328,31 @@ incus exec labby -- curl -fsS http://127.0.0.1:8765/ready
 See [docs/runtime/INCUS.md](./docs/runtime/INCUS.md) for the full Incus
 runbook, bare-metal variant, `/dev/net/tun` Tailscale passthrough, manual
 `claude`/`codex`/`gemini` login checklist, and rollback commands.
+
+### Proxy One Stdio MCP Server
+
+After installing Labby, configure proxy defaults once and launch a JavaScript
+stdio server without proxy flags:
+
+```bash
+labby config proxy set
+labby doctor proxy
+labby proxy /path/to/dist.js
+```
+
+The built-in zero-flag policy is Tailscale Serve plus tailnet authorization on
+a random high port. Child flags follow the first child token unchanged, and an
+explicit separator is available for unusual commands:
+
+```bash
+labby proxy /path/to/dist.js --workspace /srv/data --read-only
+labby proxy -- npx -y @modelcontextprotocol/server-filesystem /srv/data
+```
+
+Use `labby proxy --local --auth none ...` for explicit loopback-only
+development. Bearer and OAuth setup, exact-port resource audiences, safe Serve
+ownership, configuration precedence, output modes, and recovery are covered in
+the [stdio MCP proxy guide](./docs/guides/STDIO_MCP_PROXY.md).
 
 ## Core Workflows
 
@@ -442,8 +463,9 @@ MCP call shapes:
 { "code": "async () => codemode.run(\"gateway-summary\", {\"includeHealth\": true})" }
 ```
 
-Code Mode can call exposed upstream MCP tools only. It cannot call Labby actions
-from inside the sandbox.
+Code Mode can call exposed upstream tools and eligible catalog-admitted
+in-process Labby actions. Route, Loadout, caller, and action policy still
+apply; sandbox access does not grant unrestricted administration.
 
 ### Work With Code Mode Snippets
 
@@ -457,14 +479,14 @@ labby snippet test my-snippet
 ```
 
 Snippets are stored per-user under `$LABBY_HOME` and executed through the
-gateway Code Mode runner, so they can reach exposed upstream tools but not Labby
-actions. The `snippets` service is gateway-gated: it is unavailable in builds
+gateway Code Mode runner, so they can reach exposed upstream tools and eligible
+catalog-admitted in-process actions. The `snippets` service is gateway-gated: it is unavailable in builds
 without the `gateway` feature.
 
 ### Audit Health And Logs
 
 ```bash
-labby doctor            # audit every configured service
+labby doctor            # system, auth, gateway, and relay audit
 labby doctor system     # local env vars, disk, toolchain
 labby doctor auth       # auth/OAuth env vars, files, permissions
 labby doctor proxy      # zero-route stdio-proxy config/dependency preflight
@@ -525,14 +547,15 @@ MCP service tools use the shared action shape:
 
 ```json
 {
-  "action": "mcp.list",
-  "params": { "search": "postgres", "limit": 10 }
+  "action": "gateway.list",
+  "params": {}
 }
 ```
 
 Every service tool also supports `help` and `schema` through the shared
-dispatcher. Destructive MCP actions use elicitation when the client supports it;
-headless clients pass `"confirm": true` inside `params`.
+dispatcher. Destructive MCP actions require the MRTR elicitation exchange.
+Clients without form elicitation receive `confirmation_required`;
+`params.confirm` does not authorize execution.
 
 ## Configuration
 
@@ -563,7 +586,7 @@ Useful environment variables:
 | `LABBY_AUTH_PROVIDER` | Inbound OAuth identity provider: `google` (stable) or `authelia` (open beta). |
 | `LABBY_GOOGLE_CLIENT_ID` / `LABBY_GOOGLE_CLIENT_SECRET` | Google credentials when Google is selected. |
 | `LABBY_AUTHELIA_ISSUER_URL` / `LABBY_AUTHELIA_CLIENT_ID` / `LABBY_AUTHELIA_CLIENT_SECRET` | Authelia OIDC configuration; see the pinned registration contract in the OAuth guide. |
-| `LABBY_AUTH_ADMIN_EMAIL` | Bootstrap admin email; required in OAuth mode. |
+| `LABBY_AUTH_ADMIN_EMAIL` | Administrator email or comma-separated emails; required in OAuth mode. |
 | `LABBY_OAUTH_ENCRYPTION_KEY` | Base64 32-byte key required for encrypted upstream OAuth credentials. Rotation requires reauthorizing affected upstreams. |
 | `LABBY_WEB_ASSETS_DIR` | Override static Labby export directory. |
 | `LABBY_WEB_UI_AUTH_DISABLED` | Development-only browser auth bypass. |
@@ -572,13 +595,15 @@ Useful environment variables:
 | `LABBY_ACTOR_KEY_SECRET` | Stable secret for redacted actor correlation in logs. |
 | `LABBY_ADMIN_ENABLED` | Runtime opt-in for the `lab_admin` tool. |
 
-Bearer auth is an operator/admin shortcut for Labby routes. Public protected MCP
-routes validate route-scoped Labby OAuth JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as
-a public resource credential.
+Static bearer authentication establishes an operator transport ceiling, not a
+universal durable administrator grant. Operation-specific access authority
+still applies. Public protected MCP routes validate route-scoped Labby OAuth
+JWTs; do not treat `LABBY_MCP_HTTP_TOKEN` as a public resource credential.
 
 When driving the web UI with automation while OAuth is enabled, pass the bearer
-token as a same-origin header. `/auth/session` recognizes that token and returns a
-synthetic admin session:
+token as a same-origin header. `/auth/session` recognizes that token and returns
+an authenticated session projection whose authority depends on durable access
+state; a bearer credential does not universally grant durable administration:
 
 ```bash
 TOKEN=$(awk -F= '/^LABBY_MCP_HTTP_TOKEN=/{print $2}' ~/.labby/.env)
@@ -593,11 +618,13 @@ See [runtime configuration](./docs/runtime/CONFIG.md),
 ## Current Catalogs
 
 Do not maintain action, feature, env, or coverage inventories by hand in this
-README. The generated artifacts are authoritative for the current branch:
+README. The generated artifacts describe the all-feature documentation
+projection. Runtime feature, platform, startup, route, and caller authorization
+gates still determine what a running gateway exposes:
 
 | Artifact | Purpose |
 | --- | --- |
-| [service-catalog.md](./docs/generated/service-catalog.md) | Registered services, exposure, features, categories, and surfaces. |
+| [service-catalog.md](./docs/generated/service-catalog.md) | Service metadata, conditional registration, features, categories, and supported surfaces. |
 | [action-catalog.md](./docs/generated/action-catalog.md) | Per-service actions and destructive metadata. |
 | [env-reference.md](./docs/generated/env-reference.md) | Env vars generated from service metadata. |
 | [api-routes.md](./docs/generated/api-routes.md) | Mounted HTTP routes. |
@@ -613,26 +640,33 @@ just docs-generate
 just docs-check
 ```
 
-`docs-check` verifies generated-artifact freshness and invariants. It is not a
-Markdown link checker, live health check, or onboarding policy audit.
+`labby docs check` verifies generated-artifact freshness and invariants. The
+`just docs-check` recipe also checks Markdown links, documentation policy,
+instruction topology, and control-plane contracts with their regression tests.
+Neither establishes live service health or deployment acceptance. Fix generated
+content at the entrypoints in the [source-ownership index](./docs/generated/README.md),
+then regenerate; that index is itself generated.
 
 ## Architecture
 
-The workspace has 11 members and uses Rust 2024, resolver 3, a single
+The workspace uses Rust 2024, resolver 3, a single
 `[workspace.package]` version, shared `[workspace.dependencies]`, and shared
 `[workspace.lints]` (`unsafe_code = "forbid"`, `mod_module_files = "deny"`,
-`disallowed_macros = "deny"`). The MCP SDK is pinned exactly as
-`rmcp = "=3.1.0"`.
+`disallowed_macros = "deny"`). The member inventory and exact Git-pinned MCP SDK
+revision are maintained in [Cargo.toml](./Cargo.toml);
+[Architecture](./docs/ARCH.md) owns the complete crate map.
 
 | Path | Role |
 | --- | --- |
-| [crates/labby-primitives](./crates/labby-primitives) | Dependency-free leaf crate: `ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`, static SSRF checks. |
-| [crates/labby-apis](./crates/labby-apis) | Shared SDK contracts for core HTTP behavior, setup, and doctor. |
+| [crates/labby-primitives](./crates/labby-primitives) | Workspace dependency-leaf crate: `ActionSpec`/`ParamSpec`, `PluginMeta`/`EnvVar`/`Category`, `UiSchema`, static SSRF checks. |
+| [crates/labby-apis](./crates/labby-apis) | Pure SDK contracts for core HTTP behavior, setup, doctor, and Artifact control; no ambient product configuration. |
 | [crates/labby-auth](./crates/labby-auth) | OAuth/JWT/session middleware, route support, and upstream OAuth runtime. |
 | [crates/labby-runtime](./crates/labby-runtime) | Surface-neutral contracts and helpers: `ToolError`, gateway config DTOs, dispatch helpers, redaction, path safety, and security helpers. |
 | [crates/labby-codemode](./crates/labby-codemode) | Client-neutral Code Mode runner kernel, broker, result shaping, snippets, and TypeScript descriptor generation. |
 | [crates/labby-gateway](./crates/labby-gateway) | Gateway manager, upstream MCP proxy pool, Code Mode host adapter, discovery/imports, virtual servers, protected routes, and OAuth lifecycle. |
-| [crates/labby-openapi](./crates/labby-openapi) | OpenAPI 3.1 schema assembly for the HTTP surface. |
+| [crates/labby-openapi](./crates/labby-openapi) | OpenAPI-to-Code-Mode derivation and hardened outbound HTTP execution. |
+| [crates/labby-browser](./crates/labby-browser) | Reusable browser bridge, pairing, permission, and invocation runtime. |
+| [crates/labby-model](./crates/labby-model) | Model-checking and verification support; never a product dependency. |
 | [crates/labby-web](./crates/labby-web) | Embedded/filesystem web asset serving with symlink escape defense. |
 | [crates/labby](./crates/labby) | Product binary crate: CLI, MCP, HTTP API, config loading, gateway dispatch, logs, setup, snippets, filesystem access, and output rendering. |
 | [crates/labby-winjob](./crates/labby-winjob) | Windows Job Object process-tree support, isolated so the main workspace can keep `unsafe_code = "forbid"`. |
@@ -642,10 +676,12 @@ The workspace has 11 members and uses Rust 2024, resolver 3, a single
 | [plugins](./plugins) | Claude/Codex plugin assets and skills. |
 | [docs](./docs/README.md) | Topic documentation and generated inventories. |
 
-Shared behavior belongs in the shared execution layer. Upstream/domain logic
-belongs in `labby-apis`; reusable gateway/runtime/code-mode behavior belongs in
-the extracted `labby-*` crates; product dispatch belongs in
-`crates/labby/src/dispatch`; CLI, MCP, HTTP, and web adapters stay thin. See
+Shared operations belong in the owning extracted runtime or product dispatch.
+`labby-gateway` owns upstream discovery, routing, OAuth lifecycle, and the
+gateway Code Mode host; `labby-codemode` owns the host-neutral kernel.
+`labby-apis` remains a pure SDK boundary. Product adapters under
+`crates/labby/src` translate input, caller context, and output without duplicating
+authorization, validation, or operation semantics. See
 [Architecture](./docs/ARCH.md) and [Dispatch](./docs/dev/DISPATCH.md).
 
 ## Development
@@ -677,10 +713,10 @@ just web-watch        # rebuild web assets when frontend files change
 just run -- help      # web export + cargo run --all-features -- <args>
 just chat-local       # local Labby admin UI workflow with browser auth disabled
 just install          # web export + release build + install ~/.local/bin/labby
-just mcp-token        # rotate LABBY_MCP_HTTP_TOKEN in .env
+just mcp-token        # rotate checkout .env token and print it; not daemon secret rotation
 ```
 
-Authoritative Rust verification is all-features:
+Use all-feature workspace verification plus affected standalone feature slices:
 
 ```bash
 cargo check --workspace --all-features
@@ -704,7 +740,7 @@ Frontend changes should also run the relevant `pnpm` scripts under
 ### Host Gateway Runtime
 
 The recommended self-hosted gateway runtime is the Incus system container
-provisioned by `scripts/incus-bootstrap.sh --version vX.Y.Z` and converged
+provisioned by `labby host incus setup --version vX.Y.Z` and converged
 in-box with `labby setup --provision`. Bare metal uses the same provisioner and
 system unit when the host or VM is dedicated to Labby. The default service is
 `/etc/systemd/system/labby.service`, running as `User=labby`, `Group=labby`, with
@@ -716,15 +752,17 @@ remains the rebuild-and-restart developer shortcut.
 Release Please maintains the version/changelog pull request and creates the
 stable tag plus draft GitHub release when that pull request merges. The stable
 tag triggers the heavy GitHub-hosted candidate workflow. It builds Linux and
-macOS archives with checksums, builds and smokes the Incus image,
-publishes the npm launcher, and publishes Labby's
+macOS archives with checksums, publishes the npm launcher, and publishes Labby's
 `server.json` metadata to the official MCP Registry. Only after qualification
 and publication succeed does the workflow promote the draft GitHub release.
+Incus substrate images build and publish independently through
+`.github/workflows/incus-image.yml`; normal binary releases do not build an image.
 
 ### Plugin Setup
 
-The `plugins/labby` plugin ships skills, an MCP config, and `userConfig` — not a
-`labby` binary, and no Claude Code hooks. The former
+`plugins/labby` supplies usage skills; `plugins/install-labby` owns the installer
+skill, MCP configuration, and `userConfig`. Neither bundles the Labby binary
+or automatic lifecycle hooks. The former
 `plugins/labby/hooks/hooks.json` (SessionStart / ConfigChange shims) has been
 removed; operators run `labby setup` themselves. Do not reintroduce a `hooks/`
 directory, bundle a binary under `plugins/labby/bin/`, or add

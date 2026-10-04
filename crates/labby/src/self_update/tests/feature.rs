@@ -64,9 +64,11 @@ impl Fixture {
 set -eu
 out=
 url=
+write_out=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out=$2; shift 2;;
+    -w|--write-out) write_out=$2; shift 2;;
     --connect-timeout|--max-time|--retry) shift 2;;
     -*) shift;;
     *) url=$1; shift;;
@@ -78,17 +80,22 @@ case "$url" in
   *) echo "unexpected network request: $url" >&2; exit 91;;
 esac
 [ -n "$out" ]
+if [ ! -f "$LABBY_TEST_FEATURE_ROOT/${url##*/}" ]; then
+  [ -z "$write_out" ] || printf '404'
+  exit 22
+fi
 cp "$LABBY_TEST_FEATURE_ROOT/${url##*/}" "$out"
+[ -z "$write_out" ] || printf '200'
 "#,
         );
         executable(
             &root.path().join("tools/gh"),
             r#"#!/bin/sh
 set -eu
-# The installer probes gh for attestation support and authentication before
-# any download. Those probes are prerequisite checks, not attestation
-# requests, so answer them without recording them.
+# Verifier capability/version and legacy-release authentication checks are
+# prerequisites, not attestation requests, so answer without recording them.
 case "$*" in
+  "--version") echo "gh version 2.102.0 (fixture)"; exit 0;;
   "attestation verify --help"|"auth status --hostname github.com") exit 0;;
 esac
 printf '%s\n' "$*" >> "$LABBY_TEST_FEATURE_ROOT/attestations"
@@ -278,12 +285,17 @@ fn automatic_installs_verified_newer_release_and_records_receipt() {
             .join("bin/.labby-install/activation-journal")
             .exists()
     );
+    let downloads = fs::read_to_string(fixture.root.path().join("downloads")).unwrap();
+    let release = "https://github.com/dinglebear-ai/labby/releases/download/v1.17.0/lab-aarch64-apple-darwin.tar.gz";
+    // This legacy fixture has no public bundle. The installer probes that
+    // exact sidecar before using the authenticated attestation lookup.
     assert_eq!(
-        fs::read_to_string(fixture.root.path().join("downloads"))
-            .unwrap()
-            .lines()
-            .count(),
-        2
+        downloads.lines().collect::<Vec<_>>(),
+        [
+            format!("{release}.sigstore.jsonl"),
+            release.to_owned(),
+            format!("{release}.sha256"),
+        ]
     );
     assert_eq!(
         fs::read_to_string(fixture.root.path().join("attestations"))

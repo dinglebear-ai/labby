@@ -23,6 +23,7 @@ Commands:
   doctor       Audit configuration and dependencies without automatically repairing them
   logs         Query bounded local process logs, or explicitly select the deployment journal
   setup        Guide onboarding, check prerequisites, or explicitly repair local setup
+  tailcat      Pair an approved browser with local hardware sandbox tools
   host         Install, update, or operate the host service and its Incus deployment
   config       Inspect setup state and manage drafts or proxy defaults
   state        Migrate, export, verify, or restore durable installation state offline
@@ -4764,6 +4765,7 @@ Commands:
   validate  Validate a snippet without saving or executing it
   remove    Remove a user snippet
   test      Test with deterministic fixtures; use --live to contact upstreams
+  fixture   Generate an editable fixture from tool schemas without executing tools
 
 Options:
       --json
@@ -5125,6 +5127,73 @@ Options:
 
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby snippet fixture`
+
+```text
+Generate an editable fixture from tool schemas without executing tools
+
+Usage: labby snippet fixture [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --tool <TOOLS>
+          Exact tool IDs for legacy snippets without declarations
+
+      --check <CHECK>
+          Compare current contracts with a saved fixture; never execute tools
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --schemas <SCHEMAS>
+          Saved schema map keyed by upstream::tool; uses no gateway when supplied
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --results <RESULTS>
+          Synthetic result overrides keyed by upstream::tool
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --variant <VARIANT>
+          Populate optional fields and one array item, or generate minimal values
+
+          [default: populated]
+          [possible values: populated, minimal]
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --output <OUTPUT>
+          Save the generated fixture to a new file; existing files are never overwritten
+
+      --param <KEY=VALUE>
+
 
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
@@ -6012,9 +6081,10 @@ Guide onboarding, check prerequisites, or explicitly repair local setup
 Usage: labby setup [OPTIONS] [COMMAND]
 
 Commands:
-  state   Show the redacted setup and draft snapshot without changing configuration
-  check   Check local setup prerequisites without mutating the filesystem
-  repair  Repair missing local setup prerequisites without contacting external services
+  clients  Detect or safely register selected external MCP clients on this computer
+  state    Show the redacted setup and draft snapshot without changing configuration
+  check    Check local setup prerequisites without mutating the filesystem
+  repair   Repair missing local setup prerequisites without contacting external services
 
 Options:
       --json
@@ -6042,35 +6112,47 @@ Options:
           Suppress console logs, but always report command errors
 
       --skip-deps
-          Skip runtime dependency installation and only converge user/service state
+          Skip dependency installation offers for ChatGPT setup, or runtime installation when provisioning
 
       --no-input
           Never prompt for missing input or confirmation
 
       --role <ROLE>
-          Configure this machine as a Labby server or as a client of another server
+          Configure server authentication or a client; server service installation requires --deployment
 
           [possible values: server, client]
+
+      --chatgpt
+          Connect ChatGPT to local Microsandbox sandboxes through Google OAuth and Tailscale Funnel
 
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --tailcat
+          Prepare native dashboard access through Tailcat without installing a daemon
+
+      --advanced
+          Ask about deployment, listen address, port, and authentication instead of using local defaults
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --config-only
+          Prepare server authentication in LABBY_HOME without installing or starting a service
+
       --deployment <DEPLOYMENT>
-          Server deployment backend. Native is the fastest path; Incus is isolated
+          Install a managed server explicitly: native service or isolated Incus container
 
           [possible values: native, incus]
 
       --host <HOST>
           Server listen address. Defaults to 127.0.0.1
 
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
       --port <PORT>
-          Server listen or published port. Defaults to 8765
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+          Server listen or published port. Fresh local setup uses 8765 when available, otherwise an available port
 
       --server-url <SERVER_URL>
           Explicit Labby server URL for client mode
@@ -6088,11 +6170,308 @@ Options:
 
           [possible values: none, google, authelia]
 
+      --clients <CLIENTS>
+          Register selected installed MCP clients through Labby's protected local bridge
+
+          [possible values: codex, claude-code]
+
       --desktop
           Install the Labby desktop app when a published package is available for this platform
 
       --no-desktop
           Do not install the Labby desktop app
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients`
+
+```text
+Detect or safely register selected external MCP clients on this computer
+
+Usage: labby setup clients [OPTIONS] <COMMAND>
+
+Commands:
+  bridge    Serve stdio MCP using the protected saved connection for exactly this gateway
+  connect   Verify the selected connection and register selected local clients with backups
+  list      Detect supported client executables and configuration files on this computer
+  plan      Review registration using protected saved CLI credentials or client-owned OAuth
+  register  Register Labby using the exact reviewed config version. Client use remains unverified
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients bridge`
+
+```text
+Serve stdio MCP using the protected saved connection for exactly this gateway
+
+Usage: labby setup clients bridge [OPTIONS] --gateway-url <GATEWAY_URL> --state-root <STATE_ROOT>
+
+Options:
+      --gateway-url <GATEWAY_URL>
+
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --state-root <STATE_ROOT>
+
+
+      --client <CLIENT>
+          [possible values: codex, claude-code]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients connect`
+
+```text
+Verify the selected connection and register selected local clients with backups
+
+Usage: labby setup clients connect [OPTIONS] --clients <CLIENTS>
+
+Options:
+      --clients <CLIENTS>
+          [possible values: codex, claude-code]
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --gateway-url <GATEWAY_URL>
+
+
+      --connection <CONNECTION>
+          [default: saved-cli]
+          [possible values: saved-cli, oauth]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --state-root <STATE_ROOT>
+
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients list`
+
+```text
+Detect supported client executables and configuration files on this computer
+
+Usage: labby setup clients list [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients plan`
+
+```text
+Review registration using protected saved CLI credentials or client-owned OAuth
+
+Usage: labby setup clients plan [OPTIONS] --client <CLIENT> --gateway-url <GATEWAY_URL>
+
+Options:
+      --client <CLIENT>
+          [possible values: codex, claude-code]
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --gateway-url <GATEWAY_URL>
+
+
+      --connection <CONNECTION>
+          [default: saved-cli]
+          [possible values: saved-cli, oauth]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --state-root <STATE_ROOT>
+
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby setup clients register`
+
+```text
+Register Labby using the exact reviewed config version. Client use remains unverified
+
+Usage: labby setup clients register [OPTIONS] --client <CLIENT> --gateway-url <GATEWAY_URL> --expected-version <EXPECTED_VERSION>
+
+Options:
+      --client <CLIENT>
+          [possible values: codex, claude-code]
+
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --gateway-url <GATEWAY_URL>
+
+
+      --expected-version <EXPECTED_VERSION>
+
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+      --connection <CONNECTION>
+          [default: saved-cli]
+          [possible values: saved-cli, oauth]
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --state-root <STATE_ROOT>
+
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help
@@ -6186,6 +6565,204 @@ Usage: labby setup repair [OPTIONS]
 Options:
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat`
+
+```text
+Pair an approved browser with local hardware sandbox tools
+
+Usage: labby tailcat [OPTIONS] <COMMAND>
+
+Commands:
+  pair    Approve a browser key for the selected sandbox upstream
+  status  Show local native session states without credentials or addresses
+  stop    Stop one local session and retire its credential
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat pair`
+
+```text
+Approve a browser key for the selected sandbox upstream
+
+Usage: labby tailcat pair [OPTIONS] --credential-file <PATH>
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --request <PATH>
+          Browser-exported request JSON containing its public key and HTTPS origin
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+      --rendezvous <RENDEZVOUS>
+          HTTPS dashboard origin; the exchange code is requested privately
+
+      --pairing-id <PAIRING_ID>
+          Public dashboard pairing identifier
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+      --pair-code-stdin
+          Read the private exchange code from stdin for noninteractive approval
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --credential-file <PATH>
+          Private project credential file, owned by the current user
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --output <PATH>
+          New private delivery file to import into the requesting browser
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+  -y, --yes
+          Explicitly approve the reviewed origin, peer key and sandbox upstream
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat status`
+
+```text
+Show local native session states without credentials or addresses
+
+Usage: labby tailcat status [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby tailcat stop`
+
+```text
+Stop one local session and retire its credential
+
+Usage: labby tailcat stop [OPTIONS] <ID>
+
+Arguments:
+  <ID>
+
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --socket <SOCKET>
+          Explicit same-host control socket; no remote HTTP fallback
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -7653,7 +8230,7 @@ Options:
       --exposure <EXPOSURE>
           Exposure mode to persist
 
-          [possible values: tailscale, local]
+          [possible values: tailscale, funnel, local]
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
@@ -8125,11 +8702,11 @@ Options:
 ```text
 Proxy a stdio upstream to Streamable HTTP
 
-Usage: labby proxy [OPTIONS] <COMMAND>...
+Usage: labby proxy [OPTIONS] [COMMAND]...
 
 Arguments:
-  <COMMAND>...
-          Child program or script followed by its arguments
+  [COMMAND]...
+          Child program and arguments; otherwise discover .mcp.json in Labby home or beside the binary
 
 Options:
       --json
@@ -8172,20 +8749,29 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --funnel
+          Select OAuth and publish with Tailscale Funnel; preview callback if unconfigured
+
+      --print-google-callback
+          Print the Funnel MCP URL and Google callback without starting a proxy
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --mcp-json <PATH>
+          Load local or remote servers from a .mcp.json mcpServers object
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
       --cwd <CWD>
           Child working directory
 
       --env <NAME=VALUE>
           Explicit child environment entry; repeatable
 
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
-
       --inherit-env <NAME>
           Inherit one ambient environment variable; repeatable
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
   -h, --help
           Print help

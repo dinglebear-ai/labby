@@ -4,7 +4,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
-import { ArtifactResults, depotCoveragePulse, discoveryCountLabel, exactImportConnection, exactImportParams, mergeArtifactPages } from './depot-page-content'
+import { ArtifactResults, depotCoveragePulse, discoveryCountLabel, discoveryFailureMessage, exactImportConnection, exactImportParams, mergeArtifactPages } from './depot-page-content'
 
 test('unavailable catalog counts remain unknown rather than implying an empty catalog', () => {
   assert.equal(discoveryCountLabel(0, false, true), '—')
@@ -14,6 +14,10 @@ test('unavailable catalog counts remain unknown rather than implying an empty ca
 })
 
 test('depotCoveragePulse never renders failed provider coverage as healthy', () => {
+  assert.deepEqual(depotCoveragePulse(), {
+    color: 'var(--aurora-warn)',
+    label: 'checking catalog',
+  })
   assert.deepEqual(depotCoveragePulse('all_failed'), {
     color: 'var(--aurora-error)',
     label: 'all_failed',
@@ -26,6 +30,12 @@ test('depotCoveragePulse never renders failed provider coverage as healthy', () 
     color: 'var(--aurora-success)',
     label: 'complete',
   })
+})
+
+test('catalog authorization and indexing failures are described as unavailable search', () => {
+  assert.match(discoveryFailureMessage('Labby catalog request failed (503, index_not_ready)'), /index is still preparing/)
+  assert.match(discoveryFailureMessage('Labby catalog request failed (403)'), /denied this search/)
+  assert.doesNotMatch(discoveryFailureMessage('Labby catalog request failed (403)'), /No artifacts/)
 })
 
 test('mergeArtifactPages appends unique cursor results in order', () => {

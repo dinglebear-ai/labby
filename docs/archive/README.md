@@ -9,4 +9,4 @@ Current behavior is documented from [the product documentation index](../README.
 - retired-labby/ preserves selected documentation from the retired pre-current product shape for historical reference.
 - extraction-adrs/ preserves the original crate-extraction ADR series after that migration work ceased to be a current top-level decision set.
 
-Transient web/reference caches, agent session logs, generated smoke output, and completed branch-specific implementation plans are intentionally **not** archived here. Git history is the archive for those artifacts.
+This archive does not replace the separate protected `docs/sessions/` and `docs/superpowers/` trees or authorize their cleanup. They remain outside general documentation and link audits unless explicitly approved. Maintained implementation records can remain under `docs/plans/` and dated receipts under `docs/tasks/`; neither is a substitute for current product contracts. Untracked research caches and generated smoke output are not canonical documentation. See [Documentation Maintenance](../dev/DOCUMENTATION.md#audit-the-tree-before-editing) for the applicable ownership and update rules.

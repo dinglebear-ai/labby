@@ -199,7 +199,7 @@ impl std::error::Error for CapabilityCallError {}
 /// Char cap for the upstream-authored JSON-RPC error message retained on
 /// [`CapabilityCallError::Mcp`], embedded in stringified surface errors, and
 /// interpolated into dispatch logs.
-const UPSTREAM_ERROR_MESSAGE_CAP_CHARS: usize = 4096;
+pub(super) const UPSTREAM_ERROR_MESSAGE_CAP_CHARS: usize = 4096;
 
 /// Byte cap for the upstream-authored `ErrorData.data` payload retained on
 /// [`CapabilityCallError::Mcp`]. Matches the Code Mode consumer's
@@ -218,10 +218,8 @@ const UPSTREAM_ERROR_KIND_CAP_CHARS: usize = 64;
 /// `ErrorData`'s `Display` interpolates both `message` and the full serialized
 /// `data` value, so an unbounded upstream error would otherwise flow multi-MB
 /// payloads into every log line, stringified surface error, and the retained
-/// [`CapabilityCallError::Mcp`] enum. Small payloads pass through byte-for-byte
-/// unchanged — this is a size guard at the pool boundary, not a redaction pass;
-/// consumer-boundary sanitization (secret redaction, prompt-marker stripping)
-/// still happens in `code_mode_host.rs` / `tool_error.rs`.
+/// [`CapabilityCallError::Mcp`] enum. Preserve structured diagnostics while
+/// redacting credentials and bounding upstream-controlled text at this boundary.
 pub(super) fn bound_upstream_service_error(error: rmcp::ServiceError) -> rmcp::ServiceError {
     match error {
         rmcp::ServiceError::McpError(data) => {
@@ -243,52 +241,117 @@ pub(super) fn bound_upstream_service_error(error: rmcp::ServiceError) -> rmcp::S
 /// unavoidable without deeper rmcp surgery; what matters is that nothing
 /// oversized is stored or logged.
 pub(super) fn bounded_service_error_text(error: &rmcp::ServiceError) -> String {
-    let text = error.to_string();
-    if text.len() > UPSTREAM_ERROR_MESSAGE_CAP_CHARS
-        && text.chars().count() > UPSTREAM_ERROR_MESSAGE_CAP_CHARS
-    {
-        labby_runtime::agent_error::sanitize_error_text(&text, UPSTREAM_ERROR_MESSAGE_CAP_CHARS)
-    } else {
-        text
+    let text = match error {
+        rmcp::ServiceError::McpError(data) => {
+            rmcp::ServiceError::McpError(sanitized_upstream_error_data(data)).to_string()
+        }
+        other => other.to_string(),
+    };
+    labby_runtime::agent_error::sanitize_error_text(&text, UPSTREAM_ERROR_MESSAGE_CAP_CHARS)
+}
+
+fn bound_upstream_error_data(data: rmcp::model::ErrorData) -> rmcp::model::ErrorData {
+    sanitized_upstream_error_data(&data)
+}
+
+// Stop serialization at the byte budget without allocating a potentially large
+// upstream payload merely to measure it.
+fn error_data_fits_budget(value: &Value) -> bool {
+    struct Budget(usize);
+    impl std::io::Write for Budget {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes.len() > self.0 {
+                return Err(std::io::Error::other("upstream error data exceeded cap"));
+            }
+            self.0 -= bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    serde_json::to_writer(&mut Budget(UPSTREAM_ERROR_DATA_CAP_BYTES), value).is_ok()
+}
+
+// Error diagnostics use only the byte budget; trace collection/string limits
+// would discard useful metadata from otherwise small errors.
+fn redact_error_metadata(value: &Value) -> Value {
+    match value {
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    let value = if labby_runtime::redact::is_sensitive_key(key) {
+                        Value::String("[REDACTED]".into())
+                    } else {
+                        redact_error_metadata(value)
+                    };
+                    (key.clone(), value)
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_error_metadata).collect()),
+        Value::String(text) => {
+            // Reuse the owner's scalar credential heuristics without adopting
+            // its 512-character trace truncation for ordinary diagnostics.
+            let scalar =
+                labby_runtime::redact::redact_trace_value(value, UPSTREAM_ERROR_DATA_CAP_BYTES);
+            if scalar.as_str() == Some("[redacted]") {
+                return scalar;
+            }
+            if text.starts_with("http://") || text.starts_with("https://") {
+                return Value::String(labby_runtime::redact::redact_url(text));
+            }
+            let redacted = labby_runtime::redact::redact_secret_like_segments(text);
+            // The shared free-text helper normalizes whitespace. Preserve exact
+            // nonsecret diagnostics when it did not replace a credential.
+            if redacted.contains("[REDACTED]") && redacted != *text {
+                Value::String(redacted)
+            } else {
+                value.clone()
+            }
+        }
+        _ => value.clone(),
     }
 }
 
-fn bound_upstream_error_data(mut data: rmcp::model::ErrorData) -> rmcp::model::ErrorData {
-    // Byte length is a cheap upper bound on char count: only scan and rewrite
-    // when the message can actually exceed the cap.
-    if data.message.len() > UPSTREAM_ERROR_MESSAGE_CAP_CHARS
-        && data.message.chars().count() > UPSTREAM_ERROR_MESSAGE_CAP_CHARS
-    {
-        data.message = labby_runtime::agent_error::sanitize_error_text(
+fn sanitized_upstream_error_data(data: &rmcp::model::ErrorData) -> rmcp::model::ErrorData {
+    let mut sanitized = rmcp::model::ErrorData::new(
+        data.code,
+        labby_runtime::agent_error::sanitize_error_text(
             &data.message,
             UPSTREAM_ERROR_MESSAGE_CAP_CHARS,
-        )
-        .into();
-    }
+        ),
+        None,
+    );
     if let Some(payload) = data.data.as_ref() {
-        let serialized_len = serde_json::to_vec(payload).map_or(usize::MAX, |bytes| bytes.len());
-        if serialized_len > UPSTREAM_ERROR_DATA_CAP_BYTES {
-            let mut bounded =
-                labby_codemode::redact_trace_value(payload, UPSTREAM_ERROR_DATA_CAP_BYTES);
-            // `redact_trace_value` replaces an over-cap payload wholesale with a
-            // truncation stub, which would silently drop the `kind` hint that
-            // `code_mode_mcp_error_kind` classifies on — an over-cap
-            // `unknown_action` would degrade to a generic `upstream_error` and
-            // hand the agent the wrong recovery action. Carry that one small
-            // scalar across; it is allowlist-validated downstream, so a hostile
-            // value cannot invent a kind.
-            if let (Some(stub), Some(original)) = (bounded.as_object_mut(), payload.as_object())
-                && let Some(kind) = original.get("kind").and_then(Value::as_str)
-            {
-                stub.insert(
-                    "kind".to_string(),
-                    Value::String(kind.chars().take(UPSTREAM_ERROR_KIND_CAP_CHARS).collect()),
-                );
+        let mut bounded = if error_data_fits_budget(payload) {
+            let redacted = redact_error_metadata(payload);
+            if error_data_fits_budget(&redacted) {
+                redacted
+            } else {
+                labby_codemode::redact_trace_value(&redacted, UPSTREAM_ERROR_DATA_CAP_BYTES)
             }
-            data.data = Some(bounded);
+        } else {
+            labby_codemode::redact_trace_value(payload, UPSTREAM_ERROR_DATA_CAP_BYTES)
+        };
+        // Preserve the recovery hint even when truncation drops this field. It
+        // remains untrusted upstream text and must be sanitized before insertion.
+        if let (Some(stub), Some(original)) = (bounded.as_object_mut(), payload.as_object())
+            && let Some(kind) = original.get("kind").and_then(Value::as_str)
+        {
+            let kind = labby_runtime::agent_error::sanitize_error_text(
+                kind,
+                UPSTREAM_ERROR_KIND_CAP_CHARS,
+            );
+            stub.insert(
+                "kind".to_string(),
+                Value::String(kind.chars().take(UPSTREAM_ERROR_KIND_CAP_CHARS).collect()),
+            );
         }
+        sanitized.data = Some(bounded);
     }
-    data
+    sanitized
 }
 
 /// Outcome of a timed capability call before size-cap enforcement.
@@ -650,7 +713,10 @@ where
             // retained error enum — an upstream must not be able to push a
             // multi-MB error body through the gateway's error plumbing.
             let error = bound_upstream_service_error(error);
-            let message = error_message_fn(&error);
+            let message = labby_runtime::agent_error::sanitize_error_text(
+                &error_message_fn(&error),
+                UPSTREAM_ERROR_MESSAGE_CAP_CHARS,
+            );
             if service_error_affects_connection_health(&error) {
                 if subject.is_none() {
                     pool.record_failure_for(upstream_name, capability, message.clone())
@@ -869,7 +935,7 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn subject_scoped_timeout_does_not_poison_global_capability_health() {
         let pool = UpstreamPool::new().with_upstream_call_concurrency(1);
         let upstream_name: Arc<str> = Arc::from("fixture");
@@ -878,9 +944,12 @@ mod tests {
             healthy_in_process_entry(Arc::clone(&upstream_name), HashMap::new()),
         );
 
+        // Test the dispatched RPC timeout, not whether a busy host can create
+        // and acquire the semaphore within one real millisecond. Paused Tokio
+        // time advances the pending RPC deadline without a wall-clock sleep.
         let result = timed_capability_call_with_timeout(
             &pool,
-            Duration::from_millis(1),
+            Duration::from_secs(30),
             "fixture",
             UpstreamCapability::Resources,
             UpstreamRequestLog::resources_list("fixture", true),
@@ -975,6 +1044,112 @@ mod tests {
             Some("unknown_action"),
             "the classification kind must survive the size bound"
         );
+    }
+
+    #[test]
+    fn over_cap_mcp_error_kind_does_not_reintroduce_credentials() {
+        let data = ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "denied",
+            Some(serde_json::json!({
+                "kind": "Bearer secret-kind-regression", "payload": "x".repeat(10_000),
+            })),
+        );
+        let bounded = bound_upstream_error_data(data);
+        assert!(
+            !bounded
+                .data
+                .unwrap()
+                .to_string()
+                .contains("secret-kind-regression")
+        );
+    }
+
+    #[test]
+    fn small_many_field_mcp_error_retains_the_classification_kind() {
+        let mut payload = serde_json::Map::new();
+        for index in 0..70 {
+            payload.insert(format!("a{index:02}"), serde_json::json!(index));
+        }
+        payload.insert("kind".into(), serde_json::json!("unknown_action"));
+        assert!(serde_json::to_vec(&payload).unwrap().len() < UPSTREAM_ERROR_DATA_CAP_BYTES);
+        let bounded = bound_upstream_error_data(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "bad action",
+            Some(Value::Object(payload)),
+        ));
+        assert_eq!(bounded.data.unwrap()["kind"], "unknown_action");
+    }
+
+    #[test]
+    fn under_cap_error_metadata_preserves_all_collection_entries() {
+        let mut fields = serde_json::Map::new();
+        for index in 0..70 {
+            fields.insert(format!("f{index}"), serde_json::json!(index));
+        }
+        let payload = serde_json::json!({
+            "fields": fields, "items": (0..70).collect::<Vec<_>>(),
+            "access_token": "private-collection-regression",
+        });
+        assert!(serde_json::to_vec(&payload).unwrap().len() < UPSTREAM_ERROR_DATA_CAP_BYTES);
+        let bounded = bound_upstream_error_data(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "invalid",
+            Some(payload.clone()),
+        ))
+        .data
+        .unwrap();
+        assert_eq!(bounded["fields"], payload["fields"]);
+        assert_eq!(bounded["items"], payload["items"]);
+        assert_ne!(bounded["access_token"], payload["access_token"]);
+    }
+
+    #[test]
+    fn under_cap_error_metadata_preserves_long_diagnostics() {
+        let diagnostic = format!("{}diagnostic-tail", "x".repeat(700));
+        let payload = serde_json::json!({
+            "diagnostic": diagnostic, "detail": "Bearer private-long-regression",
+        });
+        assert!(serde_json::to_vec(&payload).unwrap().len() < UPSTREAM_ERROR_DATA_CAP_BYTES);
+        let bounded = bound_upstream_error_data(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "invalid",
+            Some(payload.clone()),
+        ))
+        .data
+        .unwrap();
+        assert_eq!(bounded["diagnostic"], payload["diagnostic"]);
+        assert!(!bounded.to_string().contains("private-long-regression"));
+    }
+
+    #[test]
+    fn small_mcp_error_data_credentials_are_redacted() {
+        let data = ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "denied",
+            Some(serde_json::json!({
+                "kind": "forbidden", "code": 42, "access_token": "opaque-regression-secret",
+            })),
+        );
+        let bounded = bound_upstream_error_data(data);
+        let payload = bounded.data.expect("retain structured metadata");
+        assert_eq!(payload["kind"], "forbidden");
+        assert_eq!(payload["code"], 42);
+        assert_ne!(payload["access_token"], "opaque-regression-secret");
+    }
+
+    #[test]
+    fn short_mcp_error_credentials_are_redacted() {
+        let error = rmcp::ServiceError::McpError(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "Authorization: Bearer secret-token-for-regression",
+            None,
+        ));
+        assert!(!bounded_service_error_text(&error).contains("secret-token-for-regression"));
+        let rmcp::ServiceError::McpError(data) = bound_upstream_service_error(error) else {
+            panic!("preserve MCP error");
+        };
+        assert!(!data.message.contains("secret-token-for-regression"));
     }
 
     #[test]

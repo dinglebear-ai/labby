@@ -354,117 +354,123 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     .await
 }
 
-pub(super) async fn connect_upstream_with_handler_and_notifications<H: ClientHandler + Clone>(
-    config: &UpstreamConfig,
-    subject: Option<&str>,
-    oauth_client_cache: Option<&OauthClientCache>,
-    runtime_origin: Option<&str>,
-    runtime_owner: Option<&UpstreamRuntimeOwner>,
-    shared_client: Option<&reqwest::Client>,
+pub(super) fn connect_upstream_with_handler_and_notifications<'a, H: ClientHandler + Clone + 'a>(
+    config: &'a UpstreamConfig,
+    subject: Option<&'a str>,
+    oauth_client_cache: Option<&'a OauthClientCache>,
+    runtime_origin: Option<&'a str>,
+    runtime_owner: Option<&'a UpstreamRuntimeOwner>,
+    shared_client: Option<&'a reqwest::Client>,
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
-) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    let started = Instant::now();
-    tracing::debug!(
-        surface = "dispatch",
-        service = "upstream.pool",
-        action = "upstream.connect",
-        event = "attempt",
-        operation = "connection.acquire",
-        upstream = %config.name,
-        transport = upstream_transport(config),
-        target = %upstream_target_redacted(config),
-        subject_scoped = subject.is_some(),
-        "upstream connection acquire attempt"
-    );
-    let result = match config.effective_transport() {
-        Some(UpstreamTransport::Http) => {
-            let url = config.url.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("upstream {} HTTP transport has no url", config.name)
-            })?;
-            connect_http_upstream_with_notifications(
-                url,
-                config,
-                subject,
-                oauth_client_cache,
-                shared_client,
-                handler,
-                notification_interceptor.clone(),
-            )
-            .await
-        }
-        Some(UpstreamTransport::Websocket) => {
-            let url = config.url.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("upstream {} WebSocket transport has no url", config.name)
-            })?;
-            connect_websocket_upstream(url, config, handler, notification_interceptor.clone()).await
-        }
-        Some(UpstreamTransport::Stdio) => {
-            let command = config.command.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("upstream {} stdio transport has no command", config.name)
-            })?;
-            connect_stdio_upstream(
-                command,
-                &config.args,
-                config,
-                runtime_origin,
-                runtime_owner,
-                handler,
-                notification_interceptor.clone(),
-            )
-            .await
-        }
-        Some(UpstreamTransport::UnixSocket) => {
-            let url = config.url.as_deref().ok_or_else(|| {
-                anyhow::anyhow!("upstream {} Unix socket transport has no url", config.name)
-            })?;
-            connect_unix_socket_upstream(
-                url,
-                config,
-                subject,
-                oauth_client_cache,
-                handler,
-                notification_interceptor.clone(),
-            )
-            .await
-        }
-        None => Err(anyhow::anyhow!(
-            "upstream {} has neither url nor command",
-            config.name
-        )),
-    };
-    match &result {
-        Ok((_, tools)) => tracing::info!(
+) -> impl Future<Output = anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)>> + Send + 'a
+{
+    // Heap-own all transport state machines once, keeping the generic relay
+    // and ordinary connection forwarding futures small on serving stacks.
+    Box::pin(async move {
+        let started = Instant::now();
+        tracing::debug!(
             surface = "dispatch",
             service = "upstream.pool",
             action = "upstream.connect",
-            event = "finish",
+            event = "attempt",
             operation = "connection.acquire",
             upstream = %config.name,
             transport = upstream_transport(config),
             target = %upstream_target_redacted(config),
             subject_scoped = subject.is_some(),
-            tool_count = tools.len(),
-            elapsed_ms = started.elapsed().as_millis(),
-            "upstream connection acquire finish"
-        ),
-        Err(error) => tracing::info!(
-            surface = "dispatch",
-            service = "upstream.pool",
-            action = "upstream.connect",
-            event = "error",
-            operation = "connection.acquire",
-            upstream = %config.name,
-            transport = upstream_transport(config),
-            target = %upstream_target_redacted(config),
-            subject_scoped = subject.is_some(),
-            kind = "upstream_connect_error",
-            error = %error,
-            elapsed_ms = started.elapsed().as_millis(),
-            "upstream connection acquire error"
-        ),
-    }
-    result
+            "upstream connection acquire attempt"
+        );
+        let result = match config.effective_transport() {
+            Some(UpstreamTransport::Http) => {
+                let url = config.url.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("upstream {} HTTP transport has no url", config.name)
+                })?;
+                connect_http_upstream_with_notifications(
+                    url,
+                    config,
+                    subject,
+                    oauth_client_cache,
+                    shared_client,
+                    handler,
+                    notification_interceptor.clone(),
+                )
+                .await
+            }
+            Some(UpstreamTransport::Websocket) => {
+                let url = config.url.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("upstream {} WebSocket transport has no url", config.name)
+                })?;
+                connect_websocket_upstream(url, config, handler, notification_interceptor.clone())
+                    .await
+            }
+            Some(UpstreamTransport::Stdio) => {
+                let command = config.command.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("upstream {} stdio transport has no command", config.name)
+                })?;
+                connect_stdio_upstream(
+                    command,
+                    &config.args,
+                    config,
+                    runtime_origin,
+                    runtime_owner,
+                    handler,
+                    notification_interceptor.clone(),
+                )
+                .await
+            }
+            Some(UpstreamTransport::UnixSocket) => {
+                let url = config.url.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("upstream {} Unix socket transport has no url", config.name)
+                })?;
+                connect_unix_socket_upstream(
+                    url,
+                    config,
+                    subject,
+                    oauth_client_cache,
+                    handler,
+                    notification_interceptor.clone(),
+                )
+                .await
+            }
+            None => Err(anyhow::anyhow!(
+                "upstream {} has neither url nor command",
+                config.name
+            )),
+        };
+        match &result {
+            Ok((_, tools)) => tracing::info!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "upstream.connect",
+                event = "finish",
+                operation = "connection.acquire",
+                upstream = %config.name,
+                transport = upstream_transport(config),
+                target = %upstream_target_redacted(config),
+                subject_scoped = subject.is_some(),
+                tool_count = tools.len(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "upstream connection acquire finish"
+            ),
+            Err(error) => tracing::info!(
+                surface = "dispatch",
+                service = "upstream.pool",
+                action = "upstream.connect",
+                event = "error",
+                operation = "connection.acquire",
+                upstream = %config.name,
+                transport = upstream_transport(config),
+                target = %upstream_target_redacted(config),
+                subject_scoped = subject.is_some(),
+                kind = "upstream_connect_error",
+                error = %error,
+                elapsed_ms = started.elapsed().as_millis(),
+                "upstream connection acquire error"
+            ),
+        }
+        result
+    })
 }
 
 pub(super) async fn connect_upstream(
@@ -930,6 +936,9 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             .build()?
     };
 
+    // Heap-poll HTTP startup below the nested resource-relay callchain. Keeping
+    // its concrete discovery future inline exhausts ordinary debug test stacks.
+    // Dropping the box retains the same lifecycle cancellation semantics.
     // Wrap in BodyCappedHttpClient so both the OAuth and non-OAuth paths
     // enforce the streaming response-size cap (P-H4).
     let capped =
@@ -961,20 +970,23 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             OrderedRelayNotificationTransport::new(worker, notification_interceptor.clone());
         let service = match lifecycle {
             LifecycleAttempt::Modern => UpstreamClientService::Direct(
-                handler
-                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                Box::pin(
+                    handler.serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
                         worker,
                         lifecycle.mode(),
-                    )
-                    .await?,
+                    ),
+                )
+                .await?,
             ),
             LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
-                VersionedClientHandler::new(handler, legacy_protocol_version())
-                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                Box::pin(
+                    VersionedClientHandler::new(handler, legacy_protocol_version())
+                        .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
                         worker,
                         lifecycle.mode(),
-                    )
-                    .await?,
+                    ),
+                )
+                .await?,
             ),
         };
         let peer = service.peer().clone();
@@ -1003,18 +1015,28 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     let worker = StreamableHttpClientWorker::new(capped, transport_config);
     let worker = WorkerTransport::spawn(worker);
     let worker = OrderedRelayNotificationTransport::new(worker, notification_interceptor);
-    let service = match lifecycle {
-        LifecycleAttempt::Modern => UpstreamClientService::Direct(
-            handler
-                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
+    let service =
+        match lifecycle {
+            LifecycleAttempt::Modern => UpstreamClientService::Direct(
+                Box::pin(
+                    handler.serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    ),
+                )
                 .await?,
-        ),
-        LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
-            VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(worker, lifecycle.mode())
+            ),
+            LifecycleAttempt::LegacyInitialize => UpstreamClientService::Versioned(
+                Box::pin(
+                    VersionedClientHandler::new(handler, legacy_protocol_version())
+                        .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        worker,
+                        lifecycle.mode(),
+                    ),
+                )
                 .await?,
-        ),
-    };
+            ),
+        };
     let peer = service.peer().clone();
     let tools = catalog_pagination::list_tools(&peer, DISCOVERY_TIMEOUT, MAX_UPSTREAM_TOOLS)
         .await
@@ -1081,6 +1103,29 @@ pub(super) fn runtime_origin_label(
 #[cfg(test)]
 mod conformance_tests {
     use super::configured_custom_headers;
+
+    #[test]
+    fn transport_owner_keeps_connection_caller_futures_bounded() {
+        let config = super::super::testsupport::test_upstream_config();
+        let owner = super::connect_upstream_with_handler_and_notifications(
+            &config,
+            None,
+            None,
+            None,
+            None,
+            None,
+            (),
+            None,
+        );
+        let caller = super::connect_upstream(&config, None, None, None, None);
+        eprintln!(
+            "connection future bytes: owner={}, caller={}",
+            size_of_val(&owner),
+            size_of_val(&caller)
+        );
+        assert!(size_of_val(&owner) < 4096);
+        assert!(size_of_val(&caller) < 4096);
+    }
 
     #[test]
     fn configured_headers_cannot_transit_an_inbound_authorization_token() {

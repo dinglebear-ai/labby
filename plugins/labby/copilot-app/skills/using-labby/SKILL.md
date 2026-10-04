@@ -84,6 +84,14 @@ For direct MCP stdio use, run `labby mcp`. For browser/API/admin workflows, run 
 For live upstream discovery, execution, batching, and recovery, load `$using-codemode`.
 For saved Code Mode workflows, load `$using-snippets`.
 
+## Agent response notifications
+
+The canonical `$using-codemode` skill owns receiving, acknowledgment, scope, and
+producer instructions for notices attached to Code Mode responses. Authorized
+producers use `POST /v1/notifications/agent`; do not edit the operator notification
+feed or the SQLite file to inject messages. Inbox addresses grant no authority.
+Delivery is not evidence that the underlying job completed successfully.
+
 ## Configuration
 
 Config lives in `$LABBY_HOME/.env` and `$LABBY_HOME/config.toml` (default

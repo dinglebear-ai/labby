@@ -1,6 +1,15 @@
 [
   {
     "service": "agents",
+    "env_var": "LABBY_AGENT_PROVIDER_PROTOCOL",
+    "required": false,
+    "secret": false,
+    "description": "Built-in Agent provider protocol: openai uses standard models and chat/completions endpoints; phoenix also uses provider session extensions. Omitted retains legacy phoenix behavior; select openai for a standard provider",
+    "example": "openai",
+    "default_port": null
+  },
+  {
+    "service": "agents",
     "env_var": "LABBY_PHOENIX_OPENAI_API_KEY",
     "required": false,
     "secret": true,
@@ -29,27 +38,27 @@
   {
     "service": "auth",
     "env_var": "LABBY_AUTHELIA_CLIENT_ID",
-    "required": false,
+    "required": true,
     "secret": false,
-    "description": "Authelia confidential OIDC client identifier",
+    "description": "Authelia confidential OIDC client identifier; required when OAuth mode selects Authelia",
     "example": "labby",
     "default_port": null
   },
   {
     "service": "auth",
     "env_var": "LABBY_AUTHELIA_CLIENT_SECRET",
-    "required": false,
+    "required": true,
     "secret": true,
-    "description": "Authelia confidential OIDC client secret",
+    "description": "Authelia confidential OIDC client secret; required when OAuth mode selects Authelia",
     "example": "<labby_authelia_client_secret>",
     "default_port": null
   },
   {
     "service": "auth",
     "env_var": "LABBY_AUTHELIA_ISSUER_URL",
-    "required": false,
+    "required": true,
     "secret": false,
-    "description": "Exact Authelia OIDC issuer URL",
+    "description": "Exact Authelia OIDC issuer URL; required when OAuth mode selects Authelia",
     "example": "https://auth.example.com",
     "default_port": null
   },
@@ -85,7 +94,7 @@
     "env_var": "LABBY_AUTH_ALLOWED_EMAIL_DOMAINS",
     "required": false,
     "secret": false,
-    "description": "Comma-separated Google Workspace hosted-domain allowlist",
+    "description": "Comma-separated admission-domain allowlist: Google Workspace hosted domains or verified Authelia email domains",
     "example": "example.com",
     "default_port": null
   },
@@ -193,7 +202,7 @@
     "env_var": "LABBY_AUTH_PROVIDER",
     "required": false,
     "secret": false,
-    "description": "Active inbound identity provider: google or authelia",
+    "description": "Inbound identity provider: google or authelia; inferred from credentials when omitted, with exactly one provider configured",
     "example": "authelia",
     "default_port": null
   },
@@ -274,7 +283,7 @@
     "env_var": "LABBY_GOOGLE_CLIENT_ID",
     "required": true,
     "secret": false,
-    "description": "Google OAuth client identifier used in oauth mode",
+    "description": "Google OAuth client identifier; required when OAuth mode selects Google",
     "example": "google-client-id",
     "default_port": null
   },
@@ -283,7 +292,7 @@
     "env_var": "LABBY_GOOGLE_CLIENT_SECRET",
     "required": true,
     "secret": true,
-    "description": "Google OAuth client secret used in oauth mode",
+    "description": "Google OAuth client secret; required when OAuth mode selects Google",
     "example": "<labby_google_client_secret>",
     "default_port": null
   },

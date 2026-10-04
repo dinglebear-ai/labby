@@ -24,6 +24,7 @@ fn javy_search_and_describe_preserve_declaration_presence() {
         ),
     ] {
         let info = SnippetInfo {
+            content_digest: None,
             name: "declaration".into(),
             description: Some("Declaration presentation".into()),
             tags: vec![],
@@ -139,6 +140,7 @@ fn javy_search_filters_lexical_and_semantic_results_by_kind() {
         None,
     ));
     let snippet = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::snippet(&SnippetInfo {
+        content_digest: None,
         name: "catalog_snippet".into(),
         description: Some("catalog kind filter".into()),
         tags: vec![],

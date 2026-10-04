@@ -158,6 +158,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: "1.27.1"
+          cache-dependency-path: tools/tailcat-bridge/go.sum
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Build natively
         # CI checks every workspace member. The release archives contain only
         # the product CLI, so avoid compiling unrelated workspace binaries and
@@ -169,7 +178,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/${{ matrix.binary }}"
-          tar -C dist -czf "${{ matrix.archive }}" "${{ matrix.binary }}"
+          scripts/package-tailcat-release.sh "$PWD/dist" "${GITHUB_REF_NAME#v}" "${{ matrix.target }}"
+          tar -C dist -czf "${{ matrix.archive }}" "${{ matrix.binary }}" tailcat
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${{ matrix.archive }}" > "${{ matrix.archive }}.sha256"
           else
@@ -545,14 +555,29 @@ jobs:
             labby-install.sh
             labby-install.sh.sha256
             release-manifest.json
+      - name: Publish account-free provenance bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifacts=(lab-*.tar.gz lab-*.spdx.json lab-*.sha256 labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json release-manifest.json)
+          scripts/ci/export-release-attestation-bundles.sh "${artifacts[@]}"
+          bundles=(*.sigstore.jsonl)
+          scripts/ci/upload-immutable-release-assets.sh -- "${bundles[@]}"
       - name: Verify release provenance as a consumer
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           shopt -s nullglob
+          verifier_dir=$(mktemp -d)
+          trap 'rm -rf "$verifier_dir"' EXIT
+          source scripts/ci/github-verifier-bootstrap.sh
+          ensure_github_verifier "$verifier_dir"
           for artifact in lab-*.tar.gz lab-*.sha256 lab-*.spdx.json labby-desktop-*.tar.gz labby-desktop-*.AppImage labby-desktop-*.sha256 labby-desktop-*.spdx.json labby-install.sh labby-install.sh.sha256 labby-install.sh.spdx.json release-manifest.json; do
-            scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
+            GH_VERIFIER="$GH_VERIFIER" scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done
       - name: Prepare npm stable pointer transaction
         env:

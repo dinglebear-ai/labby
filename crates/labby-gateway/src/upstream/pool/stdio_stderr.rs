@@ -173,6 +173,76 @@ const STDERR_LINE_MAX_BYTES: usize = 1024;
 /// Maximum number of lines forwarded per second from a single upstream's stderr.
 const STDERR_RATE_CAP_PER_SEC: u32 = 50;
 
+/// Retain only a diagnostic prefix while draining the rest of an oversized
+/// line. Emit the capped prefix immediately so a child cannot hold an
+/// unbounded line in memory (or withhold startup diagnostics) without a newline.
+struct BoundedStderrLines<R> {
+    reader: tokio::io::BufReader<R>,
+    line: Vec<u8>,
+    discarding: bool,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> BoundedStderrLines<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader: tokio::io::BufReader::new(reader),
+            line: Vec::with_capacity(STDERR_LINE_MAX_BYTES),
+            discarding: false,
+        }
+    }
+
+    async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        use tokio::io::AsyncBufReadExt;
+
+        loop {
+            let buffer = self.reader.fill_buf().await?;
+            if buffer.is_empty() {
+                return Ok((!self.line.is_empty()).then(|| self.take_line(false)));
+            }
+            let mut consumed = 0;
+            let mut complete = None;
+            for &byte in buffer {
+                consumed += 1;
+                if self.discarding {
+                    if byte == b'\n' {
+                        self.discarding = false;
+                    }
+                    continue;
+                }
+                if byte == b'\n' {
+                    complete = Some(false);
+                    break;
+                }
+                if self.line.len() == STDERR_LINE_MAX_BYTES {
+                    self.discarding = true;
+                    complete = Some(true);
+                    break;
+                }
+                self.line.push(byte);
+            }
+            self.reader.consume(consumed);
+            if let Some(truncated) = complete {
+                return Ok(Some(self.take_line(truncated)));
+            }
+        }
+    }
+
+    fn take_line(&mut self, truncated: bool) -> String {
+        if !truncated && self.line.last() == Some(&b'\r') {
+            self.line.pop();
+        }
+        let decoded = String::from_utf8_lossy(&self.line);
+        let capped = cap_line_bytes(&decoded, STDERR_LINE_MAX_BYTES);
+        let line = if truncated {
+            format!("{capped}…[truncated]")
+        } else {
+            capped.to_string()
+        };
+        self.line.clear();
+        line
+    }
+}
+
 /// Drain a piped child stderr to EOF, forwarding non-empty lines into tracing
 /// and retaining a bounded redacted tail for startup-failure diagnosis.
 pub(super) fn forward_upstream_stderr(
@@ -191,9 +261,7 @@ pub(super) fn forward_upstream_stderr(
     };
     tokio::spawn(async move {
         use labby_runtime::redact::redact_stdio_value;
-        use tokio::io::{AsyncBufReadExt, BufReader};
-
-        let mut lines = BufReader::new(stderr).lines();
+        let mut lines = BoundedStderrLines::new(stderr);
         let mut window_start = std::time::Instant::now();
         let mut lines_this_window: u32 = 0;
         let mut dropped_this_window: u32 = 0;
@@ -225,13 +293,7 @@ pub(super) fn forward_upstream_stderr(
                     }
                     lines_this_window += 1;
 
-                    let capped = cap_line_bytes(&line, STDERR_LINE_MAX_BYTES);
-                    let truncated = if capped.len() < line.len() {
-                        format!("{capped}…[truncated]")
-                    } else {
-                        line.clone()
-                    };
-                    let redacted = redact_stdio_value(&truncated);
+                    let redacted = redact_stdio_value(&line);
                     diagnostics.push(redacted.clone()).await;
 
                     let Some(level) = level else {
@@ -275,6 +337,73 @@ pub(super) fn forward_upstream_stderr(
 #[cfg(test)]
 mod tests {
     use super::{cap_line_bytes, parse_stderr_level};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_open_stderr_line_is_bounded_before_newline() {
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        // The child confirms it wrote the oversized line, then waits on stdin.
+        // Waiting for a newline here would retain arbitrary child output.
+        let mut child = tokio::process::Command::new("/bin/sh")
+            .args(["-c", "i=0; while [ $i -lt 2048 ]; do printf x >&2; i=$((i+1)); done; printf 'ready\\n'; read release; printf '\\nnext-line\\n' >&2"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("stderr fixture");
+        let diagnostics = super::StdioDiagnostics::default();
+        super::forward_upstream_stderr(
+            child.stderr.take(),
+            "bounded-stderr-fixture".into(),
+            None,
+            diagnostics.clone(),
+        );
+        let mut stdout = BufReader::new(child.stdout.take().expect("stdout")).lines();
+        assert_eq!(stdout.next_line().await.unwrap().as_deref(), Some("ready"));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !diagnostics.lines.lock().await.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("oversized stderr must be capped while the line remains open");
+        {
+            let lines = diagnostics.lines.lock().await;
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0], format!("{}…[truncated]", "x".repeat(1024)));
+        }
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"release\n")
+            .await
+            .unwrap();
+        assert!(child.wait().await.unwrap().success());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if diagnostics
+                    .lines
+                    .lock()
+                    .await
+                    .back()
+                    .is_some_and(|line| line == "next-line")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("drain must recover at the next line");
+        assert_eq!(diagnostics.lines.lock().await.len(), 2);
+    }
 
     #[test]
     fn stderr_level_unset_defaults_to_debug() {

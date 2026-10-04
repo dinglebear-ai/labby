@@ -34,10 +34,20 @@ export interface GatewayConfigView extends GatewayConfig {
 export interface GatewayWriteConfig extends GatewayConfig {
   bearer_token_value?: string
   /** OAuth spec — write-only, never returned by the API. Set when auth mode is 'oauth'. */
-  oauth?: { registration_strategy: string; scopes?: string[] }
+  oauth?: { registration_strategy: string; scopes?: string[] } | null
 }
 
+export type CapabilityKind = 'tools' | 'resources' | 'prompts' | 'skills'
+export interface CapabilityObservationValue {
+  state: 'unknown' | 'known' | 'stale' | 'failed'
+  discovered: number | null
+  exposed: number | null
+  error?: string | null
+}
+export type CapabilityObservation = { scope: 'global' | 'credential' } & Record<CapabilityKind, CapabilityObservationValue>
+
 export interface GatewayStatus {
+  capability_observation?: CapabilityObservation
   healthy: boolean
   connected: boolean
   /** Connected, but the runtime capability snapshot is still being populated. */
@@ -198,12 +208,18 @@ export interface GatewayImportResult {
   errors: GatewayImportError[]
 }
 
+/** Applied atomically with the upstream configuration, including private OAuth state. */
+export type GatewayProtectedRouteChange =
+  | { operation: 'upsert'; name?: string; route: ProtectedMcpRouteInput }
+  | { operation: 'remove'; name: string }
+
 export interface CreateGatewayInput {
   name: string
   /** Optional free-form label; `name` stays the stable identifier. */
   display_name?: string | null
   transport: TransportType
   config: GatewayWriteConfig
+  protected_route?: GatewayProtectedRouteChange
 }
 
 export interface UpdateGatewayInput {
@@ -211,10 +227,12 @@ export interface UpdateGatewayInput {
   /** `null` or blank clears the label; absent leaves it unchanged. */
   display_name?: string | null
   transport?: TransportType
-  config?: Partial<GatewayWriteConfig>
+  config?: Omit<Partial<GatewayWriteConfig>, 'url'> & { url?: string | null }
+  protected_route?: GatewayProtectedRouteChange
 }
 
 export interface TestGatewayResult {
+  capability_observation?: CapabilityObservation
   success: boolean
   severity?: 'success' | 'warning' | 'failure'
   message: string

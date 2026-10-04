@@ -77,11 +77,18 @@ async fn search_tools(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<ToolSearchRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let started = std::time::Instant::now();
-    private_tool_browser_admin(&auth)
-        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
+    let authority = require_platform_authority(
+        &state,
+        auth.as_ref().map(|value| &value.0),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.tools.search",
+    )
+    .await
+    .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
     if request.query.len() > labby_codemode::QUERY_MAX_BYTES {
         return Err(private_tool_error(
             ToolError::InvalidParam {
@@ -102,8 +109,16 @@ async fn search_tools(
         .ok_or_else(manager_not_wired)
         .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
+    authority
+        .validate_before_external_effect()
+        .await
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
     let response = manager
         .search_admin_tools(subject, &request.query, request.limit)
+        .await
+        .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
+    authority
+        .validate_before_external_effect()
         .await
         .map_err(|error| private_tool_error(error, "tools.search", started, &headers))?;
     tracing::info!(
@@ -125,11 +140,18 @@ async fn describe_tool(
     State(state): State<AppState>,
     headers: HeaderMap,
     auth: Option<Extension<AuthContext>>,
+    identity: Option<Extension<VerifiedIdentity>>,
     Json(request): Json<ToolDescribeRequest>,
 ) -> Result<impl IntoResponse, ApiError> {
     let started = std::time::Instant::now();
-    private_tool_browser_admin(&auth)
-        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
+    let authority = require_platform_authority(
+        &state,
+        auth.as_ref().map(|value| &value.0),
+        identity.as_ref().map(|value| &value.0),
+        "gateway.tools.describe",
+    )
+    .await
+    .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
     if request.target.len() > labby_codemode::TARGET_MAX_BYTES {
         return Err(private_tool_error(
             ToolError::InvalidParam {
@@ -150,8 +172,16 @@ async fn describe_tool(
         .ok_or_else(manager_not_wired)
         .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
+    authority
+        .validate_before_external_effect()
+        .await
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
     let response = manager
         .describe_admin_tool(subject, &request.target)
+        .await
+        .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
+    authority
+        .validate_before_external_effect()
         .await
         .map_err(|error| private_tool_error(error, "tools.describe", started, &headers))?;
     tracing::info!(
@@ -168,14 +198,47 @@ async fn describe_tool(
     Ok(no_referrer(Json(response)))
 }
 
-fn private_tool_browser_admin(auth: &Option<Extension<AuthContext>>) -> Result<(), ToolError> {
-    if has_admin_scope(auth.as_ref()) {
-        return Ok(());
-    }
-    Err(ToolError::Forbidden {
-        message: "tool browser requires `lab:admin` scope".into(),
+/// Scope is an outer ceiling; current durable PlatformManage authority is the
+/// admission decision shared by dedicated OAuth and private discovery routes.
+pub(crate) async fn require_platform_authority(
+    state: &AppState,
+    auth: Option<&AuthContext>,
+    identity: Option<&VerifiedIdentity>,
+    action: &str,
+) -> Result<crate::access::GatewayActionAuthorization, ToolError> {
+    let denied = || ToolError::Forbidden {
+        message: "Gateway operation is not authorized".into(),
         required_scopes: vec!["lab:admin".into()],
-    })
+    };
+    let auth = auth
+        .filter(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
+        .ok_or_else(denied)?;
+    let identity = identity.ok_or_else(denied)?.clone();
+    let installation_id = match state.installation_id.as_deref() {
+        Some(id) => id.to_owned(),
+        None => state
+            .access_runtime
+            .store()
+            .await
+            .map_err(|error| map_runtime_error("gateway", error))?
+            .installation_id()
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "service_unavailable".into(),
+                message: "Gateway authorization could not be evaluated".into(),
+            })?
+            .unwrap_or_else(|| "installation".to_owned()),
+    };
+    crate::access::authorize_gateway_action(
+        &state.access_runtime,
+        identity,
+        crate::access::AuthorityCeiling::from_auth_context(auth),
+        &installation_id,
+        None,
+        action,
+    )
+    .await?
+    .ok_or_else(denied)
 }
 
 fn manager_not_wired() -> ToolError {
@@ -432,7 +495,7 @@ async fn handle(
                     team_id.as_deref(),
                     oauth_subject.as_deref(),
                 );
-                let mut response = labby_runtime::usage_actor::scope_attributed(
+                let response = labby_runtime::usage_actor::scope_attributed(
                     labby_runtime::usage_actor::UsageAttribution::inbound(
                         usage_actor_tag,
                         "api",
@@ -448,7 +511,11 @@ async fn handle(
                         },
                     ),
                 )
-                .await?;
+                .await;
+                if let Some(authority) = gateway_authority.as_ref() {
+                    authority.validate_after_external_effect().await?;
+                }
+                let mut response = response?;
                 // Only Team-scoped policy responses are projected through the
                 // Team namespace; platform responses (upstream lists, OAuth
                 // state) must stay complete for an administrator who happens
@@ -1241,6 +1308,130 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_http_list_and_detail_preserve_unknown_credential_observation() {
+        let manager = test_manager();
+        let upstream: UpstreamConfig = serde_json::from_value(json!({
+            "name": "cold-oauth", "url": "http://127.0.0.1:9/mcp",
+            "oauth": {"mode":"authorization_code_pkce", "registration":{"strategy":"preregistered", "client_id":"fixture"}}
+        })).expect("OAuth fixture config");
+        manager.replace_config_for_tests(vec![upstream]).await;
+        for (action, params) in [
+            ("gateway.list", json!({})),
+            ("gateway.server.get", json!({"id":"cold-oauth"})),
+        ] {
+            let response =
+                post_gateway_as_admin(manager.clone(), json!({"action":action,"params":params}))
+                    .await;
+            assert_eq!(response.status(), StatusCode::OK, "{action}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+            let row = if action == "gateway.list" {
+                &payload[0]
+            } else {
+                &payload
+            };
+            let observation = &row["capability_observation"];
+            assert_eq!(observation["scope"], "credential", "{action}: {payload}");
+            assert_eq!(observation["tools"]["state"], "unknown", "{action}");
+            assert!(observation["tools"]["discovered"].is_null(), "{action}");
+            assert!(observation["tools"]["exposed"].is_null(), "{action}");
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    #[allow(clippy::disallowed_methods)] // Mock upstream descriptors, not Labby-owned tools.
+    async fn gateway_http_scoped_counts_and_inventory_use_installation_credential() {
+        let upstream: UpstreamConfig = serde_json::from_value(json!({
+            "name":"warm-oauth", "url":"http://127.0.0.1:9/mcp",
+            "expose_tools": (0..90).map(|index| format!("tool-{index}")).collect::<Vec<_>>(),
+            "oauth":{"mode":"authorization_code_pkce","registration":{"strategy":"preregistered","client_id":"fixture"}}
+        })).expect("OAuth config");
+        let pool = Arc::new(labby_gateway::upstream::pool::UpstreamPool::new());
+        for (subject, count) in [
+            (crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT, 91),
+            ("another-person", 7),
+        ] {
+            pool.install_test_subject_tools_for_upstream(
+                &upstream,
+                subject,
+                (0..count)
+                    .map(|index| {
+                        rmcp::model::Tool::new(
+                            format!("tool-{index}"),
+                            "fixture",
+                            Arc::new(serde_json::Map::new()),
+                        )
+                    })
+                    .collect(),
+            )
+            .await;
+        }
+        let runtime = GatewayRuntimeHandle::default();
+        runtime.swap(Some(pool)).await;
+        let manager = Arc::new(test_gateway_manager(
+            std::path::PathBuf::from("config.toml"),
+            runtime,
+        ));
+        manager.replace_config_for_tests(vec![upstream]).await;
+        for (action, params) in [
+            ("gateway.list", json!({})),
+            ("gateway.server.get", json!({"id":"warm-oauth"})),
+            ("gateway.discovered_tools", json!({"name":"warm-oauth"})),
+        ] {
+            let response =
+                post_gateway_as_admin(manager.clone(), json!({"action":action,"params":params}))
+                    .await;
+            assert_eq!(response.status(), StatusCode::OK, "{action}");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let payload: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+            if action == "gateway.discovered_tools" {
+                assert_eq!(
+                    payload.as_array().expect("tools").len(),
+                    91,
+                    "installation inventory must not use another person's catalog"
+                );
+                assert_eq!(
+                    payload
+                        .as_array()
+                        .expect("tools")
+                        .iter()
+                        .filter(|row| row["exposed"] == true)
+                        .count(),
+                    90
+                );
+            } else {
+                let row = if action == "gateway.list" {
+                    &payload[0]
+                } else {
+                    &payload
+                };
+                assert_eq!(
+                    row["capability_observation"]["scope"], "credential",
+                    "{action}"
+                );
+                assert_eq!(
+                    row["capability_observation"]["tools"]["state"], "known",
+                    "{action}"
+                );
+                assert_eq!(
+                    row["capability_observation"]["tools"]["discovered"], 91,
+                    "{action}"
+                );
+                assert_eq!(
+                    row["capability_observation"]["tools"]["exposed"], 90,
+                    "{action}"
+                );
+            }
+            assert!(!payload.to_string().contains("another-person"));
+        }
+    }
+
+    #[tokio::test]
     async fn gateway_code_mode_mcp_ui_update_persists_via_api() {
         let _guard = crate::config::process_code_mode_test_guard();
         let (manager, path) = test_manager_with_path();
@@ -1438,6 +1629,44 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
     }
 
+    #[test]
+    fn gateway_test_api_completes_with_one_mib_serving_stack() {
+        // Exercise the handler and scoped dispatcher together, rather than
+        // inferring serving-stack safety from a child future's size.
+        std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(gateway_test_accepts_proposed_spec)
+            .unwrap()
+            .join()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn atomic_gateway_save_api_rejects_selected_team_before_effects() {
+        let (manager, path) = test_manager_with_path();
+        let app = gateway_routes_with_auth_context(manager.clone(), admin_auth_context()).await;
+        let response = app.oneshot(Request::builder().method("POST").uri("/")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("x-labby-team-id", "alpha")
+            .body(Body::from(json!({"action":"gateway.add","params":{
+                "spec":{"name":"must-not-install","url":"https://example.test/mcp"},
+                "protected_route":{"operation":"upsert","route":{
+                    "name":"route","enabled":true,"public_host":"mcp.example.test","public_path":"/route",
+                    "backend_url":"https://example.test/mcp","backend_mcp_path":"/mcp","scopes":["mcp:read"]
+                }}
+            }}).to_string())).unwrap()).await.unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(error["kind"], "invalid_param", "{error}");
+        assert!(error["message"].as_str().unwrap().contains("Team"));
+        assert!(manager.current_config().await.upstream.is_empty());
+        assert!(!path.exists());
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
     #[tokio::test]
     async fn gateway_add_update_remove_reload_routes_exist() {
         let manager = test_manager();
@@ -1558,6 +1787,218 @@ mod tests {
         )
         .await
         .expect("response")
+    }
+
+    #[tokio::test]
+    async fn dedicated_admin_routes_reject_revoked_roles_and_missing_identity() {
+        let cases = [
+            ("POST", "/codemode/tools/search", json!({"query":"ping"})),
+            (
+                "POST",
+                "/codemode/tools/describe",
+                json!({"target":"alpha::ping"}),
+            ),
+            ("GET", "/oauth/upstreams", json!(null)),
+            (
+                "POST",
+                "/oauth/probe",
+                json!({"url":"https://fixture.invalid/mcp","confirm":true}),
+            ),
+            ("POST", "/oauth/start", json!({"upstream":"fixture"})),
+            ("GET", "/oauth/status?upstream=fixture", json!(null)),
+            ("POST", "/oauth/clear?upstream=fixture", json!(null)),
+            (
+                "POST",
+                "/oauth/google/revoke",
+                json!({"upstream":"fixture","confirm":true}),
+            ),
+        ];
+        let mut failures = Vec::new();
+        for denied_state in ["revoked", "disabled", "missing_identity"] {
+            let auth = admin_auth_context();
+            let identity = labby_auth::VerifiedIdentity::local_credential(
+                labby_auth::Authenticator::StaticBearer,
+                &auth.sub,
+            )
+            .unwrap();
+            let state = authorized_test_state_for_identity(test_manager(), identity.clone()).await;
+            if denied_state != "missing_identity" {
+                let statement = if denied_state == "revoked" {
+                    "UPDATE platform_administrators SET status='revoked', revoked_at=11"
+                } else {
+                    "UPDATE principals SET status='disabled'"
+                };
+                state
+                    .access_runtime
+                    .store()
+                    .await
+                    .unwrap()
+                    .execute_test_statement(statement)
+                    .await
+                    .unwrap();
+            }
+            let app = super::routes(state.clone())
+                .router
+                .nest(
+                    "/oauth",
+                    crate::api::upstream_oauth::gateway_routes(state.clone()).router,
+                )
+                .layer(Extension(auth));
+            let app = if denied_state == "missing_identity" {
+                app
+            } else {
+                app.layer(Extension(identity))
+            }
+            .with_state(state);
+            for (method, path, body) in &cases {
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(*method)
+                            .uri(*path)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                if response.status() != StatusCode::FORBIDDEN {
+                    failures.push(format!(
+                        "{denied_state}: {method} {path}: {}",
+                        response.status()
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "dedicated routes bypassed durable authority: {failures:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn dedicated_oauth_clear_uses_current_role_and_preserves_denied_credentials() {
+        use labby_auth::upstream::{encryption::load_key, manager::UpstreamOauthManager};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = labby_auth::sqlite::SqliteStore::open(directory.path().join("auth.db"))
+            .await
+            .unwrap();
+        let config: UpstreamConfig = serde_json::from_value(json!({
+            "name": "fixture", "enabled": true, "url": "https://fixture.invalid/mcp",
+            "oauth": {"mode": "authorization_code_pkce", "registration": {"strategy": "dynamic"}}
+        }))
+        .unwrap();
+        let key = load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
+        let redirect_uri = "https://lab.example/auth/upstream/callback".to_string();
+        let managers = Arc::new(dashmap::DashMap::new());
+        managers.insert(
+            "fixture".into(),
+            UpstreamOauthManager::new(
+                store.clone(),
+                key.clone(),
+                config.clone(),
+                redirect_uri.clone(),
+            ),
+        );
+        let manager = Arc::new(
+            test_gateway_manager(
+                directory.path().join("gateway.toml"),
+                GatewayRuntimeHandle::default(),
+            )
+            .with_oauth_resources(store.clone(), key, redirect_uri)
+            .with_upstream_oauth_managers(managers),
+        );
+        manager.replace_config_for_tests(vec![config]).await;
+        let subject = crate::dispatch::gateway::SHARED_GATEWAY_OAUTH_SUBJECT;
+        // Clear never decrypts this row: it must retain every byte on denial
+        // and remove the shared identity only after current durable admission.
+        store
+            .upsert_upstream_oauth_credentials(labby_auth::types::UpstreamOauthCredentialRow {
+                upstream_name: "fixture".into(),
+                subject: subject.into(),
+                client_id: "fixture-client".into(),
+                granted_scopes_json: "[]".into(),
+                token_blob: vec![1, 2, 3],
+                token_blob_nonce: vec![4, 5, 6],
+                token_received_at: 1,
+                access_token_expires_at: i64::MAX,
+                refresh_token_present: true,
+            })
+            .await
+            .unwrap();
+        let auth = admin_auth_context();
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            &auth.sub,
+        )
+        .unwrap();
+        let state = authorized_test_state_for_identity(manager, identity.clone()).await;
+        let access = state.access_runtime.store().await.unwrap();
+        access
+            .execute_test_statement(
+                "UPDATE platform_administrators SET status='revoked', revoked_at=11",
+            )
+            .await
+            .unwrap();
+        let app = crate::api::upstream_oauth::gateway_routes(state.clone())
+            .router
+            .layer(Extension(auth))
+            .layer(Extension(identity))
+            .with_state(state);
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/clear?upstream=fixture")
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let denied = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let retained = store
+            .find_upstream_oauth_credentials("fixture", subject)
+            .await
+            .unwrap()
+            .expect("denied clear preserves credentials");
+        assert_eq!(retained.token_blob, [1, 2, 3]);
+        assert_eq!(retained.token_blob_nonce, [4, 5, 6]);
+        assert!(retained.refresh_token_present);
+
+        access
+            .execute_test_statement(
+                "UPDATE platform_administrators SET status='active', revoked_at=NULL",
+            )
+            .await
+            .unwrap();
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/upstreams")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let payload: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(listed.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload, json!([{"name": "fixture"}]));
+        let allowed = app.oneshot(request()).await.unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        assert!(
+            store
+                .find_upstream_oauth_credentials("fixture", subject)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1698,5 +2139,125 @@ mod tests {
             crate::access::filter_team_gateway_projection(Some("alpha"), &mut platform);
         }
         assert_eq!(platform, expected);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn gateway_http_fences_revocation_during_discovery() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let provider = MockServer::start().await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let responder_entered = entered.clone();
+        let responder_gate = gate.clone();
+        let response = ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": format!("{}/mcp", provider.uri()),
+            "authorization_endpoint": format!("{}/authorize", provider.uri()),
+            "token_endpoint": format!("{}/token", provider.uri()),
+            "code_challenge_methods_supported": ["S256"]
+        }));
+        Mock::given(method("GET"))
+            .respond_with(move |_: &wiremock::Request| {
+                responder_entered.notify_one();
+                let (lock, ready) = &*responder_gate;
+                let released = lock.lock().unwrap();
+                let (released, timeout) = ready
+                    .wait_timeout_while(released, std::time::Duration::from_secs(5), |released| {
+                        !*released
+                    })
+                    .unwrap();
+                assert!(
+                    *released && !timeout.timed_out(),
+                    "authority test barrier was not released"
+                );
+                response.clone()
+            })
+            .mount(&provider)
+            .await;
+        let dir = tempfile::Builder::new()
+            .prefix("labby-code-mode-oauth-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+            .await
+            .unwrap();
+        let config: UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name": "personal", "enabled": true,
+            "url": format!("{}/mcp", provider.uri()),
+            "oauth": {"mode": "authorization_code_pkce", "registration": {
+                "strategy": "preregistered", "client_id": "fixture"
+            }}
+        }))
+        .unwrap();
+        let key = crate::oauth::upstream::encryption::load_key(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )
+        .unwrap();
+        let callback = "https://lab.example.com/auth/upstream/callback";
+        let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+            store.clone(),
+            key.clone(),
+            config.clone(),
+            callback.into(),
+        );
+        let managers = Arc::new(dashmap::DashMap::new());
+        managers.insert("personal".to_owned(), oauth);
+        let manager = test_gateway_manager(dir.path().join("lab.toml"), Default::default())
+            .with_oauth_resources(store.clone(), key, callback.into())
+            .with_upstream_oauth_managers(managers);
+        manager.replace_config_for_tests(vec![config]).await;
+
+        let manager = Arc::new(manager);
+        let identity = labby_auth::VerifiedIdentity::local_credential(
+            labby_auth::Authenticator::StaticBearer,
+            "personal-user",
+        )
+        .unwrap();
+        let state = authorized_test_state_for_identity(manager, identity.clone()).await;
+        let access = state.access_runtime.clone();
+        let app = super::routes(state.clone())
+            .router
+            .layer(Extension(manage_auth_context("personal-user")))
+            .layer(Extension(identity))
+            .with_state(state);
+        let operation = tokio::spawn(async move {
+            post_gateway_routes(
+                app,
+                json!({"action":"gateway.oauth.authorize", "params":{"upstream":"personal"}}),
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+            .await
+            .unwrap();
+        access
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement("UPDATE principals SET status='disabled', updated_at=12")
+            .await
+            .unwrap();
+        {
+            let (lock, ready) = &*gate;
+            *lock.lock().unwrap() = true;
+            ready.notify_all();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), operation)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!result.status().is_success());
+        let body = axum::body::to_bytes(result.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(envelope["kind"], "authority_changed", "{envelope}");
+        assert_eq!(envelope["original_kind"], "forbidden", "{envelope}");
+        assert_eq!(envelope["action"], "gateway.oauth.authorize", "{envelope}");
+        assert_eq!(envelope["side_effects"], "possible");
+        assert_eq!(envelope["recovery"]["same_arguments"], "discouraged");
     }
 }

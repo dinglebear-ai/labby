@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { cancelAgentSession, listAgents, listTasks } from './client.ts'
+import { cancelAgentSession, listAgentModels, listAgents, listTasks } from './client.ts'
 import { __setBrowserSessionStateForTests } from '../auth/session-store.ts'
 
 const authority = { schemaVersion: 1, compatibilityGeneration: 1, principalId: 'principal-1', organizationId: 'org-1', activeOwner: { kind: 'team' as const, id: 'team-1' }, activeTeamId: 'team-1', teams: [{ id: 'team-1', role: 'member', membershipEpoch: 1, policyEpoch: 1 }], projects: [], capabilities: ['scope.read'], generation: 1 } as const
@@ -62,6 +62,20 @@ test('agent session cancel posts the shared cancel action with the session bindi
   assert.equal(requests[0]!.method, 'POST')
   assert.equal(requests[0]!.headers.get('x-csrf-token'), 'csrf')
   assert.deepEqual(JSON.parse(await requests[0]!.text()), { action: 'agents.session.cancel', params: { agent_id: 'a-1', session_id: 's-1' } })
+})
+
+test('Agent models are read for the selected authorized owner', async () => {
+  authenticate()
+  let requestBody: unknown
+  globalThis.fetch = async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body))
+    return Response.json({ models: ['model-a', 'model-b'] })
+  }
+  assert.deepEqual(await listAgentModels('team', 'team-1'), ['model-a', 'model-b'])
+  assert.deepEqual(requestBody, {
+    action: 'agents.models.list',
+    params: { owner_kind: 'team', owner_id: 'team-1' },
+  })
 })
 
 test('repeated pagination cursors fail closed', async () => {

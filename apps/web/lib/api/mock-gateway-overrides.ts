@@ -2,9 +2,10 @@ import type { ExposurePolicy, Gateway } from '../types/gateway.ts'
 import { EXPOSE_NONE_PATTERN } from './tool-exposure-draft.ts'
 
 export interface MockGatewayOverride {
+  capabilityObservation?: Gateway['status']['capability_observation']
   exposurePolicy?: ExposurePolicy
   proxyResources?: boolean
-  config?: Partial<Gateway['config']>
+  config?: Omit<Partial<Gateway['config']>, 'url'> & { url?: string | null }
 }
 
 const STORAGE_KEY = 'labby.mock.gateway-overrides.v1'
@@ -71,7 +72,11 @@ export function applyMockGatewayOverride(
     return gateway
   }
 
-  const overriddenConfig = { ...gateway.config, ...override.config }
+  const overriddenConfig = {
+    ...gateway.config,
+    ...override.config,
+    url: override.config?.url === null ? undefined : override.config?.url ?? gateway.config.url,
+  }
   const exposePatterns = override.exposurePolicy?.mode === 'allowlist'
     ? override.exposurePolicy.patterns
     : []
@@ -104,6 +109,7 @@ export function applyMockGatewayOverride(
     },
     status: {
       ...gateway.status,
+      capability_observation: override.capabilityObservation ?? gateway.status.capability_observation,
       exposed_tool_count: tools.filter((tool) => tool.exposed).length,
       exposed_resource_count: proxyResources ? gateway.discovery.resources.length : 0,
     },

@@ -379,6 +379,56 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     })
 }
 
+/// Remove one credential key through the canonical compensation primitive.
+pub fn remove_key(path: &Path, key: &str) -> Result<MergeOutcome, MergeError> {
+    restore_key(path, key, None)
+}
+
+/// Restore the effective credential under one host lock. Canonicalize only this
+/// key (including exported/duplicate rows), retaining unrelated current bytes.
+pub fn restore_key(
+    path: &Path,
+    key: &str,
+    previous: Option<&str>,
+) -> Result<MergeOutcome, MergeError> {
+    let write_error = |error: super::host_write::HostWriteError| MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::Other(error.to_string()),
+    };
+    let lock = HostConfigLock::acquire(path).map_err(write_error)?;
+    let raw = lock.read_raw().map_err(write_error)?;
+    let replacement = previous.map(|value| format!("{key}={}", quote_value(value)));
+    let output =
+        labby_runtime::dotenv::rewrite_key(&raw, key, replacement.as_deref()).map_err(|_| {
+            MergeError::WriteFailed {
+                path: path.to_path_buf(),
+                reason: WriteFailReason::Other("cannot rewrite an invalid dotenv file".into()),
+            }
+        })?;
+    if output == raw {
+        return Ok(MergeOutcome::default());
+    }
+    let backup_path = if path.exists() {
+        Some(create_backup(path)?)
+    } else {
+        None
+    };
+    lock.write(&output).map_err(write_error)?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let pruned =
+        prune_backups(parent, path).map_err(|source| MergeError::CommittedMaintenanceFailed {
+            path: path.to_path_buf(),
+            backup_path: backup_path.clone(),
+            source,
+        })?;
+    Ok(MergeOutcome {
+        written: 1,
+        backup_path,
+        pruned,
+        ..Default::default()
+    })
+}
+
 /// Classify a merge without writing, backing up, or pruning files.
 #[cfg(test)]
 pub fn preview(path: &Path, req: &MergeRequest) -> Result<MergePreview, MergeError> {
@@ -468,6 +518,20 @@ fn write_atomically(
         source: e,
     })?;
     set_secure_perms(tmp.path())?;
+    #[cfg(windows)]
+    labby_winjob::fs::set_created_owner(tmp.path(), tmp.as_file(), false).map_err(|error| {
+        MergeError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: WriteFailReason::from_io(&error),
+        }
+    })?;
+    #[cfg(windows)]
+    labby_winjob::fs::verify_private_acl(tmp.as_file()).map_err(|error| {
+        MergeError::WriteFailed {
+            path: path.to_path_buf(),
+            reason: WriteFailReason::Other(format!("private environment temporary: {error}")),
+        }
+    })?;
     {
         let file = tmp.as_file_mut();
         for line in lines {
@@ -646,6 +710,14 @@ fn copy_file_contents(src: &Path, dest_path: &Path) -> std::io::Result<()> {
         }
         return Err(std::io::Error::other(error.to_string()));
     }
+    #[cfg(windows)]
+    if !dest_existed {
+        if let Err(error) = labby_winjob::fs::set_created_owner(dest_path, &dest, false) {
+            drop(dest);
+            drop(fs::remove_file(dest_path));
+            return Err(error);
+        }
+    }
     let copied = std::io::copy(&mut src, &mut dest).map(|_| ());
     if copied.is_err() && !dest_existed {
         drop(dest);
@@ -668,6 +740,7 @@ fn quote_value(value: &str) -> String {
         match ch {
             '"' => out.push_str(r#"\""#),
             '\\' => out.push_str(r"\\"),
+            '$' => out.push_str(r"\$"),
             other => out.push(other),
         }
     }
@@ -676,7 +749,7 @@ fn quote_value(value: &str) -> String {
 }
 
 /// Strip enclosing double quotes from a serialized `.env` value and undo
-/// the `\"` / `\\` escapes applied by the private `quote_value` helper. Pub so the dispatch
+/// the `\"` / `\\` / `\$` escapes applied by the private `quote_value` helper. Pub so the dispatch
 /// layer can use the same parser when reading `.env.draft` directly
 /// (no second copy of the same logic in `dispatch/setup/draft.rs`).
 #[must_use]
@@ -684,6 +757,7 @@ pub fn strip_quotes(value: &str) -> String {
     if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
         value[1..value.len() - 1]
             .replace(r#"\""#, "\"")
+            .replace(r"\$", "$")
             .replace(r"\\", r"\")
     } else {
         value.to_owned()
@@ -695,10 +769,136 @@ pub fn strip_quotes(value: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn credential_literal_dollar_roundtrips_through_restore_and_draft_decoder() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        for value in [
+            r"prefix${LABBY_TEST_LITERAL_SECRET_UNSET_91B09}slash\$suffix",
+            r"$",
+            r"\$",
+            r"\\$",
+            r#"quote\"$suffix"#,
+            "first\n${LABBY_TEST_LITERAL_SECRET_UNSET_91B09}\nlast",
+        ] {
+            restore_key(&path, "TOKEN", Some(value)).unwrap();
+            let raw = fs::read_to_string(&path).unwrap();
+            let (_, loaded) = dotenvy::from_read_iter(raw.as_bytes())
+                .next()
+                .unwrap()
+                .unwrap();
+            assert_eq!(loaded, value);
+            assert_eq!(strip_quotes(&quote_value(value)), value);
+        }
+    }
+
+    #[test]
+    fn multiline_credential_restore_preserves_unrelated_assignment_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let unrelated = "# operator comment\r\nNOTE=\"first\r\nTOKEN=keep-this-value\r\nlast\"\r\n";
+        let raw = format!("{unrelated}TOKEN=abc\n");
+        fs::write(&path, &raw).unwrap();
+        assert_eq!(restore_key(&path, "TOKEN", Some("abc")).unwrap().written, 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        restore_key(&path, "TOKEN", Some("replacement")).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!("{unrelated}TOKEN=replacement\n")
+        );
+        remove_key(&path, "TOKEN").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), unrelated);
+    }
+
+    #[test]
+    fn multiline_credential_restore_removes_complete_target_assignments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let raw = "# top\nexport TOKEN=\"old\nOTHER=inside-token\nlast\"\nTOKEN=duplicate\nKEEP=unchanged";
+        fs::write(&path, raw).unwrap();
+        restore_key(&path, "TOKEN", Some("new")).unwrap();
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# top\nTOKEN=new\nKEEP=unchanged"
+        );
+        remove_key(&path, "TOKEN").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "# top\nKEEP=unchanged");
+    }
+
+    #[test]
+    fn multiline_credential_restore_rejects_unclosed_values_without_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let raw = "NOTE=\"first\nTOKEN=continuation\n";
+        fs::write(&path, raw).unwrap();
+        assert!(restore_key(&path, "TOKEN", Some("new")).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert!(fs::read_dir(dir.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".env.bak.")
+        }));
+    }
+
     fn write_initial(dir: &Path, name: &str, contents: &str) -> PathBuf {
         let path = dir.join(name);
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn merged_env_and_backup_support_protected_current_user_reads() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let path = directory.path().join(".env");
+        for value in ["first", "second"] {
+            let outcome = merge(
+                &path,
+                MergeRequest {
+                    entries: vec![EnvEntry::new("LABBY_LOG", value)],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let parents = labby_winjob::fs::AncestorGuard::for_file(&path).unwrap();
+            parents.verify_parent_acl().expect("merged env parent ACL");
+            let file = labby_winjob::fs::open_read(&path, false).unwrap();
+            labby_winjob::fs::verify_private_acl(&file).expect("merged env file owner and ACL");
+            drop(file);
+            drop(parents);
+            let bytes = crate::installation::secure_file::read_private(&path).unwrap();
+            assert_eq!(
+                String::from_utf8(bytes).unwrap(),
+                format!("LABBY_LOG={value}\n")
+            );
+            if let Some(backup) = outcome.backup_path {
+                assert_eq!(
+                    crate::installation::secure_file::read_private(&backup).unwrap(),
+                    b"LABBY_LOG=first\n"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn remove_key_preserves_comments_exports_and_unrelated_current_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let raw = "# operator note\nexport\tTOKEN=one\nTOKEN=two\nexport=literal-key\nTOKEN_SUFFIX=keep\nOTHER=\"new writer\"\n";
+        fs::write(&path, raw).unwrap();
+        let outcome = remove_key(&path, "TOKEN").unwrap();
+        assert_eq!(outcome.written, 1);
+        assert_eq!(
+            fs::read_to_string(outcome.backup_path.unwrap()).unwrap(),
+            raw
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "# operator note\nexport=literal-key\nTOKEN_SUFFIX=keep\nOTHER=\"new writer\"\n"
+        );
+        assert_eq!(remove_key(&path, "TOKEN").unwrap().written, 0);
     }
 
     #[test]

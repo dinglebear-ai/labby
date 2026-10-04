@@ -119,7 +119,7 @@ impl CodeModePersonalOauthProvider for CanonicalPersonalOauthProvider {
             .await?
             .ok_or_else(denied)?;
             authority.validate_before_external_effect().await?;
-            crate::dispatch::gateway::dispatch_with_manager_scoped(
+            let result = crate::dispatch::gateway::dispatch_with_manager_scoped(
                 manager,
                 "gateway.oauth.authorize",
                 params,
@@ -128,7 +128,9 @@ impl CodeModePersonalOauthProvider for CanonicalPersonalOauthProvider {
                     oauth_subject: Some(subject),
                 },
             )
-            .await
+            .await;
+            authority.validate_after_external_effect().await?;
+            result
         })
     }
 }
@@ -276,5 +278,143 @@ mod tests {
                 .kind(),
             "forbidden"
         );
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn personal_oauth_fences_revocation_during_discovery() {
+        let provider = MockServer::start().await;
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let gate = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let responder_entered = entered.clone();
+        let responder_gate = gate.clone();
+        let response = ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer": format!("{}/mcp", provider.uri()),
+            "authorization_endpoint": format!("{}/authorize", provider.uri()),
+            "token_endpoint": format!("{}/token", provider.uri()),
+            "code_challenge_methods_supported": ["S256"]
+        }));
+        Mock::given(method("GET"))
+            .respond_with(move |_: &wiremock::Request| {
+                responder_entered.notify_one();
+                let (lock, ready) = &*responder_gate;
+                let released = lock.lock().unwrap();
+                let (released, timeout) = ready
+                    .wait_timeout_while(released, std::time::Duration::from_secs(5), |released| {
+                        !*released
+                    })
+                    .unwrap();
+                assert!(
+                    *released && !timeout.timed_out(),
+                    "authority test barrier was not released"
+                );
+                response.clone()
+            })
+            .mount(&provider)
+            .await;
+        let dir = tempfile::Builder::new()
+            .prefix("labby-code-mode-oauth-")
+            .tempdir_in(std::env::current_dir().unwrap())
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let store = labby_auth::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+            .await
+            .unwrap();
+        let config: labby_runtime::gateway_config::UpstreamConfig =
+            serde_json::from_value(serde_json::json!({
+                "name": "personal", "enabled": true,
+                "url": format!("{}/mcp", provider.uri()),
+                "oauth": {"mode": "authorization_code_pkce", "registration": {
+                    "strategy": "preregistered", "client_id": "fixture"
+                }}
+            }))
+            .unwrap();
+        let key = crate::oauth::upstream::encryption::load_key(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        )
+        .unwrap();
+        let callback = "https://lab.example.com/auth/upstream/callback";
+        let oauth = labby_auth::upstream::manager::UpstreamOauthManager::new(
+            store.clone(),
+            key.clone(),
+            config.clone(),
+            callback.into(),
+        );
+        let managers = Arc::new(dashmap::DashMap::new());
+        managers.insert("personal".to_owned(), oauth);
+        let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
+            dir.path().join("lab.toml"),
+            Default::default(),
+        )
+        .with_oauth_resources(store.clone(), key, callback.into())
+        .with_upstream_oauth_managers(managers);
+        manager.replace_config_for_tests(vec![config]).await;
+
+        let identity =
+            VerifiedIdentity::local_credential(labby_auth::Authenticator::StaticBearer, "reader")
+                .unwrap();
+        let access = Arc::new(AccessRuntime::initialize(dir.path().join("access.db")).await);
+        access
+            .bootstrap_owner(
+                crate::access::BootstrapOwnerInput::new(identity.clone(), "Personal", "Default")
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let auth = labby_auth::auth_context::AuthContext {
+            sub: "reader".to_owned(),
+            actor_key: None,
+            scopes: vec!["lab".to_owned()],
+            issuer: "test".to_owned(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        };
+        let guard = register_personal_authority(
+            access.clone(),
+            identity,
+            AuthorityCeiling::from_auth_context(&auth),
+            auth.sub,
+            None,
+        );
+        let token = guard.token().to_owned();
+        let operation = tokio::spawn(async move {
+            CanonicalPersonalOauthProvider
+                .authorize(
+                    &manager,
+                    &token,
+                    serde_json::json!({"upstream": "personal"}),
+                )
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), entered.notified())
+            .await
+            .unwrap();
+        access
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement("UPDATE principals SET status='disabled', updated_at=12")
+            .await
+            .unwrap();
+        {
+            let (lock, ready) = &*gate;
+            *lock.lock().unwrap() = true;
+            ready.notify_all();
+        }
+        let result = tokio::time::timeout(std::time::Duration::from_secs(10), operation)
+            .await
+            .unwrap()
+            .unwrap();
+        let error = result.expect_err("revocation must fence authorization URL disclosure");
+        let envelope = error.to_agent_value();
+        assert_eq!(envelope["kind"], "authority_changed", "{envelope}");
+        assert_eq!(envelope["original_kind"], "forbidden", "{envelope}");
+        assert_eq!(envelope["action"], "gateway.oauth.authorize", "{envelope}");
+        assert_eq!(envelope["side_effects"], "possible");
+        assert_eq!(envelope["recovery"]["same_arguments"], "discouraged");
+        drop(guard);
     }
 }

@@ -64,7 +64,7 @@ pub async fn check_proxy_preflight(surface: &'static str) -> Report {
         ));
     } else {
         #[cfg(feature = "gateway")]
-        findings.extend(tailscale_findings().await);
+        findings.extend(tailscale_findings(preferences.exposure).await);
         #[cfg(not(feature = "gateway"))]
         findings.push(gateway_feature_unavailable("proxy:tailscale-version"));
     }
@@ -159,7 +159,11 @@ async fn auth_findings(
         ProxyAuthMode::Oauth => {
             #[cfg(feature = "gateway")]
             {
-                oauth_findings(_config, surface).await
+                if preferences.exposure == ProxyExposure::Funnel {
+                    funnel_oauth_findings(_config, preferences).await
+                } else {
+                    oauth_findings(_config, surface).await
+                }
             }
             #[cfg(not(feature = "gateway"))]
             {
@@ -167,6 +171,62 @@ async fn auth_findings(
             }
         }
     }
+}
+
+#[cfg(feature = "gateway")]
+async fn funnel_oauth_findings(
+    config: &crate::config::LabConfig,
+    preferences: &ProxyPreferences,
+) -> Vec<Finding> {
+    let mut options = crate::proxy::tailscale::TailscaleServeOptions::for_proxy(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+        preferences.path.clone(),
+        preferences.port,
+        preferences.port_range_start,
+        preferences.port_range_end,
+    );
+    options.exposure = preferences.exposure;
+    options.auth = preferences.auth;
+    if let Some(executable) = std::env::var_os("LABBY_TAILSCALE_BIN") {
+        options.executable = executable.into();
+    }
+    let result = async {
+        let plan = crate::proxy::tailscale::TailscaleServePlan::prepare(options).await?;
+        preferences.validate()?;
+        let auth = crate::proxy::oauth::resolve_self_hosted_auth_config(config, plan.public_url())?;
+        validate_funnel_state_paths(&auth)?;
+        anyhow::Ok(())
+    }
+    .await;
+    vec![match result {
+        Ok(()) => finding(
+            "proxy:oauth-self-hosted",
+            Severity::Ok,
+            "Funnel OAuth credentials, admission policy, persistent state paths, and planned issuer are configured; no live Labby daemon is required",
+        ),
+        Err(error) => finding(
+            "proxy:oauth-self-hosted",
+            Severity::Fail,
+            format!("self-hosted Funnel OAuth preflight failed: {error:#}"),
+        ),
+    }]
+}
+
+#[cfg(feature = "gateway")]
+fn validate_funnel_state_paths(auth: &labby_auth::config::AuthConfig) -> anyhow::Result<()> {
+    for path in [&auth.sqlite_path, &auth.key_path] {
+        anyhow::ensure!(path.is_absolute(), "OAuth state paths must be absolute");
+        match std::fs::metadata(path) {
+            Ok(metadata) => anyhow::ensure!(metadata.is_file(), "OAuth state path is not a file"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::ensure!(
+        auth.sqlite_path != auth.key_path,
+        "OAuth database and signing key require separate paths"
+    );
+    Ok(())
 }
 
 #[cfg(feature = "gateway")]
@@ -343,7 +403,7 @@ async fn oauth_findings(config: &crate::config::LabConfig, surface: &'static str
 }
 
 #[cfg(feature = "gateway")]
-async fn tailscale_findings() -> Vec<Finding> {
+async fn tailscale_findings(exposure: ProxyExposure) -> Vec<Finding> {
     let executable = std::env::var_os("LABBY_TAILSCALE_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("tailscale"));
@@ -438,19 +498,24 @@ async fn tailscale_findings() -> Vec<Finding> {
         },
     ));
 
-    match crate::proxy::tailscale::run_checked(&executable, ["serve", "status", "--json"])
+    let publication = if exposure == ProxyExposure::Funnel {
+        "funnel"
+    } else {
+        "serve"
+    };
+    match crate::proxy::tailscale::run_checked(&executable, [publication, "status", "--json"])
         .await
         .and_then(|raw| ServeStatus::parse(&raw))
     {
         Ok(_) => findings.push(finding(
             "proxy:tailscale-https-serve",
             Severity::Ok,
-            "Tailscale HTTPS Serve status is readable without mutation",
+            format!("Tailscale HTTPS {publication} status is readable without mutation"),
         )),
         Err(error) => findings.push(finding(
             "proxy:tailscale-https-serve",
             Severity::Fail,
-            format!("Tailscale HTTPS Serve capability is unavailable: {error:#}"),
+            format!("Tailscale HTTPS {publication} capability is unavailable: {error:#}"),
         )),
     }
     findings
@@ -471,5 +536,62 @@ mod feature_boundary_tests {
             finding.message,
             "gateway feature is not compiled into this labby build"
         );
+    }
+}
+
+#[cfg(all(test, feature = "gateway"))]
+mod funnel_tests {
+    use super::*;
+
+    fn auth_at(home: &std::path::Path) -> labby_auth::config::AuthConfig {
+        labby_auth::config::AuthConfigBuilder::new()
+            .env_prefix("LABBY")
+            .build_from_sources([
+                ("LABBY_AUTH_MODE".to_string(), "oauth".to_string()),
+                (
+                    "LABBY_PUBLIC_URL".to_string(),
+                    "https://host.tailnet.ts.net:8443/".to_string(),
+                ),
+                (
+                    "LABBY_GOOGLE_CLIENT_ID".to_string(),
+                    "test-client".to_string(),
+                ),
+                (
+                    "LABBY_GOOGLE_CLIENT_SECRET".to_string(),
+                    "test-secret".to_string(),
+                ),
+                (
+                    "LABBY_AUTH_ADMIN_EMAIL".to_string(),
+                    "owner@example.com".to_string(),
+                ),
+                ("LABBY_TOKEN_ENCRYPTION_KEY".to_string(), "11".repeat(32)),
+                (
+                    "LABBY_AUTH_SQLITE_PATH".to_string(),
+                    home.join("auth.db").display().to_string(),
+                ),
+                (
+                    "LABBY_AUTH_KEY_PATH".to_string(),
+                    home.join("auth-jwt.pem").display().to_string(),
+                ),
+            ])
+            .unwrap()
+    }
+
+    #[test]
+    fn funnel_state_checks_do_not_open_state_or_daemon() {
+        let home = tempfile::tempdir().unwrap();
+        validate_funnel_state_paths(&auth_at(home.path())).unwrap();
+        assert_eq!(std::fs::read_dir(home.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn funnel_state_rejects_directory_and_shared_database_key_path() {
+        let home = tempfile::tempdir().unwrap();
+        let mut auth = auth_at(home.path());
+        auth.sqlite_path = home.path().to_path_buf();
+        assert!(validate_funnel_state_paths(&auth).is_err());
+        let mut auth = auth_at(home.path());
+        auth.key_path = auth.sqlite_path.clone();
+        assert!(validate_funnel_state_paths(&auth).is_err());
     }
 }

@@ -2,9 +2,9 @@
 
 This directory is the canonical documentation entrypoint for the current Labby product.
 
-The live Rust/TypeScript implementation and the generated catalogs under [generated/](./generated/README.md) are the ground truth for what is compiled, registered, and exposed. Product prose should explain that implementation rather than preserve old product shapes.
+The current Rust/TypeScript implementation owns product behavior. The catalogs under [generated/](./generated/README.md) describe the all-feature documentation projection, not a live deployment: platform, startup configuration, route exposure, and caller authorization still determine which operations are available. Product prose should explain these boundaries rather than preserve old product shapes.
 
-Historical material that still has durable value lives under `docs/archive/` and is explicitly non-canonical. Durable implementation-plan packets may remain under `docs/plans/` when they retain useful engineering evidence, but completed packets must say that they are historical and point back to the current canonical product docs. Transient research caches, session logs, and generated smoke output are not product documentation; Git history retains them when historical archaeology is needed.
+Historical material under `docs/archive/`, plans, and dated task records is not current product authority. Completed implementation packets should identify their historical status and point to the current contracts. `docs/sessions/` and `docs/superpowers/` are protected history, excluded from a general audit, including link audits. `docs/references/` is an untracked research cache. See [Documentation Maintenance](./dev/DOCUMENTATION.md#audit-the-tree-before-editing) for classification and update rules.
 
 ## Start Here
 
@@ -26,6 +26,8 @@ Historical material that still has durable value lives under `docs/archive/` and
 - [Access Control, Workspaces, and Artifact Distribution](./access-control/README.md) — active specification/contract for organizations, groups, projects, effective workspaces, scoped assets/capabilities, and Personal Labby Artifact sync/fork flows.
 - [Skills-over-MCP compatibility](./plans/skills-over-mcp-compat/README.md) — historical implementation plan and progress record; the current contract is [Skills extension](./contracts/skills-extension.md) and current product behavior is [Artifacts And Agent Skills](./services/SKILLS.md).
 - [Verification and compliance](./dev/VERIFICATION.md) — implemented specification oracles, model/replay tiers, real-process conformance, evidence boundaries, and qualification rules; operational commands live in the [verification workspace](../tools/verification/README.md).
+- [First-use release qualification](./dev/FIRST_USE_RELEASE_QUALIFICATION.md) — timed clean-machine evidence, supported starting conditions, and remaining standalone trust boundary.
+- [Discover MCP connection metadata](./contracts/discover-mcp-connection.md) — supported revision metadata and runtime verification.
 - [Configuration](./runtime/CONFIG.md) and [Environment](./runtime/ENV.md) — runtime configuration and environment variables.
 - [Operations](./OPERATIONS.md) — build, doctor, deployment, CI, release, and operator workflows.
 - [Privilege-exposure runbook](./runtime/PRIVILEGE_EXPOSURE_RUNBOOK.md) — tamper review, credential rotation, owner re-verification, and config rollback after an admin-scope exposure.
@@ -58,8 +60,13 @@ The generated [service catalog](./generated/service-catalog.md) is authoritative
 
 Do not hand-maintain a duplicate action inventory in prose. Use the generated [action catalog](./generated/action-catalog.md) for exact action names, parameters, scopes, destructive classification, and surfaces.
 
-The browser-only [access owner bootstrap workflow](./services/ACCESS.md) is an
-HTTP route, not a registered multi-surface service.
+The [access owner bootstrap workflow](./services/ACCESS.md#owner-bootstrap)
+has browser and direct-local proof flows. Its HTTP routes are not a separate
+registered multi-surface service.
+
+## Experimental connections
+
+- [Tailcat browser connection](./guides/TAILCAT_BROWSER.md) — opt-in native pairing and authenticated Depot setup; full VM acceptance remains pending.
 
 ## Public Surfaces
 
@@ -79,6 +86,7 @@ HTTP route, not a registered multi-surface service.
 - [Reverse proxy](./runtime/REVERSE_PROXY.md)
 - [Host gateway runtime](./runtime/HOST_GATEWAY.md)
 - [Incus](./runtime/INCUS.md)
+- [Incus development-container provisioning](./runtime/INCUS_DEV_CONTAINER_PROVISIONING.md)
 - [Unraid plugin](./runtime/UNRAID.md)
 - [GitHub Actions runner](./runtime/ACTIONS_RUNNER.md)
 - [CI/CD](./runtime/CICD.md)
@@ -94,6 +102,7 @@ HTTP route, not a registered multi-surface service.
 - [Service model](./dev/SERVICES.md) — service inventory and registration rules.
 - [Service onboarding](./dev/SERVICE_ONBOARDING.md) — end-to-end checklist for a new first-class capability.
 - [Code Mode](./dev/CODE_MODE.md) — Code Mode runtime and host integration.
+- [Agent notifications](./dev/AGENT_NOTIFICATIONS.md) — durable Code Mode inboxes, authenticated publication, acknowledgments, and storage recovery.
 - [Errors](./dev/ERRORS.md) — stable error taxonomy and surface mapping.
 - [Observability](./dev/OBSERVABILITY.md) — required fields, correlation, redaction, and verification.
 - [Testing](./dev/TESTING.md) — local and CI verification expectations.
@@ -145,7 +154,7 @@ These are useful engineering records, not substitutes for current product contra
 
 ## Plugins And Snippets
 
-- [Plugins](./PLUGINS.md) — checked-in Labby plugin, distribution boundary, and setup lifecycle.
+- [Plugins](./PLUGINS.md) — separate installer and usage plugins, client registration, distribution boundaries, and binary-owned setup lifecycle.
 - [Snippet authoring](./snippets/README.md) — executable Code Mode snippet format and workflow.
 
 ## Generated Product References
@@ -166,10 +175,11 @@ Generated artifacts include:
 - [API routes](./generated/api-routes.md)
 - [MCP help](./generated/mcp-help.md)
 - [CLI help](./generated/cli-help.md)
+- [CLI migration](./generated/cli-migration.md)
 - [feature matrix](./generated/feature-matrix.md)
-- `openapi.json`
+- [OpenAPI](./generated/openapi.json)
 
-Never edit generated artifacts by hand.
+Never edit generated artifacts by hand, including their README. The [generated ownership index](./generated/README.md) is derived from the artifact manifest and links each output to its source entrypoint. Correct the owning metadata, schema, Clap definition, or renderer before regenerating.
 
 ## Source-Of-Truth Rules
 

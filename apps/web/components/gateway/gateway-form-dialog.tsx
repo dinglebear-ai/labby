@@ -205,16 +205,6 @@ function formatSkillPatterns(patterns: string[] | null | undefined): string {
   return (patterns ?? []).join(', ')
 }
 
-/// A protected-route write rejected because a route of that name already
-/// exists. The backend answers 409 for several kinds, and the mutation layer
-/// throws its own error class, so this matches the reported shape rather than
-/// a class identity.
-export function isRouteNameConflict(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false
-  const { status, code } = error as { status?: unknown; code?: unknown }
-  return status === 409 && code === 'conflict'
-}
-
 const emptyCustomState = {
   transport: 'http' as TransportType,
   name: '',
@@ -248,7 +238,7 @@ export function GatewayFormDialog({
   const protectedRouteTouchedRef = useRef(false)
   const { data: supportedServices } = useSupportedServices()
   const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
-  const { testGateway, saveServiceConfig, enableVirtualServer, disableVirtualServer, addProtectedRoute, updateProtectedRoute, removeProtectedRoute } =
+  const { testGateway, saveServiceConfig, enableVirtualServer, disableVirtualServer } =
     useGatewayMutations()
 
   const [mode, setMode] = useState<FormMode>('custom')
@@ -665,6 +655,9 @@ export function GatewayFormDialog({
       } else {
         try {
           new URL(url)
+          if (isEditing && gateway?.transport === 'http' && url !== gateway.config.url && /(?:\[redacted\]|%5bredacted%5d)/i.test(url)) {
+            newErrors.url = 'Re-enter all redacted credentials before changing this URL.'
+          }
         } catch {
           newErrors.url = 'Invalid URL format'
         }
@@ -672,7 +665,16 @@ export function GatewayFormDialog({
 
     } else {
       try {
-        parseStdioCommandLine(command)
+        const parsed = parseStdioCommandLine(command)
+        if (isEditing && gateway?.transport === 'stdio') {
+          const original = [gateway.config.command ?? '', ...(gateway.config.args ?? [])]
+          const next = [parsed.command, ...parsed.args]
+          const changed = JSON.stringify(original) !== JSON.stringify(next)
+          const hasMask = (values: string[]) => values.some(value => /\[redacted\]/i.test(value))
+          if (changed && hasMask(original) && hasMask(next)) {
+            newErrors.command = 'Re-enter all redacted credentials before changing this command or its arguments.'
+          }
+        }
       } catch (error) {
         newErrors.command = error instanceof Error ? error.message : 'Invalid command'
       }
@@ -743,6 +745,9 @@ export function GatewayFormDialog({
 
   const buildInput = (): CreateGatewayInput => {
     const stdio = transport === 'stdio' ? parseStdioCommandLine(command) : null
+    const existingStdio = isEditing && gateway?.transport === 'stdio'
+    const commandChanged = !existingStdio || stdio?.command !== gateway.config.command
+    const argsChanged = !existingStdio || JSON.stringify(stdio?.args ?? []) !== JSON.stringify(gateway.config.args ?? [])
     const authEnabled = transport === 'http'
     const preserveExistingOauth = isEditing && gateway?.config.oauth_enabled && authMode === 'oauth'
     const oauthConfig =
@@ -752,7 +757,9 @@ export function GatewayFormDialog({
       && oauthState.registration_strategy !== 'unknown'
       && !preserveExistingOauth
         ? { registration_strategy: oauthState.registration_strategy, scopes: oauthState.scopes }
-        : undefined
+        : isEditing && gateway?.config.oauth_enabled && (!authEnabled || authMode !== 'oauth')
+          ? null
+          : undefined
     return {
       name,
       display_name: displayName.trim() || null,
@@ -760,12 +767,12 @@ export function GatewayFormDialog({
       config: {
         ...(transport === 'http'
           ? {
-              url,
+              ...(!isEditing || gateway?.transport !== 'http' || url !== gateway.config.url ? { url } : {}),
               ...(Object.keys(stdioEnv).length > 0 ? { env: stdioEnv } : {}),
             }
           : {
-              command: stdio?.command,
-              args: stdio && stdio.args.length > 0 ? stdio.args : undefined,
+              ...(commandChanged ? { command: stdio?.command } : {}),
+              ...(argsChanged ? { args: isEditing ? stdio?.args ?? [] : stdio?.args.length ? stdio.args : undefined } : {}),
               env: Object.keys(stdioEnv).length > 0 ? stdioEnv : undefined,
             }),
         bearer_token_env: !authEnabled
@@ -803,57 +810,27 @@ export function GatewayFormDialog({
     health_path: null,
   })
 
-  const saveProtectedRoute = async (publicPath: string, signal?: AbortSignal): Promise<void> => {
+  const buildProtectedRouteChange = (publicPath: string): CreateGatewayInput['protected_route'] => {
+    if (!publicPath) {
+      return existingProtectedRoute ? { operation: 'remove', name: existingProtectedRoute.name } : undefined
+    }
+    // Upstream rename already cascades route references in the backend. An
+    // unchanged path needs no second policy mutation (including Team scope).
+    if (existingProtectedRoute?.public_path === publicPath) return undefined
     const route = buildProtectedRouteInput(publicPath)
-    const existingPathRoute = protectedRoutes.find(
-      (item) =>
-        item.enabled &&
-        item.public_host === route.public_host &&
-        item.public_path === route.public_path,
-    )
-    if (
-      existingPathRoute &&
-      existingPathRoute.name !== route.name &&
-      existingPathRoute.name !== existingProtectedRoute?.name
-    ) {
+    const existingPathRoute = protectedRoutes.find((item) => item.enabled
+      && item.public_host === route.public_host && item.public_path === route.public_path)
+    if (existingPathRoute && existingPathRoute.name !== route.name && existingPathRoute.name !== existingProtectedRoute?.name) {
       throw new GatewayApiError(
         `Protected route ${route.public_path} is already assigned to ${existingPathRoute.upstream ?? existingPathRoute.name}. Choose a different path or edit that route first.`,
         409,
       )
     }
-
-    if (existingProtectedRoute) {
-      await updateProtectedRoute(existingProtectedRoute.name, {
-        ...route,
-        name: existingProtectedRoute.name,
-      }, signal)
-      return
+    return {
+      operation: 'upsert',
+      ...(existingProtectedRoute ? { name: existingProtectedRoute.name } : {}),
+      route: { ...route, name: existingProtectedRoute?.name ?? route.name },
     }
-
-    try {
-      await addProtectedRoute(route, signal)
-    } catch (error) {
-      // Only a name conflict means "this route already exists, update it".
-      // Other 409s (for example the access setup gate) must surface: replaying
-      // the write as an update would hide them behind a second failure.
-      if (isRouteNameConflict(error)) {
-        await updateProtectedRoute(route.name, route, signal)
-        return
-      }
-      throw error
-    }
-  }
-
-  const removeExistingProtectedRouteIfCleared = async (
-    publicPath: string,
-    signal?: AbortSignal,
-  ): Promise<void> => {
-    if (!existingProtectedRoute) return
-    // Only remove when the protected-route field was explicitly cleared.
-    // If publicPath is non-empty, saveProtectedRoute already handled the
-    // update/replace; deleting here would silently discard the just-saved route.
-    if (publicPath) return
-    await removeProtectedRoute(existingProtectedRoute.name, signal)
   }
 
   const handleTest = async () => {
@@ -946,15 +923,9 @@ export function GatewayFormDialog({
             route.name !== existingProtectedRoute?.name,
         ),
       )
+      const protectedRouteChange = buildProtectedRouteChange(normalizedProtectedPath)
       await runGatewaySaveTransaction(
-        () => onSave(buildInput()),
-        async () => {
-          if (normalizedProtectedPath) {
-            await saveProtectedRoute(normalizedProtectedPath, controller.signal)
-          } else {
-            await removeExistingProtectedRouteIfCleared(normalizedProtectedPath, controller.signal)
-          }
-        },
+        () => onSave({ ...buildInput(), ...(protectedRouteChange ? { protected_route: protectedRouteChange } : {}) }),
       )
       if (controller.signal.aborted) return
       toast.success(
@@ -979,16 +950,11 @@ export function GatewayFormDialog({
         setSaveError(error.message)
         return
       }
-      toast.error(
-        getErrorMessage(
-          error,
-          mode === 'lab'
-            ? 'Failed to save Lab server'
-            : isEditing
-              ? 'Failed to update server'
-              : 'Failed to create server',
-        ),
-      )
+      const message = getErrorMessage(error, mode === 'lab'
+        ? 'Failed to save Lab server'
+        : isEditing ? 'Failed to update server' : 'Failed to create server')
+      setSaveError(message)
+      toast.error(message)
     } finally {
       setIsSaving(false)
     }
@@ -1688,7 +1654,7 @@ export function GatewayFormDialog({
           data-gateway-json-drawer
           className={cn(
             'absolute top-0 bottom-0 bg-aurora-page-bg border-l border-aurora-border-strong rounded-r-lg overflow-hidden transition-[width] duration-[250ms] ease-[cubic-bezier(.4,0,.2,1)] flex flex-col sm:left-full',
-            'max-[600px]:fixed max-[600px]:inset-0 max-[600px]:rounded-none max-[600px]:border-l-0 max-[600px]:z-50',
+            'max-[600px]:fixed max-[600px]:inset-0 max-[600px]:rounded-none max-[600px]:border-l-0 max-[600px]:z-50 max-[600px]:pt-[env(safe-area-inset-top)] max-[600px]:pb-[env(safe-area-inset-bottom)]',
             jsonDrawerOpen
               ? 'max-[600px]:h-full'
               : 'w-0',

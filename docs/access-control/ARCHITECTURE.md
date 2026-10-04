@@ -12,7 +12,7 @@ status: "design"
 The design intentionally builds on current Labby boundaries rather than replacing them.
 
 - labby-auth already produces AuthContext with issuer, subject, OAuth scopes, browser-session state, optional actor key, and optional verified email.
-- labby-runtime already implements ArtifactInterchange v1 and an explicit-root Artifact store/lifecycle library. The current product does not yet own and open one canonical ArtifactStore as application state; product wiring is a prerequisite, not an existing enforcement seam.
+- labby-runtime implements ArtifactInterchange v1 and an explicit-root Artifact store/lifecycle library. Product startup in `crates/labby/src/cli/serve.rs` opens the canonical `LABBY_HOME/artifacts` store through `bootstrap_skill_library`, installs the process runtime, and starts local follow reconciliation. This local Library wiring does not implement every proposed Assignment or cross-Labby transfer policy below.
 - GatewayLoadoutConfig already selects upstreams/services and gates tools, resources, prompts, skills, and Code Mode.
 - MCP route scoping already computes capability gates from a Loadout and narrows the gateway view.
 - labby-gateway already depends on labby-runtime and labby-auth, so the authorization design must not introduce a dependency cycle between those crates.
@@ -82,7 +82,9 @@ open transaction, because that inverts the order and can deadlock.
 
 ### labby-access
 
-Target shared boundary: labby-access, after an extraction gate.
+Target shared boundary: labby-access, after an extraction gate. There is no
+`crates/labby-access` workspace member in this checkout; current ownership is
+`crates/labby/src/access/`. References to the extracted crate below are proposals.
 
 Milestone 1 starts as a private, surface-neutral `crates/labby/src/access/` module so one complete policy path can prove its types and dependency direction. Extract it to `crates/labby-access` before a second concrete consumer or when architecture tests demonstrate that keeping it in the product crate would create transport coupling or a dependency cycle. The extraction must preserve behavior through contract fixtures; this packet does not pre-commit a broad public API before that evidence exists.
 
@@ -129,7 +131,7 @@ The existing Artifact subsystem remains authoritative for:
 
 Access control references Artifact ID + exact revision ID and consumes safe policy facts derived from Artifact state. It does not duplicate Artifact payload metadata into ACL tables.
 
-Before Artifact Assignments or distribution are implemented, the top-level application must own one configured canonical ArtifactStore root and handle startup, doctor, restart reconciliation, and fact projection. SQLite cannot foreign-key into the filesystem store; every reference is application-validated and orphan state is fail-closed.
+The top-level application owns the canonical ArtifactStore root; local distribution uses AccessStore policy and mirror/subscription state alongside it. Broader Assignment and remote-transfer work must preserve startup, doctor, restart reconciliation, and fact projection. SQLite cannot foreign-key into the filesystem store; every reference is application-validated and orphan state is fail-closed.
 
 ### labby-gateway
 
@@ -277,7 +279,7 @@ Cache keys and dispatch context include Project identity. A shared upstream name
 
 ## Artifact distribution architecture
 
-Artifact distribution is a dependent milestone, not part of Milestone 1. It cannot begin until application-owned ArtifactStore wiring and a cross-store operation state machine are complete.
+Artifact distribution was a dependent milestone outside Milestone 1. Local transfer policy, pin, managed follow, update, and personal fork are now mounted through `dispatch/skill_library`; the paired-destination protocol below remains a target design.
 
 Artifact transfer uses two independent planes:
 

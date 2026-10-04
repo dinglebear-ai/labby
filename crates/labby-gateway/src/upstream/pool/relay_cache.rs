@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use rmcp::model::{ClientCapabilities, TaskStatusNotificationParams};
+use rmcp::model::ClientCapabilities;
 use rmcp::service::Peer;
 use rmcp::{RoleClient, RoleServer};
 
@@ -35,16 +35,6 @@ impl RelayCachedConnection {
             .service()
             .rebind_downstream(downstream)
             .await;
-    }
-
-    pub(super) async fn flush_task_status_notifications(
-        &self,
-        notifications: Vec<TaskStatusNotificationParams>,
-    ) {
-        let handler = self._connection._client_service.service();
-        for params in notifications {
-            handler.forward_task_status(params).await;
-        }
     }
 }
 

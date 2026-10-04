@@ -50,3 +50,19 @@ test('skill validation panel renders the six skill checks from draft state and s
     await view.unmount()
   }
 })
+
+for (const kind of ['Skill', 'Agent'] as const) {
+  test(`${kind} panel exposes blocking frontmatter errors`, async () => {
+    const window = installTestDom()
+    let selected = ''
+    const view = await renderClient(<ArtifactValidationPanel kind={kind} metadata={metadata} content={body} issues={[{ field: 'frontmatter', severity: 'error', message: 'Metadata must be valid JSON.', from: 0, to: 0 }]} onField={field => { selected = field }} />)
+    try {
+      assert.match(view.container.textContent ?? '', /Metadata must be valid JSON/)
+      const progress = view.container.querySelector('[role="progressbar"]')!
+      assert.ok(Number(progress.getAttribute('aria-valuenow')) < Number(progress.getAttribute('aria-valuemax')))
+      const button = Array.from(view.container.querySelectorAll('button')).find(button => button.textContent?.includes('Frontmatter'))!
+      await act(async () => button.dispatchEvent(new window.MouseEvent('click', { bubbles: true }) as unknown as Event))
+      assert.equal(selected, 'frontmatter')
+    } finally { await view.unmount() }
+  })
+}

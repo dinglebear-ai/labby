@@ -1,7 +1,10 @@
 # Code Mode Retained Results
 
-**Status:** Proposed, not implemented on current main as verified 2026-09-16.
-**Tracking issue:** #274, "Retain and page oversized Code Mode results by handle" (still open as verified 2026-09-16).
+**Status:** Proposal; the retained-result fetch/slice API is absent from the
+audited implementation at `9ab31dea8`.
+**Tracking issue:** [#274](https://github.com/dinglebear-ai/labby/issues/274),
+"Retain and page oversized Code Mode results by handle". Repository source
+review does not establish the issue's current remote status.
 
 ## Purpose
 
@@ -25,9 +28,16 @@ Any implementation must preserve the acceptance criteria in issue #274:
 - small and cheaply reproducible results are not retained by default;
 - metrics cover stored bytes, fetches, misses, expirations, and evictions.
 
-## Current Main
+## Implementation boundary
 
-Current main has Code Mode result shaping/truncation, artifact retention, source retention, and step journaling, but it does **not** expose the proposed retained-result handle API such as codemode.fetch(handle) or codemode.slice(handle, ...). Those adjacent retention mechanisms are separate features and must not be treated as implementation of #274.
+The audited implementation has Code Mode result shaping/truncation, artifact retention, source retention, and step journaling, but it does **not** expose the proposed retained-result handle API such as codemode.fetch(handle) or codemode.slice(handle, ...). Those adjacent retention mechanisms are separate features and must not be treated as implementation of #274.
+
+The owning sources are `crates/labby-codemode/src/preamble.rs` (sandbox APIs),
+`truncate.rs` (preview/recovery markers), `artifacts.rs` (explicit artifact
+writes), and `types.rs` (execution responses/source retention). Truncation does
+not cache the omitted value, and the 8 MiB default per-call result ceiling can
+reject a large upstream result before JavaScript receives it. See
+[Code Mode result handling](../../dev/CODE_MODE.md#result-contract).
 
 ## Implementation Note
 

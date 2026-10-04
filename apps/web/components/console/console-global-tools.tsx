@@ -87,14 +87,16 @@ export function PhoenixAvailability() {
     const controller = new AbortController()
     setError(undefined)
     void phoenixApi.status(controller.signal).then(async (nextStatus) => {
+      if (controller.signal.aborted) return
       setStatus(nextStatus)
       if (!nextStatus.available) return
       const catalog = await phoenixApi.models(controller.signal)
+      if (controller.signal.aborted) return
       const availableModels = catalog.models ?? []
       setModels(availableModels)
       const selected = availableModels.find((entry) => entry.isDefault) ?? availableModels[0]
       if (selected) { setModel(selected.model); setEffort(selected.defaultReasoningEffort) }
-    }, (reason: unknown) => {
+    }).catch((reason: unknown) => {
       if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Phoenix status is unavailable')
     })
     return () => controller.abort()

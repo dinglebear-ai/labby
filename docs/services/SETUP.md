@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-18"
+updated: "2026-09-29"
 ---
 
 # Setup Service
@@ -20,7 +20,34 @@ The generated [action catalog](../generated/action-catalog.md) is authoritative 
 - repair supported setup state
 - project observational access-store health into setup checks without owning access-store repair
 
+## Connect ChatGPT to local sandboxes
+
+Run `npx -y @dinglebear/labby setup` and choose **Connect ChatGPT to local sandboxes**. The other choices connect an existing gateway or install a managed gateway service. The direct equivalent is `labby setup --chatgpt`.
+
+The guided path checks Node.js 22+, npx, Tailscale, and the platform's virtualization prerequisite. On macOS it offers Homebrew installation of missing Node or the Tailscale application when Homebrew is available. On Linux it offers Node installation through an existing mise installation and Tailscale installation through the official HTTPS installer with sudo. Otherwise it prints the official download link. Installation can require approval, sign-in, a PATH update, or another login; rerun setup after completing that step. `--skip-deps` disables installation offers. Starting with `npx` already requires Node/npm to be installed.
+
+Setup reads the Tailscale node's DNS name and checks its existing Serve/Funnel mappings without publishing an endpoint. Public HTTPS **443** is the default. This is separate from the proxy's OS-selected loopback port: Labby does not need to bind local port 443 or run as root. A collision preserves the existing mapping and stops setup. Use another Tailscale node/public endpoint, or explicitly try `--port 8443` or `--port 10000`; those ports are supported by Tailscale, but 8443 failed ChatGPT discovery in our qualification and 10000 was not tested.
+
+The callback is printed before credentials are requested. Setup attempts to open Google Cloud, with a printed URL as fallback; `--no-browser` suppresses opening it. Complete Branding and Audience, add your Google account as a test user if needed, create a **Web application** client, and paste the exact callback into **Authorized redirect URIs**. Paste the resulting credentials into setup's prompts.
+
+OAuth configuration and token encryption keys persist in `LABBY_HOME` (normally `~/.labby`); no gateway daemon is installed. Setup saves Funnel/OAuth proxy preferences and adds `microsandbox-mcp@0.7.6` through npx to `.mcp.json`, preserving other servers and any existing customized Microsandbox entry. Keep npm optional dependencies enabled: the adapter's supported platform package supplies the native runtime. macOS uses the system hypervisor; Linux requires usable `/dev/kvm`. Labby cannot install missing CPU virtualization support.
+
+Finally, accept **Start the proxy now**, or run:
+
+```bash
+npx -y @dinglebear/labby proxy
+```
+
+Keep the terminal open. In ChatGPT Developer mode, add an OAuth app using the printed MCP URL, sign in with Google, and ask it to run `runtime_check` before creating a sandbox. The Microsandbox server is an upstream of Labby; ChatGPT connects to Labby's protected public endpoint. A dry run does not install dependencies, open a browser, save configuration, or publish Funnel; Tailscale must already be installed and signed in to derive the callback.
+
 ## Google OAuth and ChatGPT web
+
+Direct `labby setup --role server` prepares authentication in `LABBY_HOME` by
+default, without installing or starting a daemon. Use `--deployment native` or
+`--deployment incus` to install a managed server. Bare interactive `labby setup`
+offers sandbox setup, an existing gateway connection, or a managed native
+gateway. The one-line installer explicitly selects native deployment when
+server installation is requested.
 
 Labby's supported ChatGPT web connection requires the server to run in OAuth mode and to have a publicly reachable HTTPS origin. A bearer-only Labby server is appropriate for local or explicitly token-configured CLI clients, but it is not the supported ChatGPT web connection path.
 
@@ -135,9 +162,9 @@ the remaining service files determine what can start at login.
 
 ## Safety Model
 
-Read-only discovery actions such as `check`, `help`, `schema`, and `schema.get` do not require destructive confirmation. Mutating setup actions are classified as destructive and require `lab:admin` where the action catalog says so.
+Read-only discovery actions such as `check`, `help`, `schema`, and `schema.get` do not require destructive confirmation. Administrative scope and destructive classification are independent; each setup action uses its shared catalog metadata.
 
-Plugin lifecycle and other local host mutations are additionally constrained by the product's local-action policy. Surface adapters must use the shared setup dispatcher rather than reimplementing setup behavior.
+Local host mutations are additionally constrained by the product's local-action policy. Surface adapters must use the shared setup dispatcher rather than reimplementing setup behavior.
 
 ### Config validation
 
@@ -183,6 +210,13 @@ The checked-in Claude plugin is a client connection package only; it does not
 configure or repair the Labby server host. Capability-affecting configuration
 problems are surfaced through `doctor capabilities.status`, Doctor, and the
 global admin warning surface.
+
+Settings includes a Notifications section for inbox retention, Depot failure
+polling, and optional Apprise delivery. These are environment-backed,
+restart-required settings with stale-write protection; `APPRISE_TOKEN` is
+write-only and is projected as a configured marker with an opaque fingerprint.
+The recent inbox is a separate admin-only HTTP feed. See
+[operator notifications](../OPERATIONS.md#operator-notifications).
 
 ## CLI
 

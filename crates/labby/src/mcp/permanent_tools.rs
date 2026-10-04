@@ -279,6 +279,19 @@ pub(crate) fn is_reserved_non_upstream_tool_name(name: &str) -> bool {
     )
 }
 
+/// Keep proxy aggregation's names identical on the wire and in the peer contract.
+#[cfg(feature = "gateway")]
+pub(crate) fn proxy_upstream_descriptor(
+    registry: &crate::registry::ToolRegistry,
+    upstream: &str,
+    mut tool: Tool,
+) -> Tool {
+    if registry.is_proxy_aggregate() {
+        tool.name = format!("{upstream}::{}", tool.name).into();
+    }
+    with_labby_security(tool)
+}
+
 #[must_use]
 pub(crate) fn code_mode_read_annotations() -> ToolAnnotations {
     ToolAnnotations::new()
@@ -1420,13 +1433,17 @@ struct OAuthSecurityScheme<'a> {
 /// OAuth policy. This applies to both Labby-owned and proxied upstream tools:
 /// upstream authentication is terminated by the gateway and must not leak as
 /// the public boundary's client-facing policy.
-pub(crate) fn with_labby_security(mut tool: Tool) -> Tool {
+pub(crate) fn with_labby_security(tool: Tool) -> Tool {
     const DISCOVERY_SCOPES: &[&str] = &["lab:read"];
     let schemes = serde_json::to_value([OAuthSecurityScheme {
         kind: "oauth2",
         scopes: DISCOVERY_SCOPES,
     }])
     .expect("static OAuth security scheme serializes");
+    with_security_schemes(tool, schemes)
+}
+
+pub(crate) fn with_security_schemes(mut tool: Tool, schemes: Value) -> Tool {
     tool.meta
         .get_or_insert_with(|| MetaObject(Map::new()))
         .0

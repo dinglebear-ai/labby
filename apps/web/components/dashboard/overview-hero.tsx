@@ -1,5 +1,6 @@
 'use client'
 
+import { summarizeCapabilities } from '@/lib/gateway-capabilities'
 import * as React from 'react'
 import Link from 'next/link'
 import { useGatewayNotifications } from '@/lib/notification-acknowledgements'
@@ -33,7 +34,7 @@ import type { Gateway } from '@/lib/types/gateway'
  * the stat strip and the per-server fleet-health squares.
  */
 
-type Tone = 'default' | 'success' | 'warning' | 'error' | 'info'
+type Tone = 'default' | 'success' | 'warning' | 'error' | 'info' | 'secondary' | 'tertiary'
 
 const TONE_COLOR: Record<Tone, string> = {
   default: 'var(--aurora-text-primary)',
@@ -41,6 +42,8 @@ const TONE_COLOR: Record<Tone, string> = {
   warning: 'var(--aurora-warn)',
   error: 'var(--aurora-error)',
   info: 'var(--aurora-accent-strong)',
+  secondary: 'var(--aurora-accent-pink)',
+  tertiary: 'var(--aurora-protocol-strong)',
 }
 
 type HeroStat = {
@@ -65,7 +68,7 @@ function HeroWindowPills({
 }) {
   return (
     <div role="tablist" aria-label="Activity window" style={{ display: 'inline-flex', gap: 5 }}>
-      {(['24h', '7d', '30d'] as const).map((window) => {
+      {(['1h', '24h', '7d', '30d'] as const).map((window) => {
         const active = window === value
         return (
           <button
@@ -107,13 +110,13 @@ function HeroWindowPills({
 }
 
 /** Live "updated Ns ago" ticker — the mock's refresh affordance counts up. */
-function useSecondsSince(stamp: number): number {
+function useSecondsSince(stamp: number | null): number | null {
   const [, force] = React.useReducer((n: number) => n + 1, 0)
   React.useEffect(() => {
-    const id = setInterval(force, 1000)
+    const id = setInterval(force, 15_000)
     return () => clearInterval(id)
   }, [])
-  return Math.max(0, Math.round((Date.now() - stamp) / 1000))
+  return stamp === null ? null : Math.max(0, Math.round((Date.now() - stamp) / 1000))
 }
 
 function formatAgo(seconds: number): string {
@@ -139,6 +142,7 @@ function heartbeatPoints(buckets: { calls: number }[]): string {
 
 function gatewayTone(gateway: Gateway): { color: string; state: string } {
   const operational = describeGatewayOperationalState(gateway)
+  if (operational.kind === 'idle') return { color: 'var(--aurora-text-muted)', state: operational.label.toLowerCase() }
   if (operational.kind === 'disabled') return { color: 'var(--aurora-text-muted)', state: 'disabled' }
   if (operational.kind === 'disconnected') return { color: 'var(--aurora-error)', state: 'disconnected' }
   if (operational.kind === 'degraded') return { color: 'var(--aurora-warn)', state: 'needs attention' }
@@ -163,7 +167,7 @@ function StatCell({ stat, isLast }: { stat: HeroStat; isLast: boolean }) {
         <span style={{ flexShrink: 0, color: 'var(--aurora-text-muted)', display: 'grid' }}><Icon size={12} strokeWidth={1.8} /></span>
         <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--aurora-text-muted)', whiteSpace: 'nowrap' }}>{stat.label}</span>
       </div>
-      <div style={{ marginTop: 6, fontFamily: 'var(--font-display)', fontSize: 21, lineHeight: 1, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: TONE_COLOR[stat.tone ?? 'default'] }}>{stat.value}</div>
+      <div data-overview-quantity={stat.label} style={{ marginTop: 6, overflowWrap: 'anywhere', fontFamily: 'var(--font-display)', fontSize: 21, lineHeight: 1, fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: TONE_COLOR[stat.tone ?? 'default'] }}>{typeof stat.value === 'number' ? stat.value.toLocaleString('en-US') : stat.value}</div>
     </>
   )
   if (stat.href) {
@@ -180,6 +184,7 @@ export function OverviewHero({
   onWindowChange,
   onRefresh,
   loadedAt,
+  metricsStale = false,
 }: {
   gateways: Gateway[]
   live: LiveFleetStats
@@ -188,7 +193,8 @@ export function OverviewHero({
   onWindowChange: (window: MetricsWindow) => void
   onRefresh: () => void
   /** Epoch ms of the last successful metrics load, for the "updated Ns ago" ticker. */
-  loadedAt: number
+  loadedAt: number | null
+  metricsStale?: boolean
 }) {
   const [refreshHovered, setRefreshHovered] = React.useState(false)
   const [manageHovered, setManageHovered] = React.useState(false)
@@ -200,6 +206,7 @@ export function OverviewHero({
     .map((gateway) => ({ gateway, operational: describeGatewayOperationalState(gateway) }))
   const attention = activeGatewayStates.filter(({ operational }) => operational.needsAttention)
   const discovering = activeGatewayStates.filter(({ operational }) => operational.kind === 'discovering')
+  const idle = activeGatewayStates.filter(({ operational }) => operational.kind === 'idle')
   const troubled = attention
     .filter(({ gateway, operational }) => {
       const prefix = `gateway:${gateway.name}:`
@@ -234,30 +241,25 @@ export function OverviewHero({
           : `${troubled.length} need${troubled.length === 1 ? 's' : ''} attention`
         : discovering.length > 0
           ? `${discovering.length} discovering`
-          : 'all systems nominal'
+          : idle.length > 0
+            ? `${idle.length} not checked or idle`
+            : 'all systems nominal'
 
-  const exposedPrompts = gateways.filter((gateway) => gateway.enabled !== false).reduce(
-    (sum, gateway) => sum + gateway.status.exposed_prompt_count,
-    0,
-  )
-  const exposedResources = gateways.filter((gateway) => gateway.enabled !== false).reduce(
-    (sum, gateway) => sum + gateway.status.exposed_resource_count,
-    0,
-  )
-
-  // The reference stat strip: Connected · Offline · Tools · Prompts · Resources ·
-  // Upstream calls · Failed · Tokens · P95 latency. Only Failed carries a tone;
-  // every other value renders in primary text.
+  const activeStatuses = gateways.filter(gateway => gateway.enabled !== false).map(gateway => gateway.status)
+  const promptSummary = summarizeCapabilities(activeStatuses, 'prompts')
+  const resourceSummary = summarizeCapabilities(activeStatuses, 'resources')
+  const partialCatalog = (live.incompleteTools ?? 0) > 0 || promptSummary.incomplete > 0 || resourceSummary.incomplete > 0
   const usageHref = `/usage/?window=${activeWindow}`
   const stats: HeroStat[] = [
-    { label: 'Connected', value: live.connectedServers, icon: Cable, href: '/gateways/' },
-    { label: 'Offline', value: live.offlineServers, icon: PlugZap, href: '/gateways/' },
-    { label: 'Tools', value: live.exposedTools, icon: Wrench, href: '/tools/' },
-    { label: 'Prompts', value: exposedPrompts, icon: MessageSquare, href: '/gateways/' },
-    { label: 'Resources', value: exposedResources, icon: FileText, href: '/gateways/' },
+    { label: 'Connected', value: live.connectedServers, tone: 'success', icon: Cable, href: '/gateways/' },
+    { label: 'Offline', value: live.offlineServers, tone: live.offlineServers > 0 ? 'warning' : 'success', icon: PlugZap, href: '/gateways/' },
+    { label: 'Tools', value: live.exposedTools, tone: 'secondary', icon: Wrench, href: '/tools/' },
+    { label: 'Prompts', value: promptSummary.exposed, tone: 'info', icon: MessageSquare, href: '/gateways/' },
+    { label: 'Resources', value: resourceSummary.exposed, tone: 'info', icon: FileText, href: '/gateways/' },
     {
       label: 'Upstream calls',
       value: metrics ? formatCompactNumber(metrics.tool_calls.total) : '—',
+      tone: metrics ? 'info' : 'default',
       icon: Activity,
       href: usageHref,
     },
@@ -265,18 +267,20 @@ export function OverviewHero({
       label: 'Failed',
       value: metrics ? formatCompactNumber(metrics.tool_calls.failed) : '—',
       icon: AlertTriangle,
-      tone: metrics && metrics.tool_calls.failed > 0 ? 'error' : 'default',
+      tone: metrics && metrics.tool_calls.failed > 0 ? 'error' : metrics ? 'success' : 'default',
       href: `${usageHref}&outcome=failed`,
     },
     {
-      label: 'Tokens',
-      value: metrics ? formatCompactNumber(metrics.tokens.total) : '—',
+      label: 'Tokens (sample)',
+      value: metrics?.collected.tokens ? formatCompactNumber(metrics.tokens.total) : '—',
+      tone: metrics?.collected.tokens ? 'tertiary' : 'default',
       icon: Coins,
       href: `${usageHref}&focus=tokens`,
     },
     {
       label: 'P95 latency',
       value: metrics ? `${Math.round(metrics.latency.p95)}ms` : '—',
+      tone: metrics ? 'info' : 'default',
       icon: Gauge,
       href: `${usageHref}&focus=latency`,
     },
@@ -354,7 +358,7 @@ export function OverviewHero({
                 lineHeight: 1.04,
                 fontWeight: 800,
                 color: 'var(--aurora-text-primary)',
-                whiteSpace: 'nowrap',
+                overflowWrap: 'anywhere',
               }}
             >
               Operational Overview
@@ -457,7 +461,7 @@ export function OverviewHero({
             }}
           >
             <RotateCw size={12} strokeWidth={1.7} />
-            {formatAgo(secondsSinceLoad)}
+            {secondsSinceLoad === null ? 'No usage sample' : `${metricsStale || secondsSinceLoad > 90 ? 'Stale · ' : ''}${formatAgo(secondsSinceLoad)}`}
           </button>
 
           <span
@@ -498,7 +502,7 @@ export function OverviewHero({
               background: manageHovered
                 ? 'color-mix(in srgb, var(--aurora-accent-primary) 13%, var(--aurora-panel-strong))'
                 : 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))',
-              color: '#bfe7fb',
+              color: 'var(--aurora-accent-strong)',
               fontFamily: 'inherit',
               fontSize: 13,
               fontWeight: 650,
@@ -539,6 +543,12 @@ export function OverviewHero({
             <StatCell key={stat.label} stat={stat} isLast={index === stats.length - 1} />
           ))}
         </div>
+
+        {partialCatalog ? (
+          <p role="status" className="px-3 text-xs text-aurora-warn" title="Tools, prompts and resources show observed exposed counts. Some server catalogs have not been discovered or need refresh.">
+            Partial catalog <span className="text-aurora-text-muted">· Counts reflect discovered servers</span>
+          </p>
+        ) : null}
 
         <Link
           href="/gateways"

@@ -23,6 +23,7 @@ OUTPUT_KEYS = [
     "browser_extension",
     "desktop",
     "npm",
+    "tailcat",
     "incus",
     "security",
     "javascript_advisories",
@@ -127,7 +128,19 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             "scripts/ci/lifecycle-scripts.json",
             "scripts/ci/check-lifecycle-scripts.sh",
             "scripts/ci/test_release_hardening.py",
+            "scripts/sync-npm-release-version.py",
+            "scripts/ci/test_release_observer.py",
             "scripts/ci/resolve-n-minus-one-baseline.py",
+            "scripts/ci/github-verifier-bootstrap.sh.in",
+            "scripts/ci/github-verifier-bootstrap.ps1.in",
+            "scripts/ci/github-verifier-bootstrap-pins.json",
+            "scripts/ci/generate-verifier-bootstrap.py",
+            "scripts/ci/test_release_provenance_bundles.py",
+            "scripts/ci/test_verifier_bootstrap.py",
+            "scripts/ci/qualify-first-use.py",
+            "scripts/ci/first-use-native-driver.py",
+            "scripts/ci/test_first_use_qualification.py",
+            "scripts/ci/test_first_use_native_driver.py",
             "scripts/ci/check_node_toolchain_sync.py",
             "scripts/ci/js-advisory-policy.json",
             "scripts/ci/js_advisory_gate.py",
@@ -198,6 +211,20 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     )
     desktop = any_match(paths, lambda p: starts(p, "apps/tauri/"))
     npm = any_match(paths, lambda p: starts(p, "packages/labby-mcp/") or p == "server.json")
+    tailcat = any_match(
+        paths,
+        lambda p: starts(
+            p, "packages/labby-tailcat-browser/", "packages/labby-microsandbox/",
+            "tools/tailcat-bridge/", "crates/labby-tailcat/",
+            "crates/labby/src/dispatch/tailcat/", "crates/labby/src/api/tailcat/",
+        ) or p in {
+            "crates/labby/src/mcp/tool_execution.rs", "crates/labby/src/mcp/call_tool.rs",
+            "crates/labby/src/api/tailcat.rs", "crates/labby/src/dispatch/tailcat.rs",
+            "scripts/test-tailcat-bridge.sh", "scripts/build-tailcat-bridge.sh",
+            "scripts/package-tailcat-release.sh", "scripts/install-tailcat-depot-assets.sh",
+            "scripts/ci/test_tailcat_workflow.py",
+        },
+    )
     # The M3 model consumes only core/scenario from the isolated toolkit.
     # Their sources and inherited manifest/lints affect product compilation;
     # runner/backend/host code remains on the separate verification lane.
@@ -289,6 +316,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "browser_extension": browser_extension,
         "desktop": desktop,
         "npm": npm,
+        "tailcat": tailcat,
         "incus": incus,
         "security": security,
         "javascript_advisories": javascript_advisories,
@@ -313,6 +341,7 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
                 "scripts/ci/lifecycle-scripts.json",
                 "scripts/ci/check-lifecycle-scripts.sh",
                 "scripts/ci/test_release_hardening.py",
+                "scripts/ci/test_release_observer.py",
             },
         )
         if fail_closed:
@@ -323,8 +352,19 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
             lambda p: p
             in {
                 ".github/workflows/release.yml",
+                "scripts/sync-npm-release-version.py",
                 ".github/workflows/build-incus-image.yml",
                 "scripts/ci/resolve-n-minus-one-baseline.py",
+                "scripts/ci/github-verifier-bootstrap.sh.in",
+                "scripts/ci/github-verifier-bootstrap.ps1.in",
+                "scripts/ci/github-verifier-bootstrap-pins.json",
+                "scripts/ci/generate-verifier-bootstrap.py",
+                "scripts/ci/test_release_provenance_bundles.py",
+                "scripts/ci/test_verifier_bootstrap.py",
+                "scripts/ci/qualify-first-use.py",
+                "scripts/ci/first-use-native-driver.py",
+                "scripts/ci/test_first_use_qualification.py",
+                "scripts/ci/test_first_use_native_driver.py",
             },
         ):
             result["release"] = True

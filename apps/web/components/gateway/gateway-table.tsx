@@ -1,5 +1,6 @@
 'use client'
 
+import { capabilityDescription, capabilityLabel, capabilityScopeLabel, capabilityValue, summarizeCapabilities } from '@/lib/gateway-capabilities'
 import { Fragment, type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
@@ -67,7 +68,7 @@ import {
 
 type SortKey = 'name' | 'connection' | 'endpoint' | 'exposed' | 'uptime'
 type SortDirection = 'asc' | 'desc'
-type StatusGroupId = 'attention' | 'discovering' | 'healthy' | 'disabled'
+type StatusGroupId = 'idle' | 'attention' | 'discovering' | 'healthy' | 'disabled'
 
 const GATEWAY_TABLE_BADGE =
   'inline-flex h-6 items-center rounded-full px-2 text-[10px] font-semibold uppercase tracking-[0.12em]'
@@ -321,7 +322,7 @@ export function GatewayTable({
           break
         case 'exposed':
           result =
-            left.status.exposed_tool_count - right.status.exposed_tool_count ||
+            (capabilityValue(left.status, 'tools').exposed ?? -1) - (capabilityValue(right.status, 'tools').exposed ?? -1) ||
             left.status.exposed_resource_count - right.status.exposed_resource_count ||
             left.status.exposed_prompt_count - right.status.exposed_prompt_count ||
             (left.status.exposed_skill_count ?? 0) - (right.status.exposed_skill_count ?? 0)
@@ -346,6 +347,7 @@ export function GatewayTable({
     const discovering = sortedGateways.filter(
       (gateway) => describeGatewayOperationalState(gateway).kind === 'discovering',
     )
+    const idle = sortedGateways.filter((gateway) => describeGatewayOperationalState(gateway).kind === 'idle')
     const healthy = sortedGateways.filter(
       (gateway) => describeGatewayOperationalState(gateway).kind === 'healthy',
     )
@@ -353,6 +355,7 @@ export function GatewayTable({
 
     return [
       { id: 'attention' as const, label: 'Needs attention', tone: 'text-aurora-warn', rows: attention },
+      { id: 'idle' as const, label: 'Not checked or idle', tone: 'text-aurora-text-muted', rows: idle },
       { id: 'discovering' as const, label: 'Discovering', tone: 'text-aurora-accent-strong', rows: discovering },
       { id: 'healthy' as const, label: 'Healthy', tone: 'text-aurora-success', rows: healthy },
       { id: 'disabled' as const, label: 'Disabled', tone: 'text-aurora-text-muted', rows: disabled },
@@ -384,17 +387,7 @@ export function GatewayTable({
     gatewayNeedsAttention(gateway) && hasUndismissedIncident(gateway),
   )
 
-  const exposureTotals = useMemo(
-    () =>
-      gateways.reduce(
-        (totals, gateway) => ({
-          exposed: totals.exposed + gateway.status.exposed_tool_count,
-          discovered: totals.discovered + gateway.status.discovered_tool_count,
-        }),
-        { exposed: 0, discovered: 0 },
-      ),
-    [gateways],
-  )
+  const exposureTotals = useMemo(() => summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools'), [gateways])
 
   const isGroupCollapsed = (id: StatusGroupId) => collapsedGroups.includes(id)
 
@@ -439,7 +432,6 @@ export function GatewayTable({
         align === 'start' ? 'justify-self-start p-0' : 'justify-self-center rounded-md px-1 py-0.5',
       )}
       aria-label={`Sort by ${label.toLowerCase()}`}
-      aria-sort={sortKey === sort ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
     >
       <span>{label}</span>
       {sortKey === sort ? (
@@ -477,7 +469,7 @@ export function GatewayTable({
 
   const statusRailClass = (gateway: Gateway) => {
     const state = describeGatewayOperationalState(gateway)
-    if (state.kind === 'disabled') return GW_EMPTY_RAIL
+    if (state.kind === 'disabled' || state.kind === 'idle') return GW_EMPTY_RAIL
     if (state.kind === 'healthy') return 'bg-aurora-accent-strong'
     if (state.kind === 'discovering') return 'bg-aurora-accent-primary'
     if (state.kind === 'disconnected') return 'bg-aurora-error'
@@ -492,8 +484,7 @@ export function GatewayTable({
     const showsCommandLine = gateway.transport === 'stdio'
     const isDisabled = !(gateway.enabled ?? true)
     const operational = describeGatewayOperationalState(gateway)
-    const statusTone = gatewayStatusTone(operational.kind)
-    const connectionTone = gatewayConnectionTone(!isDisabled, gateway.status.connected)
+    const connectionTone = gatewayConnectionTone(!isDisabled, gateway.status.connected, operational)
     const cleanupSummary = cleanupSummaryByGatewayId[gateway.id]
     const cleanupBadge = cleanupBadgeLabel(cleanupSummary?.cleanup, 'cleaned')
     const previewBadge = cleanupBadgeLabel(cleanupSummary?.preview, 'preview')
@@ -522,7 +513,8 @@ export function GatewayTable({
       exposed: (<div data-gateway-cell="exposed" className="min-w-0 justify-self-center">
           <span
             className="grid grid-cols-[40px_40px_40px] items-center gap-x-[6px]"
-            title={status.catalog_warming ? 'Capability catalog is warming' : `Exposed — tools ${status.exposed_tool_count}/${status.discovered_tool_count} · resources ${status.exposed_resource_count}/${status.discovered_resource_count} · prompts ${status.exposed_prompt_count}/${status.discovered_prompt_count}`}
+            title={`${capabilityScopeLabel(status) ?? 'Catalog'} — tools ${capabilityDescription(status, 'tools')} · resources ${capabilityDescription(status, 'resources')} · prompts ${capabilityDescription(status, 'prompts')}`}
+            aria-label={`${capabilityScopeLabel(status) ?? 'Catalog'} — tools ${capabilityLabel(status, 'tools')} · resources ${capabilityLabel(status, 'resources')} · prompts ${capabilityLabel(status, 'prompts')}`}
           >
             <span
               className={cn(
@@ -532,7 +524,7 @@ export function GatewayTable({
             >
               <Wrench className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Tools:</span>
-              {status.catalog_warming ? '…' : status.discovered_tool_count === 0 ? EM_DASH : status.exposed_tool_count}
+              {capabilityValue(status, 'tools').state === 'known' ? capabilityValue(status, 'tools').exposed : '…'}
             </span>
             <span
               className={cn(
@@ -542,7 +534,7 @@ export function GatewayTable({
             >
               <FileText className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Resources:</span>
-              {status.discovered_resource_count === 0 ? EM_DASH : status.exposed_resource_count}
+              {capabilityValue(status, 'resources').state === 'known' ? capabilityValue(status, 'resources').exposed : '…'}
             </span>
             <span
               className={cn(
@@ -552,7 +544,7 @@ export function GatewayTable({
             >
               <MessageSquare className="size-[11px] shrink-0 opacity-65" aria-hidden="true" />
               <span className="sr-only">Prompts:</span>
-              {status.discovered_prompt_count === 0 ? EM_DASH : status.exposed_prompt_count}
+              {capabilityValue(status, 'prompts').state === 'known' ? capabilityValue(status, 'prompts').exposed : '…'}
             </span>
           </span>
         </div>),
@@ -573,6 +565,7 @@ export function GatewayTable({
     return (
       <Fragment key={gateway.id}>
         <div
+          role="row"
           data-gwrow="1"
           style={gridStyle}
           data-hoverrow="1"
@@ -589,7 +582,7 @@ export function GatewayTable({
           aria-hidden="true"
         />
 
-        <div className="min-w-0 pl-5">
+        <div role="cell" aria-colindex={1} className="min-w-0 pl-5">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <button
               type="button"
@@ -610,7 +603,7 @@ export function GatewayTable({
             </button>
             <Link
               href={gatewayDetailHref(gateway.id)}
-              title={gateway.display_name?.trim() ? `${statusTone.label} · ${operational.reason} · ID: ${gateway.name}` : `${gateway.name} · ${statusTone.label} · ${operational.reason}`}
+              title={gateway.display_name?.trim() ? `${operational.label} · ${operational.reason} · ID: ${gateway.name}` : `${gateway.name} · ${operational.label} · ${operational.reason}`}
               className="min-w-0 max-w-full break-words font-display text-[13.5px] leading-[1.16] [font-weight:760] text-aurora-text-primary underline-offset-4 hover:text-aurora-accent-strong hover:underline"
             >
               {displayName}
@@ -765,7 +758,7 @@ export function GatewayTable({
           </div>
         </div>
 
-        <div className="min-w-0 justify-self-center">
+        <div role="cell" aria-colindex={2} className="min-w-0 justify-self-center">
           <span
             className={cn(
               'inline-flex items-center gap-1.5 rounded-full border border-aurora-border-subtle px-2 py-1 text-[10px] font-semibold',
@@ -777,13 +770,13 @@ export function GatewayTable({
             {connectionTone.label}
           </span>
         </div>
-        {visibleColumns.map((column) => (
-          <Fragment key={column}>{columnCells[column]}</Fragment>
+        {visibleColumns.map((column, index) => (
+          <div key={column} role="cell" aria-colindex={index + 3} className={cn("min-w-0", column !== "endpoint" && "flex justify-center")}>{columnCells[column]}</div>
         ))}
 
         </div>
         {isExpanded ? (
-          <div className="border-t border-aurora-border-strong bg-[color-mix(in_srgb,var(--aurora-accent-primary)_4%,var(--gw-head))] px-10 py-4">
+          <div role="row"><div role="cell" aria-colspan={visibleColumns.length + 2} className="border-t border-aurora-border-strong bg-[color-mix(in_srgb,var(--aurora-accent-primary)_4%,var(--gw-head))] px-10 py-4">
             <div className="grid gap-4 text-[11px] sm:grid-cols-2 xl:grid-cols-4">
               <GatewayFact label="Transport" value={gateway.transport} />
               <GatewayFact label="Endpoint" value={endpointPreview} mono />
@@ -802,7 +795,7 @@ export function GatewayTable({
                 <Link href={gatewayDetailHref(gateway.id)}>Open server page</Link>
               </Button>
             </div>
-          </div>
+          </div></div>
         ) : null}
       </Fragment>
     )
@@ -812,7 +805,8 @@ export function GatewayTable({
       <section
         aria-label="Server inventory cards"
         className={cn(
-          'space-y-2 min-[1101px]:hidden',
+          'space-y-2',
+          presentation === 'table' && 'hidden',
           presentation === 'cards' && 'min-[1101px]:grid min-[1101px]:grid-cols-2 min-[1101px]:gap-3 min-[1101px]:space-y-0 min-[1450px]:grid-cols-3',
         )}
       >
@@ -848,7 +842,7 @@ export function GatewayTable({
               )}
             >
               <span className={cn('absolute inset-y-0 left-0 w-[3px]', statusRailClass(gateway))} aria-hidden="true" />
-              <div className="space-y-3 p-3 pl-4">
+              <div className={cn('p-3 pl-4', presentation === 'cards' ? 'space-y-3' : 'space-y-1')}>
                 <div className="flex min-w-0 items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -859,16 +853,16 @@ export function GatewayTable({
                       >
                         {displayName}
                       </Link>
-                      <span title={`${statusTone.label}. ${operational.reason}`} className={cn('inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2 text-[10px] font-semibold', statusTone.text)}>
+                      <span title={`${operational.label}. ${operational.reason}`} className={cn('inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2 text-[10px] font-semibold', statusTone.text)}>
                         <span className={cn('size-1.5 rounded-full', statusTone.dot)} aria-hidden="true" />
-                        {statusTone.label}
+                        {operational.label}
                       </span>
                       <WarningsPill warnings={gateway.warnings} gatewayName={gateway.name} staleCount={gateway.status.likely_stale_count}/>
                     </div>
                     <button
                       type="button"
                       className={cn(
-                        'mt-1.5 flex min-h-8 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-[11px] text-aurora-text-muted',
+                        'mt-1.5 flex min-h-11 w-full min-w-0 items-center gap-1.5 rounded-md text-left text-[11px] text-aurora-text-muted',
                         showsCommandLine && 'hover:bg-aurora-hover-bg hover:text-aurora-text-primary',
                       )}
                       onClick={() => showsCommandLine && setExpandedMobileGatewayId((current) => current === gateway.id ? null : gateway.id)}
@@ -882,7 +876,7 @@ export function GatewayTable({
 
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="icon" className={cn(gatewayActionTone(), 'size-10 shrink-0 rounded-full')} aria-label={`More actions for ${gateway.name}`}>
+                      <Button variant="outline" size="icon" className={cn(gatewayActionTone(), 'size-11 shrink-0 rounded-full')} aria-label={`More actions for ${gateway.name}`}>
                         <MoreHorizontal className="size-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -921,28 +915,29 @@ export function GatewayTable({
                   </div>
                 ) : null}
 
-                <div className="grid grid-cols-2 gap-2">
-                  {counts.map(({ label, icon: Icon, exposed, discovered }) => (
-                    <div key={label} data-mobile-metric={label.toLowerCase()} className="rounded-lg border border-aurora-border-subtle bg-aurora-control-surface/15 px-2.5 py-2">
+                {presentation === 'list' ? <p className="text-xs tabular-nums text-aurora-text-muted">{capabilityLabel(gateway.status, 'tools')} tools · {capabilityLabel(gateway.status, 'resources')} resources · {capabilityLabel(gateway.status, 'prompts')} prompts · {capabilityLabel(gateway.status, 'skills')} skills · {runtimeLabel} runtime</p> : <div className="grid grid-cols-2 gap-2">
+                  {counts.map(({ label, icon: Icon }) => (
+                    <div key={label} title={capabilityDescription(gateway.status, label.toLowerCase() as 'tools' | 'resources' | 'prompts' | 'skills')} data-mobile-metric={label.toLowerCase()} className="rounded-lg border border-aurora-border-subtle bg-aurora-control-surface/15 px-2.5 py-2">
                       <div className="flex items-center gap-1.5 text-[10px] uppercase tracking-[0.09em] text-aurora-text-muted"><Icon className="size-3.5" />{label}</div>
                       <div className="mt-1 font-display text-[16px] font-bold tabular-nums text-aurora-text-primary">
-                        {exposed}<span className="ml-1 text-[10px] font-medium text-aurora-text-muted">/ {discovered}</span>
+                        {capabilityLabel(gateway.status, label.toLowerCase() as 'tools' | 'resources' | 'prompts' | 'skills')}
                       </div>
                     </div>
                   ))}
-                </div>
+                </div>}
 
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-aurora-border-subtle pt-2 text-[10px] text-aurora-text-muted">
+                  {capabilityScopeLabel(gateway.status) ? <span>{capabilityScopeLabel(gateway.status)}</span> : null}
                   <span data-mobile-metric="runtime">Runtime <strong className="font-semibold text-aurora-text-primary">{runtimeLabel}</strong></span>
                   {cleanupSummaryLabel ? <span>· {cleanupSummaryLabel}</span> : null}
                   {gateway.warnings.length > 0 ? <span className="text-aurora-warn">· {gateway.warnings.length} warning{gateway.warnings.length === 1 ? '' : 's'}</span> : null}
                 </div>
 
-                <div className="grid grid-cols-3 gap-2">
-                  <Button asChild variant="outline" size="sm" className="min-h-10"><Link href={gatewayDetailHref(gateway.id)}><Eye className="mr-1.5 size-4" />Open</Link></Button>
-                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-10" onClick={() => onTest(gateway)}><Play className="mr-1.5 size-4" />Test</Button> : <Button variant="outline" size="sm" className="min-h-10" onClick={() => onEdit(gateway)}><Pencil className="mr-1.5 size-4" />Edit</Button>}
-                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-10" onClick={() => onReload(gateway)}><RefreshCw className="mr-1.5 size-4" />Reload</Button> : <Button variant="outline" size="sm" className="min-h-10" onClick={() => requestToggleEnabled(gateway)}>{gateway.enabled ?? true ? 'Disable' : 'Enable'}</Button>}
-                </div>
+                {presentation === 'cards' ? <div className="grid grid-cols-3 gap-2">
+                  <Button asChild variant="outline" size="sm" className="min-h-11"><Link href={gatewayDetailHref(gateway.id)}><Eye className="mr-1.5 size-4" />Open</Link></Button>
+                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-11" onClick={() => onTest(gateway)}><Play className="mr-1.5 size-4" />Test</Button> : <Button variant="outline" size="sm" className="min-h-11" onClick={() => onEdit(gateway)}><Pencil className="mr-1.5 size-4" />Edit</Button>}
+                  {supportsProbeControls ? <Button variant="outline" size="sm" className="min-h-11" onClick={() => onReload(gateway)}><RefreshCw className="mr-1.5 size-4" />Reload</Button> : <Button variant="outline" size="sm" className="min-h-11" onClick={() => requestToggleEnabled(gateway)}>{gateway.enabled ?? true ? 'Disable' : 'Enable'}</Button>}
+                </div> : null}
               </div>
             </article>
           )
@@ -955,15 +950,17 @@ export function GatewayTable({
       <section
         aria-label="Server inventory"
         data-hovercard="1"
-        className={cn(GW_CARD, 'hidden', presentation !== 'cards' && 'min-[1101px]:block')}
+        className={cn(GW_CARD, presentation !== 'table' && 'hidden')}
         style={GW_SCRIM_ALIASES}
       >
         <div
           data-gwtablewrap="1"
           className="aurora-scrollbar overflow-x-auto min-[1101px]:overflow-x-visible"
         >
-          <div data-gwtable="1" className="min-w-[1010px]">
+          <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
+          <div data-gwtable="1" role="table" aria-label="Server inventory" aria-colcount={visibleColumns.length + 2} className="min-w-[1010px]">
             <div
+              role="row"
               data-gwhead="1"
               style={gridStyle}
               className={cn(
@@ -971,12 +968,15 @@ export function GatewayTable({
                 'sticky top-0 z-[18] h-10 border-b border-aurora-border-strong bg-[var(--gw-head)] pl-5',
               )}
             >
-              <SortHeader label="Server" sort="name" align="start" />
-              <div className="justify-self-center">
+              <div role="columnheader" aria-colindex={1} aria-sort={sortKey === 'name' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}><SortHeader label="Server" sort="name" align="start" /></div>
+              <div role="columnheader" aria-colindex={2} aria-sort={sortKey === 'connection' ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'} className="justify-self-center">
                 <SortHeader label="Connection" sort="connection" />
               </div>
-              {visibleColumns.map((column) => (
+              {visibleColumns.map((column, index) => (
                 <div
+                  role="columnheader"
+                  aria-colindex={index + 3}
+                  aria-sort={sortKey === column ? (sortDirection === 'asc' ? 'ascending' : 'descending') : 'none'}
                   key={column}
                   data-gateway-column={column}
                   className="group/column flex min-w-0 items-center justify-center gap-1"
@@ -1017,9 +1017,8 @@ export function GatewayTable({
               ))}
             </div>
 
-            <GatewaySelectionToolbar gateways={gateways} selectedIds={selectedGatewayIds} onClear={() => setSelectedGatewayIds([])} onBatchSetEnabled={onBatchSetEnabled} onBatchReload={onBatchReload}/>
             {attentionCount > 0 ? (
-              <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-warn)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-warn)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-warn)_10%,var(--gw-head))]">
+              <div role="row"><div role="cell" aria-colspan={visibleColumns.length + 2} className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--aurora-warn)_22%,var(--aurora-border-default))] bg-[color-mix(in_srgb,var(--aurora-warn)_6%,var(--gw-head))] px-5 py-1.5 transition-colors hover:bg-[color-mix(in_srgb,var(--aurora-warn)_10%,var(--gw-head))]">
                 <button
                   type="button"
                   onClick={() => toggleGroup('attention')}
@@ -1052,7 +1051,7 @@ export function GatewayTable({
                     <X className="size-3" aria-hidden="true" />
                   </button>
                 ) : null}
-              </div>
+              </div></div>
             ) : null}
 
             {statusGroups.map((group) => {
@@ -1060,6 +1059,7 @@ export function GatewayTable({
 
               return (
                 <Fragment key={group.id}>
+                  <div role="row"><div role="cell" aria-colspan={visibleColumns.length + 2}>
                   <button
                     type="button"
                     onClick={() => toggleGroup(group.id)}
@@ -1084,6 +1084,7 @@ export function GatewayTable({
                       className="h-px flex-1 bg-[color-mix(in_srgb,var(--aurora-border-default)_40%,var(--aurora-page-bg))]"
                     />
                   </button>
+                  </div></div>
                   {expanded ? group.rows.map((gateway) => renderDesktopRow(gateway)) : null}
                 </Fragment>
               )
@@ -1093,7 +1094,7 @@ export function GatewayTable({
         <div className="flex items-center justify-between gap-3 border-t border-[color-mix(in_srgb,var(--aurora-border-default)_70%,var(--aurora-page-bg))] bg-[var(--gw-footer)] px-5 py-[9px]">
           <span className="text-[11.5px] tabular-nums text-aurora-text-muted">
             {gateways.length} {gateways.length === 1 ? 'server' : 'servers'} ·{' '}
-            {exposureTotals.exposed}/{exposureTotals.discovered} tools
+            {exposureTotals.exposed}/{exposureTotals.discovered} tools{exposureTotals.incomplete ? ' · incomplete' : ''}
             {selectedGatewayIds.length > 0 ? ` · ${selectedGatewayIds.length} selected` : ''}
             {layoutWarning ? ' · Column layout could not be read or saved on this device.' : ''}
           </span>

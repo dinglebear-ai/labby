@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
 import { ProtectedMcpRoutesPanel } from '@/components/gateway/protected-mcp-routes-panel'
+import { ExternalClientSetup } from '@/components/settings/ExternalClientSetup'
 import { SettingsScalarSection } from '@/components/settings/SettingsScalarSection'
 import { setupApi, type SettingsSchemaResponse, type SettingsState } from '@/lib/api/setup-client'
 import { fieldsForSection } from '@/lib/settings/schema'
@@ -49,13 +50,14 @@ export default function SurfacesPage(): React.ReactElement {
         {settings ? (
           <SettingsScalarSection
             title="Surfaces"
-            description="Safe scalar HTTP, MCP, URL, and CORS settings. Dangerous auth-bypass settings are read-only."
+            description="Set the public app and MCP addresses, accepted request hosts, and browser origins. Changes that could bypass authentication are shown for inspection and require a separate security flow."
             section="surfaces"
             state={settings}
             fields={fields}
             onSaved={setSettings}
           />
         ) : null}
+        <ExternalClientSetup mcpEndpoint={settings?.values['public_urls.mcp_gateway']} />
         <ProtectedMcpRoutesPanel />
       </div>
     </>

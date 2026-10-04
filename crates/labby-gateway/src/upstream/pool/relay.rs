@@ -58,8 +58,8 @@ use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
     ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
-    GetPromptRequestParams, GetPromptResponse, ProgressNotificationParam, ProgressToken,
-    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
+    GetPromptRequestParams, GetPromptResponse, Implementation, ProgressNotificationParam,
+    ProgressToken, ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
     RequestMetaObject, ResourceUpdatedNotificationParam, ServerNotification, ServerResult,
     TaskStatusNotification, TaskStatusNotificationParams,
 };
@@ -453,7 +453,7 @@ impl RelayRouteState {
         }
     }
 
-    async fn gateway_task_id(&self, native_task_id: &str) -> Option<String> {
+    pub(super) async fn gateway_task_id(&self, native_task_id: &str) -> Option<String> {
         self.tasks
             .lock()
             .await
@@ -675,6 +675,7 @@ impl ClientHandler for RelayClientHandler {
     /// claimed on its behalf.
     fn get_info(&self) -> ClientInfo {
         let mut info = ClientInfo::default();
+        info.client_info = Implementation::new("labby-bridge", env!("CARGO_PKG_VERSION"));
         info.capabilities = self.capabilities.clone();
         info
     }
@@ -1416,7 +1417,13 @@ impl UpstreamPool {
                         }
                     };
                 let result = self
-                    .register_task_response(&relay_key, caller_subject, task_authorization, result)
+                    .register_task_response(
+                        &relay_key,
+                        &crate::gateway::code_mode::catalog_cache::fingerprint(config),
+                        caller_subject,
+                        task_authorization,
+                        result,
+                    )
                     .await;
                 match result {
                     Ok(result) => {
@@ -1441,19 +1448,13 @@ impl UpstreamPool {
                         Some(Ok(result))
                     }
                     Err(message) => {
-                        let error = ServiceError::UnexpectedResponse;
-                        self.record_relay_failure_for(
-                            &config.name,
-                            UpstreamCapability::Tools,
-                            subject,
-                            message.clone(),
-                        )
-                        .await;
+                        // A local routing/store rejection is not an upstream
+                        // protocol failure and must not trip its circuit breaker.
                         log_upstream_request_error(
                             event,
                             started.elapsed().as_millis(),
-                            "protocol_error",
-                            Some(&error),
+                            "task_registration_failed",
+                            None,
                             None,
                             None,
                         );
@@ -1461,10 +1462,10 @@ impl UpstreamPool {
                             self,
                             event,
                             caller_subject,
-                            "protocol_error",
+                            "task_registration_failed",
                             started.elapsed().as_millis(),
                         );
-                        Some(Err(super::CapabilityCallError::Protocol { message }))
+                        Some(Err(super::CapabilityCallError::Other { message }))
                     }
                 }
             }
@@ -3644,6 +3645,11 @@ mod tests {
             capabilities.clone(),
         )
         .await;
+        let pool = pool.with_task_route_store(Arc::new(
+            super::super::TaskRouteStore::open_in_memory()
+                .await
+                .expect("task route store"),
+        ));
         let result = pool
             .call_tool_relayed(
                 &config,
@@ -3768,6 +3774,11 @@ mod tests {
             relay_capabilities.clone(),
         );
         assert_eq!(handler.get_info().capabilities, relay_capabilities);
+        assert_eq!(handler.get_info().client_info.name, "labby-bridge");
+        assert_eq!(
+            handler.get_info().client_info.version,
+            env!("CARGO_PKG_VERSION")
+        );
         let gw_client = handler
             .serve_with_lifecycle(
                 gw_client_transport,

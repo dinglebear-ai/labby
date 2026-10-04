@@ -1,9 +1,11 @@
 'use client'
 
+import { capabilityDescription, capabilityLabel, capabilityScopeLabel, capabilityValue } from '@/lib/gateway-capabilities'
 import dynamic from 'next/dynamic'
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ButtonHTMLAttributes,
   type ReactNode,
@@ -49,6 +51,7 @@ import {
 } from './gateway-confirmations'
 import { AppHeader } from '@/components/app-header'
 import { Button } from '@/components/ui/button'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
@@ -60,6 +63,7 @@ import type { GatewaySaveRollback } from './gateway-form-dialog'
 import { TestResultPanel } from './test-result-panel'
 import { CleanupResultPanel } from './cleanup-result-panel'
 import { useGateway, useGatewayMutations, useProtectedMcpRoutes } from '@/lib/hooks/use-gateways'
+import { useGatewayProbe } from '@/lib/hooks/use-gateway-probe'
 import type { Gateway, CreateGatewayInput, UpdateGatewayInput } from '@/lib/types/gateway'
 import { gatewayLabel } from '@/lib/gateway-label'
 import {
@@ -229,7 +233,7 @@ function formatGatewayTimestamp(value: string | null | undefined): string {
 export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const { data: gateway, isLoading, error } = useGateway(gatewayId)
+  const { data: gateway, isLoading, isValidating, error, mutate: refreshGateway } = useGateway(gatewayId)
   const { data: protectedRoutes = [] } = useProtectedMcpRoutes()
   const usage = useSWR(gatewayId ? ['gateway-detail-calls', gatewayId] : null, () => fetchToolCalls({ window: '24h', upstream: gatewayId!, limit: 5 }), { revalidateOnFocus: false })
   const usageMetrics = useSWR(gatewayId ? ['gateway-detail-metrics', gatewayId] : null, () => fetchGatewayUsageMetrics('24h', gatewayId!), { revalidateOnFocus: false })
@@ -247,13 +251,15 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     setVirtualServerSurface,
   } = useGatewayMutations()
 
-  const [isTesting, setIsTesting] = useState(false)
+  const { run: runProbe, close: closeProbe, result: testResult, isTesting } = useGatewayProbe(testGateway, gatewayId)
   const [isReloading, setIsReloading] = useState(false)
   const [isCleaningRuntime, setIsCleaningRuntime] = useState(false)
   const [isAggressiveCleanup, setIsAggressiveCleanup] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [removeConfirmationOpen, setRemoveConfirmationOpen] = useState(false)
   const [manageToolsMode, setManageToolsMode] = useState(false)
+  const [exposureChangedRemotely, setExposureChangedRemotely] = useState(false)
+  const exposureSnapshot = useRef<{ id?: string; signature: string }>({ signature: '' })
   const [draftSelectedToolNames, setDraftSelectedToolNames] = useState<string[]>([])
   const [selectedRowToolNames, setSelectedRowToolNames] = useState<string[]>([])
   const [isSavingExposure, setIsSavingExposure] = useState(false)
@@ -265,7 +271,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const [isStartingOauth, setIsStartingOauth] = useState(false)
   const [catalogEditorOpen, setCatalogEditorOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<'overview' | 'catalog' | 'activity' | 'routes' | 'runtime' | 'config' | 'settings' | 'warnings' | 'logs'>(searchParams.get('tab') === 'logs' ? 'logs' : 'overview')
-  const [testResult, setTestResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof testGateway>> } | null>(null)
   const [cleanupResult, setCleanupResult] = useState<{ gateway: Gateway; result: Awaited<ReturnType<typeof cleanupGateway>> } | null>(null)
   const [hasMounted, setHasMounted] = useState(false)
   const {
@@ -304,10 +309,17 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   }, [])
 
   useEffect(() => {
+    const previous = exposureSnapshot.current
+    exposureSnapshot.current = { id: gateway?.id, signature: toolExposureSignature }
+    if (previous.id === gateway?.id && manageToolsMode) {
+      if (previous.signature !== toolExposureSignature) setExposureChangedRemotely(true)
+      return
+    }
     setDraftSelectedToolNames(currentExposedToolNames)
     setSelectedRowToolNames([])
     setManageToolsMode(false)
-  }, [currentExposedToolNames, gateway?.id, toolExposureSignature])
+    setExposureChangedRemotely(false)
+  }, [currentExposedToolNames, gateway?.id, toolExposureSignature, manageToolsMode])
 
   useEffect(() => {
     setEnvDraft(Object.entries(gateway?.config.env ?? {}).map(([key, value]) => `${key}=${value}`).join('\n'))
@@ -340,10 +352,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
   const handleTest = async () => {
     if (!gateway || !(gateway.enabled ?? true)) return
-    setIsTesting(true)
     try {
-      const result = await testGateway(gateway.id)
-      setTestResult({ gateway, result })
+      const result = await runProbe(gateway)
+      if (!result) return
       if (result.severity === 'warning') {
         toast.warning(result.detail || result.message)
       } else if (result.success) {
@@ -353,8 +364,6 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       }
     } catch (error) {
       toast.error(getErrorMessage(error, 'Failed to test server'))
-    } finally {
-      setIsTesting(false)
     }
   }
 
@@ -391,13 +400,14 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   ): Promise<GatewaySaveRollback | void> => {
     if (!gateway) return
     const previous = gateway
-    await updateGateway(gateway.id, input as UpdateGatewayInput)
-    return async () => {
-      await updateGateway(previous.id, {
-        name: previous.name,
-        transport: previous.transport,
-        config: previous.config,
-      })
+    const saved = await updateGateway(gateway.id, input as UpdateGatewayInput)
+    return {
+      commit: () => {
+        if (saved.id === previous.id) return
+        const params = new URLSearchParams(searchParams.toString())
+        params.set('id', saved.id)
+        router.replace(`/gateway/?${params.toString()}`, { scroll: false })
+      },
     }
   }
 
@@ -484,7 +494,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     )
   }
 
-  if (error || !gateway) {
+  if (!gateway) {
     return (
       <>
         <AppHeader
@@ -768,18 +778,18 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
   const updatedAtLabel = formatGatewayTimestamp(gateway.updated_at)
   const isEnabled = gateway.enabled ?? true
-  const detailStatus = gatewayDetailStatus({ enabled: isEnabled, connected: gateway.status.connected, healthy: gateway.status.healthy })
+  const detailStatus = gatewayDetailStatus({ enabled: isEnabled, ...gateway.status, warnings: gateway.warnings })
   const operationalStatus = describeGatewayOperationalState(gateway)
   const statusLabel = detailStatus.label
   const displayName = gateway.display_name?.trim() ? gatewayLabel(gateway) : gatewayDisplayName(gateway.name)
   const statusDotColor = detailStatus.tone === 'connected'
     ? 'var(--aurora-accent-strong)'
-    : detailStatus.tone === 'disabled'
+    : detailStatus.tone === 'disabled' || detailStatus.tone === 'idle'
       ? 'var(--aurora-text-muted)'
       : 'var(--aurora-error)'
   const statusDotHalo = detailStatus.tone === 'connected'
     ? 'rgba(103,203,250,0.16)'
-    : detailStatus.tone === 'disabled'
+    : detailStatus.tone === 'disabled' || detailStatus.tone === 'idle'
       ? 'rgba(137,163,180,0.10)'
       : 'rgba(199,132,144,0.10)'
   const transportLabel =
@@ -792,21 +802,27 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
   const exposureStats = [
     {
       label: 'Tools',
+      observationLabel: capabilityLabel(gateway.status, 'tools'),
+      observationDescription: capabilityDescription(gateway.status, 'tools'),
       icon: <Wrench size={13} />,
-      exposed: gateway.status.exposed_tool_count,
-      discovered: gateway.status.discovered_tool_count,
+      exposed: capabilityValue(gateway.status, 'tools').exposed ?? 0,
+      discovered: capabilityValue(gateway.status, 'tools').discovered ?? 0,
     },
     {
       label: 'Resources',
+      observationLabel: capabilityLabel(gateway.status, 'resources'),
+      observationDescription: capabilityDescription(gateway.status, 'resources'),
       icon: <FileText size={13} />,
-      exposed: gateway.status.exposed_resource_count,
-      discovered: gateway.status.discovered_resource_count,
+      exposed: capabilityValue(gateway.status, 'resources').exposed ?? 0,
+      discovered: capabilityValue(gateway.status, 'resources').discovered ?? 0,
     },
     {
       label: 'Prompts',
+      observationLabel: capabilityLabel(gateway.status, 'prompts'),
+      observationDescription: capabilityDescription(gateway.status, 'prompts'),
       icon: <MessageSquare size={13} />,
-      exposed: gateway.status.exposed_prompt_count,
-      discovered: gateway.status.discovered_prompt_count,
+      exposed: capabilityValue(gateway.status, 'prompts').exposed ?? 0,
+      discovered: capabilityValue(gateway.status, 'prompts').discovered ?? 0,
     },
   ]
   const totalExposedPrimitives = exposureStats.reduce((total, stat) => total + stat.exposed, 0)
@@ -946,6 +962,23 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
       />
 
       <div className="flex-1 min-w-0 overflow-x-hidden">
+        {error ? (
+          <Alert variant="warn" className="mb-4">
+            <AlertTriangle />
+            <AlertTitle>Connection status may be out of date</AlertTitle>
+            <AlertDescription>
+              <p>Showing the last successful server snapshot. {getErrorMessage(error, 'The latest status refresh failed.')}</p>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isValidating}
+                onClick={() => { void refreshGateway().catch(() => undefined) }}
+              >
+                {isValidating ? 'Refreshing connection status…' : 'Retry connection status'}
+              </Button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
         {!(gateway.enabled ?? true) ? (
           <div className="mb-4 flex items-start gap-3 rounded-lg border border-aurora-warn/30 bg-aurora-warn/10 px-4 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-aurora-warn" />
@@ -1064,6 +1097,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   </HeaderMetaButton>
                   <HeaderMetaDot />
                   <span style={{ fontWeight: 650 }}>{transportLabel}</span>
+                  {capabilityScopeLabel(gateway.status) ? <span>{capabilityScopeLabel(gateway.status)}</span> : null}
                   <HeaderMetaDot />
                   <span
                     style={{ fontVariantNumeric: 'tabular-nums' }}
@@ -1178,9 +1212,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   active={activeTab === 'catalog'}
                   label="Catalog"
                   count={
-                    gateway.discovery.tools.length +
-                    gateway.discovery.resources.length +
-                    gateway.discovery.prompts.length
+                    gateway.status.capability_observation && ['tools', 'resources', 'prompts'].some(kind => capabilityValue(gateway.status, kind as 'tools' | 'resources' | 'prompts').state !== 'known')
+                      ? '…' : ['tools', 'resources', 'prompts'].reduce((sum, kind) => sum + (capabilityValue(gateway.status, kind as 'tools' | 'resources' | 'prompts').discovered ?? 0), 0)
                   }
                 />
                 <DetailTabTrigger value="activity" active={activeTab === 'activity'} label="Activity" count={usage.data?.filtered} />
@@ -1201,10 +1234,10 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
             <div className="space-y-3.5">
               <div style={DETAIL_KV_GRID_STYLE}>
                 <DetailKeyValueCard label="Catalog" rows={[
-                  { label: 'Tools · exposed / discovered', value: `${gateway.discovery.tools.filter((item) => item.exposed).length} / ${gateway.discovery.tools.length}` },
-                  { label: 'Prompts', value: `${gateway.discovery.prompts.filter((item) => item.exposed).length} / ${gateway.discovery.prompts.length}` },
-                  { label: 'Resources', value: `${gateway.discovery.resources.filter((item) => item.exposed).length} / ${gateway.discovery.resources.length}` },
-                  { label: 'Skills', value: `${gateway.status.exposed_skill_count ?? 0} / ${gateway.status.discovered_skill_count ?? 0}` },
+                  { label: 'Tools · exposed / discovered', value: capabilityLabel(gateway.status, 'tools') },
+                  { label: 'Prompts', value: capabilityLabel(gateway.status, 'prompts') },
+                  { label: 'Resources', value: capabilityLabel(gateway.status, 'resources') },
+                  { label: 'Skills', value: capabilityLabel(gateway.status, 'skills') },
                   { label: 'Most used tool', value: usageMetrics.data?.top_tools[0]?.tool ?? DETAIL_NO_DATA },
                   { label: 'Most problematic', value: usageMetrics.data ? [...usageMetrics.data.top_tools].sort((a, b) => b.failed - a.failed).find((tool) => tool.failed > 0)?.tool ?? 'none' : DETAIL_NO_DATA },
                 ]}/>
@@ -1233,9 +1266,9 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {([
-                      ['tools', toolsTabLabel, Wrench, gateway.discovery.tools.length],
-                      ['prompts', 'Prompts', MessageSquare, gateway.discovery.prompts.length],
-                      ['resources', 'Resources', FileText, gateway.discovery.resources.length],
+                      ['tools', toolsTabLabel, Wrench, capabilityValue(gateway.status, 'tools').state === 'known' ? capabilityValue(gateway.status, 'tools').discovered : '…'],
+                      ['prompts', 'Prompts', MessageSquare, capabilityValue(gateway.status, 'prompts').state === 'known' ? capabilityValue(gateway.status, 'prompts').discovered : '…'],
+                      ['resources', 'Resources', FileText, capabilityValue(gateway.status, 'resources').state === 'known' ? capabilityValue(gateway.status, 'resources').discovered : '…'],
                       ['ui-resources', 'UI Resources', Braces, gateway.config.proxy_mcp_ui ? 1 : 0],
                     ] as const).map(([value, label, Icon, count]) => (
                       <button
@@ -1308,7 +1341,16 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                     <Wrench className="size-4 text-aurora-text-muted" />
                     <h2 className="text-lg font-semibold">{toolsTabLabel}</h2>
                   </div>
+                  {gateway.status.capability_observation && displayedTools.length === 0 && capabilityValue(gateway.status, 'tools').state !== 'known' ? <p role="status" className="text-xs text-aurora-text-muted">{capabilityLabel(gateway.status, 'tools')}. Refresh discovery to load tools.</p> : null}
+                  {manageToolsMode && exposureChangedRemotely ? (
+                    <Alert variant="warn" className="mb-4">
+                      <AlertTriangle />
+                      <AlertTitle>Tool catalog or exposure changed while you were editing</AlertTitle>
+                      <AlertDescription>Your draft is preserved. Review the current catalog before saving, or cancel to use the latest server exposure.</AlertDescription>
+                    </Alert>
+                  ) : null}
                   <ToolExposureTable
+                    emptyLabel={capabilityValue(gateway.status, 'tools').state !== 'known' ? capabilityLabel(gateway.status, 'tools') : capabilityValue(gateway.status, 'tools').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No tools discovered'}
                     tools={displayedTools}
                     exposureLabel={exposureSummary.label}
                     exposeAll={exposeAllTools}
@@ -1336,11 +1378,12 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
               {inventoryFilter === 'resources' ? (
                 <PrimitiveExposureTable
+                  key={`${gateway.id}:resources`}
                   title="Discovered MCP Resources"
                   description="Search and manage which upstream resources are exposed through this server."
                   searchPlaceholder="Search resources"
                   manageLabel="Manage resources"
-                  emptyLabel="No resources discovered"
+                  emptyLabel={capabilityValue(gateway.status, 'resources').state !== 'known' ? capabilityLabel(gateway.status, 'resources') : capabilityValue(gateway.status, 'resources').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No resources discovered'}
                   exposureEnabled={resourceExposureEnabled}
                   icon={FileText}
                   items={gateway.discovery.resources.map((resource) => ({
@@ -1369,11 +1412,12 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
               {inventoryFilter === 'prompts' ? (
                 <PrimitiveExposureTable
+                  key={`${gateway.id}:prompts`}
                   title="Discovered MCP Prompts"
                   description="Search and manage which upstream prompts are exposed through this server."
                   searchPlaceholder="Search prompts"
                   manageLabel="Manage prompts"
-                  emptyLabel="No prompts discovered"
+                  emptyLabel={capabilityValue(gateway.status, 'prompts').state !== 'known' ? capabilityLabel(gateway.status, 'prompts') : capabilityValue(gateway.status, 'prompts').discovered ? 'Catalog entries are unavailable. Refresh discovery.' : 'No prompts discovered'}
                   exposureEnabled={promptExposureEnabled}
                   icon={MessageSquare}
                   items={gateway.discovery.prompts.map((prompt) => ({
@@ -1775,7 +1819,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
 
       <TestResultPanel
         result={testResult}
-        onClose={() => setTestResult(null)}
+        onClose={closeProbe}
       />
       <CleanupResultPanel
         result={cleanupResult}

@@ -806,8 +806,8 @@ mod tests {
         let runtime = FileStashRuntime::initialize(root(&temp, "stash")).await;
         let store = runtime.store().await.unwrap();
         store.with_connection(|connection| {
-            connection.execute("INSERT INTO files VALUES('a','owner','Name','name',0,'a',1,1,1)",[]).map_err(FileStashStoreError::sqlite)?;
-            assert!(connection.execute("INSERT INTO pending_uploads VALUES('u','owner','NAME','name',0,'pending',9,1,1)",[]).is_err());
+            connection.execute("INSERT INTO files(file_id,owner_principal_id,display_name,collision_key,size_bytes,blob_key,ready,created_at,updated_at) VALUES('a','owner','Name','name',0,'a',1,1,1)",[]).map_err(FileStashStoreError::sqlite)?;
+            assert!(connection.execute("INSERT INTO pending_uploads(upload_id,owner_principal_id,display_name,collision_key,reserved_bytes,state,expires_at,created_at,updated_at) VALUES('u','owner','NAME','name',0,'pending',9,1,1)",[]).is_err());
             assert!(connection.execute("INSERT INTO grants VALUES('g','a','owner','active',1,NULL)",[]).is_err());
             connection.execute("INSERT INTO grants VALUES('g','a','other','active',1,NULL)",[]).map_err(FileStashStoreError::sqlite)?;
             assert!(connection.execute("UPDATE grants SET grantee_principal_id='owner' WHERE grant_id='g'",[]).is_err());

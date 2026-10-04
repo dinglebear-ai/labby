@@ -42,6 +42,8 @@
     "scripts/ci/n-minus-one-diagnostics.sh",
     "scripts/ci/n-minus-one-token.sh",
     "scripts/ci/n-minus-one-recovery.sh",
+    "scripts/ci/export-release-attestation-bundles.sh",
+    "scripts/ci/github-verifier-bootstrap.sh",
     "scripts/ci/verify-release-provenance.sh",
     "scripts/ci/upload-immutable-release-assets.sh",
     "scripts/ci/verify-and-activate-release.sh",
@@ -50,7 +52,12 @@
     "plugins/scripts/cleanup-leaked-mcp.sh",
     "plugins/scripts/health-check",
     "plugins/scripts/link-claude-mds",
-    "plugins/scripts/protected-mcp-smoke"
+    "plugins/scripts/protected-mcp-smoke",
+    "scripts/build-tailcat-bridge.sh",
+    "scripts/install-tailcat-depot-assets.sh",
+    "scripts/test-tailcat-bridge.sh",
+    "scripts/package-tailcat-release.sh",
+    "scripts/tests/tailcat-installers.sh"
   ],
   "powershell": [
     "scripts/install.ps1"
@@ -68,6 +75,9 @@
     "scripts/ci/test_default_web_build.py",
     "scripts/ci/test_npm_pointer.py",
     "scripts/ci/test_update_safety_oracles.py",
-    "scripts/tests/test_timeout.py"
+    "scripts/tests/test_timeout.py",
+    "scripts/tests/release-attestation-bundles.sh",
+    "scripts/tests/test_tailcat_release.py",
+    "scripts/tests/tailcat-installers.sh"
   ]
 }

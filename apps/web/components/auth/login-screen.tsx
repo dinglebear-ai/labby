@@ -1,6 +1,6 @@
 'use client'
 
-import { FormEvent, useState } from 'react'
+import { FormEvent, useEffect, useState } from 'react'
 
 import { Button } from '../ui/button.tsx'
 import { LabbyIcon } from '../labby-icon.tsx'
@@ -11,6 +11,7 @@ import {
   AURORA_STRONG_PANEL,
 } from '../aurora/tokens.ts'
 import { cn } from '../../lib/utils.ts'
+import { redeemSetupBrowserHandoff } from '../../lib/auth/session-store.ts'
 import { exchangeBearerBrowserSession, useBrowserSession } from '../../lib/auth/session.ts'
 
 type LoginScreenProps = {
@@ -24,6 +25,18 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
   const [token, setToken] = useState('')
   const [bearerError, setBearerError] = useState<string>()
   const [submitting, setSubmitting] = useState(false)
+  useEffect(() => {
+    const fragment = new URLSearchParams(window.location.hash.slice(1))
+    const handoff = fragment.get('setup_handoff')
+    if (!handoff) return
+    // Remove the capability before any request, telemetry, render, or navigation.
+    window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}`)
+    setSubmitting(true)
+    void redeemSetupBrowserHandoff(handoff).then(next => {
+      if (next.status !== 'authenticated') throw new Error('Labby could not establish the setup browser session. Run setup again.')
+    }).catch(error => setBearerError(error instanceof Error ? error.message : 'Local setup handoff could not be verified.'))
+      .finally(() => setSubmitting(false))
+  }, [])
   const loginAvailable = session.status === 'unauthenticated' && session.loginAvailable === true
   const bearerAvailable = session.status === 'unauthenticated' && session.bearerLoginAvailable === true
   const authUnavailable = session.status === 'auth_error'
@@ -31,9 +44,9 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
   const introCopy = errorMessage
     ? 'Labby could not verify your current session.'
     : bearerAvailable && loginAvailable
-      ? 'Use your setup token or your configured sign-in provider.'
+      ? 'Use your configured sign-in provider or an operator bearer token.'
       : bearerAvailable
-        ? 'Enter the bearer token generated during Labby setup.'
+        ? 'Local setup opens this page with a secure sign-in link. For manual operator access, enter your gateway bearer token.'
         : 'Sign in to access your Labby workspace.'
 
   async function submitBearer(event: FormEvent<HTMLFormElement>) {
@@ -80,7 +93,7 @@ export function LoginScreen({ errorMessage, requestId, returnTo }: LoginScreenPr
         {bearerAvailable ? (
           <form className="mt-5" onSubmit={submitBearer}>
             <label className="block text-xs font-semibold text-aurora-text-muted" htmlFor="labby-bearer-token">
-              Setup token
+              Operator bearer token
             </label>
             <input
               id="labby-bearer-token"

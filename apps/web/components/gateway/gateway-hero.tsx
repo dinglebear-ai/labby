@@ -228,13 +228,14 @@ export function GatewayHero({
 }) {
   const attention = serverStates.filter((server) => ['disconnected', 'needs attention'].includes(server.state)).length
   const discovering = serverStates.filter((server) => server.state === 'discovering').length
+  const idle = serverStates.filter((server) => ['not checked', 'idle'].includes(server.state)).length
   const pulseLens: GatewayLens = attention > 0 ? 'attention' : enabled > 0 ? 'enabled' : 'configured'
   const pulseColor =
     attention > 0
       ? 'var(--aurora-warn)'
       : discovering > 0
         ? 'var(--aurora-accent-strong)'
-        : enabled > 0
+        : enabled > 0 && idle === 0
           ? 'var(--aurora-success)'
           : 'var(--aurora-text-muted)'
   const pulseLabel =
@@ -246,7 +247,9 @@ export function GatewayHero({
           ? `${attention} need${attention === 1 ? 's' : ''} attention`
           : discovering > 0
             ? `${discovering} discovering`
-            : 'all systems nominal'
+            : idle > 0
+              ? `${idle} not checked or idle`
+              : 'all systems nominal'
 
   const totalDiscovered =
     discoveredTools + discoveredPrompts + discoveredResources + discoveredSkills

@@ -85,6 +85,25 @@ fn modern_discovery_error_must_not_downgrade(error: &anyhow::Error) -> bool {
     })
 }
 
+// Older middleware uses generic JSON-RPC error codes rather than the modern
+// typed protocol contract. Require the attempted version and an advertised
+// supported retry version, not merely a message mentioning a protocol error.
+fn legacy_jsonrpc_version_rejection(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let Some(ClientInitializeError::JsonRpcError(error)) =
+            cause.downcast_ref::<ClientInitializeError>()
+        else {
+            return false;
+        };
+        let message = error.message.to_ascii_lowercase();
+        matches!(error.code.0, -32600 | -32000)
+            && message.contains("unsupported protocol version")
+            && message.contains("2026-07-28")
+            && message.contains("supported versions:")
+            && message.contains("2025-11-25")
+    })
+}
+
 fn http_status_code(message: &str) -> Option<u16> {
     let start = message.find("http ")? + "http ".len();
     message.get(start..start + 3)?.parse().ok()
@@ -123,20 +142,35 @@ pub(super) fn compatibility_retry(
 
     let message = format!("{error:#}").to_ascii_lowercase();
 
+    if let Some(status) = http_status_code(&message) {
+        if matches!(status, 401 | 403 | 429) || status >= 500 {
+            return None;
+        }
+        // HTTP middleware strips the body to a bounded compatibility marker.
+        // This legacy header rejection is distinct from typed modern errors.
+        if transport == LifecycleTransport::Network
+            && status == 400
+            && message.contains("unsupported mcp-protocol-version")
+        {
+            return Some(LifecycleAttempt::LegacyInitialize);
+        }
+    }
+
+    if legacy_jsonrpc_version_rejection(error) {
+        return Some(LifecycleAttempt::LegacyInitialize);
+    }
+
     if message.contains("unsupported mcp-protocol-version")
         || message.contains("unsupported protocol version")
     {
         return None;
     }
 
-    if let Some(status) = http_status_code(&message) {
-        if matches!(status, 401 | 403 | 429) || status >= 500 {
-            return None;
-        }
-        if transport == LifecycleTransport::Network && matches!(status, 400 | 404 | 405 | 415 | 422)
-        {
-            return Some(LifecycleAttempt::LegacyInitialize);
-        }
+    if transport == LifecycleTransport::Network
+        && http_status_code(&message)
+            .is_some_and(|status| matches!(status, 400 | 404 | 405 | 415 | 422))
+    {
+        return Some(LifecycleAttempt::LegacyInitialize);
     }
 
     if message.contains("method not found")
@@ -298,11 +332,35 @@ mod tests {
     }
 
     #[test]
+    fn retries_explicit_legacy_jsonrpc_version_rejection() {
+        for code in [-32600, -32000] {
+            let error = anyhow::Error::new(ClientInitializeError::JsonRpcError(
+                rmcp::model::ErrorData::new(
+                    ErrorCode(code),
+                    "Unsupported protocol version: 2026-07-28. Supported versions: 2025-11-25",
+                    None,
+                ),
+            ));
+            assert_eq!(
+                compatibility_retry(&error, LifecycleTransport::Network),
+                Some(LifecycleAttempt::LegacyInitialize)
+            );
+        }
+    }
+
+    #[test]
+    fn retries_explicit_legacy_header_version_rejection_only_on_network() {
+        let error = anyhow::anyhow!("HTTP 400: unsupported mcp-protocol-version");
+        assert_eq!(
+            compatibility_retry(&error, LifecycleTransport::Network),
+            Some(LifecycleAttempt::LegacyInitialize)
+        );
+        assert_eq!(compatibility_retry(&error, LifecycleTransport::Stdio), None);
+    }
+
+    #[test]
     fn unsupported_protocol_text_alone_is_not_legacy_evidence() {
-        for message in [
-            "HTTP 400: Unsupported MCP-Protocol-Version: 2026-07-28",
-            "unsupported protocol version",
-        ] {
+        for message in ["unsupported protocol version"] {
             for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
                 assert_eq!(
                     compatibility_retry(&anyhow::anyhow!(message), transport),
@@ -314,6 +372,23 @@ mod tests {
     }
 
     #[test]
+    fn does_not_retry_ambiguous_legacy_version_rejection() {
+        for message in [
+            "Unsupported protocol version",
+            "Unsupported protocol version: 2026-07-28",
+            "Unsupported protocol version: 2026-07-28. Supported versions: 2025-06-18",
+        ] {
+            let error = anyhow::Error::new(ClientInitializeError::JsonRpcError(
+                rmcp::model::ErrorData::new(ErrorCode(-32600), message, None),
+            ));
+            assert_eq!(
+                compatibility_retry(&error, LifecycleTransport::Network),
+                None
+            );
+        }
+    }
+
+    #[test]
     fn does_not_downgrade_modern_protocol_contract_errors() {
         for code in [
             ErrorCode::HEADER_MISMATCH,
@@ -321,7 +396,11 @@ mod tests {
             ErrorCode::UNSUPPORTED_PROTOCOL_VERSION,
         ] {
             let error = anyhow::Error::new(ClientInitializeError::JsonRpcError(
-                rmcp::model::ErrorData::new(code, "modern protocol contract error", None),
+                rmcp::model::ErrorData::new(
+                    code,
+                    "Unsupported protocol version: 2026-07-28. Supported versions: 2025-11-25",
+                    None,
+                ),
             ));
             for transport in [LifecycleTransport::Network, LifecycleTransport::Stdio] {
                 assert_eq!(compatibility_retry(&error, transport), None);
@@ -366,6 +445,10 @@ mod tests {
     #[test]
     fn does_not_downgrade_operational_or_authentication_failures() {
         for message in [
+            "HTTP 401 Unauthorized: Unsupported MCP-Protocol-Version: 2026-07-28",
+            "HTTP 403 Forbidden: Unsupported MCP-Protocol-Version: 2026-07-28",
+            "HTTP 429: Unsupported MCP-Protocol-Version: 2026-07-28",
+            "HTTP 502: Unsupported MCP-Protocol-Version: 2026-07-28",
             "HTTP 401 Unauthorized",
             "HTTP 401 Unauthorized: method not found",
             "HTTP 403 Forbidden: expect initialize request",

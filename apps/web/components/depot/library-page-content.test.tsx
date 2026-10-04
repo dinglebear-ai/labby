@@ -7,6 +7,7 @@ import { installTestDom, renderClient } from '../../lib/testing/dom-test-utils.t
 import { filterArtifacts } from './library-model'
 
 const dom = installTestDom()
+test.after(() => dom.happyDOM.close())
 Object.defineProperty(globalThis, 'self', { value: globalThis.window, configurable: true })
 Object.defineProperty(globalThis, 'NodeFilter', { value: dom.NodeFilter, configurable: true })
 Object.defineProperty(globalThis, 'HTMLInputElement', { value: dom.HTMLInputElement, configurable: true })
@@ -151,6 +152,64 @@ const operationCatalog = () => Response.json({ operations: [
 ] })
 const flush = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
 
+test('production Library displays real revision contents and exact upstream identity', async () => {
+  const record = { ...artifact('unique-skill', 'skill'), providerId: 'team-catalog',
+    readme: { state: 'available' as const, kind: 'readme' as const, path: 'README.md' as const, revisionId: 'unique-skill-rev', content: '# Actual revision\n\nREADME_MARKER' },
+    lineage: { upstreamArtifactId: 'original', following: true },
+  }
+  const { view, restore } = await renderLibrary(new URLSearchParams({ artifact: record.id }), [record])
+  try {
+    await flush()
+    const dialog = document.querySelector('[role="dialog"]')!
+    assert.match(dialog.textContent ?? '', /README_MARKER/)
+    assert.doesNotMatch(dialog.textContent ?? '', /Forks stay linked|reference.md|examples\/basic.md/)
+    await act(async () => dialog.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click())
+    assert.match(dialog.textContent ?? '', /README.md/)
+    assert.doesNotMatch(dialog.textContent ?? '', /SKILL.md|scripts\/unique-skill.sh/)
+    const destination = new URL(dialog.querySelector<HTMLAnchorElement>('[aria-label="Upstream"] a')!.getAttribute('href')!, 'https://labby.example')
+    assert.equal(destination.searchParams.get('artifactProvider'), 'team-catalog')
+    assert.equal(destination.searchParams.get('artifact'), 'original')
+    assert.equal(dialog.querySelector('button[title="Add to Library"]'), null)
+    assert.equal(dialog.querySelector('[aria-label="Install command"]'), null)
+    assert.equal(dialog.querySelector('button[aria-label="Copy install command"]'), null)
+  } finally { await view.unmount(); restore() }
+})
+
+test('same-route navigation replaces stale search and kind filters', async () => {
+  const records = [artifact('alpha', 'skill', 'Alpha Skill'), artifact('beta', 'plugin', 'Beta Plugin')]
+  const { view, requested, restore } = await renderLibrary(new URLSearchParams({ q: 'Alpha', kind: 'skill' }), records)
+  try {
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 360)) })
+    assert.match(view.container.textContent ?? '', /Alpha Skill/)
+    await view.rerender(<SearchParamsContext.Provider value={new URLSearchParams({ q: 'Beta', kind: 'plugin', artifact: 'beta' }) as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 360)) })
+    assert.equal(view.container.querySelector<HTMLInputElement>('input[aria-label="Search library"]')?.value, 'Beta')
+    assert.match(view.container.textContent ?? '', /Beta Plugin/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Alpha Skill/)
+    assert.equal(requested.filter(request => request.operation === 'depot.artifacts.list').at(-1)?.input.query, 'Beta')
+    assert.match(document.querySelector('[role="dialog"]')?.textContent ?? '', /Beta Plugin/)
+  } finally { await view.unmount(); restore() }
+})
+
+test('denied clipboard writes surface recovery without an unhandled rejection', async () => {
+  const { toast } = await import('sonner')
+  const originalError = toast.error
+  const messages: string[] = []
+  toast.error = (message => { messages.push(String(message)); return 'test' }) as typeof toast.error
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => { throw new Error('Permission denied') } } })
+  const { view, restore } = await renderLibrary(new URLSearchParams({ artifact: 'skill-one' }))
+  try {
+    await flush()
+    await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Copy Library link"]')!.click())
+    assert.deepEqual(messages, ['Could not copy share link. Allow clipboard access and try again.'])
+  } finally {
+    await view.unmount(); restore(); toast.error = originalError
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+  }
+})
+
 function artifact(id: string, kind: string, title = id) {
   return {
     id, kind, namespace: 'tootie.tv', name: id, title, description: title + ' description', revisionCount: 1,
@@ -160,9 +219,37 @@ function artifact(id: string, kind: string, title = id) {
   }
 }
 
+test('late clipboard settlement after unmount cannot publish feedback', async () => {
+  const { toast } = await import('sonner')
+  const originalSuccess = toast.success, originalError = toast.error
+  const feedback: string[] = []
+  toast.success = (message => { feedback.push(String(message)); return 'test' }) as typeof toast.success
+  toast.error = (message => { feedback.push(String(message)); return 'test' }) as typeof toast.error
+  const originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+  try {
+    for (const fail of [false, true]) {
+      let resolve!: () => void, reject!: (error: Error) => void
+      const pending = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: () => pending } })
+      const { view, restore } = await renderLibrary(new URLSearchParams({ artifact: 'skill-one' }))
+      try {
+        await flush()
+        await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Copy Library link"]')!.click())
+        await view.unmount()
+        await act(async () => { if (fail) reject(new Error('denied')); else resolve() })
+      } finally { restore() }
+    }
+    assert.deepEqual(feedback, [])
+  } finally {
+    toast.success = originalSuccess; toast.error = originalError
+    if (originalClipboard) Object.defineProperty(navigator, 'clipboard', originalClipboard)
+    else Reflect.deleteProperty(navigator, 'clipboard')
+  }
+})
+
 type DepotRequest = { operation: string; input: Record<string, unknown>; projectId: string | null }
 
-async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')]) {
+async function renderLibrary(search = new URLSearchParams(), records = [artifact('skill-one', 'skill', 'Skill One')], pages?: ReturnType<typeof artifact>[][], omitTotal = false) {
   const requested: DepotRequest[] = []
   const requestSequence: string[] = []
   const originalFetch = globalThis.fetch
@@ -182,7 +269,10 @@ async function renderLibrary(search = new URLSearchParams(), records = [artifact
       const id = String(body.params?.artifactId ?? '')
       return envelope({ artifact: records.find(item => item.id === id) ?? artifact(id, 'skill', 'Deep linked artifact') })
     }
-    if (body.operation === 'depot.artifacts.list') return envelope({ artifacts: records, total: records.length })
+    if (body.operation === 'depot.artifacts.list') {
+      const page = Number(body.params?.cursor ?? 0)
+      return envelope({ artifacts: pages?.[page] ?? records, ...(omitTotal ? {} : { total: pages ? pages.reduce((sum, items) => sum + items.length, 0) : records.length }), ...(pages && page + 1 < pages.length ? { nextCursor: String(page + 1) } : {}) })
+    }
     return Response.json({ message: 'unexpected request' }, { status: 500 })
   }) as typeof globalThis.fetch
   document.body.replaceChildren()
@@ -317,4 +407,125 @@ test('a stale detail response cannot overwrite a newer artifact selection', asyn
     assert.doesNotMatch(document.body.textContent ?? '', /Alpha stale/)
     assert.match(document.body.textContent ?? '', /Bravo current/)
   } finally { await view.unmount(); globalThis.fetch = originalFetch }
+})
+
+
+test('Library bounds mounted rows and retained export metadata across seven catalog pages', async () => {
+  const pages = Array.from({ length: 7 }, (_, page) => Array.from({ length: 200 }, (_, row) => artifact(`artifact-${page}-${row}`, 'skill')))
+  const { view, restore } = await renderLibrary(new URLSearchParams(), pages[0], pages)
+  const originalCreate = URL.createObjectURL
+  const originalRevoke = URL.revokeObjectURL
+  let exported: Blob | undefined
+  URL.createObjectURL = blob => { exported = blob as Blob; return 'blob:library-test' }
+  URL.revokeObjectURL = () => {}
+  try {
+    await flush()
+    for (let page = 1; page < pages.length; page++) {
+      const more = [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Load more')
+      assert.ok(more)
+      await act(async () => more.click())
+      await flush()
+      const rows = view.container.querySelectorAll('[data-library-collection] button.group, [data-library-collection] tbody tr')
+      assert.ok(rows.length <= 200, `page ${page} mounted ${rows.length} artifact rows`)
+    }
+    assert.match(view.container.textContent ?? '', /Earlier results were discarded/)
+    for (let page = 1; page < 5; page++) {
+      const next = [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Next page')!
+      assert.equal(next.disabled, false)
+      await act(async () => next.click())
+    }
+    assert.match(view.container.textContent ?? '', /artifact-6-199/)
+    assert.equal(view.container.querySelectorAll('[data-library-collection] button.group, [data-library-collection] tbody tr').length, 200)
+    await act(async () => view.container.querySelector<HTMLButtonElement>('button[aria-label="Export loaded library metadata"]')!.click())
+    assert.ok(exported)
+    const payload = JSON.parse(await exported.text())
+    assert.equal(payload.complete, false, 'an evicted catalog prefix must never be exported as complete')
+    assert.equal(payload.total, 1400)
+    assert.ok(payload.artifacts.length <= 1000)
+    assert.ok(payload.artifacts.some((item: { id: string }) => item.id === 'artifact-6-199'))
+    await act(async () => [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Refresh')!.click())
+    await flush()
+    await act(async () => [...view.container.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Load more')!.click())
+    await flush()
+    assert.match(view.container.textContent ?? '', /Page 1 of 2/)
+    assert.match(view.container.textContent ?? '', /artifact-0-0/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Earlier results were discarded/)
+  } finally {
+    URL.createObjectURL = originalCreate
+    URL.revokeObjectURL = originalRevoke
+    await view.unmount()
+    restore()
+  }
+})
+
+
+test('Library explains capacity eviction without claiming that a populated catalog is empty', async () => {
+  const oversized = artifact('huge', 'skill')
+  oversized.description = 'x'.repeat(9 * 1024 * 1024)
+  const { view, restore } = await renderLibrary(new URLSearchParams(), [oversized])
+  try {
+    await flush()
+    assert.match(view.container.textContent ?? '', /No results fit in the retained window/)
+    assert.doesNotMatch(view.container.textContent ?? '', /No artifacts in your library yet/)
+    assert.equal(view.container.querySelector<HTMLButtonElement>('button[aria-label="Export loaded library metadata"]')!.disabled, true)
+  } finally { await view.unmount(); restore() }
+})
+
+test('Library unavailable counts stay unknown and retry recovers actual records', async () => {
+  const originalFetch = globalThis.fetch
+  let unavailable = true
+  let lists = 0
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    if ((init?.method ?? 'GET') === 'GET' && String(input) === '/v1/depot/operations') return unavailable ? new Response('<html>bad gateway</html>', { status: 502 }) : operationCatalog()
+    const body = JSON.parse(String(init?.body ?? '{}'))
+    if (body.operation === 'depot.artifacts.list') { lists++; return envelope({ artifacts: [artifact('actual', 'skill', 'Actual Library record')], total: 1 }) }
+    return Response.json({}, { status: 500 })
+  }) as typeof fetch
+  document.body.replaceChildren()
+  const view = await renderClient(<SearchParamsContext.Provider value={new URLSearchParams() as never}><LibraryPageContent /></SearchParamsContext.Provider>)
+  try {
+    await flush()
+    assert.match(view.container.textContent ?? '', /Count unavailable/)
+    assert.doesNotMatch(view.container.textContent ?? '', /0 of 0|No artifacts in your library yet/)
+    assert.equal((view.container.querySelector('[data-console-hero-stats]')?.textContent?.match(/—/g) ?? []).length, 5)
+    unavailable = false
+    const retry = [...view.container.querySelectorAll('button')].find(button => button.textContent?.includes('Retry loading'))!
+    await act(async () => retry.click())
+    await flush()
+    assert.match(view.container.textContent ?? '', /Actual Library record/)
+    assert.match(view.container.textContent ?? '', /1 of 1/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Library unavailable|Count unavailable/)
+    const refresh = [...view.container.querySelectorAll('button')].find(button => button.textContent === 'Refresh')!
+    await act(async () => { refresh.click(); refresh.click() })
+    await flush()
+    assert.equal(lists, 2, 'repeated same-turn refresh activations share one catalog request')
+    assert.match(view.container.textContent ?? '', /Actual Library record/)
+  } finally { await view.unmount(); globalThis.fetch = originalFetch }
+})
+
+test('Library empty success differs from failed catalogs and partial facets remain lower bounds', async () => {
+  const empty = await renderLibrary(new URLSearchParams(), [])
+  try { await flush(); assert.match(empty.view.container.textContent ?? '', /No artifacts in your library yet/); assert.match(empty.view.container.textContent ?? '', /0 of 0/) }
+  finally { await empty.view.unmount(); empty.restore() }
+  const partial = await renderLibrary(new URLSearchParams(), [artifact('one', 'skill')], [[artifact('one', 'skill')], [artifact('two', 'skill')]])
+  try {
+    await flush()
+    assert.match(partial.view.container.textContent ?? '', /1 of 2/)
+    assert.match(partial.view.container.textContent ?? '', /Facet counts describe loaded artifacts only/)
+    assert.match(partial.view.container.querySelector('[data-console-hero-stats]')?.textContent ?? '', /Public1\+/)
+  } finally { await partial.view.unmount(); partial.restore() }
+})
+
+
+test('Library does not invent a global total when a paginated authority omits it', async () => {
+  const fixture = await renderLibrary(new URLSearchParams(), [artifact('one', 'skill')], [[artifact('one', 'skill')], [artifact('two', 'skill')]], true)
+  try {
+    await flush()
+    assert.match(fixture.view.container.textContent ?? '', /1 of 1\+/)
+    const loadMore = [...fixture.view.container.querySelectorAll('button')].find(button => button.textContent === 'Load more')!
+    await act(async () => loadMore.click())
+    await flush()
+    assert.match(fixture.view.container.textContent ?? '', /2 of 2/)
+    assert.doesNotMatch(fixture.view.container.textContent ?? '', /Facet counts describe loaded artifacts only/)
+  } finally { await fixture.view.unmount(); fixture.restore() }
 })

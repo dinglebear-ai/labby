@@ -489,6 +489,17 @@ fn feature_shape_intent_is_explicit_without_the_live_harness() {
             intent.key()
         );
         match intent.service.as_str() {
+            "setup"
+                if matches!(
+                    intent.action.as_str(),
+                    "tailcat.configure" | "tailcat.enable" | "tailcat.enroll"
+                ) =>
+            {
+                assert_eq!(
+                    intent.applicable_features,
+                    BTreeSet::from(["all".to_owned()])
+                );
+            }
             "fs" => assert!(intent.applicable_features.contains("fs")),
             "lab_admin" => assert!(intent.applicable_features.contains("lab-admin")),
             "artifacts" | "bundles" | "jobs" | "skills" | "sources" | "uploads" => {
@@ -625,6 +636,16 @@ fn independently_defined_feature_shapes_match_intent_projections() {
         let independently_expected = catalog
             .iter()
             .filter(|action| services.contains(action.service.as_str()))
+            // Tailcat setup additionally requires the opt-in native Tailcat feature.
+            // Among these independent product slices only `all` includes it.
+            .filter(|action| {
+                !(action.service == "setup"
+                    && matches!(
+                        action.action.as_str(),
+                        "tailcat.configure" | "tailcat.enable" | "tailcat.enroll"
+                    ))
+                    || shape == "all"
+            })
             .map(CatalogAction::key)
             .collect::<BTreeSet<_>>();
         let declared = intents()

@@ -34,6 +34,7 @@ export interface PhoenixMessage {
   role: 'user' | 'assistant'
   text: string
   created_at_ms?: number
+  turn_id?: string | null
 }
 
 export interface PhoenixSession {

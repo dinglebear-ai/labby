@@ -29,6 +29,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `agents` | `agents.delete` | false | true | false |  | `resource_capability` | `scope.delete` | `agent` | `agent_id*: string` | `object` | mcp, api |
 | `agents` | `agents.get` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string` | `object` | mcp, api |
 | `agents` | `agents.list` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `cursor: string`<br>`limit: string` | `object` | mcp, api |
+| `agents` | `agents.models.list` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `owner_kind*: string`<br>`owner_id*: string` | `object` | mcp, api |
 | `agents` | `agents.run` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`input: string` | `object` | mcp, api |
 | `agents` | `agents.session.cancel` | false | false | false |  | `resource_capability` | `scope.operate` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
 | `agents` | `agents.session.status` | false | false | false |  | `resource_capability` | `scope.read` | `agent` | `agent_id*: string`<br>`session_id*: string` | `object` | mcp, api |
@@ -134,7 +135,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `fs` | `fs.preview` | false | false | false |  | `transport` | `-` | `-` | `path*: string`<br>`max_bytes: integer` | `binary (streamed); mime from safe-MIME whitelist or application/octet-stream` | api, web |
 | `fs` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `fs` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
-| `gateway` | `gateway.add` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `spec*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.add` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `spec*: json`<br>`bearer_token_value: string`<br>`protected_route: object` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.client_config.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string` | `McpClientConfigView` | mcp, api |
 | `gateway` | `gateway.clients.list` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `GatewayClientView[]` | cli, mcp, api |
 | `gateway` | `gateway.code_mode.get` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `CodeModeConfig` | cli, mcp, api, web |
@@ -204,9 +205,9 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `gateway` | `gateway.status` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string` | `GatewayRuntimeView[]` | mcp, api, web |
 | `gateway` | `gateway.supported_services` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` |  | `SupportedServiceView[]` | mcp, api, web |
 | `gateway` | `gateway.test` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name: string`<br>`spec: json` | `GatewayTestResult` | cli, mcp, api, web |
-| `gateway` | `gateway.update` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string` | `GatewayView` | cli, mcp, api, web |
+| `gateway` | `gateway.update` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `name*: string`<br>`patch*: json`<br>`bearer_token_value: string`<br>`protected_route: object` | `GatewayView` | cli, mcp, api, web |
 | `gateway` | `gateway.usage.calls` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`client_name: string`<br>`client_version: string`<br>`agent_id: string`<br>`outcome: string`<br>`search: string`<br>`limit: integer`<br>`cursor: string`<br>`include_total: boolean` | `GatewayUsageCallsView` | cli, mcp, api, web |
-| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`client_name: string`<br>`client_version: string`<br>`agent_id: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
+| `gateway` | `gateway.usage.metrics` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `since_unix: integer`<br>`until_unix: integer`<br>`upstream: string`<br>`tool: string`<br>`capability: string`<br>`operation: string`<br>`subject_scoped: boolean`<br>`actor: string`<br>`client_name: string`<br>`client_version: string`<br>`agent_id: string`<br>`outcome: string`<br>`search: string`<br>`bucket_count: integer`<br>`timezone: string`<br>`timezone_offset_minutes: integer`<br>`include_upstream_timeseries: boolean`<br>`include_facets: boolean` | `GatewayUsageMetricsView` | cli, mcp, api, web |
 | `gateway` | `gateway.virtual_server.disable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
 | `gateway` | `gateway.virtual_server.enable` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `ServerView` | mcp, api, web |
 | `gateway` | `gateway.virtual_server.get_mcp_policy` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `gateway` | `id*: string` | `VirtualServerMcpPolicyView` | mcp, api, web |
@@ -240,13 +241,19 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `server_logs` | `server_logs.query` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `limit: integer`<br>`level: string`<br>`levels: string[]`<br>`target: string`<br>`service: string`<br>`action: string`<br>`kind: string`<br>`query: string`<br>`file: string`<br>`max_scan_bytes: integer`<br>`stop_after_limit: boolean`<br>`correlated_only: boolean` | `ServerLogsQueryResult` | cli, mcp, api |
 | `setup` | `bootstrap` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `BootstrapOutcome` | mcp, api |
 | `setup` | `check` | false | false | false |  | `transport` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
+| `setup` | `clients.session.revoke` | false | false | false |  | `transport` | `-` | `-` |  | `ClientObservationRevocation` | api |
+| `setup` | `clients.session.start` | false | false | false |  | `transport` | `-` | `-` | `clients*: array` | `ClientObservationSessions` | api |
 | `setup` | `draft.commit` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `draft.discard` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `DraftDiscardOutcome` | cli, mcp, api, web |
 | `setup` | `draft.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `DraftEntry[]` | mcp, api, web |
 | `setup` | `draft.set` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `entries*: DraftEntry[]`<br>`force: boolean` | `DraftSetOutcome` | mcp, api, web |
 | `setup` | `finalize` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `force: boolean` | `CommitOutcome` | mcp, api, web |
 | `setup` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
+| `setup` | `mcp.verification.call` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string`<br>`tool*: string`<br>`expected_fingerprint*: string`<br>`arguments*: object`<br>`approved*: boolean` | `McpVerificationResult` | api |
+| `setup` | `mcp.verification.tools` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`expected_url*: string` | `McpVerificationTools` | api |
 | `setup` | `proxy.configure` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `preferences*: ProxyPreferences`<br>`bearer_token: string`<br>`dry_run: boolean` | `ProxySetupOutcome` | cli, mcp, api |
+| `setup` | `readiness.clients.defer` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | api |
+| `setup` | `readiness.state` | false | false | false |  | `transport` | `-` | `-` |  | `ReadinessState` | api |
 | `setup` | `repair` | false | true | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupReport` | cli, mcp, api |
 | `setup` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api, web |
 | `setup` | `schema.get` | false | false | false |  | `transport` | `-` | `-` | `services: string[]` | `ServiceSchemaMap` | mcp, api, web |
@@ -258,14 +265,23 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `setup` | `settings.state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `section: string` | `SettingsState` | mcp, api, web |
 | `setup` | `settings.update` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `services.built_in_upstream_apis_enabled*: boolean` | `SettingsState` | mcp, api, web |
 | `setup` | `state` | false | false | true | lab:admin | `transport_admin` | `-` | `-` |  | `SetupSnapshot` | cli, mcp, api, web |
+| `setup` | `tailcat.configure` | false | false | false |  | `transport` | `-` | `-` | `project_id*: string`<br>`public_resource*: string`<br>`derp_map_url*: string`<br>`node_path*: string`<br>`dry_run: boolean` | `TailcatSetupOutcome` | mcp, api, web |
+| `setup` | `tailcat.enable` | false | false | false |  | `transport` | `-` | `-` | `project_id*: string`<br>`credential_id*: string` | `TailcatEnableOutcome` | mcp, api, web |
+| `setup` | `tailcat.enroll` | false | false | false |  | `transport` | `-` | `-` | `project_id*: string`<br>`idempotency_key*: string` | `TailcatEnrollmentOutcome` | mcp, api, web |
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
-| `snippets` | `snippets.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean` | `SnippetInfo` | cli, mcp, api |
-| `snippets` | `snippets.exec` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object` | `CodeModeExecutionResponse` | cli, mcp, api |
+| `snippets` | `snippets.artifact` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`path*: string` | `SnippetArtifactResponse` | mcp, api |
+| `snippets` | `snippets.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean`<br>`expected_digest: string` | `SnippetInfo` | cli, mcp, api |
+| `snippets` | `snippets.exec` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object`<br>`expected_preview_fingerprint: string` | `CodeModeExecutionResponse` | cli, mcp, api |
+| `snippets` | `snippets.fixture` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object`<br>`tools: string[]`<br>`check: object`<br>`schemas: object`<br>`results: object`<br>`variant: string` | `SnippetFixtureDraft` | cli, mcp, api |
 | `snippets` | `snippets.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ResolvedSnippet` | cli, mcp, api |
+| `snippets` | `snippets.history` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`limit: integer`<br>`cursor: string` | `SnippetReceiptHistory` | mcp, api |
 | `snippets` | `snippets.list` | false | false | false |  | `transport` | `-` | `-` |  | `SnippetList` | cli, mcp, api |
+| `snippets` | `snippets.preview` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`execution_id: string`<br>`params: object` | `SnippetPreview` | mcp, api |
 | `snippets` | `snippets.promote` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`name*: string`<br>`description: string`<br>`force: boolean`<br>`shadow_builtin: boolean` | `SnippetPromotionResult` | mcp, api |
+| `snippets` | `snippets.receipt` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string` | `SnippetExecutionReceipt` | mcp, api |
 | `snippets` | `snippets.remove` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
+| `snippets` | `snippets.replay` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`params*: object`<br>`expected_preview_fingerprint*: string`<br>`acknowledged_drift*: array` | `CodeModeExecutionResponse` | mcp, api |
 | `snippets` | `snippets.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `fixture: object`<br>`live: boolean`<br>`name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
 | `snippets` | `snippets.validate` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
 | `sources` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
@@ -277,13 +293,17 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `stash` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `stash` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `stash` | `stash.delete` | false | true | false |  | `resource_capability` | `scope.delete` | `stash` | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Deleted` | mcp, api, web |
+| `stash` | `stash.folders` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FolderPage` | mcp, api, web |
 | `stash` | `stash.grants.create` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`grantee_principal_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashGrant` | mcp, api, web |
 | `stash` | `stash.grants.list` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `GrantPage` | mcp, api, web |
 | `stash` | `stash.grants.revoke` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`grant_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `Revoked` | mcp, api, web |
-| `stash` | `stash.list` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
+| `stash` | `stash.list` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `folder: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
 | `stash` | `stash.metadata` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `file_id*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api |
+| `stash` | `stash.move` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`folder*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api, web |
+| `stash` | `stash.read_text` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `uri*: string`<br>`cursor: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `TextPage` | mcp, api |
 | `stash` | `stash.rename` | false | false | false |  | `resource_capability` | `scope.manage` | `stash` | `file_id*: string`<br>`display_name*: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api, web |
-| `stash` | `stash.search` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `query*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
+| `stash` | `stash.save_text` | false | false | false |  | `resource_capability` | `scope.create` | `stash` | `filename*: string`<br>`content*: string`<br>`format: markdown\|text`<br>`folder: string`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `StashFile` | mcp, api |
+| `stash` | `stash.search` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `folder: string`<br>`query*: string`<br>`cursor: string`<br>`limit: integer`<br>`owner_kind: personal\|team`<br>`owner_id: string` | `FilePage` | mcp, api, web |
 | `stash` | `stash.stats` | false | false | false |  | `resource_capability` | `scope.read` | `stash` | `owner_kind: personal\|team`<br>`owner_id: string` | `StashStats` | mcp, api, web |
 | `tasks` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `tasks` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |

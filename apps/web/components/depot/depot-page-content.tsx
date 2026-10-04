@@ -39,10 +39,23 @@ export function depotCoveragePulse(coverage?: string, error?: string) {
   if (error || coverage === 'all_failed') {
     return { color: 'var(--aurora-error)', label: coverage ?? 'unavailable' }
   }
+  if (!coverage) return { color: 'var(--aurora-warn)', label: 'checking catalog' }
   if (coverage === 'partial' || coverage === 'deferred' || coverage === 'all_disabled') {
     return { color: 'var(--aurora-warn)', label: coverage }
   }
   return { color: 'var(--aurora-success)', label: coverage ?? 'ready' }
+}
+
+export function discoveryFailureMessage(error?: string, failures: string[] = []): string {
+  if (error?.includes('index_not_ready') || failures.includes('index_not_ready')) {
+    return 'The catalog index is still preparing. Search has not returned verified results yet; retry shortly.'
+  }
+  if (error?.includes('(403') || failures.includes('forbidden')) {
+    return 'The configured catalog denied this search. Check its access policy and the Labby provider connection before retrying.'
+  }
+  if (error) return `Catalog search failed: ${error}. Retry after checking the provider connection.`
+  if (failures.includes('unsupported_kind')) return 'Some sources do not support this kind filter. Results cover the supported sources only.'
+  return 'Some sources are still preparing search results or are unavailable. Retry to check again.'
 }
 
 export function mergeArtifactPages(current: DepotArtifact[], incoming: DepotArtifact[]): DepotArtifact[] {
@@ -294,9 +307,8 @@ function SessionDepotPage() {
   }
   const resultCount=state.total??state.window.rowCount
   const incomplete = Boolean(state.error) || (state.coverage !== undefined && state.coverage !== 'complete' && state.coverage !== 'empty')
-  const incompleteMessage = state.failures?.includes('unsupported_kind')
-    ? 'Some sources do not support this kind filter. Results cover the supported sources only.'
-    : 'Some sources are still preparing search results or are unavailable. Retry to check again.'
+  const incompleteMessage = discoveryFailureMessage(state.error, state.failures)
+  const showCollections = !activeQuery && kind === 'all' && selectedProvider === 'all' && visibility === 'all'
 
   useEffect(() => {
     if (cursorIndex >= results.length) setCursorIndex(results.length ? results.length - 1 : -1)
@@ -331,7 +343,7 @@ function SessionDepotPage() {
   return <>
     <AppHeader icon={<Compass className="size-3.5" />} breadcrumbs={[{label:'Discover'}]}/>
     <div className={`${AURORA_PAGE_SHELL} flex-1`}><div className={AURORA_PAGE_FRAME} style={{ gap: 14 }}>
-      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Every artifact Depot can reach — registries, marketplaces, catalogs and crawls — searched semantically and installable in any target format through APM." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild size="icon" variant="outline" className="size-9 rounded-[10px] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create" aria-label="Publish artifact" title="Publish artifact"><Plus aria-hidden="true" className="size-[15px]" /></Link></Button>}
+      <ConsoleHero variant="discover" icon={<Compass className="size-[22px]" />} eyebrow="Depot · Bazaar" title="Discover" description="Explore artifacts from the catalogs Labby can reach. Add to Library saves a revision; connect an MCP server in Gateway to make its tools available." pulse={USE_MOCK_DATA && !state.error ? { color: 'var(--aurora-success)', label: `${providers.filter(provider => provider.enabled).length} sources indexed` } : depotCoveragePulse(state.coverage,state.error)} actions={<Button asChild size="icon" variant="outline" className="size-9 rounded-[10px] text-aurora-accent-strong" style={{ borderColor: 'color-mix(in srgb, var(--aurora-accent-primary) 55%, var(--aurora-border-strong))', background: 'color-mix(in srgb, var(--aurora-accent-primary) 9%, var(--aurora-panel-strong))' }}><Link href="/create" aria-label="Publish artifact" title="Publish artifact"><Plus aria-hidden="true" className="size-[15px]" /></Link></Button>}
         stats={[
           { label: activeQuery ? 'Matches' : 'Indexed', value: discoveryCountLabel(resultCount, state.exact, Boolean(state.error) || state.total === undefined), suffix: 'artifacts' },
           { label: 'Sources', value: providerError && providers.length === 0 ? '—' : providers.filter(provider => provider.enabled).length, suffix: providerError ? 'provider status unavailable' : 'registries + crawls' },
@@ -355,8 +367,8 @@ function SessionDepotPage() {
       <div className="flex min-w-0 flex-col gap-3">
       <DiscoverFilterPanel open={filtersOpen} providers={providers} artifacts={visible.items} kind={kind} selectedProvider={selectedProvider} onFilter={changeFilter} visibility={visibility} onVisibility={setVisibility} mockKinds={USE_MOCK_DATA} showVisibility={!USE_MOCK_DATA}/>
       {providerError?<DashboardPanel title="Source filter status unavailable"><p role="status" className="text-sm text-aurora-text-muted">Artifact discovery remains usable, but the source selector may be incomplete or stale: {providerError}</p></DashboardPanel>:null}
-      {incomplete&&!state.loading?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
-      {!activeQuery && kind === 'all' && selectedProvider === 'all' && visibility === 'all' && !state.loading ? <DiscoverRails artifacts={USE_MOCK_DATA?visible.items:[]} artifactHref={artifactHref} unavailableReason={USE_MOCK_DATA?undefined:'Recommendation evidence is not reported by the current Depot contract.'}/> : null}
+      {incomplete&&!state.loading&&!showCollections?<DashboardPanel title="Search coverage incomplete"><p role="status" className="text-sm text-aurora-text-muted">{incompleteMessage}</p><Button variant="outline" onClick={()=>void load(query.trim())}>Retry search</Button></DashboardPanel>:null}
+      {showCollections ? <DiscoverRails artifacts={visible.items} artifactHref={artifactHref} loading={state.loading} incomplete={incomplete} failureMessage={incompleteMessage} onRetry={()=>void load(query.trim())} now={now}/> : null}
       <section aria-labelledby="artifact-results-title" className="contents">
         <div className="flex flex-wrap items-end gap-[10px] border-b border-aurora-border-default/55 px-0.5">
           <DiscoverResultTabs shelf={shelf} setShelf={setShelf} />
@@ -377,7 +389,7 @@ function SessionDepotPage() {
       </div>
     </div></div>
     <DiscoverBundleCompare open={compareOpen} artifacts={selectedBulkArtifacts} onOpenChange={setCompareOpen}/>
-    <ArtifactInspection artifact={detail} previewMode={USE_MOCK_DATA} specLabels={detail&&USE_MOCK_DATA?mockDepotSpecLabels(detail):undefined} metricLabels={detail&&USE_MOCK_DATA?mockDepotMetricLabels(detail):undefined} inLibrary={detail?isArtifactInLibrary(detail):false} importing={importing} onImport={addArtifactToLibrary} onFork={USE_MOCK_DATA?previewFork:undefined} onSend={USE_MOCK_DATA?previewSend:undefined} installFormats={USE_MOCK_DATA?['Claude plugin.json','gemini-extension.json','Agent Plugins','mcp.json','ARD entry','Loadout']:undefined} onInstallFormat={USE_MOCK_DATA?previewInstallFormat:undefined} loading={detailLoading} open={Boolean(selectedId&&selectedArtifactProvider)} focusKey={selectedId && selectedArtifactProvider ? artifactKey(selectedArtifactProvider, selectedId) : undefined} copied={copied} onOpenChange={open=>{if(!open)router.push(artifactHref(),{scroll:false})}} onCopy={copyValue} onExport={exportArtifact}/>
+    <ArtifactInspection artifact={detail} previewMode={USE_MOCK_DATA} fixtureContent={USE_MOCK_DATA} specLabels={detail&&USE_MOCK_DATA?mockDepotSpecLabels(detail):undefined} metricLabels={detail&&USE_MOCK_DATA?mockDepotMetricLabels(detail):undefined} inLibrary={detail?isArtifactInLibrary(detail):false} importing={importing} onImport={addArtifactToLibrary} onFork={USE_MOCK_DATA?previewFork:undefined} onSend={USE_MOCK_DATA?previewSend:undefined} installFormats={USE_MOCK_DATA?['Claude plugin.json','gemini-extension.json','Agent Plugins','mcp.json','ARD entry','Loadout']:undefined} onInstallFormat={USE_MOCK_DATA?previewInstallFormat:undefined} loading={detailLoading} open={Boolean(selectedId&&selectedArtifactProvider)} focusKey={selectedId && selectedArtifactProvider ? artifactKey(selectedArtifactProvider, selectedId) : undefined} copied={copied} onOpenChange={open=>{if(!open)router.push(artifactHref(),{scroll:false})}} onCopy={copyValue} onExport={exportArtifact}/>
   </>
 }
 

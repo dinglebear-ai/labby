@@ -8,7 +8,7 @@ details there and keep this file focused on rules for editing `.github/`.
 
 - All repository-defined CI jobs run on GitHub-hosted runners. Linux jobs use
   the pinned `ubuntu-24.04` image, or `ubuntu-24.04-arm` for native ARM64
-  release builds. Windows jobs use `windows-latest`.
+  release builds. macOS jobs use native GitHub-hosted runners.
 - Rust compilation uses `.github/actions/setup-rust-kache` in credentialless
   GitHub-cache mode. Repository-level shared MinIO credentials are forbidden:
   same-repository pull requests can edit workflow content and must never be
@@ -19,8 +19,8 @@ details there and keep this file focused on rules for editing `.github/`.
   qualification job promotes it. Incus and registry publishers are callable
   gates that complete before promotion and are covered by aggregate
   reconciliation.
-- Native Windows Rust tests and installer contracts are GitHub-hosted and
-  required by the stable `ci-gate`; Palette's Windows check remains advisory.
+- CI runs on Linux and macOS only; do not add Windows runner lanes or manual
+  Windows CI inputs.
 - External actions and reusable workflows are pinned to full commit SHAs.
 - Fleet contract callers must pass the same exact workflows commit as
   `implementation-ref`.
@@ -60,7 +60,6 @@ details there and keep this file focused on rules for editing `.github/`.
 | Rust compile, test, coverage, security | `ubuntu-24.04` |
 | Node, pnpm, browser, frontend | `ubuntu-24.04` |
 | policy, labels, drift, metadata, aggregate gates | `ubuntu-24.04` |
-| native Windows required tests and advisory Palette check | `windows-latest` |
 | Linux x86_64 release and publication jobs | pinned GitHub-hosted `ubuntu-24.04` image |
 | Linux arm64 release and qualification jobs | native GitHub-hosted `ubuntu-24.04-arm` runner |
 | macOS arm64 release and qualification jobs | native GitHub-hosted `macos-15` runner |
@@ -102,7 +101,7 @@ Labby through the pinned fleet policy and repository contract. Keep that opt-in
 visible when adding ARM64 jobs or artifacts; QEMU and cross-platform emulation
 still require a deliberate implementation and verification plan.
 The supported release binary artifacts are Linux x86_64, Linux arm64, and macOS arm64.
-Windows remains covered by required CI tests but is not a release target.
+Windows is neither a CI runner nor a release target.
 Keep each release target native to its GitHub-hosted runner; do not add
 emulation, cross-platform image matrices, or QEMU setup.
 

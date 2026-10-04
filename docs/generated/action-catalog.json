@@ -838,6 +838,42 @@
   },
   {
     "service": "agents",
+    "action": "agents.models.list",
+    "description": "List models available to the configured Agent provider for an authorized owner",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "agent",
+    "params": [
+      {
+        "name": "owner_kind",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "agents",
     "action": "agents.run",
     "description": "Start a pinned Agent session",
     "destructive": false,
@@ -4949,6 +4985,12 @@
         "ty": "string",
         "required": false,
         "description": "Write-only: raw bearer token to store securely. Never returned on reads. If bearer_token_env is omitted from the spec, a default env var name is derived from the gateway name."
+      },
+      {
+        "name": "protected_route",
+        "ty": "object",
+        "required": false,
+        "description": "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead."
       }
     ],
     "returns": "GatewayView",
@@ -6990,7 +7032,7 @@
   {
     "service": "gateway",
     "action": "gateway.schema",
-    "description": "Return tool schemas (input_schema + meta) for one upstream MCP server, filtered by its exposure policy. OAuth upstreams are discovered live with the authenticated subject; other upstreams use the shared cache.",
+    "description": "Return tool schemas (input_schema + output_schema + meta) for one upstream MCP server, filtered by its exposure policy. OAuth upstreams are discovered live with the authenticated subject; other upstreams use the shared cache.",
     "destructive": false,
     "requires_admin": false,
     "required_scopes": [],
@@ -7358,6 +7400,12 @@
         "ty": "string",
         "required": false,
         "description": "Write-only: raw bearer token to store securely. Never returned on reads. Requires bearer_token_env in patch or existing config."
+      },
+      {
+        "name": "protected_route",
+        "ty": "object",
+        "required": false,
+        "description": "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead."
       }
     ],
     "returns": "GatewayView",
@@ -7602,6 +7650,12 @@
         "ty": "integer",
         "required": false,
         "description": "Minutes east of UTC fallback when timezone is omitted (-1440 to 1440)"
+      },
+      {
+        "name": "include_upstream_timeseries",
+        "ty": "boolean",
+        "required": false,
+        "description": "Include at most four upstream bucket series from the same read transaction as total timeseries; default false"
       },
       {
         "name": "include_facets",
@@ -8749,6 +8803,59 @@
   },
   {
     "service": "setup",
+    "action": "clients.session.revoke",
+    "description": "Revoke the authenticated user's current client observation sessions and clear their client readiness evidence",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "ClientObservationRevocation",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "clients.session.start",
+    "description": "Issue expiring client-specific observation proofs for the authenticated user's selected applications; does not verify client use or grant authority",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "clients",
+        "ty": "array",
+        "required": true,
+        "description": "Selected supported applications: codex and claude-code"
+      }
+    ],
+    "returns": "ClientObservationSessions",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
     "action": "draft.commit",
     "description": "Run audit and atomically merge .env.draft into .env",
     "destructive": true,
@@ -8924,6 +9031,106 @@
   },
   {
     "service": "setup",
+    "action": "mcp.verification.call",
+    "description": "Perform one explicitly approved read-only MCP call with schema-validated inputs and persist real first-use evidence",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Saved MCP server name"
+      },
+      {
+        "name": "expected_url",
+        "ty": "string",
+        "required": true,
+        "description": "Exact HTTPS endpoint the user reviewed"
+      },
+      {
+        "name": "tool",
+        "ty": "string",
+        "required": true,
+        "description": "Actual exposed tool selected by the user"
+      },
+      {
+        "name": "expected_fingerprint",
+        "ty": "string",
+        "required": true,
+        "description": "Exact reviewed tool schema and runtime publication fingerprint from the tool list"
+      },
+      {
+        "name": "arguments",
+        "ty": "object",
+        "required": true,
+        "description": "Reviewed tool inputs validated against its current runtime schema"
+      },
+      {
+        "name": "approved",
+        "ty": "boolean",
+        "required": true,
+        "description": "Explicit approval of this named tool call"
+      }
+    ],
+    "returns": "McpVerificationResult",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated identity with lab:admin and installation gateway authority; browser mutations require CSRF",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "mcp.verification.tools",
+    "description": "List exposed read-only MCP tools with supported scalar input schemas for a reviewed HTTPS server",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Saved MCP server name"
+      },
+      {
+        "name": "expected_url",
+        "ty": "string",
+        "required": true,
+        "description": "Exact HTTPS endpoint the user reviewed"
+      }
+    ],
+    "returns": "McpVerificationTools",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated identity with lab:admin and installation gateway authority; browser mutations require CSRF",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
     "action": "proxy.configure",
     "description": "Persist local stdio-proxy defaults and securely store a bearer secret when required",
     "destructive": true,
@@ -8963,6 +9170,52 @@
     },
     "requires_http_subject": false,
     "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "readiness.clients.defer",
+    "description": "Choose to use Labby without external applications for now; records an optional deferred step, never a verified client connection",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "ReadinessState",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "readiness.state",
+    "description": "Read resumable first-use checks for the authenticated user; required checks remain incomplete until verified by the server",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [],
+    "returns": "ReadinessState",
+    "surface_availability": {
+      "cli": false,
+      "mcp": false,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": true,
+    "auth_posture": "HTTP-only authenticated personal identity; browser mutations require CSRF; caller-bound evidence grants no access",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9276,6 +9529,132 @@
     "builtin": false
   },
   {
+    "service": "setup",
+    "action": "tailcat.configure",
+    "description": "Prepare a restricted native Tailcat adapter and project route for an authenticated operator who owns the project",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Existing project owned by the authenticated caller"
+      },
+      {
+        "name": "public_resource",
+        "ty": "string",
+        "required": true,
+        "description": "HTTPS resource URL for the restricted route"
+      },
+      {
+        "name": "derp_map_url",
+        "ty": "string",
+        "required": true,
+        "description": "HTTPS Tailcat DERP map URL"
+      },
+      {
+        "name": "node_path",
+        "ty": "string",
+        "required": true,
+        "description": "Absolute installed Node executable path"
+      },
+      {
+        "name": "dry_run",
+        "ty": "boolean",
+        "required": false,
+        "description": "Validate and preview without writing"
+      }
+    ],
+    "returns": "TailcatSetupOutcome",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "tailcat.enable",
+    "description": "Enable native Tailcat preferences after verified owner credential enrollment; requires restart",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Existing owned Tailcat project"
+      },
+      {
+        "name": "credential_id",
+        "ty": "string",
+        "required": true,
+        "description": "Public credential ID returned by native enrollment"
+      }
+    ],
+    "returns": "TailcatEnableOutcome",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "setup",
+    "action": "tailcat.enroll",
+    "description": "Enroll a restricted Tailcat project credential in private native custody after verified owner sign-in",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "project_id",
+        "ty": "string",
+        "required": true,
+        "description": "Existing owned project with its exact Tailcat loadout already assigned"
+      },
+      {
+        "name": "idempotency_key",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque 16–128 character operation key; reuse only when retrying this enrollment"
+      }
+    ],
+    "returns": "TailcatEnrollmentOutcome",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
     "service": "snippets",
     "action": "help",
     "description": "Show this action catalog",
@@ -9330,6 +9709,44 @@
   },
   {
     "service": "snippets",
+    "action": "snippets.artifact",
+    "description": "Read an authorized receipt artifact, with size, digest and containment verification",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": true,
+        "description": "Saved snippet execution identifier"
+      },
+      {
+        "name": "path",
+        "ty": "string",
+        "required": true,
+        "description": "Exact relative artifact path from the authorized receipt"
+      }
+    ],
+    "returns": "SnippetArtifactResponse",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
     "action": "snippets.create",
     "description": "Create a user snippet under LABBY_HOME/snippets",
     "destructive": false,
@@ -9364,6 +9781,12 @@
         "ty": "boolean",
         "required": false,
         "description": "Overwrite an existing user snippet"
+      },
+      {
+        "name": "expected_digest",
+        "ty": "string",
+        "required": false,
+        "description": "Reject a stale edit unless the current user snippet has this content_digest"
       }
     ],
     "returns": "SnippetInfo",
@@ -9402,9 +9825,83 @@
         "ty": "object",
         "required": false,
         "description": "Input object passed to the snippet async function"
+      },
+      {
+        "name": "expected_preview_fingerprint",
+        "ty": "string",
+        "required": false,
+        "description": "Optional current preview fingerprint; stale source, input, scope, runtime or tool metadata fails before execution"
       }
     ],
     "returns": "CodeModeExecutionResponse",
+    "surface_availability": {
+      "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
+    "action": "snippets.fixture",
+    "description": "Generate an editable offline fixture draft from visible tool schemas without executing tools",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": true,
+        "description": "Saved snippet name"
+      },
+      {
+        "name": "params",
+        "ty": "object",
+        "required": false,
+        "description": "Synthetic snippet input values"
+      },
+      {
+        "name": "tools",
+        "ty": "string[]",
+        "required": false,
+        "description": "Explicit exact tool IDs for legacy snippets; can only narrow declarations"
+      },
+      {
+        "name": "check",
+        "ty": "object",
+        "required": false,
+        "description": "Saved fixture to compare with current contracts without execution"
+      },
+      {
+        "name": "schemas",
+        "ty": "object",
+        "required": false,
+        "description": "Saved contracts keyed by exact tool ID; omit to discover caller-visible schemas"
+      },
+      {
+        "name": "results",
+        "ty": "object",
+        "required": false,
+        "description": "Explicit synthetic response overrides keyed by exact tool ID"
+      },
+      {
+        "name": "variant",
+        "ty": "string",
+        "required": false,
+        "description": "populated (default) or minimal"
+      }
+    ],
+    "returns": "SnippetFixtureDraft",
     "surface_availability": {
       "cli": true,
       "mcp": true,
@@ -9450,6 +9947,50 @@
   },
   {
     "service": "snippets",
+    "action": "snippets.history",
+    "description": "List bounded execution receipts in the current caller and route scope",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": false,
+        "description": "Filter by snippet name"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size: 1 to 50, default 20"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Opaque continuation for the same caller, route and filter"
+      }
+    ],
+    "returns": "SnippetReceiptHistory",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
     "action": "snippets.list",
     "description": "List built-in and user executable Code Mode snippets",
     "destructive": false,
@@ -9468,6 +10009,50 @@
     },
     "requires_http_subject": false,
     "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
+    "action": "snippets.preview",
+    "description": "Inspect current snippet metadata and owner-scoped replay drift without executing JavaScript or upstream tools",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "name",
+        "ty": "string",
+        "required": false,
+        "description": "Snippet name; mutually exclusive with execution_id"
+      },
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": false,
+        "description": "Owner-scoped historical execution for replay comparison"
+      },
+      {
+        "name": "params",
+        "ty": "object",
+        "required": false,
+        "description": "Ephemeral caller-supplied inputs; never recovered from receipts"
+      }
+    ],
+    "returns": "SnippetPreview",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9529,6 +10114,38 @@
   },
   {
     "service": "snippets",
+    "action": "snippets.receipt",
+    "description": "Read bounded execution metadata in the original caller and route scope",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": true,
+        "description": "Saved snippet execution identifier"
+      }
+    ],
+    "returns": "SnippetExecutionReceipt",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
     "action": "snippets.remove",
     "description": "Remove a user snippet",
     "destructive": true,
@@ -9550,6 +10167,56 @@
     "returns": "SnippetRemoveResult",
     "surface_availability": {
       "cli": true,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "snippets",
+    "action": "snippets.replay",
+    "description": "Explicitly rerun the current snippet with new inputs after guarding its preview and acknowledging all drift",
+    "destructive": true,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "transport_admin",
+    "required_capability": null,
+    "resource_family": null,
+    "params": [
+      {
+        "name": "execution_id",
+        "ty": "string",
+        "required": true,
+        "description": "Owner-scoped historical execution"
+      },
+      {
+        "name": "params",
+        "ty": "object",
+        "required": true,
+        "description": "Required caller-supplied inputs; receipts contain no input payloads"
+      },
+      {
+        "name": "expected_preview_fingerprint",
+        "ty": "string",
+        "required": true,
+        "description": "Fingerprint of the current replay preview"
+      },
+      {
+        "name": "acknowledged_drift",
+        "ty": "array",
+        "required": true,
+        "description": "Exact set of current changed or unverifiable drift field names"
+      }
+    ],
+    "returns": "CodeModeExecutionResponse",
+    "surface_availability": {
+      "cli": false,
       "mcp": true,
       "api": true,
       "web_ui": false
@@ -9959,6 +10626,54 @@
   },
   {
     "service": "stash",
+    "action": "stash.folders",
+    "description": "List caller-visible virtual folders with file counts",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "stash",
+    "params": [
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Folder continuation from the preceding folder page"
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, at most 200"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "FolderPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
     "action": "stash.grants.create",
     "description": "Grant one principal read access to an owned file",
     "destructive": false,
@@ -10119,6 +10834,12 @@
     "resource_family": "stash",
     "params": [
       {
+        "name": "folder",
+        "ty": "string",
+        "required": false,
+        "description": "Virtual folder, such as dinglebear-ai/labby; empty selects Unfiled"
+      },
+      {
         "name": "cursor",
         "ty": "string",
         "required": false,
@@ -10199,6 +10920,102 @@
   },
   {
     "service": "stash",
+    "action": "stash.move",
+    "description": "Move an owned file to a virtual folder without changing its URI",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.manage",
+    "resource_family": "stash",
+    "params": [
+      {
+        "name": "file_id",
+        "ty": "string",
+        "required": true,
+        "description": "Opaque file ID; moving preserves its resource URI"
+      },
+      {
+        "name": "folder",
+        "ty": "string",
+        "required": true,
+        "description": "Destination virtual folder; empty moves to Unfiled"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "StashFile",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": true
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
+    "action": "stash.read_text",
+    "description": "Read a saved context document by URI with bounded text continuation",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "stash",
+    "params": [
+      {
+        "name": "uri",
+        "ty": "string",
+        "required": true,
+        "description": "Stable stash://me/files/{id} resource URI"
+      },
+      {
+        "name": "cursor",
+        "ty": "string",
+        "required": false,
+        "description": "Continuation from the preceding text read"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "TextPage",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
     "action": "stash.rename",
     "description": "Rename an owned file",
     "destructive": false,
@@ -10247,6 +11064,66 @@
   },
   {
     "service": "stash",
+    "action": "stash.save_text",
+    "description": "Save a private text or Markdown context document in a virtual folder",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.create",
+    "resource_family": "stash",
+    "params": [
+      {
+        "name": "filename",
+        "ty": "string",
+        "required": true,
+        "description": "Display filename; existing names in the same folder conflict"
+      },
+      {
+        "name": "content",
+        "ty": "string",
+        "required": true,
+        "description": "Exact UTF-8 document, at most 512 KiB"
+      },
+      {
+        "name": "format",
+        "ty": "markdown|text",
+        "required": false,
+        "description": "Document format; defaults to markdown"
+      },
+      {
+        "name": "folder",
+        "ty": "string",
+        "required": false,
+        "description": "Virtual folder, such as dinglebear-ai/labby; empty selects Unfiled"
+      },
+      {
+        "name": "owner_kind",
+        "ty": "personal|team",
+        "required": false,
+        "description": "Explicit owner scope; defaults to personal"
+      },
+      {
+        "name": "owner_id",
+        "ty": "string",
+        "required": false,
+        "description": "Required with Team ownership"
+      }
+    ],
+    "returns": "StashFile",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "stash",
     "action": "stash.search",
     "description": "Search available files by display name",
     "destructive": false,
@@ -10256,6 +11133,12 @@
     "required_capability": "scope.read",
     "resource_family": "stash",
     "params": [
+      {
+        "name": "folder",
+        "ty": "string",
+        "required": false,
+        "description": "Virtual folder, such as dinglebear-ai/labby; empty selects Unfiled"
+      },
       {
         "name": "query",
         "ty": "string",

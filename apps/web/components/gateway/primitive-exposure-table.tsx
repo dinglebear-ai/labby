@@ -75,10 +75,19 @@ export function PrimitiveExposureTable({
   const effectiveSearch = searchValue ?? search
   const deferredSearch = useDeferredValue(effectiveSearch)
   const setEffectiveSearch = onSearchValueChange ?? setSearch
+  const exposureSignature = JSON.stringify(
+    items.map(({ name, exposed }) => [name, exposed] as const).sort(([left], [right]) => left.localeCompare(right)),
+  )
+  const baselineNames = useMemo(
+    () => sortUnique(items.filter((item) => item.exposed).map((item) => item.name)),
+    // Only names and exposure affect the selection baseline.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [exposureSignature],
+  )
 
   useEffect(() => {
-    setSelectedNames(sortUnique(items.filter((item) => item.exposed).map((item) => item.name)))
-  }, [items])
+    setSelectedNames(baselineNames)
+  }, [baselineNames])
 
   useEffect(() => {
     if (!manageMode) {

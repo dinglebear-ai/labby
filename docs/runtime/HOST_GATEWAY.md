@@ -20,7 +20,7 @@ running Labby directly on the host.
 
 | Path | Use when | Entry point |
 |------|----------|-------------|
-| Incus system container | Normal self-hosted gateway deployment | `scripts/incus-bootstrap.sh --version vX.Y.Z` |
+| Incus system container | Normal self-hosted gateway deployment | `labby setup` (select server, then Incus) or `labby host incus setup --version vX.Y.Z` |
 | Bare metal / dedicated VM | The host itself is the gateway appliance | `labby setup --provision --yes` |
 
 See [INCUS.md](./INCUS.md) for the full Incus runbook, bare-metal variant,
@@ -52,9 +52,12 @@ The plan is explicit about privilege. Root actions are limited to the apt
 package floor (`git`, `openssh-client`, `gh`, `ca-certificates`, `curl`,
 `xz-utils`, `zsh`, `jq`, `ripgrep`, `lsof`, `rsync`, `python3`, and `ffmpeg`), `labby`
 user creation, writing
-`/etc/systemd/system/labby.service`, and enabling/restarting the service.
-User-space actions run as `labby` and install Node v24.x, `uv` plus Python,
-`claude`, `codex`, and `gemini`.
+`/etc/systemd/system/labby.service`, enabling/restarting the service,
+Tailscale installation/join, cache cleanup, and the optional Android package
+step. User-space actions run as `labby` and install Node v24.x, `uv` plus
+Python, Rust/Go, `claude`, `codex`, `gemini`, mise, chezmoi, and crgx.
+The plan and pinned action bodies come from
+`crates/labby/src/dispatch/setup/provision.rs` and `.config/incus/labby-image.yaml`.
 
 Provisioning does not install or initialize Incus, install the optional Android
 SDK or `adb` by default, or expose root package/user/systemd mutation through
@@ -80,7 +83,7 @@ labby host service install --install-self -y
 systemctl status labby --no-pager
 ```
 
-`host-service install` writes or updates `/etc/systemd/system/labby.service`,
+`labby host service install` writes or updates `/etc/systemd/system/labby.service`,
 installs the current binary when `--install-self` is provided, enables the unit,
 and restarts the service.
 

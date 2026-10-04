@@ -14,11 +14,16 @@ use super::UpstreamPool;
 use super::capability_call::CapabilityCallError;
 use super::skills_list::UpstreamSkillsError;
 
+/// Provider entries and whether an upstream traversal stopped before exhaustion.
+pub struct SkillSearchResult {
+    pub skills: Vec<SkillProviderEntry>,
+    pub incomplete: bool,
+}
+
 fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
     match error {
-        UpstreamSkillsError::Capability(CapabilityCallError::Timeout { .. }) => {
-            SkillProviderError::DeadlineExceeded
-        }
+        UpstreamSkillsError::Capability(CapabilityCallError::Timeout { .. })
+        | UpstreamSkillsError::SearchIncomplete => SkillProviderError::DeadlineExceeded,
         UpstreamSkillsError::Capability(CapabilityCallError::ResponseTooLarge { .. }) => {
             SkillProviderError::LimitExceeded {
                 what: "response_bytes",
@@ -28,8 +33,7 @@ fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
         UpstreamSkillsError::Capability(CapabilityCallError::Transport { .. })
         | UpstreamSkillsError::Unavailable
         | UpstreamSkillsError::Invalidated
-        | UpstreamSkillsError::CacheMissing
-        | UpstreamSkillsError::SearchIncomplete => SkillProviderError::Unavailable {
+        | UpstreamSkillsError::CacheMissing => SkillProviderError::Unavailable {
             reason: "upstream_unavailable".to_owned(),
         },
         UpstreamSkillsError::Capability(CapabilityCallError::QueueSaturated { .. }) => {
@@ -99,6 +103,18 @@ impl SepSkillProvider {
         }
     }
 
+    /// Peek at a fresh caller-scoped immutable catalog without network I/O.
+    /// Cold and expired catalogs return None so the ordinary list operation
+    /// owns the single bounded discovery attempt and background refresh.
+    pub async fn catalog_revision(&self) -> Option<(u64, Duration)> {
+        let subject = super::skills::skills_cache_subject(&self.config, self.subject.as_deref());
+        let key = (self.config.name.clone(), subject.map(str::to_string));
+        let snapshot = self.pool.cached_skills(&key).await?;
+        snapshot
+            .is_fresh()
+            .then(|| (snapshot.revision, snapshot.remaining_ttl()))
+    }
+
     fn validate_provider(&self, requested: &SkillProviderId) -> Result<(), SkillProviderError> {
         if requested != &self.id {
             return Err(SkillProviderError::WrongProvider);
@@ -125,29 +141,85 @@ impl SepSkillProvider {
             .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
     }
 
+    /// Resolve a target and its ownership catalog under one operation deadline.
+    /// Cold direct retrieval overlaps enumeration; no target is admitted before
+    /// catalog-wide collisions and lifecycle invalidation have been checked.
+    pub async fn get_with_catalog(
+        &self,
+        request: &SkillGetRequest,
+    ) -> Result<(SkillGetResult, SkillDiscoverResult), SkillProviderError> {
+        request.validate()?;
+        self.validate_provider(request.id.provider())?;
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            self.operation_timeout(request.deadline.timeout),
+            self.pool.targeted_skill_with_catalog(
+                &self.config,
+                self.subject.as_deref(),
+                request.id.source_id(),
+            ),
+        )
+        .await
+        .map_err(|_| SkillProviderError::DeadlineExceeded)?
+        .map_err(map_upstream_skills_error)?;
+        let (skill, exposed) = result;
+        let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
+        let get = SkillGetResult {
+            skill: SkillProviderEntry::from_validated(self.id.clone(), skill),
+        };
+        get.validate_for(&self.id, request)?;
+        let catalog = SkillDiscoverResult {
+            skills: exposed
+                .skills
+                .into_iter()
+                .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
+                .collect(),
+            source: exposed.source,
+            cache_age: (exposed.source == SkillDiscoverySource::Cached)
+                .then(|| Duration::from_secs(exposed.age_secs)),
+            ttl: exposed.ttl_ms.map(Duration::from_millis),
+            excluded_count: exposed.excluded_count,
+            truncated: exposed.truncated,
+        };
+        tracing::debug!(surface = "dispatch", service = "skills", action = "get", upstream = %self.config.name,
+            source = ?catalog.source, catalog_items = catalog.skills.len(), elapsed_ms = started.elapsed().as_millis(),
+            "completed targeted Skill retrieval with ownership catalog");
+        Ok((get, catalog))
+    }
+
     /// Search paginated Skill metadata without letting non-matching prefix
     /// entries consume the caller's result budget.
     pub async fn search(
         &self,
         query: &str,
         max_items: usize,
-    ) -> Result<Vec<SkillProviderEntry>, SkillProviderError> {
+    ) -> Result<SkillSearchResult, SkillProviderError> {
+        let timeout = self.operation_timeout(labby_runtime::skills::limits::SKILLS_LIST_TIMEOUT);
+        // Leave a small margin so the inner page deadline can return partial
+        // matches before the provider's outer deadline cancels the whole search.
+        let traversal_budget =
+            timeout.saturating_sub((timeout / 5).min(Duration::from_millis(250)));
         let skills = tokio::time::timeout(
-            self.operation_timeout(labby_runtime::skills::limits::SKILLS_LIST_TIMEOUT),
+            timeout,
             self.pool.search_upstream_skills(
                 &self.config,
                 self.subject.as_deref(),
                 query,
                 max_items,
+                traversal_budget,
             ),
         )
         .await
         .map_err(|_| SkillProviderError::DeadlineExceeded)?
         .map_err(map_upstream_skills_error)?;
-        Ok(skills
-            .into_iter()
-            .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
-            .collect())
+        Ok(SkillSearchResult {
+            skills: skills
+                .skills
+                .into_iter()
+                .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill))
+                .collect(),
+            incomplete: skills.incomplete,
+        })
     }
 }
 
@@ -207,43 +279,7 @@ impl SkillProvider for SepSkillProvider {
     }
 
     fn get<'a>(&'a self, request: &'a SkillGetRequest) -> SkillProviderFuture<'a, SkillGetResult> {
-        Box::pin(async move {
-            request.validate()?;
-            self.validate_provider(request.id.provider())?;
-            let operation = async {
-                let exposed = self
-                    .pool
-                    .upstream_skills(&self.config, self.subject.as_deref())
-                    .await
-                    .map_err(map_upstream_skills_error)?;
-                let skill = if let Some(skill) = exposed
-                    .skills
-                    .iter()
-                    .find(|skill| skill.entry.uri == request.id.source_id())
-                    .cloned()
-                {
-                    Some(skill)
-                } else {
-                    self.pool
-                        .fetch_unlisted_skill(
-                            &self.config,
-                            self.subject.as_deref(),
-                            request.id.source_id(),
-                        )
-                        .await
-                        .map_err(map_upstream_skills_error)?
-                };
-                let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
-                let result = SkillGetResult {
-                    skill: SkillProviderEntry::from_validated(self.id.clone(), skill),
-                };
-                result.validate_for(&self.id, request)?;
-                Ok(result)
-            };
-            tokio::time::timeout(self.operation_timeout(request.deadline.timeout), operation)
-                .await
-                .map_err(|_| SkillProviderError::DeadlineExceeded)?
-        })
+        Box::pin(async move { self.get_with_catalog(request).await.map(|(skill, _)| skill) })
     }
 
     fn read_resource<'a>(

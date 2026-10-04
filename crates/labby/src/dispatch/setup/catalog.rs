@@ -147,6 +147,93 @@ struct SettingsAuthSurfaceSchema {
 pub const LOCAL_ONLY_ACTIONS: &[&str] = &["bootstrap", "proxy.configure"];
 
 pub const ACTIONS: &[ActionSpec] = &[
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    ActionSpec {
+        name: "tailcat.enable",
+        description: "Enable native Tailcat preferences after verified owner credential enrollment; requires restart",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailcatEnableOutcome",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "project_id",
+                ty: "string",
+                required: true,
+                description: "Existing owned Tailcat project",
+            },
+            ParamSpec {
+                name: "credential_id",
+                ty: "string",
+                required: true,
+                description: "Public credential ID returned by native enrollment",
+            },
+        ],
+    },
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    ActionSpec {
+        name: "tailcat.enroll",
+        description: "Enroll a restricted Tailcat project credential in private native custody after verified owner sign-in",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailcatEnrollmentOutcome",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "project_id",
+                ty: "string",
+                required: true,
+                description: "Existing owned project with its exact Tailcat loadout already assigned",
+            },
+            ParamSpec {
+                name: "idempotency_key",
+                ty: "string",
+                required: true,
+                description: "Opaque 16–128 character operation key; reuse only when retrying this enrollment",
+            },
+        ],
+    },
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    ActionSpec {
+        name: "tailcat.configure",
+        description: "Prepare a restricted native Tailcat adapter and project route for an authenticated operator who owns the project",
+        destructive: false,
+        requires_admin: false,
+        returns: "TailcatSetupOutcome",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "project_id",
+                ty: "string",
+                required: true,
+                description: "Existing project owned by the authenticated caller",
+            },
+            ParamSpec {
+                name: "public_resource",
+                ty: "string",
+                required: true,
+                description: "HTTPS resource URL for the restricted route",
+            },
+            ParamSpec {
+                name: "derp_map_url",
+                ty: "string",
+                required: true,
+                description: "HTTPS Tailcat DERP map URL",
+            },
+            ParamSpec {
+                name: "node_path",
+                ty: "string",
+                required: true,
+                description: "Absolute installed Node executable path",
+            },
+            ParamSpec {
+                name: "dry_run",
+                ty: "boolean",
+                required: false,
+                description: "Validate and preview without writing",
+            },
+        ],
+    },
     ActionSpec {
         name: "help",
         description: "Show this action catalog",
@@ -169,6 +256,121 @@ pub const ACTIONS: &[ActionSpec] = &[
             required: true,
             description: "Action name to describe",
         }],
+    },
+    ActionSpec {
+        name: "mcp.verification.tools",
+        description: "List exposed read-only MCP tools with supported scalar input schemas for a reviewed HTTPS server",
+        destructive: false,
+        requires_admin: true,
+        returns: "McpVerificationTools",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Saved MCP server name",
+            },
+            ParamSpec {
+                name: "expected_url",
+                ty: "string",
+                required: true,
+                description: "Exact HTTPS endpoint the user reviewed",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "mcp.verification.call",
+        description: "Perform one explicitly approved read-only MCP call with schema-validated inputs and persist real first-use evidence",
+        destructive: false,
+        requires_admin: true,
+        returns: "McpVerificationResult",
+        output_schema: None,
+        params: &[
+            ParamSpec {
+                name: "name",
+                ty: "string",
+                required: true,
+                description: "Saved MCP server name",
+            },
+            ParamSpec {
+                name: "expected_url",
+                ty: "string",
+                required: true,
+                description: "Exact HTTPS endpoint the user reviewed",
+            },
+            ParamSpec {
+                name: "tool",
+                ty: "string",
+                required: true,
+                description: "Actual exposed tool selected by the user",
+            },
+            ParamSpec {
+                name: "expected_fingerprint",
+                ty: "string",
+                required: true,
+                description: "Exact reviewed tool schema and runtime publication fingerprint from the tool list",
+            },
+            ParamSpec {
+                name: "arguments",
+                ty: "object",
+                required: true,
+                description: "Reviewed tool inputs validated against its current runtime schema",
+            },
+            ParamSpec {
+                name: "approved",
+                ty: "boolean",
+                required: true,
+                description: "Explicit approval of this named tool call",
+            },
+        ],
+    },
+    ActionSpec {
+        name: "clients.session.start",
+        description: "Issue expiring client-specific observation proofs for the authenticated user's selected applications; does not verify client use or grant authority",
+        destructive: false,
+        requires_admin: false,
+        returns: "ClientObservationSessions",
+        output_schema: Some(labby_primitives::action::schema_for::<super::client_evidence::Issued>),
+        params: &[ParamSpec {
+            name: "clients",
+            ty: "array",
+            required: true,
+            description: "Selected supported applications: codex and claude-code",
+        }],
+    },
+    ActionSpec {
+        name: "clients.session.revoke",
+        description: "Revoke the authenticated user's current client observation sessions and clear their client readiness evidence",
+        destructive: false,
+        requires_admin: false,
+        returns: "ClientObservationRevocation",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::client_evidence::Revocation>,
+        ),
+        params: &[],
+    },
+    ActionSpec {
+        name: "readiness.clients.defer",
+        description: "Choose to use Labby without external applications for now; records an optional deferred step, never a verified client connection",
+        destructive: false,
+        requires_admin: false,
+        returns: "ReadinessState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::readiness::ReadinessState>,
+        ),
+        params: &[],
+    },
+    ActionSpec {
+        name: "readiness.state",
+        description: "Read resumable first-use checks for the authenticated user; required checks remain incomplete until verified by the server",
+        destructive: false,
+        requires_admin: false,
+        returns: "ReadinessState",
+        output_schema: Some(
+            labby_primitives::action::schema_for::<super::readiness::ReadinessState>,
+        ),
+        params: &[],
     },
     ActionSpec {
         name: "state",

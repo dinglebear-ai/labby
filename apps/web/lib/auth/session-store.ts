@@ -329,6 +329,18 @@ export async function exchangeBearerBrowserSession(token: string) {
   return loadBrowserSession()
 }
 
+/** Consume the installer capability once; never retain it in application state. */
+export async function redeemSetupBrowserHandoff(token: string) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('This local setup link is invalid. Run setup again.')
+  const response = await fetch('/auth/setup-handoff/redeem', {
+    method: 'POST', cache: 'no-store', credentials: 'include',
+    headers: { 'content-type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify({ token }),
+  })
+  if (!response.ok) throw new Error('This local setup link expired or could not be verified. Run setup again.')
+  return loadBrowserSession()
+}
+
 export class LogoutRevocationError extends Error {
   constructor(public readonly status?: number) {
     super(status === undefined

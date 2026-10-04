@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context as _, Result, bail};
-use dialoguer::{Confirm, Input, Password, Select, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, MultiSelect, Password, Select, theme::ColorfulTheme};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 #[cfg(target_os = "linux")]
@@ -50,6 +50,8 @@ enum OAuthConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SetupPlan {
+    #[serde(default)]
+    preserve: PreserveDefaults,
     role: SetupRoleArg,
     deployment: Option<SetupDeploymentArg>,
     host: String,
@@ -60,22 +62,90 @@ struct SetupPlan {
     oauth: Option<OAuthConfig>,
     client_auth: Option<ClientAuth>,
     client_bearer_token: Option<String>,
+    #[serde(default)]
+    selected_clients: Vec<crate::dispatch::setup::client_registration::ExternalClient>,
     install_desktop: bool,
     no_browser: bool,
     invoking_home: PathBuf,
     invoking_user: Option<String>,
 }
 
-pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
-    let interactive = crate::cli::helpers::interactive_allowed() && !args.yes;
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct PreserveDefaults {
+    host: bool,
+    port: bool,
+    auth: bool,
+    public_url: bool,
+}
+
+pub(super) async fn run(mut args: SetupArgs, format: OutputFormat) -> Result<ExitCode> {
+    let interactive = crate::cli::helpers::interactive_allowed() && !args.yes && !format.is_json();
+    if interactive && args.role.is_none() && !args.chatgpt && !args.tailcat {
+        match Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("How would you like to use Labby?")
+            .items([
+                "Connect ChatGPT to local sandboxes",
+                "Connect a dashboard through Tailcat",
+                "Connect to an existing Labby gateway",
+                "Install a managed Labby gateway",
+            ])
+            .default(0)
+            .interact()?
+        {
+            0 => args.chatgpt = true,
+            1 => args.tailcat = true,
+            2 => args.role = Some(SetupRoleArg::Client),
+            _ => {
+                args.role = Some(SetupRoleArg::Server);
+                args.deployment = Some(SetupDeploymentArg::Native);
+            }
+        }
+    }
+    if args.tailcat {
+        #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+        return super::tailcat::run(args, interactive, format);
+        #[cfg(not(all(feature = "tailcat", feature = "gateway", unix)))]
+        bail!("Tailcat dashboard setup requires a gateway-enabled Tailcat build on Unix");
+    }
+    if args.chatgpt {
+        #[cfg(feature = "gateway")]
+        return super::chatgpt::run(args, interactive, format).await;
+        #[cfg(not(feature = "gateway"))]
+        bail!("ChatGPT sandbox setup requires a gateway-enabled Labby build");
+    }
+    if args.skip_deps {
+        bail!("--skip-deps is only valid with --provision or ChatGPT sandbox setup");
+    }
+    run_standard(args, interactive, format).await
+}
+
+pub(super) async fn run_standard(
+    mut args: SetupArgs,
+    interactive: bool,
+    format: OutputFormat,
+) -> Result<ExitCode> {
+    // Explicit server configuration is service-free unless a deployment is selected.
+    if args.role == Some(SetupRoleArg::Server) && args.deployment.is_none() {
+        if args.desktop {
+            bail!("--desktop with --role server requires an explicit --deployment");
+        }
+        args.config_only = true;
+    }
     if interactive {
         print_banner();
+    }
+    if args.config_only {
+        let outcome = configure_only(&args, interactive)?;
+        print(&outcome, format)?;
+        return Ok(ExitCode::SUCCESS);
     }
     let plan = collect_plan(&args, interactive)?;
     if args.dry_run {
         print(&redacted_plan(&plan), format)?;
         return Ok(ExitCode::SUCCESS);
     }
+
+    reject_unsupported_privileged_root(&plan)?;
 
     if plan.install_desktop && is_unix_root() {
         bail!(
@@ -92,9 +162,46 @@ pub(super) async fn run(args: SetupArgs, format: OutputFormat) -> Result<ExitCod
             let desktop = report_desktop_install(&plan, &install_desktop);
             print(&desktop.summary(&plan), format)?;
         }
+        let handoff = native_browser_handoff(&plan).await;
+        let clients = register_selected_clients(&plan).await;
+        print(
+            &json!({"browser_handoff":handoff,"selected_clients":clients}),
+            format,
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     apply(plan, format).await
+}
+
+/// Service-free OAuth/bearer configuration, rendered by the calling adapter.
+pub(super) fn configure_only(args: &SetupArgs, interactive: bool) -> Result<serde_json::Value> {
+    if args.role != Some(SetupRoleArg::Server) {
+        bail!("--config-only requires --role server");
+    }
+    if !args.clients.is_empty() {
+        bail!(
+            "configuration-only setup does not register external clients; use client setup or an explicit server deployment"
+        );
+    }
+    let mut plan = collect_plan(args, interactive)?;
+    let paths = crate::installation::InstallationPaths::resolve()?;
+    resolve_existing_native_defaults(&mut plan, paths.root())?;
+    if args.tailcat
+        && (!matches!(resolved_server_auth(&plan), SetupAuthArg::OAuth) || plan.oauth.is_none())
+    {
+        bail!(
+            "Tailcat setup requires OAuth-only server configuration; configure an OAuth provider explicitly before continuing"
+        );
+    }
+    let mut outcome = redacted_plan(&plan);
+    outcome["config_only"] = json!(true);
+    outcome["env_path"] = json!(paths.root().join(".env"));
+    outcome["service_installed"] = json!(false);
+    outcome["dry_run"] = json!(args.dry_run);
+    if !args.dry_run {
+        configure_server_env(&paths.root().join(".env"), &plan)?;
+    }
+    Ok(outcome)
 }
 
 pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result<ExitCode> {
@@ -113,6 +220,7 @@ pub(super) async fn apply_plan_file(path: &Path, format: OutputFormat) -> Result
         std::env::var("SUDO_USER").ok().as_deref(),
         dirs::home_dir(),
     )?;
+    reject_unsupported_privileged_root(&plan)?;
     if requires_root(&plan) && !is_unix_root() {
         bail!("native Linux server setup requires root privileges");
     }
@@ -193,11 +301,8 @@ fn collect_plan(args: &SetupArgs, interactive: bool) -> Result<SetupPlan> {
     let role = match args.role {
         Some(role) => role,
         None if interactive => match Select::with_theme(&theme)
-            .with_prompt("What are we setting up?")
-            .items([
-                "Server — run Labby here",
-                "Client — connect to a Labby server",
-            ])
+            .with_prompt("How would you like to use Labby?")
+            .items(["Use Labby on this computer", "Connect to an existing Labby"])
             .default(0)
             .interact()?
         {
@@ -251,6 +356,79 @@ fn invoking_home_for(
     ambient_home.context("could not determine the invoking user's home directory")
 }
 
+pub(super) fn installed_client_program(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|directory| {
+            let candidate = directory.join(program);
+            let Ok(metadata) = candidate.metadata() else {
+                return false;
+            };
+            if !metadata.is_file() {
+                return false;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                metadata.permissions().mode() & 0o111 != 0
+            }
+            #[cfg(not(unix))]
+            {
+                true
+            }
+        })
+    })
+}
+
+fn collect_selected_clients(
+    args: &SetupArgs,
+    interactive: bool,
+    theme: &ColorfulTheme,
+) -> Result<Vec<crate::dispatch::setup::client_registration::ExternalClient>> {
+    use crate::dispatch::setup::client_registration::ExternalClient;
+    if !args.clients.is_empty() {
+        return Ok(args.clients.iter().copied().map(Into::into).collect());
+    }
+    if !interactive {
+        return Ok(Vec::new());
+    }
+    let detected = [
+        ("Codex", "codex", ExternalClient::Codex),
+        ("Claude Code", "claude", ExternalClient::ClaudeCode),
+    ]
+    .into_iter()
+    .filter(|(_, program, _)| installed_client_program(program))
+    .collect::<Vec<_>>();
+    if detected.is_empty() {
+        return Ok(Vec::new());
+    }
+    let selected = MultiSelect::with_theme(theme)
+        .with_prompt("Where would you like to use Labby? Select installed clients, or leave empty to use Labby only")
+        .items(detected.iter().map(|(label, _, _)| *label).collect::<Vec<_>>())
+        .interact()?;
+    Ok(selected
+        .into_iter()
+        .map(|index| detected[index].2)
+        .collect())
+}
+
+fn fresh_local_port(preferred: u16, root: &Path) -> Result<u16> {
+    // Existing installations retain their configured setup target. An occupied
+    // port on a fresh loopback installation can be replaced with an OS-selected
+    // port; the service still performs the final bind and reports any race.
+    if root.join(".env").exists() || root.join("config.toml").exists() {
+        return Ok(preferred);
+    }
+    match std::net::TcpListener::bind((DEFAULT_HOST, preferred)) {
+        Ok(listener) => Ok(listener.local_addr()?.port()),
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            let listener = std::net::TcpListener::bind((DEFAULT_HOST, 0))
+                .context("select an available loopback port for Labby")?;
+            Ok(listener.local_addr()?.port())
+        }
+        Err(error) => Err(error).context("check the local Labby listener"),
+    }
+}
+
 fn collect_server_plan(
     args: &SetupArgs,
     interactive: bool,
@@ -258,11 +436,13 @@ fn collect_server_plan(
     invoking_home: PathBuf,
     invoking_user: Option<String>,
 ) -> Result<SetupPlan> {
-    let incus_ready =
-        cfg!(all(target_os = "linux", target_arch = "x86_64")) && command_ok("incus", &["version"]);
+    let advanced = interactive && args.advanced;
+    let incus_ready = !args.config_only
+        && cfg!(all(target_os = "linux", target_arch = "x86_64"))
+        && command_ok("incus", &["version"]);
     let deployment = match args.deployment {
         Some(value) => value,
-        None if interactive && incus_ready => match Select::with_theme(theme)
+        None if advanced && incus_ready => match Select::with_theme(theme)
             .with_prompt("Deployment")
             .items(["Native service — fastest", "Incus container — isolated"])
             .default(0)
@@ -279,7 +459,7 @@ fn collect_server_plan(
 
     let host = match args.host.as_deref() {
         Some(value) => validate_host(value)?,
-        None if interactive => validate_host(
+        None if advanced && !args.config_only => validate_host(
             &Input::<String>::with_theme(theme)
                 .with_prompt("Listen address")
                 .default(DEFAULT_HOST.to_string())
@@ -290,7 +470,7 @@ fn collect_server_plan(
     let port = match args.port {
         Some(port) if port > 0 => port,
         Some(_) => bail!("port must be between 1 and 65535"),
-        None if interactive => Input::<u16>::with_theme(theme)
+        None if advanced && !args.config_only => Input::<u16>::with_theme(theme)
             .with_prompt("Port")
             .default(DEFAULT_PORT)
             .validate_with(|value: &u16| {
@@ -301,6 +481,20 @@ fn collect_server_plan(
                 }
             })
             .interact_text()?,
+        None if !advanced
+            && !args.config_only
+            && matches!(deployment, SetupDeploymentArg::Native)
+            && host == DEFAULT_HOST =>
+        {
+            let root = std::env::var_os("LABBY_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| invoking_home.join(".labby"));
+            let root = crate::installation::InstallationPaths::from_root(root)?
+                .root()
+                .to_path_buf();
+            fresh_local_port(DEFAULT_PORT, &root)?
+        }
         None => DEFAULT_PORT,
     };
 
@@ -315,7 +509,7 @@ fn collect_server_plan(
         {
             SetupAuthArg::Both
         }
-        None if interactive => match Select::with_theme(theme)
+        None if advanced => match Select::with_theme(theme)
             .with_prompt("Authentication")
             .items(["Bearer token", "OAuth only", "OAuth + bearer break-glass"])
             .default(0)
@@ -369,6 +563,11 @@ fn collect_server_plan(
             )?;
             if interactive {
                 print_google_oauth_setup_guidance(&public_url);
+                if !args.no_browser && !args.dry_run {
+                    super::browser_handoff::open_url(
+                        "https://console.cloud.google.com/auth/clients",
+                    );
+                }
             }
             let client_id = prompt_required(
                 "Google client ID",
@@ -442,8 +641,14 @@ fn collect_server_plan(
         }
     };
 
-    let install_desktop = desktop_choice(args, interactive, theme)?;
+    let install_desktop = !args.config_only && desktop_choice(args, interactive, theme)?;
     Ok(SetupPlan {
+        preserve: PreserveDefaults {
+            host: !advanced && args.host.is_none(),
+            port: !advanced && args.port.is_none(),
+            auth: !advanced && args.auth.is_none() && args.oauth.is_none(),
+            public_url: args.public_url.is_none(),
+        },
         role: SetupRoleArg::Server,
         deployment: Some(deployment),
         host,
@@ -455,6 +660,11 @@ fn collect_server_plan(
         client_auth: None,
         client_bearer_token: None,
         install_desktop,
+        selected_clients: if args.config_only {
+            Vec::new()
+        } else {
+            collect_selected_clients(args, interactive, theme)?
+        },
         no_browser: args.no_browser,
         invoking_home,
         invoking_user,
@@ -526,6 +736,7 @@ fn collect_client_plan(
     };
 
     Ok(SetupPlan {
+        preserve: PreserveDefaults::default(),
         role: SetupRoleArg::Client,
         deployment: None,
         host: DEFAULT_HOST.to_string(),
@@ -536,6 +747,7 @@ fn collect_client_plan(
         oauth: None,
         client_auth: Some(client_auth),
         client_bearer_token,
+        selected_clients: collect_selected_clients(args, interactive, theme)?,
         install_desktop: desktop_choice(args, interactive, theme)?,
         no_browser: args.no_browser,
         invoking_home,
@@ -623,7 +835,7 @@ fn google_callback_url(public_url: &str) -> String {
 fn print_google_oauth_setup_guidance(public_url: &str) {
     let callback_url = google_callback_url(public_url);
     eprintln!(
-        "\nGoogle OAuth setup\n  1. In Google Auth Platform, create an OAuth client of type Web application.\n  2. Add this exact Authorized redirect URI:\n     {callback_url}\n  3. Copy the Client ID and Client secret back into this setup flow.\n\nChatGPT web: Labby must use OAuth and a publicly reachable HTTPS public URL. Bearer-only mode cannot be used for the Labby ChatGPT web connection.\n"
+        "\nGoogle OAuth setup\n  Google Cloud: https://console.cloud.google.com/auth/clients\n  1. In Google Auth Platform, create an OAuth client of type Web application.\n  2. Add this exact Authorized redirect URI:\n     {callback_url}\n  3. Copy the Client ID and Client secret back into this setup flow.\n\nChatGPT web: Labby must use OAuth and a publicly reachable HTTPS public URL. Bearer-only mode cannot be used for the Labby ChatGPT web connection.\n"
     );
 }
 
@@ -721,6 +933,16 @@ fn requires_root(plan: &SetupPlan) -> bool {
         && matches!(plan.deployment, Some(SetupDeploymentArg::Native))
 }
 
+fn reject_unsupported_privileged_root(plan: &SetupPlan) -> Result<()> {
+    if requires_root(plan) && std::env::var_os("LABBY_HOME").is_some_and(|value| !value.is_empty())
+    {
+        bail!(
+            "native Linux service setup uses /home/labby/.labby for server state and cannot safely write an invoking-user custom LABBY_HOME while elevated; use the default invoking-user state root or configure the client separately as that user"
+        );
+    }
+    Ok(())
+}
+
 fn privileged_plan(plan: &SetupPlan) -> SetupPlan {
     let mut privileged = plan.clone();
     privileged.install_desktop = false;
@@ -759,13 +981,126 @@ Labby needs administrator access to install the native system service."
     Ok(ExitCode::SUCCESS)
 }
 
-async fn apply(plan: SetupPlan, format: OutputFormat) -> Result<ExitCode> {
-    let result = match plan.role {
+async fn apply(mut plan: SetupPlan, format: OutputFormat) -> Result<ExitCode> {
+    if matches!(plan.role, SetupRoleArg::Server)
+        && matches!(plan.deployment, Some(SetupDeploymentArg::Native))
+    {
+        #[cfg(target_os = "linux")]
+        let root = Path::new(SERVER_ENV)
+            .parent()
+            .context("server environment has no parent")?
+            .to_path_buf();
+        #[cfg(not(target_os = "linux"))]
+        let root = invoking_installation_root(&plan)?;
+        resolve_existing_native_defaults(&mut plan, &root)?;
+    }
+    let mut result = match plan.role {
         SetupRoleArg::Server => apply_server(&plan, format).await?,
         SetupRoleArg::Client => apply_client(&plan).await?,
     };
+    let handoff = native_browser_handoff(&plan).await;
+    let clients = register_selected_clients(&plan).await;
+    if let Some(object) = result.as_object_mut() {
+        object.insert("browser_handoff".into(), json!(handoff));
+        object.insert("selected_clients".into(), clients);
+    }
     print(&result, format)?;
     Ok(ExitCode::SUCCESS)
+}
+
+async fn register_selected_clients(plan: &SetupPlan) -> serde_json::Value {
+    if plan.selected_clients.is_empty() {
+        return json!({"status":"not_selected","connected":false});
+    }
+    if is_unix_root() {
+        return json!({"status":"deferred_to_invoking_user","connected":false});
+    }
+    let root = match invoking_installation_root(plan) {
+        Ok(root) => root,
+        Err(error) => {
+            return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
+        }
+    };
+    let (gateway, bearer) = match crate::dispatch::setup::client_bridge::saved_connection_identity(
+        &root,
+    ) {
+        Ok(identity) => identity,
+        Err(error) => {
+            return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
+        }
+    };
+    if let Some(requested) = plan.server_url.as_ref() {
+        if crate::config::cli::normalize_server(requested)
+            .ok()
+            .as_deref()
+            != Some(gateway.as_str())
+        {
+            return json!({"status":"needs_attention","connected":false,"message":"Saved client connection does not match the selected gateway"});
+        }
+    }
+    let oauth_only = !bearer;
+    let results = if oauth_only {
+        let gateway = format!(
+            "{}/mcp",
+            gateway.trim_end_matches('/').trim_end_matches("/mcp")
+        );
+        crate::dispatch::setup::client_registration::register_oauth_clients(
+            plan.invoking_home.clone(),
+            root,
+            gateway,
+            plan.selected_clients.clone(),
+        )
+        .await
+    } else {
+        let binary = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
+            }
+        };
+        crate::dispatch::setup::client_registration::register_saved_clients(
+            plan.invoking_home.clone(),
+            root,
+            gateway,
+            plan.selected_clients.clone(),
+            binary,
+        )
+        .await
+    };
+    json!({"status":"client_use_not_verified","connected":false,"clients":results})
+}
+
+async fn native_browser_handoff(plan: &SetupPlan) -> &'static str {
+    if !matches!(plan.role, SetupRoleArg::Server)
+        || !matches!(plan.deployment, Some(SetupDeploymentArg::Native))
+        || plan.no_browser
+    {
+        return "not_requested";
+    }
+    if is_unix_root() {
+        return "deferred_to_invoking_user";
+    }
+    let Ok(root) = invoking_installation_root(plan) else {
+        return "needs_attention";
+    };
+    let Some(token) = read_env(&root.join(".env"), "LABBY_MCP_HTTP_TOKEN") else {
+        return "needs_attention";
+    };
+    if token.trim().is_empty() {
+        return "not_applicable_to_saved_auth";
+    }
+    let Some(server) = read_env(&root.join(".env"), "LABBY_SERVER_URL") else {
+        return "needs_attention";
+    };
+    match super::browser_handoff::open(&server, &token).await {
+        Ok(()) => "opened",
+        Err(_) => {
+            eprintln!(
+                "Labby is installed. The local browser handoff needs attention; rerun setup to obtain a fresh link."
+            );
+            "needs_attention"
+        }
+    }
 }
 
 async fn apply_server(plan: &SetupPlan, format: OutputFormat) -> Result<serde_json::Value> {
@@ -828,7 +1163,11 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
                 "web": advertised_url(plan),
                 "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
                 "client_configured": true,
+                "local_cli_configured": true,
                 "features": "full",
+                "installation_complete": true,
+                "first_use_status": "not_verified",
+                "first_use_checks_required": ["agent_provider", "starter_agent_run", "selected_clients", "discover", "mcp_tool_call"],
             }),
             plan,
             &desktop,
@@ -836,7 +1175,7 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
     }
     #[cfg(target_os = "macos")]
     {
-        let home_env = plan.invoking_home.join(".labby/.env");
+        let home_env = invoking_installation_root(plan)?.join(".env");
         let token = configure_server_env(&home_env, plan)?;
         if matches!(resolved_server_auth(plan), SetupAuthArg::Bearer) {
             bootstrap_static_owner_at(
@@ -858,6 +1197,10 @@ async fn apply_native_server(plan: &SetupPlan) -> Result<serde_json::Value> {
                 "web": advertised_url(plan),
                 "mcp": format!("{}/mcp", advertised_url(plan).trim_end_matches('/')),
                 "features": "full",
+                "local_cli_configured": true,
+                "installation_complete": true,
+                "first_use_status": "not_verified",
+                "first_use_checks_required": ["agent_provider", "starter_agent_run", "selected_clients", "discover", "mcp_tool_call"],
             }),
             plan,
             &desktop,
@@ -1245,7 +1588,7 @@ async fn apply_client_with(
         .server_url
         .as_deref()
         .context("client setup requires a server URL")?;
-    let env_path = plan.invoking_home.join(".labby/.env");
+    let env_path = invoking_installation_root(plan)?.join(".env");
     configure_client_env(&env_path, server_url, plan.client_bearer_token.as_deref())?;
     if matches!(plan.client_auth, Some(ClientAuth::OAuth)) {
         let server = crate::oauth::cli_session::server_url(server_url)?;
@@ -1312,6 +1655,7 @@ pub(super) async fn bootstrap_static_owner_at(root: &Path) -> Result<()> {
     }
 }
 
+#[cfg(any(test, target_os = "linux", target_os = "macos"))]
 fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
     plan.server_auth.unwrap_or_else(|| {
         if plan.oauth.is_some() {
@@ -1322,7 +1666,123 @@ fn resolved_server_auth(plan: &SetupPlan) -> SetupAuthArg {
     })
 }
 
-#[cfg(any(test, target_os = "linux", target_os = "macos"))]
+/// Resolve omitted choices from the service's actual state before installing,
+/// connecting the local client, or offering a browser handoff.
+fn resolve_existing_native_defaults(plan: &mut SetupPlan, root: &Path) -> Result<()> {
+    let raw = crate::config::host_write::read_config_snapshot(&root.join(".env"))
+        .map_err(|_| anyhow::anyhow!("cannot safely read existing server environment"))?;
+    let mut env = std::collections::BTreeMap::new();
+    for entry in dotenvy::from_read_iter(raw.as_bytes()) {
+        let (key, value) = entry.map_err(|_| {
+            anyhow::anyhow!("existing server environment is invalid; repair it before setup")
+        })?;
+        env.insert(key, value);
+    }
+    let config =
+        crate::config::load_toml_from_fixed_root(&[root.join("config.toml")]).map_err(|_| {
+            anyhow::anyhow!(
+                "existing server configuration is invalid or unreadable; repair it before setup"
+            )
+        })?;
+    let value = |key: &str, fallback: Option<String>| env.get(key).cloned().or(fallback);
+    if (plan.preserve.host || plan.preserve.port)
+        && value("LABBY_MCP_TRANSPORT", config.mcp.transport.clone())
+            .is_some_and(|transport| transport != "http")
+    {
+        bail!(
+            "existing server uses another transport; choose explicit HTTP listener settings with --advanced"
+        );
+    }
+
+    if plan.preserve.host {
+        if let Some(host) = value("LABBY_MCP_HTTP_HOST", config.mcp.host.clone()) {
+            plan.host = validate_host(&host)?;
+        }
+    }
+    if plan.preserve.port {
+        if let Some(port) = value(
+            "LABBY_MCP_HTTP_PORT",
+            config.mcp.port.map(|port| port.to_string()),
+        ) {
+            plan.port = port
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .context("existing server port must be between 1 and 65535")?;
+        }
+    }
+    let auth = config.auth.unwrap_or_default();
+    if plan.preserve.public_url {
+        if let Some(url) =
+            value("LABBY_PUBLIC_URL", auth.public_url.clone()).filter(|url| !url.is_empty())
+        {
+            validate_public_url(&url)?;
+            plan.public_url = Some(url);
+        }
+    }
+    if plan.preserve.auth {
+        match value("LABBY_AUTH_MODE", auth.mode.clone()).as_deref() {
+            None | Some("bearer") => {}
+            Some("oauth") => {
+                let required = |key: &str, fallback: Option<String>| {
+                    value(key, fallback)
+                    .filter(|value| !value.trim().is_empty())
+                    .with_context(|| format!("existing OAuth configuration is missing {key}; repair it before setup"))
+                };
+                let admin_email = required("LABBY_AUTH_ADMIN_EMAIL", auth.admin_email.clone())?;
+                plan.oauth = Some(
+                    match required("LABBY_AUTH_PROVIDER", auth.provider.clone())?.as_str() {
+                        "google" => OAuthConfig::Google {
+                            client_id: required(
+                                "LABBY_GOOGLE_CLIENT_ID",
+                                auth.google_client_id.clone(),
+                            )?,
+                            client_secret: required(
+                                "LABBY_GOOGLE_CLIENT_SECRET",
+                                auth.google_client_secret.clone(),
+                            )?,
+                            admin_email,
+                        },
+                        "authelia" => OAuthConfig::Authelia {
+                            issuer_url: required(
+                                "LABBY_AUTHELIA_ISSUER_URL",
+                                auth.authelia_issuer_url.clone(),
+                            )?,
+                            client_id: required(
+                                "LABBY_AUTHELIA_CLIENT_ID",
+                                auth.authelia_client_id.clone(),
+                            )?,
+                            client_secret: required(
+                                "LABBY_AUTHELIA_CLIENT_SECRET",
+                                auth.authelia_client_secret.clone(),
+                            )?,
+                            admin_email,
+                        },
+                        _ => {
+                            bail!("existing OAuth provider is unsupported; repair it before setup")
+                        }
+                    },
+                );
+                plan.server_auth = Some(
+                    if env
+                        .get("LABBY_MCP_HTTP_TOKEN")
+                        .is_some_and(|token| !token.trim().is_empty())
+                    {
+                        SetupAuthArg::Both
+                    } else {
+                        SetupAuthArg::OAuth
+                    },
+                );
+                if plan.public_url.is_none() {
+                    bail!("existing OAuth configuration needs a public URL");
+                }
+            }
+            Some(_) => bail!("existing authentication mode is unsupported; repair it before setup"),
+        }
+    }
+    Ok(())
+}
+
 fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>> {
     // The access store requires an owner-only state directory. Environment
     // merges protect individual files but create new parents with the umask.
@@ -1416,8 +1876,17 @@ fn configure_server_env(path: &Path, plan: &SetupPlan) -> Result<Option<String>>
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn configure_local_client(plan: &SetupPlan, token: Option<&str>) -> Result<()> {
-    let env = plan.invoking_home.join(".labby/.env");
-    let server = format!("http://127.0.0.1:{}", plan.port);
+    let root = invoking_installation_root(plan)?;
+    if is_unix_root()
+        && plan.invoking_user.is_some()
+        && std::env::var_os("LABBY_HOME").is_some_and(|value| !value.is_empty())
+    {
+        bail!(
+            "configure a custom LABBY_HOME client as the invoking user, not through elevated setup"
+        );
+    }
+    let env = root.join(".env");
+    let server = advertised_url(plan);
     merge_env(
         &env,
         vec![
@@ -1428,9 +1897,29 @@ fn configure_local_client(plan: &SetupPlan, token: Option<&str>) -> Result<()> {
     if is_unix_root()
         && let Some(user) = plan.invoking_user.as_deref()
     {
-        chown_tree(&plan.invoking_home.join(".labby"), user)?;
+        chown_tree(&root, user)?;
     }
     Ok(())
+}
+
+/// Resolve the invoking account's state separately from the Linux service
+/// account. An explicit LABBY_HOME must govern every invoking-user write.
+fn invoking_installation_root(plan: &SetupPlan) -> Result<PathBuf> {
+    invoking_installation_root_with(plan, std::env::var_os("LABBY_HOME"))
+}
+
+fn invoking_installation_root_with(
+    plan: &SetupPlan,
+    selected_root: Option<std::ffi::OsString>,
+) -> Result<PathBuf> {
+    let root = selected_root
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| plan.invoking_home.join(".labby"));
+    Ok(crate::installation::InstallationPaths::from_root(root)
+        .context("resolve invoking user's Labby installation root")?
+        .root()
+        .to_path_buf())
 }
 
 fn merge_env(path: &Path, entries: Vec<EnvEntry>) -> Result<()> {
@@ -1447,10 +1936,11 @@ fn merge_env(path: &Path, entries: Vec<EnvEntry>) -> Result<()> {
 }
 
 fn read_env(path: &Path, key: &str) -> Option<String> {
-    dotenvy::from_path_iter(path)
-        .ok()?
-        .filter_map(Result::ok)
-        .find_map(|(entry_key, value)| (entry_key == key).then_some(value))
+    let raw = crate::config::host_write::read_config_snapshot(path).ok()?;
+    let entries = dotenvy::from_read_iter(raw.as_bytes())
+        .collect::<std::result::Result<std::collections::BTreeMap<_, _>, _>>()
+        .ok()?;
+    entries.get(key).cloned()
 }
 
 #[cfg(target_os = "macos")]
@@ -1465,7 +1955,7 @@ fn install_macos_service(plan: &SetupPlan) -> Result<()> {
         .env("LABBY_SERVICE_BIN", &executable)
         .env("LABBY_SERVICE_HOST", &plan.host)
         .env("LABBY_SERVICE_PORT", plan.port.to_string())
-        .env("LABBY_HOME", plan.invoking_home.join(".labby"))
+        .env("LABBY_HOME", invoking_installation_root(plan)?)
         .status()?;
     if !status.success() {
         bail!("macOS service installer exited with {status}");
@@ -1584,7 +2074,7 @@ fn report_desktop_install(plan: &SetupPlan, installer: DesktopInstaller<'_>) -> 
         Err(error) => {
             let reason = format!("{error:#}");
             eprintln!(
-                "warning: the Labby desktop app was not installed: {reason}. Setup is otherwise complete."
+                "warning: the Labby desktop app was not installed: {reason}. Labby installation succeeded; first-use checks are still required."
             );
             DesktopOutcome {
                 installed: false,
@@ -1654,6 +2144,7 @@ fn redacted_plan(plan: &SetupPlan) -> serde_json::Value {
         "server_auth": plan.server_auth,
         "oauth": plan.oauth.as_ref().map(|provider| match provider { OAuthConfig::Google { .. } => "google", OAuthConfig::Authelia { .. } => "authelia" }),
         "client_auth": plan.client_auth,
+        "selected_clients": plan.selected_clients,
         "install_desktop": plan.install_desktop,
         "no_browser": plan.no_browser,
     })
@@ -1680,6 +2171,7 @@ mod tests {
 
     fn server_plan(home: PathBuf) -> SetupPlan {
         SetupPlan {
+            preserve: PreserveDefaults::default(),
             role: SetupRoleArg::Server,
             deployment: Some(SetupDeploymentArg::Native),
             host: DEFAULT_HOST.into(),
@@ -1690,11 +2182,107 @@ mod tests {
             oauth: None,
             client_auth: None,
             client_bearer_token: None,
+            selected_clients: Vec::new(),
             install_desktop: true,
             no_browser: true,
             invoking_home: home,
             invoking_user: Some("operator".into()),
         }
+    }
+
+    #[test]
+    fn omitted_native_choices_preserve_existing_oauth_and_listener() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        std::fs::write(root.join(".env"), "LABBY_MCP_HTTP_HOST=192.0.2.20\nLABBY_MCP_HTTP_PORT=9321\nLABBY_AUTH_MODE=oauth\nLABBY_AUTH_PROVIDER=google\nLABBY_PUBLIC_URL=https://labby.example.com\nLABBY_GOOGLE_CLIENT_ID=existing-id\nLABBY_GOOGLE_CLIENT_SECRET=existing-secret\nLABBY_AUTH_ADMIN_EMAIL=admin@example.com\n").unwrap();
+        let mut plan = server_plan(root.to_path_buf());
+        plan.preserve = PreserveDefaults {
+            host: true,
+            port: true,
+            auth: true,
+            public_url: true,
+        };
+        resolve_existing_native_defaults(&mut plan, root).unwrap();
+        assert_eq!(plan.host, "192.0.2.20");
+        assert_eq!(plan.port, 9321);
+        assert!(matches!(plan.server_auth, Some(SetupAuthArg::OAuth)));
+        assert_eq!(
+            plan.public_url.as_deref(),
+            Some("https://labby.example.com")
+        );
+        assert!(
+            configure_server_env(&root.join(".env"), &plan)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            read_env(&root.join(".env"), "LABBY_GOOGLE_CLIENT_SECRET").as_deref(),
+            Some("existing-secret")
+        );
+    }
+
+    #[test]
+    fn saved_toml_listener_and_environment_precedence_are_preserved() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("config.toml"),
+            "[mcp]\nhost = '192.0.2.30'\nport = 9345\n",
+        )
+        .unwrap();
+        std::fs::write(temp.path().join(".env"), "LABBY_MCP_HTTP_PORT=9456\n").unwrap();
+        let mut plan = server_plan(temp.path().to_path_buf());
+        plan.preserve = PreserveDefaults {
+            host: true,
+            port: true,
+            auth: true,
+            public_url: true,
+        };
+        resolve_existing_native_defaults(&mut plan, temp.path()).unwrap();
+        assert_eq!(plan.host, "192.0.2.30");
+        assert_eq!(plan.port, 9456);
+    }
+
+    #[test]
+    fn explicit_native_choices_override_existing_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join(".env"),
+            "LABBY_MCP_HTTP_HOST=192.0.2.20\nLABBY_MCP_HTTP_PORT=9321\nLABBY_AUTH_MODE=oauth\n",
+        )
+        .unwrap();
+        let mut plan = server_plan(temp.path().to_path_buf());
+        resolve_existing_native_defaults(&mut plan, temp.path()).unwrap();
+        assert_eq!(plan.host, DEFAULT_HOST);
+        assert_eq!(plan.port, DEFAULT_PORT);
+        assert!(matches!(plan.server_auth, Some(SetupAuthArg::Bearer)));
+    }
+
+    #[test]
+    fn invalid_existing_environment_fails_before_reconfiguration() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(".env");
+        std::fs::write(&path, "LABBY_AUTH_MODE='unterminated").unwrap();
+        let mut plan = server_plan(temp.path().to_path_buf());
+        assert!(resolve_existing_native_defaults(&mut plan, temp.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "LABBY_AUTH_MODE='unterminated"
+        );
+    }
+
+    #[test]
+    fn fresh_local_setup_avoids_occupied_ports_and_retains_existing_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let listener = std::net::TcpListener::bind((DEFAULT_HOST, 0)).unwrap();
+        let preferred = listener.local_addr().unwrap().port();
+        let selected = fresh_local_port(preferred, directory.path()).unwrap();
+        assert_ne!(selected, preferred);
+        assert_ne!(selected, 0);
+        std::fs::write(directory.path().join("config.toml"), "").unwrap();
+        assert_eq!(
+            fresh_local_port(preferred, directory.path()).unwrap(),
+            preferred
+        );
     }
 
     #[test]
@@ -1739,6 +2327,7 @@ mod tests {
     async fn desktop_install_failure_is_reported_not_fatal() {
         let home = tempfile::tempdir().unwrap();
         let plan = SetupPlan {
+            preserve: PreserveDefaults::default(),
             role: SetupRoleArg::Client,
             deployment: None,
             host: DEFAULT_HOST.into(),
@@ -1749,6 +2338,7 @@ mod tests {
             oauth: None,
             client_auth: Some(ClientAuth::Bearer),
             client_bearer_token: Some("client-token".into()),
+            selected_clients: Vec::new(),
             install_desktop: true,
             no_browser: true,
             invoking_home: home.path().to_path_buf(),
@@ -2182,6 +2772,7 @@ esac
     #[test]
     fn advertised_url_never_uses_unspecified_address() {
         let plan = SetupPlan {
+            preserve: PreserveDefaults::default(),
             role: SetupRoleArg::Server,
             deployment: Some(SetupDeploymentArg::Native),
             host: "0.0.0.0".into(),
@@ -2192,12 +2783,33 @@ esac
             oauth: None,
             client_auth: None,
             client_bearer_token: None,
+            selected_clients: Vec::new(),
             install_desktop: false,
             no_browser: false,
             invoking_home: PathBuf::from("/tmp/user"),
             invoking_user: Some("user".into()),
         };
         assert_eq!(advertised_url(&plan), "http://127.0.0.1:9123");
+        let root = crate::access::test_support::secure_tempdir();
+        let expected_root = root.path().canonicalize().unwrap();
+        let selected =
+            invoking_installation_root_with(&plan, Some(expected_root.as_os_str().to_owned()))
+                .unwrap();
+        assert_eq!(selected, expected_root);
+        assert!(invoking_installation_root_with(
+            &plan,
+            Some(std::ffi::OsString::from("relative-root")),
+        )
+        .is_err());
+
+        let bound_to_other_interface = SetupPlan {
+            host: "192.0.2.10".into(),
+            ..plan
+        };
+        assert_eq!(
+            advertised_url(&bound_to_other_interface),
+            "http://192.0.2.10:9123"
+        );
     }
 
     #[test]

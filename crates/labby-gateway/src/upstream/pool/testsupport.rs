@@ -170,6 +170,26 @@ impl ServerHandler for StaticCatalogServer {
     }
 }
 
+pub(crate) async fn close_global_transport_for_tests(pool: &UpstreamPool, name: &str) {
+    let peer = {
+        let connections = pool.connections.read().await;
+        let entry = connections.get(name).expect("test connection exists");
+        entry
+            ._server_task
+            .as_ref()
+            .expect("test server task")
+            .abort();
+        entry.peer.clone()
+    };
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !peer.is_transport_closed() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("test transport closes");
+}
+
 pub(crate) async fn static_catalog_pool(upstream_name: &str) -> Arc<UpstreamPool> {
     static_catalog_pool_with_server(upstream_name, StaticCatalogServer::default()).await
 }
@@ -716,4 +736,49 @@ pub(super) async fn move_connection_to_subject_cache_with_tools(
             last_used: std::time::Instant::now(),
         },
     );
+}
+
+/// Live in-process generic and subject peers for gateway lifecycle regressions.
+#[cfg(test)]
+pub(crate) async fn retained_oauth_peers(
+    upstream: &str,
+    peer_upstream: &str,
+    subject: &str,
+    cache: labby_auth::upstream::cache::OauthClientCache,
+) -> (Arc<UpstreamPool>, Vec<rmcp::service::Peer<RoleClient>>) {
+    let pool = Arc::try_unwrap(static_catalog_pool(upstream).await)
+        .ok()
+        .expect("fixture has one owner")
+        .with_oauth_client_cache(cache);
+    let generic_peer = pool
+        .connections
+        .read()
+        .await
+        .get(upstream)
+        .unwrap()
+        .peer
+        .clone();
+    pool.generic_oauth_subjects
+        .write()
+        .await
+        .insert(upstream.into(), subject.into());
+    let subject_pool = static_catalog_pool(peer_upstream).await;
+    let connection = subject_pool
+        .connections
+        .write()
+        .await
+        .remove(peer_upstream)
+        .unwrap();
+    let subject_peer = connection.peer.clone();
+    pool.subject_connections.write().await.insert(
+        (peer_upstream.into(), subject.into()),
+        super::SubjectScopedConnection {
+            optional_catalogs: Default::default(),
+            _connection: connection,
+            peer: subject_peer.clone(),
+            tools: vec![],
+            last_used: std::time::Instant::now(),
+        },
+    );
+    (Arc::new(pool), vec![generic_peer, subject_peer])
 }

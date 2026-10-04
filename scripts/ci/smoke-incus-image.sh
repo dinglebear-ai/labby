@@ -56,6 +56,10 @@ SMOKE_IMAGE_IMPORTED=0
 SMOKE_RENDERED_PROFILE=""
 SYSTEMD_INCUS_SERVICE_STARTED=0
 SYSTEMD_INCUS_SOCKET_STARTED=0
+SMOKE_FORWARD_BRIDGE=""
+SMOKE_FORWARD_COMMENT="labby-incus-smoke-$$"
+SMOKE_FORWARD_OUTBOUND=0
+SMOKE_FORWARD_RETURN=0
 
 incus_cmd() {
     if [[ "$INCUS_USE_SUDO" == "1" ]]; then
@@ -86,6 +90,8 @@ cleanup() {
             incus_cmd image delete "$SMOKE_IMAGE_FINGERPRINT" >/dev/null 2>&1 || true
         fi
     fi
+
+    cleanup_smoke_forwarding || status=1
 
     if [[ "$SYSTEMD_INCUS_SERVICE_STARTED" == "1" ]]; then
         sudo_cmd systemctl stop incus.service >/dev/null 2>&1 || true
@@ -263,6 +269,66 @@ ensure_incus_ready() {
         incus_cmd admin init --minimal
     fi
     incus_has_storage_pool || die "Incus initialization did not create a storage pool"
+    ensure_smoke_forwarding
+}
+
+# Docker's hosted-runner FORWARD policy can block Incus guest HTTPS while
+# DHCP and DNS still work. Scope the existing N-1 workaround to the actual
+# managed bridge and journal only this smoke run's additions for cleanup.
+ensure_smoke_forwarding() {
+    [[ "${CI:-}" == "true" || "${GITHUB_ACTIONS:-}" == "true" ]] || return 0
+    have iptables || return 0
+    sudo_cmd iptables -w 5 -L DOCKER-USER >/dev/null 2>&1 || return 0
+    SMOKE_FORWARD_BRIDGE="$(incus_cmd profile device get default eth0 network)"
+    [[ "$SMOKE_FORWARD_BRIDGE" =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ && ${#SMOKE_FORWARD_BRIDGE} -le 15 ]] \
+        || die "default eth0 has no valid managed bridge"
+    # Incus 6.0 lacks -c; default CSV begins with name,type,managed.
+    incus_cmd network list --format csv | \
+        awk -F, -v name="$SMOKE_FORWARD_BRIDGE" '$1 == name && $2 == "bridge" && $3 == "YES" { found = 1 } END { exit !found }' \
+        || die "default Incus network $SMOKE_FORWARD_BRIDGE is not a managed bridge"
+    [[ "$(incus_cmd network get "$SMOKE_FORWARD_BRIDGE" ipv4.nat)" == "true" ]] \
+        || die "smoke bridge requires managed IPv4 NAT"
+    log "allowing CI Docker forwarding for Incus bridge $SMOKE_FORWARD_BRIDGE"
+    if ! sudo_cmd iptables -w 5 -C DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" -j ACCEPT 2>/dev/null; then
+        # Arm cleanup before insertion: cancellation can arrive after iptables commits.
+        SMOKE_FORWARD_OUTBOUND=1
+        sudo_cmd iptables -w 5 -I DOCKER-USER -i "$SMOKE_FORWARD_BRIDGE" \
+            -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || return 1
+    fi
+    if ! sudo_cmd iptables -w 5 -C DOCKER-USER -o "$SMOKE_FORWARD_BRIDGE" \
+        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+        SMOKE_FORWARD_RETURN=1
+        sudo_cmd iptables -w 5 -I DOCKER-USER -o "$SMOKE_FORWARD_BRIDGE" \
+            -m conntrack --ctstate RELATED,ESTABLISHED \
+            -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || return 1
+    fi
+}
+
+remove_owned_smoke_forwarding_rule() {
+    local status=0
+    sudo_cmd iptables -w 5 -C DOCKER-USER "$@" >/dev/null 2>&1 || status=$?
+    case "$status" in
+        0) sudo_cmd iptables -w 5 -D DOCKER-USER "$@" ;;
+        1) return 0 ;; # The attempted insertion did not leave a rule.
+        *) return 1 ;; # A failed probe cannot establish successful cleanup.
+    esac
+}
+
+cleanup_smoke_forwarding() {
+    local failed=0
+    if [[ "$SMOKE_FORWARD_RETURN" == "1" ]]; then
+        remove_owned_smoke_forwarding_rule -o "$SMOKE_FORWARD_BRIDGE" \
+            -m conntrack --ctstate RELATED,ESTABLISHED \
+            -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || failed=1
+    fi
+    if [[ "$SMOKE_FORWARD_OUTBOUND" == "1" ]]; then
+        remove_owned_smoke_forwarding_rule -i "$SMOKE_FORWARD_BRIDGE" \
+            -m comment --comment "$SMOKE_FORWARD_COMMENT" -j ACCEPT || failed=1
+    fi
+    if [[ "$failed" == "1" ]]; then
+        log "failed to remove owned smoke forwarding rules for $SMOKE_FORWARD_BRIDGE"
+        return 1
+    fi
 }
 
 default_storage_pool() {
@@ -467,9 +533,14 @@ do
         exit 1
     fi
 done
-if env | grep -E "^(TS_AUTHKEY|LABBY_MCP_HTTP_TOKEN|OPENAI_API_KEY|ANTHROPIC_API_KEY|GITHUB_TOKEN|GH_TOKEN|NPM_TOKEN|CARGO_REGISTRY_TOKEN)=" >&2; then
-    exit 1
-fi'
+forbidden_env=0
+for name in TS_AUTHKEY LABBY_MCP_HTTP_TOKEN OPENAI_API_KEY ANTHROPIC_API_KEY GITHUB_TOKEN GH_TOKEN NPM_TOKEN CARGO_REGISTRY_TOKEN; do
+    if printenv "$name" >/dev/null; then
+        printf "forbidden runtime environment variable: %s\n" "$name" >&2
+        forbidden_env=1
+    fi
+done
+test "$forbidden_env" = 0'
 
 log "checking provision convergence"
 incus_cmd file push "$smoke_binary" "$container_name/usr/local/bin/labby"

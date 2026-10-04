@@ -55,6 +55,18 @@ inputs:
 
 Thin orchestration snippet. SSH discovery is a required dependency, then independent Docker hosts fan out through the reusable one-host inventory snippet. The complete machine-readable report is written as an artifact while the direct result stays compact.
 
+The dependencies are [`homelab-ssh-targets`](homelab-ssh-targets.md) and
+[`docker-host-inventory`](docker-host-inventory.md); all nested work shares one
+Code Mode execution deadline and snippet/call budget. `codemode.batch` does not
+limit the number of simultaneously started hosts. A small receipt cannot make
+an arbitrarily large fleet fit those limits.
+
+`ok` reports inventory-stage errors. Always inspect `partial`, discovery
+warnings, unreachable targets, and unknown image-update states too: zero
+inventoried hosts can still return `ok: true`. Artifact sanitization removes
+selected controller/config paths and identity-file details; the per-host
+inventory still contains mount paths and raw container logs.
+
 ```js
 async (o = {}) => {
 	const input = {

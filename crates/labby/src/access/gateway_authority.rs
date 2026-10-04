@@ -48,6 +48,35 @@ impl GatewayActionAuthorization {
             .validate_at(AuthoritySafeBoundary::BeforeExternalEffect, now, &epochs)
             .map_err(|_| denied())
     }
+
+    /// Fence response disclosure without misclassifying an executed mutation
+    /// as a denial before dispatch. No operation result is retained here.
+    pub(crate) async fn validate_after_external_effect(&self) -> Result<(), ToolError> {
+        use labby_runtime::agent_error::{
+            AgentErrorOrigin, AgentRecoveryAction, AgentRecoveryAdvice, AgentSameArgumentsRetry,
+            AgentSideEffectRisk,
+        };
+
+        self.validate_before_external_effect().await.map_err(|error| {
+            ToolError::contract(
+                "authority_changed",
+                "Gateway authority could not be confirmed after the operation executed",
+                serde_json::Map::from_iter([
+                    ("service".into(), Value::String("gateway".into())),
+                    ("action".into(), Value::String(self.action.clone())),
+                    ("original_kind".into(), Value::String(error.kind().into())),
+                ]),
+                Some(AgentErrorOrigin::Policy),
+                Some(AgentRecoveryAdvice {
+                    action: AgentRecoveryAction::InspectAndEscalate,
+                    same_arguments: AgentSameArgumentsRetry::Discouraged,
+                    guidance: "Inspect current operation, credential, authorization, and connection state through an authorized operator before retrying; changes may already have committed. Confirm current caller authority before starting another operation.".into(),
+                    retry_after_ms: None,
+                }),
+                Some(AgentSideEffectRisk::Possible),
+            )
+        })
+    }
 }
 
 /// Gateway policy is team-manageable; host configuration and process/credential
@@ -88,6 +117,17 @@ pub(crate) fn qualify_team_gateway_params(
     team_id: Option<&str>,
     mut params: Value,
 ) -> Result<Value, ToolError> {
+    if team_id.is_some()
+        && matches!(action, "gateway.add" | "gateway.update")
+        && params
+            .get("protected_route")
+            .is_some_and(|change| !change.is_null())
+    {
+        return Err(ToolError::InvalidParam {
+            param: "protected_route".into(),
+            message: "Combined upstream and protected-route saves require installation scope. Use the separately scoped protected-route workflow for Team routes, then save the upstream without a protected_route mutation.".into(),
+        });
+    }
     if !matches!(
         gateway_authority_class(action),
         Some(GatewayAuthorityClass::ScopedRead | GatewayAuthorityClass::ScopedManage)
@@ -523,6 +563,36 @@ mod tests {
             let error = authorize_against(&runtime, "gateway.oauth.start").await;
             assert_eq!(error.kind(), "service_unavailable", "{reason:?}");
             assert_eq!(error.user_message(), "access store is unavailable");
+        }
+    }
+
+    #[test]
+    fn atomic_gateway_save_rejects_selected_team_before_dispatch() {
+        for action in ["gateway.add", "gateway.update"] {
+            let params = serde_json::json!({"name":"platform-upstream", "protected_route":{"operation":"remove","name":"route"}});
+            let error = qualify_team_gateway_params(action, Some("alpha"), params.clone())
+                .expect_err("combined saves must not silently bypass Team route authority");
+            assert_eq!(error.kind(), "invalid_param");
+            assert_eq!(
+                qualify_team_gateway_params(action, None, params.clone()).unwrap(),
+                params
+            );
+            assert!(
+                qualify_team_gateway_params(
+                    action,
+                    Some("alpha"),
+                    serde_json::json!({"name":"platform-upstream"})
+                )
+                .is_ok()
+            );
+            assert!(
+                qualify_team_gateway_params(
+                    action,
+                    Some("alpha"),
+                    serde_json::json!({"name":"platform-upstream", "protected_route":null})
+                )
+                .is_ok()
+            );
         }
     }
 

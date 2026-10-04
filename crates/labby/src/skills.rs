@@ -303,6 +303,48 @@ mod tests {
     use labby_runtime::skills::compare_frontmatter;
 
     #[test]
+    fn notice_production_embedded_skill_explains_receipt_and_authority() {
+        let skills = first_party_skills();
+        let skill = skills.get("using-codemode").unwrap();
+        let body = skill.file(&skill.entry.uri).unwrap();
+        for term in [
+            "ack_notifications",
+            "notification_inbox",
+            "advisory data",
+            "Deduplicate",
+            "live input schema",
+        ] {
+            assert!(
+                body.contains(term),
+                "missing canonical skill contract: {term}"
+            );
+        }
+        let reference = skill
+            .file(
+                &skill
+                    .entry
+                    .uri
+                    .replace("SKILL.md", "references/code-mode.md"),
+            )
+            .unwrap();
+        for term in [
+            "POST /v1/notifications/agent",
+            "lab:admin",
+            "dedupe_key",
+            "not an independent security boundary",
+            "repeat only the notification controls",
+            "Never replay a mutating script",
+            "notification controls require write-capable Code Mode",
+            "both OAuth and credential consumers report `conversation_routing`",
+        ] {
+            assert!(
+                reference.contains(term),
+                "missing notification reference: {term}"
+            );
+        }
+    }
+
+    #[test]
     fn bundled_skills_publish_a_complete_manifest() {
         let skills = first_party_skills();
         assert!(skills.contains_key("using-labby"));

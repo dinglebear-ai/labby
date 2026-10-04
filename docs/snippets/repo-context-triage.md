@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Quick repository context pass using filesystem, Octocode, GitHub, and time
 tags: [repo, triage, research]
+tools: ["time::get_current_time", "filesystem::read_text_file", "octocode::localSearch", "github::search_issues", "github::get_file_contents"]
 inputs:
   repo_path:
     type: string
@@ -76,7 +77,8 @@ The builder should validate both simple and nested schemas:
 - `github::search_issues.perPage` must be an integer.
 - `github::get_file_contents.owner`, `repo`, and `path` must be strings.
 
-Live tool contracts reverified before this update:
+Tool contracts recorded by the 2026-09-16 update (rediscover before execution;
+these upstreams are not built into Labby):
 
 - `time::get_current_time`
 - `filesystem::read_text_file`

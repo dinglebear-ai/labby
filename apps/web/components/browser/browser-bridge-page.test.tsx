@@ -144,3 +144,41 @@ test('session pagination exposes older bounded pages instead of hiding them', as
     await window.happyDOM.close()
   }
 })
+
+for (const scenario of [
+  { name: 'three detail warnings with healthy sections', rejectedSections: 0, detailWarnings: 3, totalFailure: false },
+  { name: 'two failed sections with one detail warning', rejectedSections: 2, detailWarnings: 1, totalFailure: false },
+  { name: 'three failed top-level sections', rejectedSections: 3, detailWarnings: 0, totalFailure: true },
+]) {
+  test(`browser outage classification uses request statuses: ${scenario.name}`, async () => {
+    const window = installDom()
+    const { BrowserBridgePage } = await import('./browser-bridge-page')
+    const { createRoot } = await import('react-dom/client')
+    const original = { ...browserApi }
+    browserApi.list = async () => {
+      if (scenario.rejectedSections >= 1) throw new Error('browsers unavailable')
+      return [identity]
+    }
+    browserApi.pairings = async () => {
+      if (scenario.rejectedSections >= 2) throw new Error('pairings unavailable')
+      return []
+    }
+    browserApi.sessions = async () => {
+      if (scenario.rejectedSections >= 3) throw new Error('sessions unavailable')
+      return { sessions: [], next_cursor: null, detail_warnings: Array.from({ length: scenario.detailWarnings }, (_, index) => `Session ${index} details unavailable`) }
+    }
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    try {
+      await act(async () => root.render(<BrowserBridgePage />))
+      assert.equal(container.textContent?.includes('Browser bridge unavailable'), scenario.totalFailure)
+      assert.equal(container.textContent?.includes('Browser bridge is partially degraded'), !scenario.totalFailure)
+    } finally {
+      await act(async () => root.unmount())
+      container.remove()
+      Object.assign(browserApi, original)
+      await window.happyDOM.close()
+    }
+  })
+}

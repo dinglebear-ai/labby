@@ -400,3 +400,43 @@ async fn blocked_listener_receives_no_connection_or_authorization() {
             .is_err()
     );
 }
+
+#[tokio::test]
+#[allow(
+    clippy::panic,
+    reason = "fixture fails if HTTP loads native trust roots"
+)]
+async fn local_http_client_does_not_load_native_tls_roots() {
+    let endpoint = "http://127.0.0.1:43210";
+    let secret = Secret::local_bearer("local-team", endpoint, "test-secret").unwrap();
+    let client = NetworkClient::local("local-team", endpoint, secret)
+        .unwrap()
+        .with_test_tls_hook(std::sync::Arc::new(|| {
+            panic!("HTTP loaded native TLS roots")
+        }));
+    client.test_client_setup().await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cold_tls_setup_does_not_block_runtime_and_reuses_lease() {
+    let (client, _received) =
+        tls_fixture("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".into()).await;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let observed = calls.clone();
+    let client = client.with_test_tls_hook(std::sync::Arc::new(move || {
+        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(200));
+    }));
+    let start = std::time::Instant::now();
+    let (setup, timer) = tokio::join!(client.test_client_setup(), async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        start.elapsed()
+    });
+    setup.unwrap();
+    assert!(
+        timer < Duration::from_millis(100),
+        "TLS root loading blocked async runtime for {timer:?}"
+    );
+    client.test_client_setup().await.unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

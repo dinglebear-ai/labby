@@ -16,6 +16,8 @@ pub mod browser;
 pub mod clients;
 #[cfg(feature = "gateway")]
 pub(crate) mod code_mode_search;
+#[cfg(feature = "gateway")]
+pub(crate) mod codemode_notices;
 pub mod depot;
 pub mod depot_publish;
 pub(crate) mod dev_containers;
@@ -53,3 +55,6 @@ pub mod snippets;
 pub(crate) mod tasks;
 #[cfg(feature = "gateway")]
 pub mod upstream;
+
+#[cfg(all(feature = "gateway", any(feature = "tailcat", test)))]
+pub mod tailcat;

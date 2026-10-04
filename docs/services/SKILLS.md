@@ -1,7 +1,7 @@
 ---
 title: "Artifacts And Agent Skills"
 created: "2026-08-26"
-updated: "2026-09-20"
+updated: "2026-09-30"
 ---
 
 # Artifacts And Agent Skills
@@ -23,6 +23,28 @@ the SEP-2640 protocol methods.
 The native extension contract is pinned and documented in
 [Skills extension](../contracts/skills-extension.md). This document owns the
 Labby product lifecycle and operator behavior.
+
+## Catalog Performance And Freshness
+
+Native pagination reuses a bounded, immutable aggregate catalog across requests
+with the same caller scope. Before reuse, Labby checks the local generation,
+upstream catalog revisions and expiry, and the current exposure configuration.
+Changes rebuild the aggregate and retain the existing cursor validation rules.
+Incomplete upstream discovery is not admitted to this cache. Cold upstreams
+use the ordinary listing attempt; cache validation never initiates network I/O.
+
+On a cold upstream cache, `skills/get` overlaps the target request with catalog
+discovery. The catalog still validates ownership and collisions before an
+unlisted target can be returned. Listed entries can finish without waiting for
+the speculative target request; credential or catalog invalidation rejects late
+unlisted results.
+
+The local ArtifactStore shares a bounded parsed-head cache across clones. Each
+query still enumerates current heads and checks Unix file identity, change time,
+modification time, size, and mode. Unchanged heads avoid repeated JSON reads,
+validation, and sorting. External edits and deletions invalidate reuse; platforms
+without Unix change metadata read and validate every head. Debug logs report
+elapsed time, cache reuse, and parsed-head counts without record contents.
 
 ## Lifecycle
 
@@ -134,7 +156,7 @@ Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.
 
 The remote control plane extends `artifacts.*` and exposes four supporting
-service families:
+HTTP-context-only service families (not MCP or in-process Code Mode tools):
 
 - `sources.*` controls persisted, refreshable ingestion sources;
 - `jobs.*` starts and observes durable repository, registry, MCP, marketplace,

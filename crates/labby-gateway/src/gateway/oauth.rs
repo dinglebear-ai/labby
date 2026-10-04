@@ -7,6 +7,8 @@ use labby_runtime::error::ToolError;
 
 #[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 pub struct UpstreamOauthStatusView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_observation: Option<crate::gateway::view_models::CapabilityObservation>,
     pub authenticated: bool,
     pub upstream: String,
     pub credential_source: String,

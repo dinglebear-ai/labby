@@ -1,7 +1,7 @@
 ---
 title: "Service Model"
 created: "2026-07-30"
-updated: "2026-09-07"
+updated: "2026-09-29"
 ---
 
 # Service Model
@@ -9,26 +9,31 @@ updated: "2026-09-07"
 Labby registers a small product catalog over one shared dispatch contract. The
 generated [service catalog](../generated/service-catalog.md) is authoritative.
 
-## Current Services
+## Catalog, Registration, And Exposure
 
-| Service | Exposure | Surfaces | Ownership |
-| --- | --- | --- | --- |
-| `access` | always on (caller-bound) | MCP, API, web | Teams, memberships, invitations, project assignments, platform administrators, Team Gateway credential bindings |
-| `agents` | always on (caller-bound) | MCP, API, web | Owner-scoped Agent definitions, sessions, and execution |
-| `artifacts` | feature-gated (`skills`) | CLI, MCP, API, web | Durable local Skill Library plus bounded provider-backed discovery and control-plane projections |
-| `browser` | always on | MCP, API, web | Rust-native WebMCP browser bridge, pairing, discovery, consent, invocation |
-| `bundles`, `jobs`, `sources`, `uploads` | feature-gated (`skills`) | MCP, API, web | Remote Depot control-plane authority services |
-| `dev_containers` | always on (caller-bound) | MCP, API, web | Owner-scoped Dev Container definitions, leases, recovery, lifecycle |
-| `doctor` | always on | CLI, MCP, API | Supported configuration and runtime diagnostics |
-| `fs` | feature-gated (`fs`) | MCP, API, web | Optional configured filesystem browser |
-| `gateway` | feature-gated (`gateway`) | CLI, MCP, API, web | Upstreams, protected routes, virtual servers, OAuth, Loadouts, Code Mode host |
-| `lab_admin` | runtime-conditional (`lab-admin`) | CLI, MCP | Explicitly enabled administrative actions |
-| `projects` | always on (caller-bound) | MCP, API, web | Team-owned Project lifecycle |
-| `server_logs` | always on | CLI, MCP, API | Local Labby server-log search and inspection |
-| `setup` | always on | CLI, MCP, API, web | Bootstrap, provisioning, local repair, host service |
-| `snippets` | feature-gated (`gateway`) | CLI, MCP, API | Code Mode snippet storage and execution metadata |
-| `stash` | Linux only (caller-bound) | MCP, API, web | Principal- or Team-scoped File Stash |
-| `tasks` | always on (caller-bound) | MCP, API, web | Durable owner-scoped Agent Tasks, admission, execution, revocation |
+Use the generated [service catalog](../generated/service-catalog.md) for exact
+service names, feature classifications, metadata owners, and supported surfaces.
+Use the [service documentation index](../services/README.md) for behavioral
+contracts and the [action catalog](../generated/action-catalog.md) for action
+metadata. This guide explains the model rather than maintaining another copy
+of those inventories.
+
+The all-feature documentation projection uses `build_docs_registry` and includes
+runtime-conditional definitions. A catalog entry is not proof that a service is
+registered in a running process or exposed to a particular caller. Keep these
+checks separate:
+
+- compilation selects Cargo features;
+- runtime registration applies startup and platform conditions, including the
+  admin opt-in and Linux-only File Stash;
+- route and surface projections select what is visible and callable;
+- caller identity, Team/project authority, scopes, and action-specific checks
+  determine whether the requested operation is authorized.
+
+Not every catalog entry represents a registered multi-surface service. The
+`proxy` entry describes the direct stdio-proxy CLI runtime; protected-route
+publication has its own `artifact_publish` contract. Neither should be inferred
+from a hand-maintained list of ordinary context-free dispatchers.
 
 Caller-bound services need a host-established identity and transport
 authority ceiling. Their registry entries answer only `help`/`schema`; every
@@ -43,10 +48,10 @@ CLI, MCP, HTTP, and web code are adapters over that dispatcher, not separate
 implementations.
 
 - Action metadata lives in `ActionSpec`/`ParamSpec`.
-- Destructive classification is shared across surfaces.
+- `ActionSpec.requires_admin` and `destructive` are independent; use shared surface policy for authorization and confirmation rather than treating every mutation as destructive.
 - Service metadata drives generated catalogs and help.
 - Feature-gated services must compile in their documented slices.
-- Runtime-conditional services remain absent unless explicitly enabled.
+- Runtime-conditional availability follows registry, platform, and startup rules, not only Cargo feature selection.
 
 Reusable gateway, auth, Code Mode, web, and runtime behavior belongs in the
 extracted `labby-*` crates. Product dispatch and configuration adapters belong

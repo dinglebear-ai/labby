@@ -144,15 +144,39 @@ impl GatewayConfigStore for LabConfigStore {
         env_name: &'a str,
         token_value: &'a str,
     ) -> StoreFuture<'a, Result<(), ToolError>> {
-        // The manager already validated the env name and normalized the header.
+        // Canonicalize this key only, including exported/duplicate entries.
+        // The manager already validated the name and normalized the header.
+        self.restore_gateway_bearer_token(env_name, Some(token_value))
+    }
+
+    fn restore_gateway_bearer_token<'a>(
+        &'a self,
+        env_name: &'a str,
+        previous: Option<&'a str>,
+    ) -> StoreFuture<'a, Result<(), ToolError>> {
         Box::pin(async move {
-            let creds = vec![EnvCredential {
-                service: "gateway".to_string(),
-                url: None,
-                secret: Some(token_value.to_string()),
-                env_field: env_name.to_string(),
-            }];
-            self.write_creds_and_refresh(creds).await
+            let env_path = self.resolved_env_path();
+            let path = env_path.clone();
+            let key = env_name.to_owned();
+            let previous = previous.map(str::to_owned);
+            let outcome = tokio::task::spawn_blocking(move || match previous.as_deref() {
+                Some(value) => crate::config::env_merge::restore_key(&path, &key, Some(value)),
+                None => crate::config::env_merge::remove_key(&path, &key),
+            })
+            .await
+            .map_err(|_| ToolError::internal_message("credential rollback task failed"))?
+            .map_err(|_| ToolError::internal_message("credential rollback failed"))?;
+            if outcome.written != 0
+                && let Some(clients) = &self.service_clients
+            {
+                clients
+                    .refresh_from_env_path(&env_path)
+                    .await
+                    .map_err(|_| {
+                        ToolError::internal_message("credential rollback client refresh failed")
+                    })?;
+            }
+            Ok(())
         })
     }
 
@@ -246,6 +270,14 @@ impl GatewayConfigStore for ProcessCodeModeInertStore {
         token_value: &'a str,
     ) -> StoreFuture<'a, Result<(), ToolError>> {
         self.0.persist_gateway_bearer_token(env_name, token_value)
+    }
+
+    fn restore_gateway_bearer_token<'a>(
+        &'a self,
+        env_name: &'a str,
+        previous: Option<&'a str>,
+    ) -> StoreFuture<'a, Result<(), ToolError>> {
+        self.0.restore_gateway_bearer_token(env_name, previous)
     }
 
     fn persist_service_env<'a>(
@@ -361,6 +393,68 @@ mod host_config {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn bearer_compensation_preserves_current_unrelated_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LabConfigStore::new(
+            Arc::new(RwLock::new(LabConfig::default())),
+            dir.path().join("config.toml"),
+        );
+        let env_path = store.env_path();
+        std::fs::write(
+            &env_path,
+            "# operator note\nexport\tTOKEN=replacement\nTOKEN=duplicate\nUNRELATED_NEW=survives\n",
+        )
+        .unwrap();
+        store
+            .persist_gateway_bearer_token("TOKEN", "Bearer saved")
+            .await
+            .unwrap();
+        let first = dotenvy::from_path_iter(&env_path)
+            .unwrap()
+            .map(Result::unwrap)
+            .find(|(key, _)| key == "TOKEN")
+            .unwrap()
+            .1;
+        assert_eq!(first, "Bearer saved");
+        store
+            .restore_gateway_bearer_token("TOKEN", Some("previous"))
+            .await
+            .unwrap();
+        let values: BTreeMap<_, _> = dotenvy::from_path_iter(&env_path)
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(values.get("TOKEN").map(String::as_str), Some("previous"));
+        assert_eq!(
+            values.get("UNRELATED_NEW").map(String::as_str),
+            Some("survives")
+        );
+        store
+            .restore_gateway_bearer_token("TOKEN", None)
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&env_path).unwrap(),
+            "# operator note\nUNRELATED_NEW=survives\n"
+        );
+        let backup = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(".env.bak."))
+            .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                backup.metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        #[cfg(not(unix))]
+        assert!(backup.metadata().unwrap().is_file());
+    }
 
     #[test]
     fn credentials_follow_the_selected_config_installation() {

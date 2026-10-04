@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::cursor::{Binding, CursorError, PageInput};
 use super::health::Failure;
-use super::manager::Manager;
+use super::manager::{Manager, Topology};
 use super::network::Operation;
 use super::provider::ProviderError;
 use futures::future::join_all;
@@ -85,7 +85,7 @@ pub async fn discover(
 /// Run one bounded, cursor-free indexed search for a server-selected provider
 /// set under an admission shared by the caller's concurrent search fan-out.
 pub(crate) async fn discover_selected_admitted(
-    manager: &Manager,
+    topology: &Topology,
     provider_ids: &[String],
     query: &str,
     kind: &str,
@@ -96,7 +96,6 @@ pub(crate) async fn discover_selected_admitted(
     if !SUPPORTED_KINDS.contains(&kind) {
         return Err(DiscoveryError::InvalidKind);
     }
-    let topology = manager.snapshot();
     let selected = provider_ids
         .iter()
         .filter_map(|id| topology.providers.get(id))
@@ -312,7 +311,12 @@ fn require_kind(
     kind: Option<&str>,
 ) -> Result<super::provider::Identity, ProviderError> {
     identity.and_then(|identity| {
-        if kind.is_some_and(|kind| !identity.supported_kinds.iter().any(|value| value == kind)) {
+        if kind.is_some_and(|kind| {
+            !identity
+                .supported_kinds
+                .iter()
+                .any(|value| matching_kind(kind, value))
+        }) {
             Err(ProviderError::UnsupportedKind)
         } else {
             Ok(identity)
@@ -452,10 +456,13 @@ fn apply_reply(
                     .identity
                     .supported_kinds
                     .iter()
-                    .any(|value| value == kind)
-                    || items
-                        .iter()
-                        .any(|item| item.get("kind").and_then(Value::as_str) != Some(kind))
+                    .any(|value| matching_kind(kind, value))
+                    || items.iter().any(|item| {
+                        !item
+                            .get("kind")
+                            .and_then(Value::as_str)
+                            .is_some_and(|actual| matching_kind(kind, actual))
+                    })
             }) {
                 fail_provider(state, "incompatible");
                 return;
@@ -482,6 +489,14 @@ fn apply_reply(
         Err(ProviderError::Pending) => state.page.outcome = "pending".into(),
         Err(error) => fail_provider(state, failure_kind(error)),
     }
+}
+
+// The registry's established `mcp` descriptor and the product's MCP server
+// filter identify the same artifact family. Preserve the original wire kind
+// and artifact ID; no other families are interchangeable.
+fn matching_kind(requested: &str, actual: &str) -> bool {
+    requested == actual
+        || (matches!(requested, "mcp" | "mcp-server") && matches!(actual, "mcp" | "mcp-server"))
 }
 
 fn fail_provider(state: &mut FederatedProvider, kind: &str) {
@@ -932,6 +947,13 @@ fn project_fields(source: &Map<String, Value>) -> Result<Map<String, Value>, Dis
         }
         projected.insert("revisionCount".into(), count.clone());
     }
+    // Connection metadata is advisory and revision-bound. Unsupported or malformed
+    // metadata never makes an otherwise readable catalog entry disappear.
+    if let Some(connection) = source.get("mcpConnection")
+        && valid_mcp_connection(source, connection)
+    {
+        projected.insert("mcpConnection".into(), connection.clone());
+    }
     Ok(projected)
 }
 
@@ -980,6 +1002,98 @@ fn bounded_value(value: &Value, depth: usize) -> bool {
                 && values
                     .iter()
                     .all(|(key, value)| key.len() <= 128 && bounded_value(value, depth + 1))
+        }
+    }
+}
+
+fn valid_mcp_connection(source: &Map<String, Value>, value: &Value) -> bool {
+    let Some(connection) = value.as_object() else {
+        return false;
+    };
+    if connection.len() != 5
+        || connection.get("schemaVersion").and_then(Value::as_str)
+            != Some("labby.mcp-connection/v1")
+        || connection.get("transport").and_then(Value::as_str) != Some("http")
+        || !matches!(
+            connection.get("authentication").and_then(Value::as_str),
+            Some("none" | "bearer")
+        )
+    {
+        return false;
+    }
+    let revision = source
+        .get("currentRevisionId")
+        .or_else(|| source.get("currentRevision").and_then(|v| v.get("id")))
+        .and_then(Value::as_str)
+        .filter(|revision| !revision.is_empty() && revision.len() <= 512);
+    if revision.is_none() || connection.get("revisionId").and_then(Value::as_str) != revision {
+        return false;
+    }
+    let Some(endpoint) = connection.get("url").and_then(Value::as_str).filter(|url| {
+        url.len() <= 2048
+            && !url
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+    }) else {
+        return false;
+    };
+    let Ok(endpoint) = url::Url::parse(endpoint) else {
+        return false;
+    };
+    endpoint.scheme() == "https"
+        && endpoint.host_str().is_some()
+        && endpoint.username().is_empty()
+        && endpoint.password().is_none()
+        && endpoint.fragment().is_none()
+        && endpoint.query().is_none()
+}
+
+#[cfg(test)]
+mod kind_alias_tests {
+    use super::super::provider::{Identity, Reply};
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn registry_mcp_reply_survives_server_filter_without_rewriting_identity() {
+        for (requested, actual) in [("mcp-server", "mcp"), ("mcp", "mcp-server")] {
+            let identity = Identity::parse(json!({
+                "contractVersion": "depot.discovery/v1", "deploymentId": "public",
+                "deploymentEpoch": "deployment", "authorityEpoch": "authority",
+                "listingEpoch": "listing", "snapshotContinuations": true,
+                "maxPageSize": 25, "supportedKinds": [actual],
+            }))
+            .unwrap();
+            assert!(require_kind(Ok(identity.clone()), Some(requested)).is_ok());
+            let mut state = FederatedProvider {
+                id: "public".into(),
+                incarnation: "incarnation".into(),
+                listing_epoch: String::new(),
+                max_page_size: None,
+                upstream_cursor: None,
+                page: ProviderPage::participating("public", vec![], None, None),
+            };
+            let artifact = json!({"id": "unchanged-registry-id", "kind": actual});
+            apply_reply(
+                &mut state,
+                Ok(Reply {
+                    identity: identity.clone(),
+                    result: json!({"artifacts": [artifact.clone()], "total": 1}),
+                }),
+                Some(requested),
+            );
+            assert_eq!(state.page.failure, None);
+            assert_eq!(state.page.items.front(), Some(&artifact));
+            // A different family still fails even when the provider advertises MCP.
+            apply_reply(
+                &mut state,
+                Ok(Reply {
+                    identity,
+                    result: json!({"artifacts": [{"id": "other", "kind": "skill"}]}),
+                }),
+                Some(requested),
+            );
+            assert_eq!(state.page.failure.as_deref(), Some("incompatible"));
         }
     }
 }

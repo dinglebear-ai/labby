@@ -1,6 +1,6 @@
-//! Live inbound MCP client/session registry — surface-neutral metadata type
+//! Bounded inbound MCP client observation registry — surface-neutral metadata type
 //! + shared handle so the gateway dispatch layer (`labby-gateway`) can read
-//! connection state that `labby`'s MCP transport (`rmcp`-dependent, cannot be
+//! observed metadata that `labby`'s MCP transport (`rmcp`-dependent, cannot be
 //! imported here) writes.
 //!
 //! Mirrors the existing `GatewayRuntimeHandle` pattern (a thin
@@ -8,12 +8,8 @@
 //! transport state into the extracted dispatch crate) rather than inventing a
 //! new cross-crate wiring shape.
 //!
-//! Pruning matches the existing `PeerNotifier` peers list's behavior:
-//! reactive/best-effort, not a proactive liveness view. An entry can outlive
-//! its actual connection between catalog-change notify passes. Do not treat
-//! this list as a strict "currently connected" guarantee — see
-//! `docs/dev/OBSERVABILITY.md` and bead lab-av018 for the follow-up to add
-//! disconnect-driven pruning.
+//! Records show retained observations, not active transport sessions. In
+//! particular, stateless HTTP requests never establish a durable connection.
 //!
 //! `push` is a hardened boundary against a hostile/buggy peer: entries are a
 //! drop-oldest ring bounded at `MAX_CLIENTS`, and every attacker-controlled
@@ -49,7 +45,8 @@ fn truncate_field(mut value: String) -> String {
     value
 }
 
-/// One inbound MCP client session, captured at `initialize` time.
+/// One bounded observation of an inbound MCP client identity. This is not a
+/// persistent-session or current-connection record, especially for HTTP.
 ///
 /// `subject_tag` is a pre-redacted display tag (see
 /// `redact_subject_for_logging` in `labby`'s `mcp::context`) — this type must
@@ -70,39 +67,84 @@ pub struct ConnectedClient {
     /// `"stdio"`, `"http"`, `"in-process"` (built-in service peers), or
     /// `"test"` — set from `LabMcpServer::transport_label` at construction.
     pub transport: String,
-    /// RFC 3339 timestamp recorded when the client connection was registered.
+    /// RFC 3339 timestamp of the first retained observation. Kept under the
+    /// historical wire name for compatibility; it does not prove connection.
     pub connected_at: String,
+    /// Most recent observation of this identity, including later requests.
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+    /// Number of observations folded into this row.
+    #[serde(default)]
+    pub observation_count: u64,
+}
+
+struct RegistryEntry {
+    client: ConnectedClient,
+    // Full authenticated actor key, or a transport-local connection key.
+    // Never serialized. A shortened display tag must not merge users.
+    scope_key: Option<String>,
 }
 
 /// Thin shared handle — cloneable, cheap, `Default` yields an empty registry
 /// (the no-op case for CLI/dev paths that never wire a real transport).
 #[derive(Clone, Default)]
 pub struct ClientRegistryHandle {
-    clients: Arc<RwLock<VecDeque<ConnectedClient>>>,
+    clients: Arc<RwLock<VecDeque<RegistryEntry>>>,
 }
 
 impl ClientRegistryHandle {
     /// Truncates every attacker-controlled string field to `MAX_FIELD_LEN`
     /// and drops the oldest entry once the registry holds `MAX_CLIENTS`.
     pub async fn push(&self, client: ConnectedClient) {
+        self.observe(client, None).await;
+    }
+
+    /// Fold repeat observations only when the caller supplies a private,
+    /// collision-resistant actor or connection key. Anonymous stateless HTTP
+    /// calls remain separate bounded observations.
+    pub async fn observe(&self, client: ConnectedClient, scope_key: Option<String>) {
         let client = ConnectedClient {
             subject_tag: client.subject_tag.map(truncate_field),
             authorized_client_id: client.authorized_client_id.map(truncate_field),
             client_name: client.client_name.map(truncate_field),
             client_version: client.client_version.map(truncate_field),
             transport: client.transport,
+            last_seen_at: client
+                .last_seen_at
+                .or_else(|| Some(client.connected_at.clone())),
             connected_at: client.connected_at,
+            observation_count: client.observation_count.max(1),
         };
         let mut guard = self.clients.write().await;
+        if let Some(key) = scope_key.as_deref()
+            && let Some(index) = guard.iter().position(|entry| {
+                entry.scope_key.as_deref() == Some(key)
+                    && entry.client.client_name == client.client_name
+                    && entry.client.client_version == client.client_version
+                    && entry.client.transport == client.transport
+                    && entry.client.authorized_client_id == client.authorized_client_id
+            })
+        {
+            let mut entry = guard.remove(index).expect("position came from registry");
+            entry.client.last_seen_at = Some(client.connected_at);
+            entry.client.observation_count = entry.client.observation_count.saturating_add(1);
+            guard.push_back(entry);
+            return;
+        }
         if guard.len() >= MAX_CLIENTS {
             guard.pop_front();
         }
-        guard.push_back(client);
+        guard.push_back(RegistryEntry { client, scope_key });
     }
 
     /// Return a snapshot of currently retained client records in connection order.
     pub async fn list(&self) -> Vec<ConnectedClient> {
-        self.clients.read().await.iter().cloned().collect()
+        self.clients
+            .read()
+            .await
+            .iter()
+            .map(|entry| entry.client.clone())
+            .collect()
     }
 }
 
@@ -118,6 +160,8 @@ mod tests {
             client_version: Some("1.0.0".to_string()),
             transport: "mcp".to_string(),
             connected_at: "2026-01-01T00:00:00Z".to_string(),
+            last_seen_at: None,
+            observation_count: 1,
         }
     }
 
@@ -201,5 +245,39 @@ mod tests {
         let name = clients[0].client_name.as_ref().unwrap();
         assert!(name.len() <= MAX_FIELD_LEN);
         assert!(std::str::from_utf8(name.as_bytes()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn observations_update_last_seen_without_merging_distinct_actors() {
+        let handle = ClientRegistryHandle::default();
+        let first = sample("same-client");
+        let mut later = first.clone();
+        later.connected_at = "2026-01-01T00:00:10Z".to_string();
+        handle
+            .observe(first.clone(), Some("full-actor-key-a".into()))
+            .await;
+        handle
+            .observe(later.clone(), Some("full-actor-key-a".into()))
+            .await;
+        handle.observe(later, Some("full-actor-key-b".into())).await;
+
+        let clients = handle.list().await;
+        assert_eq!(clients.len(), 2);
+        assert_eq!(clients[0].observation_count, 2);
+        assert_eq!(
+            clients[0].last_seen_at.as_deref(),
+            Some("2026-01-01T00:00:10Z")
+        );
+        assert_eq!(clients[1].observation_count, 1);
+        assert_eq!(clients[0].subject_tag, clients[1].subject_tag);
+    }
+
+    #[tokio::test]
+    async fn anonymous_observations_remain_bounded_and_unmerged() {
+        let handle = ClientRegistryHandle::default();
+        for _ in 0..=MAX_CLIENTS {
+            handle.observe(sample("anonymous"), None).await;
+        }
+        assert_eq!(handle.list().await.len(), MAX_CLIENTS);
     }
 }

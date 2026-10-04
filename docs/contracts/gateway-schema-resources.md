@@ -32,7 +32,7 @@ Names are opaque strings; the gateway does not normalize case or punctuation.
 When the upstream pool is present, `list_resources` includes:
 
 - One entry for `lab://gateway/servers` with `mime_type: "application/json"`.
-- One entry per registered upstream at `lab://gateway/<name>/schema` with
+- One entry per route-visible registered upstream at `lab://gateway/<name>/schema` with
   `mime_type: "application/json"`.
 
 These entries appear in addition to the existing `lab://catalog`,
@@ -70,7 +70,8 @@ POST /v1/gateway
 
 Status codes (assigned by `ToolError::into_response()`):
 
-- `200` — body is `{ "result": <document> }` per the lab API envelope.
+- `200` — body is the document itself; the action helper does not add a
+  `result` wrapper.
 - `404` — `kind: "not_found"` when `<name>` is unknown or pool not
   configured.
 - `422` — `kind: "missing_param"` when `gateway.schema` is called
@@ -79,6 +80,10 @@ Status codes (assigned by `ToolError::into_response()`):
 
 The two new actions appear in `gateway.help` output alongside the
 existing `gateway.discovered_*` actions.
+
+Listing and direct reads both enforce route visibility. OAuth schema reads
+also require the request's verified OAuth subject and can return typed
+authentication, timeout, capacity, or upstream-discovery errors.
 
 ## Document shapes
 
@@ -110,6 +115,11 @@ Stability rules:
   renaming any of the listed fields is a breaking change.
 - Element order is not stable. Callers must key by `name`.
 
+OAuth upstream rows instead have `tool_count: null`,
+`tool_health: "not_probed"`, and `discovery_mode: "request_scoped"`.
+They do not represent a shared cached OAuth tool catalog; use a subject-scoped
+schema read to discover tools.
+
 ### `lab://gateway/<name>/schema` (MCP) / `gateway.schema` (HTTP action)
 
 ```jsonc
@@ -119,12 +129,13 @@ Stability rules:
     {
       "name": "string",                       // tool name as exposed by the upstream
       "description": "string or null",        // upstream-supplied; absent fields become null
-      "input_schema": { /* JSON Schema */ },  // exactly the schema returned by the upstream
+      "input_schema": { /* JSON Schema */ },  // discovered schema; see sanitization below
       "meta": { /* upstream _meta verbatim */ } // null when upstream did not provide _meta
     }
   ],
   "health": "healthy",
-  "last_error": "string|null"
+  "last_error": "string|null",
+  "catalog_source": "shared_cache" // or "subject_scoped_live" for OAuth
 }
 ```
 
@@ -134,9 +145,9 @@ Stability rules:
 - Each tool element has stable required fields `name`, `description`,
   `input_schema`, `meta`. `description` and `meta` are `null` (not
   absent) when the upstream does not provide them.
-- `input_schema` is passed through verbatim from the upstream `tools/list`
-  payload. The gateway does not normalize, validate, or rewrite it. If
-  the upstream omits `input_schema`, the field is `null`.
+- `input_schema` and `description` reflect the discovered catalog. Shared
+  discovery applies the gateway's presentation sanitization; this is not a
+  byte-for-byte copy guarantee. An unavailable schema is represented by `null`.
 - `meta` is passed through verbatim from the upstream tool definition's
   `_meta` field (renamed without the leading underscore to comply with
   JSON style). The gateway does not strip, filter, or rewrite its
@@ -147,26 +158,29 @@ Stability rules:
 ## Health values
 
 `tool_health` and `health` use the following stable string set, derived
-from `UpstreamHealth`:
+from `UpstreamHealth` plus the OAuth index's discovery state:
 
 | String       | Meaning                                                          |
 |--------------|------------------------------------------------------------------|
 | `"healthy"`  | `UpstreamHealth::Healthy`                                        |
 | `"degraded"` | `Unhealthy { consecutive_failures < CIRCUIT_BREAKER_THRESHOLD }` |
 | `"open"`     | `Unhealthy { consecutive_failures >= CIRCUIT_BREAKER_THRESHOLD }` |
+| `"not_probed"` | OAuth index row; discovery requires a request subject |
 
 New variants may be added without a breaking change. Renaming or removing
 any of the above is a breaking change.
 
 ## Caching and staleness
 
-The gateway returns whatever the pool has cached. There is no per-read
-upstream call. Staleness is bounded by the pool's normal discovery and
-reprobe cadence (`REPROBE_INTERVAL`, the post-reload rediscovery path).
+Regular upstream schema reads use the shared discovery cache. Its freshness
+depends on discovery, enabled reprobes, reloads, and upstream notifications;
+there is no unconditional session-long freshness guarantee. OAuth schema
+reads perform bounded live discovery using the request's subject and return
+`catalog_source: "subject_scoped_live"`.
 
-Clients SHOULD treat both documents as cacheable for the duration of a
-session and re-read after `gateway reload` or after a tool call returns
-`unknown_action` for a previously-listed tool.
+Clients must keep these documents isolated by caller and route and re-read
+after configuration or authorization changes. Do not reuse one subject's
+OAuth schema as another subject's catalog.
 
 ## Error envelope (HTTP)
 

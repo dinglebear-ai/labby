@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Build a compact docs brief from Context7, web search, GitHub, Axon, and time
 tags: [docs, research, cross-server]
+tools: ["time::get_current_time", "context7::resolve-library-id", "context7::query-docs", "searxng::searxng_web_search", "cloudflare-docs::search_cloudflare_documentation", "github::search_repositories", "Axon::axon"]
 inputs:
   topic:
     type: string
@@ -21,6 +22,21 @@ inputs:
     default: /websites/rs_tokio_tokio
     required: false
     description: Concrete Context7 library id
+  library_question:
+    type: string
+    default: spawn blocking task
+    required: false
+    description: Context7 discovery and documentation question
+  cloudflare_query:
+    type: string
+    default: workers durable objects
+    required: false
+    description: Cloudflare documentation query
+  github_repo_query:
+    type: string
+    default: modelcontextprotocol rust sdk
+    required: false
+    description: GitHub repository search query
   max_results:
     type: integer
     default: 3
@@ -31,12 +47,13 @@ inputs:
 # Cross-Server Docs Brief
 
 Use this snippet for a compact documentation brief from several independent
-sources. The contracts below were rediscovered and smoke-tested through Labby on
-2026-09-16.
+sources. The contracts below record discovery and smoke tests from 2026-09-16;
+they are deployment-specific examples, not a bundled Labby upstream guarantee.
+Rediscover the tool IDs and schemas on the intended gateway before running.
 
-## Current Tool Contracts
+## Recorded Tool Contracts
 
-| Step | Tool | Current parameters |
+| Step | Tool | Recorded parameters |
 | --- | --- | --- |
 | Timestamp | `time::get_current_time` | `timezone` |
 | Library discovery | `context7::resolve-library-id` | `libraryName`, `query` |
@@ -48,7 +65,8 @@ sources. The contracts below were rediscovered and smoke-tested through Labby on
 
 Older versions of this snippet used removed parameters such as Context7
 `tokens`, SearXNG `count`, Cloudflare `limit`, and the lowercase
-`axon::axon` tool id. Those shapes are not current.
+`axon::axon` tool id. This example uses the shapes recorded above; the current
+gateway's discovered schema remains authoritative.
 
 The calls are independent, so the snippet uses `codemode.batch`. Each call also
 returns its own timing/error envelope, allowing the brief to degrade without

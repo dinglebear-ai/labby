@@ -7,6 +7,10 @@
   "invalid_action": "schema",
   "policy_action": "stash.delete",
   "workflow": [
+    "stash.save_text",
+    "stash.read_text",
+    "stash.folders",
+    "stash.move",
     "stash.rename",
     "stash.grants.create",
     "stash.grants.list",
@@ -19,7 +23,12 @@
     "file_id": "01ARZ3NDEKTSV4RRFFQ69G5FAV",
     "display_name": "matrix-renamed.txt",
     "grantee_principal_id": "matrix-stash-recipient",
-    "grant_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW"
+    "grant_id": "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+    "filename": "matrix-context.md",
+    "content": "# Matrix context\nExact café 🦀 handoff\n",
+    "format": "markdown",
+    "folder": "matrix/context",
+    "uri": "stash://me/files/01ARZ3NDEKTSV4RRFFQ69G5FAV"
   },
   "action_params": {}
 }

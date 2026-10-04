@@ -71,14 +71,14 @@ export default function NotificationsSettingsPage(): React.ReactElement {
     <div className="space-y-4">
       <SettingsPageHeader
         title="Notifications"
-        description="Keep ingestion failures visible inside Labby and optionally fan them out through Apprise. Depot polling is read-only and uses Labby’s existing server-held Depot authority."
+        description="Record operational events in Labby and optionally send alerts through Apprise. Labby checks Team Depot ingestion runs for new failures using its configured server connection."
       />
       {loading ? <p className="flex items-center gap-2 text-xs text-aurora-text-muted"><Loader2 className="size-4 animate-spin" />Loading notification settings…</p> : null}
       {error ? <p role="alert" className="text-xs text-aurora-error">{error}</p> : null}
       {settings ? (
         <SettingsScalarSection
           title="Delivery"
-          description="Changes are schema-validated with stale-write protection. APPRISE_TOKEN is a write-only stateful Apprise configuration key; leave it empty to use stateless /notify."
+          description="Choose which events are stored, how long Labby keeps them, and where alerts are sent. The Apprise key is write-only; leave it empty if your Apprise service accepts alerts without a configuration key."
           section="notifications"
           state={settings}
           fields={fields}
@@ -87,7 +87,7 @@ export default function NotificationsSettingsPage(): React.ReactElement {
       ) : null}
       <SettingsCard
         title="Recent notifications"
-        description="A bounded local inbox survives restarts and deduplicates the same failed Depot run."
+        description="Recent events stored by this gateway. They remain after a restart, up to the retention limit above."
         action={<Button size="sm" variant="outline" onClick={() => loadNotifications()}><RefreshCw className="size-4" />Refresh</Button>}
       >
         {feedError ? <p role="alert" className="p-4 text-xs text-aurora-error">{feedError}</p> : null}

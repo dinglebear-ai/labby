@@ -49,6 +49,7 @@ pub mod upstream_oauth;
 
 /// Browser-session endpoints for the hosted UI.
 pub mod browser_session;
+mod setup_handoff;
 
 /// Static Labby web asset serving helpers.
 pub mod web;
@@ -82,3 +83,6 @@ pub struct ActionRequest {
 pub use error::{ApiError, ToolError};
 #[allow(unused_imports)]
 pub use state::AppState;
+
+#[cfg(all(feature = "gateway", any(feature = "tailcat", test)))]
+pub(crate) mod tailcat;

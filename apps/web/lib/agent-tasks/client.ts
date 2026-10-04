@@ -146,6 +146,17 @@ export async function listAgents(signal?: AbortSignal): Promise<AgentView[]> {
   return listAll<AgentView>('agents', 'agents.list', 'agents', signal)
 }
 
+export async function listAgentModels(ownerKind: OwnerKind, ownerId: string, signal?: AbortSignal): Promise<string[]> {
+  const response = await action<{ models: string[] }>('agents', 'agents.models.list', {
+    owner_kind: ownerKind,
+    owner_id: ownerId,
+  }, signal)
+  if (!Array.isArray(response.models) || response.models.some((model) => typeof model !== 'string')) {
+    throw new Error('Agent provider returned an invalid model list.')
+  }
+  return response.models
+}
+
 export async function getAgent(agentId: string, signal?: AbortSignal): Promise<AgentView> {
   return action<AgentView>('agents', 'agents.get', { agent_id: agentId }, signal)
 }

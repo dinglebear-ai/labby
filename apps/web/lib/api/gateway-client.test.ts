@@ -971,6 +971,7 @@ test('gatewayApi.hydrateToolInventory lazily fills tool rows and isolates one se
       'gateway.discovered_tools': ({ name }) => name === 'broken'
         ? new Response(JSON.stringify({ message: 'offline' }), { status: 503 })
         : ['search'],
+      'gateway.get': () => ({ ...standardGatewayView, config: { ...standardGatewayView.config, expose_tools: null } }),
     },
     async (requests) => {
       const base = {
@@ -992,9 +993,76 @@ test('gatewayApi.hydrateToolInventory lazily fills tool rows and isolates one se
       }])
       assert.deepEqual(rows[1]?.discovery.tools, [])
       assert.equal(rows[1]?.warnings.at(-1)?.code, 'tool_inventory_unavailable')
-      assert.deepEqual(requests.map((request) => request.params.name).sort(), ['broken', 'healthy'])
+      assert.deepEqual(requests.filter(request => request.action === 'gateway.discovered_tools').map((request) => request.params.name).sort(), ['broken', 'healthy'])
     },
   )
+})
+
+test('legacy string inventory reads the actual policy before assigning exposure', async () => {
+  await withGatewayFetch({
+    'gateway.discovered_tools': () => ['hidden.write'],
+    'gateway.get': () => ({ ...standardGatewayView, config: { ...standardGatewayView.config, expose_tools: [] } }),
+  }, async requests => {
+    const rows = await gatewayApi.hydrateToolInventory([{
+      id: 'restricted', name: 'restricted', source: 'custom_gateway', config: {},
+      discovery: { tools: [], resources: [], prompts: [] }, warnings: [],
+    }] as never)
+    assert.equal(rows[0].discovery.tools[0].exposed, false)
+    assert.equal(rows[0].discovery.tools[0].matched_by, null)
+    assert.equal(requests.filter(request => request.action === 'gateway.get').length, 1)
+  })
+})
+
+test('legacy structured inventory without exposure flags reads authoritative policy', async () => {
+  await withGatewayFetch({
+    'gateway.discovered_tools': () => [{ name: 'hidden.write', description: 'Restricted operation' }],
+    'gateway.get': () => ({ ...standardGatewayView, config: { ...standardGatewayView.config, expose_tools: [] } }),
+  }, async requests => {
+    const rows = await gatewayApi.hydrateToolInventory([{
+      id: 'restricted', name: 'restricted', source: 'custom_gateway', config: {},
+      discovery: { tools: [], resources: [], prompts: [] }, warnings: [],
+    }] as never)
+    assert.deepEqual(rows[0].discovery.tools, [{ name: 'hidden.write', description: 'Restricted operation', exposed: false, matched_by: null }])
+    assert.equal(requests.filter(request => request.action === 'gateway.get').length, 1)
+  })
+})
+
+test('summary inventory preserves backend exposure and match provenance', async () => {
+  await withGatewayFetch({
+    'gateway.list': () => [{
+      id: 'restricted', name: 'restricted', source: 'custom_gateway', enabled: true,
+      config_summary: { transport: 'http', target: 'https://example.test/mcp', command: null, args: [] },
+      discovered_tool_count: 2, exposed_tool_count: 1,
+    }],
+    'gateway.discovered_tools': () => [
+      { name: 'hidden.write', exposed: false, matched_by: null },
+      { name: 'public.read', exposed: true, matched_by: 'public.*' },
+    ],
+  }, async () => {
+    const rows = await gatewayApi.hydrateToolInventory(await gatewayApi.list())
+    assert.deepEqual(rows[0]?.discovery.tools.map(({ name, exposed, matched_by }) => ({ name, exposed, matched_by })), [
+      { name: 'hidden.write', exposed: false, matched_by: null },
+      { name: 'public.read', exposed: true, matched_by: 'public.*' },
+    ])
+  })
+})
+
+test('detail and connection-test results use explicit connection state over cached counts', async () => {
+  for (const [connected, count, severity] of [[true, 0, 'success'], [false, 3, 'failure']] as const) {
+    const view = { ...standardGatewayView, runtime: { ...standardGatewayView.runtime, connected, tool_count: count, resource_count: 0, prompt_count: 0 } }
+    await withGatewayFetch({
+      'gateway.server.get': () => ({ id: 'gateway-1', name: 'gateway-1', source: 'custom_gateway' }),
+      'gateway.get': () => view,
+      'gateway.test': () => view.runtime,
+      'gateway.mcp.list': () => [],
+      'gateway.discovered_tools': () => [], 'gateway.discovered_resources': () => [], 'gateway.discovered_prompts': () => [],
+    }, async () => {
+      assert.equal((await gatewayApi.get('gateway-1')).status.connected, connected)
+      const result = await gatewayApi.test('gateway-1')
+      assert.equal(result.success, connected)
+      assert.equal(result.severity, severity)
+    })
+  }
 })
 
 test('gatewayApi.list rethrows aborts instead of degrading rows', async () => {
@@ -1362,5 +1430,81 @@ test('gatewayApi.reload trusts the backend connected verdict over capability cou
     const result = await gatewayApi.reload('gateway-1')
     assert.equal(result.success, true)
     assert.equal(result.message, 'Server restarted successfully')
+  })
+})
+
+test('runtime hydration replaces scoped observation independently of legacy zero counts', async () => {
+ const unknown = {state:'unknown' as const, discovered:null, exposed:null}
+ const observation = {scope:'credential' as const, tools:{state:'known' as const,discovered:91,exposed:91},resources:unknown,prompts:unknown,skills:unknown}
+ await withGatewayFetch({'gateway.mcp.list':()=>[{name:'linear',connected:false,discovered_tool_count:0,capability_observation:observation}]},async()=>{
+  const [gateway] = await gatewayApi.hydrateRuntime([{id:'linear',name:'linear',transport:'http',config:{},status:{healthy:false,connected:false,discovered_tool_count:0,exposed_tool_count:0,discovered_resource_count:0,exposed_resource_count:0,discovered_prompt_count:0,exposed_prompt_count:0},discovery:{tools:[],resources:[],prompts:[]},warnings:[]}])
+  assert.deepEqual(gateway.status.capability_observation,observation)
+  assert.equal(gateway.status.connected,false)
+ })
+})
+
+
+test('tool inventory hydration caps fleet request concurrency and returns every server', async () => {
+  let active = 0
+  let maximum = 0
+  await withGatewayFetch({
+    'gateway.discovered_tools': async ({ name }) => {
+      active += 1
+      maximum = Math.max(maximum, active)
+      try {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        return [{ name: String(name) + '_tool', exposed: true, matched_by: '*' }]
+      } finally {
+        active -= 1
+      }
+    },
+  }, async () => {
+    const gateways = Array.from({ length: 12 }, (_, index) => ({
+      id: 'fleet-' + index, name: 'fleet-' + index, source: 'custom_gateway', config: {},
+      discovery: { tools: [], resources: [], prompts: [] }, warnings: [],
+    }))
+    const hydrated = await gatewayApi.hydrateToolInventory(gateways as never)
+    assert.ok(maximum <= 4, 'inventory loaders must not launch the whole fleet concurrently')
+    assert.equal(hydrated.length, 12)
+    assert.equal(hydrated[11].discovery.tools[0].name, 'fleet-11_tool')
+  })
+})
+
+
+test('queued inventory requests stop when the authority changes during bounded hydration', async () => {
+  let release!: () => void
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  let started = 0
+  await withGatewayFetch({
+    'gateway.discovered_tools': async () => {
+      started++
+      await blocked
+      return [{ name: 'private_tool', exposed: true, matched_by: '*' }]
+    },
+  }, async () => {
+    const rows = Array.from({ length: 12 }, (_, index) => ({
+      id: 'fenced-' + index, name: 'fenced-' + index, source: 'custom_gateway', config: {},
+      discovery: { tools: [], resources: [], prompts: [] }, warnings: [],
+    }))
+    const pending = gatewayApi.hydrateToolInventory(rows as never)
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'different-owner' }, csrfToken: 'test-csrf', expiresAt: 1, projectId: 'different-project' })
+    release()
+    await assert.rejects(pending, error => error instanceof DOMException && error.name === 'AbortError')
+    assert.equal(started, 4, 'remaining queued rows must not be requested under the replacement authority')
+  })
+})
+
+test('detail runtime refresh requests only the named runtime and preserves catalog and health evidence', async () => {
+  const { mockGateways } = await import('./mock-data')
+  const snapshot = { ...mockGateways[0], id: 'cheap-runtime', name: 'cheap-runtime',
+    status: { ...mockGateways[0].status, connected: false, healthy: false, last_error: 'retained failure' } }
+  await withGatewayFetch({ 'gateway.mcp.list': () => [{ name: snapshot.id, connected: true, enabled: true }] }, async requests => {
+    const refreshed = await gatewayApi.refreshRuntime(snapshot)
+    assert.deepEqual(requests, [{ action: 'gateway.mcp.list', params: { name: snapshot.id } }])
+    assert.equal(refreshed.status.connected, true)
+    assert.equal(refreshed.status.healthy, false)
+    assert.equal(refreshed.status.last_error, 'retained failure')
+    assert.equal(refreshed.discovery, snapshot.discovery)
+    assert.deepEqual(refreshed.config, snapshot.config)
   })
 })

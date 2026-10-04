@@ -1,7 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { aggregateGatewayUsage, type GatewayUsageMetrics } from './gateway-usage-adapter.ts'
+import { aggregateGatewayUsage, clientApplicationLabel, type GatewayUsageMetrics } from './gateway-usage-adapter.ts'
+
+test('generic SDK identity does not become an application name', () => {
+  assert.equal(clientApplicationLabel('rmcp'), 'Unidentified MCP client')
+  assert.equal(clientApplicationLabel('rmcp 3.3'), 'Unidentified MCP client')
+  assert.equal(clientApplicationLabel('Future Agent'), 'Future Agent')
+})
 
 function summary(overrides: Partial<GatewayUsageMetrics> = {}): GatewayUsageMetrics {
   return {

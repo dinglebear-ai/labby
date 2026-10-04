@@ -1,19 +1,31 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-05"
+updated: "2026-09-30"
 ---
 
 # CI/CD
 
-Last updated: 2026-09-05
+Last updated: 2026-09-30
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
 ## CI Path Routing
 
-The docs-check job also runs the pure-Python Microsandbox implementation skill receipt tests and its path-routing regression. Every file under plugins/labby/.apm/skills/implement-in-microsandbox/ routes to that job, including scripts, tests, locks, and descriptors. These checks do not claim to launch a microVM on CI.
+Tailcat browser/adapter packages, Go bridge sources and locks, native transport
+boundary changes, and bridge packaging/test helpers route the credentialless
+`tailcat-tests` job. It runs both npm safety suites plus native Go race and WASM
+tests on a hosted runner with pinned Node/Go versions. `ci-gate` requires success
+when Tailcat is routed; a skip is legitimate only for unrelated paths. These
+deterministic suites launch no microVM and use no relay or provider credentials;
+the explicitly ignored real-browser/native-VM acceptance remains separate live
+qualification.
 
+The docs-check job also runs the pure-Python Microsandbox implementation skill
+receipt tests and its path-routing regression. Every file under
+`plugins/labby/.apm/skills/implement-in-microsandbox/` routes to that job, including
+scripts, tests, locks, and descriptors. These checks do not launch a microVM
+on CI.
 
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
@@ -50,10 +62,11 @@ publisher is opt-in, disabled by default, fork-excluding and does not execute
 checkout code with its write token. No current caller enables publication.
 
 The unconditional `verification-conformance.yml` call is required by `ci-gate`.
-It builds the real product and lifecycle test target under a separate 15-minute
-cap, then runs the controlled HTTP/WebSocket/owned-audit conformance suite under
-a five-minute process timeout with five-second kill grace (25-minute total job
-cap). Nine required case artifacts cover the terminal outcomes, cancellation
+It builds the real product, lifecycle test target, and isolated verifier under
+a separate 20-minute cap, then runs the controlled HTTP/WebSocket/owned-audit
+conformance suite under a five-minute process timeout with five-second kill
+grace (35-minute total job cap, including setup, incident replay, validation,
+and upload margin). Nine required case artifacts cover the terminal outcomes, cancellation
 before and after dispatch, replacement ownership, and a deliberately divergent
 real adapter. Validation binds every trace hash and per-step observation to
 independently captured source/binary identity, requires successful cleanup, and
@@ -71,10 +84,24 @@ The unconditional workflow-policy job also runs the conformance and incident
 evidence validators' negative unit tests using repository-root module discovery.
 Those tests supplement, but do not replace, the real-process evidence lane.
 
+The shared Linux Rust setup installs `libcap-ng-dev` and probes `libcap-ng`
+through pkg-config so all-feature Microsandbox SDK links have their native
+capability library before compilation.
+The independent Incus builder installs the same development library in its
+custom setup command. Its image package floor includes `libcap-ng0` so the
+all-feature CLI can load the capability library during image smoke and normal
+provisioning.
+
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
+It deliberately skips that job for fork pull requests. Consequently the
+path-gated compile/test jobs, including the declared `test-fork` fallback,
+do not run on forks in the current graph. `ci-gate` explicitly accepts this
+fork-only `changes=skipped` case. Independent policy, repository-contract,
+protected-docs, and unconditional verification workflows still run; this is
+not full product test coverage for a fork PR.
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
-`palette`, `browser_extension`, `npm`, `incus`, `security`,
+`browser_extension`, `desktop`, `npm`, `incus`, `security`,
 `javascript_advisories`, `release`, `unraid`, and `verification`. Scheduled and manual runs enable every category so periodic/manual
 validation stays broad.
 
@@ -157,7 +184,7 @@ Three rules keep this contract honest:
   fail the build on that mistake.
 - Every declared `changes` output must be emitted by `changed_paths.py`, except
   the runtime-only `gate_key_drift`.
-- `ci-gate` requires `changes` to conclude `success`. A skipped or cancelled
+- Except for the explicit fork-PR skip above, `ci-gate` requires `changes` to conclude `success`. A skipped or cancelled
   `changes` job leaves every gate expression empty, which would skip every
   gated job and turn the whole run vacuously green.
 
@@ -178,11 +205,15 @@ fallback classifier used when the base commit predates that script emits no
 keys at all and lets reconciliation force every gated key to `true`, so it is
 not a second copy of the list.
 
-Branch protection on `main` requires both `Repository Contract` and `ci-gate`.
+Branch protection on `main` requires `Repository Contract`, `Protected docs guard`,
+and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
-fail the aggregate. Native Windows workspace tests are required; the Palette
-Windows job remains advisory.
+fail the aggregate. The classifier runs on every event, including fork PRs,
+without repository credentials. CI runs on Linux and macOS only; there are no
+Windows lanes or manual Windows selection inputs.
+The gate still rejects a skipped required fork product lane when its category
+was routed.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
@@ -227,12 +258,11 @@ jobs when their changed-path category is enabled:
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
-| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests and an advisory native Windows build/test smoke |
+| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests |
 | Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
 | Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
 | Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
-| Tests (Linux fork PR fallback) | `rust_test` | same warm-up plus nextest run on GitHub-hosted `ubuntu-24.04` without repository secrets |
-| Tests (Windows) | `rust_test` | same nextest run on GitHub-hosted `windows-latest`, including fork PRs; required by `ci-gate` |
+| Tests (Linux fork PR fallback) | fork PRs with `rust_test` | credentialless all-feature workspace nextest; `changes` runs on every event, and `ci-gate` requires this job when a fork PR routes Rust tests |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
 | MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
@@ -261,7 +291,12 @@ unknown-skill errors, and process cleanup. Live trust-policy cases also verify
 that disabled Skills proxying and restrictive allowlists block both native
 skill lookup and direct resource reads without hiding the gateway's own skill.
 
-Clippy runs with `-D warnings` — zero warnings are permitted. This is enforced at the workspace lint layer. Feature-slice, Clippy, Linux test, and focused MCP regression jobs deliberately keep job-wide `CARGO_BUILD_JOBS` unset so cold native dependencies such as `aws-lc-sys` retain parallel builds. To avoid runner OOMs from concurrently compiling large normal libraries and their lib-test harnesses from a cold graph, those jobs first warm ordinary `labby`/gateway targets at normal concurrency and then run their all-target or test-harness pass at the same Cargo job count. The later phase reuses the heavy normal libraries while preserving target coverage and native build-script parallelism.
+Clippy runs with `-D warnings` — zero warnings are permitted. Feature-slice,
+Clippy, Linux test, and focused MCP regression jobs keep job-wide
+`CARGO_BUILD_JOBS` unset. Linux workspace and gateway-only shard execution
+steps explicitly use `2` for unit shards and `4` for other shards after normal
+target warm-up. The root manifest selects the `ring` TLS provider;
+the former `aws-lc-sys` build is not the current rationale for the policy.
 
 The frontend build is required because the Rust binary embeds the exported
 Labby assets. CI runs an explicit TypeScript check as well as the production
@@ -269,9 +304,17 @@ build. Run `pnpm test` in `apps/web` for the frontend unit and
 install-script test contract.
 
 The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
-script with its declared shell, runs ShellCheck at warning severity, and runs
-PSScriptAnalyzer 1.24.0 against the shipped Windows installer. Analyzer setup,
-parse failures, warnings, and errors all fail the stable `ci-gate`.
+script with its declared shell and runs ShellCheck at warning severity. Analyzer
+setup, parse failures, warnings, and errors all fail the stable `ci-gate`.
+
+Live E2E precompiles the all-feature CLI and every shard/coverage test target
+under a separate 20-minute build cap. Qualification uses those artifacts with
+an explicit 1,800-second harness deadline and unchanged 900-second shard caps.
+The qualification step allows 31 minutes, including cleanup and coverage
+report generation; the 60-minute job cap leaves setup and evidence-upload
+margin outside both bounded phases. The aggregate deadline is stricter than
+the local harness default and applies to every hosted tier. A failed or timed-out shard fails the run;
+this budget separation does not waive any declared shard or evidence check.
 
 MCP conformance details, exact reproducibility pins, and the strict extension
 gap baseline are documented in
@@ -306,7 +349,7 @@ land the required code/tests and the baseline update together.
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - Native Windows workspace and Palette jobs use GitHub-hosted runners, bounded timeouts, and keyed Cargo caches; workspace tests block `ci-gate`, while Palette remains advisory
+  - CI uses Linux and macOS runners only, with no manual Windows lanes
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
@@ -329,7 +372,7 @@ native build actions.
 
 Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04`; native ARM64
 release builds use `ubuntu-24.04-arm`.
-Native Windows jobs use `windows-latest`. No repository-defined job selects a
+Native macOS jobs use GitHub-hosted Apple Silicon runners. No repository-defined job selects a
 self-hosted runner or a custom runner label.
 
 Rust jobs use the repository `setup-rust-kache` composite in credentialless
@@ -342,9 +385,9 @@ protected environment whose deployment-branch policy permits only `main`, plus
 server-enforced least-privilege credentials; a client-side prefix is not an
 authorization boundary.
 
-The reusable fleet policy and repository contract are organization-managed
-workflow calls. Their execution environment is owned by the central workflows
-repository and is outside this repository's local runner selection.
+Fleet policy runs as a local hosted job. The separate repository-contract
+workflow also selects its hosted runner locally and checks out the pinned
+organization-owned implementation for the adapter to execute.
 
 ## Build Matrix
 
@@ -354,15 +397,22 @@ repository and is outside this repository's local runner selection.
 | Linux arm64 | `aarch64-unknown-linux-gnu` |
 | macOS arm64 | `aarch64-apple-darwin` |
 
-The initial Linux ARM64 artifact receives the native packaged Code Mode smoke,
-checksums, SBOM, and provenance verification. N-1 stateful qualification remains
-on the existing deployment matrix because no prior Linux ARM64 archive is
-available for the initial release; this is not an ARM64 upgrade/rollback claim.
-The shell and npm installers select the matching ARM64 archive.
+Linux ARM64 receives the native packaged Code Mode smoke, checksums, SBOM,
+provenance verification, and a native Unix N-1 stateful upgrade/rollback leg.
+For the first release without an older published ARM64 archive,
+`scripts/ci/resolve_arm64_n_minus_one.py` selects an older published stable
+ancestor tag with a complete Linux x86_64 archive and checksum. The workflow
+builds that source natively for ARM64 and binds its source commit and binary
+digest into the Unix adapter. This bootstrap qualifies state transitions
+against a source-built baseline, not a previously distributed ARM64 binary.
+Once an eligible published ARM64 archive exists, the resolver requires its
+checksum and uses that archive; a missing sidecar fails closed rather than
+reenabling bootstrap. The candidate archive still requires provenance
+verification in either mode. Shell and npm installers select the matching
+ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
-runner. Windows remains covered by required CI tests, but is not a release
-target. Cross-compilation may be useful experimentally, but it is not the
+runner. Windows is neither a CI runner nor a release target. Cross-compilation may be useful experimentally, but it is not the
 release support contract.
 
 ## Integration Tests
@@ -386,21 +436,31 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
-   required npm/MCP publisher credentials, verifies npm authentication, and resolves both platform N-1
-   baselines before starting frontend or native builds.
+   required npm/MCP publisher credentials, verifies npm authentication, and
+   resolves the published x86_64/macOS N-1 baselines and the ARM64 published
+   or source-bootstrap baseline before starting frontend or native builds.
    The advisory desktop bundle starts after preflight in parallel with the
    CLI builds and upgrade qualification; promotion still waits for its result
    so any successful desktop asset enters the release manifest.
 4. Each platform archive is built, smoke-tested, and attested in its build job.
    The N-1 matrix verifies that exact archive attestation before extraction,
    checks the archive sidecar, and records an archive-to-extracted-binary digest
-   binding. It then invokes a platform-owned adapter for Unix, macOS, Incus,
-   and host-service deployment. All four legs must pass. N-1 is the newest published
+   binding. It then invokes a platform-owned adapter for Unix on x86_64 and
+   ARM64, macOS, Incus, and host-service deployment. All five legs must pass.
+   Except for the explicit
+   first-release ARM64 source bootstrap above, N-1 is the newest published
    (non-draft, non-prerelease) `vX.Y.Z` release that is older than the
    candidate, merged into it, and carries the leg's archive and `.sha256`
    sidecar (`scripts/ci/resolve-n-minus-one-baseline.py`). Newer tags whose
    releases stayed drafts or never received assets are skipped; if no release
-   qualifies, the leg fails closed. The authenticated check is a bearer
+   qualifies, the leg fails closed. Historical Incus baselines may embed mutable
+   dependency installer URLs; bootstrap prepares the checksum-verified pinned
+   Tailscale and ChezMoi versions before running their provisioning plans.
+   ChezMoi installation and its temporary installer participate in bootstrap
+   rollback. The archive installer accepts curl exit 22 or macOS exit 56 only
+   with an exact HTTP 404 for a missing public bundle, then still requires
+   authenticated GitHub attestation verification before activation.
+   The authenticated check is a bearer
    `help` call on the gateway: from v1.16, a bearer-mode install with no access
    store answers gateway admin actions with setup-required until an owner
    bootstraps through OAuth. Each adapter must install N-1 and seed
@@ -497,10 +557,22 @@ Labby release. Normal `vX.Y.Z` releases never wait for or publish an image.
 Older version releases with an Incus asset remain covered by the reconciler's
 legacy manifest check.
 
-**Tag format:** `vX.Y.Z` — no other formats are accepted.
+**Binary release tag format:** `vX.Y.Z`. Independent Incus publication uses
+the distinct tags described above.
 
 **Version policy:** single version across the entire workspace. `labby` and
 `labby-apis` always share the same version number.
+
+Historical reconciliation verifies the immutable npm version rather than requiring
+its mutable `latest` tag to remain on every old release. Candidate promotion still
+verifies the requested dist-tag. Legacy manifests declaring an Incus distribution
+recognize its checksum sidecar only when it agrees with the manifest digest, and
+recognize the exact legacy SPDX image sidecar format. Other unexpected assets
+remain failures; this does not add an attestation claim for legacy sidecars.
+For historical MCP raw hashes, the observer fetches `server.json` at the immutable
+release tag, verifies that its raw digest matches the manifest expectation, and
+then compares the entire normalized registry object. Different metadata or an
+unbound source still fails; the immutable release manifest is never rewritten.
 
 ## Artifact Distribution
 
@@ -557,8 +629,9 @@ side or print the private key in a workflow log.
 ## Test Reports
 
 CI uses the `ci` nextest profile in `.config/nextest.toml`. The test job
-uploads `target/nextest/ci/junit.xml` as the `nextest-junit` artifact with
-short retention so failed runs can be inspected without scraping logs.
+uploads `target/nextest/ci/junit.xml` as `nextest-junit-<shard>` for the
+Linux matrix and `nextest-junit` for the fork fallback, so failed runs can be
+inspected without scraping logs.
 
 ## Cargo Deny Advisories
 
@@ -590,6 +663,12 @@ embed an empty asset set; distributable builds must consume the generated
 export so the binary includes the Admin UI. `just web-build` creates the local
 export for full-product source builds and Incus syncs.
 
+The Settings browser test builds a fresh static export with static mock data
+disabled before serving it locally and intercepting API responses. Other
+browser fixtures build with mock data enabled, so their ignored `out/` cannot
+be reused for this adapter test. These checks do not qualify a live gateway or
+provider.
+
 ```bash
 cd apps/web
 pnpm run test:unit
@@ -602,4 +681,5 @@ pnpm test:browser
 
 - no telemetry pipeline
 - no background analytics
-- no phone-home behavior in any CI or release step
+- no product analytics collection; CI and release steps explicitly contact
+  dependency, provenance, and publication services

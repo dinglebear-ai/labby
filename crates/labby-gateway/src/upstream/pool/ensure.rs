@@ -185,7 +185,12 @@ impl UpstreamPool {
     async fn upstream_is_ready(&self, name: &str, readiness: Readiness) -> bool {
         match readiness {
             Readiness::Tools => self.has_healthy_tools_for_upstream(name).await,
-            Readiness::Connection => self.connections.read().await.contains_key(name),
+            Readiness::Connection => self
+                .connections
+                .read()
+                .await
+                .get(name)
+                .is_some_and(|connection| !connection.peer.is_transport_closed()),
         }
     }
 
@@ -199,20 +204,6 @@ impl UpstreamPool {
         Box::pin(async move {
             if !config.enabled {
                 return Ok(false);
-            }
-            // Connection-only callers reuse an already registered peer, including
-            // in-process skill providers. Do not turn that readiness check into
-            // a new OAuth tool-discovery request. Tool discovery remains scoped
-            // to the caller below, even when a regular peer exists.
-            if readiness == Readiness::Connection
-                && config.oauth.is_some()
-                && oauth_subject.is_some()
-            {
-                let connect_lock = self.lazy_connect_lock(&config.name).await;
-                let _connect_guard = connect_lock.lock().await;
-                if self.upstream_is_ready(&config.name, readiness).await {
-                    return Ok(false);
-                }
             }
             // OAuth tool discovery is identity-scoped. Keep its peer and tool list
             // in the per-(upstream, subject) cache; publishing either into the
@@ -515,6 +506,22 @@ impl UpstreamPool {
     }
 
     #[cfg(test)]
+    pub(crate) async fn hold_subject_connect_gate_for_tests(
+        &self,
+        name: &str,
+        subject: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        self.subject_connect_locks
+            .write()
+            .await
+            .entry((name.to_owned(), subject.to_owned()))
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+            .lock_owned()
+            .await
+    }
+
+    #[cfg(test)]
     pub(crate) fn register_upstream_config_for_tests(&self, config: &UpstreamConfig) {
         self.upstream_config_fingerprints.insert(
             config.name.clone(),
@@ -597,7 +604,7 @@ impl UpstreamPool {
             upstream_discovery_timeout(config, self.request_timeout),
             MAX_UPSTREAM_TOOLS,
         )
-        .await?;
+        .await;
         let _oauth_publication = self
             .oauth_publication_guard(lifecycle_epoch.as_ref())
             .await?;
@@ -611,7 +618,38 @@ impl UpstreamPool {
             self.acquire_or_connect_subject(config, subject).await?;
             return Ok(());
         };
+        anyhow::ensure!(
+            self.upstream_config_matches(config),
+            "upstream configuration changed during subject refresh"
+        );
+        anyhow::ensure!(
+            !entry.peer.is_transport_closed()
+                && match (entry.peer.peer_info(), peer.peer_info()) {
+                    (Some(current), Some(observed)) => Arc::ptr_eq(&current, &observed),
+                    _ => false,
+                },
+            "subject connection replaced during catalog refresh"
+        );
+        let tools = match tools {
+            Ok(tools) => tools,
+            Err(error) => {
+                self.subject_connect_errors.write().await.insert(
+                    key.clone(),
+                    super::SubjectConnectErrorEntry {
+                        message: labby_runtime::redact::sanitize_error_text(
+                            &error.to_string(),
+                            512,
+                        ),
+                        recorded_at: Instant::now(),
+                    },
+                );
+                return Err(error.into());
+            }
+        };
+        self.subject_connect_errors.write().await.remove(&key);
         entry.tools = tools;
+        entry.optional_catalogs.tools_revision =
+            entry.optional_catalogs.tools_revision.saturating_add(1);
         entry.last_used = Instant::now();
         Ok(())
     }
@@ -1440,5 +1478,73 @@ mod tests {
             peer,
             UpstreamRuntimeMetadata::default(),
         )
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::super::testsupport::{close_global_transport_for_tests, static_catalog_pool};
+    use super::*;
+
+    #[tokio::test]
+    async fn a_closed_connection_is_repaired_by_a_lazy_http_connect() {
+        use serde_json::{Value, json};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(|request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).expect("JSON-RPC");
+                let Some(id) = body.get("id") else {
+                    return ResponseTemplate::new(202);
+                };
+                let result = match body["method"].as_str().unwrap_or_default() {
+                    "initialize" => json!({
+                        "protocolVersion": "2025-11-25", "capabilities": {"tools": {}},
+                        "serverInfo": {"name": "repair", "version": "1"}
+                    }),
+                    "tools/list" => json!({"tools": []}),
+                    _ => {
+                        return ResponseTemplate::new(200).set_body_json(json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "method not found"}
+                        }));
+                    }
+                };
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(ResponseTemplate::new(405))
+            .mount(&server)
+            .await;
+        let pool = static_catalog_pool("up").await;
+        close_global_transport_for_tests(&pool, "up").await;
+        let mut config = super::super::testsupport::named_test_upstream_config("up");
+        config.command = None;
+        config.url = Some(format!("{}/mcp", server.uri()));
+        config.lifecycle = Some(labby_runtime::gateway_config::UpstreamLifecycle::Initialize);
+        let repaired = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            pool.ensure_connection_for_upstream(&config, None, None),
+        )
+        .await
+        .expect("bounded lazy connect")
+        .expect("HTTP reconnect");
+        assert!(
+            repaired,
+            "closed registered peer must trigger connection replacement"
+        );
+        assert!(pool.upstream_is_ready("up", Readiness::Connection).await);
+        assert!(!server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_closed_connection_is_not_ready() {
+        let pool = static_catalog_pool("up").await;
+        assert!(pool.upstream_is_ready("up", Readiness::Connection).await);
+        close_global_transport_for_tests(&pool, "up").await;
+        assert!(!pool.upstream_is_ready("up", Readiness::Connection).await);
     }
 }

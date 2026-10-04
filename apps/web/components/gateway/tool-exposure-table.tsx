@@ -37,6 +37,7 @@ const FILTER_OPTIONS = [
 ] as const
 
 interface ToolExposureTableProps {
+  emptyLabel?: string
   tools: DiscoveredTool[]
   exposureLabel: string
   exposeAll: boolean
@@ -62,6 +63,7 @@ interface ToolExposureTableProps {
 
 export function ToolExposureTable({
   tools,
+  emptyLabel = 'No tools discovered',
   exposureLabel,
   exposeAll,
   manageMode,
@@ -403,7 +405,7 @@ export function ToolExposureTable({
       <div className="space-y-3 md:hidden">
         {filteredTools.length === 0 ? (
           <div className="rounded-lg border p-6 text-center text-sm text-aurora-text-muted">
-            {tools.length === 0 ? 'No tools discovered' : 'No tools match your search'}
+            {tools.length === 0 ? emptyLabel : 'No tools match your search'}
           </div>
         ) : (
           filteredTools.map((tool) => (
@@ -463,7 +465,7 @@ export function ToolExposureTable({
             {filteredTools.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={manageMode ? 2 : 1} className="py-8 text-center text-aurora-text-muted">
-                  {tools.length === 0 ? 'No tools discovered' : 'No tools match your search'}
+                  {tools.length === 0 ? emptyLabel : 'No tools match your search'}
                 </TableCell>
               </TableRow>
             ) : (

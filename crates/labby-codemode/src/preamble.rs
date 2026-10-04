@@ -101,6 +101,9 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
     "describe",
     "listResources",
     "readResource",
+    "readArtifact",
+    "artifactInfo",
+    "listArtifacts",
     "getPrompt",
     "listSkills",
     "getSkill",
@@ -311,8 +314,12 @@ codemode.search = async function(input) {{
   var searchEntries = __codemodeDiscovery.slice();
   var queryBackedById = Object.create(null);
   var artifactSearchIncomplete = false;
+  var artifactSearchIncompleteSources = [];
   try {{
     var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
+    artifactSearchIncompleteSources = artifactResponse && Array.isArray(artifactResponse.incompleteSources)
+      ? artifactResponse.incompleteSources : [];
+    artifactSearchIncomplete = artifactSearchIncompleteSources.length > 0;
     var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
     var knownIds = Object.create(null);
     for (var localIndex = 0; localIndex < searchEntries.length; localIndex++) knownIds[searchEntries[localIndex].id] = true;
@@ -464,6 +471,7 @@ codemode.search = async function(input) {{
     var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
     if (artifactSearchIncomplete) {{
       empty.incomplete = true;
+      if (artifactSearchIncompleteSources.length) empty.incompleteSources = artifactSearchIncompleteSources;
       empty.hint = "Artifact search was incomplete. Retry or inspect source availability.";
       return empty;
     }}
@@ -487,6 +495,7 @@ codemode.search = async function(input) {{
   }}
   if (artifactSearchIncomplete) {{
     found.incomplete = true;
+    if (artifactSearchIncompleteSources.length) found.incompleteSources = artifactSearchIncompleteSources;
     found.hint = "Artifact search was incomplete. Retry or inspect source availability." + (found.hint ? " " + found.hint : "");
   }}
   return found;
@@ -646,6 +655,15 @@ codemode.readResource = async function(uri) {{
     throw new TypeError("codemode.readResource requires a non-empty URI string");
   }}
   return callTool("__lab_internal::read_resource", {{ uri: uri }});
+}};
+codemode.readArtifact = async function(artifactId, options) {{
+  return callTool("__lab_internal::read_artifact", Object.assign({{}}, options || {{}}, {{ artifact_id: artifactId }}));
+}};
+codemode.artifactInfo = async function(artifactId) {{
+  return callTool("__lab_internal::artifact_info", {{ artifact_id: artifactId }});
+}};
+codemode.listArtifacts = async function(options) {{
+  return callTool("__lab_internal::list_artifacts", options || {{}});
 }};
 codemode.getPrompt = async function(prompt, args) {{
   if (typeof prompt !== "string" || !prompt.trim()) {{
@@ -1261,6 +1279,77 @@ mod tests {
         assert!(value.get("error").is_none(), "{value}");
         assert_eq!(value["hit"], "depot:skill:fixture");
         assert_eq!(value["described"], value["hit"]);
+    }
+
+    #[test]
+    fn query_backed_partial_search_marks_results_incomplete() {
+        let js = generate_discovery_js(&[], 0.5, &[]).expect("js");
+        let remote = CodeModeDiscoveryEntry::from_catalog(&CatalogDescriptor::metadata(
+            CodeModeCatalogKind::Skill,
+            "public_depot",
+            "depot:skill:fixture",
+            "fixture skill",
+            "query-backed result",
+            Vec::new(),
+        ));
+        let remote = serde_json::to_string(&remote).expect("remote entry");
+        let script = format!(
+            "{js}\n\
+             globalThis.callTool = async (id) => id === '__lab_internal::artifact_search'\n\
+               ? {{entries: [{remote}], incompleteSources: ['team_depot']}} : {{ranked: []}};\n\
+             globalThis.result = null;\n\
+             (async () => {{ globalThis.result = JSON.stringify(await codemode.search('fixture')); }})()\n\
+               .catch(error => {{ globalThis.result = JSON.stringify({{error: String(error)}}); }});"
+        );
+        let runtime = javy::Runtime::new(javy::Config::default()).expect("runtime");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .expect("script");
+        runtime.resolve_pending_jobs().expect("pending jobs");
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .expect("result");
+        let value: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert_eq!(value["results"][0]["id"], "depot:skill:fixture");
+        assert_eq!(value["incomplete"], true);
+        assert_eq!(
+            value["incompleteSources"],
+            serde_json::json!(["team_depot"])
+        );
+    }
+
+    #[test]
+    fn artifact_helpers_forward_ids_and_pagination_inside_quickjs() {
+        let js = generate_discovery_js(&[], 0.5, &[]).expect("discovery JS");
+        let script = format!(
+            r"{js}
+            globalThis.calls = [];
+            globalThis.callTool = async (id, params) => {{ calls.push({{id, params}}); return params; }};
+            (async () => {{
+                await codemode.readArtifact('opaque-id', {{offset:4, length:100, artifact_id:'wrong'}});
+                await codemode.artifactInfo('opaque-id');
+                await codemode.listArtifacts({{limit:5, cursor:'cursor'}});
+                globalThis.result = JSON.stringify(calls);
+            }})();"
+        );
+        let runtime = javy::Runtime::new(javy::Config::default()).expect("runtime");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .expect("script");
+        runtime.resolve_pending_jobs().expect("jobs");
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .expect("result");
+        let calls: serde_json::Value = serde_json::from_str(&result).expect("json");
+        assert_eq!(calls[0]["id"], "__lab_internal::read_artifact");
+        assert_eq!(calls[0]["params"]["artifact_id"], "opaque-id");
+        assert_eq!(calls[0]["params"]["offset"], 4);
+        assert_eq!(calls[1]["id"], "__lab_internal::artifact_info");
+        assert_eq!(calls[2]["params"]["limit"], 5);
     }
 
     #[test]

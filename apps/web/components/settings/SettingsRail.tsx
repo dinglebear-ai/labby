@@ -1,22 +1,16 @@
 'use client'
 
-// Section nav for /settings/*. Static list of panels; URL-driven "active"
-// state via usePathname.
-//
-// Settings has no vertical rail. The panels are exposed as a segmented-button
-// strip (28px tall, 8px radius, 11.5px/650, accent-tinted when active) that
-// sits above the single settings column, so the body keeps the same
-// position on every panel.
-
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import {
   Activity,
+  Bot,
   Bell,
   Cog,
   FileSearch,
   KeyRound,
   Layers,
+  ListChecks,
   PlugZap,
   Server,
   Shield,
@@ -33,8 +27,10 @@ interface RailEntry {
 }
 
 const ENTRIES: RailEntry[] = [
+  { href: '/settings/', label: 'Overview', icon: ListChecks },
   { href: '/settings/core/', label: 'Core', icon: Cog },
-  { href: '/settings/services/', label: 'Services', icon: Server },
+  { href: '/settings/agents/', label: 'Agent provider', icon: Bot },
+  { href: '/settings/services/', label: 'MCP servers', icon: Server },
   { href: '/settings/surfaces/', label: 'Surfaces', icon: PlugZap },
   { href: '/settings/features/', label: 'Features', icon: Layers },
   { href: '/settings/doctor/', label: 'Doctor', icon: Activity },
@@ -54,10 +50,19 @@ export function settingsRailEntries(session: BrowserSessionState): RailEntry[] {
     ...ENTRIES,
     { href: '/settings/notifications/', label: 'Notifications', icon: Bell },
     ...(session.isConfiguredAdmin
-      ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound }]
+      ? [{ href: '/settings/authentication/', label: 'Authentication', icon: KeyRound },
+        { href: '/settings/tailcat/', label: 'Tailcat', icon: PlugZap }]
       : []),
     { href: '/settings/depot/', label: 'Depot', icon: Warehouse },
   ]
+}
+
+export function activeSettingsHref(pathname: string, entries: RailEntry[]): string {
+  const normalizedPath = pathname.endsWith('/') ? pathname : `${pathname}/`
+  return entries.find((entry) => entry.href !== '/settings/' && normalizedPath.startsWith(entry.href))?.href
+    ?? entries.find((entry) => entry.href === normalizedPath)?.href
+    ?? entries[0]?.href
+    ?? ''
 }
 
 export function SettingsRail(): React.ReactElement {
@@ -65,11 +70,10 @@ export function SettingsRail(): React.ReactElement {
   const router = useRouter()
   const session = useBrowserSession()
   const entries = settingsRailEntries(session)
-  const activeEntry = entries.find((entry) => pathname.startsWith(entry.href)) ?? entries[0]
-  const activeHref = activeEntry?.href ?? ENTRIES[0]?.href ?? ''
+  const activeHref = activeSettingsHref(pathname, entries)
 
   return (
-    <nav aria-label="Settings sections">
+    <nav aria-label="Settings sections" className="self-start lg:sticky lg:top-0">
       <label htmlFor="settings-section" className="sr-only">
         Settings section
       </label>
@@ -77,7 +81,8 @@ export function SettingsRail(): React.ReactElement {
         id="settings-section"
         value={activeHref}
         onChange={(event) => router.push(event.target.value)}
-        className="w-full md:hidden"
+        name="settings-section"
+        className="w-full lg:hidden"
         style={{ ...SETTINGS_CONTROL_STYLE, width: '100%' }}
       >
         {entries.map((entry) => (
@@ -86,24 +91,24 @@ export function SettingsRail(): React.ReactElement {
           </option>
         ))}
       </select>
-      <div
-        className="hidden md:flex"
-        style={{ gap: 4, flexWrap: 'wrap', alignItems: 'center' }}
-      >
-        {entries.map((entry) => {
-          const active = pathname.startsWith(entry.href)
-          const Icon = entry.icon
-          return (
-            <Link
-              key={entry.href}
-              href={entry.href}
-              aria-current={active ? 'page' : undefined}
-              style={settingsSegmentStyle(active)}
-            >
-              <Icon size={13} />
-              <span>{entry.label}</span>
-            </Link>
-          )
+      <div className="hidden space-y-6 lg:block">
+        {['Workspace', 'Connections', 'System'].map((group) => {
+          const grouped = entries.filter((entry) => {
+            const section = entry.href.split('/')[2]
+            return (['', 'core', 'agents', 'services'].includes(section) ? 'Workspace' : ['surfaces', 'authentication', 'depot', 'tailcat'].includes(section) ? 'Connections' : 'System') === group
+          })
+          return <div key={group}>
+            <p className="mb-2 px-3 text-xs font-medium text-aurora-text-muted">{group}</p>
+            <div className="space-y-1">{grouped.map((entry) => {
+              const active = entry.href === activeHref
+              const Icon = entry.icon
+              return <Link key={entry.href} href={entry.href} aria-current={active ? 'page' : undefined}
+                className="w-full focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aurora-accent-primary"
+                style={{ ...settingsSegmentStyle(active), justifyContent: 'flex-start', height: 40, gap: 10, background: active ? 'color-mix(in srgb, var(--aurora-accent-primary) 12%, transparent)' : 'transparent', borderColor: active ? 'var(--aurora-border-strong)' : 'transparent' }}>
+                <Icon size={16} /><span>{entry.label}</span>
+              </Link>
+            })}</div>
+          </div>
         })}
       </div>
     </nav>

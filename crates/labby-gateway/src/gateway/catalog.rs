@@ -138,6 +138,7 @@ struct GatewayServerToolSchemaRow {
     name: String,
     description: Option<String>,
     input_schema: Option<serde_json::Value>,
+    output_schema: Option<serde_json::Value>,
     meta: Option<serde_json::Value>,
 }
 
@@ -633,6 +634,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "integer",
                 required: false,
                 description: "Minutes east of UTC fallback when timezone is omitted (-1440 to 1440)",
+            },
+            ParamSpec {
+                name: "include_upstream_timeseries",
+                ty: "boolean",
+                required: false,
+                description: "Include at most four upstream bucket series from the same read transaction as total timeseries; default false",
             },
             ParamSpec {
                 name: "include_facets",
@@ -1518,6 +1525,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 required: false,
                 description: "Write-only: raw bearer token to store securely. Never returned on reads. If bearer_token_env is omitted from the spec, a default env var name is derived from the gateway name.",
             },
+            ParamSpec {
+                name: "protected_route",
+                ty: "object",
+                required: false,
+                description: "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead.",
+            },
         ],
     },
     ActionSpec {
@@ -1544,6 +1557,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: false,
                 description: "Write-only: raw bearer token to store securely. Never returned on reads. Requires bearer_token_env in patch or existing config.",
+            },
+            ParamSpec {
+                name: "protected_route",
+                ty: "object",
+                required: false,
+                description: "Optional route mutation committed atomically with the gateway: {operation:'upsert', name?:existing_route_name, route:ProtectedMcpRouteConfig} or {operation:'remove', name:existing_route_name}. Omission preserves routes. Both drafts validate before persistence; private OAuth and credentials remain backend-owned. Installation scope only: Team routes require the separately scoped protected-route workflow. Startup-mounted gateway_subset routes require staged actions instead.",
             },
         ],
     },
@@ -1625,7 +1644,7 @@ pub const ACTIONS: &[ActionSpec] = &[
     },
     ActionSpec {
         name: "gateway.schema",
-        description: "Return tool schemas (input_schema + meta) for one upstream MCP server, \
+        description: "Return tool schemas (input_schema + output_schema + meta) for one upstream MCP server, \
                        filtered by its exposure policy. OAuth upstreams are discovered live with \
                        the authenticated subject; other upstreams use the shared cache.",
         destructive: false,

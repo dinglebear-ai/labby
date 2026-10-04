@@ -9,6 +9,104 @@ AfterAll {
 }
 
 Describe 'Labby Windows installer contracts' {
+    It 'fails closed without creating a directory when WhatIf declines staging' {
+        Mock New-Item { throw 'directory must not be created' }
+        Mock Protect-LabbyMetadataDirectory { throw 'protection must not run' }
+        { New-LabbyPrivateTemporaryDirectory -WhatIf } | Should -Throw '*creation was declined*'
+        Assert-MockCalled New-Item -Times 0
+        Assert-MockCalled Protect-LabbyMetadataDirectory -Times 0
+    }
+
+    It 'rejects an outdated provenance verifier before release downloads' {
+        Mock Get-Command { [pscustomobject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+        Mock Get-LabbyGitHubVerifier { throw 'fixture old verifier/bootstrap failed' }
+        Mock Invoke-WebRequest { throw 'release download must not run' }
+        try {
+            Test-LabbyReleasePrerequisite
+            throw 'old verifier unexpectedly accepted'
+        } catch {
+            $_.Exception.Message | Should -BeLike '*Pinned GitHub verifier could not be prepared*'
+            $_.Exception.Data['LabbyTrustFailure'] | Should -BeTrue
+        }
+        Assert-MockCalled Invoke-WebRequest -Times 0
+    }
+
+    It 'rejects an outdated verifier when provenance is called directly' {
+        Mock Get-Command { [pscustomobject]@{ Name = 'gh' } } -ParameterFilter { $Name -eq 'gh' }
+        Mock Test-LabbyGitHubVerifierVersion { $false }
+        { Test-LabbyReleaseProvenance -ArtifactPath artifact.zip -Repo example/labby -ResolvedVersion v1 } | Should -Throw '*2.102.0 or newer*'
+    }
+
+    It 'rejects corrupt pinned verifier bytes before invoking them' {
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'gh' }
+        Mock Get-LabbyPinnedGitHubVerifier { @{ Url = 'https://fixture.invalid/gh.zip'; Sha256 = ('0' * 64) } }
+        Mock Get-LabbyHttpsFile { param($Uri, $OutFile) [IO.File]::WriteAllText($OutFile, 'corrupt fixture') }
+        Mock Test-LabbyGitHubVerifierVersion { throw 'downloaded code must not be invoked' }
+        $private = New-LabbyPrivateTemporaryDirectory
+        try {
+            { Get-LabbyGitHubVerifier -TemporaryDirectory $private } | Should -Throw '*checksum FAILED*'
+            Test-Path (Join-Path $private 'gh.exe') | Should -BeFalse
+            Assert-MockCalled Test-LabbyGitHubVerifierVersion -Times 0
+        } finally { Remove-Item -LiteralPath $private -Recurse -Force }
+    }
+
+    It 'extracts only the hash verified executable when gh is missing or outdated' {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $verifierFixtureArchive = Join-Path $TestDrive 'verifier-fixture.zip'
+        $verifierFixtureZip = [IO.Compression.ZipFile]::Open($verifierFixtureArchive, [IO.Compression.ZipArchiveMode]::Create)
+        try {
+            foreach ($name in @('bin/gh.exe','unselected.txt')) {
+                $writer = [IO.StreamWriter]::new($verifierFixtureZip.CreateEntry($name).Open())
+                try { $writer.Write('fixture executable bytes') } finally { $writer.Dispose() }
+            }
+        } finally { $verifierFixtureZip.Dispose() }
+        $verifierFixtureDigest = (Get-FileHash $verifierFixtureArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+        Mock Get-LabbyPinnedGitHubVerifier { @{ Url = 'https://fixture.invalid/gh.zip'; Sha256 = $verifierFixtureDigest } }
+        Mock Get-LabbyHttpsFile { param($Uri, $OutFile) Copy-Item -LiteralPath $verifierFixtureArchive -Destination $OutFile }
+        Mock Test-LabbyGitHubVerifierVersion { param($Executable) $Executable -ne 'outdated.exe' }
+        Mock Test-LabbyGitHubCliCommand { $true }
+        foreach ($existing in @($null, [pscustomobject]@{ Source = 'outdated.exe' })) {
+            Mock Get-Command { $existing } -ParameterFilter { $Name -eq 'gh' }
+            $private = New-LabbyPrivateTemporaryDirectory
+            try {
+                $selected = Get-LabbyGitHubVerifier -TemporaryDirectory $private
+                $selected | Should -Be (Join-Path $private 'gh.exe')
+                [IO.File]::ReadAllText($selected) | Should -Be 'fixture executable bytes'
+                Test-Path (Join-Path $private 'unselected.txt') | Should -BeFalse
+            } finally { Remove-Item -LiteralPath $private -Recurse -Force }
+        }
+    }
+
+    It 'verifies public bundles without inherited credentials and restores process environment' {
+        $keys = @('GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','GH_HOST','GH_CONFIG_DIR')
+        $saved = @{}
+        foreach ($key in $keys) {
+            $saved[$key] = [Environment]::GetEnvironmentVariable($key,'Process')
+            [Environment]::SetEnvironmentVariable($key,'fixture-private','Process')
+        }
+        Mock Test-LabbyGitHubVerifierVersion { $true }
+        Mock Test-LabbyGitHubCliCommand {
+            param($Arguments, $Executable)
+            $Arguments | Should -Contain '--bundle'
+            foreach ($key in @('GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN')) {
+                [Environment]::GetEnvironmentVariable($key,'Process') | Should -BeNullOrEmpty
+            }
+            $env:GH_HOST | Should -Be 'github.com'
+            @(Get-ChildItem -Force $env:GH_CONFIG_DIR).Count | Should -Be 0
+            return $true
+        }
+        try {
+            Test-LabbyReleaseProvenance -ArtifactPath archive.zip -Repo example/labby -ResolvedVersion v1 -Verifier fixture.exe -BundlePath bundle.jsonl
+            foreach ($key in $keys) { [Environment]::GetEnvironmentVariable($key,'Process') | Should -Be 'fixture-private' }
+            Mock Test-LabbyGitHubCliCommand { $false }
+            { Test-LabbyReleaseProvenance -ArtifactPath archive.zip -Repo example/labby -ResolvedVersion v1 -Verifier fixture.exe -BundlePath rejected.jsonl } | Should -Throw '*provenance verification FAILED*'
+            foreach ($key in $keys) { [Environment]::GetEnvironmentVariable($key,'Process') | Should -Be 'fixture-private' }
+            Assert-MockCalled Test-LabbyGitHubCliCommand -Times 0 -ParameterFilter { $Arguments[0] -eq 'auth' }
+        } finally {
+            foreach ($key in $keys) { [Environment]::SetEnvironmentVariable($key,$saved[$key],'Process') }
+        }
+    }
+
     It 'fails when the release API cannot resolve latest' {
         Mock Invoke-RestMethod { throw 'fixture API unavailable' }
         { Resolve-LabbyReleaseVersion -Repo example/labby -RequestedVersion latest `
@@ -35,21 +133,57 @@ Describe 'Labby Windows installer contracts' {
         # so a fresh machine fails fast with the dependency message instead of
         # downloading an artifact it cannot verify.
         Mock Get-Command { $null } -ParameterFilter { $Name -eq 'gh' }
+        Mock Get-LabbyGitHubVerifier { throw 'fixture bootstrap unavailable' }
         Mock Invoke-RestMethod { throw 'release resolution ran before the prerequisite gate' }
         Mock Invoke-WebRequest { throw 'release download ran before the prerequisite gate' }
         try {
             Install-LabbyFromRelease -InstallDir (Join-Path $TestDrive 'no-gh') -Version latest -Repo example/labby
             throw 'release install unexpectedly succeeded without gh'
         } catch {
-            $_.Exception.Message | Should -BeLike '*GitHub CLI (gh) is required*'
+            $_.Exception.Message | Should -BeLike '*Pinned GitHub verifier could not be prepared*'
             $_.Exception.Data['LabbyTrustFailure'] | Should -BeTrue
         }
         Assert-MockCalled Invoke-RestMethod -Times 0
         Assert-MockCalled Invoke-WebRequest -Times 0
     }
 
+    It 'does not download payloads when a missing bundle has no legacy authentication' {
+        Mock Test-LabbyReleasePrerequisite { 'fixture.exe' }
+        Mock Get-LabbyHttpsFile { throw 'fixture missing bundle' }
+        Mock Test-LabbyDownloadNotFound { $true }
+        Mock Test-LabbyGitHubCliCommand { $false }
+        Mock Invoke-WebRequest { throw 'payload download must not run' }
+        { Install-LabbyFromRelease -InstallDir (Join-Path $TestDrive 'missing-bundle-auth') -Version v1 -Repo example/labby } |
+            Should -Throw '*no archive was downloaded*'
+        Assert-MockCalled Test-LabbyGitHubCliCommand -Times 1 -ParameterFilter { $Arguments[0] -eq 'auth' }
+        Assert-MockCalled Invoke-WebRequest -Times 0
+    }
+
+    It 'does not download payloads or consult credentials after a forbidden or TLS-failed bundle' -TestCases @(
+        @{ Failure = 'HTTP 403 forbidden' }, @{ Failure = 'TLS handshake failed' }, @{ Failure = 'request timed out' }
+    ) {
+        param($Failure)
+        Mock Test-LabbyReleasePrerequisite { 'fixture.exe' }
+        Mock Get-LabbyHttpsFile { throw $Failure }
+        Mock Test-LabbyDownloadNotFound { $false }
+        Mock Test-LabbyGitHubCliCommand { throw 'credential lookup must not run' }
+        Mock Invoke-WebRequest { throw 'payload download must not run' }
+        Mock Install-LabbyFromSource { throw 'source build must not run' }
+        try {
+            Invoke-LabbyInstall -InstallDir (Join-Path $TestDrive 'bundle-unavailable') -Version v1 -Repo example/labby -AllowSourceFallback -NoPathUpdate
+            throw 'failed provenance qualification unexpectedly accepted'
+        } catch {
+            $_.Exception.Message | Should -BeLike '*source fallback is forbidden*'
+            $_.Exception.Data['LabbyTrustFailure'] | Should -BeTrue
+        }
+        Assert-MockCalled Test-LabbyGitHubCliCommand -Times 0
+        Assert-MockCalled Invoke-WebRequest -Times 0
+        Assert-MockCalled Install-LabbyFromSource -Times 0
+    }
+
     It 'fails when the required checksum sidecar is unavailable' {
         Mock Test-LabbyReleasePrerequisite {}
+        Mock Get-LabbyHttpsFile { param($Uri, $OutFile) [IO.File]::WriteAllText($OutFile, 'fixture bundle') }
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
             if ($Uri -like '*.sha256') { throw 'fixture sidecar unavailable' }
@@ -180,6 +314,7 @@ printf source-pinned >"$root/bin/labby.exe"
         Install-LabbyVerifiedBinary -SourcePath $prior -InstallDir $installDir -Source release `
             -RequestedVersion v1 -ResolvedVersion v1
         Mock Test-LabbyReleasePrerequisite {}
+        Mock Get-LabbyHttpsFile { param($Uri, $OutFile) [IO.File]::WriteAllText($OutFile, 'fixture bundle') }
         Mock Invoke-WebRequest {
             param($Uri, $OutFile)
             $contents = if ($Uri -like '*.sha256') { ('0' * 64) + '  labby.zip' } else { 'untrusted archive' }

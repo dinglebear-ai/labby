@@ -1502,6 +1502,40 @@
         "readOnlyHint": true
       },
       "contractVersion": 1,
+      "description": "List valid server-configured Git credential IDs and matching hosts for repository source setup. Secret values are never returned. Requires ingestion write access.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "depot.credentials.list",
+      "outputSchema": {
+        "additionalProperties": true,
+        "properties": {
+          "credentials": {
+            "description": "Canonical credentials result field.",
+            "type": "array"
+          }
+        },
+        "required": [
+          "credentials"
+        ],
+        "type": "object"
+      },
+      "requiredScope": "write",
+      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "title": "List repository credentials",
+      "transportAvailable": true
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "contractVersion": 1,
       "description": "List recent durable ingest jobs. Job metadata is write-scoped.",
       "inputSchema": {
         "additionalProperties": false,

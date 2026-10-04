@@ -1,3 +1,4 @@
+import { summarizeCapabilities } from '../gateway-capabilities.ts'
 import type { Gateway } from '@/lib/types/gateway'
 
 export interface GatewaySettingsSnapshot {
@@ -53,6 +54,6 @@ export function buildGatewayDocsSnapshot(
     httpGateways: gateways.filter((gateway) => gateway.transport === 'http').length,
     stdioGateways: gateways.filter((gateway) => gateway.transport === 'stdio').length,
     supportedServices,
-    exposedTools: gateways.reduce((count, gateway) => count + gateway.status.exposed_tool_count, 0),
+    exposedTools: summarizeCapabilities(gateways.map(gateway => gateway.status), 'tools').exposed,
   }
 }

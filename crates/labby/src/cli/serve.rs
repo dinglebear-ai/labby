@@ -1,5 +1,175 @@
 //! `labby serve` — start the MCP server.
 
+#[cfg(all(feature = "tailcat", unix))]
+#[path = "serve/tailcat.rs"]
+mod tailcat {
+    // Compose the opt-in private controller from the hosted gateway authority.
+    use crate::{
+        api::{AppState, tailcat::ControlListener},
+        config::McpPreferences,
+        dispatch::tailcat::{
+            HelperArtifact,
+            manager::{Manager, NativeOwner},
+        },
+    };
+    use anyhow::{Context as _, Result};
+    use std::sync::Arc;
+
+    pub(super) async fn start_control(
+        state: &AppState,
+        auth: Option<&labby_auth::state::AuthState>,
+        mcp: &McpPreferences,
+        notifier: crate::mcp::peers::PeerNotifier,
+    ) -> Result<Option<ControlListener>> {
+        let preferences = &state.config.tailcat;
+        if !preferences.enabled {
+            return Ok(None);
+        }
+        labby_tailcat::ensure_platform_supported().context("Tailcat platform unsupported")?;
+        let auth = auth
+            .filter(|auth| auth.config.mode == labby_auth::config::AuthMode::OAuth)
+            .filter(|_| !state.web_ui_auth_disabled)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Tailcat requires enabled OAuth browser authentication")
+            })?;
+        let key = auth.config.token_encryption_key.clone().ok_or_else(|| {
+            anyhow::anyhow!("Tailcat requires the persistent OAuth encryption key")
+        })?;
+        let adapter = state.access_credential_adapter.clone().ok_or_else(|| {
+            anyhow::anyhow!("Tailcat requires native project credential authority")
+        })?;
+        let gateway = state
+            .gateway_manager
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Tailcat requires the hosted gateway"))?;
+        let installation = state
+            .installation_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Tailcat requires an initialized installation"))?
+            .to_owned();
+        let (executable, expected_sha256) =
+            match (&preferences.helper_path, &preferences.helper_sha256) {
+                (Some(path), Some(checksum)) => {
+                    let digest: [u8; 32] = hex::decode(checksum)
+                        .ok()
+                        .and_then(|bytes| bytes.try_into().ok())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("tailcat.helper_sha256 must be a SHA-256 digest")
+                        })?;
+                    (path.clone(), digest)
+                }
+                (None, None) => {
+                    let root = preferences.bundle_path.clone();
+                    let bundle = tokio::task::spawn_blocking(move || {
+                        crate::dispatch::tailcat::assets::discover(root.as_deref())
+                    })
+                    .await??;
+                    (bundle.helper, bundle.helper_sha256)
+                }
+                _ => anyhow::bail!("configure both tailcat.helper_path and tailcat.helper_sha256"),
+            };
+        let derp_map_url = preferences
+            .derp_map_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("configure an approved HTTPS tailcat.derp_map_url"))?;
+        let state_dir = labby_runtime::lab_home().join("tailcat");
+        crate::installation::secure_file::create_private_dir(&state_dir)
+            .context("initialize private Tailcat helper state directory")?;
+        // Verify artifact and map before publishing even the private control socket.
+        // Actual startup validates another immutable snapshot against this digest.
+        let preflight = labby_tailcat::BridgeConfig {
+            executable: executable.clone(),
+            state_dir: state_dir.clone(),
+            expected_sha256,
+            target: "127.0.0.1:1".parse()?,
+            peer: format!("nodekey:{}", "1".repeat(64)),
+            derp_map_url: derp_map_url.clone(),
+        };
+        tokio::task::spawn_blocking(move || preflight.validate())
+            .await?
+            .context("Tailcat pinned helper validation failed")?;
+        let mut projection_state = state.clone().with_oauth_state(auth.clone());
+        if let Some(routers) = super::build_protected_mcp_routers(&projection_state, mcp, notifier)?
+        {
+            projection_state = projection_state.with_protected_mcp_routers(routers);
+        }
+        let artifact = HelperArtifact {
+            executable,
+            state_dir,
+            expected_sha256,
+            derp_map_url,
+        };
+        let owner = NativeOwner {
+            oauth_enabled: true,
+            runtime: state.access_runtime.clone(),
+            adapter,
+            gateway,
+            installation,
+            key: Arc::new(key),
+            projection: Arc::new(move |authority, route| {
+                crate::api::tailcat::restricted_router(projection_state.clone(), route, authority)
+            }),
+        };
+        let manager = Arc::new(Manager::new(owner, artifact)?);
+        ControlListener::start(preferences.socket_path(), manager)
+            .await
+            .context("publish private Tailcat control socket")
+            .map(Some)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use tower::ServiceExt as _;
+
+        #[tokio::test]
+        async fn disabled_tailcat_preserves_ordinary_authenticated_routes() {
+            let state = AppState::new();
+            assert!(!state.config.tailcat.enabled);
+            let ordinary = crate::api::router::build_router(
+                state.clone(),
+                Some("fixture-token".into()),
+                None,
+                None,
+                &[],
+            );
+            for phase in 0..2 {
+                if phase == 1 {
+                    assert!(
+                        start_control(
+                            &state,
+                            None,
+                            &McpPreferences::default(),
+                            crate::mcp::peers::PeerNotifier::default()
+                        )
+                        .await
+                        .unwrap()
+                        .is_none()
+                    );
+                }
+                for (path, expected) in [
+                    ("/health", axum::http::StatusCode::OK),
+                    ("/v1/setup/actions", axum::http::StatusCode::OK),
+                    ("/tailcat/mcp", axum::http::StatusCode::NOT_FOUND),
+                ] {
+                    let response = ordinary
+                        .clone()
+                        .oneshot(
+                            axum::http::Request::builder()
+                                .uri(path)
+                                .header("authorization", "Bearer fixture-token")
+                                .body(axum::body::Body::empty())
+                                .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    assert_eq!(response.status(), expected);
+                }
+            }
+        }
+    }
+}
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -328,6 +498,9 @@ async fn initialize_selected_file_stash_runtime(
 }
 
 async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
+    if config.tailcat.enabled && !cfg!(all(feature = "tailcat", unix)) {
+        anyhow::bail!("Tailcat requires a macOS/Linux build with the tailcat feature");
+    }
     if args.auto_update {
         crate::self_update::require_macos()?;
         if matches!(args.transport, Some(Transport::Stdio)) || args.command.is_some() {
@@ -390,7 +563,14 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         registry,
         config.services.built_in_upstream_apis_enabled,
     );
-    let registry = filter_registry(registry, &args.services)?;
+    let registry = if std::env::var_os("LABBY_MCP_PROXY_AGGREGATE").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+        && matches!(transport, Transport::Stdio)
+    {
+        ToolRegistry::proxy_aggregate()
+    } else {
+        filter_registry(registry, &args.services)?
+    };
     tracing::info!(
         subsystem = "startup",
         phase = "bootstrap.registry",
@@ -410,7 +590,11 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
     // full rationale; this mirrors what the `gateway` CLI subcommands
     // already do for their own dispatch.
     #[cfg(feature = "gateway")]
-    if stdio_mode && let Some(live) = crate::live_gateway::detect(config, "mcp").await? {
+    if stdio_mode
+        && std::env::var_os("LABBY_MCP_FORCE_STANDALONE").as_deref()
+            != Some(std::ffi::OsStr::new("1"))
+        && let Some(live) = crate::live_gateway::detect(config, "mcp").await?
+    {
         tracing::info!(
             subsystem = "startup",
             phase = "bridge.detected",
@@ -473,6 +657,22 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
             Arc::new(AccessRuntime::blocked_unavailable())
         }
     };
+    #[cfg(all(feature = "tailcat", feature = "gateway", unix))]
+    if installation_paths
+        .root()
+        .join("tailcat/enrollments")
+        .try_exists()?
+    {
+        // The daemon lifecycle lock is already held. Reconcile native custody
+        // before publishing HTTP or private control listeners.
+        let _writer = access_runtime.acquire_bootstrap_writer().await?;
+        let store = access_runtime.store().await?;
+        crate::dispatch::setup::tailcat_enrollment::reconcile_pending(&installation_paths, &store)
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!("Tailcat credential custody requires recovery before startup")
+            })?;
+    }
     // Hermetic live-test binaries need a durable principal behind the static bearer so the
     // protected API/MCP/CLI adapters exercise their real authority paths. This hook is compiled
     // out of product builds and only active in test-support (`proxy-testkit`) builds, where it
@@ -826,6 +1026,21 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         .with_access_runtime(Arc::clone(&access_runtime))
         .with_file_stash_runtime(Arc::clone(&file_stash_runtime))
         .with_http_bind_host(host.clone());
+    #[cfg(feature = "gateway")]
+    {
+        state.agent_notifications =
+            match crate::dispatch::codemode_notices::NoticeStore::open_installation().await {
+                Ok(store) => store,
+                Err(error) => {
+                    tracing::error!(
+                        subsystem = "agent_notifications",
+                        kind = error.kind(),
+                        "durable agent inbox unavailable; notification operations disabled, no memory fallback"
+                    );
+                    crate::dispatch::codemode_notices::NoticeStore::disabled()
+                }
+            };
+    }
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
     {
@@ -1437,6 +1652,14 @@ async fn run_http(
     let mut effective_mcp_config = mcp_config.clone();
     effective_mcp_config.host = Some(host.to_string());
     effective_mcp_config.port = Some(port);
+    #[cfg(all(feature = "tailcat", unix))]
+    let _tailcat_control = tailcat::start_control(
+        &state,
+        auth_state.as_ref(),
+        &effective_mcp_config,
+        notifier.clone(),
+    )
+    .await?;
     #[cfg(feature = "gateway")]
     let router = build_http_router(
         state,
@@ -2039,7 +2262,7 @@ async fn log_mcp_request(
     next.run(req).await
 }
 
-fn build_http_router(
+pub(crate) fn build_http_router(
     state: AppState,
     bearer_token: Option<String>,
     auth_state: Option<labby_auth::state::AuthState>,
@@ -2155,6 +2378,21 @@ async fn build_gateway_runtime(
     } else {
         None
     };
+    let task_route_store = match labby_gateway::upstream::pool::TaskRouteStore::open(
+        crate::config::task_routes_db_path()?,
+    )
+    .await
+    {
+        Ok(store) => Some(Arc::new(store)),
+        Err(error) => {
+            health.record_degraded(
+                crate::runtime_health::TASK_ROUTES_UNAVAILABLE,
+                format!("MCP task acknowledgement is disabled: {error}"),
+            );
+            tracing::error!(error = %error, "task route store unavailable; MCP task creation will fail closed");
+            None
+        }
+    };
     let step_journal = if crate::config::codemode_journal_enabled() {
         match labby_gateway::codemode_journal::StepJournalStore::open(
             crate::config::codemode_journal_db_path()?,
@@ -2184,12 +2422,42 @@ async fn build_gateway_runtime(
         .with_relay_timeout(config.upstream_relay_timeout())
         .with_in_process_connector(crate::composition::in_process_connector())
         .with_usage_store(usage_store.clone());
+    if let Some(store) = &task_route_store {
+        pool_builder = pool_builder.with_task_route_store(Arc::clone(store));
+    }
     if let Some(rt) = &upstream_oauth_runtime {
         pool_builder = pool_builder.with_oauth_client_cache(rt.cache.clone());
     }
     let pool = Arc::new(pool_builder);
     if !suppress_upstream_runtime {
         pool.seed_lazy_upstreams(&config.upstream).await;
+        if std::env::var_os("LABBY_MCP_PROXY_AGGREGATE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            use futures::{StreamExt as _, TryStreamExt as _};
+            // Cold package runners are independent; bound fanout while requiring
+            // every configured server to finish before advertising the aggregate.
+            futures::stream::iter(config.upstream.iter().map(|upstream| {
+                let pool = pool.clone();
+                async move {
+                    pool.ensure_tools_for_upstream(upstream, None, None)
+                        .await
+                        .with_context(|| {
+                            format!("proxy MCP upstream `{}` failed discovery", upstream.name)
+                        })?;
+                    let tools = pool.healthy_tools_for_upstream(&upstream.name).await;
+                    anyhow::ensure!(!tools.is_empty(), "proxy MCP upstream `{}` did not expose tools", upstream.name);
+                    for tool in tools {
+                        anyhow::ensure!(!tool.tool.name.contains("::"),
+                            "proxy MCP upstream `{}` exposes tool `{}` with unsupported namespace separator `::`", upstream.name, tool.tool.name);
+                    }
+                    anyhow::Ok(())
+                }
+            }))
+            .buffer_unordered(4)
+            .try_collect::<Vec<_>>()
+            .await?;
+        }
         tracing::info!(
             subsystem = "gateway_client",
             phase = "discovery.lazy",
@@ -2237,6 +2505,7 @@ async fn build_gateway_runtime(
             }),
             resource_registry,
             usage_store: usage_store.clone(),
+            task_route_store: task_route_store.clone(),
             code_mode_app_state: notifier.code_mode_app_state.clone(),
             execution_capability_provider: Some(
                 crate::dispatch::execution_catalog::CanonicalExecutionCatalogProvider::production()
@@ -2539,6 +2808,24 @@ fn run_stdio(
             "labby serve ready"
         );
         let service_count = registry.services().len();
+        #[cfg(feature = "gateway")]
+        let route_runtime = {
+            let store =
+                match crate::dispatch::codemode_notices::NoticeStore::open_installation().await {
+                    Ok(store) => store,
+                    Err(error) => {
+                        tracing::error!(
+                            subsystem = "agent_notifications",
+                            kind = error.kind(),
+                            "durable stdio agent inbox unavailable; no memory fallback"
+                        );
+                        crate::dispatch::codemode_notices::NoticeStore::disabled()
+                    }
+                };
+            Arc::new(crate::mcp::runtime::McpRouteRuntime::with_notification_store(store))
+        };
+        #[cfg(not(feature = "gateway"))]
+        let route_runtime = Default::default();
         let server = LabMcpServer {
             installation_id: stdio_installation_id,
             registry,
@@ -2549,7 +2836,7 @@ fn run_stdio(
             peers: Arc::clone(&notifier.peers),
             code_mode_app_state: notifier.code_mode_app_state.clone(),
             last_listed_tool_contract: Default::default(),
-            route_runtime: Default::default(),
+            route_runtime,
             #[cfg(feature = "gateway")]
             client_registry: notifier.client_registry.clone(),
             transport_label: "stdio",
@@ -2711,6 +2998,13 @@ fn build_mcp_service_with_scope(
     // vec) so that gateway reload notifications reach every connected session.
     let shared_peers = Arc::clone(&notifier.peers);
     let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
+    #[cfg(feature = "gateway")]
+    let shared_route_runtime = Arc::new(
+        crate::mcp::runtime::McpRouteRuntime::with_notification_store(
+            state.agent_notifications.clone(),
+        ),
+    );
+    #[cfg(not(feature = "gateway"))]
     let shared_route_runtime: Arc<crate::mcp::runtime::McpRouteRuntime> = Default::default();
     shared_route_runtime.configure_depot(Arc::clone(&state.depot));
     #[cfg(feature = "gateway")]
@@ -2817,6 +3111,14 @@ fn build_protected_mcp_routers(
         routers.insert(route.name, router);
     }
     Ok(Some(routers))
+}
+
+#[cfg(all(test, feature = "gateway"))]
+pub(crate) fn tailcat_test_projection(
+    state: &AppState,
+) -> Result<std::collections::HashMap<String, axum::Router>> {
+    build_protected_mcp_routers(state, &state.config.mcp, PeerNotifier::default())?
+        .ok_or_else(|| anyhow::anyhow!("test projection missing"))
 }
 
 /// Build the allowed hosts list for DNS rebinding protection.

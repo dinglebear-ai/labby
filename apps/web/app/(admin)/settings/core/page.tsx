@@ -52,7 +52,7 @@ export default function CorePage(): React.ReactElement {
       {settings ? (
         <SettingsScalarSection
           title="Core"
-          description="Env-backed process defaults and low-risk operator paths."
+          description="Choose where the gateway listens and stores workspace files, how it writes logs, and how CLI results appear. Each field says when a restart is required."
           section="core"
           state={settings}
           fields={fields}

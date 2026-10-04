@@ -305,6 +305,19 @@ impl LiveLabbyBuilder {
                 std::fs::set_permissions(&labby_home, std::fs::Permissions::from_mode(0o700))
                     .map_err(|error| error.to_string())?;
             }
+            #[cfg(windows)]
+            {
+                // Provider reads verify the home DACL even when .env is absent.
+                // Match the private installation directory used by real setup.
+                let handle = labby_winjob::fs::open_directory(&labby_home)
+                    .map_err(|error| error.to_string())?;
+                labby_winjob::fs::harden_private_directory_dacl(&labby_home, &handle)
+                    .map_err(|error| error.to_string())?;
+                labby_winjob::fs::set_created_owner(&labby_home, &handle, true)
+                    .map_err(|error| error.to_string())?;
+                labby_winjob::fs::verify_private_directory_dacl(&handle)
+                    .map_err(|error| error.to_string())?;
+            }
             if let Some(config) = &self.config {
                 std::fs::write(labby_home.join("config.toml"), config)
                     .map_err(|error| error.to_string())?;

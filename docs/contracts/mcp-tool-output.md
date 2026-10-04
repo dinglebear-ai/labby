@@ -14,7 +14,7 @@ Normative contract for `outputSchema` and `structuredContent` on Labby MCP surfa
 the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 
 - **Contract version:** 1
-- **MCP revisions:** 2025-06-18 → 2026-07-28 (three revisions; rmcp 3.1.0 additionally
+- **MCP revisions:** 2025-06-18 → 2026-07-28 (three revisions; the pinned rmcp additionally
   negotiates 2024-11-05 and 2025-03-26)
 
 ---
@@ -24,14 +24,16 @@ the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 | Class | Examples | Result shape owner | `outputSchema` |
 |---|---|---|---|
 | **Builtin service** | `gateway`, `doctor`, `setup`, `server_logs`, `snippets`, `fs`, `lab_admin` | Labby (`format_dispatch_result`) | Dispatch envelope (C2) |
-| **Code Mode** | `codemode`, `codemode_ui` | Labby (`code_mode_execute_trace`) | Trace schema (C4) |
+| **Code Mode** | `codemode`, `codemode_read`, `codemode_ui` | Labby (`code_mode_execute_trace`) | Trace schema (C4) |
 | **Synthetic / app** | `mcp_app`, `add_server`, `gateway_status`, `settings` | Labby, per-tool | Per audit — accurate schema or none |
 | **Upstream (proxied)** | any `<upstream>::<tool>` | The upstream server | Relayed (C5) |
 
 > **Visibility caveat.** Under `hide_raw_tools` (whenever Code Mode is enabled), every builtin
-> service tool except `server_logs` is suppressed from `tools/list`
-> (`handlers_tools.rs:135-137`, `peer_contract.rs:201-203`). The builtin contract below
-> therefore applies **only in Raw mode** for all classes but `server_logs`. See SPEC §2.1.
+> service tool except `server_logs` and `gateway` is suppressed from the wire
+> `tools/list` by `handlers_tools.rs`. Eligible in-process action projections
+> have separate caller filtering. `peer_contract.rs` currently omits `gateway`
+> from its Code Mode hash projection; that runtime parity defect is not a
+> different intended wire contract.
 
 ---
 
@@ -54,21 +56,25 @@ A builtin service tool call that succeeds MUST return a `CallToolResult` with:
 
 **Invariants**
 
-- `ok` MUST be `true`; `service` MUST equal the answering tool name; `action` MUST be the
+- `ok` MUST be `true`; `service` MUST equal the registered service name (the
+  answering tool name for routers, not the atomic projection name); `action` MUST be the
   resolved action, including built-ins (`help`, `schema`).
 - The text block and `structuredContent` MUST be serializations of **one** value, built once
   and serialized twice. Never parse text back into structure.
 - `structuredContent` MUST be **present** on every success path of a tool that declares
   `outputSchema` — not merely well-shaped. See C3.3.
 
-`data` is unconstrained. Consumers MUST NOT infer a `data` shape from the tool schema.
+Router `data` is unconstrained. Eligible atomic projections instead pin `service`
+and `action` and put the action's `output_schema` under `data`; consumers can
+use that advertised schema without inferring one from the router.
 
-> **Limitation (was previously stated as a mitigation).** There is currently **no** mechanism
-> by which a consumer can learn a specific action's result shape. The `schema` built-in action
+> **Router limitation.** The `schema` built-in action
 > returns `ActionSpec.returns`, a `&'static str` documented as *"not a runtime contract —
 > purely informational"* (`crates/labby-primitives/src/action.rs:42-44`), with values such as
-> `"DoctorReport"` that resolve to no definition. Earlier drafts of this contract directed
-> consumers there with a SHOULD; that guidance was unsatisfiable and has been withdrawn.
+> `"DoctorReport"` that need not resolve to a definition. Some actions now have an
+> `ActionSpec.output_schema` builder, used by eligible atomic projections. Do not
+> infer a machine-readable result schema from `returns`, or assume every action
+> supplies an output-schema builder.
 
 ### C2.2 Error
 
@@ -139,7 +145,7 @@ Once advertised:
   which already broke Claude Code's own Bash tool in production
   ([anthropics/claude-code#14465](https://github.com/anthropics/claude-code/issues/14465));
 - error results are exempt per C3.2 but MUST still carry `isError: true` and their envelope;
-- Labby does not validate its own output at runtime; neither does rmcp 3.1.0 (verified).
+- Labby does not validate its own output at runtime.
   Conformance is enforced by tests. **MCP Inspector is a weaker validator than production
   clients** ([inspector#1005](https://github.com/modelcontextprotocol/inspector/issues/1005)) —
   passing it is not evidence of conformance.
@@ -160,7 +166,7 @@ requiring a version bump plus updates to `docs/surfaces/MCP.md` and generated do
 change.
 
 **`additionalProperties` is `true`.** Decided (SPEC §5.2), not left open. Closing the envelope
-would make any future `build_success` field invalidate all seven builtins' advertised schemas
+would make any future `build_success` field invalidate builtin router schemas
 simultaneously and client-side, *and* move `descriptor_contract_hash` in the same stroke — and
 this envelope family demonstrably grows (the error envelope already gained a versioned recovery
 contract). The detectability that `false` would buy is obtained internally instead, by the
@@ -171,9 +177,10 @@ contract). The detectability that `false` would buy is obtained internally inste
 
 ## C4. Code Mode trace
 
-`codemode` and `codemode_ui` advertise `code_mode_trace_output_schema`
-(`handlers_tools.rs:686-765`) and MUST advertise the **same** schema — one execution backend,
-differing only in MCP App metadata.
+`codemode`, `codemode_read`, and `codemode_ui` advertise `code_mode_trace_output_schema`
+and MUST advertise the **same** schema. They share an execution backend;
+`codemode_read` narrows authority to live read-only tools, while `codemode_ui`
+adds MCP App metadata.
 
 - Success results MUST satisfy it, including `logs_count`
   (`crates/labby-codemode/src/trace.rs`).
@@ -270,8 +277,21 @@ than the raw result.
 
 ## C7. Truncation and shaping
 
-Truncation applies **only** at the outer execution boundary. In-sandbox intermediate `callTool`
-results are never truncated.
+Truncation applies at the outer execution boundary. Intermediate `callTool`
+results are not silently truncated: `runner_drive.rs` rejects a serialized value
+above the per-call ceiling with `result_too_large` before delivering it to the
+sandbox. The default is 8 MiB, resolved from
+`LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB`, then the host configuration fallback.
+An upstream call may already have performed side effects before that rejection.
+Request upstream pagination or smaller fields; JavaScript cannot slice bytes it
+never received.
+
+The checked-in `code-mode-retained-*.schema.json` files describe a retained-result
+contract that is not wired into the current runner or gateway host. Current
+truncation markers contain no `result_handle`, and `codemode.fetch` /
+`codemode.slice` are not implemented retrieval helpers. Do not treat those schema
+files as proof that omitted bytes were retained or that caller/route isolation
+for such handles has been implemented.
 
 **Two distinct markers exist:**
 
@@ -298,7 +318,7 @@ results are never truncated.
 5. MUST NOT let descriptor builders — or the gating booleans that feed them — disagree.
 6. MUST NOT admit unsanitized upstream schema text into an LLM-facing surface (C5.1).
 7. MUST NOT construct a Labby-owned descriptor outside the shared registry builder.
-   **Enforced, not aspirational:** all five Labby-owned descriptors are built in
+   **Enforced, not aspirational:** Labby-owned descriptors are built in
    `crates/labby/src/mcp/permanent_tools.rs`, and `/clippy.toml` bans `Tool::new` elsewhere
    via `disallowed_methods = "deny"` — reintroducing a second construction site is a compile
    error, not a review catch.

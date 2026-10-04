@@ -1,6 +1,6 @@
 import { getSessionAuthority, getSessionCsrfToken } from '@/lib/auth/session-store'
 import { resolveStashOwner, stashOwnerUnsupportedMessage } from './owner'
-import type { GrantPage, StashFile, StashGrant, StashPage, StashStats } from './types'
+import type { GrantPage, StashFile, StashGrant, StashPage, StashStats, StashFolderPage } from './types'
 
 export class StashError extends Error {
   constructor(message: string, public readonly status: number, public readonly kind?: string) {
@@ -44,12 +44,30 @@ function request(path: string, init: RequestInit = {}) {
   return fetch(`/v1/stash${path}`, { credentials: 'include', cache: 'no-store', ...init, headers })
 }
 
-export async function listFiles(cursor?: string, signal?: AbortSignal, search?: string): Promise<StashPage> {
+export async function listFiles(cursor?: string, signal?: AbortSignal, search?: string, folder?: string): Promise<StashPage> {
   const query = new URLSearchParams()
   if (cursor) query.set('cursor', cursor)
   if (search) query.set('query', search)
+  if (folder !== undefined) query.set('folder', folder)
   const suffix = query.size > 0 ? `?${query}` : ''
   return parse(await request(suffix, { signal }))
+}
+
+export async function listFolders(cursor?: string, signal?: AbortSignal): Promise<StashFolderPage> {
+  const query = new URLSearchParams()
+  if (cursor !== undefined) query.set('cursor', cursor)
+  const page = await parse<StashFolderPage>(await request(`/folders?${query}`, { signal }))
+  if (!Array.isArray(page.folders)) throw new StashError('The folder catalog response was invalid.', 502, 'invalid_response')
+  return page
+}
+
+export async function moveFile(fileId: string, folder: string): Promise<StashFile> {
+  const resolution = resolveStashOwner(getSessionAuthority())
+  if (!resolution.ok) throw new StashError(stashOwnerUnsupportedMessage(resolution.reason), 0, STASH_WORKSPACE_UNSUPPORTED)
+  const owner = resolution.owner
+  return parse(await request('', { method: 'POST', headers: csrfHeaders(true), body: JSON.stringify({
+    action: 'stash.move', params: { file_id: fileId, folder, owner_kind: owner?.kind || 'personal', ...(owner ? { owner_id: owner.id } : {}) },
+  }) }))
 }
 
 export async function getStats(signal?: AbortSignal): Promise<StashStats> {
@@ -61,9 +79,10 @@ export async function searchRecipients(query: string, signal?: AbortSignal): Pro
   return response.recipients
 }
 
-export async function uploadFile(file: File, signal?: AbortSignal): Promise<{ file_id: string; uri: string }> {
+export async function uploadFile(file: File, signal?: AbortSignal, folder?: string): Promise<{ file_id: string; uri: string }> {
   const headers = csrfHeaders()
   headers.set('x-labby-stash-filename', encodeURIComponent(file.name))
+  if (folder !== undefined) headers.set('x-labby-stash-folder', encodeURIComponent(folder))
   return parse(await request('/uploads', {
     method: 'POST', headers, body: file, signal,
   }))

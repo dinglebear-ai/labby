@@ -48,6 +48,9 @@ const SHARED_NON_SERVICES: &[&str] = &[
     // `depot` backs provider discovery projected through the `artifacts`
     // service; it is not itself a registered product service.
     "depot",
+    // Durable notice authorization and delivery are shared API/MCP runtime
+    // operations; this subsystem declares no action-dispatched service catalog.
+    "codemode_notices",
     "node",
     "security",
     // `upstream` is now a temporary compatibility shim (`crate::dispatch::upstream`
@@ -77,6 +80,8 @@ const SHARED_NON_SERVICES: &[&str] = &[
     "agent_payloads",
     "agent_llm",
     "phoenix_openai",
+    // Tailcat owns transport pairing/session lifecycle, not an action service.
+    "tailcat",
     "helpers",
     "redact",
     "path_safety",
@@ -93,6 +98,8 @@ const KNOWN_SERVICES: &[&str] = &[
     "browser",
     "dev_containers",
     "doctor",
+    // Caller-bound `stash` actions are owned by the File Stash dispatcher.
+    "file_stash",
     "fs",
     "gateway",
     "lab_admin",

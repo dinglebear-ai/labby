@@ -38,6 +38,9 @@ use rmcp::service::RunningService;
 use serde_json::Value;
 use url::{Host, Url};
 
+#[cfg(feature = "gateway")]
+mod fixture_schemas;
+
 use crate::config::LabConfig;
 use crate::dispatch::error::ToolError;
 
@@ -300,6 +303,30 @@ pub async fn detect(
             })?;
     }
     detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await
+}
+
+/// Connect using a credential already read from a protected, authority-bound
+/// saved CLI connection. Never inspect ambient targets or permit local fallback.
+pub(crate) async fn detect_bound_bearer_target(
+    server: &str,
+    token: String,
+) -> Result<LiveGateway, ToolError> {
+    let base_url = normalize_explicit_target(server)?;
+    detect_targets(
+        TargetSet::Explicit {
+            base_url,
+            source: ExplicitSource::Context,
+        },
+        Some(token),
+        DISCOVERY_TIMEOUT,
+        "cli",
+    )
+    .await?
+    .ok_or_else(|| {
+        ToolError::internal_message(
+            "The selected saved gateway is unavailable; local fallback was suppressed",
+        )
+    })
 }
 
 fn token_for_target_from(
@@ -1001,11 +1028,35 @@ impl LiveGateway {
     /// A Team selected with [`Self::with_team_id`] is sent as the
     /// `x-labby-team-id` header regardless of the action.
     pub async fn dispatch_action(&self, action: &str, params: Value) -> Result<Value, ToolError> {
+        self.dispatch_surface_action("v1/gateway", action, params)
+            .await
+    }
+
+    pub(crate) async fn dispatch_client_session(
+        &self,
+        action: &str,
+        params: Value,
+    ) -> Result<Value, ToolError> {
+        if !matches!(action, "clients.session.start" | "clients.session.revoke") {
+            return Err(ToolError::internal_message(
+                "Invalid client session operation",
+            ));
+        }
+        self.dispatch_surface_action("v1/setup", action, params)
+            .await
+    }
+
+    async fn dispatch_surface_action(
+        &self,
+        endpoint: &str,
+        action: &str,
+        params: Value,
+    ) -> Result<Value, ToolError> {
         let mut request = self
             .client
             .post(
                 self.base_url
-                    .join("v1/gateway")
+                    .join(endpoint)
                     .expect("validated base URL joins"),
             )
             .json(&serde_json::json!({ "action": action, "params": params }));
@@ -1105,6 +1156,35 @@ impl LiveGateway {
         codemode_result_value(call_result?)
     }
 
+    /// Forward a byte-stream client to this authenticated gateway without
+    /// constructing a second gateway or owning local OAuth state.
+    pub(crate) async fn serve_client_bridge<R, W>(
+        &self,
+        read: R,
+        write: W,
+        evidence: Option<&str>,
+    ) -> anyhow::Result<()>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send + 'static,
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
+        use anyhow::Context as _;
+        use rmcp::ServiceExt as _;
+        let service = tokio::time::timeout(
+            Duration::from_secs(20),
+            self.connect_service_with_evidence(
+                crate::mcp::bridge::BridgeClientHandler::new(),
+                evidence,
+            ),
+        )
+        .await
+        .context("Client bridge initialization timed out")??;
+        let handler = crate::mcp::bridge::BridgeServerHandler::new(service);
+        let running = handler.serve((read, write)).await?;
+        running.waiting().await?;
+        Ok(())
+    }
+
     /// Open a long-lived MCP streamable-HTTP connection to the daemon's
     /// `/mcp` endpoint and return the running client service. Callers own the
     /// resulting `Peer<RoleClient>` for as long as they need it (e.g. the
@@ -1120,6 +1200,14 @@ impl LiveGateway {
         &self,
         handler: H,
     ) -> anyhow::Result<RunningService<RoleClient, H>> {
+        self.connect_service_with_evidence(handler, None).await
+    }
+
+    pub(crate) async fn connect_service_with_evidence<H: rmcp::ClientHandler>(
+        &self,
+        handler: H,
+        evidence: Option<&str>,
+    ) -> anyhow::Result<RunningService<RoleClient, H>> {
         use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
         use rmcp::transport::streamable_http_client::{
             StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
@@ -1132,6 +1220,16 @@ impl LiveGateway {
                 .to_string(),
         );
         transport_config.auth_header = self.token.clone();
+        if let Some(evidence) = evidence {
+            let mut value = reqwest::header::HeaderValue::from_str(evidence)?;
+            value.set_sensitive(true);
+            transport_config.custom_headers.insert(
+                reqwest::header::HeaderName::from_static(
+                    crate::dispatch::setup::client_evidence::HEADER,
+                ),
+                value,
+            );
+        }
         let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
         Ok(handler
             .serve_with_lifecycle(

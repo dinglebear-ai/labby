@@ -487,6 +487,26 @@ fn connected_client_from_discovery(
         client_version: client_info.as_ref().map(|info| info.version.clone()),
         transport: transport_label.to_string(),
         connected_at,
+        last_seen_at: None,
+        observation_count: 1,
+    }
+}
+
+#[cfg(feature = "gateway")]
+impl LabMcpServer {
+    async fn observe_client(&self, context: &RequestContext<RoleServer>) {
+        let actor_key = actor_key_from_extensions(&context.extensions);
+        let scope_key = actor_key.map(|key| format!("actor:{key}")).or_else(|| {
+            (self.transport_label != "http")
+                .then(|| format!("connection:{}", self.relay_session_id))
+        });
+        let client = connected_client_from_discovery(
+            context.client_info(),
+            &context.extensions,
+            self.transport_label,
+            jiff::Timestamp::now().to_string(),
+        );
+        self.client_registry.observe(client, scope_key).await;
     }
 }
 
@@ -536,6 +556,8 @@ impl ServerHandler for LabMcpServer {
             "adapting legacy MCP initialize lifecycle to the stateless server"
         );
         context.peer.set_peer_info(request.clone());
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         let mut info = self.get_info();
         // RMCP adapts subsequent request validation and wire behavior from the
         // negotiated peer version. Echo the requested version because every
@@ -594,6 +616,17 @@ impl ServerHandler for LabMcpServer {
                 "Labby exposes caller-visible Agent Skills through the MCP Skills extension (io.modelcontextprotocol/skills). Call `skills/list` to discover skills, `skills/get` with a `skill://` URI to inspect a skill, and `resources/read` with a manifest resource URI to read its content. Start with `skill://labby/using-labby/SKILL.md` for Labby usage guidance. If your MCP client cannot call Skills extension methods but can use Labby's `codemode` tool, use `codemode.listSkills()`, `codemode.getSkill(uri)`, and `codemode.readSkill(uri)` instead. The extension contract is at `lab://contracts/skills-extension`."
                     .to_string(),
             );
+        }
+        #[cfg(feature = "gateway")]
+        if let Some(manager) = &self.gateway_manager {
+            let instructions = info.instructions.get_or_insert_with(String::new);
+            instructions.push_str("\n\nCode Mode is a gateway to connected tools, skills, resources, prompts, subagents, and reusable snippets. Search by intent before assuming a capability is unavailable. Load using-codemode and using-snippets when relevant. Use returned IDs, helpers, and schemas; never guess parameters. Discovery, description, and execution can share one run when the script can construct valid arguments from discovered metadata.\n\nBatch independent calls with codemode.batch(), with bounded concurrency; await dependencies in order. Use codemode_read for inspection and codemode for authorized changes. Process large intermediate data inside the sandbox and return only useful summaries, coverage, pagination, and errors. JavaScript state does not persist between executions.\n\nDiscover upstream resources with codemode.listResources(upstream), then codemode.readResource(uri), preserving returned URIs. Parse, filter, and aggregate resources inside the sandbox. Unscoped admin/trusted-local callers can discover Labby operator resources with codemode.listResources('labby'): gateway servers, status, limits, and capability overview.\n\nPersist large string outputs with writeArtifact(relativePath, content, {contentType}). Keep its receipt. Eligible unscoped admin/trusted-local writes return artifact_id; use codemode.readArtifact(id), codemode.artifactInfo(id), and codemode.listArtifacts({limit, cursor}) in later runs. Artifacts belong to their creating caller and are subject to retention; legacy/restricted writes are not enrolled for retrieval. writeArtifact is unavailable on codemode_read.\n\nAvailability does not grant permission. Follow the user's scope. Inspect recovery guidance and side_effects before retrying; a timeout does not undo writes. Verify uncertain outcomes before repeating mutations. Keep secrets out of logs, outputs, and artifacts.");
+            if let Some(config) = manager.code_mode_config_snapshot() {
+                let storage = labby_codemode::effective_storage_limits();
+                instructions.push_str(&format!("\n\nCurrent Code Mode limits: {} milliseconds per run, {} upstream calls, {} response bytes and approximately {} response tokens for the complete envelope. Limits are ceilings, not targets. Individual tool results, snippets, and artifacts have separate budgets. Unscoped admin/trusted-local callers can read lab://gateway/limits for current effective settings.", config.timeout_ms, storage["max_calls_per_run"], config.max_response_bytes, config.max_response_tokens));
+            } else {
+                instructions.push_str("\n\nCurrent limits are available to unscoped admin/trusted-local callers at lab://gateway/limits; the configuration is being updated, so no numeric snapshot is advertised.");
+            }
         }
         info
     }
@@ -662,16 +695,7 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
         #[cfg(feature = "gateway")]
-        {
-            let client_info = context.client_info();
-            let connected_client = connected_client_from_discovery(
-                client_info,
-                &context.extensions,
-                self.transport_label,
-                jiff::Timestamp::now().to_string(),
-            );
-            self.client_registry.push(connected_client).await;
-        }
+        self.observe_client(&context).await;
 
         Ok(DiscoverResult::from_server_info(
             self.supported_protocol_versions().into_owned(),
@@ -797,6 +821,8 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CompleteResult, ErrorData>> + Send {
         Box::pin(async move {
+            #[cfg(feature = "gateway")]
+            self.observe_client(&context).await;
             restore_request_meta(&mut request.meta, &context.meta);
             Ok(provenance::stamp_complete_result(
                 self.complete_impl(request, context).await?,
@@ -809,6 +835,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListPromptsResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_prompts_result(
             self.list_prompts_impl(request, context).await?,
         ))
@@ -822,6 +850,8 @@ impl ServerHandler for LabMcpServer {
         // Bound the SDK's shared request-dispatch frame, including discovery
         // requests which never execute this branch.
         Box::pin(async move {
+            #[cfg(feature = "gateway")]
+            self.observe_client(&context).await;
             restore_request_meta(&mut request.meta, &context.meta);
             Ok(provenance::stamp_get_prompt_response(
                 labby_runtime::usage_actor::scope_attributed(
@@ -838,6 +868,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_resources_result(
             self.list_resources_impl(request, context).await?,
         ))
@@ -848,6 +880,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_resource_templates_result(
             self.list_resource_templates_impl(request, context).await?,
         ))
@@ -859,6 +893,8 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ReadResourceResponse, ErrorData>> + Send {
         Box::pin(async move {
+            #[cfg(feature = "gateway")]
+            self.observe_client(&context).await;
             restore_request_meta(&mut request.meta, &context.meta);
             let response = match labby_runtime::usage_actor::scope_attributed(
                 self.request_usage_attribution(&context),
@@ -881,6 +917,8 @@ impl ServerHandler for LabMcpServer {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         Ok(provenance::stamp_list_tools_result(
             self.list_tools_impl(request, context).await?,
         ))
@@ -903,6 +941,8 @@ impl ServerHandler for LabMcpServer {
         {
             context.extensions.insert(identity);
         }
+        #[cfg(feature = "gateway")]
+        self.observe_client(&context).await;
         let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         context
             .extensions
@@ -915,13 +955,20 @@ impl ServerHandler for LabMcpServer {
         // stack. In a multi-hop relay, nested Labby servers otherwise poll the
         // all-features dispatch state on Tokio's bounded worker stack and can
         // overflow it as new in-process services enlarge that state machine.
-        Ok(provenance::stamp_call_tool_response(
-            labby_runtime::usage_actor::scope_attributed(
-                self.request_usage_attribution(&context),
-                self.boxed_call_tool_response_impl(request, context),
-            )
-            .await?,
-        ))
+        let client_binding =
+            crate::dispatch::setup::client_evidence::binding_from_extensions(&context.extensions);
+        let result = labby_runtime::usage_actor::scope_attributed(
+            self.request_usage_attribution(&context),
+            self.boxed_call_tool_response_impl(request, context),
+        )
+        .await?;
+        crate::dispatch::setup::client_evidence::record_completed_tool(
+            &self.access_runtime,
+            client_binding,
+            &result,
+        )
+        .await;
+        Ok(provenance::stamp_call_tool_response(result))
     }
 
     async fn get_task(
@@ -1124,6 +1171,47 @@ mod tests {
             assert_eq!(running.service().request_subject(&context), None);
         }
         running.cancel().await.unwrap();
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn legacy_initialize_and_later_metadata_update_one_observed_client() {
+        let server = stateless_test_server(Default::default());
+        let registry = server.client_registry.clone();
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        running
+            .service()
+            .initialize(
+                rmcp::model::InitializeRequestParams::new(
+                    rmcp::model::ClientCapabilities::default(),
+                    rmcp::model::Implementation::new("legacy-client", "1.0"),
+                ),
+                context,
+            )
+            .await
+            .expect("legacy initialize");
+        let first = registry.list().await;
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].client_name.as_deref(), Some("legacy-client"));
+
+        let mut context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(2), running.peer().clone());
+        context.meta = rmcp::model::RequestMetaObject::with_client_context(
+            ProtocolVersion::V_2026_07_28,
+            rmcp::model::Implementation::new("request-client", "2.0"),
+            rmcp::model::ClientCapabilities::default(),
+        );
+        drop(running.service().list_tools(None, context).await);
+        let observed = registry.list().await;
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[1].client_name.as_deref(), Some("request-client"));
+        assert_eq!(observed[1].observation_count, 1);
+        assert!(observed[1].last_seen_at.is_some());
     }
 
     #[test]
@@ -1435,6 +1523,29 @@ mod tests {
         assert!(instructions.contains("resources/read"));
         assert!(instructions.contains("codemode.listSkills()"));
         assert!(instructions.contains("skill://labby/using-labby/SKILL.md"));
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn server_instructions_include_runtime_limits_and_artifact_helpers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
+            temp.path().join("config.toml"),
+            Default::default(),
+        );
+        let mut config = crate::config::LabConfig::default();
+        config.code_mode.timeout_ms = 180_000;
+        config.code_mode.max_response_bytes = 65536;
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let mut server = stateless_test_server(Default::default());
+        server.gateway_manager = Some(std::sync::Arc::new(manager));
+        let instructions = server.get_info().instructions.expect("instructions");
+        assert!(instructions.contains("180000 milliseconds"));
+        assert!(instructions.contains("65536 response bytes"));
+        assert!(instructions.contains("codemode.readArtifact(id)"));
+        assert!(instructions.contains("codemode.listResources('labby')"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import type {
+  CapabilityObservation,
   CreateGatewayInput,
   ExposurePolicy,
   ExposurePolicyPreview,
@@ -36,9 +37,12 @@ export interface BackendServerWarningView {
 export interface BackendServerConfigSummaryView {
   transport?: string | null
   target?: string | null
+  command?: string | null
+  args?: string[]
 }
 
 export interface BackendServerView {
+  capability_observation?: CapabilityObservation
   notification_incidents?: Record<string, string>
   id: string
   name: string
@@ -88,6 +92,7 @@ export interface BackendGatewayConfigView {
 }
 
 export interface BackendGatewayRuntimeView {
+  capability_observation?: CapabilityObservation
   name: string
   /** The backend's connection verdict; capability counts are not one. */
   connected?: boolean
@@ -107,6 +112,7 @@ export interface BackendGatewayRuntimeView {
 }
 
 export interface BackendGatewayMcpRuntimeView {
+  capability_observation?: CapabilityObservation
   notification_incidents?: Record<string, string>
   name: string
   enabled?: boolean
@@ -475,6 +481,7 @@ export function normalizeServerView(
     config: {
       ...((transport === 'http' && target) ? { url: target } : {}),
       ...((transport === 'stdio' && target) ? { command: target } : {}),
+      ...(transport === 'stdio' && view.config_summary?.args ? { args: view.config_summary.args } : {}),
       proxy_resources: config.proxy_resources,
       proxy_prompts: config.proxy_prompts,
       proxy_mcp_ui: config.proxy_mcp_ui,
@@ -485,6 +492,7 @@ export function normalizeServerView(
       connected: view.connected ?? false,
       catalog_warming: catalogWarming,
       ...(lastError ? { last_error: lastError } : {}),
+      capability_observation: runtime?.capability_observation ?? view.capability_observation,
       discovered_tool_count: view.discovered_tool_count ?? tools.length,
       exposed_tool_count: view.exposed_tool_count ?? tools.length,
       discovered_resource_count: view.discovered_resource_count ?? 0,
@@ -591,6 +599,7 @@ export function normalizeGateway(
       healthy: (config.enabled ?? true) && probe.healthy,
       connected: (config.enabled ?? true) && probe.connected,
       ...(humanizedError ? { last_error: humanizedError } : {}),
+      capability_observation: view.runtime.capability_observation,
       discovered_tool_count: view.runtime.tool_count,
       exposed_tool_count: view.runtime.exposed_tool_count ?? tools.filter((tool) => tool.exposed).length,
       discovered_resource_count: view.runtime.resource_count,
@@ -669,7 +678,7 @@ export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): Gate
     ? rawLastError
     : undefined
 
-  if (connectedCount > 0) {
+  if (runtime.connected ?? (connectedCount > 0)) {
     return {
       connected: true,
       healthy: !lastError,
@@ -680,7 +689,9 @@ export function probeStatusFromRuntime(runtime: BackendGatewayRuntimeView): Gate
   return {
     connected: false,
     healthy: false,
-    last_error: lastError ?? 'No capabilities (tools, resources, prompts, or skills) were discovered from this gateway.',
+    last_error: lastError ?? (runtime.connected === false
+      ? 'This gateway is disconnected.'
+      : 'No capabilities (tools, resources, prompts, or skills) were discovered from this gateway.'),
   }
 }
 
@@ -726,7 +737,7 @@ export function buildGatewayCreatePayload(input: CreateGatewayInput) {
     },
   })
 
-  const payload: Record<string, unknown> = { spec }
+  const payload: Record<string, unknown> = { spec, ...(input.protected_route ? { protected_route: input.protected_route } : {}) }
   const bearerTokenValue = input.config.bearer_token_value?.trim()
   if (bearerTokenValue) {
     payload.bearer_token_value = bearerTokenValue
@@ -747,14 +758,14 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
   }
 
   if (input.transport === 'http') {
-    patch.url = config.url ?? null
+    if (config.url !== undefined) patch.url = config.url
     patch.command = null
     patch.args = []
     if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}
   } else if (input.transport === 'stdio') {
     patch.url = null
-    patch.command = config.command ?? null
-    patch.args = normalizeArgs(config.args)
+    if (config.command !== undefined) patch.command = config.command
+    if (config.args !== undefined) patch.args = normalizeArgs(config.args)
     if (config.env !== undefined) patch.env = normalizeEnv(config.env) ?? {}
   } else {
     if (config.url !== undefined) patch.url = config.url
@@ -808,7 +819,7 @@ export function buildGatewayPatch(input: UpdateGatewayInput & { name?: string; t
   }
 
   if (config.oauth !== undefined) {
-    patch.oauth = {
+    patch.oauth = config.oauth === null ? null : {
       mode: 'authorization_code_pkce',
       registration: { strategy: config.oauth.registration_strategy },
       scopes: config.oauth.scopes ?? null,
@@ -838,6 +849,7 @@ export function buildGatewayUpdatePayload(
   const payload: Record<string, unknown> = {
     name: id,
     patch,
+    ...(input.protected_route ? { protected_route: input.protected_route } : {}),
   }
   const bearerTokenValue = input.config?.bearer_token_value?.trim()
   if (bearerTokenValue) {

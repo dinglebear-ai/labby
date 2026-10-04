@@ -5,6 +5,7 @@ created: "2026-07-30"
 updated: "2026-09-16"
 description: Axon fan-out research workflows for briefs and smoke tests
 tags: [axon, research, docs]
+tools: ["Axon::axon"]
 inputs:
   topic:
     type: string
@@ -637,16 +638,18 @@ async (overrides = {}) => {
 An MCP prompt should not duplicate the workflow. It should expose this snippet by name:
 
 ```text
-Run snippet `axon_research_brief` with:
+Run snippet `axon-fanout` with:
 - topic: {{topic}}
 - focus: {{focus}}
-- seedUrl: {{url}}
+- seed_url: {{url}}
 
 Read the artifact named in the snippet output's `artifact` receipt (its `absolute_path`) as the primary answer. Use structured fields only for follow-up or verification.
 Do not add `extract` or `stats`.
 ```
 
 ## `axon_fanout_url`
+
+This is a workflow sketch, not a separately registered snippet.
 
 Purpose: gather broad intel about a single URL.
 
@@ -665,6 +668,8 @@ Avoid in the fast path:
 - `stats`
 
 ## `axon_health_snapshot`
+
+This is a workflow sketch, not a separately registered snippet.
 
 Purpose: quickly understand whether Axon is available and what it already knows.
 

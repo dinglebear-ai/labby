@@ -39,9 +39,9 @@ export async function startReauth(
   return await response.json() as ReauthStarted
 }
 
-export async function pollReauth(interaction: string, fetcher: typeof fetch = fetch): Promise<ReauthPoll> {
+export async function pollReauth(interaction: string, fetcher: typeof fetch = fetch, signal?: AbortSignal): Promise<ReauthPoll> {
   const response = await fetcher(`/auth/reauth/${encodeURIComponent(interaction)}`, {
-    cache: 'no-store', credentials: 'include',
+    cache: 'no-store', credentials: 'include', signal,
   })
   if (!response.ok) throw new Error(await errorMessage(response))
   return await response.json() as ReauthPoll
@@ -67,13 +67,25 @@ export async function waitForReauthProof(
     epoch?: () => number
     delay?: () => Promise<void>
     attempts?: number
+    signal?: AbortSignal
   } = {},
 ) {
   const epoch = dependencies.epoch ?? getBrowserSessionEpoch
-  const delay = dependencies.delay ?? (() => new Promise<void>(resolve => setTimeout(resolve, 750)))
-  for (let attempt = 0; attempt < (dependencies.attempts ?? 400); attempt += 1) {
+  const signal = dependencies.signal
+  const delay = dependencies.delay ?? (() => new Promise<void>((resolve, reject) => {
+    const cancelled = () => { clearTimeout(timer); signal?.removeEventListener('abort', cancelled); reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')) }
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', cancelled); resolve() }, 750)
+    signal?.addEventListener('abort', cancelled, { once: true })
+    if (signal?.aborted) cancelled()
+  }))
+  const assertCurrent = () => {
+    signal?.throwIfAborted()
     if (epoch() !== initialEpoch) throw new Error('Browser session changed during reauthentication')
-    const result = await pollReauth(interaction, dependencies.fetcher)
+  }
+  for (let attempt = 0; attempt < (dependencies.attempts ?? 400); attempt += 1) {
+    assertCurrent()
+    const result = await pollReauth(interaction, dependencies.fetcher, signal)
+    assertCurrent()
     if (result.status === 'Completed') return result.proof
     if (result.status === 'Expired') throw new Error('Reauthentication expired. Try again.')
     await delay()

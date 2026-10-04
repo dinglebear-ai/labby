@@ -52,7 +52,12 @@ Labby therefore uses two output trees:
 1. `target/doc/` contains the canonical workspace/default-target documentation.
 2. `target/rustdoc-extra/doc/` contains the `stdio-mcp-fixture` integration-test binary and Labby's Rust examples.
 
-The split is intentional. The `labby` package has both a library and a same-named binary; Cargo cannot publish both without an output collision at `labby/index.html` (Cargo issue #6313). The CLI launcher itself is six lines and delegates directly to `labby::run()`, so the canonical library Rustdoc is the product API documentation for that executable. CI compile-checks the launcher normally instead of publishing a duplicate page.
+The split is intentional. The `labby` package has both a library and a same-named
+binary; publishing both collides at `labby/index.html`. The launcher in
+`crates/labby/src/main.rs` creates an 8 MiB-stack thread and Tokio runtime,
+delegates to `labby::run()`, then bounds runtime shutdown. The library Rustdoc
+documents the product API; CI compile-checks the launcher instead of publishing
+a duplicate page.
 
 The secondary Rustdoc pass targets the non-colliding fixture and all examples. Cargo's `--examples` selector keeps example coverage current as examples are added.
 
