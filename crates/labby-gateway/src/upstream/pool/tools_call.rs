@@ -287,8 +287,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = self
-            .acquire_or_connect_subject(config, subject)
+        let peer = self
+            .acquire_subject_peer(config, subject)
             .await
             .map_err(|error| CapabilityCallError::Transport {
                 message: error.to_string(),
@@ -328,8 +328,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = self
-            .acquire_or_connect_subject(config, subject)
+        let peer = self
+            .acquire_subject_peer(config, subject)
             .await
             .map_err(|error| CapabilityCallError::Transport {
                 message: error.to_string(),
@@ -369,7 +369,7 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
+        let peer = match self.acquire_subject_peer(config, subject).await {
             Ok(pair) => pair,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -1112,7 +1112,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: conn,
                     peer: peer.clone(),
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now(),
                 },
             );

@@ -258,37 +258,7 @@ impl GatewayManager {
         let path = mutation_lock_path(&self.path);
         let (ready_tx, ready_rx) = oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        tokio::task::spawn_blocking(move || {
-            let mut ready_tx = Some(ready_tx);
-            let result = (|| {
-                if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|error| {
-                        ToolError::internal_message(format!(
-                            "failed to create gateway mutation lock directory {}: {error}",
-                            parent.display()
-                        ))
-                    })?;
-                }
-                let file = open_config_mutation_lock(&path)?;
-                let mut lock = RwLock::new(file);
-                let _guard = lock.write().map_err(|error| {
-                    ToolError::internal_message(format!(
-                        "failed to acquire gateway mutation lock {}: {error}",
-                        path.display()
-                    ))
-                })?;
-                if ready_tx
-                    .take()
-                    .is_some_and(|sender| sender.send(Ok(())).is_ok())
-                {
-                    let _ = release_rx.recv();
-                }
-                Ok::<(), ToolError>(())
-            })();
-            if let (Err(error), Some(sender)) = (result, ready_tx.take()) {
-                drop(sender.send(Err(error)));
-            }
-        });
+        tokio::task::spawn_blocking(move || hold_config_mutation_lock(path, ready_tx, release_rx));
         ready_rx.await.map_err(|_| {
             ToolError::internal_message("gateway mutation lock task ended before acquisition")
         })??;
@@ -646,6 +616,55 @@ mod config_revision_tests {
     }
 }
 
+// A blocking flock cannot be cancelled by dropping the async waiter. Poll the
+// nonblocking operation so timed-out requests release their worker and file.
+fn hold_config_mutation_lock(
+    path: std::path::PathBuf,
+    ready_tx: oneshot::Sender<Result<(), ToolError>>,
+    release_rx: std::sync::mpsc::Receiver<()>,
+) {
+    let mut ready_tx = Some(ready_tx);
+    let result = (|| {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                ToolError::internal_message(format!(
+                    "failed to create gateway mutation lock directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let file = open_config_mutation_lock(&path)?;
+        let mut lock = RwLock::new(file);
+        loop {
+            if ready_tx.as_ref().is_none_or(oneshot::Sender::is_closed) {
+                return Ok(());
+            }
+            match lock.try_write() {
+                Ok(_guard) => {
+                    if ready_tx
+                        .take()
+                        .is_some_and(|sender| sender.send(Ok(())).is_ok())
+                    {
+                        let _ = release_rx.recv();
+                    }
+                    return Ok(());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(error) => {
+                    return Err(ToolError::internal_message(format!(
+                        "failed to acquire gateway mutation lock {}: {error}",
+                        path.display()
+                    )));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if let (Err(error), Some(sender)) = (result, ready_tx.take()) {
+        drop(sender.send(Err(error)));
+    }
+}
+
 fn mutation_lock_path(path: &std::path::Path) -> std::path::PathBuf {
     let mut lock_path = path.to_path_buf();
     let name = path
@@ -714,6 +733,29 @@ mod windows_acl_tests {
 mod mutation_lock_tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    #[tokio::test]
+    async fn cancelled_file_lock_wait_exits_while_holder_remains_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml.mutation.lock");
+        let mut holder = RwLock::new(open_config_mutation_lock(&path).unwrap());
+        let _guard = holder.write().unwrap();
+        let (ready_tx, mut ready_rx) = oneshot::channel();
+        let (_release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            hold_config_mutation_lock(path, ready_tx, release_rx);
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut ready_rx)
+                .await
+                .is_err()
+        );
+        drop(ready_rx);
+        tokio::time::timeout(Duration::from_secs(1), worker)
+            .await
+            .expect("cancelled waiter must exit before the holder releases")
+            .unwrap();
+    }
 
     #[test]
     fn mutation_lock_is_restricted_before_use() {

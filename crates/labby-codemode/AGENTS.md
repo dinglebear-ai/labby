@@ -267,7 +267,7 @@ items.
 | Per-run cwd isolation | A direct-process runner has a long-lived host `TempDir`; a Microsandbox runner creates its own guest-local `TempDir`. In both cases the runner creates a FRESH per-execution jail subdir on every `Start` and removes the previous one (`runner.rs::reset_execution_jail`), so a pooled process never accumulates cwd state across runs. |
 | Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run jail root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
 | Artifact size cap | Enforced: 8 MiB default (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB`) |
-| Tool call budget | Not enforced. Code Mode is bounded by wall-clock timeout, sandbox memory/stack, output/log/artifact caps, and host-side tool policy. |
+| Tool call budget | Ordinary `callTool` calls are capped at 512 per run by default (configurable up to 2048); reserved internal calls have a separate ceiling. Explicit and automatic artifact writes share a hard 64 MiB / 256-file per-run payload budget and serialized store-byte admission. |
 
 **Writing tests that assert on env isolation:** `env_clear()` has landed, so a
 test asserting the runner child has a minimal/empty environment reflects real
@@ -282,14 +282,14 @@ env_clear lands" comment — that state is in the past.
 | File | Purpose |
 |------|---------|
 | `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution seq + cwd-jail reset, `PR_SET_DUMPABLE`. |
-| `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
+| `runner_drive.rs` + `runner_drive/` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
 | `pool/microsandbox.rs` | Opt-in microVM create, `exec --stream` attachment, bounded startup, and force-remove lifecycle guard. |
 | `runner_backend.rs` | Fail-closed selection and validation for the direct-process and opt-in Microsandbox runner transports. |
 | `pool/config.rs` | `PoolConfig`: env-driven pool size / recycle / overflow knobs and the kill switch. |
 | `runner_io.rs` | Framed stdio line protocol with the child process. |
-| `execute.rs` | `execute()` entry point: build context, inject preamble, call driver, return result. Also owns mcp-ui widget capture: `extract_ui_link` records an upstream result's `_meta.ui` (last-wins, into the per-run `CodeModeBroker::ui_capture` sink) before the envelope is unwrapped, and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
+| `execute.rs` + `execute/` | `execute()` entry point: build context, inject preamble, call driver, return result. Also owns mcp-ui widget capture: `extract_ui_link` records an upstream result's `_meta.ui` (last-wins, into the per-run `CodeModeBroker::ui_capture` sink) before the envelope is unwrapped, and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
 | `host.rs` | Host trait and adapters that let gateway or tests provide tool/snippet/artifact behavior without coupling this crate back to gateway. |
 | `broker.rs` | Broker implementation for tool calls, snippet resolution, artifact writes, and per-run UI capture. |
 | `preamble.rs` | Injects the `callTool` bridge stub and catalog proxy into the JS environment. |

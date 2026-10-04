@@ -85,7 +85,7 @@ import { GatewayCompactCatalog } from './gateway-compact-catalog'
 import { GatewayActivityPanels } from './gateway-activity-panels'
 import { gatewayDetailStatus } from './gateway-detail-status'
 import { gatewayDisplayName } from '@/lib/gateway-display-name'
-import { describeGatewayOperationalState } from '@/lib/gateway-operational-state'
+import { describeGatewayOperationalState, gatewayRecoverySummary } from '@/lib/gateway-operational-state'
 import {
   DETAIL_NO_DATA,
   DETAIL_PANEL_GRID_STYLE,
@@ -914,8 +914,8 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
     },
     { label: 'protocolVersion', value: gateway.status.protocol_version ?? DETAIL_NO_DATA },
     {
-      label: 'health / reason',
-      value: `${operationalStatus.label} · ${operationalStatus.reason}`,
+      label: 'Health',
+      value: <div className="space-y-2"><span>{operationalStatus.label} · {gatewayRecoverySummary(operationalStatus)}</span>{operationalStatus.needsAttention ? <><Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>Review connection settings</Button><details className="text-left"><summary className="cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">Technical diagnostics</summary><p className="mt-2 whitespace-pre-wrap break-words text-xs text-aurora-text-muted">{operationalStatus.reason}</p></details></> : null}</div>,
     },
     { label: 'origin', value: gateway.status.origin ?? 'server-managed' },
     {

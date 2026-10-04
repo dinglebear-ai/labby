@@ -46,3 +46,19 @@ describe('discovery window', () => {
     assert.equal(window.index.size, 3)
   })
 })
+
+
+it('every retained page can be revisited through previous and next controls', () => {
+  let window = createDiscoveryWindow()
+  for (let page = 0; page < 10; page += 1) window = appendDiscoveryPage(window, [artifact(page)])
+  let visible = visibleArtifacts(window)
+  const seen = new Set(visible.items.map(item => item.artifactId))
+  while (visible.leadingRows > 0) {
+    visible = visibleArtifacts(window, Math.max(1, visible.startPage - 2))
+    visible.items.forEach(item => seen.add(item.artifactId))
+  }
+  assert.equal(seen.size, 10)
+  while (visible.trailingRows > 0) visible = visibleArtifacts(window, visible.startPage + 4)
+  assert.equal(visible.trailingRows, 0)
+  assert.ok(visible.items.some(item => item.artifactId === 'artifact-9'))
+})

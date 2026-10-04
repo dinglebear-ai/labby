@@ -57,36 +57,14 @@ pub(crate) fn truncate_execution_response(
     // result (e.g. `{"ok":true}`) would *grow* it. In a logs-dominant response
     // the result therefore remains intact and the log trimming path below gets
     // the next opportunity to reclaim space.
-    if let Some(result) = response.result.as_ref() {
-        let original_len = serde_json::to_string(result).map(|s| s.len()).unwrap_or(0);
-        // Prefer the complete example, then trade preview bytes for guidance.
-        // Small valid envelopes may require concise prose instead of the example.
-        for (preview_bytes, compact) in [(1024, false), (512, false), (0, false), (0, true)] {
-            let marker = truncation_marker(
-                result,
-                token_estimate_divisor,
-                &response.artifacts,
-                preview_bytes,
-                compact,
-            );
-            let marker_len = serde_json::to_vec(&marker).map_or(usize::MAX, |s| s.len());
-            if marker_len >= original_len {
-                continue;
-            }
-            let mut candidate = response.clone();
-            candidate.result = Some(marker);
-            candidate.result_shaping = None;
-            let fits = response_within_budget(
-                &candidate,
-                max_response_bytes,
-                max_response_tokens,
-                token_estimate_divisor,
-            );
-            if fits || compact {
-                response = candidate;
-                break;
-            }
-        }
+    if let Some(marker) = result_marker(
+        &mut response,
+        max_response_bytes,
+        max_response_tokens,
+        token_estimate_divisor,
+    ) {
+        response.result = Some(marker);
+        response.result_shaping = None;
     }
 
     // A logs-dominant response can still exceed budget after capping the result. Trim `logs`
@@ -136,6 +114,87 @@ pub(crate) fn truncate_execution_response(
     }
 
     response
+}
+
+/// Probe automatic artifact preservation without cloning the result tree or
+/// optional trace payloads. Every temporarily removed field is restored.
+pub(crate) fn result_would_be_truncated(
+    response: &mut CodeModeExecutionResponse,
+    max_response_bytes: usize,
+    max_response_tokens: usize,
+    token_estimate_divisor: u32,
+) -> bool {
+    if response_within_budget(
+        response,
+        max_response_bytes,
+        max_response_tokens,
+        token_estimate_divisor,
+    ) {
+        return false;
+    }
+    let params: Vec<_> = response
+        .calls
+        .iter_mut()
+        .map(|call| call.params.take())
+        .collect();
+    let changed = !response_within_budget(
+        response,
+        max_response_bytes,
+        max_response_tokens,
+        token_estimate_divisor,
+    ) && result_marker(
+        response,
+        max_response_bytes,
+        max_response_tokens,
+        token_estimate_divisor,
+    )
+    .is_some();
+    for (call, params) in response.calls.iter_mut().zip(params) {
+        call.params = params;
+    }
+    changed
+}
+
+fn result_marker(
+    response: &mut CodeModeExecutionResponse,
+    max_response_bytes: usize,
+    max_response_tokens: usize,
+    token_estimate_divisor: u32,
+) -> Option<Value> {
+    let result = response.result.take()?;
+    // Reuse one serialization across preview sizes, and probe in place so
+    // large logs, UI payloads, and call metadata are never cloned per marker.
+    let serialized = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
+    let original_len = serialized.len();
+    let shaping = response.result_shaping.take();
+    let mut selected = None;
+    for (preview_bytes, compact) in [(1024, false), (512, false), (0, false), (0, true)] {
+        let marker = truncation_marker_serialized(
+            &serialized,
+            token_estimate_divisor,
+            &response.artifacts,
+            preview_bytes,
+            compact,
+        );
+        let marker_len = serde_json::to_vec(&marker).map_or(usize::MAX, |s| s.len());
+        if marker_len >= original_len {
+            continue;
+        }
+        response.result = Some(marker);
+        if response_within_budget(
+            response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        ) || compact
+        {
+            selected = response.result.take();
+            break;
+        }
+    }
+    response.result = Some(result);
+    response.result_shaping = shaping;
+    selected
 }
 
 /// Compute the minimum number of oldest log lines to drop so that the overall
@@ -249,6 +308,7 @@ pub(crate) const RESOURCE_READ_EXAMPLE: &str = r#"async () => {
   return {chunk, next_offset, total: serialized.length, done: next_offset >= serialized.length};
 }"#;
 
+#[cfg(test)]
 fn truncation_marker(
     value: &Value,
     token_estimate_divisor: u32,
@@ -257,7 +317,23 @@ fn truncation_marker(
     compact: bool,
 ) -> Value {
     let serialized = serde_json::to_string(value).unwrap_or_else(|_| "null".to_string());
-    let preview = utf8_prefix_by_bytes(&serialized, preview_bytes).to_string();
+    truncation_marker_serialized(
+        &serialized,
+        token_estimate_divisor,
+        artifacts,
+        preview_bytes,
+        compact,
+    )
+}
+
+fn truncation_marker_serialized(
+    serialized: &str,
+    token_estimate_divisor: u32,
+    artifacts: &[CodeModeArtifactReceipt],
+    preview_bytes: usize,
+    compact: bool,
+) -> Value {
+    let preview = utf8_prefix_by_bytes(serialized, preview_bytes).to_string();
     let mut marker = json!({
         "truncated": true,
         "original_size": serialized.len(),
@@ -647,6 +723,73 @@ mod tests {
             truncated.logs,
             vec!["[logs truncated to fit response budget — 1 line(s) dropped]".to_string()]
         );
+    }
+
+    #[test]
+    fn preservation_probe_matches_truncation_and_restores_every_field() {
+        for result in [
+            json!({"ok": true}),
+            json!({"rows": vec!["🦀\\\"".repeat(64); 100]}),
+        ] {
+            for with_params in [false, true] {
+                let mut response = response_with_logs(result.clone(), vec!["log".repeat(100); 10]);
+                response.calls.push(CodeModeExecutedCall {
+                    id: "demo::query".into(),
+                    ok: true,
+                    elapsed_ms: 4,
+                    start_ms: Some(1),
+                    params: with_params.then(|| json!({"query": "x".repeat(8000)})),
+                    error_kind: None,
+                    ui: None,
+                });
+                response.result_shaping = Some(CodeModeResultShapeMetadata {
+                    policy: CodeModeResultShapePolicy::Truncate,
+                    changed: false,
+                    truncated: false,
+                    original_size_bytes: 11,
+                    shaped_size_bytes: 11,
+                    warning: Some("soft warning".into()),
+                });
+                for (bytes, tokens, divisor) in [
+                    (512, usize::MAX, 4),
+                    (2048, 512, 4),
+                    (4096, usize::MAX, 4),
+                    (usize::MAX, 1, 1),
+                    (100_000, usize::MAX, 4),
+                ] {
+                    let original = response.clone();
+                    let expected =
+                        truncate_execution_response(original.clone(), bytes, tokens, divisor);
+                    let preserve = result_would_be_truncated(&mut response, bytes, tokens, divisor);
+                    assert_eq!(preserve, expected.result != original.result);
+                    assert_eq!(
+                        response, original,
+                        "borrowed probe must restore raw response"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn log_pressure_preserves_result_shaping_when_no_marker_shrinks_result() {
+        let mut response = response_with_logs(
+            json!({"ok": true}),
+            vec!["log \"quoted\" — unicode".repeat(200); 12],
+        );
+        let metadata = CodeModeResultShapeMetadata {
+            policy: CodeModeResultShapePolicy::Truncate,
+            changed: false,
+            truncated: false,
+            original_size_bytes: 11,
+            shaped_size_bytes: 11,
+            warning: None,
+        };
+        response.result_shaping = Some(metadata.clone());
+        let truncated = truncate_execution_response(response, 2048, usize::MAX, 4);
+        assert_eq!(truncated.result, Some(json!({"ok": true})));
+        assert_eq!(truncated.result_shaping, Some(metadata));
+        assert!(response_within_budget(&truncated, 2048, usize::MAX, 4));
     }
 
     #[test]

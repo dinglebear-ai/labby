@@ -207,7 +207,7 @@ pub(super) struct SubjectScopedConnection {
     pub(super) peer: rmcp::service::Peer<RoleClient>,
     /// Tool list discovered at connect time (avoids a round-trip on
     /// every owner-lookup call).
-    pub(super) tools: Vec<rmcp::model::Tool>,
+    pub(super) tools: Arc<[rmcp::model::Tool]>,
     /// Wall-clock instant when this entry was last used.
     pub(super) last_used: Instant,
 }

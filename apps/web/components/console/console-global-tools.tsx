@@ -77,6 +77,8 @@ export function PhoenixAvailability() {
     setError(undefined)
     setSending(false)
     setInterrupting(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
     setCopiedIndex(undefined)
     // Identity changes and unmount revoke pending work; layout changes do not.
     return () => { requestGenerationRef.current += 1 }
@@ -258,6 +260,8 @@ export function PhoenixAvailability() {
     const outgoingAttachments = attachments
     if (!sessionId || (!text && outgoingAttachments.length === 0) || steering) return
     const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     setSteering(true)
     setError(undefined)
     setInput('')
@@ -265,16 +269,19 @@ export function PhoenixAvailability() {
     setMessages((current) => [...current, { role: 'user', text: displayText }])
     try {
       const updated = await phoenixApi.steer(sessionId, text, outgoingAttachments)
+      if (!isCurrent()) return
       const refreshed = await phoenixApi.read(sessionId).catch(() => undefined)
+      if (!isCurrent()) return
       if (refreshed) { setMessages(refreshed.messages); setEvents(refreshed.events ?? []) }
       setWorkflowNotice(updated.status === 'steered' ? 'Guidance added to the active turn' : undefined)
     } catch (reason) {
+      if (!isCurrent()) return
       setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
       setAttachments((current) => [...outgoingAttachments, ...current].slice(0, 4))
       setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== displayText))
       setError(reason instanceof Error ? reason.message : 'Phoenix could not steer the active turn')
     } finally {
-      setSteering(false)
+      if (isCurrent()) setSteering(false)
     }
   }
 
@@ -343,11 +350,14 @@ export function PhoenixAvailability() {
   }
 
   const retryFrom = (index: number) => {
+    if (sending || steering) return
     const userIndex = messages.slice(0, index + 1).findLastIndex((message) => message.role === 'user')
     if (userIndex < 0) return
     const text = messages[userIndex].text
-    setMessages(messages.slice(0, userIndex))
-    void sendTurn(text, true)
+    startNewThread()
+    setAttachments([])
+    setInput(text)
+    setWorkflowNotice('New conversation: only this prompt is copied. Earlier messages and attachments are not included. Review it before sending.')
   }
 
   const copyMessage = async (text: string, index: number) => {
@@ -359,6 +369,8 @@ export function PhoenixAvailability() {
   const switchThread = async (id: string) => {
     const requestGeneration = ++requestGenerationRef.current
     setSending(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
     setError(undefined)
     try {
       const thread = await phoenixApi.read(id)
@@ -377,6 +389,8 @@ export function PhoenixAvailability() {
   const startNewThread = () => {
     requestGenerationRef.current += 1
     setSending(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
     setSessionId(undefined)
     setMessages([])
     setEvents([])

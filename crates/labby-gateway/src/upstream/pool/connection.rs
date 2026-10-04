@@ -334,8 +334,23 @@ impl UpstreamPool {
         Vec<rmcp::model::Tool>,
     )> {
         self.drain_oauth_client_capacity_evictions().await;
-        self.acquire_or_connect_subject_guarded(config, subject)
-            .await
+        let (peer, tools) = self
+            .acquire_or_connect_subject_guarded(config, subject)
+            .await?;
+        Ok((peer, tools.to_vec()))
+    }
+
+    /// Acquire the current subject peer without copying its schema-bearing catalog.
+    pub(super) async fn acquire_subject_peer(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> anyhow::Result<rmcp::service::Peer<rmcp::RoleClient>> {
+        self.drain_oauth_client_capacity_evictions().await;
+        let (peer, _) = self
+            .acquire_or_connect_subject_guarded(config, subject)
+            .await?;
+        Ok(peer)
     }
 
     /// Return one exact cached subject-scoped tool without cloning the complete
@@ -375,8 +390,9 @@ impl UpstreamPool {
         Ok((
             peer,
             tools
-                .into_iter()
-                .find(|tool| tool.name.as_ref() == tool_name),
+                .iter()
+                .find(|tool| tool.name.as_ref() == tool_name)
+                .cloned(),
         ))
     }
 
@@ -388,7 +404,7 @@ impl UpstreamPool {
         subject: &str,
     ) -> anyhow::Result<(
         rmcp::service::Peer<rmcp::RoleClient>,
-        Vec<rmcp::model::Tool>,
+        Arc<[rmcp::model::Tool]>,
     )> {
         use super::connect::connect_upstream_with_client;
 
@@ -433,7 +449,7 @@ impl UpstreamPool {
 
         let result: anyhow::Result<(
             rmcp::service::Peer<rmcp::RoleClient>,
-            Vec<rmcp::model::Tool>,
+            Arc<[rmcp::model::Tool]>,
         )> = async {
             // Re-check after acquiring the lock — another waiter may have
             // already opened and cached the connection.
@@ -462,7 +478,8 @@ impl UpstreamPool {
             .await?;
 
             let peer = conn.peer.clone();
-            let cached_tools = tools.clone();
+            let tools: Arc<[rmcp::model::Tool]> = tools.into();
+            let cached_tools = Arc::clone(&tools);
             anyhow::ensure!(
                 self.upstream_config_matches(config),
                 "upstream configuration changed while subject connection was being built"
@@ -809,7 +826,7 @@ mod tests {
                             optional_catalogs: Default::default(),
                             _connection: connection,
                             peer,
-                            tools: Vec::new(),
+                            tools: Vec::new().into(),
                             last_used: std::time::Instant::now(),
                         },
                     );
@@ -879,7 +896,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: alpha_conn,
                 peer: peer.clone(),
-                tools: tools.clone(),
+                tools: tools.clone().into(),
                 last_used: Instant::now(),
             },
         );
@@ -889,6 +906,42 @@ mod tests {
         // Now verify that the cache already has the entry and evict_subject works.
         pool.evict_subject_connections_for("alpha").await;
         assert_eq!(pool.subject_connections.read().await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn warm_guarded_subject_acquisition_shares_descriptor_snapshot() {
+        let pool = static_catalog_pool("alpha").await;
+        let config = named_test_upstream_config("alpha");
+        pool.seed_lazy_upstreams(std::slice::from_ref(&config))
+            .await;
+        let connection = pool.connections.write().await.remove("alpha").unwrap();
+        let tools: Arc<[rmcp::model::Tool]> = vec![rmcp::model::Tool::new(
+            "alpha.tool",
+            "large schema fixture",
+            Arc::new(serde_json::Map::new()),
+        )]
+        .into();
+        pool.subject_connections.write().await.insert(
+            ("alpha".into(), "alice".into()),
+            SubjectScopedConnection {
+                optional_catalogs: Default::default(),
+                peer: connection.peer.clone(),
+                _connection: connection,
+                tools: Arc::clone(&tools),
+                last_used: std::time::Instant::now(),
+            },
+        );
+        let (_, first) = pool
+            .acquire_or_connect_subject_guarded(&config, "alice")
+            .await
+            .unwrap();
+        let (_, second) = pool
+            .acquire_or_connect_subject_guarded(&config, "alice")
+            .await
+            .unwrap();
+        assert!(Arc::ptr_eq(&tools, &first));
+        assert!(Arc::ptr_eq(&first, &second));
+        pool.evict_subject_connections_for("alpha").await;
     }
 
     /// Clearing credentials must remove the initialized subject-scoped MCP
@@ -915,7 +968,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 last_used: Instant::now(),
             },
         );
@@ -952,7 +1005,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: alpha_conn,
                 peer,
-                tools: vec![],
+                tools: vec![].into(),
                 last_used: Instant::now(),
             },
         );
@@ -1019,7 +1072,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: connection,
                     peer,
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now(),
                 },
             );
@@ -1162,7 +1215,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: alpha_conn,
                     peer: alpha_peer.clone(),
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now(),
                 },
             );
@@ -1187,7 +1240,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: beta_conn,
                     peer: beta_peer.clone(),
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now(),
                 },
             );
@@ -1247,7 +1300,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: stale_conn,
                     peer: stale_peer,
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now()
                         .checked_sub(SUBJECT_CONN_IDLE_TTL + Duration::from_mins(1))
                         .expect("instant in range"),
@@ -1260,7 +1313,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: fresh_conn,
                     peer: fresh_peer,
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now(),
                 },
             );
@@ -1305,7 +1358,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: conn,
                 peer,
-                tools: vec![],
+                tools: vec![].into(),
                 last_used: Instant::now(),
             },
         );
@@ -1408,7 +1461,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: conn,
                     peer,
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: now
                         .checked_sub(Duration::from_secs(300 - offset_secs as u64 * 100))
                         .expect("instant in range"),

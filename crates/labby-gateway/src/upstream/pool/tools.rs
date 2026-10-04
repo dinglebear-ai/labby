@@ -776,7 +776,7 @@ impl UpstreamPool {
                         && mcp_tool_resource_bindings_are_exposed(candidate, &resource_policy)
                 });
                 let upstream_name = std::sync::Arc::<str>::from(config.name.as_str());
-                for tool in &entry.tools {
+                for tool in entry.tools.iter() {
                     if !tool_policy.matches(tool.name.as_ref())
                         || !mcp_tool_is_mcp_app_host_visible_with_owner(
                             tool,
@@ -1081,7 +1081,7 @@ impl UpstreamPool {
                 let exposure_policy =
                     resolve_request_exposure_policy(&config.name, config.expose_tools.clone());
                 let mut hidden_count = 0usize;
-                for tool in &entry.tools {
+                for tool in entry.tools.iter() {
                     if remaining_inspections == 0 {
                         incomplete = true;
                         break 'cached;

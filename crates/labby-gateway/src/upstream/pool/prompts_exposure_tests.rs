@@ -133,7 +133,7 @@ async fn seed_subject_connection(pool: &UpstreamPool, upstream: &str, subject: &
             optional_catalogs: Default::default(),
             _connection: connection,
             peer,
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             last_used: Instant::now(),
         },
     );

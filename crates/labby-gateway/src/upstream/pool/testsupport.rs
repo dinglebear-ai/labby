@@ -732,7 +732,7 @@ pub(super) async fn move_connection_to_subject_cache_with_tools(
             optional_catalogs: Default::default(),
             _connection: connection,
             peer,
-            tools,
+            tools: tools.into(),
             last_used: std::time::Instant::now(),
         },
     );
@@ -776,7 +776,7 @@ pub(crate) async fn retained_oauth_peers(
             optional_catalogs: Default::default(),
             _connection: connection,
             peer: subject_peer.clone(),
-            tools: vec![],
+            tools: vec![].into(),
             last_used: std::time::Instant::now(),
         },
     );

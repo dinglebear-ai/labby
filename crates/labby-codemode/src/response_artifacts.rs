@@ -1,7 +1,6 @@
 //! Automatic, owner-bound preservation of oversized JSON outputs.
 use crate::artifacts::{
-    CodeModeArtifactReceipt, CodeModeArtifactWrite, artifact_max_bytes, artifact_retention_runs,
-    prune_artifact_runs, write_code_mode_artifact,
+    CodeModeArtifactReceipt, CodeModeArtifactWrite, artifact_max_bytes, write_code_mode_artifact,
 };
 use crate::{CodeModeCaller, ToolScope};
 use serde_json::Value;
@@ -34,7 +33,6 @@ pub(crate) async fn preserve(
         if content.len() > artifact_max_bytes() {
             return None;
         }
-        prune_artifact_runs(artifact_retention_runs()).await;
         let mut receipt = write_code_mode_artifact(
             root,
             &CodeModeArtifactWrite {

@@ -383,7 +383,7 @@ impl UpstreamPool {
         native_name: &str,
         apply: impl FnOnce(&mut UpstreamEntry) -> R,
     ) -> Option<R> {
-        self.apply_to_observed_catalog(observed, |catalog| {
+        self.apply_to_observed_health_catalog(observed, |catalog| {
             if !catalog.contains_prompt_route(generation, observed.upstream(), native_name) {
                 return None;
             }
@@ -400,7 +400,7 @@ impl UpstreamPool {
         native_name: &str,
         apply: impl FnOnce(&mut UpstreamEntry) -> R,
     ) -> Option<R> {
-        self.apply_to_observed_catalog(observed, |catalog| {
+        self.apply_to_observed_health_catalog(observed, |catalog| {
             if !catalog.contains_tool_route(generation, observed.upstream(), native_name) {
                 return None;
             }
@@ -449,7 +449,7 @@ impl UpstreamPool {
             return None;
         }
         drop(connections);
-        let mut catalog = self.catalog_write().await;
+        let mut catalog = self.catalog_health_write(observed.upstream()).await;
         if catalog.incarnation(observed.upstream()) != Some(observed.incarnation)
             || !catalog.contains_resource_route(generation, observed.upstream(), native_uri)
         {
@@ -471,6 +471,26 @@ impl UpstreamPool {
         }
         drop(connections);
         let mut catalog = self.catalog_write().await;
+        if catalog.incarnation(&observed.upstream) != Some(observed.incarnation) {
+            return None;
+        }
+        catalog
+            .contains_key(&observed.upstream)
+            .then(|| apply(&mut catalog))
+    }
+    pub(super) async fn apply_to_observed_health_catalog<R>(
+        &self,
+        observed: &ObservedConnectionCatalogEntry,
+        apply: impl FnOnce(&mut super::catalog_publication::CatalogState) -> R,
+    ) -> Option<R> {
+        let _binding = self.connection_catalog_binding.write().await;
+        let connections = self.connections.read().await;
+        let connection = connections.get(&observed.upstream)?;
+        if connection.incarnation != Some(observed.incarnation) {
+            return None;
+        }
+        drop(connections);
+        let mut catalog = self.catalog_health_write(observed.upstream()).await;
         if catalog.incarnation(&observed.upstream) != Some(observed.incarnation) {
             return None;
         }

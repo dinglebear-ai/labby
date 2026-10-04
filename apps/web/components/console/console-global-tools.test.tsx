@@ -172,7 +172,7 @@ test('Phoenix sends a real turn through the container-local service and renders 
     assert.equal(panel.querySelectorAll('[data-phoenix-message]').length, 2)
     assert.ok(panel.querySelector('[aria-label="Context usage 2% (4,096 / 200,000 tokens)"]'))
     assert.ok(panel.querySelector('button[aria-label="Edit message"]'))
-    assert.ok(panel.querySelector('button[aria-label="Regenerate"]'))
+    assert.ok(panel.querySelector('button[aria-label="Copy preceding prompt to new conversation"]'))
     assert.ok(panel.querySelector('button[aria-label="Copy answer"]'))
     assert.equal(document.querySelector('[aria-label="Close Phoenix panel"]')?.classList.contains('size-11'), true)
   } finally {
@@ -339,3 +339,92 @@ for (const transition of ['dock', 'close', 'identity', 'unmount'] as const) {
     }
   })
 }
+
+for (const fails of [false, true]) {
+  test(`Phoenix ignores stale steering ${fails ? 'failures' : 'successes'} after a new conversation`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    let finishSend!: (response: Response) => void
+    let finishSteer!: (response: Response) => void
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      if (action === 'phoenix.status') return response({ available: true, capabilities: { turn_lifecycle: ['steer'], unsupported: [] } })
+      if (action === 'phoenix.models.list') return response({ models: [] })
+      if (action === 'phoenix.session.list') return response({ sessions: [] })
+      if (action === 'phoenix.turn.send') return new Promise<Response>(resolve => { finishSend = resolve })
+      if (action === 'phoenix.turn.steer') return new Promise<Response>(resolve => { finishSteer = resolve })
+      return response({ session_id: 'old', status: 'ready', messages: [{ role: 'assistant', text: 'OLD STEERING' }] })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    const enter = async (value: string) => act(async () => {
+      const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')!
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+    })
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await enter('original question')
+      await act(async () => { document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(finishSend)
+      await enter('old guidance')
+      await act(async () => { document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(finishSteer)
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      const newButton = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('New'))!
+      await act(async () => newButton.click())
+      await act(async () => {
+        finishSteer(response(fails ? { message: 'OLD ERROR' } : { status: 'steered' }, fails ? 500 : 200))
+        finishSend(response({ session_id: 'old', messages: [{ role: 'assistant', text: 'OLD TURN' }] }))
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.equal(document.querySelectorAll('[data-phoenix-message]').length, 0)
+      assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '')
+      assert.doesNotMatch(document.body.textContent ?? '', /OLD STEERING|OLD ERROR|Guidance added/)
+    } finally {
+      globalThis.fetch = originalFetch
+      await view.unmount()
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+test('copying a prompt to a fresh conversation is explicit and waits for review before sending', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  const actions: string[] = []
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    actions.push(action)
+    const body = action === 'phoenix.status' ? { available: true }
+      : action === 'phoenix.models.list' ? { models: [] }
+      : action === 'phoenix.session.list' ? { sessions: [{ session_id: 'existing', title: 'Existing' }] }
+      : { session_id: 'existing', messages: [{ role: 'user', text: 'Earlier context' }, { role: 'assistant', text: 'Earlier answer' }, { role: 'user', text: 'Follow-up' }, { role: 'assistant', text: 'Latest answer' }] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+    const existing = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('Existing'))!
+    assert.ok(existing)
+    await act(async () => { existing.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    const copy = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Copy prompt to new conversation"]')].at(-1)!
+    assert.ok(copy)
+    await act(async () => copy.click())
+    assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, 'Follow-up')
+    assert.equal(document.querySelectorAll('[data-phoenix-message]').length, 0)
+    assert.match(document.body.textContent ?? '', /Earlier messages and attachments are not included/)
+    assert.equal(actions.includes('phoenix.turn.send'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})

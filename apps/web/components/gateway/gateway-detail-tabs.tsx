@@ -799,9 +799,9 @@ export function DetailKeyValueCard({ label, rows }: { label: React.ReactNode; ro
       <div style={{ padding: '4px 0 5px' }}>
         {rows.map((row) => {
           const RowIcon = rowIcon(row.label)
-          return <div key={row.label} style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '2px 14px' }}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, fontSize: 11.5, lineHeight: 1.35, color: 'var(--aurora-text-muted)', whiteSpace: 'nowrap' }}><RowIcon size={11} style={{ color: tone, opacity: 0.75, flexShrink: 0 }}/>{row.label}</span>
-            <span style={{ fontSize: 11.5, fontWeight: 650, lineHeight: 1.35, fontVariantNumeric: 'tabular-nums', color: row.valueColor ?? 'var(--aurora-text-primary)', textAlign: 'right', wordBreak: 'break-all' }}>{row.value}</span>
+          return <div key={row.label} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', alignItems: 'baseline', gap: 12, padding: '2px 14px' }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, fontSize: 11.5, lineHeight: 1.35, color: 'var(--aurora-text-muted)', overflowWrap: 'anywhere' }}><RowIcon size={11} style={{ color: tone, opacity: 0.75, flexShrink: 0 }}/>{row.label}</span>
+            <span style={{ fontSize: 11.5, fontWeight: 650, lineHeight: 1.35, fontVariantNumeric: 'tabular-nums', color: row.valueColor ?? 'var(--aurora-text-primary)', minWidth: 0, textAlign: 'right', overflowWrap: 'anywhere' }}>{row.value}</span>
           </div>
         })}
       </div>

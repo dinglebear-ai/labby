@@ -467,7 +467,7 @@ impl UpstreamPool {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools,
+                tools: tools.into(),
                 last_used: Instant::now(),
             },
         );
@@ -499,7 +499,7 @@ impl UpstreamPool {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 last_used: Instant::now(),
             },
         );
@@ -572,7 +572,7 @@ impl UpstreamPool {
         // Ensure there is a live authenticated peer before taking the per-subject
         // single-flight gate. A warm entry returns immediately; a cold entry
         // performs the normal OAuth-backed connect and initial tools/list.
-        self.acquire_or_connect_subject(config, subject).await?;
+        self.acquire_subject_peer(config, subject).await?;
 
         let key = (config.name.clone(), subject.to_string());
         let connect_lock = {
@@ -592,7 +592,7 @@ impl UpstreamPool {
                 // OAuth invalidation may have detached the entry after the
                 // initial acquire. Reconnect through the canonical path rather
                 // than resurrecting the detached peer.
-                self.acquire_or_connect_subject(config, subject).await?;
+                self.acquire_subject_peer(config, subject).await?;
                 return Ok(());
             };
             entry.last_used = Instant::now();
@@ -615,7 +615,7 @@ impl UpstreamPool {
             drop(connect_guard);
             // The credential/session was invalidated while tools/list was in
             // flight. Never re-publish results from that detached peer.
-            self.acquire_or_connect_subject(config, subject).await?;
+            self.acquire_subject_peer(config, subject).await?;
             return Ok(());
         };
         anyhow::ensure!(
@@ -647,7 +647,7 @@ impl UpstreamPool {
             }
         };
         self.subject_connect_errors.write().await.remove(&key);
-        entry.tools = tools;
+        entry.tools = tools.into();
         entry.optional_catalogs.tools_revision =
             entry.optional_catalogs.tools_revision.saturating_add(1);
         entry.last_used = Instant::now();
@@ -1061,7 +1061,7 @@ mod tests {
             .await
             .get_mut(&("oauth-growing".to_string(), "alice".to_string()))
             .expect("subject connection")
-            .tools = vec![test_tool("tool_0")];
+            .tools = vec![test_tool("tool_0")].into();
 
         tool_count.store(3, Ordering::SeqCst);
 
@@ -1160,7 +1160,7 @@ mod tests {
             .await
             .get_mut(&("oauth-invalidated".to_string(), "alice".to_string()))
             .expect("subject connection")
-            .tools = vec![test_tool("tool_0")];
+            .tools = vec![test_tool("tool_0")].into();
         block_refresh.store(true, Ordering::SeqCst);
 
         let refresh_pool = Arc::clone(&pool);

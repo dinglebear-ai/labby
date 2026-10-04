@@ -8,7 +8,6 @@ use futures::stream::{self, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
 
 use crate::error::ToolError;
@@ -17,10 +16,13 @@ use labby_runtime::path_safety::reject_existing_symlink_ancestors;
 use labby_runtime::path_safety::reject_path_traversal;
 
 const DEFAULT_CONTENT_TYPE: &str = "text/plain";
+mod budget;
 mod config;
+mod publication;
 pub use config::install_artifact_config_defaults;
 pub(crate) use config::{artifact_max_bytes, artifact_max_store_bytes, artifact_retention_runs};
 mod read;
+mod retention;
 pub use read::read_receipted_artifact;
 
 /// Upper bound on the `content_type` metadata string.
@@ -161,21 +163,6 @@ impl Drop for ActiveArtifactRun {
     }
 }
 
-/// Best-effort prune of old per-run artifact directories so the store stays
-/// bounded by both a run-count cap and a total-byte budget. Keeps the newest
-/// runs (ULID names sort chronologically) and removes older ones, except any run
-/// still executing.
-pub(crate) async fn prune_artifact_runs(retain: usize) {
-    let active = active_artifact_runs_snapshot();
-    prune_artifact_runs_in(
-        &artifact_store_root(),
-        retain,
-        artifact_max_store_bytes(),
-        &active,
-    )
-    .await;
-}
-
 /// Core prune over an explicit store root (so tests need no `$LABBY_HOME`).
 ///
 /// Removes the oldest run directories that fall outside *either* the run-count
@@ -189,7 +176,7 @@ pub(crate) async fn prune_artifact_runs(retain: usize) {
 /// `active` are skipped unconditionally (even past either limit) so a concurrent
 /// run's directory is never deleted while it is still writing. Errors are
 /// swallowed (best-effort, debug-logged); pruning must never fail a run.
-pub(crate) async fn prune_artifact_runs_in(
+async fn prune_artifact_runs_locked(
     store_root: &Path,
     retain: usize,
     max_store_bytes: u64,
@@ -270,27 +257,36 @@ pub(crate) async fn prune_artifact_runs_in(
         Vec::new()
     };
 
-    // Walk newest-first, keeping a run while it sits inside BOTH the count window
-    // and the running byte budget; everything past either limit is a removal
-    // candidate. Active runs still count toward the byte total (they're on disk)
-    // but are never themselves removed.
-    let mut cumulative: u64 = 0;
+    // Active payloads have priority regardless of ULID order. Reserve their
+    // bytes before selecting inactive runs, so a newer inactive run cannot
+    // consume space that an older protected execution already occupies.
+    let mut cumulative: u64 = if byte_pruning {
+        newest_first
+            .iter()
+            .zip(&sizes)
+            .filter(|(name, _)| active.contains(*name))
+            .map(|(_, bytes)| *bytes)
+            .fold(0, u64::saturating_add)
+    } else {
+        0
+    };
     let mut to_remove: Vec<String> = Vec::new();
     for (idx, name) in newest_first.iter().enumerate() {
-        if byte_pruning {
-            cumulative = cumulative.saturating_add(sizes[idx]);
-        }
-        let within_count = !count_pruning || idx < retain;
-        let within_bytes = !byte_pruning || cumulative <= max_store_bytes;
-        if within_count && within_bytes {
-            continue;
-        }
-        // Never collect a run that is still executing — its directory may be
-        // mid-write. It becomes eligible on a later prune once it finishes.
         if active.contains(name) {
             continue;
         }
-        to_remove.push(name.clone());
+        let candidate = if byte_pruning {
+            cumulative.saturating_add(sizes[idx])
+        } else {
+            cumulative
+        };
+        let within_count = !count_pruning || idx < retain;
+        let within_bytes = !byte_pruning || candidate <= max_store_bytes;
+        if within_count && within_bytes {
+            cumulative = candidate;
+        } else {
+            to_remove.push(name.clone());
+        }
     }
 
     for name in to_remove {
@@ -332,12 +328,9 @@ pub(crate) async fn write_code_mode_artifact(
     }
 
     let destination = root.join(&rel_path);
-    // Defense-in-depth per `reject_path_traversal`'s documented contract: the
-    // lexical guard in `normalize_artifact_path` cannot see through symlinks, so
-    // confirm the joined destination stays within `root` and that no existing
-    // symlinked ancestor redirects the write outside the jail before any
-    // directory or file is created.
     reject_existing_symlink_ancestors(root, &destination)?;
+    let _reservation = budget::STORE_MUTATION.lock().await;
+    budget::admit(root, bytes.len(), artifact_max_store_bytes()).await?;
 
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent)
@@ -349,28 +342,7 @@ pub(crate) async fn write_code_mode_artifact(
     }
     reject_existing_symlink_ancestors(root, &destination)?;
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .await
-        .map_err(|err| ToolError::Sdk {
-            sdk_kind: if err.kind() == std::io::ErrorKind::AlreadyExists {
-                "invalid_param"
-            } else {
-                "internal_error"
-            }
-            .to_string(),
-            message: format!("failed to create artifact file: {err}"),
-        })?;
-    file.write_all(bytes).await.map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to write artifact file: {err}"),
-    })?;
-    file.flush().await.map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to flush artifact file: {err}"),
-    })?;
+    publication::publish(&destination, bytes).await?;
 
     let sha256 = Sha256::digest(bytes);
 

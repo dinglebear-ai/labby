@@ -19,13 +19,6 @@ pub(super) async fn handle_artifact_write_event(
     let artifact_max_bytes = state.artifact_max_bytes;
     let trace_params = cfg.trace_params;
     let artifact_op = async {
-        if writes_allowed && !state.artifact_store_pruned {
-            super::super::artifacts::prune_artifact_runs(
-                super::super::artifacts::artifact_retention_runs(),
-            )
-            .await;
-            state.artifact_store_pruned = true;
-        }
         handle_artifact_write(
             stdin,
             &artifact_root,

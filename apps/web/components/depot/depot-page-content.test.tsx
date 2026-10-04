@@ -4,7 +4,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
-import { ArtifactResults, depotCoveragePulse, discoveryCountLabel, discoveryFailureMessage, exactImportConnection, exactImportParams, mergeArtifactPages } from './depot-page-content'
+import { ArtifactResults, importArtifactSelection, depotCoveragePulse, discoveryCountLabel, discoveryFailureMessage, exactImportConnection, exactImportParams, mergeArtifactPages } from './depot-page-content'
 
 test('unavailable catalog counts remain unknown rather than implying an empty catalog', () => {
   assert.equal(discoveryCountLabel(0, false, true), '—')
@@ -110,4 +110,28 @@ test('exactImportConnection requires a source connection matching the discovery 
     () => exactImportConnection('team-depot', [{ id: 'different-depot' }]),
     /Configure an Artifact acquisition connection named “team-depot”/,
   )
+})
+
+
+test('bulk imports retain failed selections and continue after a rejected item', async () => {
+  const artifacts = ['first', 'second', 'third'].map(artifactId => ({ providerId: 'public', artifactId }))
+  const selected = new Set(artifacts.map(item => item.artifactId))
+  const outcome = await importArtifactSelection(artifacts, async item => {
+    if (item.artifactId === 'second') throw new Error('Import failed')
+    return true
+  }, () => true, item => { selected.delete(item.artifactId) })
+  assert.deepEqual(outcome, { succeeded: 2, failed: 1 })
+  assert.deepEqual([...selected], ['second'])
+})
+
+test('bulk imports stop and preserve selection when context changes in flight', async () => {
+  let current = true
+  let calls = 0
+  const cleared: string[] = []
+  const outcome = await importArtifactSelection([
+    { providerId: 'public', artifactId: 'first' }, { providerId: 'public', artifactId: 'second' },
+  ], async () => { calls += 1; current = false; return true }, () => current, item => { cleared.push(item.artifactId) })
+  assert.equal(outcome, undefined)
+  assert.equal(calls, 1)
+  assert.deepEqual(cleared, [])
 })

@@ -254,3 +254,154 @@ async fn artifact_access_chunks_preserve_utf8_and_reject_reserved_paths() {
         .is_err()
     );
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn artifact_access_cached_pages_recheck_owner_and_same_size_changes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let receipt = fixture(temp.path(), "alice").await;
+    let id = receipt.artifact_id.expect("id");
+    let (root, _) = location(temp.path(), &id).expect("location");
+    let file = root.join("report.json");
+    let params = json!({"artifact_id":id,"length":2});
+    for _ in 0..2 {
+        dispatch_at(
+            temp.path(),
+            "read_artifact",
+            &params,
+            &caller("alice"),
+            &ToolScope::default(),
+        )
+        .await
+        .expect("cached page");
+    }
+    assert_eq!(
+        cache::verification_count(&file),
+        1,
+        "second page must not reread/hash the whole file"
+    );
+    assert!(
+        dispatch_at(
+            temp.path(),
+            "read_artifact",
+            &params,
+            &caller("bob"),
+            &ToolScope::default()
+        )
+        .await
+        .is_err()
+    );
+    // Same size and inode: change time must invalidate the verified byte cache.
+    tokio::fs::write(&file, "{\"count\":9}")
+        .await
+        .expect("same-size mutation");
+    assert!(
+        dispatch_at(
+            temp.path(),
+            "read_artifact",
+            &params,
+            &caller("alice"),
+            &ToolScope::default()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(cache::verification_count(&file), 2);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn artifact_access_cached_pages_reject_replacement_and_symlink() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let receipt = fixture(temp.path(), "alice").await;
+    let id = receipt.artifact_id.expect("id");
+    let (root, _) = location(temp.path(), &id).expect("location");
+    let file = root.join("report.json");
+    let params = json!({"artifact_id":id});
+    dispatch_at(
+        temp.path(),
+        "read_artifact",
+        &params,
+        &caller("alice"),
+        &ToolScope::default(),
+    )
+    .await
+    .expect("warm");
+    let replacement = root.join("replacement");
+    tokio::fs::write(&replacement, "{\"count\":8}")
+        .await
+        .expect("replacement");
+    tokio::fs::rename(&replacement, &file)
+        .await
+        .expect("replace inode");
+    assert!(
+        dispatch_at(
+            temp.path(),
+            "read_artifact",
+            &params,
+            &caller("alice"),
+            &ToolScope::default()
+        )
+        .await
+        .is_err()
+    );
+    tokio::fs::remove_file(&file).await.expect("remove");
+    let outside = temp.path().join("outside");
+    tokio::fs::write(&outside, "{\"count\":3}")
+        .await
+        .expect("outside");
+    std::os::unix::fs::symlink(outside, &file).expect("symlink");
+    assert!(
+        dispatch_at(
+            temp.path(),
+            "read_artifact",
+            &params,
+            &caller("alice"),
+            &ToolScope::default()
+        )
+        .await
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn artifact_access_listing_skips_deleted_rows_and_enrollment_invalidates_snapshot() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let first = fixture(temp.path(), "alice").await.artifact_id.expect("id");
+    let params = json!({"limit":1});
+    dispatch_at(
+        temp.path(),
+        "list_artifacts",
+        &params,
+        &caller("alice"),
+        &ToolScope::default(),
+    )
+    .await
+    .expect("warm snapshot");
+    let (root, _) = location(temp.path(), &first).expect("location");
+    tokio::fs::remove_dir_all(root).await.expect("prune");
+    let empty = dispatch_at(
+        temp.path(),
+        "list_artifacts",
+        &params,
+        &caller("alice"),
+        &ToolScope::default(),
+    )
+    .await
+    .expect("deleted row skipped");
+    assert_eq!(empty["artifacts"], json!([]));
+    let new = fixture(temp.path(), "alice")
+        .await
+        .artifact_id
+        .expect("new id");
+    let listed = dispatch_at(
+        temp.path(),
+        "list_artifacts",
+        &params,
+        &caller("alice"),
+        &ToolScope::default(),
+    )
+    .await
+    .expect("enrollment invalidates");
+    assert_eq!(listed["artifacts"][0]["artifact_id"], new);
+}

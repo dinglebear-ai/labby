@@ -93,6 +93,23 @@ export function exactImportParams(
     idempotency_key: idempotencyKey,
   }
 }
+export async function importArtifactSelection(
+  artifacts: FederatedArtifact[],
+  importOne: (artifact: FederatedArtifact) => Promise<boolean>,
+  isCurrent: () => boolean,
+  onImported: (artifact: FederatedArtifact) => void,
+) {
+  let succeeded = 0
+  for (const artifact of artifacts) {
+    if (!isCurrent()) return undefined
+    let imported = false
+    try { imported = await importOne(artifact) } catch { /* Failed items remain selected. */ }
+    if (!isCurrent()) return undefined
+    if (imported) { succeeded += 1; onImported(artifact) }
+  }
+  return { succeeded, failed: artifacts.length - succeeded }
+}
+
 export function DepotPageContent() {
   const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   return <SessionDepotPage key={sessionEpoch} />
@@ -111,6 +128,8 @@ function SessionDepotPage() {
   const [copied,setCopied] = useState<string>()
   const [view,selectView] = useCollectionView('labby.depot.layout', 'cards')
   const [importing,setImporting] = useState(false)
+  const [bulkImporting, setBulkImporting] = useState(false)
+  const [pageAnchor, setPageAnchor] = useState<number>()
   const importPending = useRef(false)
   const [density, setDensity] = useState<DiscoveryDensity>('comfortable')
   const [shelf, setShelf] = useState<DiscoveryShelf>('trending')
@@ -138,6 +157,7 @@ function SessionDepotPage() {
     setDetail(null)
     setDetailLoading(false)
     setBulkSelectedKeys([])
+    setPageAnchor(undefined)
     setSelectionMode(false)
     setCompareOpen(false)
     setCursorIndex(-1)
@@ -202,7 +222,7 @@ function SessionDepotPage() {
   useEffect(()=>{ const controller=new AbortController(); const timer=window.setTimeout(()=>{ const next=query.trim(); setActiveQuery(next); const params=new URLSearchParams(window.location.search); if((params.get('q')?.trim()??'')!==next){if(next)params.set('q',next);else params.delete('q');params.delete('artifact');params.delete('artifactProvider');router.replace(`${pathname}${params.size?`?${params}`:''}`,{scroll:false})} if(next.length===0||next.length>=3)void load(next,undefined,controller.signal);else setState(current=>({...current,loading:false,error:undefined,window:createDiscoveryWindow(),cursor:undefined,total:undefined,exact:false}))},query?300:0); return()=>{window.clearTimeout(timer);controller.abort()} },[load,pathname,query,router])
   useEffect(()=>{lanes.current.invalidate('import');const generation=lanes.current.begin('detail');const epoch=getBrowserSessionEpoch();if(!selectedId||!selectedArtifactProvider||query.trim()!==initialQuery||contextRef.current!==contextKey){setDetail(null);setDetailLoading(false);return}const controller=new AbortController();detailControllerRef.current=controller;setDetail(null);setDetailLoading(true);void getArtifact(selectedArtifactProvider,selectedId,controller.signal).then(r=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setDetail({...r.artifact,providerId:r.providerId,artifactId:r.artifactId})}).catch(e=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())toast.error(e instanceof Error?e.message:String(e))}).finally(()=>{if(lanes.current.isCurrent('detail',generation)&&!controller.signal.aborted&&epoch===getBrowserSessionEpoch())setDetailLoading(false)});return()=>controller.abort()},[contextKey,initialQuery,query,selectedArtifactProvider,selectedId])
   useEffect(() => {
-    if (!state.cursor || state.loading || state.error) return
+    if (!state.cursor || state.loading || state.error || pageAnchor !== undefined) return
     const cursor = state.cursor
     const controller = new AbortController()
     const continueListing = () => {
@@ -228,20 +248,17 @@ function SessionDepotPage() {
     }, { rootMargin: '600px 0px' })
     observer.observe(target)
     return () => observer.disconnect()
-  }, [activeQuery, load, state.cursor, state.error, state.loading, state.coverage, state.deferredAttempts])
+  }, [activeQuery, load, state.cursor, state.error, state.loading, state.coverage, state.deferredAttempts, pageAnchor])
 
   const artifactHref=useCallback((providerId?:string,id?:string)=>{const params=new URLSearchParams();if(activeQuery)params.set('q',activeQuery);if(kind!=='all')params.set('kind',kind);if(selectedProvider!=='all')params.set('provider',selectedProvider);if(providerId&&id){params.set('artifactProvider',providerId);params.set('artifact',id)}return `${pathname}${params.size?`?${params}`:''}`},[activeQuery,kind,pathname,selectedProvider])
   const resetDiscovery=useCallback(()=>{window.history.replaceState(window.history.state,'',pathname);invalidateContext(JSON.stringify(['all','all','']));setQuery('');setActiveQuery('');setVisibility('all');setShelf('trending');setSort('relevance');setFiltersOpen(false);setBulkSelectedKeys([]);setSelectionMode(false);setCompareOpen(false);setCursorIndex(-1);router.replace(pathname,{scroll:false})},[invalidateContext,pathname,router])
   const copyValue=useCallback(async(label:string,value?:string)=>{if(!value)return;await navigator.clipboard.writeText(value);setCopied(label);toast.success(`${label} copied`);window.setTimeout(()=>setCopied(c=>c===label?undefined:c),1500)},[])
   const exportArtifact=useCallback((artifact:FederatedArtifact)=>{const label=artifact.name??artifact.descriptor?.name??artifact.kind??'artifact';const blob=new Blob([`${JSON.stringify(artifact,null,2)}\n`],{type:'application/json'}),url=URL.createObjectURL(blob),anchor=document.createElement('a');anchor.href=url;anchor.download=`${label.toLowerCase().replace(/[^a-z0-9._-]+/g,'-')}.depot.json`;anchor.click();URL.revokeObjectURL(url);toast.success('Artifact metadata exported')},[])
   const importArtifact=useCallback(async(artifact:FederatedArtifact)=>{
-    if(importPending.current)return
+    if(importPending.current)return false
     const epoch=getBrowserSessionEpoch()
     const generation=lanes.current.begin('import')
     const isCurrent=()=>epoch===getBrowserSessionEpoch()&&lanes.current.isCurrent('import',generation)
-    const artifactId=artifact.artifactId||artifact.id
-    const revisionId=artifact.currentRevisionId||artifact.currentRevision?.id
-    if(!artifactId||!revisionId)throw new Error('Labby catalog did not provide an exact Artifact and revision identity.')
     importPending.current=true
     setImporting(true)
     try{
@@ -252,7 +269,7 @@ function SessionDepotPage() {
         controlPlaneAction<{connections?:Array<{id:string}>}>('artifacts','artifacts.list_connections'),
         controlPlaneAction<{library_version?:number}>('artifacts','artifacts.list',{limit:1}),
       ])
-      if(!isCurrent())return
+      if(!isCurrent())return false
       const importParams=exactImportParams(
         artifact,
         connectionResult.connections??[],
@@ -260,8 +277,10 @@ function SessionDepotPage() {
         `depot-import-${crypto.randomUUID()}`,
       )
       await controlPlaneAction('artifacts','artifacts.import',importParams)
-      if(isCurrent())toast.success('Exact Artifact imported into Labby')
-    }catch(error){if(isCurrent())toast.error(error instanceof Error?error.message:String(error))}
+      if(!isCurrent())return false
+      toast.success('Exact Artifact imported into Labby')
+      return true
+    }catch(error){if(isCurrent())toast.error(error instanceof Error?error.message:String(error));return false}
     finally{importPending.current=false;setImporting(false)}
   },[])
   const addArtifactToLibrary=useCallback(async(artifact:FederatedArtifact)=>{
@@ -275,13 +294,13 @@ function SessionDepotPage() {
   const previewSend=useCallback((artifact:FederatedArtifact)=>{toast.success(`${artifact.name??artifact.title??artifact.artifactId} sent to Labby — preview only`)},[])
   const previewInstallFormat=useCallback((artifact:FederatedArtifact,format:string)=>{toast.success(`${artifact.name??artifact.title??artifact.artifactId} → ${format} · preview only`)},[])
   const isArtifactInLibrary=useCallback((artifact:FederatedArtifact)=>USE_MOCK_DATA&&mockDepotLibraryArtifactIds.has(artifact.artifactId),[])
-  const visible = visibleArtifacts(state.window)
+  const visible = visibleArtifacts(state.window, pageAnchor)
   const [sort, setSort] = useState<DiscoverySort>('relevance')
   const visibilityResults = visibility === 'all' ? visible.items : visible.items.filter(artifact => artifact.publication?.visibility?.toLowerCase() === visibility)
   const shelfResults = USE_MOCK_DATA ? selectDiscoveryShelf(visibilityResults, shelf) : visibilityResults
   const results = selectDiscoveryResults(shelfResults, sort)
   const shelfMeta = DISCOVERY_SHELVES.find(item => item.id === shelf) ?? DISCOVERY_SHELVES[0]
-  const selectedBulkArtifacts = results.filter(artifact => bulkSelectedKeys.includes(artifactKey(artifact.providerId, artifact.artifactId)))
+  const selectedBulkArtifacts = [...state.window.index.values()].filter(artifact => bulkSelectedKeys.includes(artifactKey(artifact.providerId, artifact.artifactId)))
   const compareEligible = canCompareBundles(selectedBulkArtifacts)
   const toggleBulkSelection = (artifact: FederatedArtifact) => {
     const key = artifactKey(artifact.providerId, artifact.artifactId)
@@ -296,14 +315,27 @@ function SessionDepotPage() {
   const clearBulkSelection = () => { setBulkSelectedKeys([]); setSelectionMode(false); setCompareOpen(false) }
   const bulkAddToLibrary = async () => {
     const chosen = [...selectedBulkArtifacts]
-    if (!chosen.length) return
+    if (!chosen.length || bulkImporting || importPending.current) return
     if (USE_MOCK_DATA) {
       toast.success(`Preview: ${chosen.length} artifact${chosen.length === 1 ? '' : 's'} would be added to Library`)
       clearBulkSelection()
       return
     }
-    for (const artifact of chosen) await importArtifact(artifact)
-    clearBulkSelection()
+    const epoch = getBrowserSessionEpoch()
+    const context = contextRef.current
+    const isCurrent = () => epoch === getBrowserSessionEpoch() && context === contextRef.current
+    setBulkImporting(true)
+    try {
+      const outcome = await importArtifactSelection(chosen, importArtifact, isCurrent, artifact => {
+        const key = artifactKey(artifact.providerId, artifact.artifactId)
+        setBulkSelectedKeys(current => current.filter(item => item !== key))
+      })
+      if (!outcome) return
+      if (outcome.failed) toast.error(`${outcome.succeeded} imported, ${outcome.failed} failed. Failed artifacts remain selected for retry.`)
+      else { toast.success(`${outcome.succeeded} artifacts imported`); clearBulkSelection() }
+    } finally {
+      setBulkImporting(false)
+    }
   }
   const resultCount=state.total??state.window.rowCount
   const incomplete = Boolean(state.error) || (state.coverage !== undefined && state.coverage !== 'complete' && state.coverage !== 'empty')
@@ -378,12 +410,16 @@ function SessionDepotPage() {
         </div>
         <div className="-mt-[5px] flex h-[17px] min-w-0 items-center gap-[7px] px-[3px]"><Info aria-hidden className="size-3 shrink-0 text-[color-mix(in_srgb,var(--aurora-accent-strong)_80%,transparent)]" strokeWidth={1.7}/><span className="shrink-0 font-display text-xs font-bold leading-[17px] tracking-[-0.005em] text-[color-mix(in_srgb,var(--aurora-text-muted)_55%,var(--aurora-text-primary))]">{shelfMeta.title}</span><span aria-hidden className="h-[11px] w-px shrink-0 bg-aurora-border-default/65"/><span className="min-w-0 text-[11.5px] leading-[17px] text-aurora-text-muted">{shelfMeta.hint}</span></div>
         {!USE_MOCK_DATA?<div data-discovery-feed-unavailable className="rounded-aurora-1 border border-dashed border-aurora-border-strong/60 bg-aurora-panel-medium px-3 py-2 text-[11.5px] leading-relaxed text-aurora-text-muted">Depot does not currently report a canonical {shelfMeta.label.toLowerCase()} feed. Results below remain the retained catalog window and are only ordered by the selected display sort.</div>:null}
-        {selectedBulkArtifacts.length ? <div className="flex flex-wrap items-center gap-[9px] rounded-aurora-1 border border-[color-mix(in_srgb,var(--aurora-accent-primary)_40%,transparent)] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_8%,var(--aurora-panel-strong))] px-[13px] py-[9px] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"><span className="font-display text-xs font-bold text-aurora-text-primary">{selectedBulkArtifacts.length === 1 ? '1 artifact selected' : `${selectedBulkArtifacts.length} artifacts selected`}</span><span className="min-w-2 flex-1"/>{compareEligible ? <Button variant="outline" size="icon-sm" className="size-7 rounded-lg" aria-label="Compare selected bundles" title="Compare selected bundles" onClick={()=>setCompareOpen(true)}><ArrowLeftRight className="size-3"/></Button> : null}<Button variant="ghost" size="sm" className="h-7 rounded-lg px-[11px] text-[11.5px]" onClick={clearBulkSelection}>Clear</Button><Button size="sm" className="h-7 gap-1.5 rounded-lg px-[13px] text-[11.5px] font-bold" disabled={importing} onClick={()=>void bulkAddToLibrary()}><Plus className="size-3"/>{`Add ${selectedBulkArtifacts.length} to Library`}</Button></div> : null}
+        {selectedBulkArtifacts.length ? <div className="flex flex-wrap items-center gap-[9px] rounded-aurora-1 border border-[color-mix(in_srgb,var(--aurora-accent-primary)_40%,transparent)] bg-[color-mix(in_srgb,var(--aurora-accent-primary)_8%,var(--aurora-panel-strong))] px-[13px] py-[9px] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"><span className="font-display text-xs font-bold text-aurora-text-primary">{selectedBulkArtifacts.length === 1 ? '1 artifact selected' : `${selectedBulkArtifacts.length} artifacts selected`}</span><span className="min-w-2 flex-1"/>{compareEligible ? <Button variant="outline" size="icon-sm" className="size-7 rounded-lg" aria-label="Compare selected bundles" title="Compare selected bundles" onClick={()=>setCompareOpen(true)}><ArrowLeftRight className="size-3"/></Button> : null}<Button variant="ghost" size="sm" className="h-7 rounded-lg px-[11px] text-[11.5px]" onClick={clearBulkSelection}>Clear</Button><Button size="sm" className="h-7 gap-1.5 rounded-lg px-[13px] text-[11.5px] font-bold" disabled={importing || bulkImporting} onClick={()=>void bulkAddToLibrary()}><Plus className="size-3"/>{`Add ${selectedBulkArtifacts.length} to Library`}</Button></div> : null}
         <h2 id="artifact-results-title" className="sr-only">{activeQuery ? `Results for “${activeQuery}”` : shelfMeta.title}</h2>
         {state.window.historyExpired?<p role="status" className="text-xs text-aurora-text-muted">Earlier results left the bounded local window. Refresh this search to revisit older history.</p>:null}
-        {visible.leadingRows>0?<div aria-hidden="true" style={{height:Math.min(visible.leadingRows*8,320)}} />:null}
-        {query.trim().length>0&&query.trim().length<3?<p className="rounded-aurora-2 border border-dashed border-aurora-border-subtle px-5 py-10 text-center text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={results} activeQuery={activeQuery} loading={state.loading} incomplete={incomplete} view={view} density={density} now={now} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref} onReset={resetDiscovery} selectionMode={selectionMode} selectedBulkKeys={bulkSelectedKeys} cursorIndex={cursorIndex} onToggleSelected={toggleBulkSelection} onEnterSelectionMode={enterSelectionMode} onAdd={addArtifactToLibrary} onFork={USE_MOCK_DATA?previewFork:undefined} onSend={USE_MOCK_DATA?previewSend:undefined} isInLibrary={isArtifactInLibrary} actionPending={importing}/>}
-        {state.cursor?<div ref={loadMoreRef} className="flex min-h-12 items-center justify-center" role="status" aria-live="polite"><Button variant="outline" onClick={()=>void load(activeQuery,state.cursor)} disabled={state.loading}>{state.loading?<Loader2 className="size-4 animate-spin"/>:null}{state.loading?'Loading more artifacts…':'Load more'}</Button></div>:null}
+        {state.window.pages.length > 3 ? <nav aria-label="Retained catalog pages" className="flex flex-wrap items-center justify-between gap-3">
+          <Button variant="outline" disabled={visible.leadingRows === 0 || state.loading} onClick={() => { setPageAnchor(Math.max(1, visible.startPage - 2)); setCursorIndex(-1) }}>Previous results</Button>
+          <span role="status" className="text-sm text-aurora-text-muted">{visible.leadingRows + 1}–{visible.leadingRows + visible.items.length} of {state.window.rowCount} retained results</span>
+          <Button variant="outline" disabled={visible.trailingRows === 0 || state.loading} onClick={() => { setPageAnchor(visible.startPage + 4); setCursorIndex(-1) }}>Next results</Button>
+        </nav> : null}
+        {query.trim().length>0&&query.trim().length<3?<p className="rounded-aurora-2 border border-dashed border-aurora-border-subtle px-5 py-10 text-center text-sm text-aurora-text-muted">Enter at least 3 characters to search.</p>:<ArtifactResults artifacts={results} activeQuery={activeQuery} loading={state.loading} incomplete={incomplete} view={view} density={density} now={now} selectedKey={selectedId&&selectedArtifactProvider?artifactKey(selectedArtifactProvider,selectedId):undefined} artifactHref={artifactHref} onReset={resetDiscovery} selectionMode={selectionMode} selectedBulkKeys={bulkSelectedKeys} cursorIndex={cursorIndex} onToggleSelected={toggleBulkSelection} onEnterSelectionMode={enterSelectionMode} onAdd={addArtifactToLibrary} onFork={USE_MOCK_DATA?previewFork:undefined} onSend={USE_MOCK_DATA?previewSend:undefined} isInLibrary={isArtifactInLibrary} actionPending={importing || bulkImporting}/>}
+        {state.cursor && visible.trailingRows === 0 ?<div ref={loadMoreRef} className="flex min-h-12 items-center justify-center" role="status" aria-live="polite"><Button variant="outline" onClick={()=>{setPageAnchor(undefined);void load(activeQuery,state.cursor)}} disabled={state.loading}>{state.loading?<Loader2 className="size-4 animate-spin"/>:null}{state.loading?'Loading more artifacts…':'Load more'}</Button></div>:null}
       </section>
       </div>
       </div>
