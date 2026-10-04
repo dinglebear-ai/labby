@@ -24,6 +24,11 @@ class WindowsCiPolicyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
 
+    def test_installer_assertion_failures_propagate_to_ci(self) -> None:
+        steps = yaml.safe_load(self.workflow)["jobs"]["windows-installer"]["steps"]
+        invocation = next(step["run"] for step in steps if "Invoke-Pester" in step.get("run", ""))
+        self.assertRegex(invocation, r"(?:^|\s)-CI(?:\s|$)")
+
     def test_workspace_windows_job_is_hosted_cached_and_bounded(self) -> None:
         block = job_block(self.workflow, "test-windows", "release-contract")
         self.assertIn("runs-on: windows-latest", block)

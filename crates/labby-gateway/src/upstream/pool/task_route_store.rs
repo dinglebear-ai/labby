@@ -189,80 +189,79 @@ impl TaskRouteStore {
         upstream: &str,
         subject: &str,
     ) -> Result<usize, String> {
-        let upstream = upstream.to_owned();
-        let subject = subject.to_owned();
-        let result = self
-            .with_connection(move |connection| {
-                connection
-                    .execute(
-                        "DELETE FROM task_routes WHERE upstream_name = ?1 AND oauth_subject = ?2",
-                        params![upstream, subject],
-                    )
-                    .map_err(sqlite_error)
-            })
-            .await;
-        self.finish_revocation(result)
+        self.revoke(vec![upstream.to_owned()], Some(subject.to_owned()), true)
+            .await
     }
 
     pub(super) async fn remove_upstreams(&self, upstreams: Vec<String>) -> Result<usize, String> {
-        let result = self
-            .with_connection(move |connection| {
-                let tx = connection
-                    .transaction_with_behavior(TransactionBehavior::Immediate)
-                    .map_err(sqlite_error)?;
-                let mut removed = 0;
-                for upstream in upstreams {
-                    removed += tx
-                        .execute(
-                            "DELETE FROM task_routes WHERE upstream_name = ?1",
-                            [upstream],
-                        )
-                        .map_err(sqlite_error)?;
-                }
-                tx.commit().map_err(sqlite_error)?;
-                Ok(removed)
-            })
-            .await;
-        self.finish_revocation(result)
+        self.revoke(upstreams, None, false).await
     }
 
     pub(super) async fn remove_oauth_upstreams(
         &self,
         upstreams: Vec<String>,
     ) -> Result<usize, String> {
-        let result = self.with_connection(move |connection| {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
-            let mut removed = 0;
-            for upstream in upstreams {
-                removed += tx.execute("DELETE FROM task_routes WHERE upstream_name = ?1 AND oauth_subject IS NOT NULL", [upstream]).map_err(sqlite_error)?;
-            }
-            tx.commit().map_err(sqlite_error)?;
-            Ok(removed)
-        }).await;
-        self.finish_revocation(result)
+        self.revoke(upstreams, None, true).await
     }
 
     #[cfg(test)]
     pub(super) async fn remove_all_oauth(&self) -> Result<usize, String> {
-        let result = self
-            .with_connection(|connection| {
-                connection
-                    .execute(
-                        "DELETE FROM task_routes WHERE oauth_subject IS NOT NULL",
-                        [],
-                    )
-                    .map_err(sqlite_error)
-            })
-            .await;
-        self.finish_revocation(result)
+        let names = self.with_connection(|connection| {
+            let mut query = connection.prepare("SELECT DISTINCT upstream_name FROM task_routes WHERE oauth_subject IS NOT NULL").map_err(sqlite_error)?;
+            query.query_map([], |row| row.get(0)).map_err(sqlite_error)?
+                .collect::<Result<Vec<String>, _>>().map_err(sqlite_error)
+        }).await?;
+        self.revoke(names, None, true).await
     }
 
-    fn finish_revocation(&self, result: Result<usize, String>) -> Result<usize, String> {
-        if result.is_err() {
-            self.revocation_failed
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
-        result
+    /// Fence new task registrations before a configuration file can change.
+    pub(crate) async fn prepare_upstream_revocation(
+        &self,
+        upstreams: Vec<String>,
+    ) -> Result<(), String> {
+        let quarantine = Arc::clone(&self.revocation_failed);
+        self.with_connection(move |connection| {
+            quarantine.store(true, std::sync::atomic::Ordering::SeqCst);
+            let intent = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+            for upstream in upstreams {
+                intent.execute("INSERT INTO task_route_revocations(upstream_name, oauth_subject, oauth_only, prepared) VALUES (?1, NULL, 0, 1)", [upstream]).map_err(sqlite_error)?;
+            }
+            intent.commit().map_err(sqlite_error)
+        }).await
+    }
+
+    pub(crate) async fn complete_prepared_revocations(&self) -> Result<(), String> {
+        let quarantine = Arc::clone(&self.revocation_failed);
+        self.with_connection_unchecked(move |connection| {
+            task_route_schema::replay_revocations(connection, true)?;
+            quarantine.store(false, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+    }
+
+    async fn revoke(
+        &self,
+        upstreams: Vec<String>,
+        subject: Option<String>,
+        oauth_only: bool,
+    ) -> Result<usize, String> {
+        let quarantine = Arc::clone(&self.revocation_failed);
+        // Both intent and cleanup belong to the SQLite worker, which survives
+        // cancellation of its async caller. No cancellation gap can forget intent.
+        self.with_connection_unchecked(move |connection| {
+            quarantine.store(true, std::sync::atomic::Ordering::SeqCst);
+            let intent = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+            for upstream in upstreams {
+                intent.execute("INSERT INTO task_route_revocations(upstream_name, oauth_subject, oauth_only) VALUES (?1, ?2, ?3)",
+                    params![upstream, subject, oauth_only]).map_err(sqlite_error)?;
+            }
+            intent.commit().map_err(sqlite_error)?;
+            let removed = task_route_schema::replay_revocations(connection, false)?;
+            let pending: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM task_route_revocations)", [], |row| row.get(0)).map_err(sqlite_error)?;
+            quarantine.store(pending, std::sync::atomic::Ordering::SeqCst);
+            Ok(removed)
+        }).await
     }
 
     async fn with_connection<T, F>(&self, operation: F) -> Result<T, String>
@@ -278,6 +277,23 @@ impl TaskRouteStore {
                 "task routing quarantined after revocation persistence failure".to_string(),
             );
         }
+        let quarantine = Arc::clone(&self.revocation_failed);
+        self.with_connection_unchecked(move |connection| {
+            if quarantine.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(
+                    "task routing quarantined after revocation persistence failure".to_string(),
+                );
+            }
+            operation(connection)
+        })
+        .await
+    }
+
+    async fn with_connection_unchecked<T, F>(&self, operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+    {
         let permit = self
             .admission
             .clone()

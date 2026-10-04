@@ -372,7 +372,7 @@ jobs:
         run: Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force
       - name: Run installer contracts on Windows
         shell: pwsh
-        run: Invoke-Pester scripts/tests/install.ps1.Tests.ps1 -Output Detailed
+        run: Invoke-Pester scripts/tests/install.ps1.Tests.ps1 -CI -Output Detailed
 
   macos-installer:
     name: macOS installer behavioral contracts

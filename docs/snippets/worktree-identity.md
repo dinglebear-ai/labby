@@ -1,12 +1,15 @@
 ---
 name: worktree-identity
+title: Worktree identity snippet
+created: 2026-10-04
+updated: 2026-10-04
 description: Read a Mac worktree's exact Git identity and evidenced Codex session, GitHub PR and Linear associations without changing any repository or tracker.
-tags: [worktree, git, codex, github, linear, readonly, macpoo]
+tags: [worktree, git, codex, github, linear, readonly, example-host]
 inputs:
   path:
     type: string
     required: true
-    description: Absolute or ~/ worktree directory on macpoo; symlinks are canonicalized.
+    description: Absolute or ~/ worktree directory on example-host; symlinks are canonicalized.
   repo_hint:
     type: string
     required: false
@@ -40,7 +43,7 @@ inputs:
     default: 3
     description: Maximum Linear issue lookups, 1..5.
 tools:
-  - claude-macpoo::Bash
+  - claude-example-host::Bash
   - github::list_pull_requests
   - github::pull_request_read
   - linear-notification-worker::get_issue
@@ -48,20 +51,21 @@ tools:
 
 # Worktree identity
 
+Install both Python files together on the shell upstream host. Replace the fictional
+`claude-example-host::Bash` tool and `/opt/labby` path below with your installation
+bindings before saving the snippet. The helper runs on the selected shell host;
+its optional `expected_host` input rejects an unexpected host before Git reads.
+
 ## Tutorial: How this snippet is built
 
-The local reader `worktree-identity.py` uses the existing private Mac onboarding
-reader's `repository_info`, safe Git argv, remote redaction, and input admission.
+The local reader `worktree-identity.py` uses the repository-owned companion reader's `repository_info`, safe Git argv, remote redaction, and input admission.
 It adds Git worktree registration and a read-only SQLite metadata projection.
-It reads neither transcripts nor private message bodies. The runner is bound to
-macpoo; gateway filesystem paths are never substituted for Mac paths.
+It reads neither transcripts nor private message bodies. The runner executes on
+the configured shell upstream; gateway paths must not replace that host's paths.
 
-The canonical local helper is retained with this source at
-`/Users/jmagar/workspace/labby/docs/snippets/worktree-identity.py`.
-The existing identity dependency is
-`~/.local/share/labby/repo-onboarding/reader.py` (version 2.0.0).
-The helper is retained in the canonical checkout. No global instructions or
-automatic indexes are changed.
+The helper and `worktree-identity-reader.py` are retained together in this
+directory. `/opt/labby` is a fictional installation path used by the fixtures.
+No global instructions or automatic indexes are changed.
 
 Git root/common-dir/HEAD/branch are exact live observations. Missing paths return
 only an exact registered worktree's recorded identity; dirty state is unknown.
@@ -113,6 +117,7 @@ async (input = {}) => {
   const quote = v => "'" + String(v).replace(/'/g,"'\\''") + "'";
   const unpack = v => {
     for (let i=0;i<5;i++) {
+      if (v?.isError===true || v?.ok===false || v?.truncated===true) return v;
       if (typeof v==='string') {try {v=JSON.parse(v);continue;}catch{return v;}}
       if (v?.structuredContent) {v=v.structuredContent;continue;}
       if (Array.isArray(v?.content)) {v=v.content.filter(x=>x.type==='text').map(x=>x.text).join('\n');continue;}
@@ -140,8 +145,8 @@ async (input = {}) => {
   };
   const localInput={path:input.path,session_limit:input.session_limit??10,session_cursor:input.session_cursor??''};
   if (input.repo_hint!==undefined) localInput.repo_hint=input.repo_hint;
-  const core=await run('claude-macpoo::Bash',{
-    command:'python3 /Users/jmagar/workspace/labby/docs/snippets/worktree-identity.py --input-json '+quote(JSON.stringify(localInput)),
+  const core=await run('claude-example-host::Bash',{
+    command:'python3 /opt/labby/docs/snippets/worktree-identity.py --input-json '+quote(JSON.stringify(localInput)),
     timeout:20000,description:'Read exact worktree Git identity and Codex metadata'
   },'local_identity');
   if (!core || core.ok!==true || !core.identity) return {ok:false,snippet:'worktree-identity',error:core?.error??{kind:'local_identity_unavailable'},failures,timings};
@@ -149,7 +154,7 @@ async (input = {}) => {
   const result={ok:true,snippet:'worktree-identity',version:'1.0.0',host:core.host,identity:id,sessions:core.sessions,worktrees:core.worktrees,
     verified:{pull_requests:[],linear_issues:[]},unresolved:{pull_requests:[],linear_issues:[]},coverage:{sessions:core.sessions.coverage,github:{queried:false},linear:{queried:false}},failures,timings};
   const finish=()=>{
-    result.partial=failures.length>0||!core.sessions.coverage.available||core.sessions.coverage.incomplete||core.worktrees.truncated||result.coverage.github.incomplete===true||result.coverage.linear.incomplete===true;
+    result.partial=failures.length>0||!core.sessions.coverage.available||core.sessions.coverage.incomplete||core.sessions.coverage.malformed_metadata===true||core.worktrees.truncated||result.coverage.github.incomplete===true||result.coverage.github.body_inspection_incomplete===true||result.coverage.github.title_inspection_incomplete===true||result.coverage.linear.incomplete===true;
     if (JSON.stringify(result).length>13000){result.worktrees.items=[];result.worktrees.truncated=true;result.partial=true;result.coverage.output_reduced=true;}
     // UTF-8 may be larger than JS string length. Keep the actual JSON bounded.
     const bytes=s=>encodeURIComponent(s).replace(/%[0-9A-F]{2}|[^%]/g,'x').length;
@@ -216,6 +221,7 @@ async (input = {}) => {
     if(!verified)return;
     const body=typeof p.body==='string'?p.body.slice(0,12000):'';
     if(typeof p.body==='string'&&p.body.length>12000)result.coverage.github.body_inspection_incomplete=true;
+    if(typeof p.title==='string'&&p.title.length>500)result.coverage.github.title_inspection_incomplete=true;
     for(const text of [typeof p.title==='string'?p.title.slice(0,500):'',body]){
       for(const m of text.matchAll(issueKey))addKey(m[1],{source:url,match:'pr_issue_key_mention',confidence:'candidate'});
     }

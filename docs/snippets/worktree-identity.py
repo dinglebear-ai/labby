@@ -12,28 +12,38 @@ import socket
 import sqlite3
 import sys
 from urllib.parse import urlsplit
+from typing import Any, Protocol
+
+JsonObject = dict[str, Any]
+
+class IdentityReader(Protocol):
+    ContextError: type[Exception]
+    def git(self, root: Path, *args: str, optional: bool = False) -> str | None: ...
+    def remote_info(self, raw: object) -> JsonObject: ...
+    def clean_string(self, value: object, name: str, maximum: int = 4096, allow_empty: bool = False) -> str: ...
+    def repository_info(self, target: Path, override: str | None) -> tuple[Path, JsonObject]: ...
 
 VERSION = "1.0.0"
-HELPER = Path.home() / ".local/share/labby/repo-onboarding/reader.py"
+HELPER = Path(__file__).with_name("worktree-identity-reader.py")
 MAX_BYTES = 14000
 KEY = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,11}-[1-9][0-9]{0,8})(?![A-Za-z0-9])")
 PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]{0,8})(?![0-9])")
 
-def refs(text, source):
+def refs(text: object, source: str) -> JsonObject:
     """Return handles only; arbitrary task text never becomes commands or output."""
     text = text[:16000] if isinstance(text, str) else ""
     return {"issue_keys": [{"key": x, "source": source} for x in sorted({x.upper() for x in KEY.findall(text)})[:8]],
             "pull_requests": [{"repository": f"{a}/{b}", "number": int(n), "url": f"https://github.com/{a}/{b}/pull/{n}", "source": source}
                               for a,b,n in sorted(set(PR.findall(text)))[:8]]}
 
-def load_identity_reader(path=HELPER):
+def load_identity_reader(path: Path = HELPER) -> IdentityReader:
     spec = importlib.util.spec_from_file_location("labby_repository_onboarding", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("identity_reader_unavailable")
     reader = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(reader)
     original_remote_info=reader.remote_info
-    def normalize_remote(raw):
+    def normalize_remote(raw: object) -> JsonObject:
         value=original_remote_info(raw)
         if value.get("github_repo") or not isinstance(raw,str):return value
         try:
@@ -47,13 +57,13 @@ def load_identity_reader(path=HELPER):
     reader.remote_info=normalize_remote
     return reader
 
-def canon(path):
+def canon(path: str) -> str:
     return str(Path(path).resolve(strict=False))
 
-def same_or_child(path, root):
+def same_or_child(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip("/") + "/")
 
-def registrations(reader, root):
+def registrations(reader: IdentityReader, root: Path) -> list[JsonObject]:
     raw = reader.git(root, "worktree", "list", "--porcelain", "-z")
     if len(raw.encode()) > 262144:
         raise reader.ContextError("registration_budget", "Worktree registration exceeds 256 KiB")
@@ -76,7 +86,7 @@ def registrations(reader, root):
         raise reader.ContextError("registration_budget", "More than 256 registered worktrees")
     return out
 
-def attachment_roots(kind, value):
+def attachment_roots(kind: str, value: object) -> list[object]:
     if not isinstance(value, dict): return []
     if kind in ("worktree", "pull_request"):
         return [value.get("root")]
@@ -84,10 +94,10 @@ def attachment_roots(kind, value):
         return [value["worktree"].get("root")]
     return []
 
-def session_metadata(reader, home, identity, paths, limit, cursor):
+def session_metadata(reader: IdentityReader, home: Path, identity: JsonObject, paths: set[str], limit: int, cursor: str, records: list[JsonObject]) -> JsonObject:
     db = home / ".codex/state_5.sqlite"
     result = {"verified": [], "candidates": [], "issue_keys": [], "pull_requests": [],
-              "coverage": {"source": str(db), "transcripts_read": False, "titles_returned": False}}
+              "coverage": {"source": str(db), "transcripts_read": False, "titles_returned": False, "malformed_metadata": False}}
     if not db.is_file():
         result["coverage"].update(available=False, reason="metadata_database_missing")
         return result
@@ -130,10 +140,17 @@ def session_metadata(reader, home, identity, paths, limit, cursor):
         for row in rows[:scan_limit]:
             sid = row["id"]
             scanned += 1
-            if not re.fullmatch(r"[0-9a-fA-F-]{36}", sid): continue
+            if not isinstance(sid, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", sid):
+                result["coverage"]["malformed_metadata"] = True
+                continue
             cwd = row["cwd"]
             evidence = []
-            exact = isinstance(cwd,str) and cwd.startswith("/") and any(same_or_child(canon(cwd), p) for p in paths)
+            exact = False
+            if isinstance(cwd, str) and cwd.startswith("/") and len(cwd) <= 4096 and not re.search(r"[\x00-\x1f\x7f]", cwd):
+                canonical_cwd = canon(cwd)
+                owners = [r["path"] for r in records if same_or_child(canonical_cwd, r["path"])]
+                owner = max(owners, key=len) if owners else None
+                exact = owner == identity["root"] and any(same_or_child(canonical_cwd, p) for p in paths)
             if exact:
                 evidence.append({"source":str(db),"record":sid,"field":"threads.cwd","match":"canonical_worktree_path"})
             attached = []
@@ -141,18 +158,26 @@ def session_metadata(reader, home, identity, paths, limit, cursor):
                 attached = c.execute("SELECT attachment_type,payload FROM thread_attachments WHERE thread_id=? AND attachment_type IN ('worktree','archived_worktree','pull_request') ORDER BY id LIMIT 33", (sid,)).fetchall()
             hints = refs(row["title"], f"threads:{sid}:title")
             for a in attached[:32]:
-                if len(a["payload"].encode()) > 16000: continue
+                if not isinstance(a["payload"], str) or len(a["payload"].encode()) > 16000:
+                    result["coverage"]["malformed_metadata"] = True
+                    continue
                 try: value = json.loads(a["payload"])
-                except ValueError: continue
+                except ValueError:
+                    result["coverage"]["malformed_metadata"] = True
+                    continue
                 roots = attachment_roots(a["attachment_type"],value)
-                match = any(isinstance(p,str) and p.startswith("/") and canon(p) in paths for p in roots)
+                match = any(isinstance(p,str) and p.startswith("/") and len(p) <= 4096 and not re.search(r"[\x00-\x1f\x7f]", p) and canon(p) in paths for p in roots)
                 if match:
                     exact = True
                     evidence.append({"source":str(db),"record":sid,"field":f"thread_attachments.{a['attachment_type']}.root","match":"canonical_worktree_path"})
                     if a["attachment_type"] == "pull_request":
                         hints["pull_requests"].extend(refs(value.get("url"),f"attachments:{sid}:pull_request.url")["pull_requests"])
                     if a["attachment_type"] == "archived_worktree":
-                        for pr in value.get("pullRequests",[])[:8]:
+                        pull_requests = value.get("pullRequests", [])
+                        if not isinstance(pull_requests, list):
+                            result["coverage"]["malformed_metadata"] = True
+                            pull_requests = []
+                        for pr in pull_requests[:8]:
                             if isinstance(pr,dict): hints["pull_requests"].extend(refs(pr.get("url"),f"attachments:{sid}:archived_worktree.pullRequests")["pull_requests"])
             repo = reader.remote_info(row["git_origin_url"])["github_repo"]
             tuple_match = repo is not None and repo in identity["repository_candidates"] and (
@@ -160,7 +185,7 @@ def session_metadata(reader, home, identity, paths, limit, cursor):
             if not exact and not tuple_match: continue
             item = {"id":sid,"archived":bool(row["archived"]),"confidence":"high" if exact else "candidate",
                     "association":"recorded_path" if exact else "git_metadata_only","evidence":evidence,
-                    "git_branch":row["git_branch"],"git_head":row["git_sha"],
+                    "git_branch":row["git_branch"] if isinstance(row["git_branch"], str) and len(row["git_branch"]) <= 4096 else None,"git_head":row["git_sha"] if isinstance(row["git_sha"], str) and len(row["git_sha"]) <= 128 else None,
                     "historical_identity_differs":row["git_sha"] is not None and row["git_sha"] != identity.get("head")}
             if not exact:
                 item["evidence"]=[{"source":str(db),"record":sid,"field":"threads.git_origin_url/git_sha/git_branch","match":"repository_and_head_or_branch"}]
@@ -186,13 +211,17 @@ def session_metadata(reader, home, identity, paths, limit, cursor):
     finally:
         if c is not None:c.close()
 
-def inspect(inp, *, reader=None, home=None, hostname=None):
+def inspect(inp: object, *, reader: IdentityReader | None = None, home: Path | None = None, hostname: str | None = None) -> JsonObject:
     home = (home or Path.home()).resolve()
     reader = reader or load_identity_reader()
     host = hostname or socket.gethostname()
-    if host.lower().split(".")[0] != "macpoo":
-        raise reader.ContextError("wrong_host", "Expected the Mac identity host; no repository or session reads were made")
-    allowed = {"path","repo_hint","session_limit","session_cursor"}
+    if not isinstance(inp, dict):
+        raise reader.ContextError("invalid_input", "Input must be an object")
+    if "expected_host" in inp:
+        reader.clean_string(inp["expected_host"], "expected_host", maximum=255)
+    if inp.get("expected_host") and host.lower() != inp["expected_host"].lower():
+        raise reader.ContextError("wrong_host", "Expected host does not match; no repository or session reads were made")
+    allowed = {"path","repo_hint","session_limit","session_cursor","expected_host"}
     if not isinstance(inp,dict) or set(inp)-allowed:
         raise reader.ContextError("invalid_input", "Unknown input field")
     arg = reader.clean_string(inp.get("path"),"path")
@@ -204,7 +233,7 @@ def inspect(inp, *, reader=None, home=None, hostname=None):
     cursor = inp.get("session_cursor","")
     if type(limit) is not int or not 1 <= limit <= 20:
         raise reader.ContextError("invalid_input","session_limit must be 1..20")
-    if cursor and not re.fullmatch(r"[0-9a-fA-F-]{36}",cursor):
+    if not isinstance(cursor, str) or (cursor and not re.fullmatch(r"[0-9a-fA-F-]{36}",cursor)):
         raise reader.ContextError("invalid_input","session_cursor must be the returned session ID")
     if target.exists():
         if not target.is_dir(): raise reader.ContextError("invalid_path","path must be a directory")
@@ -235,7 +264,7 @@ def inspect(inp, *, reader=None, home=None, hostname=None):
     identity={k:info.get(k) for k in ("root","common_dir","git_dir","head","branch","detached","dirty","changes_count","remotes","repository_candidates")}
     identity.update(path=str(target),input_path=lexical,path_state=state,git_identity_source="live_git" if state=="live" else "git_worktree_registration",
                     confidence="exact",registration=found,repository_selection=info.get("github_repo"),multiple_remotes=len(repos)>1)
-    sessions=session_metadata(reader,home,identity,{str(Path(info["root"])),lexical} if state=="live" else {str(target),lexical},limit,cursor)
+    sessions=session_metadata(reader,home,identity,{str(Path(info["root"])),lexical} if state=="live" else {str(target),lexical},limit,cursor,records)
     if state == "live":
         current_head=reader.git(root,"rev-parse","--verify","HEAD",optional=True)
         current_branch=reader.git(root,"symbolic-ref","--quiet","--short","HEAD",optional=True)
@@ -248,7 +277,7 @@ def inspect(inp, *, reader=None, home=None, hostname=None):
             "worktrees":{"total":len(records),"items":records[:24],"truncated":len(records)>24},
             "limits":{"network_contacted":False,"transcripts_read":False,"output_bytes":MAX_BYTES,"git_registration_limit":256}}
 
-def main():
+def main() -> None:
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument("--input-json",required=True)
     ns=p.parse_args()

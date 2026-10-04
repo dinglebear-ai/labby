@@ -4,6 +4,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import type { DepotArtifact } from '@/lib/api/depot-client'
+import { RequestLanes } from './request-lanes'
 import { ArtifactResults, importArtifactSelection, depotCoveragePulse, discoveryCountLabel, discoveryFailureMessage, exactImportConnection, exactImportParams, mergeArtifactPages } from './depot-page-content'
 
 test('unavailable catalog counts remain unknown rather than implying an empty catalog', () => {
@@ -134,4 +135,27 @@ test('bulk imports stop and preserve selection when context changes in flight', 
   assert.equal(outcome, undefined)
   assert.equal(calls, 1)
   assert.deepEqual(cleared, [])
+})
+
+test('bulk imports stay cancelled after navigating away and back to the same context', async () => {
+  const lanes = new RequestLanes()
+  const generation = lanes.begin('bulk-import')
+  let context = 'A'
+  let finishImport!: (result: boolean) => void
+  const pendingImport = new Promise<boolean>(resolve => { finishImport = resolve })
+  const imported: string[] = []
+  const calls: string[] = []
+  const outcome = importArtifactSelection([
+    { providerId: 'public', artifactId: 'first' }, { providerId: 'public', artifactId: 'second' },
+  ], async item => { calls.push(item.artifactId); return pendingImport },
+  () => context === 'A' && lanes.isCurrent('bulk-import', generation),
+  item => { imported.push(item.artifactId) })
+  context = 'B'
+  lanes.invalidateContext()
+  context = 'A'
+  lanes.invalidateContext()
+  finishImport(true)
+  assert.equal(await outcome, undefined)
+  assert.deepEqual(calls, ['first'])
+  assert.deepEqual(imported, [])
 })

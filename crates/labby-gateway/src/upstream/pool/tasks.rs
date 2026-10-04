@@ -274,26 +274,29 @@ impl UpstreamPool {
         )
         .await
         .map_err(|error| error.to_string())?;
-        let _publication = self.task_publication_guard(&durable_route).await?;
-        self.check_task_companion(&durable_route, &relay_routes)
-            .await?;
-        let previous = durable_route.clone();
-        durable_route.observe(&result.task.task)?;
-        // Stable polls need only a durable read, not a redundant FULL-sync write.
-        if durable_route != previous {
-            self.task_route_store.as_ref().ok_or_else(task_not_found)?
-                .update_hints(durable_route.clone()).await.map_err(|error| {
-                    tracing::error!(action = "task.route.update", error = %error, "task retention update was not durable");
-                    "task routing unavailable".to_string()
-                })?;
-        }
-        if let Some(live) = self.task_routes.write().await.get_mut(&gateway_task_id)
-            && live.record.updated_at_unix_ms <= durable_route.updated_at_unix_ms
-        {
-            live.record = durable_route;
-        }
-        result.task.task.task_id = gateway_task_id;
-        Ok(result)
+        reconnect::finish_task_request(self.request_timeout, start, &context, async {
+            let _publication = self.task_publication_guard(&durable_route).await?;
+            self.check_task_companion(&durable_route, &relay_routes)
+                .await?;
+            let previous = durable_route.clone();
+            durable_route.observe(&result.task.task)?;
+            // Stable polls need only a durable read, not a redundant FULL-sync write.
+            if durable_route != previous {
+                self.task_route_store.as_ref().ok_or_else(task_not_found)?
+                    .update_hints(durable_route.clone()).await.map_err(|error| {
+                        tracing::error!(action = "task.route.update", error = %error, "task retention update was not durable");
+                        "task routing unavailable".to_string()
+                    })?;
+            }
+            if let Some(live) = self.task_routes.write().await.get_mut(&gateway_task_id)
+                && live.record.updated_at_unix_ms <= durable_route.updated_at_unix_ms
+            {
+                live.record = durable_route;
+            }
+            result.task.task.task_id = gateway_task_id;
+            Ok(result)
+        })
+        .await
     }
 
     pub async fn update_task_routed(
@@ -381,23 +384,26 @@ impl UpstreamPool {
         )
         .await
         .map_err(|error| error.to_string())?;
-        let _publication = self.task_publication_guard(&durable_route).await?;
-        self.check_task_companion(&durable_route, &relay_routes)
-            .await?;
-        drop(_publication);
-        let delivered = relay_routes
-            .wait_for_task_notification_after(
-                notification_sequence,
-                TASK_NOTIFICATION_DELIVERY_GRACE,
-            )
-            .await;
-        tracing::debug!(
-            upstream = %upstream_name,
-            gateway_task_id,
-            delivered,
-            "task update notification delivery barrier finished"
-        );
-        Ok(())
+        reconnect::finish_task_request(self.request_timeout, start, &context, async {
+            let _publication = self.task_publication_guard(&durable_route).await?;
+            self.check_task_companion(&durable_route, &relay_routes)
+                .await?;
+            drop(_publication);
+            let delivered = relay_routes
+                .wait_for_task_notification_after(
+                    notification_sequence,
+                    TASK_NOTIFICATION_DELIVERY_GRACE,
+                )
+                .await;
+            tracing::debug!(
+                upstream = %upstream_name,
+                gateway_task_id,
+                delivered,
+                "task update notification delivery barrier finished"
+            );
+            Ok(())
+        })
+        .await
     }
 
     pub async fn cancel_task_routed(
@@ -483,23 +489,26 @@ impl UpstreamPool {
         )
         .await
         .map_err(|error| error.to_string())?;
-        let _publication = self.task_publication_guard(&durable_route).await?;
-        self.check_task_companion(&durable_route, &relay_routes)
-            .await?;
-        drop(_publication);
-        let delivered = relay_routes
-            .wait_for_task_notification_after(
-                notification_sequence,
-                TASK_NOTIFICATION_DELIVERY_GRACE,
-            )
-            .await;
-        tracing::debug!(
-            upstream = %upstream_name,
-            gateway_task_id,
-            delivered,
-            "task cancel notification delivery barrier finished"
-        );
-        Ok(())
+        reconnect::finish_task_request(self.request_timeout, start, &context, async {
+            let _publication = self.task_publication_guard(&durable_route).await?;
+            self.check_task_companion(&durable_route, &relay_routes)
+                .await?;
+            drop(_publication);
+            let delivered = relay_routes
+                .wait_for_task_notification_after(
+                    notification_sequence,
+                    TASK_NOTIFICATION_DELIVERY_GRACE,
+                )
+                .await;
+            tracing::debug!(
+                upstream = %upstream_name,
+                gateway_task_id,
+                delivered,
+                "task cancel notification delivery barrier finished"
+            );
+            Ok(())
+        })
+        .await
     }
 }
 
@@ -530,6 +539,18 @@ mod tests {
         pub(super) updates: Arc<Mutex<Vec<String>>>,
         pub(super) cancellations: Arc<Mutex<Vec<String>>>,
         fail_get_task: Arc<std::sync::atomic::AtomicBool>,
+        publication_gate: Arc<Mutex<Option<Arc<Mutex<()>>>>>,
+        publication_holder: Arc<Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>>,
+        response_ready: Arc<tokio::sync::Notify>,
+    }
+
+    impl TaskServer {
+        async fn hold_publication_before_response(&self) {
+            if let Some(gate) = self.publication_gate.lock().await.clone() {
+                *self.publication_holder.lock().await = Some(gate.lock_owned().await);
+                self.response_ready.notify_one();
+            }
+        }
     }
 
     impl ServerHandler for TaskServer {
@@ -547,6 +568,7 @@ mod tests {
             request: GetTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<GetTaskResult, ErrorData> {
+            self.hold_publication_before_response().await;
             if self.fail_get_task.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(ErrorData::internal_error("task backend unavailable", None));
             }
@@ -568,6 +590,7 @@ mod tests {
             request: UpdateTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<(), ErrorData> {
+            self.hold_publication_before_response().await;
             self.updates.lock().await.push(request.task_id);
             Ok(())
         }
@@ -577,6 +600,7 @@ mod tests {
             request: CancelTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<(), ErrorData> {
+            self.hold_publication_before_response().await;
             self.cancellations.lock().await.push(request.task_id);
             Ok(())
         }
@@ -1119,5 +1143,80 @@ mod tests {
             ],
             "task RPCs must record usage telemetry through the bulkhead path"
         );
+    }
+    #[tokio::test]
+    async fn routed_task_completion_cancels_while_post_rpc_publication_is_blocked() {
+        for operation in ["get", "update", "cancel"] {
+            let (pool, server, downstream, key) = task_pool().await;
+            let authorization = super::TaskRouteAuthorization::root();
+            let response = pool
+                .register_task_response(
+                    &key,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    Some("alice"),
+                    authorization.clone(),
+                    create_task_response(),
+                )
+                .await
+                .unwrap();
+            let CallToolResponse::Task(created) = response else {
+                unreachable!()
+            };
+            let id = created.task.task_id;
+            *server.publication_gate.lock().await = Some(pool.lazy_connect_lock(&key.0).await);
+            let context = super::TaskCallContext::default();
+            let call = async {
+                match operation {
+                    "get" => pool
+                        .get_task_routed_with_context(
+                            GetTaskParams::new(&id),
+                            Some("alice"),
+                            &authorization,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "update" => {
+                        pool.update_task_routed_with_context(
+                            UpdateTaskParams::new(&id, InputResponses::default()),
+                            Some("alice"),
+                            &authorization,
+                            &id,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                    }
+                    _ => {
+                        pool.cancel_task_routed_with_context(
+                            CancelTaskParams::new(&id),
+                            Some("alice"),
+                            &authorization,
+                            &id,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                    }
+                }
+            };
+            let cancel = async {
+                server.response_ready.notified().await;
+                // The upstream response is ready while the real pool gate is held.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                context.cancellation.cancel();
+            };
+            let (result, ()) =
+                tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(call, cancel) })
+                    .await
+                    .expect("post-RPC cancellation must not wait for publication gate release");
+            assert_eq!(result.unwrap_err(), "task request cancelled", "{operation}");
+            server.publication_holder.lock().await.take();
+            assert!(server.updates.lock().await.len() <= 1);
+            assert!(server.cancellations.lock().await.len() <= 1);
+            pool.close_task_companions("test.complete").await;
+            downstream.cancel().await.unwrap();
+        }
     }
 }

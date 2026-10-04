@@ -6,30 +6,31 @@ use std::sync::OnceLock;
 /// Caller holds STORE_MUTATION; remember only completed passes so cancelled
 /// admission remains eligible for retry. Pressure-triggered pruning bypasses
 /// this routine coalescing while preserving the same storage mutation lock.
-pub(super) async fn prune_once(root: &Path, pass: impl Future<Output = ()>) {
+pub(super) async fn prune_once(root: &Path, pass: impl Future<Output = ()>) -> bool {
     static COMPLETED: OnceLock<tokio::sync::Mutex<VecDeque<PathBuf>>> = OnceLock::new();
     run_retention_once(
         COMPLETED.get_or_init(|| tokio::sync::Mutex::new(VecDeque::new())),
         root,
         pass,
     )
-    .await;
+    .await
 }
 
 async fn run_retention_once(
     completed: &tokio::sync::Mutex<VecDeque<PathBuf>>,
     root: &Path,
     pass: impl Future<Output = ()>,
-) {
+) -> bool {
     let mut completed = completed.lock().await;
     if completed.iter().any(|path| path == root) {
-        return;
+        return false;
     }
     pass.await;
     while completed.len() >= 1024 {
         completed.pop_front();
     }
     completed.push_back(root.to_owned());
+    true
 }
 
 #[cfg(test)]

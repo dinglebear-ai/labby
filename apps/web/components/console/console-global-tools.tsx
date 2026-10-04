@@ -302,6 +302,8 @@ export function PhoenixAvailability() {
 
   const addAttachments = async (files: FileList | null) => {
     if (!files?.length) return
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     const selected = Array.from(files).slice(0, Math.max(0, 4 - attachments.length))
     const textLike = (file: File) => file.type.startsWith('text/') || /^(application\/(json|javascript|xml|yaml|x-yaml))$/.test(file.type) || /\.(md|txt|json|jsonl|ya?ml|toml|csv|ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|kts|sh|bash|zsh|fish|html?|css|scss|xml|sql|graphql|gql|ini|conf|log)$/i.test(file.name)
     const classify = (file: File): PhoenixAttachment['type'] | undefined => {
@@ -311,17 +313,22 @@ export function PhoenixAvailability() {
     }
     const accepted = selected.map((file) => ({ file, type: classify(file) })).filter((entry): entry is { file: File; type: PhoenixAttachment['type'] } => Boolean(entry.type))
     if (accepted.length !== selected.length) setError('Phoenix accepts PNG/JPEG/WebP images, supported audio, and UTF-8 text/code files up to 512 KiB. Binary files are not supported by Codex App Server input.')
-    const encoded = await Promise.all(accepted.map(({ file, type }) => new Promise<PhoenixAttachment>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const raw = String(reader.result)
-        const url = type === 'text' ? 'data:text/plain;base64,' + (raw.split(',', 2)[1] ?? '') : raw
-        resolve({ type, url, name: file.name })
-      }
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })))
-    setAttachments((current) => [...current, ...encoded].slice(0, 4))
+    try {
+      const encoded = await Promise.all(accepted.map(({ file, type }) => new Promise<PhoenixAttachment>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const raw = String(reader.result)
+          const url = type === 'text' ? 'data:text/plain;base64,' + (raw.split(',', 2)[1] ?? '') : raw
+          resolve({ type, url, name: file.name })
+        }
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })))
+      if (!isCurrent()) return
+      setAttachments((current) => [...current, ...encoded].slice(0, 4))
+    } catch {
+      if (isCurrent()) setError('Phoenix could not read the selected attachments. Try selecting the files again.')
+    }
   }
 
   const closePanel = async () => {
@@ -337,15 +344,19 @@ export function PhoenixAvailability() {
 
   const interruptTurn = async () => {
     if (!sessionId || !sending || interrupting) return
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     setInterrupting(true)
     setError(undefined)
     try {
       const updated = await phoenixApi.interrupt(sessionId)
+      if (!isCurrent()) return
       setWorkflowNotice(updated.status === 'interrupting' ? 'Stopping the active turn' : undefined)
     } catch (reason) {
+      if (!isCurrent()) return
       setError(reason instanceof Error ? reason.message : 'Phoenix could not stop the turn')
     } finally {
-      setInterrupting(false)
+      if (isCurrent()) setInterrupting(false)
     }
   }
 
@@ -369,6 +380,7 @@ export function PhoenixAvailability() {
   const switchThread = async (id: string) => {
     const requestGeneration = ++requestGenerationRef.current
     setSending(false)
+    setInterrupting(false)
     setSteering(false)
     setWorkflowNotice(undefined)
     setError(undefined)
@@ -376,6 +388,7 @@ export function PhoenixAvailability() {
       const thread = await phoenixApi.read(id)
       if (requestGeneration !== requestGenerationRef.current) return
       setSessionId(id)
+      setAttachments([])
       setTitle(threadHistory.find((item) => item.session_id === id)?.title || 'Phoenix')
       setMessages(thread.messages)
       setEvents(thread.events ?? [])
@@ -389,25 +402,32 @@ export function PhoenixAvailability() {
   const startNewThread = () => {
     requestGenerationRef.current += 1
     setSending(false)
+    setInterrupting(false)
     setSteering(false)
     setWorkflowNotice(undefined)
     setSessionId(undefined)
     setMessages([])
     setEvents([])
+    setAttachments([])
     setInput('')
     setThreadMenuOpen(false)
   }
 
   const commitTitle = async () => {
+    const requestGeneration = requestGenerationRef.current
+    const activeSessionId = sessionId
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     const nextTitle = title.trim() || 'Phoenix'
     const priorTitle = threadHistory.find((thread) => thread.session_id === sessionId)?.title || 'Phoenix'
     setTitle(nextTitle)
     setEditingTitle(false)
-    if (!sessionId) return
+    if (!activeSessionId) return
     try {
-      const renamed = await phoenixApi.rename(sessionId, nextTitle)
-      setThreadHistory((current) => current.map((thread) => thread.session_id === sessionId ? renamed : thread))
+      const renamed = await phoenixApi.rename(activeSessionId, nextTitle)
+      if (!isCurrent()) return
+      setThreadHistory((current) => current.map((thread) => thread.session_id === activeSessionId ? renamed : thread))
     } catch (reason) {
+      if (!isCurrent()) return
       setTitle(priorTitle)
       setError(reason instanceof Error ? reason.message : 'Phoenix could not rename that thread')
     }

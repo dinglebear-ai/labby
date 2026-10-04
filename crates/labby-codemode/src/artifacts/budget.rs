@@ -21,6 +21,14 @@ struct Usage {
 // Unlike retention's best-effort walk, admission fails closed on unreadable
 // paths. Metadata is bounded separately and is not artifact payload usage.
 async fn usage(root: &Path, store: bool) -> Result<Usage, ToolError> {
+    #[cfg(test)]
+    if store {
+        *store_scan_counts()
+            .lock()
+            .unwrap()
+            .entry(root.to_owned())
+            .or_default() += 1;
+    }
     let mut usage = Usage::default();
     let mut stack = vec![(root.to_path_buf(), !store)];
     while let Some((path, is_run)) = stack.pop() {
@@ -125,16 +133,20 @@ async fn admit_with_limits(
         pruning_budget,
         &active,
     );
-    if under_pressure {
+    let reconciled = if under_pressure {
         prune.await;
         reclaim_inactive(store, max_store_bytes.saturating_sub(bytes), &active).await?;
+        true
     } else {
-        super::retention::prune_once(root, prune).await;
-    }
-    let stored = if max_store_bytes > 0 {
+        super::retention::prune_once(root, prune).await
+    };
+    // STORE_MUTATION excludes in-process publication and retention throughout
+    // admission. A coalesced pass makes no changes, so the authoritative scan
+    // above remains valid; no cached usage survives this admission.
+    let stored = if max_store_bytes > 0 && reconciled {
         usage(store, true).await?.bytes
     } else {
-        0
+        stored_before
     };
     if max_store_bytes > 0
         && (stored > max_store_bytes || bytes > max_store_bytes.saturating_sub(stored))
@@ -184,3 +196,12 @@ async fn reclaim_inactive(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+fn store_scan_counts()
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, usize>> {
+    static COUNTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, usize>>,
+    > = std::sync::OnceLock::new();
+    COUNTS.get_or_init(Default::default)
+}

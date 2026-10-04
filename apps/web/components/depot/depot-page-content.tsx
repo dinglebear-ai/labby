@@ -322,8 +322,8 @@ function SessionDepotPage() {
       return
     }
     const epoch = getBrowserSessionEpoch()
-    const context = contextRef.current
-    const isCurrent = () => epoch === getBrowserSessionEpoch() && context === contextRef.current
+    const generation = lanes.current.begin('bulk-import')
+    const isCurrent = () => epoch === getBrowserSessionEpoch() && lanes.current.isCurrent('bulk-import', generation)
     setBulkImporting(true)
     try {
       const outcome = await importArtifactSelection(chosen, importArtifact, isCurrent, artifact => {

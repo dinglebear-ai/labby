@@ -288,3 +288,83 @@ pub(super) fn preserves_task_ownership(reason: &str) -> bool {
         "oauth.credentials.refresh" | "oauth.client_cache.capacity" | "upstream.restart"
     )
 }
+
+/// Final authorization, durable publication and delivery use the same caller
+/// budget as connection acquisition and the RPC. Dropping this future never
+/// retries an already acknowledged upstream mutation.
+pub(super) async fn finish_task_request<T>(
+    timeout: std::time::Duration,
+    start: Instant,
+    context: &TaskCallContext,
+    finish: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    if start.elapsed() >= timeout {
+        return Err("task request completion timed out".to_string());
+    }
+    tokio::select! {
+        biased;
+        () = context.cancellation.cancelled() => Err("task request cancelled".to_string()),
+        result = tokio::time::timeout(timeout.saturating_sub(start.elapsed()), finish) =>
+            result.map_err(|_| "task request completion timed out".to_string())?,
+    }
+}
+
+#[cfg(test)]
+mod completion_budget_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn post_response_gate_wait_obeys_caller_cancellation() {
+        let gate = tokio::sync::Mutex::new(());
+        let _holder = gate.lock().await;
+        let context = TaskCallContext::default();
+        let wait = finish_task_request(
+            std::time::Duration::from_secs(30),
+            Instant::now(),
+            &context,
+            async {
+                let _guard = gate.lock().await;
+                Ok(())
+            },
+        );
+        let cancel = async {
+            tokio::task::yield_now().await;
+            context.cancellation.cancel();
+        };
+        let (result, ()) = tokio::join!(wait, cancel);
+        assert_eq!(result.unwrap_err(), "task request cancelled");
+    }
+
+    #[tokio::test]
+    async fn post_response_gate_wait_obeys_original_remaining_budget() {
+        let gate = tokio::sync::Mutex::new(());
+        let _holder = gate.lock().await;
+        let context = TaskCallContext::default();
+        let result = finish_task_request(
+            std::time::Duration::from_millis(20),
+            Instant::now()
+                .checked_sub(std::time::Duration::from_millis(15))
+                .unwrap(),
+            &context,
+            async {
+                let _guard = gate.lock().await;
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(result.unwrap_err(), "task request completion timed out");
+    }
+    #[tokio::test]
+    async fn expired_completion_budget_does_not_poll_a_ready_publication() {
+        let published = std::sync::atomic::AtomicBool::new(false);
+        let context = TaskCallContext::default();
+        let result =
+            finish_task_request(std::time::Duration::ZERO, Instant::now(), &context, async {
+                published.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            })
+            .await;
+        assert_eq!(result.unwrap_err(), "task request completion timed out");
+        assert!(!published.load(std::sync::atomic::Ordering::Relaxed));
+    }
+}

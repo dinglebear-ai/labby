@@ -428,3 +428,170 @@ test('copying a prompt to a fresh conversation is explicit and waits for review 
     __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   }
 })
+
+for (const fails of [false, true]) {
+  test(`Phoenix fences stale interruption ${fails ? 'failures' : 'successes'} and preserves a newer interruption`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    const turns: Array<(response: Response) => void> = []
+    const interrupts: Array<(response: Response) => void> = []
+    let started = 0
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      if (action === 'phoenix.status') return response({ available: true, capabilities: { turn_lifecycle: ['interrupt'], unsupported: [] } })
+      if (action === 'phoenix.models.list') return response({ models: [] })
+      if (action === 'phoenix.session.list') return response({ sessions: [] })
+      if (action === 'phoenix.session.start') return response({ session_id: `session-${++started}`, messages: [] })
+      if (action === 'phoenix.turn.send') return new Promise<Response>(resolve => { turns.push(resolve) })
+      if (action === 'phoenix.turn.interrupt') return new Promise<Response>(resolve => { interrupts.push(resolve) })
+      return response({ messages: [] })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    const send = async (value: string) => {
+      await act(async () => {
+        const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')!
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
+        input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+      })
+      await act(async () => {
+        document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+    }
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await send('old question')
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Stop Phoenix"]')!.click())
+      assert.equal(interrupts.length, 1)
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      const newButton = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('New'))!
+      await act(async () => newButton.click())
+      await send('new question')
+      const stop = document.querySelector<HTMLButtonElement>('[aria-label="Stop Phoenix"]')!
+      assert.ok(stop)
+      assert.equal(stop.disabled, false)
+      await act(async () => stop.click())
+      assert.equal(interrupts.length, 2)
+      await act(async () => {
+        interrupts[0](response(fails ? { message: 'OLD INTERRUPT ERROR' } : { status: 'interrupting' }, fails ? 500 : 200))
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.doesNotMatch(document.body.textContent ?? '', /OLD INTERRUPT ERROR|Stopping the active turn/)
+      assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="Stopping Phoenix"]')?.disabled, true)
+      await act(async () => {
+        interrupts[1](response({ status: 'interrupting' }))
+        turns.forEach(resolve => resolve(response({ messages: [] })))
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.match(document.body.textContent ?? '', /Stopping the active turn/)
+    } finally {
+      globalThis.fetch = originalFetch
+      await view.unmount()
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+for (const transition of ['thread', 'identity', 'read failure'] as const) {
+  test(`Phoenix discards a deferred attachment after ${transition} changes`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const originalReader = globalThis.FileReader
+    let finishRead!: () => void
+    class DeferredReader extends window.FileReader {
+      override readAsDataURL() {
+        finishRead = () => {
+          if (transition === 'read failure') {
+            this.onerror?.(new window.ProgressEvent('error') as unknown as ProgressEvent<FileReader>)
+            return
+          }
+          Object.defineProperty(this, 'result', { configurable: true, value: 'data:text/plain;base64,cHJpdmF0ZQ==' })
+          this.onload?.(new window.ProgressEvent('load') as unknown as ProgressEvent<FileReader>)
+        }
+      }
+    }
+    globalThis.FileReader = DeferredReader
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      return new Response(JSON.stringify(action === 'phoenix.status' ? { available: true } : action === 'phoenix.models.list' ? { models: [] } : { sessions: [] }))
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      const picker = document.querySelector<HTMLInputElement>('[aria-label="Attach image or file"]')!
+      Object.defineProperty(picker, 'files', { configurable: true, value: [new window.File(['private'], 'private.txt', { type: 'text/plain' })] })
+      await act(async () => picker.dispatchEvent(new window.Event('change', { bubbles: true })))
+      assert.ok(finishRead)
+      if (transition === 'thread') {
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+        const newButton = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('New'))!
+        await act(async () => newButton.click())
+      } else if (transition === 'identity') {
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+        await view.rerender(<PhoenixAvailability />)
+        __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'other-operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'other-csrf' })
+        await view.rerender(<PhoenixAvailability />)
+      }
+      await act(async () => { finishRead(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(document.querySelector('[aria-label="Phoenix attachments"]') === null)
+      if (transition === 'read failure') assert.match(document.body.textContent ?? '', /could not read the selected attachments/)
+    } finally {
+      await view.unmount()
+      globalThis.fetch = originalFetch
+      globalThis.FileReader = originalReader
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+test('Phoenix ignores a rename failure after opening another conversation', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  let failRename!: (response: Response) => void
+  const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    if (action === 'phoenix.status') return response({ available: true })
+    if (action === 'phoenix.models.list') return response({ models: [] })
+    if (action === 'phoenix.session.list') return response({ sessions: [{ session_id: 'A', title: 'Conversation A' }, { session_id: 'B', title: 'Conversation B' }] })
+    if (action === 'phoenix.session.rename') return new Promise<Response>(resolve => { failRename = resolve })
+    return response({ messages: [] })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  const openThread = async (title: string) => {
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+    const button = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(item => item.textContent === title)!
+    assert.ok(button)
+    await act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await openThread('Conversation A')
+    await act(async () => document.querySelector<HTMLElement>('[title="Click to rename"]')!.click())
+    const titleInput = document.querySelector<HTMLInputElement>('[aria-label="Conversation title"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(titleInput, 'Renamed A')
+      titleInput.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'Renamed A' }) as unknown as Event)
+    })
+    await act(async () => titleInput.blur())
+    assert.ok(failRename)
+    await openThread('Conversation B')
+    await act(async () => { failRename(response({ message: 'OLD RENAME ERROR' }, 500)); await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.equal(document.querySelector('[title="Click to rename"]')?.textContent, 'Conversation B')
+    assert.doesNotMatch(document.body.textContent ?? '', /OLD RENAME ERROR/)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})

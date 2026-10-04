@@ -115,7 +115,7 @@ unroutable.
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
 | MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |
-| Tasks | Opaque, durable-before-ack handles; shared owner/config authorization on get/update/cancel; retained relay still required | task routing, durable-store, registration-race, and relay task-status regressions |
+| Tasks | Opaque, durable-before-ack handles; shared owner/config authorization on get/update/cancel; authorized relay reacquisition after restart | task routing, durable-store, registration-race, and relay task-status regressions |
 | Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
 | Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
 | Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | relay connector/route tests plus the multi-hop driver |
@@ -173,6 +173,17 @@ and response publication. Credential revocation and configuration replacement
 delete affected mappings, including routes with no live companion; same-owner
 credential refresh retains mappings while retiring old peers. Failed durable
 revocation reports an error and quarantines further task routing in that store.
+Revocation intent is persisted before credential or configuration replacement.
+On restart, pending intent is replayed before routes become available; reopening
+fails if deletion still cannot complete. A failed configuration commit can leave
+task routing conservatively quarantined until reconciliation or restart. Task
+route schema version 3 migrates versions 1 and 2 without discarding unaffected routes;
+older binaries reject the new schema rather than reopening it unsafely.
+Before upgrading, retain a SQLite-consistent backup and check schema version,
+`PRAGMA integrity_check`, route counts, and pending revocation counts. Prefer a
+forward fix when rolling back code: restoring an old database after credential
+revocation or configuration replacement can restore obsolete task authority. A
+restore requires reconciling those changes before serving routes.
 
 Task input requests and terminal payloads remain upstream-owned and are fetched
 through the same authorized route after restart. Reconnectable task subscriptions,

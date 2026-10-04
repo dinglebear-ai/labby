@@ -203,3 +203,31 @@ async fn admission_reclaims_last_byte_for_store_sized_payload() {
     assert!(!inactive.exists());
     assert_eq!(usage(dir.path(), true).await.unwrap().bytes, 5);
 }
+
+#[tokio::test]
+async fn coalesced_retention_uses_one_authoritative_store_scan_per_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = run(dir.path());
+    write_with_limits(&root, "first", b"1", 100, 100, 100)
+        .await
+        .unwrap();
+    let before = store_scan_counts().lock().unwrap()[dir.path()];
+    write_with_limits(&root, "second", b"2", 100, 100, 100)
+        .await
+        .unwrap();
+    let after = store_scan_counts().lock().unwrap()[dir.path()];
+    assert_eq!(
+        after - before,
+        1,
+        "coalesced retention cannot require another complete scan"
+    );
+    // Each admission still consults disk instead of trusting a stale cache.
+    std::fs::write(root.join("external"), vec![0; 99]).unwrap();
+    assert_eq!(
+        write_with_limits(&root, "third", b"3", 100, 200, 100)
+            .await
+            .unwrap_err()
+            .kind(),
+        "budget_exceeded"
+    );
+}

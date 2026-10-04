@@ -297,3 +297,217 @@ async fn failed_revocation_quarantines_reads_and_later_writes() {
     );
     assert!(store.insert(record()).await.is_err());
 }
+
+#[tokio::test]
+async fn failed_file_revocation_remains_denied_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("routes.db");
+    let store = TaskRouteStore::open(path.clone()).await.unwrap();
+    let mut route = record();
+    route.ttl_ms = None;
+    store.insert(route.clone()).await.unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER deny_revocation BEFORE DELETE ON task_routes BEGIN SELECT RAISE(ABORT, 'denied'); END;").unwrap();
+    assert!(
+        store
+            .remove_oauth_subject("example", "oauth-alice")
+            .await
+            .is_err()
+    );
+    drop(store);
+    assert!(
+        TaskRouteStore::open(path.clone()).await.is_err(),
+        "pending revocation must prevent reopening while deletion fails"
+    );
+    db.execute_batch("DROP TRIGGER deny_revocation").unwrap();
+    let recovered = TaskRouteStore::open(path).await.unwrap();
+    assert!(
+        recovered
+            .get(&route.public_task_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn cancelled_revocation_worker_retains_durable_intent() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("routes.db");
+    let store = TaskRouteStore::open(path.clone()).await.unwrap();
+    let mut route = record();
+    route.ttl_ms = None;
+    store.insert(route).await.unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TRIGGER deny_revocation BEFORE DELETE ON task_routes BEGIN SELECT RAISE(ABORT, 'denied'); END; BEGIN IMMEDIATE;").unwrap();
+    let worker_store = store.clone();
+    let request = tokio::spawn(async move {
+        worker_store
+            .remove_oauth_subject("example", "oauth-alice")
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while store.connection.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    db.execute_batch("COMMIT").unwrap();
+    // Acquiring the connection waits for the uncancelled SQLite worker to finish.
+    drop(store.connection.lock().await);
+    drop(store);
+    assert!(
+        TaskRouteStore::open(path).await.is_err(),
+        "caller cancellation must not forget the pending revocation"
+    );
+}
+
+#[tokio::test]
+async fn version_one_migration_preserves_routes_and_installs_revocation_intents() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("routes.db");
+    let store = TaskRouteStore::open(path.clone()).await.unwrap();
+    let route = record();
+    store.insert(route.clone()).await.unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch(
+        "DROP TABLE task_route_revocations; UPDATE task_route_meta SET schema_version = 1;",
+    )
+    .unwrap();
+    drop(db);
+    let upgraded = TaskRouteStore::open(path).await.unwrap();
+    assert_eq!(
+        upgraded.get(&route.public_task_id).await.unwrap(),
+        Some(route)
+    );
+    assert_eq!(
+        upgraded
+            .remove_oauth_subject("example", "oauth-alice")
+            .await
+            .unwrap(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn queued_lookup_cannot_bypass_failed_revocation_quarantine() {
+    let store = TaskRouteStore::open_in_memory().await.unwrap();
+    let mut route = record();
+    route.ttl_ms = None;
+    store.insert(route.clone()).await.unwrap();
+    store.with_connection(|db| db.execute_batch("CREATE TRIGGER deny_revocation BEFORE DELETE ON task_routes BEGIN SELECT RAISE(ABORT, 'denied'); END;").map_err(super::sqlite_error)).await.unwrap();
+    let held = store.connection.lock().await;
+    let revoking = store.clone();
+    let revoke = tokio::spawn(async move {
+        revoking
+            .remove_oauth_subject("example", "oauth-alice")
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while store.admission.available_permits() != super::MAX_PENDING_OPERATIONS - 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    let reading = store.clone();
+    let read = tokio::spawn(async move { reading.get(&route.public_task_id).await });
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while store.admission.available_permits() != super::MAX_PENDING_OPERATIONS - 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(held);
+    assert!(revoke.await.unwrap().is_err());
+    assert!(read.await.unwrap().is_err());
+}
+
+#[tokio::test]
+async fn prepared_config_revocation_fences_registration_and_survives_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("routes.db");
+    let store = TaskRouteStore::open(path.clone()).await.unwrap();
+    let route = record();
+    store.insert(route.clone()).await.unwrap();
+    store
+        .prepare_upstream_revocation(vec!["example".into()])
+        .await
+        .unwrap();
+    assert!(store.insert(record()).await.is_err());
+    drop(store);
+    let reopened = TaskRouteStore::open(path).await.unwrap();
+    assert!(reopened.get(&route.public_task_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn unrelated_oauth_revocation_cannot_consume_prepared_config_fence() {
+    let store = TaskRouteStore::open_in_memory().await.unwrap();
+    let mut old = record();
+    old.upstream_name = "config-a".into();
+    old.ttl_ms = None;
+    store.insert(old.clone()).await.unwrap();
+    store
+        .prepare_upstream_revocation(vec!["config-a".into()])
+        .await
+        .unwrap();
+    store
+        .remove_oauth_subject("oauth-b", "oauth-alice")
+        .await
+        .unwrap();
+    let pending: i64 = store
+        .with_connection_unchecked(|db| {
+            db.query_row(
+                "SELECT COUNT(*) FROM task_route_revocations WHERE prepared = 1",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(super::sqlite_error)
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        pending, 1,
+        "ordinary revocation cannot consume prepared intent"
+    );
+    let mut late = old.clone();
+    late.public_task_id = format!("labby-task-{}", uuid::Uuid::new_v4().simple());
+    assert!(
+        store.insert(late).await.is_err(),
+        "unrelated OAuth deletion must retain the config registration fence"
+    );
+    store.complete_prepared_revocations().await.unwrap();
+    assert!(store.get(&old.public_task_id).await.unwrap().is_none());
+    let remaining: i64 = store
+        .with_connection(|db| {
+            db.query_row("SELECT COUNT(*) FROM task_routes", [], |row| row.get(0))
+                .map_err(super::sqlite_error)
+        })
+        .await
+        .unwrap();
+    assert_eq!(remaining, 0);
+}
+
+#[tokio::test]
+async fn version_two_pending_intent_is_replayed_during_migration() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("routes.db");
+    let store = TaskRouteStore::open(path.clone()).await.unwrap();
+    let route = record();
+    store.insert(route.clone()).await.unwrap();
+    store
+        .prepare_upstream_revocation(vec!["example".into()])
+        .await
+        .unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("ALTER TABLE task_route_revocations DROP COLUMN prepared; UPDATE task_route_meta SET schema_version = 2;").unwrap();
+    drop(db);
+    let upgraded = TaskRouteStore::open(path).await.unwrap();
+    assert!(upgraded.get(&route.public_task_id).await.unwrap().is_none());
+}

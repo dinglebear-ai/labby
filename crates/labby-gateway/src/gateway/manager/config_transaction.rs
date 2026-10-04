@@ -364,18 +364,48 @@ impl GatewayManager {
         let credentials_changed = credential.as_ref().map_or_else(Vec::new, |(env_name, _)| {
             credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
         });
-        let commit_result = async {
+        // Durable task revocation precedes publishing either credentials or
+        // configuration. Its pending intent fences registrations until reconcile.
+        let task_revocations = previous
+            .upstream
+            .iter()
+            .filter(|old| {
+                credentials_changed.contains(&old.name)
+                    || candidate
+                        .upstream
+                        .iter()
+                        .find(|new| new.name == old.name)
+                        .is_none_or(|new| {
+                            crate::gateway::code_mode::catalog_cache::fingerprint(new)
+                                != crate::gateway::code_mode::catalog_cache::fingerprint(old)
+                        })
+            })
+            .map(|old| old.name.clone())
+            .collect();
+        if let Some(pool) = self.current_pool_sync() {
+            pool.prepare_task_config_revocation(task_revocations)
+                .await
+                .map_err(ToolError::internal_message)?;
+        }
+        let commit_result: Result<crate::gateway::types::GatewayCatalogDiff, ToolError> = async {
             if let Some((env_name, token_value)) = credential.as_ref() {
                 self.persist_gateway_bearer_token(env_name, token_value)
                     .await?;
             }
             self.write_config_file(&candidate).await?;
-            self.reload_with_credentials_changed(
-                origin.as_deref(),
-                owner.clone(),
-                &credentials_changed,
-            )
-            .await
+            let diff = self
+                .reload_with_credentials_changed(
+                    origin.as_deref(),
+                    owner.clone(),
+                    &credentials_changed,
+                )
+                .await?;
+            if let Some(pool) = self.current_pool_sync() {
+                pool.complete_task_config_revocation()
+                    .await
+                    .map_err(ToolError::internal_message)?;
+            }
+            Ok(diff)
         }
         .await;
         match commit_result {

@@ -54,6 +54,25 @@ impl UpstreamPool {
         self.runtime_origin == *origin && self.runtime_owner.as_ref() == owner
     }
 
+    pub(crate) async fn complete_task_config_revocation(&self) -> Result<(), String> {
+        if let Some(store) = &self.task_route_store {
+            store.complete_prepared_revocations().await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_task_config_revocation(
+        &self,
+        upstreams: Vec<String>,
+    ) -> Result<(), String> {
+        if !upstreams.is_empty()
+            && let Some(store) = &self.task_route_store
+        {
+            store.prepare_upstream_revocation(upstreams).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare_lazy_upstream_reconcile(
         &self,
         reconnect_names: &HashSet<String>,
@@ -87,13 +106,6 @@ impl UpstreamPool {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if !revoked_names.is_empty()
-            && let Some(store) = &self.task_route_store
-            && let Err(error) = store.remove_upstreams(revoked_names).await
-        {
-            tracing::error!(action = "task.routes.reconcile", error = %error,
-                "task routing quarantined after configuration revocation failure");
-        }
         let task_connections = {
             let mut tasks = self.task_routes.write().await;
             let ids = tasks
@@ -120,6 +132,13 @@ impl UpstreamPool {
             }
         }
 
+        if !revoked_names.is_empty()
+            && let Some(store) = &self.task_route_store
+            && let Err(error) = store.remove_upstreams(revoked_names).await
+        {
+            tracing::error!(action = "task.routes.reconcile", error = %error,
+                "task routing quarantined after configuration revocation failure");
+        }
         let cancelled_probe_count = {
             let mut tasks = self.probe_tasks.write().await;
             let mut count = 0usize;

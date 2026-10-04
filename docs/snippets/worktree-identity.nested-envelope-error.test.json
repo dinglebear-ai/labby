@@ -14,25 +14,38 @@
     },
     {
       "tool": "github::list_pull_requests",
-      "match": {},
-      "result": []
+      "match": {
+        "state": "all",
+        "head": "example:feature/LAB-123"
+      },
+      "result": {
+        "structuredContent": {
+          "isError": true,
+          "structuredContent": {
+            "items": []
+          }
+        }
+      }
     },
     {
       "tool": "linear-notification-worker::get_issue",
       "match": {
         "id": "LAB-123"
       },
-      "error": {
-        "kind": "permission_denied",
-        "message": "Fixture permission denied"
+      "result": {
+        "identifier": "LAB-123",
+        "id": "fixture-issue-id",
+        "url": "https://linear.app/example/issue/LAB-123/fixture",
+        "gitBranchName": "feature/LAB-123",
+        "archivedAt": "2026-09-02T00:00:00Z"
       }
     }
   ],
   "expect": {
     "/ok": true,
     "/partial": true,
-    "/unresolved/linear_issues/0/status": "lookup_failed",
-    "/failures/0/kind": "permission_denied"
+    "/failures/0/kind": "upstream_error",
+    "/verified/pull_requests": []
   },
   "budgets": {
     "wall_clock_ms": 20000,

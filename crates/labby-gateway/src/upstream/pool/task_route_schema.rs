@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
 
 pub(super) fn open(path: &Path) -> Result<Connection, String> {
     if !path.is_absolute() {
@@ -69,12 +69,25 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), String> {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(sqlite_error)?;
-        if count != 1 || version != Some(SCHEMA_VERSION) {
+        if count != 1 || !matches!(version, Some(1 | 2 | SCHEMA_VERSION)) {
             return Err("unsupported or corrupt task route schema version".to_string());
         }
         // A version stamp is not proof of an intact schema. Validate without DDL
         // so neither a future database nor a damaged current one is rewritten.
         validate_columns(&transaction)?;
+        if version == Some(1) {
+            transaction
+                .execute_batch(
+                    "CREATE TABLE task_route_revocations (
+                upstream_name TEXT NOT NULL, oauth_subject TEXT, oauth_only INTEGER NOT NULL, prepared INTEGER NOT NULL DEFAULT 0);
+                UPDATE task_route_meta SET schema_version = 3;",
+                )
+                .map_err(sqlite_error)?;
+        }
+        if version == Some(2) {
+            transaction.execute_batch("ALTER TABLE task_route_revocations ADD COLUMN prepared INTEGER NOT NULL DEFAULT 0;
+                UPDATE task_route_meta SET schema_version = 3;").map_err(sqlite_error)?;
+        }
     } else {
         let tables: i64 = transaction.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -85,7 +98,7 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), String> {
         }
         transaction.execute_batch(
             "CREATE TABLE task_route_meta (schema_version INTEGER NOT NULL);
-             INSERT INTO task_route_meta VALUES (1);
+             INSERT INTO task_route_meta VALUES (3);
              CREATE TABLE task_routes (
                  public_task_id TEXT PRIMARY KEY NOT NULL,
                  native_task_id TEXT NOT NULL, upstream_name TEXT NOT NULL,
@@ -98,8 +111,44 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), String> {
              );
              CREATE INDEX task_routes_upstream_oauth ON task_routes(upstream_name, oauth_subject);
              CREATE INDEX task_routes_owner ON task_routes(caller_subject);
-             CREATE INDEX task_routes_expiry ON task_routes((created_at_unix_ms + ttl_ms));",
+             CREATE INDEX task_routes_expiry ON task_routes((created_at_unix_ms + ttl_ms));
+             CREATE TABLE task_route_revocations (upstream_name TEXT NOT NULL, oauth_subject TEXT, oauth_only INTEGER NOT NULL, prepared INTEGER NOT NULL DEFAULT 0);",
         ).map_err(sqlite_error)?;
+    }
+    let mut schema = transaction
+        .prepare("PRAGMA table_info(task_route_revocations)")
+        .map_err(sqlite_error)?;
+    let revocation_columns = schema
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(sqlite_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(sqlite_error)?;
+    if revocation_columns
+        != [
+            ("upstream_name".into(), "TEXT".into(), 1),
+            ("oauth_subject".into(), "TEXT".into(), 0),
+            ("oauth_only".into(), "INTEGER".into(), 1),
+            ("prepared".into(), "INTEGER".into(), 1),
+        ]
+    {
+        return Err("corrupt task revocation columns".into());
+    }
+    drop(schema);
+    let columns = transaction
+        .prepare(
+            "SELECT upstream_name, oauth_subject, oauth_only FROM task_route_revocations LIMIT 0",
+        )
+        .map_err(sqlite_error)?;
+    drop(columns);
+    let invalid: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM task_route_revocations WHERE upstream_name IS NULL OR oauth_only NOT IN (0, 1) OR oauth_only IS NULL OR prepared NOT IN (0, 1) OR prepared IS NULL)", [], |row| row.get(0)).map_err(sqlite_error)?;
+    if invalid {
+        return Err("corrupt task revocation metadata".into());
     }
     transaction.commit().map_err(sqlite_error)?;
     connection
@@ -113,7 +162,36 @@ pub(super) fn initialize(connection: &mut Connection) -> Result<(), String> {
     connection
         .pragma_update(None, "fullfsync", true)
         .map_err(sqlite_error)?;
+    replay_revocations(connection, true)?;
     Ok(())
+}
+
+/// A committed intent remains authoritative through process exit or failed deletion.
+pub(super) fn replay_revocations(
+    connection: &mut Connection,
+    include_prepared: bool,
+) -> Result<usize, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(sqlite_error)?;
+    let removed = transaction
+        .execute(
+            "DELETE FROM task_routes WHERE EXISTS (
+        SELECT 1 FROM task_route_revocations r WHERE r.upstream_name = task_routes.upstream_name
+        AND (r.oauth_subject IS NULL OR r.oauth_subject IS task_routes.oauth_subject)
+        AND (r.oauth_only = 0 OR task_routes.oauth_subject IS NOT NULL)
+        AND (?1 OR r.prepared = 0))",
+            [include_prepared],
+        )
+        .map_err(sqlite_error)?;
+    transaction
+        .execute(
+            "DELETE FROM task_route_revocations WHERE ?1 OR prepared = 0",
+            [include_prepared],
+        )
+        .map_err(sqlite_error)?;
+    transaction.commit().map_err(sqlite_error)?;
+    Ok(removed)
 }
 
 fn validate_columns(connection: &Connection) -> Result<(), String> {
