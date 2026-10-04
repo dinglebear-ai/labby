@@ -977,13 +977,22 @@ impl ServerHandler for LabMcpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
         #[cfg(feature = "gateway")]
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let result = pool
-                .get_task_routed(
+                .get_task_routed_with_context(
                     request,
                     self.request_subject(&context),
                     &self.route_scope.task_authorization(),
                     context.peer.clone(),
+                    labby_gateway::upstream::pool::TaskCallContext {
+                        capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
+                            &context.meta,
+                        ))
+                        .unwrap_or_default(),
+                        cancellation: cancellation_guard.cancellation().token.clone(),
+                    },
                 )
                 .await
                 .map_err(|message| {
@@ -1005,14 +1014,23 @@ impl ServerHandler for LabMcpServer {
     ) -> Result<(), ErrorData> {
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             return pool
-                .update_task_routed(
+                .update_task_routed_with_context(
                     request,
                     self.request_subject(&context),
                     &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
+                    labby_gateway::upstream::pool::TaskCallContext {
+                        capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
+                            &context.meta,
+                        ))
+                        .unwrap_or_default(),
+                        cancellation: cancellation_guard.cancellation().token.clone(),
+                    },
                 )
                 .await
                 .map_err(|message| {
@@ -1033,14 +1051,23 @@ impl ServerHandler for LabMcpServer {
     ) -> Result<(), ErrorData> {
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
+        #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             return pool
-                .cancel_task_routed(
+                .cancel_task_routed_with_context(
                     request,
                     self.request_subject(&context),
                     &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
+                    labby_gateway::upstream::pool::TaskCallContext {
+                        capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
+                            &context.meta,
+                        ))
+                        .unwrap_or_default(),
+                        cancellation: cancellation_guard.cancellation().token.clone(),
+                    },
                 )
                 .await
                 .map_err(|message| {

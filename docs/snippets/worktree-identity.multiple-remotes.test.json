@@ -1,0 +1,37 @@
+{
+  "calls": [
+    {
+      "tool": "claude-macpoo::Bash",
+      "match": {},
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"stdout\": \"{\\\"ok\\\": true, \\\"host\\\": \\\"macpoo\\\", \\\"identity\\\": {\\\"root\\\": \\\"/fixture/repo/worktrees/topic\\\", \\\"path\\\": \\\"/fixture/repo/worktrees/topic\\\", \\\"common_dir\\\": \\\"/fixture/repo/.git\\\", \\\"git_dir\\\": \\\"/fixture/repo/.git/worktrees/topic\\\", \\\"head\\\": \\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\", \\\"branch\\\": \\\"feature/LAB-123\\\", \\\"detached\\\": false, \\\"dirty\\\": false, \\\"path_state\\\": \\\"live\\\", \\\"repository_candidates\\\": [\\\"example/repo\\\", \\\"fork/repo\\\"], \\\"remotes\\\": [{\\\"name\\\": \\\"origin\\\", \\\"fetch\\\": [{\\\"url\\\": \\\"https://github.com/example/repo\\\", \\\"github_repo\\\": \\\"example/repo\\\"}], \\\"push\\\": [{\\\"url\\\": \\\"https://github.com/example/repo\\\", \\\"github_repo\\\": \\\"example/repo\\\"}]}]}, \\\"sessions\\\": {\\\"verified\\\": [{\\\"id\\\": \\\"11111111-1111-4111-8111-111111111111\\\", \\\"archived\\\": true, \\\"confidence\\\": \\\"high\\\", \\\"association\\\": \\\"recorded_path\\\", \\\"evidence\\\": [{\\\"source\\\": \\\"fixture:threads.cwd\\\", \\\"match\\\": \\\"canonical_worktree_path\\\"}]}], \\\"candidates\\\": [], \\\"coverage\\\": {\\\"available\\\": true, \\\"incomplete\\\": false, \\\"next_cursor\\\": null, \\\"transcripts_read\\\": false}}, \\\"worktrees\\\": {\\\"total\\\": 2, \\\"items\\\": [], \\\"truncated\\\": false}, \\\"hints\\\": {\\\"issue_keys\\\": [{\\\"key\\\": \\\"LAB-123\\\", \\\"source\\\": \\\"git:HEAD:branch\\\"}], \\\"pull_requests\\\": []}}\"}"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_issue",
+      "match": {},
+      "result": {
+        "identifier": "LAB-123",
+        "id": "fixture-issue-id",
+        "url": "https://linear.app/example/issue/LAB-123/fixture",
+        "gitBranchName": "feature/LAB-123",
+        "archivedAt": "2026-09-02T00:00:00Z"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/coverage/github/reason": "multiple_fetch_repositories_select_github_repo",
+    "/verified/pull_requests": []
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 14,
+    "output_bytes": 16000
+  }
+}

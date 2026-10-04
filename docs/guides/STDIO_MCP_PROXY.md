@@ -1,7 +1,7 @@
 ---
 title: "Stdio MCP Proxy Guide"
 created: "2026-08-01"
-updated: "2026-10-01"
+updated: "2026-10-04"
 ---
 
 # Stdio MCP Proxy
@@ -21,7 +21,7 @@ Silicon or Linux with KVM. Verify the selected release includes Funnel proxy sup
 1. **Get your Google callback first:**
 
    ```console
-   npx -y @dinglebear/labby proxy --funnel --port 8443
+   npx -y @dinglebear/labby proxy --funnel --port 443
    ```
 
    Copy the printed callback into a Google Cloud **Web application** OAuth
@@ -31,8 +31,8 @@ Silicon or Linux with KVM. Verify the selected release includes Funnel proxy sup
    setup requests them:
 
    ```console
-   npx -y @dinglebear/labby setup --role server --auth oauth --oauth google --public-url https://YOUR-NODE.ts.net:8443 --no-desktop --yes
-   npx -y @dinglebear/labby config proxy set --exposure funnel --auth oauth --port 8443 --yes
+   npx -y @dinglebear/labby setup --role server --auth oauth --oauth google --public-url https://YOUR-NODE.ts.net --no-desktop
+   npx -y @dinglebear/labby config proxy set --exposure funnel --auth oauth --port 443 --yes
    ```
 
 3. **Start it and keep it running:**
@@ -51,6 +51,10 @@ is required. See the detailed steps below for prerequisites and troubleshooting,
 or use the [private OpenAI tunnel](#optional-private-mcp-connection-with-openai-secure-mcp-tunnel).
 
 ## ChatGPT web with Google OAuth and Microsandbox
+
+Guided ChatGPT setup defaults to public HTTPS 443. Keep existing mappings; use another node if 443 is occupied, or explicitly select an alternate supported Funnel port. Labby binds a separate unprivileged local loopback port.
+
+Run `npx -y @dinglebear/labby setup --chatgpt --dry-run` to derive the callback before registering a Google client. This preview reports missing credential names without requesting secrets or writing configuration.
 
 Labby and the Microsandbox MCP adapter can both run through `npx`; there is no
 separate manual Labby binary install for this path. You still need Node.js
@@ -74,7 +78,7 @@ as shown.
    credentials:
 
    ```console
-   npx -y @dinglebear/labby proxy --funnel --port 8443
+   npx -y @dinglebear/labby proxy --funnel --port 443
    ```
 
    Labby reads the node's public DNS name from `tailscale status --json` and
@@ -91,7 +95,7 @@ as shown.
 
    ```console
    npx -y @dinglebear/labby setup --role server --auth oauth --oauth google \
-     --public-url https://node.example.ts.net:8443 --no-desktop --yes
+     --public-url https://node.example.ts.net --no-desktop
    ```
 
    Provide `LABBY_GOOGLE_CLIENT_ID`, `LABBY_GOOGLE_CLIENT_SECRET`, and
@@ -104,7 +108,7 @@ as shown.
 
    ```console
    npx -y @dinglebear/labby config proxy set \
-     --exposure funnel --auth oauth --port 8443 --yes
+     --exposure funnel --auth oauth --port 443 --yes
    ```
 3. Ensure the host supports local microVMs: Linux needs KVM access, and macOS
    requires Apple Silicon. The official
@@ -261,7 +265,7 @@ directory is used.
 | Setting | Behavior |
 | --- | --- |
 | `tailscale` exposure | Binds HTTP to loopback, publishes one HTTPS port with Tailscale Serve, and prints the tailnet URL. This is the default. |
-| `funnel` exposure | Binds HTTP to loopback and publishes one public HTTPS port with Tailscale Funnel. Requires OAuth and port 443, 8443, or 10000. Random mode tries 8443, 10000, then 443. |
+| `funnel` exposure | Binds HTTP to loopback and publishes one public HTTPS port with Tailscale Funnel. Requires OAuth and port 443, 8443, or 10000. Random mode tries 443, 8443, then 10000. |
 | `local` exposure | Binds and prints a loopback HTTP URL only. Use `--local`; it never binds a LAN wildcard. |
 | `tailnet` auth | Adds no application token. Reachability and grants are owned by Tailscale. Valid only with Tailscale exposure. This is the default. |
 | `bearer` auth | Requires the separate proxy bearer token on every MCP request and SSE stream. |
@@ -275,7 +279,7 @@ One-run examples:
 ```console
 labby proxy --port 52177 /path/to/dist.js
 labby proxy --auth oauth /path/to/dist.js
-labby proxy --funnel --port 8443 -- npx -y microsandbox-mcp
+labby proxy --funnel --port 443 -- npx -y microsandbox-mcp
 printf '%s\n' "$TOKEN" | labby proxy --auth bearer --bearer-token-stdin /path/to/dist.js
 labby proxy --local --auth none /path/to/dist.js
 ```
@@ -419,7 +423,7 @@ Example `.mcp.json`:
 ```
 
 ```console
-npx -y @dinglebear/labby proxy --funnel --port 8443 --mcp-json /path/to/.mcp.json
+npx -y @dinglebear/labby proxy --funnel --port 443 --mcp-json /path/to/.mcp.json
 ```
 
 The file can contain up to 16 named servers, mixing local stdio commands and

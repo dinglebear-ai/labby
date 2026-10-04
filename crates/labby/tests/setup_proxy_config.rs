@@ -37,6 +37,16 @@ fn chatgpt_setup(
     dry_run: bool,
     occupied: bool,
 ) -> std::process::Output {
+    chatgpt_setup_with_credentials(directory, dry_run, occupied, true)
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+fn chatgpt_setup_with_credentials(
+    directory: &std::path::Path,
+    dry_run: bool,
+    occupied: bool,
+    credentials: bool,
+) -> std::process::Output {
     use std::os::unix::fs::PermissionsExt as _;
     let bin = directory.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -67,10 +77,13 @@ esac
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("LABBY_HOME", directory.join("state"))
-        .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
-        .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret-never-print")
-        .env("LABBY_AUTH_ADMIN_EMAIL", "owner@example.test")
         .args(["setup", "--chatgpt", "--yes", "--no-browser", "--json"]);
+    if credentials {
+        command
+            .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
+            .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret-never-print")
+            .env("LABBY_AUTH_ADMIN_EMAIL", "owner@example.test");
+    }
     if dry_run {
         command.arg("--dry-run");
     }
@@ -106,6 +119,68 @@ fn chatgpt_preview_derives_callback_without_installing_or_publishing() {
         std::fs::read_to_string(temp.path().join("calls")).unwrap(),
         "version\nstatus --json\nserve status --json\n"
     );
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+#[test]
+fn chatgpt_preview_reports_missing_credentials_without_writing_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = chatgpt_setup_with_credentials(temp.path(), true, false, false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "preview");
+    assert_eq!(json["ready"], false);
+    assert_eq!(
+        json["missing_requirements"],
+        serde_json::json!([
+            "LABBY_GOOGLE_CLIENT_ID",
+            "LABBY_GOOGLE_CLIENT_SECRET",
+            "LABBY_AUTH_ADMIN_EMAIL"
+        ])
+    );
+    assert!(!temp.path().join("state").exists());
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("calls")).unwrap(),
+        "version\nstatus --json\nserve status --json\n"
+    );
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+#[test]
+fn google_configuration_still_requires_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    // Exercise the real validator used by ChatGPT setup without requiring KVM
+    // or executing the platform dependency-installation preflight.
+    let output = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .env_clear()
+        .env("HOME", &home)
+        .env("LABBY_HOME", temp.path().join("state"))
+        .args([
+            "setup",
+            "--role",
+            "server",
+            "--config-only",
+            "--auth",
+            "oauth",
+            "--oauth",
+            "google",
+            "--public-url",
+            "https://test.example.ts.net",
+            "--yes",
+            "--no-browser",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Google client ID is required"));
+    assert!(!temp.path().join("state").exists());
 }
 
 #[cfg(all(unix, feature = "gateway"))]

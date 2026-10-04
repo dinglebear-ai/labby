@@ -39,7 +39,14 @@ pub struct TailscaleIdentity {
 
 impl TailscaleStatus {
     pub fn parse(json: &str) -> Result<Self> {
-        serde_json::from_str(json).context("invalid `tailscale status --json` response")
+        serde_json::from_str(json).map_err(|error| {
+            anyhow::anyhow!(
+                "invalid `tailscale status --json` response ({:?} at line {}, column {}); check that the Tailscale CLI can read its preferences and reach its local daemon in this execution environment",
+                error.classify(),
+                error.line(),
+                error.column(),
+            )
+        })
     }
 
     pub fn require_online(&self) -> Result<TailscaleIdentity> {

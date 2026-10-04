@@ -20,6 +20,7 @@ const MAX_OWNER_ROUTES: i64 = 256;
 pub struct TaskRouteStore {
     connection: Arc<Mutex<Connection>>,
     admission: Arc<Semaphore>,
+    revocation_failed: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     fail_writes: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -42,6 +43,7 @@ impl TaskRouteStore {
         Self {
             connection: Arc::new(Mutex::new(connection)),
             admission: Arc::new(Semaphore::new(MAX_PENDING_OPERATIONS)),
+            revocation_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(test)]
             fail_writes: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -180,11 +182,102 @@ impl TaskRouteStore {
         .await
     }
 
+    /// Revocation is a durable delete: public UUIDs are never reused, so stale
+    /// observations can neither recreate nor update a removed route.
+    pub(super) async fn remove_oauth_subject(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> Result<usize, String> {
+        let upstream = upstream.to_owned();
+        let subject = subject.to_owned();
+        let result = self
+            .with_connection(move |connection| {
+                connection
+                    .execute(
+                        "DELETE FROM task_routes WHERE upstream_name = ?1 AND oauth_subject = ?2",
+                        params![upstream, subject],
+                    )
+                    .map_err(sqlite_error)
+            })
+            .await;
+        self.finish_revocation(result)
+    }
+
+    pub(super) async fn remove_upstreams(&self, upstreams: Vec<String>) -> Result<usize, String> {
+        let result = self
+            .with_connection(move |connection| {
+                let tx = connection
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .map_err(sqlite_error)?;
+                let mut removed = 0;
+                for upstream in upstreams {
+                    removed += tx
+                        .execute(
+                            "DELETE FROM task_routes WHERE upstream_name = ?1",
+                            [upstream],
+                        )
+                        .map_err(sqlite_error)?;
+                }
+                tx.commit().map_err(sqlite_error)?;
+                Ok(removed)
+            })
+            .await;
+        self.finish_revocation(result)
+    }
+
+    pub(super) async fn remove_oauth_upstreams(
+        &self,
+        upstreams: Vec<String>,
+    ) -> Result<usize, String> {
+        let result = self.with_connection(move |connection| {
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+            let mut removed = 0;
+            for upstream in upstreams {
+                removed += tx.execute("DELETE FROM task_routes WHERE upstream_name = ?1 AND oauth_subject IS NOT NULL", [upstream]).map_err(sqlite_error)?;
+            }
+            tx.commit().map_err(sqlite_error)?;
+            Ok(removed)
+        }).await;
+        self.finish_revocation(result)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn remove_all_oauth(&self) -> Result<usize, String> {
+        let result = self
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "DELETE FROM task_routes WHERE oauth_subject IS NOT NULL",
+                        [],
+                    )
+                    .map_err(sqlite_error)
+            })
+            .await;
+        self.finish_revocation(result)
+    }
+
+    fn finish_revocation(&self, result: Result<usize, String>) -> Result<usize, String> {
+        if result.is_err() {
+            self.revocation_failed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        result
+    }
+
     async fn with_connection<T, F>(&self, operation: F) -> Result<T, String>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
     {
+        if self
+            .revocation_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(
+                "task routing quarantined after revocation persistence failure".to_string(),
+            );
+        }
         let permit = self
             .admission
             .clone()

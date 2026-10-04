@@ -272,3 +272,28 @@ async fn persisted_fingerprint_does_not_persist_configuration_secrets() {
         }
     }
 }
+
+#[tokio::test]
+async fn failed_revocation_quarantines_reads_and_later_writes() {
+    let store = TaskRouteStore::open_in_memory().await.expect("store");
+    let mut route = record();
+    route.ttl_ms = None;
+    store.insert(route.clone()).await.expect("route");
+    store.with_connection(|connection| {
+        connection.execute_batch("CREATE TRIGGER deny_revocation BEFORE DELETE ON task_routes BEGIN SELECT RAISE(ABORT, 'revocation denied'); END;")
+            .map_err(super::sqlite_error)
+    }).await.expect("fault injection");
+    assert!(
+        store
+            .remove_oauth_subject("example", "oauth-alice")
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .get_for_caller(&route.public_task_id, Some("alice"), &route.authorization)
+            .await
+            .is_err()
+    );
+    assert!(store.insert(record()).await.is_err());
+}

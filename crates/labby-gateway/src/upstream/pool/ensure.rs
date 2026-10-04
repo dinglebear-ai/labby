@@ -121,6 +121,9 @@ impl UpstreamPool {
                 continue;
             };
 
+            self.configured_upstreams
+                .entry(config.name.clone())
+                .or_insert_with(|| config.clone());
             self.upstream_config_fingerprints
                 .entry(config.name.clone())
                 .or_insert_with(|| crate::gateway::code_mode::catalog_cache::fingerprint(config));
@@ -140,6 +143,9 @@ impl UpstreamPool {
         let Some(entry) = validated_lazy_entry(config) else {
             return;
         };
+        self.configured_upstreams
+            .entry(config.name.clone())
+            .or_insert_with(|| config.clone());
         self.upstream_config_fingerprints
             .entry(config.name.clone())
             .or_insert_with(|| crate::gateway::code_mode::catalog_cache::fingerprint(config));

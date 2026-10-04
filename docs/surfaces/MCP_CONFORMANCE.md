@@ -164,13 +164,21 @@ per transaction. There is no task-route idle timeout or LRU eviction. If startup
 cannot open the store, `task_routes_unavailable` appears in subsystem health:
 synchronous gateway work can continue, but task creation has no in-memory fallback.
 
-**First-slice boundary for issue #771:** route metadata survives closing and
-reopening SQLite, but task RPCs still require the original retained relay
-connection. Reacquiring authenticated connections after pool replacement or
-process restart, terminal-state garbage collection, and reconnectable task
-subscriptions remain later workstreams. This slice does not claim end-to-end
-restart or reconnect durability. Incoming `notifications/tasks` messages still
-translate native IDs through the live companion.
+**Reconnect boundary for issue #771:** authenticated task peers are reacquired
+from current trusted upstream configuration after pool replacement or process
+restart. Recovery sends the original native task ID; it never replays task
+creation. Each invocation supplies its current client capabilities, cancellation,
+and deadline budget. Durable owner/route/configuration checks fence submission
+and response publication. Credential revocation and configuration replacement
+delete affected mappings, including routes with no live companion; same-owner
+credential refresh retains mappings while retiring old peers. Failed durable
+revocation reports an error and quarantines further task routing in that store.
+
+Task input requests and terminal payloads remain upstream-owned and are fetched
+through the same authorized route after restart. Reconnectable task subscriptions,
+terminal-state garbage collection, and the full issue #771 transport matrix remain
+outstanding. The task subscription draft requires task-ID subscription APIs absent
+from the pinned RMCP revision and is not part of this reconnect implementation.
 
 Focused checks, run from the repository root with its pinned Rust toolchain:
 

@@ -591,6 +591,7 @@ impl GatewayManager {
                 total.subject_connections += invalidated.subject_connections;
                 total.relay_connections += invalidated.relay_connections;
                 total.task_routes += invalidated.task_routes;
+                total.task_route_storage_failed |= invalidated.task_route_storage_failed;
             }
         } else if let Some(cache) = &self.oauth_client_cache {
             for upstream in &shared_upstreams {
@@ -742,7 +743,9 @@ impl GatewayManager {
 
         if manager.credential_source_label() == "google_provider" {
             self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace", false)
-                .await;
+                .await
+                .ensure_task_routes_durable()
+                .map_err(ToolError::internal_message)?;
         } else {
             self.invalidate_subject_oauth_runtime(
                 upstream,
@@ -750,7 +753,9 @@ impl GatewayManager {
                 "oauth.credentials.replace",
                 false,
             )
-            .await;
+            .await
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
@@ -1079,6 +1084,9 @@ impl GatewayManager {
             .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
             .await;
         drop(lifecycle_guard);
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let invalidation = revoke_result?;
         tracing::info!(
             service = "upstream_oauth",
@@ -1148,6 +1156,9 @@ impl GatewayManager {
             .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
             .await;
         drop(lifecycle_guard);
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         if let Err(error) = clear_result {
             tracing::warn!(
                 service = "upstream_oauth",

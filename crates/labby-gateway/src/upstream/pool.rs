@@ -179,7 +179,7 @@ pub use prompts_list::ListedUpstreamPrompt;
 pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
-pub use task_route::TaskRouteAuthorization;
+pub use task_route::{TaskCallContext, TaskRouteAuthorization};
 pub use task_route_store::TaskRouteStore;
 #[cfg(test)]
 pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
@@ -354,6 +354,8 @@ pub struct UpstreamPool {
     /// replaces changed fingerprints before publishing the new revision so a
     /// request carrying stale config cannot publish or reuse a connection.
     upstream_config_fingerprints: Arc<DashMap<String, String>>,
+    /// Trusted definitions for reacquiring durable task routes; never persisted.
+    configured_upstreams: Arc<DashMap<String, UpstreamConfig>>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
     probe_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
@@ -666,6 +668,7 @@ impl UpstreamPool {
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
             upstream_config_fingerprints: Arc::new(DashMap::new()),
+            configured_upstreams: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),

@@ -61,6 +61,42 @@ pub(super) async fn run(
         "\nGoogle callback: {origin}/auth/google/callback\nGoogle Cloud: {GOOGLE_CONSOLE}\n\nComplete Branding and Audience; add your account as a test user for an External app in Testing. Create a Web application client and paste the callback into Authorized redirect URIs. Use only openid, email, and profile.\n\nPublic HTTPS port: {public_port}. Labby uses a separate local loopback port; no local privileged port bind is required.\n"
     );
     let paths = crate::installation::InstallationPaths::resolve()?;
+    if args.dry_run {
+        let required_credentials = [
+            "LABBY_GOOGLE_CLIENT_ID",
+            "LABBY_GOOGLE_CLIENT_SECRET",
+            "LABBY_AUTH_ADMIN_EMAIL",
+        ];
+        let missing_requirements: Vec<_> = required_credentials
+            .into_iter()
+            .filter(|key| {
+                std::env::var(key)
+                    .ok()
+                    .is_none_or(|value| value.trim().is_empty())
+            })
+            .collect();
+        crate::output::print(
+            &serde_json::json!({
+                "status": "preview",
+                "dry_run": true,
+                "ready": false,
+                "role": "server",
+                "config_only": true,
+                "service_installed": false,
+                "public_url": origin,
+                "google_callback_url": format!("{origin}/auth/google/callback"),
+                "mcp_url": publication.public_url(),
+                "mcp_json_path": paths.root().join(".mcp.json"),
+                "funnel_port": public_port,
+                "server_auth": "oauth",
+                "oauth": "google",
+                "missing_requirements": missing_requirements,
+                "first_use_checks_required": ["google_authorization", "chatgpt_connection", "runtime_check"],
+            }),
+            format,
+        )?;
+        return Ok(ExitCode::SUCCESS);
+    }
     // Reuse the service-free OAuth configuration flow. It opens Google Cloud
     // before requesting credentials, stores secrets privately, and preserves keys.
     args.chatgpt = false;

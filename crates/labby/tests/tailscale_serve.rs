@@ -37,6 +37,28 @@ const SERVE_STATUS: &str = r#"{
 }"#;
 
 #[test]
+fn malformed_status_field_does_not_echo_private_value() {
+    let error = TailscaleStatus::parse(
+        r#"{"BackendState":"Running","Self":{"Online":"private diagnostic"}}"#,
+    )
+    .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("Data at line 1, column"));
+    assert!(!message.contains("private diagnostic"));
+    assert_eq!(error.chain().count(), 1, "private serde cause retained");
+}
+
+#[test]
+fn non_json_status_explains_local_cli_access_without_echoing_output() {
+    let error = TailscaleStatus::parse("The Tailscale CLI failed to start: private diagnostic")
+        .unwrap_err();
+    let message = format!("{error:#}");
+    assert!(message.contains("read its preferences"));
+    assert!(message.contains("local daemon"));
+    assert!(!message.contains("private diagnostic"));
+}
+
+#[test]
 fn status_requires_running_online_node_with_dns_name() {
     let status = TailscaleStatus::parse(STATUS).unwrap();
     let identity = status.require_online().unwrap();

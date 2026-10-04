@@ -1,0 +1,12 @@
+{
+  "calls": [],
+  "expect": {
+    "/ok": false,
+    "/error/kind": "invalid_input"
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 14,
+    "output_bytes": 16000
+  }
+}
