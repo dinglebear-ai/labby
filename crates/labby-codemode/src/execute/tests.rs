@@ -38,6 +38,9 @@ struct FixtureHost {
     catalog_json: Arc<str>,
     fail_list_tools: bool,
     list_tools_calls: std::sync::atomic::AtomicUsize,
+    tool_calls: std::sync::atomic::AtomicUsize,
+    tool_call_pending: bool,
+    tool_call_result: Option<Value>,
 }
 
 impl FixtureHost {
@@ -51,6 +54,9 @@ impl FixtureHost {
             catalog_json: Arc::from(catalog_json),
             fail_list_tools: false,
             list_tools_calls: std::sync::atomic::AtomicUsize::new(0),
+            tool_calls: std::sync::atomic::AtomicUsize::new(0),
+            tool_call_pending: false,
+            tool_call_result: None,
         }
     }
 
@@ -120,6 +126,17 @@ impl CodeModeHost for FixtureHost {
         _scope: &ToolScope,
         _ctx: ExecCtx,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        self.tool_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.tool_call_pending {
+            std::future::pending::<()>().await;
+        }
+        if let Some(value) = &self.tool_call_result {
+            return Ok(ToolCallOutcome {
+                value: value.clone(),
+                ui: None,
+            });
+        }
         Err(ToolError::Sdk {
             sdk_kind: "unknown_tool".to_string(),
             message: "FixtureHost does not dispatch real tool calls".to_string(),
@@ -271,5 +288,6 @@ impl CodeModeHost for FixtureHost {
 }
 
 mod capability_dispatch;
+mod dispatch_deadline;
 mod execution_and_discovery;
 mod schema_and_provider_policy;

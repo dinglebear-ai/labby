@@ -1,5 +1,6 @@
 //! Restricted HTTP projection. Native session policy belongs to dispatch.
 
+#[cfg(unix)]
 use axum::{Router, body::Body};
 #[cfg(all(feature = "tailcat", unix))]
 mod control;
@@ -8,6 +9,7 @@ pub(crate) use control::ControlListener;
 
 /// Construct only the selected protected MCP projection. Publication is owned
 /// by the native session manager; this never mounts the operator API router.
+#[cfg(unix)]
 pub(crate) fn restricted_router(
     state: super::AppState,
     route: crate::config::ProtectedMcpRouteConfig,
@@ -98,11 +100,10 @@ pub(crate) fn restricted_router(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use tower::ServiceExt as _;
-    #[cfg(unix)]
     #[tokio::test]
     async fn restricted_projection_refuses_unconfigured_or_disabled_oauth() {
         use base64::Engine as _;

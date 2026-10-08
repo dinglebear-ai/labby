@@ -65,6 +65,7 @@ fn validate_size(bytes: &[u8]) -> io::Result<()> {
 
 /// Publish a private, non-overwriting transit artifact using the same owner,
 /// permission and inode checks as credential bootstrap.
+#[cfg(unix)]
 pub(crate) fn publish_private_artifact(path: &Path, bytes: &[u8]) -> io::Result<()> {
     publish_new(path, bytes).map(drop)
 }

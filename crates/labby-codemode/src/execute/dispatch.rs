@@ -12,21 +12,29 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         ctx: ExecCtx,
         cancellation: &CancellationToken,
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
+        if cancellation.is_cancelled() {
+            return Err(CodeModeCallError::new(
+                "cancelled",
+                "Code Mode execution was cancelled",
+            ));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(CodeModeCallError::new(
+                "timeout",
+                "Code Mode execution timed out",
+            ));
+        }
         tokio::select! {
+            biased;
             () = cancellation.cancelled() => Err(CodeModeCallError::new(
                 "cancelled",
                 "Code Mode execution was cancelled",
             )),
-            result = tokio::time::timeout_at(
-                deadline,
-                self.call_tool_id_outcome(id, params, caller, surface, scope, ctx),
-            ) => match result {
-                Ok(result) => result,
-                Err(_) => Err(CodeModeCallError::new(
-                    "timeout",
-                    "Code Mode execution timed out",
-                )),
-            },
+            () = tokio::time::sleep_until(deadline) => Err(CodeModeCallError::new(
+                "timeout",
+                "Code Mode execution timed out",
+            )),
+            result = self.call_tool_id_outcome(id, params, caller, surface, scope, ctx) => result,
         }
     }
 

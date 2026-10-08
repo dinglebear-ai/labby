@@ -42,6 +42,7 @@ async fn public_first_bootstrap_restart_session_and_cleanup_are_real_and_owned()
     assert!(identity.root().join("credential.txt").exists());
     identity.create_session().await.unwrap();
     let first_cookie = identity.session.as_ref().unwrap().cookie.clone();
+    let first_csrf = identity.session.as_ref().unwrap().csrf.clone();
     let bearer_catalog = identity.bearer_catalog_response().await.unwrap();
     let browser_catalog = identity.browser_catalog_response(None).await.unwrap();
     assert_eq!(bearer_catalog.0, StatusCode::OK);
@@ -90,7 +91,30 @@ async fn public_first_bootstrap_restart_session_and_cleanup_are_real_and_owned()
         StatusCode::NO_CONTENT
     );
     identity.create_session().await.unwrap();
-    assert_ne!(identity.session.as_ref().unwrap().cookie, first_cookie);
+    assert!(
+        identity.session.as_ref().unwrap().cookie != first_cookie,
+        "new session must issue a distinct cookie"
+    );
+    let canaries = identity.exact_secret_canaries();
+    for secret in [
+        first_cookie.as_str(),
+        first_cookie.split_once('=').unwrap().1,
+        first_csrf.as_str(),
+        identity
+            .session
+            .as_ref()
+            .unwrap()
+            .cookie
+            .split_once('=')
+            .unwrap()
+            .1,
+        identity.session.as_ref().unwrap().csrf.as_str(),
+    ] {
+        assert!(
+            canaries.iter().any(|canary| canary == secret),
+            "issued session value missing from audit inventory"
+        );
+    }
     assert!(identity.cleanup().await.unwrap().is_clean());
 }
 

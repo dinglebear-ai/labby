@@ -1,11 +1,12 @@
 'use client'
 
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { Activity, ArrowUpRight, Bot, Brain, File, Folder, MessagesSquare, Paperclip, PanelRight, Send, Settings, Square, Terminal, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
 import { getBrowserSessionContextIdentity, useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
 import { PhoenixRuntimeSummary, phoenixContextWindow, phoenixTotalTokens } from './phoenix-event-timeline'
@@ -22,6 +23,7 @@ export function PhoenixAvailability() {
   const shell = useOptionalConsoleShell()
   const setPhoenixDocked = shell?.setPhoenixDocked
   const session = useBrowserSession()
+  const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
   const identity = getBrowserSessionContextIdentity()
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<PhoenixStatus>()
@@ -38,7 +40,8 @@ export function PhoenixAvailability() {
   const [interrupting, setInterrupting] = useState(false)
   const [steering, setSteering] = useState(false)
   const [workflowNotice, setWorkflowNotice] = useState<string>()
-  const [loadingDiagnostics, setLoadingDiagnostics] = useState(false)
+  const [diagnosticsEpoch, setDiagnosticsEpoch] = useState<number>()
+  const loadingDiagnostics = diagnosticsEpoch === sessionEpoch
   const [copiedIndex, setCopiedIndex] = useState<number>()
   const [newThreadOnSend, setNewThreadOnSend] = useState(false)
   const [title, setTitle] = useState('Phoenix')
@@ -56,6 +59,7 @@ export function PhoenixAvailability() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const closeAfterTurnRef = useRef<string | undefined>(undefined)
   const requestGenerationRef = useRef(0)
+  const diagnosticsRequestRef = useRef<{ epoch: number } | undefined>(undefined)
 
   useEffect(() => {
     setPhoenixDocked?.(open && dock === 'right')
@@ -64,6 +68,7 @@ export function PhoenixAvailability() {
 
   useEffect(() => {
     requestGenerationRef.current += 1
+    diagnosticsRequestRef.current = undefined
     setStatus(undefined)
     setSessionId(undefined)
     setMessages([])
@@ -84,9 +89,12 @@ export function PhoenixAvailability() {
     setEditingTitle(false)
     setThreadMenuOpen(false)
     setNewThreadOnSend(false)
-    setLoadingDiagnostics(false)
+    setDiagnosticsEpoch(undefined)
     // Identity changes and unmount revoke pending work; layout changes do not.
-    return () => { requestGenerationRef.current += 1 }
+    return () => {
+      requestGenerationRef.current += 1
+      diagnosticsRequestRef.current = undefined
+    }
   }, [identity])
 
   useEffect(() => {
@@ -295,17 +303,25 @@ export function PhoenixAvailability() {
   }
 
   const readDiagnostics = async () => {
-    if (loadingDiagnostics) return
-    setLoadingDiagnostics(true)
+    const epoch = getBrowserSessionEpoch()
+    if (diagnosticsRequestRef.current?.epoch === epoch) return
+    const request = { epoch }
+    diagnosticsRequestRef.current = request
+    const isCurrent = () => diagnosticsRequestRef.current === request && epoch === getBrowserSessionEpoch() && identity === getBrowserSessionContextIdentity()
+    setDiagnosticsEpoch(epoch)
     setError(undefined)
     try {
       const result = await phoenixApi.diagnostics()
+      if (!isCurrent()) return
       const available = Object.entries(result).filter(([, value]) => value !== null && value !== undefined).map(([key]) => key.replaceAll('_', ' '))
       setWorkflowNotice(available.length ? `Diagnostics ready: ${available.join(', ')}` : 'No diagnostics were reported')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Phoenix diagnostics are unavailable')
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : 'Phoenix diagnostics are unavailable')
     } finally {
-      setLoadingDiagnostics(false)
+      if (isCurrent()) {
+        diagnosticsRequestRef.current = undefined
+        setDiagnosticsEpoch(undefined)
+      }
     }
   }
 
@@ -346,9 +362,18 @@ export function PhoenixAvailability() {
 
   const closeThread = async (id: string) => {
     if (sending && id === sessionId) return
-    await phoenixApi.close(id)
-    setThreadHistory((current) => current.filter((thread) => thread.session_id !== id))
-    if (id === sessionId) startNewThread()
+    const requestGeneration = requestGenerationRef.current
+    const epoch = getBrowserSessionEpoch()
+    const isCurrent = () => requestGeneration === requestGenerationRef.current && epoch === getBrowserSessionEpoch() && identity === getBrowserSessionContextIdentity()
+    setError(undefined)
+    try {
+      await phoenixApi.close(id)
+      if (!isCurrent()) return
+      setThreadHistory((current) => current.filter((thread) => thread.session_id !== id))
+      if (id === sessionId) startNewThread()
+    } catch (reason) {
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : 'Phoenix could not close that thread')
+    }
   }
 
   const interruptTurn = async () => {

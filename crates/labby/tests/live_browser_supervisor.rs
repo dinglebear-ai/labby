@@ -137,11 +137,7 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .mode(0o600)
         .open(&scan_secrets)
         .expect("scan-only secrets");
-    for secret in [
-        &session.cookie,
-        &session.csrf,
-        identity.credential_for_request(),
-    ] {
+    for secret in identity.exact_secret_canaries() {
         writeln!(scan_file, "{secret}").expect("write scan-only secret");
     }
     let descriptor = fixture_root.join("descriptor.json");

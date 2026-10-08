@@ -787,3 +787,202 @@ test('Phoenix ignores a rename failure after opening another conversation', asyn
     __setBrowserSessionStateForTests({ status: 'unauthenticated' })
   }
 })
+
+for (const transition of ['identity replacement', 'A-B-A transition', 'batched A-B-A admission', 'batched A-B-A completion'] as const) {
+  for (const fails of [false, true]) {
+    test(`Phoenix preserves newer diagnostics after an obsolete ${fails ? 'failure' : 'success'} and ${transition}`, async () => {
+      const authenticated = (sub: string) => ({ status: 'authenticated' as const, user: { sub }, projectId: `project-${sub}`, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+      __setBrowserSessionStateForTests(authenticated('A'))
+      const originalFetch = globalThis.fetch
+      const { phoenixApi } = await import('../../lib/api/phoenix-client.ts')
+      const originalDiagnostics = phoenixApi.diagnostics
+      type Diagnostics = Awaited<ReturnType<typeof phoenixApi.diagnostics>>
+      const pending: Array<{ resolve: (result: Diagnostics) => void; reject: (reason: Error) => void }> = []
+      phoenixApi.diagnostics = () => new Promise((resolve, reject) => { pending.push({ resolve, reject }) })
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const { action } = JSON.parse(String(init?.body)) as { action: string }
+        const body = action === 'phoenix.status' ? { available: true, capabilities: { diagnostics: ['config'] } }
+          : action === 'phoenix.models.list' ? { models: [] } : { sessions: [] }
+        return new Response(JSON.stringify(body))
+      }) as typeof fetch
+      const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+      const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+      const view = await renderClient(<PhoenixAvailability />)
+      const readButton = () => document.querySelector<HTMLButtonElement>('[aria-label="Read Phoenix diagnostics"]')!
+      try {
+        await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Phoenix settings"]')!.click())
+        await act(async () => readButton().click())
+        assert.equal(pending.length, 1)
+        const finishOld = () => {
+          if (fails) pending[0].reject(new Error('OLD DIAGNOSTICS ERROR'))
+          else pending[0].resolve({ account: 'private diagnostics from A' })
+        }
+        if (transition.startsWith('batched')) {
+          await act(async () => {
+            __setBrowserSessionStateForTests(authenticated('B'))
+            __setBrowserSessionStateForTests(authenticated('A'))
+            if (transition === 'batched A-B-A completion') finishOld()
+            await view.rerender(<PhoenixAvailability />)
+            await new Promise(resolve => setTimeout(resolve, 0))
+          })
+          assert.doesNotMatch(document.body.textContent ?? '', /OLD DIAGNOSTICS ERROR|Diagnostics ready: account/)
+          assert.equal(readButton().disabled, false, 'a batched authority round-trip revokes obsolete diagnostics admission')
+        } else {
+          for (const sub of transition === 'A-B-A transition' ? ['B', 'A'] : ['B']) {
+            __setBrowserSessionStateForTests(authenticated(sub))
+            await view.rerender(<PhoenixAvailability />)
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+          }
+        }
+        await act(async () => readButton().click())
+        assert.equal(pending.length, 2)
+        await act(async () => {
+          if (transition !== 'batched A-B-A completion') finishOld()
+          await new Promise(resolve => setTimeout(resolve, 0))
+        })
+        assert.doesNotMatch(document.body.textContent ?? '', /OLD DIAGNOSTICS ERROR|Diagnostics ready: account/)
+        assert.equal(readButton().disabled, true, 'the older completion cannot release the current diagnostics request')
+        await act(async () => pending[1].resolve({ config: {} }))
+        assert.match(document.body.textContent ?? '', /Diagnostics ready: config/)
+        assert.equal(readButton().disabled, false)
+      } finally {
+        await view.unmount()
+        phoenixApi.diagnostics = originalDiagnostics
+        globalThis.fetch = originalFetch
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+      }
+    })
+  }
+}
+
+test('Phoenix reports current diagnostics failures and releases the read control', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    const body = action === 'phoenix.status' ? { available: true, capabilities: { diagnostics: ['config'] } }
+      : action === 'phoenix.models.list' ? { models: [] }
+      : action === 'phoenix.diagnostics.read' ? { message: 'Diagnostics temporarily unavailable' } : { sessions: [] }
+    return new Response(JSON.stringify(body), { status: action === 'phoenix.diagnostics.read' ? 503 : 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Phoenix settings"]')!.click())
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-label="Read Phoenix diagnostics"]')!.click()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    assert.match(document.body.textContent ?? '', /Diagnostics temporarily unavailable/)
+    assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="Read Phoenix diagnostics"]')!.disabled, false)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+for (const fails of [false, true]) {
+  test(`Phoenix handles current thread-close ${fails ? 'failure visibly without deleting the thread' : 'success'}`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      const body = action === 'phoenix.status' ? { available: true }
+        : action === 'phoenix.models.list' ? { models: [] }
+        : action === 'phoenix.session.close' ? fails ? { message: 'Thread could not be closed' } : { session_id: 'A', status: 'closed' }
+        : { sessions: [{ session_id: 'A', title: 'Conversation A' }] }
+      return new Response(JSON.stringify(body), { status: fails && action === 'phoenix.session.close' ? 503 : 200 })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[aria-label="Close Conversation A"]')!.click()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.equal(document.querySelector('[aria-label="Close Conversation A"]') !== null, fails)
+      if (fails) assert.match(document.body.textContent ?? '', /Thread could not be closed/)
+    } finally {
+      await view.unmount()
+      globalThis.fetch = originalFetch
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+for (const transition of ['thread', 'identity', 'batched identity'] as const) {
+  for (const fails of [false, true]) {
+    test(`Phoenix ignores late thread-close ${fails ? 'failures' : 'successes'} after a ${transition} change`, async () => {
+      const authenticated = (sub: string) => ({ status: 'authenticated' as const, user: { sub }, projectId: `project-${sub}`, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+      __setBrowserSessionStateForTests(authenticated('A'))
+      const originalFetch = globalThis.fetch
+      const { phoenixApi } = await import('../../lib/api/phoenix-client.ts')
+      const originalClose = phoenixApi.close
+      let finishClose!: () => void
+      phoenixApi.close = () => new Promise((resolve, reject) => {
+        finishClose = () => fails ? reject(new Error('OLD CLOSE ERROR')) : resolve({ session_id: 'A', status: 'closed' })
+      })
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const { action, params } = JSON.parse(String(init?.body)) as { action: string; params?: { session_id?: string } }
+        const body = action === 'phoenix.status' ? { available: true }
+          : action === 'phoenix.models.list' ? { models: [] }
+          : action === 'phoenix.session.list' ? { sessions: [{ session_id: 'A', title: 'Conversation A' }, { session_id: 'B', title: 'Conversation B' }] }
+          : { session_id: params?.session_id, messages: [{ role: 'assistant', text: `Conversation ${params?.session_id} reply` }] }
+        return new Response(JSON.stringify(body))
+      }) as typeof fetch
+      const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+      const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+      const view = await renderClient(<PhoenixAvailability />)
+      const openThread = async (title: string) => {
+        if (document.querySelector('[aria-label="Phoenix threads"]') === null) await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+        const button = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(item => item.textContent === title)!
+        assert.ok(button)
+        await act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      }
+      try {
+        await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+        await openThread('Conversation A')
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close Conversation A"]')!.click())
+        assert.ok(finishClose)
+        if (transition === 'batched identity') {
+          await act(async () => {
+            __setBrowserSessionStateForTests(authenticated('B'))
+            __setBrowserSessionStateForTests(authenticated('A'))
+            finishClose()
+            await view.rerender(<PhoenixAvailability />)
+            await new Promise(resolve => setTimeout(resolve, 0))
+          })
+          assert.match(document.body.textContent ?? '', /Conversation A reply/)
+        } else {
+          if (transition === 'identity') {
+            __setBrowserSessionStateForTests(authenticated('B'))
+            await view.rerender(<PhoenixAvailability />)
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+          }
+          await openThread('Conversation B')
+          assert.match(document.body.textContent ?? '', /Conversation B reply/)
+          await act(async () => { finishClose(); await new Promise(resolve => setTimeout(resolve, 0)) })
+          assert.match(document.body.textContent ?? '', /Conversation B reply/)
+        }
+        assert.doesNotMatch(document.body.textContent ?? '', /OLD CLOSE ERROR/)
+      } finally {
+        await view.unmount()
+        phoenixApi.close = originalClose
+        globalThis.fetch = originalFetch
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+      }
+    })
+  }
+}

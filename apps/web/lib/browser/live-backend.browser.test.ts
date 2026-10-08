@@ -11,6 +11,7 @@ import {
   observeLivePage,
   ownedBrowserLaunchOptions,
   readPrivateCsrf,
+  readScanSecrets,
   readLiveDescriptor,
   runBrowserCleanupIfActive,
   useBrowserWithAbort,
@@ -381,10 +382,9 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.ok(evidence.requests.some((request) => request.path === '/auth/session'))
       assert.ok(evidence.requests.some((request) => request.path === '/v1/catalog'))
       assert.ok(evidence.requests.some((request) => request.path === '/v1/gateway' && request.method === 'POST'))
-      const scanSecrets = (await import('node:fs/promises')).readFile(descriptor.scan_secrets_path, 'utf8')
-        .then((value) => value.split('\n').filter(Boolean))
-      assertCanaryFree(await page.locator('body').innerText(), await scanSecrets, 'DOM')
-      assertCanaryFree(evidence, await scanSecrets, 'browser evidence')
+      const scanSecrets = await readScanSecrets(descriptor, signal)
+      assertCanaryFree(await page.locator('body').innerText(), scanSecrets, 'DOM')
+      assertCanaryFree(evidence, scanSecrets, 'browser evidence')
       progress('evidence-asserted')
       await context.tracing.stop()
       progress('trace-stopped')

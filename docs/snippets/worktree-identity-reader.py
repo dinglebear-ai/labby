@@ -1,5 +1,6 @@
 """Repository-owned bounded, read-only Git identity primitives."""
-from typing import Any
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 import hashlib
 import json
@@ -37,7 +38,7 @@ def within(path: Path, base: Path) -> bool:
 
 GIT_CAPTURE_BYTES = 256 * 1024
 
-def _git_capture(root: Path, args: tuple[str, ...], consume) -> int:
+def _git_capture(root: Path, args: tuple[str, ...], consume: Callable[[bytes], None]) -> int:
     """Drain both pipes under one byte/deadline bound, including on Windows."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0", LC_ALL="C")
@@ -45,7 +46,7 @@ def _git_capture(root: Path, args: tuple[str, ...], consume) -> int:
     workers = []
     stopped = threading.Event()
     chunks = queue.Queue(maxsize=4)
-    def read_pipe(pipe, stdout):
+    def read_pipe(pipe: BinaryIO, stdout: bool) -> None:
         try:
             while not stopped.is_set():
                 chunk = pipe.read(8192)
@@ -116,7 +117,7 @@ def status(root: Path) -> tuple[int, list[dict[str, Any]], str]:
     fingerprint = hashlib.sha256()
     pending = bytearray()
     changes, count, rename = [], 0, None
-    def consume(chunk):
+    def consume(chunk: bytes) -> None:
         nonlocal count, rename
         fingerprint.update(chunk)
         pending.extend(chunk)

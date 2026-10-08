@@ -68,7 +68,7 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertIn("--no-default-features --features skills", workflow)
         self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(workflow))
 
-    def test_skills_regression_command_requires_exact_feature_lock_and_filter(self):
+    def test_skills_regression_command_requires_exact_feature_lock_and_filter(self) -> None:
         command = "cargo test -p labby --no-default-features --features skills --locked skills::"
         self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(command))
         self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(command.replace(" skills::", "\n          skills::")))
