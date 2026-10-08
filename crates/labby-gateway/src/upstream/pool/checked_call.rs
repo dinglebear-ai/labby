@@ -89,18 +89,19 @@ impl UpstreamPool {
             tools
         } else {
             let listing_deadline = self.request_timeout.min(DISCOVERY_TIMEOUT);
-            catalog_pagination::list_tools(&peer, listing_deadline, MAX_UPSTREAM_TOOLS)
+            let tools = catalog_pagination::list_tools(&peer, listing_deadline, MAX_UPSTREAM_TOOLS)
                 .await
                 .map_err(|error| CheckedToolCallError::Catalog {
                     kind: error.kind(),
                     message: error.bounded_text(),
-                })?
+                })?;
+            Arc::from(tools)
         };
         let tool = tools
-            .into_iter()
+            .iter()
             .find(|candidate| candidate.name.as_ref() == tool_name)
             .ok_or(CheckedToolCallError::MissingTool)?;
-        let (_, exact_tool) = cached_upstream_tool(tool, &Arc::from(config.name.as_str()));
+        let (_, exact_tool) = cached_upstream_tool(tool.clone(), &Arc::from(config.name.as_str()));
         let checked = check(&exact_tool).map_err(CheckedToolCallError::Check)?;
 
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, config.oauth.is_some());

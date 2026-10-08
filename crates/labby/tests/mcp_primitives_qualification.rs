@@ -696,3 +696,106 @@ async fn q1_oversized_prompt_body_is_rejected_with_a_typed_bound_error() {
 fn q1_deadlines_are_explicit_and_bounded() {
     assert!(REQUEST_TIMEOUT <= Duration::from_secs(15));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_route_survives_real_gateway_process_restart() {
+    let fixture = PrimitiveFixture::start("restart", FixtureMode::Normal)
+        .await
+        .expect("fixture");
+    let mut qualification = PrimitiveQualification::start(&[&fixture])
+        .await
+        .expect("gateway");
+    let result = qualification
+        .service()
+        .call_tool_once(CallToolRequestParams::new("fixture.task"))
+        .await
+        .expect("create task");
+    let CallToolResponse::Task(created) = result else {
+        panic!("task response required")
+    };
+    let id = created.task.task_id;
+    qualification.restart().await.expect("real process restart");
+    let result = qualification
+        .service()
+        .get_task(GetTaskParams::new(&id))
+        .await
+        .unwrap_or_else(|error| {
+            panic!(
+                "restart task poll: {error}: {}",
+                qualification.diagnostic_log_tail()
+            )
+        });
+    assert_eq!(result.task.task.task_id, id);
+    assert_eq!(result.task.task.status, TaskStatus::Working);
+    qualification
+        .service()
+        .update_task(UpdateTaskParams::new(&id, Default::default()))
+        .await
+        .expect("restart update");
+    qualification
+        .service()
+        .cancel_task(CancelTaskParams::new(&id))
+        .await
+        .expect("restart cancel");
+    assert_eq!(fixture.task_updates(), 1);
+    assert_eq!(fixture.task_cancellations(), 1);
+    assert!(qualification.finish().await.failures.is_empty());
+    assert_eq!(
+        fixture.tool_calls(),
+        1,
+        "task creation must never be replayed"
+    );
+    fixture.finish().await.expect("fixture cleanup");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_input_and_terminal_result_survive_restart_without_replaying_work() {
+    let fixture = PrimitiveFixture::start("task-input", FixtureMode::Normal)
+        .await
+        .expect("fixture");
+    fixture.require_task_input();
+    let mut runner = PrimitiveQualification::start(&[&fixture])
+        .await
+        .expect("gateway");
+    let CallToolResponse::Task(created) = runner
+        .service()
+        .call_tool_once(CallToolRequestParams::new("fixture.task"))
+        .await
+        .expect("create")
+    else {
+        panic!("task required")
+    };
+    let id = created.task.task_id;
+    runner.restart().await.expect("restart before input");
+    let task = runner
+        .service()
+        .get_task(GetTaskParams::new(&id))
+        .await
+        .expect("input poll");
+    assert_eq!(task.task.task.status, TaskStatus::InputRequired);
+    let wire = serde_json::to_value(task).expect("input state");
+    assert_eq!(
+        wire["inputRequests"]["roots-needed"]["method"],
+        "roots/list"
+    );
+    let input =
+        std::collections::BTreeMap::from([("roots-needed".to_string(), json!({"roots":[]}))]);
+    runner
+        .service()
+        .update_task(UpdateTaskParams::new(&id, input.clone()))
+        .await
+        .expect("provide input");
+    assert_eq!(fixture.task_input_responses().await, vec![input]);
+    runner.restart().await.expect("restart after input");
+    let task = runner
+        .service()
+        .get_task(GetTaskParams::new(&id))
+        .await
+        .expect("terminal poll");
+    assert_eq!(task.task.task.status, TaskStatus::Completed);
+    let wire = serde_json::to_value(task).expect("terminal state");
+    assert_eq!(wire["result"]["content"][0]["text"], "input accepted");
+    assert_eq!(fixture.tool_calls(), 1);
+    assert!(runner.finish().await.failures.is_empty());
+    fixture.finish().await.expect("fixture cleanup");
+}

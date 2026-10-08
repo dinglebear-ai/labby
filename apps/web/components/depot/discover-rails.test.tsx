@@ -55,8 +55,8 @@ test('Discover collections retain successful partial-source data and explain mis
   const html = renderToStaticMarkup(<DiscoverRails artifacts={[artifacts[3]]} artifactHref={artifactHref} now={now} incomplete failureMessage="One source is unavailable." onRetry={() => {}} />)
   assert.match(html, /Undated skill/)
   assert.match(html, /One source is unavailable/)
-  assert.match(html, /No revision dates reported in these results/)
-  assert.match(html, /No loadouts in these results/)
+  assert.doesNotMatch(html, /Recently updated|No revision dates reported in these results/)
+  assert.doesNotMatch(html, /Loadouts to explore|No loadouts in these results/)
   assert.doesNotMatch(html, /No artifacts returned|Catalog results unavailable/)
 })
 

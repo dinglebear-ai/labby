@@ -115,7 +115,7 @@ unroutable.
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
 | Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
 | MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |
-| Tasks | Opaque, durable-before-ack handles; shared owner/config authorization on get/update/cancel; retained relay still required | task routing, durable-store, registration-race, and relay task-status regressions |
+| Tasks | Opaque, durable-before-ack handles; shared owner/config authorization on get/update/cancel; authorized relay reacquisition after restart | task routing, durable-store, registration-race, and relay task-status regressions |
 | Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
 | Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
 | Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | relay connector/route tests plus the multi-hop driver |
@@ -164,13 +164,35 @@ per transaction. There is no task-route idle timeout or LRU eviction. If startup
 cannot open the store, `task_routes_unavailable` appears in subsystem health:
 synchronous gateway work can continue, but task creation has no in-memory fallback.
 
-**First-slice boundary for issue #771:** route metadata survives closing and
-reopening SQLite, but task RPCs still require the original retained relay
-connection. Reacquiring authenticated connections after pool replacement or
-process restart, terminal-state garbage collection, and reconnectable task
-subscriptions remain later workstreams. This slice does not claim end-to-end
-restart or reconnect durability. Incoming `notifications/tasks` messages still
-translate native IDs through the live companion.
+**Reconnect boundary for issue #771:** authenticated task peers are reacquired
+from current trusted upstream configuration after pool replacement or process
+restart. Recovery sends the original native task ID; it never replays task
+creation. Each invocation supplies its current client capabilities, cancellation,
+and deadline budget. Durable owner/route/configuration checks fence submission
+and response publication. Credential revocation and configuration replacement
+delete affected mappings, including routes with no live companion; same-owner
+credential refresh retains mappings while retiring old peers. Failed durable
+revocation reports an error and quarantines further task routing in that store.
+Revocation intent is persisted before credential or configuration replacement.
+On restart, pending intent is replayed before routes become available; reopening
+fails if deletion still cannot complete. A successful rollback completes the
+prepared revocation durably: affected mappings stay revoked, and unaffected task
+routing becomes available. Failed rollback restoration or revocation cleanup
+reports that failure and keeps task routing quarantined until successful
+reconciliation or restart. Task
+route schema version 3 migrates versions 1 and 2 without discarding unaffected routes;
+older binaries reject the new schema rather than reopening it unsafely.
+Before upgrading, retain a SQLite-consistent backup and check schema version,
+`PRAGMA integrity_check`, route counts, and pending revocation counts. Prefer a
+forward fix when rolling back code: restoring an old database after credential
+revocation or configuration replacement can restore obsolete task authority. A
+restore requires reconciling those changes before serving routes.
+
+Task input requests and terminal payloads remain upstream-owned and are fetched
+through the same authorized route after restart. Reconnectable task subscriptions,
+terminal-state garbage collection, and the full issue #771 transport matrix remain
+outstanding. The task subscription draft requires task-ID subscription APIs absent
+from the pinned RMCP revision and is not part of this reconnect implementation.
 
 Focused checks, run from the repository root with its pinned Rust toolchain:
 

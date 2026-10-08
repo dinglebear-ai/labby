@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-29"
+updated: "2026-10-04"
 ---
 
 # Setup Service
@@ -38,7 +38,7 @@ Finally, accept **Start the proxy now**, or run:
 npx -y @dinglebear/labby proxy
 ```
 
-Keep the terminal open. In ChatGPT Developer mode, add an OAuth app using the printed MCP URL, sign in with Google, and ask it to run `runtime_check` before creating a sandbox. The Microsandbox server is an upstream of Labby; ChatGPT connects to Labby's protected public endpoint. A dry run does not install dependencies, open a browser, save configuration, or publish Funnel; Tailscale must already be installed and signed in to derive the callback.
+Keep the terminal open. In ChatGPT Developer mode, add an OAuth app using the printed MCP URL, sign in with Google, and ask it to run `runtime_check` before creating a sandbox. The Microsandbox server is an upstream of Labby; ChatGPT connects to Labby's protected public endpoint. A dry run does not install dependencies, open a browser, save configuration, or publish Funnel; Tailscale must already be installed and signed in to derive the callback. Run `labby setup --chatgpt --dry-run` before registering a Google client. The preview reports missing credential environment names without requesting or displaying secrets; it does not claim authentication or runtime readiness. Actual setup still requires the provider credentials and admin identity.
 
 ## Google OAuth and ChatGPT web
 

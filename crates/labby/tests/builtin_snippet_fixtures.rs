@@ -15,7 +15,7 @@ async fn every_builtin_declares_dependencies_and_passes_offline_fixture() {
     let snippets = store::list_snippets(home.path(), &builtin).expect("builtin catalog");
     assert_eq!(
         snippets.len(),
-        10,
+        11,
         "review fixture coverage when adding examples"
     );
     for snippet in &snippets {
@@ -121,6 +121,56 @@ async fn fixture_input_precedence_and_synthetic_writes_are_enforced() {
         !home.path().join("report/child.json").exists(),
         "synthetic artifact must not touch disk"
     );
+}
+
+#[tokio::test]
+async fn worktree_identity_verifies_the_linked_linear_workspace() {
+    let _product = PRODUCT_EXECUTION.lock().await;
+    let home = tempfile::tempdir().expect("isolated identity fixture home");
+    let builtin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/snippets");
+    for scenario in [
+        "explicit-link",
+        "wrong-workspace",
+        "suffix-key",
+        "ten-digit-key",
+        "query-fragment",
+        "body-cut-key",
+        "dot-segment",
+        "encoded-dot-segment",
+        "encoded-dot-slug",
+    ] {
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_labby"))
+                .args([
+                    "--json",
+                    "snippet",
+                    "test",
+                    "worktree-identity",
+                    "--param",
+                    "path=/fixture/repo/worktrees/topic",
+                    "--fixture",
+                ])
+                .arg(builtin.join(format!("worktree-identity.{scenario}.test.json")))
+                .env_clear()
+                .env("HOME", home.path())
+                .env("LABBY_HOME", home.path())
+                .env("LABBY_CODE_MODE_RUNNER_BACKEND", "process")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .expect("bounded identity scenario")
+        .expect("fixture CLI");
+        assert!(
+            output.status.success(),
+            "{scenario}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).expect("fixture JSON");
+        assert_eq!(report["passed"], true, "{scenario}: {report}");
+    }
 }
 
 #[tokio::test]

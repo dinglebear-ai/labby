@@ -2,6 +2,7 @@
 
 mod config;
 mod error;
+#[cfg(unix)]
 mod protocol;
 #[cfg(unix)]
 mod supervisor;

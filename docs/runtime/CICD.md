@@ -210,10 +210,11 @@ and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
 fail the aggregate. The classifier runs on every event, including fork PRs,
-without repository credentials. CI runs on Linux and macOS only; there are no
-Windows lanes or manual Windows selection inputs.
-The gate still rejects a skipped required fork product lane when its category
-was routed.
+without repository credentials. Required native Windows workspace tests follow
+the `rust_test` category; installer checks follow `workflow` or `release`.
+The gate rejects a skipped required Windows or fork product lane when its
+category was routed. The manual `run_windows` input controls only advisory
+Windows desktop checks.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
@@ -244,7 +245,7 @@ jobs when their changed-path category is enabled:
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
-| Frontend build | `rust_compile`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/web`) |
+| Frontend build | `rust_compile`, `rust_test`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/web`); the aggregate requires this prerequisite on every routed path |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
@@ -349,7 +350,7 @@ land the required code/tests and the baseline update together.
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - CI uses Linux and macOS runners only, with no manual Windows lanes
+  - CI uses hosted Linux, macOS, and Windows runners; only advisory Windows desktop checks require manual selection
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
@@ -412,7 +413,7 @@ verification in either mode. Shell and npm installers select the matching
 ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
-runner. Windows is neither a CI runner nor a release target. Cross-compilation may be useful experimentally, but it is not the
+runner. Windows has native CI qualification lanes but is not a release target. Cross-compilation may be useful experimentally, but it is not the
 release support contract.
 
 ## Integration Tests

@@ -1124,6 +1124,32 @@ function expressions pass through, while statement blocks such as
 `const x = await callTool(...); x.items` are wrapped as `async () => { ... }` and
 the trailing expression is returned.
 
+### Artifact admission and publication
+
+Explicit `writeArtifact` calls and automatically preserved responses share a
+hard per-run payload budget of 64 MiB and 256 files, in addition to the
+configured per-artifact cap. Empty files consume the file-count budget.
+Explicit writes exceeding an aggregate limit return `budget_exceeded`.
+Automatic preservation is best effort and may be unavailable when that same
+execution budget is exhausted; final-result shaping still completes. Earlier artifacts remain
+available and must not be recreated by replaying completed mutations.
+
+Within a gateway process, artifact admission, publication, and retention are
+serialized. Each write reserves space against the configured store byte budget
+before publishing, including payloads from active runs. Inactive runs may be
+pruned to make room; active runs are retained and the new write is rejected when
+space is unavailable. Setting the store byte budget to zero disables that store
+limit, but preserves the per-run limits. Retrieval metadata is excluded from
+payload accounting. The artifact store belongs to one gateway process; this
+lock does not coordinate independent gateways sharing the same directory.
+
+Artifact content is written to a temporary file in the destination directory,
+then published without replacing an existing file. Failed or canceled writes
+remove the temporary file and leave the final path available for retry. This
+publication guarantee does not cover later retrieval-enrollment failures, which
+retain the completed output and report possible side effects. Publication is
+not a promise of durability across host power loss.
+
 ### Automatic response artifacts
 
 Successful upstream tool responses larger than 24 KiB are automatically preserved

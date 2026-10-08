@@ -72,10 +72,7 @@ impl UpstreamPool {
             self.invalidate_oauth_subject_sessions(&config.name, subject, "upstream.restart")
                 .await;
             let between = between_stop_and_start().await;
-            let reconnect = self
-                .acquire_or_connect_subject(config, subject)
-                .await
-                .map(drop);
+            let reconnect = self.acquire_subject_peer(config, subject).await.map(drop);
             return Ok(UpstreamRestart { between, reconnect });
         }
         self.begin_subscription_generation(&config.name).await;

@@ -140,24 +140,16 @@ impl LabMcpServer {
                         })
                         .cloned()
                 } else if let Some(prompt_name) = request.r#ref.as_prompt_name() {
-                    let mut owner = None;
-                    for config in &configs {
-                        if config.oauth.is_some()
-                            && pool
-                                .subject_scoped_prompt_owner(
-                                    std::slice::from_ref(config),
-                                    oauth_subject,
-                                    prompt_name,
-                                )
-                                .await
-                                .as_deref()
-                                == Some(config.name.as_str())
-                        {
-                            owner = Some(config.clone());
-                            break;
-                        }
-                    }
-                    owner
+                    // The gateway namespace identifies the owner. The pool's
+                    // completion path enforces exposure before acquiring a peer.
+                    prompt_name
+                        .split_once('/')
+                        .and_then(|(owner, _)| {
+                            configs
+                                .iter()
+                                .find(|config| config.name == owner && config.oauth.is_some())
+                        })
+                        .cloned()
                 } else {
                     None
                 };

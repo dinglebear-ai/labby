@@ -54,6 +54,25 @@ impl UpstreamPool {
         self.runtime_origin == *origin && self.runtime_owner.as_ref() == owner
     }
 
+    pub(crate) async fn complete_task_config_revocation(&self) -> Result<(), String> {
+        if let Some(store) = &self.task_route_store {
+            store.complete_prepared_revocations().await?;
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn prepare_task_config_revocation(
+        &self,
+        upstreams: Vec<String>,
+    ) -> Result<(), String> {
+        if !upstreams.is_empty()
+            && let Some(store) = &self.task_route_store
+        {
+            store.prepare_upstream_revocation(upstreams).await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn prepare_lazy_upstream_reconcile(
         &self,
         reconnect_names: &HashSet<String>,
@@ -75,17 +94,51 @@ impl UpstreamPool {
         reconnect_names: &HashSet<String>,
         _guards: &UpstreamReconcileGuards,
     ) -> UpstreamReconcileCleanup {
+        // A removed/replaced definition permanently invalidates prior bindings,
+        // even when a later configuration restores the same fingerprint.
+        let revoked_names = reconnect_names
+            .iter()
+            .filter(|name| {
+                configs
+                    .iter()
+                    .find(|config| config.name == **name)
+                    .is_none_or(|config| !self.upstream_config_matches(config))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let task_connections = {
+            let mut tasks = self.task_routes.write().await;
+            let ids = tasks
+                .iter()
+                .filter(|(_, route)| reconnect_names.contains(&route.record.upstream_name))
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|id| tasks.remove(&id))
+                .map(|route| (route.record.upstream_name, route.connection._connection))
+                .collect::<Vec<_>>()
+        };
         for upstream_name in reconnect_names {
             if let Some(config) = configs.iter().find(|config| config.name == *upstream_name) {
+                self.configured_upstreams
+                    .insert(upstream_name.clone(), config.clone());
                 self.upstream_config_fingerprints.insert(
                     upstream_name.clone(),
                     crate::gateway::code_mode::catalog_cache::fingerprint(config),
                 );
             } else {
                 self.upstream_config_fingerprints.remove(upstream_name);
+                self.configured_upstreams.remove(upstream_name);
             }
         }
 
+        if !revoked_names.is_empty()
+            && let Some(store) = &self.task_route_store
+            && let Err(error) = store.remove_upstreams(revoked_names).await
+        {
+            tracing::error!(action = "task.routes.reconcile", error = %error,
+                "task routing quarantined after configuration revocation failure");
+        }
         let cancelled_probe_count = {
             let mut tasks = self.probe_tasks.write().await;
             let mut count = 0usize;
@@ -99,7 +152,7 @@ impl UpstreamPool {
         };
 
         let mut regular = Vec::new();
-        let mut relay = Vec::new();
+        let mut relay = task_connections;
         for upstream_name in reconnect_names {
             regular.extend(self.detach_subject_connections_for(upstream_name).await);
             relay.extend(self.detach_relay_connections_for(upstream_name).await);
@@ -210,6 +263,9 @@ impl UpstreamPool {
         // Evict all cached relay connections (and reap any stdio children they
         // hold) before the pool-level connections are torn down.
         self.evict_all_relay_connections().await;
+        self.close_task_companions(reason).await;
+        self.configured_upstreams.clear();
+        self.upstream_config_fingerprints.clear();
         self.cancel_all_upstream_subscriptions().await;
 
         // Cancel and await stale-while-revalidate work before dropping the cache.

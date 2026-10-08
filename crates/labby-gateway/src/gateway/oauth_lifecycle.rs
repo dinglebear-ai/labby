@@ -591,6 +591,7 @@ impl GatewayManager {
                 total.subject_connections += invalidated.subject_connections;
                 total.relay_connections += invalidated.relay_connections;
                 total.task_routes += invalidated.task_routes;
+                total.task_route_storage_failed |= invalidated.task_route_storage_failed;
             }
         } else if let Some(cache) = &self.oauth_client_cache {
             for upstream in &shared_upstreams {
@@ -712,8 +713,48 @@ impl GatewayManager {
             });
         }
 
+        let lifecycle = self.clone();
+        let target = upstream.to_owned();
+        let owner = subject.to_owned();
+        let shared = manager.credential_source_label() == "google_provider";
+        let fence: labby_auth::upstream::manager::CredentialSaveFence = Arc::new(move || {
+            let lifecycle = lifecycle.clone();
+            let target = target.clone();
+            let owner = owner.clone();
+            Box::pin(async move {
+                let guard = match &lifecycle.oauth_client_cache {
+                    Some(cache) => Some(cache.invalidation_barrier().write_owned().await),
+                    None => None,
+                };
+                let sessions = if shared {
+                    lifecycle
+                        .invalidate_shared_oauth_runtime(
+                            &target,
+                            "oauth.google_provider.replace",
+                            true,
+                        )
+                        .await
+                } else {
+                    lifecycle
+                        .invalidate_subject_oauth_runtime(
+                            &target,
+                            &owner,
+                            "oauth.credentials.replace",
+                            true,
+                        )
+                        .await
+                };
+                sessions.ensure_task_routes_durable().map_err(|_| {
+                    rmcp::transport::auth::AuthError::InternalError(
+                        "task route revocation persistence failed".into(),
+                    )
+                })?;
+                let held: Box<dyn Send> = Box::new(guard);
+                Ok(held)
+            })
+        });
         manager
-            .complete_authorization_callback_with_issuer(subject, code, state, issuer)
+            .complete_authorization_callback_with_fence(subject, code, state, issuer, Some(fence))
             .await
             .map_err(|e| {
                 tracing::warn!(
@@ -739,19 +780,6 @@ impl GatewayManager {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth callback: tokens stored"
         );
-
-        if manager.credential_source_label() == "google_provider" {
-            self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace", false)
-                .await;
-        } else {
-            self.invalidate_subject_oauth_runtime(
-                upstream,
-                subject,
-                "oauth.credentials.replace",
-                false,
-            )
-            .await;
-        }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
             let _mutation_guard = self.acquire_config_mutation().await?;
@@ -1051,6 +1079,12 @@ impl GatewayManager {
             }
             None => None,
         };
+        let sessions = self
+            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
+            .await;
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let revoke_result = manager
             .revoke_shared_google_credential()
             .await
@@ -1075,10 +1109,10 @@ impl GatewayManager {
                     .await;
             }
         }
-        let sessions = self
-            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
-            .await;
         drop(lifecycle_guard);
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let invalidation = revoke_result?;
         tracing::info!(
             service = "upstream_oauth",
@@ -1136,6 +1170,12 @@ impl GatewayManager {
             None => None,
         };
 
+        let sessions = self
+            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
+            .await;
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let clear_result = manager.clear_credentials(subject).await;
         // Invalidation is deliberately unconditional once a clear attempt has
         // crossed the lifecycle barrier. Even if persistence reports a partial
@@ -1144,10 +1184,10 @@ impl GatewayManager {
         self.invalidate_oauth_status_discovery(upstream, Some(subject))
             .await;
 
-        let sessions = self
-            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
-            .await;
         drop(lifecycle_guard);
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         if let Err(error) = clear_result {
             tracing::warn!(
                 service = "upstream_oauth",

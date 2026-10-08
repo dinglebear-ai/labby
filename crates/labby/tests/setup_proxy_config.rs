@@ -37,6 +37,16 @@ fn chatgpt_setup(
     dry_run: bool,
     occupied: bool,
 ) -> std::process::Output {
+    chatgpt_setup_with_credentials(directory, dry_run, occupied, true)
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+fn chatgpt_setup_with_credentials(
+    directory: &std::path::Path,
+    dry_run: bool,
+    occupied: bool,
+    credentials: bool,
+) -> std::process::Output {
     use std::os::unix::fs::PermissionsExt as _;
     let bin = directory.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -67,10 +77,13 @@ esac
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("LABBY_HOME", directory.join("state"))
-        .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
-        .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret-never-print")
-        .env("LABBY_AUTH_ADMIN_EMAIL", "owner@example.test")
         .args(["setup", "--chatgpt", "--yes", "--no-browser", "--json"]);
+    if credentials {
+        command
+            .env("LABBY_GOOGLE_CLIENT_ID", "test-client")
+            .env("LABBY_GOOGLE_CLIENT_SECRET", "test-secret-never-print")
+            .env("LABBY_AUTH_ADMIN_EMAIL", "owner@example.test");
+    }
     if dry_run {
         command.arg("--dry-run");
     }
@@ -106,6 +119,68 @@ fn chatgpt_preview_derives_callback_without_installing_or_publishing() {
         std::fs::read_to_string(temp.path().join("calls")).unwrap(),
         "version\nstatus --json\nserve status --json\n"
     );
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+#[test]
+fn chatgpt_preview_reports_missing_credentials_without_writing_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let output = chatgpt_setup_with_credentials(temp.path(), true, false, false);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["status"], "preview");
+    assert_eq!(json["ready"], false);
+    assert_eq!(
+        json["missing_requirements"],
+        serde_json::json!([
+            "LABBY_GOOGLE_CLIENT_ID",
+            "LABBY_GOOGLE_CLIENT_SECRET",
+            "LABBY_AUTH_ADMIN_EMAIL"
+        ])
+    );
+    assert!(!temp.path().join("state").exists());
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("calls")).unwrap(),
+        "version\nstatus --json\nserve status --json\n"
+    );
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+#[test]
+fn google_configuration_still_requires_credentials() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    // Exercise the real validator used by ChatGPT setup without requiring KVM
+    // or executing the platform dependency-installation preflight.
+    let output = Command::new(env!("CARGO_BIN_EXE_labby"))
+        .env_clear()
+        .env("HOME", &home)
+        .env("LABBY_HOME", temp.path().join("state"))
+        .args([
+            "setup",
+            "--role",
+            "server",
+            "--config-only",
+            "--auth",
+            "oauth",
+            "--oauth",
+            "google",
+            "--public-url",
+            "https://test.example.ts.net",
+            "--yes",
+            "--no-browser",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Google client ID is required"));
+    assert!(!temp.path().join("state").exists());
 }
 
 #[cfg(all(unix, feature = "gateway"))]
@@ -209,6 +284,14 @@ fn setup_command(home: &std::path::Path, state: &std::path::Path, dry_run: bool)
             "--yes",
             "--json",
         ]);
+    #[cfg(windows)]
+    for key in ["SystemRoot", "WINDIR"] {
+        // The native preview checks a loopback port, so Winsock must be able
+        // to resolve its provider DLLs without inheriting user configuration.
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     if dry_run {
         command.arg("--dry-run");
     }
@@ -217,6 +300,18 @@ fn setup_command(home: &std::path::Path, state: &std::path::Path, dry_run: bool)
 
 fn setup(home: &std::path::Path, state: &std::path::Path, dry_run: bool) -> std::process::Output {
     setup_command(home, state, dry_run).output().unwrap()
+}
+
+fn setup_failure(output: &std::process::Output) -> String {
+    // Both callers stop before credential generation. Redact the owned
+    // fixture secrets before truncation so no partial secret can escape.
+    let diagnostic = String::from_utf8_lossy(&output.stderr)
+        .replace("test-client-secret", "[REDACTED]")
+        .replace("test-secret-never-print", "[REDACTED]")
+        .chars()
+        .take(4_096)
+        .collect::<String>();
+    format!("setup exited with {}: {diagnostic}", output.status)
 }
 
 #[test]
@@ -309,9 +404,41 @@ fn explicit_server_deployment_retains_managed_service_plan() {
         .args(["--deployment", "native"])
         .output()
         .unwrap();
-    assert!(preview.status.success());
+    assert!(preview.status.success(), "{}", setup_failure(&preview));
     let output: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
     assert_eq!(output["deployment"], "native");
     assert!(output["config_only"].is_null());
     assert!(!state.exists());
+}
+
+#[cfg(windows)]
+#[test]
+fn explicit_native_server_installation_rejects_windows_without_persisting_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("proxy-state");
+    let output = setup_command(directory.path(), &state, false)
+        .args(["--deployment", "native"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "{}", setup_failure(&output));
+    assert!(
+        output.stdout.is_empty(),
+        "unsupported installation printed an outcome"
+    );
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|_| panic!("{}", setup_failure(&output)));
+    assert!(
+        error["error"]["message"].as_str().is_some_and(|message| {
+            message.contains("native persistent server installation is not yet supported")
+        }),
+        "{}",
+        setup_failure(&output)
+    );
+    // Applying a Windows native plan only reads existing defaults before the
+    // platform rejection; it never reaches configuration or service writes.
+    assert!(
+        !state.exists(),
+        "unsupported installation created durable state"
+    );
+    assert!(!directory.path().join(".labby").exists());
 }

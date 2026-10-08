@@ -21,6 +21,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tower::Service;
+use tracing::Instrument as _;
 use url::Url;
 
 use crate::config::depot::{canonical_endpoint, canonical_local_endpoint, valid_provider_id};
@@ -177,6 +178,14 @@ type PinnedClient = Client<HttpsConnector<HttpConnector<PinnedResolver>>, Full<B
 struct Lease {
     client: PinnedClient,
     expires: Instant,
+}
+
+struct AbortExchangeOnDrop(tokio::task::AbortHandle);
+
+impl Drop for AbortExchangeOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,6 +350,19 @@ impl NetworkClient {
         let request = builder
             .body(Full::new(Bytes::from(bytes)))
             .map_err(|_| NetworkError::InvalidResponse)?;
+        // The HTTP handshake must not poll beneath the complete MCP/Code Mode
+        // dispatch stack. The exchange owns its client and request; cancellation
+        // or the outer absolute deadline aborts it instead of detaching work.
+        let exchange =
+            tokio::spawn(Self::exchange(client, request).instrument(tracing::Span::current()));
+        let _abort_on_drop = AbortExchangeOnDrop(exchange.abort_handle());
+        exchange.await.map_err(|_| NetworkError::Unavailable)?
+    }
+
+    async fn exchange(
+        client: PinnedClient,
+        request: Request<Full<Bytes>>,
+    ) -> Result<Value, NetworkError> {
         let mut response = tokio::time::timeout(IO_TIMEOUT, client.request(request))
             .await
             .map_err(|_| NetworkError::Timeout)?

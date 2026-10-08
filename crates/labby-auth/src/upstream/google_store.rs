@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use oauth2::{AccessToken, RefreshToken, Scope, TokenResponse as _, basic::BasicTokenType};
@@ -12,8 +12,6 @@ use rmcp::transport::auth::{
     VendorExtraTokenFields,
 };
 use rmcp_client as rmcp;
-use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::google::{GoogleProvider, merge_google_scopes};
@@ -23,29 +21,10 @@ use crate::upstream::types::OauthError;
 use crate::util::fingerprint;
 
 const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+#[cfg(test)]
 const REFRESH_OPERATION_LOCK_STRIPES: usize = 2_048;
 
-static REFRESH_OPERATION_LOCKS: OnceLock<[Arc<Mutex<()>>; REFRESH_OPERATION_LOCK_STRIPES]> =
-    OnceLock::new();
-
-/// Return the process-wide refresh-operation mutex for one stable credential.
-///
-/// This lock is deliberately distinct from `google_refresh::lock`. rmcp holds
-/// it across load, token exchange, and save, while `save` acquires the shorter
-/// persistence lock. Using the same mutex for both would deadlock during save.
-/// SQLite CAS and revocation fencing reject stale cross-process persistence,
-/// but do not serialize rotating-token exchanges across processes.
-/// Fixed stripes keep memory bounded without changing an active identity's
-/// mutex when capacity changes. Hash collisions serialize unrelated refreshes;
-/// they never share credential data or change store/provider/subject checks.
-pub(super) fn refresh_operation_lock(credential_identity: &str) -> Arc<Mutex<()>> {
-    let locks =
-        REFRESH_OPERATION_LOCKS.get_or_init(|| std::array::from_fn(|_| Arc::new(Mutex::new(()))));
-    let digest = Sha256::digest(credential_identity.as_bytes());
-    let stripe =
-        usize::from(u16::from_be_bytes([digest[0], digest[1]])) % REFRESH_OPERATION_LOCK_STRIPES;
-    Arc::clone(&locks[stripe])
-}
+pub(super) use crate::google_refresh::refresh_operation_lock;
 
 #[derive(Clone)]
 pub struct GoogleProviderCredentialStore {

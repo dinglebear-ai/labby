@@ -16,5 +16,10 @@
   },
   "type": "module",
   "version": "2.6.0",
-  "license": "AGPL-3.0-only"
+  "license": "AGPL-3.0-only",
+  "pnpm": {
+    "overrides": {
+      "source-map-js": "1.2.2"
+    }
+  }
 }

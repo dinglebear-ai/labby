@@ -1,6 +1,6 @@
 //! Host-brokered artifact writes for Code Mode.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -8,7 +8,6 @@ use futures::stream::{self, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
 
 use crate::error::ToolError;
@@ -17,10 +16,13 @@ use labby_runtime::path_safety::reject_existing_symlink_ancestors;
 use labby_runtime::path_safety::reject_path_traversal;
 
 const DEFAULT_CONTENT_TYPE: &str = "text/plain";
+mod budget;
 mod config;
+mod publication;
 pub use config::install_artifact_config_defaults;
 pub(crate) use config::{artifact_max_bytes, artifact_max_store_bytes, artifact_retention_runs};
 mod read;
+mod retention;
 pub use read::read_receipted_artifact;
 
 /// Upper bound on the `content_type` metadata string.
@@ -120,9 +122,9 @@ async fn dir_size_bytes(path: PathBuf) -> u64 {
 /// while that run is still writing into it. Membership here makes a run's
 /// directory un-prunable for as long as it is executing — see
 /// [`ActiveArtifactRun`].
-fn active_runs() -> &'static Mutex<HashSet<String>> {
-    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+fn active_runs() -> &'static Mutex<HashMap<String, usize>> {
+    static ACTIVE: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Snapshot the currently-active run ids so a prune pass can exclude them.
@@ -130,10 +132,12 @@ pub(crate) fn active_artifact_runs_snapshot() -> HashSet<String> {
     active_runs()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+        .keys()
+        .cloned()
+        .collect()
 }
 
-/// RAII registration of an in-flight run id. Construct once per execution and
+/// RAII registration of an in-flight run id. Nested guards share ownership;
 /// hold it for the whole run; `Drop` removes the id so the directory becomes
 /// eligible for pruning only after the run has finished.
 pub(crate) struct ActiveArtifactRun {
@@ -142,10 +146,11 @@ pub(crate) struct ActiveArtifactRun {
 
 impl ActiveArtifactRun {
     pub(crate) fn register(run_id: &str) -> Self {
-        active_runs()
+        *active_runs()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(run_id.to_string());
+            .entry(run_id.to_string())
+            .or_default() += 1;
         Self {
             run_id: run_id.to_string(),
         }
@@ -154,26 +159,14 @@ impl ActiveArtifactRun {
 
 impl Drop for ActiveArtifactRun {
     fn drop(&mut self) {
-        active_runs()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.run_id);
+        let mut runs = active_runs().lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(owners) = runs.get_mut(&self.run_id) {
+            *owners -= 1;
+            if *owners == 0 {
+                runs.remove(&self.run_id);
+            }
+        }
     }
-}
-
-/// Best-effort prune of old per-run artifact directories so the store stays
-/// bounded by both a run-count cap and a total-byte budget. Keeps the newest
-/// runs (ULID names sort chronologically) and removes older ones, except any run
-/// still executing.
-pub(crate) async fn prune_artifact_runs(retain: usize) {
-    let active = active_artifact_runs_snapshot();
-    prune_artifact_runs_in(
-        &artifact_store_root(),
-        retain,
-        artifact_max_store_bytes(),
-        &active,
-    )
-    .await;
 }
 
 /// Core prune over an explicit store root (so tests need no `$LABBY_HOME`).
@@ -189,7 +182,7 @@ pub(crate) async fn prune_artifact_runs(retain: usize) {
 /// `active` are skipped unconditionally (even past either limit) so a concurrent
 /// run's directory is never deleted while it is still writing. Errors are
 /// swallowed (best-effort, debug-logged); pruning must never fail a run.
-pub(crate) async fn prune_artifact_runs_in(
+async fn prune_artifact_runs_locked(
     store_root: &Path,
     retain: usize,
     max_store_bytes: u64,
@@ -270,27 +263,36 @@ pub(crate) async fn prune_artifact_runs_in(
         Vec::new()
     };
 
-    // Walk newest-first, keeping a run while it sits inside BOTH the count window
-    // and the running byte budget; everything past either limit is a removal
-    // candidate. Active runs still count toward the byte total (they're on disk)
-    // but are never themselves removed.
-    let mut cumulative: u64 = 0;
+    // Active payloads have priority regardless of ULID order. Reserve their
+    // bytes before selecting inactive runs, so a newer inactive run cannot
+    // consume space that an older protected execution already occupies.
+    let mut cumulative: u64 = if byte_pruning {
+        newest_first
+            .iter()
+            .zip(&sizes)
+            .filter(|(name, _)| active.contains(*name))
+            .map(|(_, bytes)| *bytes)
+            .fold(0, u64::saturating_add)
+    } else {
+        0
+    };
     let mut to_remove: Vec<String> = Vec::new();
     for (idx, name) in newest_first.iter().enumerate() {
-        if byte_pruning {
-            cumulative = cumulative.saturating_add(sizes[idx]);
-        }
-        let within_count = !count_pruning || idx < retain;
-        let within_bytes = !byte_pruning || cumulative <= max_store_bytes;
-        if within_count && within_bytes {
-            continue;
-        }
-        // Never collect a run that is still executing — its directory may be
-        // mid-write. It becomes eligible on a later prune once it finishes.
         if active.contains(name) {
             continue;
         }
-        to_remove.push(name.clone());
+        let candidate = if byte_pruning {
+            cumulative.saturating_add(sizes[idx])
+        } else {
+            cumulative
+        };
+        let within_count = !count_pruning || idx < retain;
+        let within_bytes = !byte_pruning || candidate <= max_store_bytes;
+        if within_count && within_bytes {
+            cumulative = candidate;
+        } else {
+            to_remove.push(name.clone());
+        }
     }
 
     for name in to_remove {
@@ -332,12 +334,9 @@ pub(crate) async fn write_code_mode_artifact(
     }
 
     let destination = root.join(&rel_path);
-    // Defense-in-depth per `reject_path_traversal`'s documented contract: the
-    // lexical guard in `normalize_artifact_path` cannot see through symlinks, so
-    // confirm the joined destination stays within `root` and that no existing
-    // symlinked ancestor redirects the write outside the jail before any
-    // directory or file is created.
     reject_existing_symlink_ancestors(root, &destination)?;
+    let _reservation = budget::STORE_MUTATION.lock().await;
+    budget::admit(root, bytes.len(), artifact_max_store_bytes()).await?;
 
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent)
@@ -349,28 +348,7 @@ pub(crate) async fn write_code_mode_artifact(
     }
     reject_existing_symlink_ancestors(root, &destination)?;
 
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
-        .await
-        .map_err(|err| ToolError::Sdk {
-            sdk_kind: if err.kind() == std::io::ErrorKind::AlreadyExists {
-                "invalid_param"
-            } else {
-                "internal_error"
-            }
-            .to_string(),
-            message: format!("failed to create artifact file: {err}"),
-        })?;
-    file.write_all(bytes).await.map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to write artifact file: {err}"),
-    })?;
-    file.flush().await.map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to flush artifact file: {err}"),
-    })?;
+    publication::publish(&destination, bytes).await?;
 
     let sha256 = Sha256::digest(bytes);
 
@@ -506,3 +484,6 @@ fn has_windows_drive_prefix(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
+
+#[cfg(test)]
+mod active_guard_tests;

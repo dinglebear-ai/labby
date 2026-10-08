@@ -1,0 +1,99 @@
+{
+  "calls": [
+    {
+      "tool": "claude-example-host::Bash",
+      "match": {},
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"stdout\": \"{\\\"ok\\\": true, \\\"host\\\": \\\"example-host\\\", \\\"identity\\\": {\\\"root\\\": \\\"/fixture/repo/worktrees/topic\\\", \\\"path\\\": \\\"/fixture/repo/worktrees/topic\\\", \\\"common_dir\\\": \\\"/fixture/repo/.git\\\", \\\"git_dir\\\": \\\"/fixture/repo/.git/worktrees/topic\\\", \\\"head\\\": \\\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\\", \\\"branch\\\": \\\"feature/LAB-123\\\", \\\"detached\\\": false, \\\"dirty\\\": false, \\\"path_state\\\": \\\"live\\\", \\\"repository_candidates\\\": [\\\"example/repo\\\"], \\\"remotes\\\": [{\\\"name\\\": \\\"origin\\\", \\\"fetch\\\": [{\\\"url\\\": \\\"https://github.com/example/repo\\\", \\\"github_repo\\\": \\\"example/repo\\\"}], \\\"push\\\": [{\\\"url\\\": \\\"https://github.com/example/repo\\\", \\\"github_repo\\\": \\\"example/repo\\\"}]}]}, \\\"sessions\\\": {\\\"verified\\\": [{\\\"id\\\": \\\"11111111-1111-4111-8111-111111111111\\\", \\\"archived\\\": true, \\\"confidence\\\": \\\"high\\\", \\\"association\\\": \\\"recorded_path\\\", \\\"evidence\\\": [{\\\"source\\\": \\\"fixture:threads.cwd\\\", \\\"match\\\": \\\"canonical_worktree_path\\\"}]}], \\\"candidates\\\": [], \\\"coverage\\\": {\\\"available\\\": true, \\\"incomplete\\\": false, \\\"next_cursor\\\": null, \\\"transcripts_read\\\": false}}, \\\"worktrees\\\": {\\\"total\\\": 2, \\\"items\\\": [], \\\"truncated\\\": false}, \\\"hints\\\": {\\\"issue_keys\\\": [{\\\"key\\\": \\\"LAB-123\\\", \\\"source\\\": \\\"git:HEAD:branch\\\"}], \\\"pull_requests\\\": []}}\"}"
+          }
+        ]
+      }
+    },
+    {
+      "tool": "github::list_pull_requests",
+      "match": {
+        "state": "all",
+        "head": "example:feature/LAB-123"
+      },
+      "result": [
+        {
+          "number": 7,
+          "state": "closed",
+          "merged": true,
+          "merged_at": "2026-09-01T00:00:00Z",
+          "head": {
+            "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ref": "feature/LAB-123",
+            "repo": {
+              "full_name": "example/repo"
+            }
+          },
+          "base": {
+            "repo": {
+              "full_name": "example/repo"
+            }
+          },
+          "title": "LAB-123",
+          "body": "Fixed https://linear.app/example/issue/LAB-123/fixture"
+        }
+      ]
+    },
+    {
+      "tool": "github::pull_request_read",
+      "match": {
+        "method": "get",
+        "pullNumber": 7
+      },
+      "result": {
+        "number": 7,
+        "state": "closed",
+        "merged": true,
+        "merged_at": "2026-09-01T00:00:00Z",
+        "head": {
+          "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ref": "feature/LAB-123",
+          "repo": {
+            "full_name": "example/repo"
+          }
+        },
+        "base": {
+          "repo": {
+            "full_name": "example/repo"
+          }
+        },
+        "title": "LAB-123",
+        "body": "Fixed https://linear.app/example/issue/LAB-123/fixture"
+      }
+    },
+    {
+      "tool": "linear-notification-worker::get_issue",
+      "match": {
+        "id": "LAB-123"
+      },
+      "result": {
+        "identifier": "LAB-123",
+        "id": "fixture-issue-id",
+        "url": "https://linear.app/example/issue/LAB-123/fixture",
+        "gitBranchName": "feature/LAB-123",
+        "archivedAt": "2026-09-02T00:00:00Z"
+      }
+    }
+  ],
+  "expect": {
+    "/ok": true,
+    "/verified/pull_requests/0/association": "exact_head_sha",
+    "/verified/pull_requests/0/merged": true,
+    "/verified/linear_issues/0/association": "exact_linear_git_branch",
+    "/verified/linear_issues/0/archived": true,
+    "/sessions/verified/0/archived": true,
+    "/partial": false
+  },
+  "budgets": {
+    "wall_clock_ms": 20000,
+    "tool_calls": 14,
+    "output_bytes": 16000
+  }
+}

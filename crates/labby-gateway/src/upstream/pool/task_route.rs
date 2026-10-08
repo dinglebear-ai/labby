@@ -21,3 +21,21 @@ impl TaskRouteAuthorization {
         Self::new("root", None)
     }
 }
+
+/// Trusted metadata for one task RPC. Capabilities never come from persisted history.
+#[derive(Clone)]
+pub struct TaskCallContext {
+    pub capabilities: rmcp::model::ClientCapabilities,
+    pub cancellation: tokio_util::sync::CancellationToken,
+}
+
+impl Default for TaskCallContext {
+    fn default() -> Self {
+        Self {
+            capabilities: rmcp::model::ClientCapabilities::builder()
+                .enable_tasks()
+                .build(),
+            cancellation: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+}

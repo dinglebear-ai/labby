@@ -584,7 +584,7 @@ impl UpstreamPool {
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
         // P-C1: reuse cached per-(upstream,subject) connection instead of opening fresh.
-        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
+        let peer = match self.acquire_subject_peer(config, subject).await {
             Ok(pair) => pair,
             Err(error) => {
                 log_upstream_request_error(
@@ -687,7 +687,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: vec![],
+                tools: vec![].into(),
                 last_used: std::time::Instant::now(),
             },
         );

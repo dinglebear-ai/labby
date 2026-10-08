@@ -165,3 +165,12 @@ test('failed observations without an error string explain the failing capability
   assert.equal(state.kind, 'degraded')
   assert.match(state.reason, /Skills capability discovery failed/)
 })
+
+
+test('recovery summary explains authentication without exposing transport internals', async () => {
+  const { gatewayRecoverySummary } = await import('./gateway-operational-state')
+  const state = describeGatewayOperationalState({ status: { connected: false, healthy: false, last_error: 'Transport<WorkerTransport<Client>> unexpected HTTP 401 Unauthorized' } })
+  assert.match(gatewayRecoverySummary(state), /authentication failed/)
+  assert.doesNotMatch(gatewayRecoverySummary(state), /Transport|WorkerTransport/)
+  assert.match(state.reason, /WorkerTransport/)
+})

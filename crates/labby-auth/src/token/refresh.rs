@@ -1,23 +1,22 @@
 use super::*;
 
-/// The local single-use claim starts only after subject-scoped provider
-/// serialization. Keep enough headroom beyond Google's 30-second HTTP timeout
-/// for response verification, durable broker persistence, JWT issuance, and
-/// the final atomic local-token rotation.
+/// Claim local tokens before waiting for provider coordination, and renew the
+/// lease while waiting. Keep headroom beyond Google's 30-second HTTP timeout
+/// for verification, persistence, JWT issuance, and atomic local-token rotation.
 const REFRESH_CLAIM_LEASE_SECONDS: i64 = 90;
 
 #[cfg(test)]
-static REFRESH_LOCK_WAITERS: std::sync::OnceLock<
+static REFRESH_CLAIM_ATTEMPTS: std::sync::OnceLock<
     dashmap::DashMap<String, std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 > = std::sync::OnceLock::new();
 
 #[cfg(test)]
-pub(super) fn refresh_lock_waiter_counter(
-    subject: &str,
+pub(super) fn refresh_claim_attempt_counter(
+    refresh_token: &str,
 ) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
-    REFRESH_LOCK_WAITERS
+    REFRESH_CLAIM_ATTEMPTS
         .get_or_init(dashmap::DashMap::new)
-        .entry(subject.to_string())
+        .entry(refresh_token.to_string())
         .or_insert_with(|| std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)))
         .clone()
 }
@@ -220,7 +219,7 @@ impl RefreshClaimLease {
         }
         let store = self.store.clone();
         let refresh_token = self.refresh_token.clone();
-        let refresh_token_id = fingerprint(&refresh_token);
+        let refresh_token_id = secret_diagnostic_id("oauth.refresh_token.v1", &refresh_token);
         let claim_id = self.claim_id.clone();
         #[cfg(test)]
         let observer = self.observer.clone();
@@ -303,12 +302,12 @@ pub(super) async fn refresh_token_grant(
         info!(
             grant_type = "refresh_token",
             client_id = %fingerprint(&client_id),
-            refresh_token_id = %fingerprint(&refresh_token),
+            refresh_token_id = %secret_diagnostic_id("oauth.refresh_token.v1", &refresh_token),
             "oauth refresh_token retry reused the prior rotated response"
         );
         return Ok(response);
     }
-    let refresh_token_id = fingerprint(&refresh_token);
+    let refresh_token_id = secret_diagnostic_id("oauth.refresh_token.v1", &refresh_token);
     debug!(
         grant_type = "refresh_token",
         client_id = %fingerprint(&client_id),
@@ -350,17 +349,16 @@ pub(super) async fn refresh_token_grant(
     let subject_id = fingerprint(&refresh_subject);
     let claim_id = random_token(18)?;
     let claim_expires_at = now_unix().saturating_add(REFRESH_CLAIM_LEASE_SECONDS);
-    let (stored, lock_wait_ms) =
-        claim_refresh_after_subject_lock(&state.store, &refresh_token, &claim_id, claim_expires_at)
-            .await?;
+    let (stored, claim_elapsed_ms) =
+        claim_refresh_token(&state.store, &refresh_token, &claim_id, claim_expires_at).await?;
     debug!(
         grant_type = "refresh_token",
         client_id = %fingerprint(&client_id),
         refresh_token_id = %refresh_token_id,
         subject_id = %subject_id,
-        lock_wait_ms,
+        claim_elapsed_ms,
         claim_lease_seconds = REFRESH_CLAIM_LEASE_SECONDS,
-        "oauth refresh_token grant acquired subject serialization before local claim"
+        "oauth refresh_token grant claimed local token"
     );
     let Some(stored) = stored else {
         // Another request may own the durable claim while its provider refresh
@@ -380,7 +378,7 @@ pub(super) async fn refresh_token_grant(
                 grant_type = "refresh_token",
                 client_id = %fingerprint(&client_id),
                 refresh_token_id = %refresh_token_id,
-                lock_wait_ms,
+                claim_elapsed_ms,
                 "oauth concurrent refresh reused the prior rotated response"
             );
             return Ok(response);
@@ -427,20 +425,19 @@ pub(super) async fn refresh_token_grant(
     result
 }
 
-pub(super) async fn claim_refresh_after_subject_lock(
+pub(super) async fn claim_refresh_token(
     store: &crate::sqlite::SqliteStore,
     refresh_token: &str,
     claim_id: &str,
     claim_expires_at: i64,
 ) -> Result<(Option<crate::types::ProviderBound<RefreshTokenRow>>, u128), AuthError> {
-    let lock_wait_started = Instant::now();
+    let claim_started = Instant::now();
     #[cfg(test)]
-    refresh_lock_waiter_counter(refresh_token).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let lock_wait_ms = lock_wait_started.elapsed().as_millis();
+    refresh_claim_attempt_counter(refresh_token).fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let stored = store
         .claim_bound_refresh_token(refresh_token, claim_id, claim_expires_at)
         .await?;
-    Ok((stored, lock_wait_ms))
+    Ok((stored, claim_started.elapsed().as_millis()))
 }
 
 async fn refresh_google_provider_credential(
@@ -707,8 +704,17 @@ async fn complete_claimed_refresh(
     // token. An invalid_grant compare-and-deletes the exact provider
     // generation that failed and atomically revokes every dependent local
     // grant, so the next authorization is forced through fresh consent.
-    let (_, google) = crate::google_refresh::run_shared(state, &stored.subject, || {
-        refresh_google_provider_credential(state, &stored.subject, refresh_token_id)
+    let (_, google) = crate::google_refresh::run_shared(state, &stored.subject, || async {
+        // Match rmcp's credential identity and lock order: operation first,
+        // persistence second. Single-flight joins concurrent inbound callers.
+        let _operation_guard =
+            crate::google_refresh::refresh_operation_lock(&format!("google:{}", stored.subject))
+                .lock_owned()
+                .await;
+        let _provider_guard = crate::google_refresh::lock(&stored.subject)
+            .lock_owned()
+            .await;
+        refresh_google_provider_credential(state, &stored.subject, refresh_token_id).await
     })
     .await;
     let google = google?;

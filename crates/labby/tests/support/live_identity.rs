@@ -72,6 +72,20 @@ pub(crate) struct BrowserSession {
     pub(crate) expires_at: u64,
 }
 
+impl BrowserSession {
+    fn exact_secret_canaries(&self) -> [String; 3] {
+        let cookie_value = self
+            .cookie
+            .split_once('=')
+            .map_or(self.cookie.as_str(), |(_, value)| value);
+        [
+            self.cookie.clone(),
+            cookie_value.to_owned(),
+            self.csrf.clone(),
+        ]
+    }
+}
+
 pub(crate) struct LiveIdentity {
     guard: Option<LiveLabbyGuard>,
     owned: tempfile::TempDir,
@@ -85,6 +99,7 @@ pub(crate) struct LiveIdentity {
     pub(crate) prepare_id: String,
     pub(crate) identity: PublicIdentity,
     pub(crate) session: Option<BrowserSession>,
+    session_secret_canaries: Vec<String>,
     journal: Vec<String>,
 }
 
@@ -324,6 +339,7 @@ impl LiveIdentity {
             prepare_id: prepare_id.clone(),
             identity,
             session: None,
+            session_secret_canaries: Vec::new(),
             journal: vec![prepare_id, credential_id],
         })
     }
@@ -388,11 +404,20 @@ impl LiveIdentity {
     }
 
     pub(crate) fn exact_secret_canaries(&self) -> Vec<String> {
-        vec![
+        let mut canaries = vec![
             self.credential.clone(),
             self.proof.clone(),
             self.seeded_canary.clone(),
-        ]
+            self.static_token.clone(),
+        ];
+        canaries.extend(self.session_secret_canaries.iter().cloned());
+        if let Some(session) = &self.session {
+            canaries.extend(session.exact_secret_canaries());
+        }
+        canaries.retain(|canary| !canary.is_empty());
+        canaries.sort();
+        canaries.dedup();
+        canaries
     }
 
     pub(crate) async fn exercise_timeout(&mut self) -> Result<(), String> {
@@ -502,6 +527,12 @@ impl LiveIdentity {
         let expires_at = required_u64(&body, "expires_at")?;
         self.journal
             .push(format!("session:{}", sha256_short(cookie.as_bytes())));
+        // Earlier session values can still appear in retained failure evidence
+        // after a new session is issued. Keep them in this owner's audit set.
+        if let Some(previous) = self.session.take() {
+            self.session_secret_canaries
+                .extend(previous.exact_secret_canaries());
+        }
         self.session = Some(BrowserSession {
             cookie,
             csrf,
@@ -657,6 +688,11 @@ impl LiveIdentity {
 
     pub(crate) async fn cleanup(mut self) -> Result<CleanupResult, String> {
         let session = self.session.as_ref().map(|session| session.cookie.clone());
+        let secret_canaries = self.exact_secret_canaries();
+        let secret_canaries = secret_canaries
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
         let mut failures = Vec::new();
         match self
             .client
@@ -708,17 +744,20 @@ impl LiveIdentity {
         {
             failures.push(error);
         }
+        let revocation_verified = failures.is_empty();
         let result = guard.finish().await;
         failures.extend(result.failures.iter().cloned());
-        if let Err(error) = scan_secrets(
-            self.owned.path(),
-            &[&self.credential, &self.proof, &self.seeded_canary],
-        ) {
+        if let Err(error) =
+            remove_private_auth_store_fixture(self.owned.path(), revocation_verified, &result)
+        {
+            failures.push(error);
+        }
+        if let Err(error) = scan_secrets(self.owned.path(), &secret_canaries) {
             failures.push(error);
         }
         if let Err(error) = scan_files(
             std::slice::from_ref(&self.retained_evidence),
-            &[&self.credential, &self.proof, &self.seeded_canary],
+            &secret_canaries,
         ) {
             failures.push(error);
         }
@@ -931,6 +970,43 @@ fn sha256_short(bytes: &[u8]) -> String {
     use sha2::{Digest as _, Sha256};
     hex::encode(Sha256::digest(bytes))[..16].to_owned()
 }
+
+fn remove_private_auth_store_fixture(
+    root: &Path,
+    revocation_verified: bool,
+    cleanup: &CleanupResult,
+) -> Result<(), String> {
+    if !revocation_verified || !cleanup.is_clean() || !(cleanup.graceful || cleanup.forced) {
+        return Err(
+            "private auth fixture cleanup requires verified revocation and stopped daemon".into(),
+        );
+    }
+    let home = root.join("labby-home");
+    match std::fs::symlink_metadata(&home) {
+        Ok(metadata) if metadata.is_dir() && !metadata.is_symlink() => {}
+        Ok(_) => return Err("private auth fixture home must be a real directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect private auth fixture home: {error}")),
+    }
+    // SqliteStore deliberately persists session CSRF values. DELETE revokes
+    // their authority but need not erase old SQLite/WAL pages. These exact
+    // run-owned private inputs are disposable only after revocation and stop;
+    // every other home file, log, report, and screenshot remains fully scanned.
+    for name in ["auth.db", "auth.db-wal", "auth.db-shm", "auth.db-journal"] {
+        let path = home.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() && !metadata.is_symlink() => {
+                std::fs::remove_file(path)
+                    .map_err(|error| format!("remove private auth fixture {name}: {error}"))?;
+            }
+            Ok(_) => return Err(format!("private auth fixture {name} must be a real file")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect private auth fixture {name}: {error}")),
+        }
+    }
+    Ok(())
+}
+
 fn scan_secrets(root: &Path, secrets: &[&str]) -> Result<(), String> {
     let mut pending = vec![root.to_owned()];
     while let Some(path) = pending.pop() {
@@ -1008,6 +1084,211 @@ fn synchronous_cleanup_request(base: &str, proof: &str, prepare_id: &str) -> Res
 #[cfg(test)]
 mod diagnostic_tests {
     use super::identity_failure_class;
+
+    #[tokio::test]
+    async fn private_auth_store_cleanup_requires_revoked_stopped_phase_and_preserves_evidence() {
+        let owned = tempfile::tempdir().unwrap();
+        let home = owned.path().join("labby-home");
+        std::fs::create_dir(&home).unwrap();
+        let database = home.join("auth.db");
+        let secret = "synthetic-private-csrf-canary";
+        let store = labby_auth::sqlite::SqliteStore::open(database.clone())
+            .await
+            .unwrap();
+        let now = labby_auth::util::now_unix();
+        store
+            .upsert_browser_session(labby_auth::types::BrowserSessionRow {
+                session_id: "synthetic-session-id".into(),
+                subject: "synthetic-subject".into(),
+                email: None,
+                csrf_token: secret.into(),
+                created_at: now,
+                expires_at: now + 600,
+                project_binding: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .find_browser_session("synthetic-session-id")
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        let stopped = super::CleanupResult {
+            graceful: true,
+            ..Default::default()
+        };
+        let failed = super::CleanupResult {
+            graceful: true,
+            failures: vec!["synthetic stop failure".into()],
+            ..Default::default()
+        };
+        for (revoked, cleanup) in [
+            (false, &stopped),
+            (true, &super::CleanupResult::default()),
+            (true, &failed),
+        ] {
+            assert!(
+                super::remove_private_auth_store_fixture(owned.path(), revoked, cleanup).is_err()
+            );
+            assert!(
+                database.is_file(),
+                "unverified phase must preserve the private store"
+            );
+        }
+
+        store
+            .revoke_browser_session("synthetic-session-id")
+            .await
+            .unwrap();
+        assert!(
+            store
+                .find_browser_session("synthetic-session-id")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        // A closed store may have checkpointed its sidecars already. Exercise
+        // exact residual WAL/SHM/journal cleanup without a live SQLite writer.
+        for name in ["auth.db-wal", "auth.db-shm", "auth.db-journal"] {
+            std::fs::write(home.join(name), secret).unwrap();
+        }
+        let decoy = home.join("auth.db.backup");
+        std::fs::write(&decoy, b"clean decoy").unwrap();
+        super::remove_private_auth_store_fixture(owned.path(), true, &stopped).unwrap();
+        super::remove_private_auth_store_fixture(owned.path(), true, &stopped).unwrap();
+        for name in ["auth.db", "auth.db-wal", "auth.db-shm", "auth.db-journal"] {
+            assert!(
+                !home.join(name).exists(),
+                "private auth fixture must be removed"
+            );
+        }
+        assert!(
+            decoy.is_file(),
+            "similar filenames must survive exact cleanup"
+        );
+        for evidence in [
+            decoy,
+            home.join("stdout.log"),
+            owned.path().join("report.json"),
+            owned.path().join("failure.png"),
+        ] {
+            std::fs::write(&evidence, secret).unwrap();
+            assert!(
+                super::scan_secrets(owned.path(), &[secret]).is_err(),
+                "every remaining owned file must be audited"
+            );
+            std::fs::write(evidence, b"clean evidence").unwrap();
+        }
+        let retained = tempfile::tempdir().unwrap();
+        let report = retained.path().join("retained.json");
+        std::fs::write(&report, secret).unwrap();
+        assert!(
+            super::scan_retained_evidence(&report, &[secret.into()]).is_err(),
+            "retained evidence must remain audited"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_auth_store_cleanup_rejects_symlinked_home() {
+        let owned = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let database = outside.path().join("auth.db");
+        std::fs::write(&database, b"must survive").unwrap();
+        std::os::unix::fs::symlink(outside.path(), owned.path().join("labby-home")).unwrap();
+        let stopped = super::CleanupResult {
+            graceful: true,
+            ..Default::default()
+        };
+        assert!(super::remove_private_auth_store_fixture(owned.path(), true, &stopped).is_err());
+        assert!(
+            database.is_file(),
+            "private fixture cleanup must not follow a symlinked home"
+        );
+    }
+
+    #[test]
+    fn session_secret_inventory_rejects_raw_values_in_owned_and_retained_evidence() {
+        drop(rustls::crypto::ring::default_provider().install_default());
+        let owned = tempfile::tempdir().unwrap();
+        let retained_evidence = owned.path().join("retained.json");
+        let identity = super::LiveIdentity {
+            guard: None,
+            owned,
+            client: super::identity_http_client(std::time::Duration::from_secs(1)).unwrap(),
+            proof: "synthetic-proof".into(),
+            manifest: serde_json::Value::Null,
+            credential: "synthetic-bearer".into(),
+            static_token: "synthetic-static-bearer".into(),
+            seeded_canary: "synthetic-seeded-canary".into(),
+            retained_evidence,
+            prepare_id: "synthetic-prepare".into(),
+            identity: super::PublicIdentity {
+                issuer: String::new(),
+                subject: String::new(),
+                project_id: String::new(),
+                loadout_id: String::new(),
+                route_id: String::new(),
+                scopes: Vec::new(),
+                credential_id: String::new(),
+                credential_generation: 0,
+                resource: String::new(),
+                audience: String::new(),
+                expires_at: 0,
+            },
+            session: Some(super::BrowserSession {
+                cookie: "custom_session=synthetic-raw-cookie=value".into(),
+                csrf: "synthetic-raw-csrf".into(),
+                expires_at: 0,
+            }),
+            session_secret_canaries: super::BrowserSession {
+                cookie: "custom_session=synthetic-prior-cookie".into(),
+                csrf: "synthetic-prior-csrf".into(),
+                expires_at: 0,
+            }
+            .exact_secret_canaries()
+            .into(),
+            journal: Vec::new(),
+        };
+        let owned_evidence = identity.root().join("owned.json");
+        let canaries = identity.exact_secret_canaries();
+        let canaries = canaries.iter().map(String::as_str).collect::<Vec<_>>();
+        for secret in [
+            "synthetic-raw-cookie=value",
+            "synthetic-raw-csrf",
+            "synthetic-prior-cookie",
+            "synthetic-prior-csrf",
+            "synthetic-static-bearer",
+        ] {
+            std::fs::write(&owned_evidence, b"{}\n").unwrap();
+            std::fs::write(identity.retained_evidence(), b"{}\n").unwrap();
+            super::scan_secrets(identity.root(), &canaries).unwrap();
+            super::scan_files(std::slice::from_ref(&identity.retained_evidence), &canaries)
+                .unwrap();
+
+            let leaked = serde_json::json!({ "message": secret }).to_string();
+            std::fs::write(&owned_evidence, &leaked).unwrap();
+            let failure = super::scan_secrets(identity.root(), &canaries).unwrap_err();
+            assert!(
+                !failure.contains(secret),
+                "audit errors must not echo secrets"
+            );
+
+            std::fs::write(&owned_evidence, b"{}\n").unwrap();
+            std::fs::write(identity.retained_evidence(), leaked).unwrap();
+            let failure =
+                super::scan_files(std::slice::from_ref(&identity.retained_evidence), &canaries)
+                    .unwrap_err();
+            assert!(
+                !failure.contains(secret),
+                "audit errors must not echo secrets"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn identity_http_client_times_out_when_server_never_sends_headers() {

@@ -353,6 +353,8 @@ impl PublishedToolCatalogSnapshot {
 }
 
 pub(super) struct CatalogState {
+    #[cfg(test)]
+    projection_builds: usize,
     entries: HashMap<String, UpstreamEntry>,
     notification_incidents: HashMap<String, HashMap<String, (String, String)>>,
     incarnations: HashMap<String, super::incarnation::ConnectionIncarnation>,
@@ -569,6 +571,8 @@ impl CatalogState {
 
     pub(super) fn new() -> Self {
         Self {
+            #[cfg(test)]
+            projection_builds: 0,
             entries: HashMap::new(),
             notification_incidents: HashMap::new(),
             incarnations: HashMap::new(),
@@ -1263,41 +1267,61 @@ impl CatalogState {
         Ok((determinant, Arc::from(routes)))
     }
 
-    fn publish_if_changed(&mut self) {
-        self.notification_incidents
-            .retain(|name, _| self.entries.contains_key(name));
-        for (name, entry) in &self.entries {
-            let incidents = self.notification_incidents.entry(name.clone()).or_default();
-            for (condition, error, health) in [
-                ("tools", &entry.tool_last_error, entry.tool_health),
-                ("prompts", &entry.prompt_last_error, entry.prompt_health),
-                (
-                    "resources",
-                    &entry.resource_last_error,
-                    entry.resource_health,
-                ),
-                ("skills", &entry.skill_last_error, entry.skill_health),
-            ] {
-                if error.is_none() && health.is_routable() {
-                    incidents.remove(condition);
-                    continue;
-                }
-                let fingerprint = format!(
-                    "{}:{}",
-                    health.is_routable(),
-                    error.as_deref().unwrap_or("")
+    fn refresh_notification_incident(&mut self, name: &str) {
+        let Some(entry) = self.entries.get(name) else {
+            self.notification_incidents.remove(name);
+            return;
+        };
+        let incidents = self
+            .notification_incidents
+            .entry(name.to_owned())
+            .or_default();
+        for (condition, error, health) in [
+            ("tools", &entry.tool_last_error, entry.tool_health),
+            ("prompts", &entry.prompt_last_error, entry.prompt_health),
+            (
+                "resources",
+                &entry.resource_last_error,
+                entry.resource_health,
+            ),
+            ("skills", &entry.skill_last_error, entry.skill_health),
+        ] {
+            if error.is_none() && health.is_routable() {
+                incidents.remove(condition);
+                continue;
+            }
+            let fingerprint = format!(
+                "{}:{}",
+                health.is_routable(),
+                error.as_deref().unwrap_or("")
+            );
+            if incidents
+                .get(condition)
+                .is_none_or(|(old, _)| old != &fingerprint)
+            {
+                incidents.insert(
+                    condition.to_owned(),
+                    (fingerprint, uuid::Uuid::new_v4().to_string()),
                 );
-                if incidents
-                    .get(condition)
-                    .is_none_or(|(old, _)| old != &fingerprint)
-                {
-                    incidents.insert(
-                        condition.to_owned(),
-                        (fingerprint, uuid::Uuid::new_v4().to_string()),
-                    );
-                }
             }
         }
+    }
+
+    fn refresh_notification_incidents(&mut self) {
+        self.notification_incidents
+            .retain(|name, _| self.entries.contains_key(name));
+        let names = self.entries.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            self.refresh_notification_incident(&name);
+        }
+    }
+
+    fn publish_if_changed(&mut self) {
+        #[cfg(test)]
+        {
+            self.projection_builds += 1;
+        }
+        self.refresh_notification_incidents();
         self.resource_sources
             .retain(|upstream, _| self.entries.contains_key(upstream));
         self.resource_template_sources
@@ -1379,7 +1403,20 @@ impl DerefMut for CatalogState {
     }
 }
 
-pub(super) struct CatalogWriteGuard<'a>(RwLockWriteGuard<'a, CatalogState>);
+pub(super) struct CatalogWriteGuard<'a>(
+    RwLockWriteGuard<'a, CatalogState>,
+    Option<(String, Option<[bool; 3]>)>,
+);
+
+fn routing_health(state: &CatalogState, upstream: &str) -> Option<[bool; 3]> {
+    state.entries.get(upstream).map(|entry| {
+        [
+            entry.tool_health.is_routable(),
+            entry.resource_health.is_routable(),
+            entry.prompt_health.is_routable(),
+        ]
+    })
+}
 
 impl Deref for CatalogWriteGuard<'_> {
     type Target = CatalogState;
@@ -1397,7 +1434,16 @@ impl DerefMut for CatalogWriteGuard<'_> {
 
 impl Drop for CatalogWriteGuard<'_> {
     fn drop(&mut self) {
-        self.0.publish_if_changed();
+        if self
+            .1
+            .as_ref()
+            .is_some_and(|(upstream, before)| *before == routing_health(&self.0, upstream))
+        {
+            self.0
+                .refresh_notification_incident(&self.1.as_ref().expect("health guard").0);
+        } else {
+            self.0.publish_if_changed();
+        }
     }
 }
 
@@ -1420,7 +1466,14 @@ impl UpstreamPool {
     }
 
     pub(super) async fn catalog_write(&self) -> CatalogWriteGuard<'_> {
-        CatalogWriteGuard(self.catalog.write().await)
+        CatalogWriteGuard(self.catalog.write().await, None)
+    }
+
+    /// Guard for health-only mutations; callers must not change descriptors or policy.
+    pub(super) async fn catalog_health_write(&self, upstream: &str) -> CatalogWriteGuard<'_> {
+        let state = self.catalog.write().await;
+        let before = routing_health(&state, upstream);
+        CatalogWriteGuard(state, Some((upstream.to_owned(), before)))
     }
 
     pub async fn published_resource_template_catalog(
@@ -3156,6 +3209,39 @@ mod tests {
         pool.published_tool_catalog()
             .await
             .expect("published catalog")
+    }
+
+    #[tokio::test]
+    async fn unchanged_health_skips_projection_builds_but_quarantine_publishes() {
+        use crate::upstream::types::{CIRCUIT_BREAKER_THRESHOLD, UpstreamCapability};
+        let pool = UpstreamPool::new();
+        pool.catalog_write()
+            .await
+            .insert("fast".into(), entry("fast", "read"));
+        let original = snapshot(&pool).await;
+        let builds = pool.catalog.read().await.projection_builds;
+        for _ in 0..8 {
+            pool.record_success_for("fast", UpstreamCapability::Tools)
+                .await;
+        }
+        assert_eq!(pool.catalog.read().await.projection_builds, builds);
+        assert!(Arc::ptr_eq(&original, &snapshot(&pool).await));
+        for _ in 0..CIRCUIT_BREAKER_THRESHOLD {
+            pool.record_failure_for("fast", UpstreamCapability::Tools, "failed")
+                .await;
+        }
+        assert_eq!(pool.catalog.read().await.projection_builds, builds + 1);
+        assert!(snapshot(&pool).await.routes().is_empty());
+        assert!(
+            pool.notification_incidents("fast")
+                .await
+                .contains_key("tools")
+        );
+        pool.record_success_for("fast", UpstreamCapability::Tools)
+            .await;
+        assert_eq!(pool.catalog.read().await.projection_builds, builds + 2);
+        assert_eq!(snapshot(&pool).await.routes().len(), 1);
+        assert!(pool.notification_incidents("fast").await.is_empty());
     }
 
     #[tokio::test]

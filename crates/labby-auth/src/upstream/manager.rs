@@ -52,7 +52,9 @@ use crate::upstream::http_client::{
 };
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
+mod callback_store;
 mod discovery;
+pub use callback_store::CredentialSaveFence;
 
 static SHARED_GOOGLE_REFRESH_FLIGHTS: OnceLock<Arc<RefreshLocks>> = OnceLock::new();
 
@@ -368,9 +370,22 @@ impl UpstreamOauthManager {
         csrf_token: &str,
         issuer: Option<&str>,
     ) -> Result<(), OauthError> {
+        self.complete_authorization_callback_with_fence(subject, code, csrf_token, issuer, None)
+            .await
+    }
+
+    /// Install a callback-only pre-save fence; failed state/code validation never invokes it.
+    pub async fn complete_authorization_callback_with_fence(
+        &self,
+        subject: &str,
+        code: &str,
+        csrf_token: &str,
+        issuer: Option<&str>,
+        fence: Option<CredentialSaveFence>,
+    ) -> Result<(), OauthError> {
         let started = std::time::Instant::now();
 
-        let (auth_manager, _) = self
+        let (mut auth_manager, google_store) = self
             .configured_authorization_manager(
                 subject,
                 DynamicClientRegistrationUse::CompleteAuthorization,
@@ -387,6 +402,21 @@ impl UpstreamOauthManager {
                 e
             })?;
 
+        if let Some(fence) = fence {
+            match google_store {
+                Some(inner) => auth_manager
+                    .set_credential_store(callback_store::FencedCredentialStore { inner, fence }),
+                None => auth_manager.set_credential_store(callback_store::FencedCredentialStore {
+                    inner: SqliteCredentialStore::new(
+                        self.sqlite.clone(),
+                        self.key.clone(),
+                        &self.upstream.name,
+                        subject,
+                    ),
+                    fence,
+                }),
+            }
+        }
         auth_manager
             .exchange_code_for_token_with_issuer(code, csrf_token, issuer)
             .await

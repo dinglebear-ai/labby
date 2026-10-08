@@ -1,4 +1,5 @@
 import importlib.util
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -10,6 +11,12 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
+
+
+SKILLS_REGRESSION_COMMAND = re.compile(
+    r"(?<!\S)cargo\s+test\s+-p\s+labby\s+--no-default-features"
+    r"\s+--features\s+skills\s+--locked\s+skills::(?!\S)"
+)
 
 
 class OwnershipMappingTest(unittest.TestCase):
@@ -59,10 +66,20 @@ class OwnershipMappingTest(unittest.TestCase):
         )
         self.assertIn("Accepted SEP-2640 server, client, and intermediary behavior", workflow)
         self.assertIn("--no-default-features --features skills", workflow)
-        self.assertIn(
-            "cargo test -p labby --no-default-features --features skills --locked\n          skills::",
-            workflow,
-        )
+        self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(workflow))
+
+    def test_skills_regression_command_requires_exact_feature_lock_and_filter(self) -> None:
+        command = "cargo test -p labby --no-default-features --features skills --locked skills::"
+        self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(command))
+        self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(command.replace(" skills::", "\n          skills::")))
+        for broken in [
+            command.replace(" --locked", ""),
+            command.replace("--features skills", "--features gateway"),
+            command.replace(" skills::", " skill_library"),
+            command + "unrelated",
+        ]:
+            with self.subTest(command=broken):
+                self.assertIsNone(SKILLS_REGRESSION_COMMAND.search(broken))
 
 
 if __name__ == "__main__":

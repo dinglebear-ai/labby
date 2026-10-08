@@ -1256,3 +1256,39 @@ async fn ordered_relay_notification_transport_preserves_task_status_after_receiv
     assert!(transport.receive().await.is_none());
     assert_eq!(observed.lock().await.as_slice(), ["native-task"]);
 }
+
+#[tokio::test]
+#[allow(clippy::panic, reason = "test assertions")]
+async fn ordered_relay_preserves_subscription_task_metadata_for_sdk_routing() {
+    use rmcp::model::GetMeta;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let interceptor: RelayNotificationInterceptor = Arc::new(move |_| {
+        observed.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {})
+    });
+    let mut message = task_status_message();
+    let rmcp::model::JsonRpcMessage::Notification(notification) = &mut message else {
+        panic!("notification required")
+    };
+    notification
+        .notification
+        .get_meta_mut()
+        .set_subscription_id(NumberOrString::Number(77));
+    let fixture = OrderedRelayNotificationFixture {
+        messages: VecDeque::from([message]),
+    };
+    let mut transport = OrderedRelayNotificationTransport::new(fixture, Some(interceptor));
+    let message = transport
+        .receive()
+        .await
+        .expect("subscription event must pass through");
+    let rmcp::model::JsonRpcMessage::Notification(notification) = message else {
+        panic!("notification required")
+    };
+    assert_eq!(
+        notification.notification.get_meta().subscription_id(),
+        Some(NumberOrString::Number(77))
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}

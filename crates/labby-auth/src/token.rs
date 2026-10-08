@@ -22,7 +22,8 @@ use crate::jwt::AccessClaims;
 use crate::state::AuthState;
 use crate::types::{RefreshTokenRow, RevocationRequest, TokenRequest, TokenResponse};
 use crate::util::{
-    duration_secs_usize, expires_at, fingerprint, now_unix, random_token, timestamp_usize,
+    duration_secs_usize, expires_at, fingerprint, now_unix, random_token, secret_diagnostic_id,
+    timestamp_usize,
 };
 
 mod refresh;
@@ -31,8 +32,8 @@ mod response;
 use refresh::refresh_token_grant;
 #[cfg(test)]
 use refresh::{
-    RefreshClaimLease, RefreshClaimLeaseObserver, claim_refresh_after_subject_lock,
-    refresh_lock_waiter_counter,
+    RefreshClaimLease, RefreshClaimLeaseObserver, claim_refresh_token,
+    refresh_claim_attempt_counter,
 };
 use refresh_replay::{await_cached_refresh_response, cached_refresh_response};
 use response::{TokenEndpointError, TokenResponseWithCache, apply_token_cache_headers};
@@ -206,10 +207,7 @@ async fn enterprise_managed_grant(
         request.client_assertion.as_deref(),
     )
     .await?;
-    if matches!(
-        state.inbound_provider.kind(),
-        crate::config::InboundProviderKind::Google
-    ) && !state
+    if !state
         .consume_assertion_jti(&claims.iss, &claims.jti, claims.iat, claims.exp)
         .await?
     {
@@ -910,7 +908,7 @@ pub async fn revoke(
         Ok(None) => {}
         Err(error) => return TokenEndpointError::Auth(error).into_response(),
     }
-    let token_id = fingerprint(&request.token);
+    let token_id = secret_diagnostic_id("oauth.revocation_token.v1", &request.token);
     match state.store.find_refresh_token(&request.token).await {
         Ok(Some(row)) => {
             let Some(client_id) = request.client_id.as_deref() else {
@@ -1002,7 +1000,7 @@ async fn authorization_code_grant(
         request.client_assertion.as_deref(),
     )
     .await?;
-    let auth_code_id = fingerprint(&code);
+    let auth_code_id = secret_diagnostic_id("oauth.code.v1", &code);
     info!(
         grant_type = "authorization_code",
         client_id = %fingerprint(&client_id),
@@ -1226,6 +1224,70 @@ mod tests {
             assert!(
                 !logs.contains(sentinel),
                 "OAuth token value leaked into logs: {sentinel}\n{logs}"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn token_diagnostics_do_not_log_offline_verifiable_secret_hashes() {
+        let _tracing_lock = crate::test_support::TRACING_TEST_LOCK.lock().await;
+        let buf = crate::test_support::global_tracing_buffer();
+        let state = test_auth_state_with_registered_client().await;
+        let code = "diagnostic-code-sentinel";
+        let refresh = "diagnostic-refresh-sentinel";
+        let revoked = "diagnostic-revocation-sentinel";
+        state
+            .store
+            .upsert_refresh_token(crate::types::RefreshTokenRow {
+                refresh_token: revoked.into(),
+                client_id: "client".into(),
+                subject: "google-subject-123".into(),
+                resource: "https://lab.example.com/mcp".into(),
+                scope: "lab".into(),
+                provider_refresh_token: None,
+                created_at: crate::util::now_unix(),
+                expires_at: crate::util::now_unix() + 3600,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+        for (path, fields) in [
+            (
+                "/token",
+                vec![
+                    ("grant_type", "authorization_code"),
+                    ("code", code),
+                    ("client_id", "client"),
+                    ("redirect_uri", "http://127.0.0.1:7777/callback"),
+                    ("code_verifier", "verifier"),
+                ],
+            ),
+            (
+                "/token",
+                vec![
+                    ("grant_type", "refresh_token"),
+                    ("refresh_token", refresh),
+                    ("client_id", "client"),
+                ],
+            ),
+            ("/revoke", vec![("token", revoked), ("client_id", "client")]),
+        ] {
+            app.clone()
+                .oneshot(form_request(path, form(&fields)))
+                .await
+                .unwrap();
+        }
+        let logs = crate::test_support::captured_logs(buf);
+        for (label, secret) in [
+            ("oauth.code.v1", code),
+            ("oauth.refresh_token.v1", refresh),
+            ("oauth.revocation_token.v1", revoked),
+        ] {
+            assert!(!logs.contains(secret));
+            assert!(!logs.contains(&crate::util::fingerprint(secret)));
+            assert!(
+                logs.contains(&crate::util::secret_diagnostic_id(label, secret)),
+                "missing diagnostic for {label}: {logs}"
             );
         }
     }
@@ -2030,6 +2092,15 @@ mod tests {
 
     #[tokio::test]
     async fn enterprise_id_jag_mints_user_token_bound_to_claimed_resource() {
+        assert_enterprise_id_jag_policy(false).await;
+    }
+
+    #[tokio::test]
+    async fn authelia_enterprise_id_jag_rejects_replay_and_excessive_lifetime() {
+        assert_enterprise_id_jag_policy(true).await;
+    }
+
+    async fn assert_enterprise_id_jag_policy(authelia: bool) {
         let base = test_auth_state_with_registered_client().await;
         let (encoding_key, jwks) = assertion_key();
         let mut config = (*base.config).clone();
@@ -2046,12 +2117,43 @@ mod tests {
             scopes: vec!["lab".to_string()],
             resources: vec!["https://lab.example.com/mcp".to_string()],
         }];
-        let state = AuthState::for_tests(
-            config,
-            base.store.clone(),
-            (*base.signing_keys).clone(),
-            base.google().clone(),
-        );
+        let state = if authelia {
+            let issuer = "https://auth.example.test/application/o/labby";
+            base.store
+                .activate_inbound_provider(
+                    "authelia",
+                    issuer,
+                    "enterprise-test",
+                    crate::util::now_unix(),
+                )
+                .await
+                .unwrap();
+            let provider = crate::authelia::AutheliaProvider::new(
+                Url::parse(issuer).unwrap(),
+                "authelia-client".into(),
+                "authelia-secret".into(),
+                Url::parse("https://lab.example.com/auth/oidc/callback").unwrap(),
+            )
+            .unwrap();
+            AuthState::for_tests_with_provider(
+                config,
+                base.store.clone(),
+                (*base.signing_keys).clone(),
+                crate::oauth_provider::InboundProviderRuntime::Authelia(Box::new(provider)),
+                base.store
+                    .inbound_provider_state()
+                    .await
+                    .unwrap()
+                    .generation,
+            )
+        } else {
+            AuthState::for_tests(
+                config,
+                base.store.clone(),
+                (*base.signing_keys).clone(),
+                base.google().clone(),
+            )
+        };
         let now = crate::util::now_unix();
         let assertion = sign_assertion(
             &encoding_key,
@@ -2084,6 +2186,7 @@ mod tests {
         assert_eq!(missing_auth.status(), StatusCode::UNAUTHORIZED);
 
         let response = app
+            .clone()
             .oneshot(form_request(
                 "/token",
                 form(&[
@@ -2111,6 +2214,48 @@ mod tests {
             Some("https://idp.example.com")
         );
         assert_eq!(claims.identity_credential_id, None);
+        let replay = app
+            .clone()
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    ("assertion", &assertion),
+                    ("client_id", "client"),
+                    ("client_secret", "enterprise-client-secret"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
+        let excessive = sign_assertion(
+            &encoding_key,
+            &super::IdJagClaims {
+                iss: "https://idp.example.com".into(),
+                sub: "employee-42".into(),
+                aud: "https://lab.example.com".into(),
+                exp: now + 3600,
+                iat: now,
+                jti: "excessive-lifetime".into(),
+                client_id: "client".into(),
+                resource: "https://lab.example.com/mcp".into(),
+                scope: "lab".into(),
+            },
+            Some("oauth-id-jag+jwt"),
+        );
+        let rejected = app
+            .oneshot(form_request(
+                "/token",
+                form(&[
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer"),
+                    ("assertion", &excessive),
+                    ("client_id", "client"),
+                    ("client_secret", "enterprise-client-secret"),
+                ]),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
     }
 
     fn assertion_key() -> (EncodingKey, serde_json::Value) {
@@ -2782,6 +2927,15 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_refresh_grants_share_the_rotated_response() {
+        assert_concurrent_refresh_coordination(false).await;
+    }
+
+    #[tokio::test]
+    async fn inbound_refresh_waits_for_upstream_refresh_operation() {
+        assert_concurrent_refresh_coordination(true).await;
+    }
+
+    async fn assert_concurrent_refresh_coordination(operation: bool) {
         let state = test_auth_state_with_refreshable_google().await;
         let subject = "google-subject-123";
         state
@@ -2798,9 +2952,14 @@ mod tests {
             })
             .await
             .unwrap();
-        let subject_lock = crate::google_refresh::lock(subject);
-        let subject_guard = subject_lock.clone().lock_owned().await;
-        let waiters = super::refresh_lock_waiter_counter("concurrent-refresh-token");
+        let subject_lock = if operation {
+            crate::google_refresh::refresh_operation_lock(&format!("google:{subject}"))
+        } else {
+            crate::google_refresh::lock(subject)
+        };
+        let subject_guard = subject_lock.lock_owned().await;
+        let waiters = super::refresh_claim_attempt_counter("concurrent-refresh-token");
+        let previous_attempts = waiters.load(std::sync::atomic::Ordering::SeqCst);
         let app = router(state);
         let request = || {
             Request::builder()
@@ -2812,15 +2971,21 @@ mod tests {
                 ))
                 .unwrap()
         };
-        let first = tokio::spawn(app.clone().oneshot(request()));
+        let mut first = tokio::spawn(app.clone().oneshot(request()));
         let second = tokio::spawn(app.oneshot(request()));
         tokio::time::timeout(Duration::from_secs(2), async {
-            while waiters.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            while waiters.load(std::sync::atomic::Ordering::SeqCst) < previous_attempts + 2 {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("both refresh requests reached the held subject lock");
+        .expect("both refresh requests attempted the local token claim");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut first)
+                .await
+                .is_err(),
+            "inbound refresh must wait for the shared provider credential lock"
+        );
         drop(subject_guard);
 
         let first = first.await.unwrap().unwrap();
@@ -2857,7 +3022,7 @@ mod tests {
         let subject_guard = crate::google_refresh::lock("google-subject-123")
             .lock_owned()
             .await;
-        let claim = super::claim_refresh_after_subject_lock(
+        let claim = super::claim_refresh_token(
             &state.store,
             "contended-refresh-token",
             "request-claim",
@@ -2961,7 +3126,7 @@ mod tests {
             state.store.clone(),
             "cancelled-refresh-token".to_string(),
             "cancelled-owner".to_string(),
-            crate::util::fingerprint("cancelled-refresh-token"),
+            crate::util::secret_diagnostic_id("oauth.refresh_token.v1", "cancelled-refresh-token"),
             90,
             Duration::from_mins(1),
             observer.clone(),
@@ -3023,7 +3188,7 @@ mod tests {
             state.store.clone(),
             "heartbeat-refresh-token".to_string(),
             "heartbeat-owner".to_string(),
-            crate::util::fingerprint("heartbeat-refresh-token"),
+            crate::util::secret_diagnostic_id("oauth.refresh_token.v1", "heartbeat-refresh-token"),
             30,
             Duration::from_millis(10),
             observer.clone(),
@@ -3081,7 +3246,7 @@ mod tests {
             state.store.clone(),
             "completed-refresh-token".to_string(),
             "completed-owner".to_string(),
-            crate::util::fingerprint("completed-refresh-token"),
+            crate::util::secret_diagnostic_id("oauth.refresh_token.v1", "completed-refresh-token"),
             90,
             Duration::from_mins(1),
             observer,
@@ -3131,7 +3296,10 @@ mod tests {
             state.store.clone(),
             "release-cancel-refresh-token".to_string(),
             "release-owner".to_string(),
-            crate::util::fingerprint("release-cancel-refresh-token"),
+            crate::util::secret_diagnostic_id(
+                "oauth.refresh_token.v1",
+                "release-cancel-refresh-token",
+            ),
             90,
             Duration::from_mins(1),
             observer.clone(),

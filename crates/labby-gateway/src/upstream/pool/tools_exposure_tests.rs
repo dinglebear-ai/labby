@@ -244,7 +244,7 @@ async fn subject_catalogs_are_isolated_from_each_other_and_the_global_catalog() 
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: vec![test_tool(tool_name)],
+                tools: vec![test_tool(tool_name)].into(),
                 last_used: Instant::now(),
             },
         );
@@ -281,7 +281,7 @@ async fn exact_subject_scoped_lookup_projects_only_the_requested_tool() {
             optional_catalogs: Default::default(),
             _connection: connection,
             peer,
-            tools,
+            tools: tools.into(),
             last_used: Instant::now(),
         },
     );

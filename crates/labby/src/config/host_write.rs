@@ -107,6 +107,15 @@ impl HostConfigLock {
         super::secret_files::restrict_secret_file_permissions(temp.path())
             .map_err(|_| HostWriteError::Io)?;
         hand_to_directory_owner(temp.as_file(), parent)?;
+        #[cfg(windows)]
+        {
+            // Elevated tokens can default new files to Administrators ownership.
+            // Assign and verify only this newly created, identity-pinned file.
+            labby_winjob::fs::set_created_owner(temp.path(), temp.as_file(), false)
+                .map_err(|_| HostWriteError::UnsafePath)?;
+            labby_winjob::fs::verify_private_acl(temp.as_file())
+                .map_err(|_| HostWriteError::UnsafePath)?;
+        }
         temp.write_all(raw.as_bytes())
             .map_err(|_| HostWriteError::Io)?;
         temp.as_file()

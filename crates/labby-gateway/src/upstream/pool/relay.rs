@@ -2183,6 +2183,29 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        let key = (
+            config.name.clone(),
+            session_id,
+            subject.map(str::to_owned),
+            capability_fingerprint(&capabilities),
+        );
+        self.acquire_relay_for_key(config, subject, downstream, capabilities, key)
+            .await
+    }
+
+    pub(super) async fn acquire_relay_for_key(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        downstream: Peer<RoleServer>,
+        capabilities: ClientCapabilities,
+        key: RelayCacheKey,
+    ) -> Option<(
+        Peer<RoleClient>,
+        Arc<RelayRouteState>,
+        Option<HttpCancellationSender>,
+        Option<u64>,
+    )> {
         if !self.upstream_config_matches(config) {
             return None;
         }
@@ -2192,12 +2215,6 @@ impl UpstreamPool {
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
         let requested_capability_fingerprint = capability_fingerprint(&capabilities);
-        let key = (
-            config.name.clone(),
-            session_id,
-            subject.map(str::to_owned),
-            requested_capability_fingerprint.clone(),
-        );
 
         // Fast path: fresh, live cached entry using the same per-request
         // capability snapshot. A changed capability set requires a new MCP

@@ -1,12 +1,12 @@
 'use client'
 
-import { FormEvent, useEffect, useRef, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { Activity, ArrowUpRight, Bot, Brain, File, Folder, MessagesSquare, Paperclip, PanelRight, Send, Settings, Square, Terminal, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
-import { useBrowserSession } from '@/lib/auth/session'
-import { authorityIdentity } from '@/lib/auth/authority'
+import { getBrowserSessionContextIdentity, useBrowserSession } from '@/lib/auth/session'
+import { getBrowserSessionEpoch, subscribeToBrowserSession } from '@/lib/auth/session-store'
 import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
 import { PhoenixRuntimeSummary, phoenixContextWindow, phoenixTotalTokens } from './phoenix-event-timeline'
@@ -23,7 +23,8 @@ export function PhoenixAvailability() {
   const shell = useOptionalConsoleShell()
   const setPhoenixDocked = shell?.setPhoenixDocked
   const session = useBrowserSession()
-  const identity = session.status === 'authenticated' ? authorityIdentity(session.authority) : session.status
+  const sessionEpoch = useSyncExternalStore(subscribeToBrowserSession, getBrowserSessionEpoch, () => 0)
+  const identity = getBrowserSessionContextIdentity()
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<PhoenixStatus>()
   const [sessionId, setSessionId] = useState<string>()
@@ -39,7 +40,8 @@ export function PhoenixAvailability() {
   const [interrupting, setInterrupting] = useState(false)
   const [steering, setSteering] = useState(false)
   const [workflowNotice, setWorkflowNotice] = useState<string>()
-  const [loadingDiagnostics, setLoadingDiagnostics] = useState(false)
+  const [diagnosticsEpoch, setDiagnosticsEpoch] = useState<number>()
+  const loadingDiagnostics = diagnosticsEpoch === sessionEpoch
   const [copiedIndex, setCopiedIndex] = useState<number>()
   const [newThreadOnSend, setNewThreadOnSend] = useState(false)
   const [title, setTitle] = useState('Phoenix')
@@ -57,6 +59,7 @@ export function PhoenixAvailability() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const closeAfterTurnRef = useRef<string | undefined>(undefined)
   const requestGenerationRef = useRef(0)
+  const diagnosticsRequestRef = useRef<{ epoch: number } | undefined>(undefined)
 
   useEffect(() => {
     setPhoenixDocked?.(open && dock === 'right')
@@ -65,6 +68,7 @@ export function PhoenixAvailability() {
 
   useEffect(() => {
     requestGenerationRef.current += 1
+    diagnosticsRequestRef.current = undefined
     setStatus(undefined)
     setSessionId(undefined)
     setMessages([])
@@ -77,9 +81,20 @@ export function PhoenixAvailability() {
     setError(undefined)
     setSending(false)
     setInterrupting(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
     setCopiedIndex(undefined)
+    setThreadHistory([])
+    setTitle('Phoenix')
+    setEditingTitle(false)
+    setThreadMenuOpen(false)
+    setNewThreadOnSend(false)
+    setDiagnosticsEpoch(undefined)
     // Identity changes and unmount revoke pending work; layout changes do not.
-    return () => { requestGenerationRef.current += 1 }
+    return () => {
+      requestGenerationRef.current += 1
+      diagnosticsRequestRef.current = undefined
+    }
   }, [identity])
 
   useEffect(() => {
@@ -103,11 +118,13 @@ export function PhoenixAvailability() {
   }, [identity, open, session.status])
 
   useEffect(() => {
-    if (!open || status?.available !== true) return
+    if (!open || session.status !== 'authenticated' || status?.available !== true) return
     const controller = new AbortController()
-    void phoenixApi.list(controller.signal).then((result) => setThreadHistory(result.sessions ?? []), () => undefined)
+    void phoenixApi.list(controller.signal).then((result) => {
+      if (!controller.signal.aborted && identity === getBrowserSessionContextIdentity()) setThreadHistory(result.sessions ?? [])
+    }, () => undefined)
     return () => controller.abort()
-  }, [open, status?.available])
+  }, [identity, open, session.status, status?.available])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -210,6 +227,8 @@ export function PhoenixAvailability() {
     const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
     const requestGeneration = ++requestGenerationRef.current
     setSending(true)
+    setSteering(false)
+    setInterrupting(false)
     setError(undefined)
     setInput('')
     setAttachments([])
@@ -258,6 +277,8 @@ export function PhoenixAvailability() {
     const outgoingAttachments = attachments
     if (!sessionId || (!text && outgoingAttachments.length === 0) || steering) return
     const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     setSteering(true)
     setError(undefined)
     setInput('')
@@ -265,36 +286,49 @@ export function PhoenixAvailability() {
     setMessages((current) => [...current, { role: 'user', text: displayText }])
     try {
       const updated = await phoenixApi.steer(sessionId, text, outgoingAttachments)
+      if (!isCurrent()) return
       const refreshed = await phoenixApi.read(sessionId).catch(() => undefined)
+      if (!isCurrent()) return
       if (refreshed) { setMessages(refreshed.messages); setEvents(refreshed.events ?? []) }
       setWorkflowNotice(updated.status === 'steered' ? 'Guidance added to the active turn' : undefined)
     } catch (reason) {
+      if (!isCurrent()) return
       setInput((current) => current ? [text, current].filter(Boolean).join('\n') : text)
       setAttachments((current) => [...outgoingAttachments, ...current].slice(0, 4))
       setMessages((current) => current.filter((message, index) => index !== current.length - 1 || message.role !== 'user' || message.text !== displayText))
       setError(reason instanceof Error ? reason.message : 'Phoenix could not steer the active turn')
     } finally {
-      setSteering(false)
+      if (isCurrent()) setSteering(false)
     }
   }
 
   const readDiagnostics = async () => {
-    if (loadingDiagnostics) return
-    setLoadingDiagnostics(true)
+    const epoch = getBrowserSessionEpoch()
+    if (diagnosticsRequestRef.current?.epoch === epoch) return
+    const request = { epoch }
+    diagnosticsRequestRef.current = request
+    const isCurrent = () => diagnosticsRequestRef.current === request && epoch === getBrowserSessionEpoch() && identity === getBrowserSessionContextIdentity()
+    setDiagnosticsEpoch(epoch)
     setError(undefined)
     try {
       const result = await phoenixApi.diagnostics()
+      if (!isCurrent()) return
       const available = Object.entries(result).filter(([, value]) => value !== null && value !== undefined).map(([key]) => key.replaceAll('_', ' '))
       setWorkflowNotice(available.length ? `Diagnostics ready: ${available.join(', ')}` : 'No diagnostics were reported')
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Phoenix diagnostics are unavailable')
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : 'Phoenix diagnostics are unavailable')
     } finally {
-      setLoadingDiagnostics(false)
+      if (isCurrent()) {
+        diagnosticsRequestRef.current = undefined
+        setDiagnosticsEpoch(undefined)
+      }
     }
   }
 
   const addAttachments = async (files: FileList | null) => {
     if (!files?.length) return
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     const selected = Array.from(files).slice(0, Math.max(0, 4 - attachments.length))
     const textLike = (file: File) => file.type.startsWith('text/') || /^(application\/(json|javascript|xml|yaml|x-yaml))$/.test(file.type) || /\.(md|txt|json|jsonl|ya?ml|toml|csv|ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|kts|sh|bash|zsh|fish|html?|css|scss|xml|sql|graphql|gql|ini|conf|log)$/i.test(file.name)
     const classify = (file: File): PhoenixAttachment['type'] | undefined => {
@@ -304,17 +338,22 @@ export function PhoenixAvailability() {
     }
     const accepted = selected.map((file) => ({ file, type: classify(file) })).filter((entry): entry is { file: File; type: PhoenixAttachment['type'] } => Boolean(entry.type))
     if (accepted.length !== selected.length) setError('Phoenix accepts PNG/JPEG/WebP images, supported audio, and UTF-8 text/code files up to 512 KiB. Binary files are not supported by Codex App Server input.')
-    const encoded = await Promise.all(accepted.map(({ file, type }) => new Promise<PhoenixAttachment>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        const raw = String(reader.result)
-        const url = type === 'text' ? 'data:text/plain;base64,' + (raw.split(',', 2)[1] ?? '') : raw
-        resolve({ type, url, name: file.name })
-      }
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })))
-    setAttachments((current) => [...current, ...encoded].slice(0, 4))
+    try {
+      const encoded = await Promise.all(accepted.map(({ file, type }) => new Promise<PhoenixAttachment>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const raw = String(reader.result)
+          const url = type === 'text' ? 'data:text/plain;base64,' + (raw.split(',', 2)[1] ?? '') : raw
+          resolve({ type, url, name: file.name })
+        }
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })))
+      if (!isCurrent()) return
+      setAttachments((current) => [...current, ...encoded].slice(0, 4))
+    } catch {
+      if (isCurrent()) setError('Phoenix could not read the selected attachments. Try selecting the files again.')
+    }
   }
 
   const closePanel = async () => {
@@ -323,31 +362,47 @@ export function PhoenixAvailability() {
 
   const closeThread = async (id: string) => {
     if (sending && id === sessionId) return
-    await phoenixApi.close(id)
-    setThreadHistory((current) => current.filter((thread) => thread.session_id !== id))
-    if (id === sessionId) startNewThread()
+    const requestGeneration = requestGenerationRef.current
+    const epoch = getBrowserSessionEpoch()
+    const isCurrent = () => requestGeneration === requestGenerationRef.current && epoch === getBrowserSessionEpoch() && identity === getBrowserSessionContextIdentity()
+    setError(undefined)
+    try {
+      await phoenixApi.close(id)
+      if (!isCurrent()) return
+      setThreadHistory((current) => current.filter((thread) => thread.session_id !== id))
+      if (id === sessionId) startNewThread()
+    } catch (reason) {
+      if (isCurrent()) setError(reason instanceof Error ? reason.message : 'Phoenix could not close that thread')
+    }
   }
 
   const interruptTurn = async () => {
     if (!sessionId || !sending || interrupting) return
+    const requestGeneration = requestGenerationRef.current
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     setInterrupting(true)
     setError(undefined)
     try {
       const updated = await phoenixApi.interrupt(sessionId)
+      if (!isCurrent()) return
       setWorkflowNotice(updated.status === 'interrupting' ? 'Stopping the active turn' : undefined)
     } catch (reason) {
+      if (!isCurrent()) return
       setError(reason instanceof Error ? reason.message : 'Phoenix could not stop the turn')
     } finally {
-      setInterrupting(false)
+      if (isCurrent()) setInterrupting(false)
     }
   }
 
   const retryFrom = (index: number) => {
+    if (sending || steering) return
     const userIndex = messages.slice(0, index + 1).findLastIndex((message) => message.role === 'user')
     if (userIndex < 0) return
     const text = messages[userIndex].text
-    setMessages(messages.slice(0, userIndex))
-    void sendTurn(text, true)
+    startNewThread()
+    setAttachments([])
+    setInput(text)
+    setWorkflowNotice('New conversation: only this prompt is copied. Earlier messages and attachments are not included. Review it before sending.')
   }
 
   const copyMessage = async (text: string, index: number) => {
@@ -359,11 +414,15 @@ export function PhoenixAvailability() {
   const switchThread = async (id: string) => {
     const requestGeneration = ++requestGenerationRef.current
     setSending(false)
+    setInterrupting(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
     setError(undefined)
     try {
       const thread = await phoenixApi.read(id)
       if (requestGeneration !== requestGenerationRef.current) return
       setSessionId(id)
+      setAttachments([])
       setTitle(threadHistory.find((item) => item.session_id === id)?.title || 'Phoenix')
       setMessages(thread.messages)
       setEvents(thread.events ?? [])
@@ -377,23 +436,32 @@ export function PhoenixAvailability() {
   const startNewThread = () => {
     requestGenerationRef.current += 1
     setSending(false)
+    setInterrupting(false)
+    setSteering(false)
+    setWorkflowNotice(undefined)
     setSessionId(undefined)
     setMessages([])
     setEvents([])
+    setAttachments([])
     setInput('')
     setThreadMenuOpen(false)
   }
 
   const commitTitle = async () => {
+    const requestGeneration = requestGenerationRef.current
+    const activeSessionId = sessionId
+    const isCurrent = () => requestGeneration === requestGenerationRef.current
     const nextTitle = title.trim() || 'Phoenix'
     const priorTitle = threadHistory.find((thread) => thread.session_id === sessionId)?.title || 'Phoenix'
     setTitle(nextTitle)
     setEditingTitle(false)
-    if (!sessionId) return
+    if (!activeSessionId) return
     try {
-      const renamed = await phoenixApi.rename(sessionId, nextTitle)
-      setThreadHistory((current) => current.map((thread) => thread.session_id === sessionId ? renamed : thread))
+      const renamed = await phoenixApi.rename(activeSessionId, nextTitle)
+      if (!isCurrent()) return
+      setThreadHistory((current) => current.map((thread) => thread.session_id === activeSessionId ? renamed : thread))
     } catch (reason) {
+      if (!isCurrent()) return
       setTitle(priorTitle)
       setError(reason instanceof Error ? reason.message : 'Phoenix could not rename that thread')
     }

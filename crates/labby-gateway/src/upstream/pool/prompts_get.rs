@@ -204,9 +204,8 @@ impl UpstreamPool {
     }
     /// Discover prompts from all OAuth upstreams visible to `subject`.
     ///
-    /// P-C1 fix: uses `acquire_or_connect_subject` so connections are cached;
-    /// the tools list from connect is not needed here but the cached peer is
-    /// used directly for `list_prompts`.
+    /// P-C1 fix: uses `acquire_subject_peer` so connections are cached;
+    /// the shared tool snapshot is not copied for prompt discovery.
     pub async fn subject_scoped_prompts(
         &self,
         configs: &[UpstreamConfig],
@@ -268,13 +267,13 @@ impl UpstreamPool {
                 };
                 let result = tokio::time::timeout_at(
                     deadline_at,
-                    pool.acquire_or_connect_subject(&config, &subject),
+                    pool.acquire_subject_peer(&config, &subject),
                 )
                 .await
                 .map_err(|_| {
                     anyhow::anyhow!("subject-scoped prompt acquisition exceeded request deadline")
                 })
-                .and_then(|result| result.map(|(peer, _tools)| peer));
+                .and_then(|result| result);
                 (config.name.clone(), policy, Some(result))
             });
         }
@@ -395,7 +394,7 @@ impl UpstreamPool {
 
     /// Find which upstream owns `prompt_name` for `subject`.
     ///
-    /// P-C1 fix: uses `acquire_or_connect_subject` so connections are cached.
+    /// P-C1 fix: uses `acquire_subject_peer` so connections are cached.
     pub async fn subject_scoped_prompt_owner(
         &self,
         configs: &[UpstreamConfig],
@@ -417,10 +416,7 @@ impl UpstreamPool {
                     Ok(permit) => permit,
                     Err(_) => return (config.name.clone(), policy, target_prompt, None),
                 };
-                let result = pool
-                    .acquire_or_connect_subject(&config, &subject)
-                    .await
-                    .map(|(peer, _tools)| peer);
+                let result = pool.acquire_subject_peer(&config, &subject).await;
                 (config.name.clone(), policy, target_prompt, Some(result))
             });
         }
@@ -550,7 +546,7 @@ impl UpstreamPool {
 
     /// Get a prompt from an OAuth-subject-scoped upstream.
     ///
-    /// P-C1 fix: uses `acquire_or_connect_subject` so the per-(upstream,subject)
+    /// P-C1 fix: uses `acquire_subject_peer` so the per-(upstream,subject)
     /// connection is reused from cache rather than opened fresh each call.
     pub async fn subject_scoped_get_prompt(
         &self,
@@ -601,8 +597,8 @@ impl UpstreamPool {
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
         // P-C1: reuse cached per-(upstream,subject) connection.
-        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
-            Ok(pair) => pair,
+        let peer = match self.acquire_subject_peer(config, subject).await {
+            Ok(peer) => peer,
             Err(error) => {
                 log_upstream_request_error(
                     event,

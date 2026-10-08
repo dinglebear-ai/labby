@@ -71,8 +71,8 @@ pub struct MergeRequest {
     /// When `true`, conflicting keys are overwritten instead of skipped.
     pub force: bool,
     /// When `Some(mtime)`, abort with [`MergeError::WriteConflict`] if the
-    /// target's current mtime differs (mtime-skew). Pass [`snapshot_mtime`]
-    /// taken at read time to detect interleaved writers.
+    /// target's current mtime differs or is unavailable. Pass [`snapshot_mtime`]
+    /// taken at read time to detect interleaved writers, including deletion.
     pub expected_mtime: Option<SystemTime>,
 }
 
@@ -250,8 +250,7 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
         })?;
 
     if let Some(expected) = req.expected_mtime
-        && let Some(current) = snapshot_mtime(path)
-        && current != expected
+        && snapshot_mtime(path) != Some(expected)
     {
         return Err(MergeError::WriteConflict {
             path: path.to_path_buf(),
@@ -1142,6 +1141,65 @@ mod tests {
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn deleted_snapshotted_target_returns_write_conflict_without_recreating_env() {
+        for force in [false, true] {
+            let dir = crate::access::test_support::secure_tempdir();
+            let path = dir.path().join(".env");
+            crate::installation::secure_file::publish_new(&path, b"FOO=before\n")
+                .expect("publish private original env");
+            let expected = snapshot_mtime(&path).expect("snapshot the existing target");
+            fs::remove_file(&path).expect("delete target after its snapshot");
+
+            let error = merge(
+                &path,
+                MergeRequest {
+                    entries: vec![EnvEntry::new("FOO", "after")],
+                    force,
+                    expected_mtime: Some(expected),
+                },
+            )
+            .expect_err("a deleted snapshot target cannot be recreated by a stale merge");
+            assert_eq!(error.kind(), "merge_write_conflict");
+            assert!(matches!(
+                error,
+                MergeError::WriteConflict {
+                    reason: WriteConflictReason::MtimeSkew,
+                    ..
+                }
+            ));
+            assert!(!path.exists(), "force={force}: stale merge recreated env");
+            assert!(
+                fs::read_dir(dir.path())
+                    .unwrap()
+                    .all(|entry| entry.unwrap().file_name() == ".env.lock"),
+                "force={force}: rejected merge created a backup or temporary artifact"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_without_expected_mtime_recreates_deleted_target() {
+        let dir = crate::access::test_support::secure_tempdir();
+        let path = dir.path().join(".env");
+        crate::installation::secure_file::publish_new(&path, b"FOO=before\n")
+            .expect("publish private original env");
+        fs::remove_file(&path).expect("delete the original env");
+
+        let outcome = merge(
+            &path,
+            MergeRequest {
+                entries: vec![EnvEntry::new("FOO", "after")],
+                expected_mtime: None,
+                ..Default::default()
+            },
+        )
+        .expect("an unconditional merge may recreate a deleted target");
+        assert_eq!(outcome.written, 1);
+        assert!(outcome.backup_path.is_none());
+        assert_eq!(fs::read(&path).unwrap(), b"FOO=after\n");
     }
 
     #[test]

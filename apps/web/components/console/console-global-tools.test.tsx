@@ -172,7 +172,7 @@ test('Phoenix sends a real turn through the container-local service and renders 
     assert.equal(panel.querySelectorAll('[data-phoenix-message]').length, 2)
     assert.ok(panel.querySelector('[aria-label="Context usage 2% (4,096 / 200,000 tokens)"]'))
     assert.ok(panel.querySelector('button[aria-label="Edit message"]'))
-    assert.ok(panel.querySelector('button[aria-label="Regenerate"]'))
+    assert.ok(panel.querySelector('button[aria-label="Copy preceding prompt to new conversation"]'))
     assert.ok(panel.querySelector('button[aria-label="Copy answer"]'))
     assert.equal(document.querySelector('[aria-label="Close Phoenix panel"]')?.classList.contains('size-11'), true)
   } finally {
@@ -338,4 +338,651 @@ for (const transition of ['dock', 'close', 'identity', 'unmount'] as const) {
       __setBrowserSessionStateForTests({ status: 'unauthenticated' })
     }
   })
+}
+
+for (const fails of [false, true]) {
+  test(`Phoenix ignores stale steering ${fails ? 'failures' : 'successes'} after a new conversation`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    let finishSend!: (response: Response) => void
+    let finishSteer!: (response: Response) => void
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      if (action === 'phoenix.status') return response({ available: true, capabilities: { turn_lifecycle: ['steer'], unsupported: [] } })
+      if (action === 'phoenix.models.list') return response({ models: [] })
+      if (action === 'phoenix.session.list') return response({ sessions: [] })
+      if (action === 'phoenix.turn.send') return new Promise<Response>(resolve => { finishSend = resolve })
+      if (action === 'phoenix.turn.steer') return new Promise<Response>(resolve => { finishSteer = resolve })
+      return response({ session_id: 'old', status: 'ready', messages: [{ role: 'assistant', text: 'OLD STEERING' }] })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    const enter = async (value: string) => act(async () => {
+      const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')!
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
+      input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+    })
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await enter('original question')
+      await act(async () => { document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(finishSend)
+      await enter('old guidance')
+      await act(async () => { document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(finishSteer)
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      const newButton = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('New'))!
+      await act(async () => newButton.click())
+      await act(async () => {
+        finishSteer(response(fails ? { message: 'OLD ERROR' } : { status: 'steered' }, fails ? 500 : 200))
+        finishSend(response({ session_id: 'old', messages: [{ role: 'assistant', text: 'OLD TURN' }] }))
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.equal(document.querySelectorAll('[data-phoenix-message]').length, 0)
+      assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, '')
+      assert.doesNotMatch(document.body.textContent ?? '', /OLD STEERING|OLD ERROR|Guidance added/)
+    } finally {
+      globalThis.fetch = originalFetch
+      await view.unmount()
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+test('copying a prompt to a fresh conversation is explicit and waits for review before sending', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  const actions: string[] = []
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    actions.push(action)
+    const body = action === 'phoenix.status' ? { available: true }
+      : action === 'phoenix.models.list' ? { models: [] }
+      : action === 'phoenix.session.list' ? { sessions: [{ session_id: 'existing', title: 'Existing' }] }
+      : { session_id: 'existing', messages: [{ role: 'user', text: 'Earlier context' }, { role: 'assistant', text: 'Earlier answer' }, { role: 'user', text: 'Follow-up' }, { role: 'assistant', text: 'Latest answer' }] }
+    return new Response(JSON.stringify(body), { status: 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+    const existing = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('Existing'))!
+    assert.ok(existing)
+    await act(async () => { existing.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+    const copy = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Copy prompt to new conversation"]')].at(-1)!
+    assert.ok(copy)
+    await act(async () => copy.click())
+    assert.equal(document.querySelector<HTMLTextAreaElement>('textarea')!.value, 'Follow-up')
+    assert.equal(document.querySelectorAll('[data-phoenix-message]').length, 0)
+    assert.match(document.body.textContent ?? '', /Earlier messages and attachments are not included/)
+    assert.equal(actions.includes('phoenix.turn.send'), false)
+  } finally {
+    globalThis.fetch = originalFetch
+    await view.unmount()
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+for (const fails of [false, true]) {
+  test(`Phoenix fences stale interruption ${fails ? 'failures' : 'successes'} and preserves a newer interruption`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    const turns: Array<(response: Response) => void> = []
+    const interrupts: Array<(response: Response) => void> = []
+    let started = 0
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      if (action === 'phoenix.status') return response({ available: true, capabilities: { turn_lifecycle: ['interrupt'], unsupported: [] } })
+      if (action === 'phoenix.models.list') return response({ models: [] })
+      if (action === 'phoenix.session.list') return response({ sessions: [] })
+      if (action === 'phoenix.session.start') return response({ session_id: `session-${++started}`, messages: [] })
+      if (action === 'phoenix.turn.send') return new Promise<Response>(resolve => { turns.push(resolve) })
+      if (action === 'phoenix.turn.interrupt') return new Promise<Response>(resolve => { interrupts.push(resolve) })
+      return response({ messages: [] })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    const send = async (value: string) => {
+      await act(async () => {
+        const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')!
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
+        input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+      })
+      await act(async () => {
+        document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+    }
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await send('old question')
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Stop Phoenix"]')!.click())
+      assert.equal(interrupts.length, 1)
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      const newButton = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('New'))!
+      await act(async () => newButton.click())
+      await send('new question')
+      const stop = document.querySelector<HTMLButtonElement>('[aria-label="Stop Phoenix"]')!
+      assert.ok(stop)
+      assert.equal(stop.disabled, false)
+      await act(async () => stop.click())
+      assert.equal(interrupts.length, 2)
+      await act(async () => {
+        interrupts[0](response(fails ? { message: 'OLD INTERRUPT ERROR' } : { status: 'interrupting' }, fails ? 500 : 200))
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.doesNotMatch(document.body.textContent ?? '', /OLD INTERRUPT ERROR|Stopping the active turn/)
+      assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="Stopping Phoenix"]')?.disabled, true)
+      await act(async () => {
+        interrupts[1](response({ status: 'interrupting' }))
+        turns.forEach(resolve => resolve(response({ messages: [] })))
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.match(document.body.textContent ?? '', /Stopping the active turn/)
+    } finally {
+      globalThis.fetch = originalFetch
+      await view.unmount()
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+for (const control of ['steer', 'interrupt'] as const) {
+  for (const fails of [false, true]) {
+    test(`Phoenix releases obsolete ${control} on a same-session send and fences late ${fails ? 'failures' : 'successes'}`, async () => {
+      __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+      const originalFetch = globalThis.fetch
+      const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+      const turns: Array<(response: Response) => void> = []
+      const controls: Array<(response: Response) => void> = []
+      let started = 0
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const { action } = JSON.parse(String(init?.body)) as { action: string }
+        if (action === 'phoenix.status') return response({ available: true, capabilities: { turn_lifecycle: [control], unsupported: [] } })
+        if (action === 'phoenix.models.list') return response({ models: [] })
+        if (action === 'phoenix.session.list') return response({ sessions: [] })
+        if (action === 'phoenix.session.start') return response({ session_id: `session-${++started}`, messages: [] })
+        if (action === 'phoenix.turn.send') return new Promise<Response>(resolve => { turns.push(resolve) })
+        if (action === `phoenix.turn.${control}`) return new Promise<Response>(resolve => { controls.push(resolve) })
+        return response({ messages: [] })
+      }) as typeof fetch
+      const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+      const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+      const view = await renderClient(<PhoenixAvailability />)
+      const send = async (value: string) => {
+        await act(async () => {
+          const input = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Message Phoenix"]')!
+          Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')!.set!.call(input, value)
+          input.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: value }) as unknown as Event)
+        })
+        await act(async () => {
+          document.querySelector<HTMLTextAreaElement>('textarea')!.form!.requestSubmit()
+          await new Promise(resolve => setTimeout(resolve, 0))
+        })
+      }
+      const controlTurn = async () => {
+        if (control === 'steer') await send('guidance')
+        else {
+          const stop = document.querySelector<HTMLButtonElement>('[aria-label="Stop Phoenix"]')
+          assert.ok(stop, 'the current turn exposes an available interruption')
+          await act(async () => stop.click())
+        }
+      }
+      try {
+        await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+        await send('old question')
+        await controlTurn()
+        assert.equal(controls.length, 1)
+        await act(async () => {
+          turns[0](response({ session_id: 'session-1', messages: [] }))
+          await new Promise(resolve => setTimeout(resolve, 0))
+        })
+        await send('next question')
+        assert.equal(started, 1, 'the next send keeps the same session')
+        await controlTurn()
+        assert.equal(controls.length, 2, 'a new turn releases the obsolete pending control')
+        await act(async () => {
+          controls[0](response(fails ? { message: 'OLD CONTROL ERROR' } : { status: control === 'steer' ? 'steered' : 'interrupting' }, fails ? 500 : 200))
+          await new Promise(resolve => setTimeout(resolve, 0))
+        })
+        assert.doesNotMatch(document.body.textContent ?? '', /OLD CONTROL ERROR|Stopping the active turn|Guidance added/)
+        if (control === 'interrupt') assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="Stopping Phoenix"]')?.disabled, true)
+        else {
+          await send('guidance while pending')
+          assert.equal(controls.length, 2, 'the older completion cannot release the newer steer')
+        }
+        await act(async () => {
+          controls[1](response({ status: control === 'steer' ? 'steered' : 'interrupting' }))
+          turns[1](response({ messages: [] }))
+          await new Promise(resolve => setTimeout(resolve, 0))
+        })
+        assert.match(document.body.textContent ?? '', control === 'interrupt' ? /Stopping the active turn/ : /Guidance added/)
+      } finally {
+        globalThis.fetch = originalFetch
+        await view.unmount()
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+      }
+    })
+  }
+}
+
+for (const transition of ['logout', 'account status failure', 'workspace list failure'] as const) {
+  test(`Phoenix clears private conversation metadata after ${transition}`, async () => {
+    const authenticated = (sub: string, projectId: string) => ({ status: 'authenticated' as const, user: { sub }, projectId, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    __setBrowserSessionStateForTests(authenticated('operator-A', 'project-A'))
+    const originalFetch = globalThis.fetch
+    let replaced = false
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      if (action === 'phoenix.status') return replaced && transition === 'account status failure' ? response({ message: 'Status unavailable for B' }, 503) : response({ available: true })
+      if (action === 'phoenix.models.list') return response({ models: [] })
+      if (action === 'phoenix.session.list') return replaced ? response({ message: 'History unavailable for B' }, 503) : response({ sessions: [{ session_id: 'private-A', title: 'Private conversation A' }] })
+      return response({ session_id: 'private-A', messages: [] })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      const privateThread = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent === 'Private conversation A')!
+      assert.ok(privateThread, 'authority A history loaded')
+      await act(async () => privateThread.click())
+      assert.equal(document.querySelector('[title="Click to rename"]')?.textContent, 'Private conversation A')
+      await act(async () => document.querySelector<HTMLElement>('[title="Click to rename"]')!.click())
+      assert.equal(document.querySelector<HTMLInputElement>('[aria-label="Conversation title"]')!.value, 'Private conversation A')
+      replaced = true
+      __setBrowserSessionStateForTests(transition === 'logout' ? { status: 'unauthenticated' } : authenticated(transition === 'account status failure' ? 'operator-B' : 'operator-A', 'project-B'))
+      await view.rerender(<PhoenixAvailability />)
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(document.querySelector('[aria-label="Conversation title"]') === null, 'old title editor is revoked')
+      assert.equal(document.querySelector('[title="Click to rename"]')?.textContent, 'Phoenix')
+      if (document.querySelector('[aria-label="Phoenix threads"]') === null) await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      assert.doesNotMatch(document.body.textContent ?? '', /Private conversation A/)
+      assert.match(document.querySelector('[aria-label="Phoenix threads"]')?.textContent ?? '', /No previous Phoenix threads/)
+    } finally {
+      await view.unmount()
+      globalThis.fetch = originalFetch
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+test('Phoenix rejects a deferred history publication from the prior browser identity', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator-A' }, projectId: 'project-A', expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  const { phoenixApi } = await import('../../lib/api/phoenix-client.ts')
+  const originalList = phoenixApi.list
+  let finishOld!: (result: Awaited<ReturnType<typeof phoenixApi.list>>) => void
+  let oldSignal: AbortSignal | undefined
+  let calls = 0
+  const summary = (title: string) => ({ session_id: title, title, preview: title, message_count: 1, turn_status: 'ready' as const })
+  phoenixApi.list = (signal) => ++calls === 1 ? new Promise(resolve => { oldSignal = signal; finishOld = resolve }) : Promise.resolve({ sessions: [summary('Conversation B')] })
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    return new Response(JSON.stringify(action === 'phoenix.status' ? { available: true } : { models: [] }))
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.ok(finishOld)
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator-B' }, projectId: 'project-B', expiresAt: Date.now() + 60_000, csrfToken: 'other-csrf' })
+    await view.rerender(<PhoenixAvailability />)
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+    assert.equal(oldSignal?.aborted, true, 'prior history request is revoked')
+    assert.match(document.querySelector('[aria-label="Phoenix threads"]')?.textContent ?? '', /Conversation B/)
+    // The transport may already have completed when cancellation arrives.
+    await act(async () => finishOld({ sessions: [summary('Private conversation A')] }))
+    assert.match(document.querySelector('[aria-label="Phoenix threads"]')?.textContent ?? '', /Conversation B/)
+    assert.doesNotMatch(document.body.textContent ?? '', /Private conversation A/)
+  } finally {
+    await view.unmount()
+    phoenixApi.list = originalList
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+test('Phoenix retains current history across transport-only session refresh', async () => {
+  const authenticated = (csrfToken: string) => ({ status: 'authenticated' as const, user: { sub: 'operator-A' }, projectId: 'project-A', expiresAt: Date.now() + 60_000, csrfToken })
+  __setBrowserSessionStateForTests(authenticated('csrf'))
+  const originalFetch = globalThis.fetch
+  let lists = 0
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    if (action === 'phoenix.session.list') lists += 1
+    return new Response(JSON.stringify(action === 'phoenix.status' ? { available: true } : action === 'phoenix.models.list' ? { models: [] } : { sessions: [{ session_id: 'A', title: 'Current conversation A' }] }))
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+    assert.match(document.querySelector('[aria-label="Phoenix threads"]')?.textContent ?? '', /Current conversation A/)
+    __setBrowserSessionStateForTests(authenticated('rotated-csrf'))
+    await view.rerender(<PhoenixAvailability />)
+    assert.match(document.querySelector('[aria-label="Phoenix threads"]')?.textContent ?? '', /Current conversation A/)
+    assert.equal(lists, 1, 'transport refresh preserves the current cache and request owner')
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+for (const transition of ['thread', 'identity', 'read failure'] as const) {
+  test(`Phoenix discards a deferred attachment after ${transition} changes`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    const originalReader = globalThis.FileReader
+    let finishRead!: () => void
+    class DeferredReader extends window.FileReader {
+      override readAsDataURL() {
+        finishRead = () => {
+          if (transition === 'read failure') {
+            this.onerror?.(new window.ProgressEvent('error') as unknown as ProgressEvent<FileReader>)
+            return
+          }
+          Object.defineProperty(this, 'result', { configurable: true, value: 'data:text/plain;base64,cHJpdmF0ZQ==' })
+          this.onload?.(new window.ProgressEvent('load') as unknown as ProgressEvent<FileReader>)
+        }
+      }
+    }
+    globalThis.FileReader = DeferredReader
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      return new Response(JSON.stringify(action === 'phoenix.status' ? { available: true } : action === 'phoenix.models.list' ? { models: [] } : { sessions: [] }))
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      const picker = document.querySelector<HTMLInputElement>('[aria-label="Attach image or file"]')!
+      Object.defineProperty(picker, 'files', { configurable: true, value: [new window.File(['private'], 'private.txt', { type: 'text/plain' })] })
+      await act(async () => picker.dispatchEvent(new window.Event('change', { bubbles: true })))
+      assert.ok(finishRead)
+      if (transition === 'thread') {
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+        const newButton = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(button => button.textContent?.includes('New'))!
+        await act(async () => newButton.click())
+      } else if (transition === 'identity') {
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+        await view.rerender(<PhoenixAvailability />)
+        __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'other-operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'other-csrf' })
+        await view.rerender(<PhoenixAvailability />)
+      }
+      await act(async () => { finishRead(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      assert.ok(document.querySelector('[aria-label="Phoenix attachments"]') === null)
+      if (transition === 'read failure') assert.match(document.body.textContent ?? '', /could not read the selected attachments/)
+    } finally {
+      await view.unmount()
+      globalThis.fetch = originalFetch
+      globalThis.FileReader = originalReader
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+test('Phoenix ignores a rename failure after opening another conversation', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  let failRename!: (response: Response) => void
+  const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    if (action === 'phoenix.status') return response({ available: true })
+    if (action === 'phoenix.models.list') return response({ models: [] })
+    if (action === 'phoenix.session.list') return response({ sessions: [{ session_id: 'A', title: 'Conversation A' }, { session_id: 'B', title: 'Conversation B' }] })
+    if (action === 'phoenix.session.rename') return new Promise<Response>(resolve => { failRename = resolve })
+    return response({ messages: [] })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  const openThread = async (title: string) => {
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+    const button = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(item => item.textContent === title)!
+    assert.ok(button)
+    await act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+  }
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await openThread('Conversation A')
+    await act(async () => document.querySelector<HTMLElement>('[title="Click to rename"]')!.click())
+    const titleInput = document.querySelector<HTMLInputElement>('[aria-label="Conversation title"]')!
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')!.set!.call(titleInput, 'Renamed A')
+      titleInput.dispatchEvent(new window.InputEvent('input', { bubbles: true, data: 'Renamed A' }) as unknown as Event)
+    })
+    await act(async () => titleInput.blur())
+    assert.ok(failRename)
+    await openThread('Conversation B')
+    await act(async () => { failRename(response({ message: 'OLD RENAME ERROR' }, 500)); await new Promise(resolve => setTimeout(resolve, 0)) })
+    assert.equal(document.querySelector('[title="Click to rename"]')?.textContent, 'Conversation B')
+    assert.doesNotMatch(document.body.textContent ?? '', /OLD RENAME ERROR/)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+for (const transition of ['identity replacement', 'A-B-A transition', 'batched A-B-A admission', 'batched A-B-A completion'] as const) {
+  for (const fails of [false, true]) {
+    test(`Phoenix preserves newer diagnostics after an obsolete ${fails ? 'failure' : 'success'} and ${transition}`, async () => {
+      const authenticated = (sub: string) => ({ status: 'authenticated' as const, user: { sub }, projectId: `project-${sub}`, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+      __setBrowserSessionStateForTests(authenticated('A'))
+      const originalFetch = globalThis.fetch
+      const { phoenixApi } = await import('../../lib/api/phoenix-client.ts')
+      const originalDiagnostics = phoenixApi.diagnostics
+      type Diagnostics = Awaited<ReturnType<typeof phoenixApi.diagnostics>>
+      const pending: Array<{ resolve: (result: Diagnostics) => void; reject: (reason: Error) => void }> = []
+      phoenixApi.diagnostics = () => new Promise((resolve, reject) => { pending.push({ resolve, reject }) })
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const { action } = JSON.parse(String(init?.body)) as { action: string }
+        const body = action === 'phoenix.status' ? { available: true, capabilities: { diagnostics: ['config'] } }
+          : action === 'phoenix.models.list' ? { models: [] } : { sessions: [] }
+        return new Response(JSON.stringify(body))
+      }) as typeof fetch
+      const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+      const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+      const view = await renderClient(<PhoenixAvailability />)
+      const readButton = () => document.querySelector<HTMLButtonElement>('[aria-label="Read Phoenix diagnostics"]')!
+      try {
+        await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Phoenix settings"]')!.click())
+        await act(async () => readButton().click())
+        assert.equal(pending.length, 1)
+        const finishOld = () => {
+          if (fails) pending[0].reject(new Error('OLD DIAGNOSTICS ERROR'))
+          else pending[0].resolve({ account: 'private diagnostics from A' })
+        }
+        if (transition.startsWith('batched')) {
+          await act(async () => {
+            __setBrowserSessionStateForTests(authenticated('B'))
+            __setBrowserSessionStateForTests(authenticated('A'))
+            if (transition === 'batched A-B-A completion') finishOld()
+            await view.rerender(<PhoenixAvailability />)
+            await new Promise(resolve => setTimeout(resolve, 0))
+          })
+          assert.doesNotMatch(document.body.textContent ?? '', /OLD DIAGNOSTICS ERROR|Diagnostics ready: account/)
+          assert.equal(readButton().disabled, false, 'a batched authority round-trip revokes obsolete diagnostics admission')
+        } else {
+          for (const sub of transition === 'A-B-A transition' ? ['B', 'A'] : ['B']) {
+            __setBrowserSessionStateForTests(authenticated(sub))
+            await view.rerender(<PhoenixAvailability />)
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+          }
+        }
+        await act(async () => readButton().click())
+        assert.equal(pending.length, 2)
+        await act(async () => {
+          if (transition !== 'batched A-B-A completion') finishOld()
+          await new Promise(resolve => setTimeout(resolve, 0))
+        })
+        assert.doesNotMatch(document.body.textContent ?? '', /OLD DIAGNOSTICS ERROR|Diagnostics ready: account/)
+        assert.equal(readButton().disabled, true, 'the older completion cannot release the current diagnostics request')
+        await act(async () => pending[1].resolve({ config: {} }))
+        assert.match(document.body.textContent ?? '', /Diagnostics ready: config/)
+        assert.equal(readButton().disabled, false)
+      } finally {
+        await view.unmount()
+        phoenixApi.diagnostics = originalDiagnostics
+        globalThis.fetch = originalFetch
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+      }
+    })
+  }
+}
+
+test('Phoenix reports current diagnostics failures and releases the read control', async () => {
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const { action } = JSON.parse(String(init?.body)) as { action: string }
+    const body = action === 'phoenix.status' ? { available: true, capabilities: { diagnostics: ['config'] } }
+      : action === 'phoenix.models.list' ? { models: [] }
+      : action === 'phoenix.diagnostics.read' ? { message: 'Diagnostics temporarily unavailable' } : { sessions: [] }
+    return new Response(JSON.stringify(body), { status: action === 'phoenix.diagnostics.read' ? 503 : 200 })
+  }) as typeof fetch
+  const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const view = await renderClient(<PhoenixAvailability />)
+  try {
+    await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Phoenix settings"]')!.click())
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>('[aria-label="Read Phoenix diagnostics"]')!.click()
+      await new Promise(resolve => setTimeout(resolve, 0))
+    })
+    assert.match(document.body.textContent ?? '', /Diagnostics temporarily unavailable/)
+    assert.equal(document.querySelector<HTMLButtonElement>('[aria-label="Read Phoenix diagnostics"]')!.disabled, false)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+    __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+  }
+})
+
+for (const fails of [false, true]) {
+  test(`Phoenix handles current thread-close ${fails ? 'failure visibly without deleting the thread' : 'success'}`, async () => {
+    __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const { action } = JSON.parse(String(init?.body)) as { action: string }
+      const body = action === 'phoenix.status' ? { available: true }
+        : action === 'phoenix.models.list' ? { models: [] }
+        : action === 'phoenix.session.close' ? fails ? { message: 'Thread could not be closed' } : { session_id: 'A', status: 'closed' }
+        : { sessions: [{ session_id: 'A', title: 'Conversation A' }] }
+      return new Response(JSON.stringify(body), { status: fails && action === 'phoenix.session.close' ? 503 : 200 })
+    }) as typeof fetch
+    const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+    const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+    const view = await renderClient(<PhoenixAvailability />)
+    try {
+      await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+      await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+      await act(async () => {
+        document.querySelector<HTMLButtonElement>('[aria-label="Close Conversation A"]')!.click()
+        await new Promise(resolve => setTimeout(resolve, 0))
+      })
+      assert.equal(document.querySelector('[aria-label="Close Conversation A"]') !== null, fails)
+      if (fails) assert.match(document.body.textContent ?? '', /Thread could not be closed/)
+    } finally {
+      await view.unmount()
+      globalThis.fetch = originalFetch
+      __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+    }
+  })
+}
+
+for (const transition of ['thread', 'identity', 'batched identity'] as const) {
+  for (const fails of [false, true]) {
+    test(`Phoenix ignores late thread-close ${fails ? 'failures' : 'successes'} after a ${transition} change`, async () => {
+      const authenticated = (sub: string) => ({ status: 'authenticated' as const, user: { sub }, projectId: `project-${sub}`, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+      __setBrowserSessionStateForTests(authenticated('A'))
+      const originalFetch = globalThis.fetch
+      const { phoenixApi } = await import('../../lib/api/phoenix-client.ts')
+      const originalClose = phoenixApi.close
+      let finishClose!: () => void
+      phoenixApi.close = () => new Promise((resolve, reject) => {
+        finishClose = () => fails ? reject(new Error('OLD CLOSE ERROR')) : resolve({ session_id: 'A', status: 'closed' })
+      })
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const { action, params } = JSON.parse(String(init?.body)) as { action: string; params?: { session_id?: string } }
+        const body = action === 'phoenix.status' ? { available: true }
+          : action === 'phoenix.models.list' ? { models: [] }
+          : action === 'phoenix.session.list' ? { sessions: [{ session_id: 'A', title: 'Conversation A' }, { session_id: 'B', title: 'Conversation B' }] }
+          : { session_id: params?.session_id, messages: [{ role: 'assistant', text: `Conversation ${params?.session_id} reply` }] }
+        return new Response(JSON.stringify(body))
+      }) as typeof fetch
+      const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+      const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+      const view = await renderClient(<PhoenixAvailability />)
+      const openThread = async (title: string) => {
+        if (document.querySelector('[aria-label="Phoenix threads"]') === null) await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+        const button = [...document.querySelectorAll<HTMLButtonElement>('[aria-label="Phoenix threads"] button')].find(item => item.textContent === title)!
+        assert.ok(button)
+        await act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 0)) })
+      }
+      try {
+        await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+        await openThread('Conversation A')
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Switch Phoenix thread"]')!.click())
+        await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close Conversation A"]')!.click())
+        assert.ok(finishClose)
+        if (transition === 'batched identity') {
+          await act(async () => {
+            __setBrowserSessionStateForTests(authenticated('B'))
+            __setBrowserSessionStateForTests(authenticated('A'))
+            finishClose()
+            await view.rerender(<PhoenixAvailability />)
+            await new Promise(resolve => setTimeout(resolve, 0))
+          })
+          assert.match(document.body.textContent ?? '', /Conversation A reply/)
+        } else {
+          if (transition === 'identity') {
+            __setBrowserSessionStateForTests(authenticated('B'))
+            await view.rerender(<PhoenixAvailability />)
+            await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+          }
+          await openThread('Conversation B')
+          assert.match(document.body.textContent ?? '', /Conversation B reply/)
+          await act(async () => { finishClose(); await new Promise(resolve => setTimeout(resolve, 0)) })
+          assert.match(document.body.textContent ?? '', /Conversation B reply/)
+        }
+        assert.doesNotMatch(document.body.textContent ?? '', /OLD CLOSE ERROR/)
+      } finally {
+        await view.unmount()
+        phoenixApi.close = originalClose
+        globalThis.fetch = originalFetch
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+      }
+    })
+  }
 }
