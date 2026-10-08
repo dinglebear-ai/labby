@@ -31,7 +31,7 @@ pub(super) fn record_verification(path: &Path) {
         .or_default() += 1;
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn verification_count(path: &Path) -> usize {
     verifications()
         .lock()

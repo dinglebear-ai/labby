@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use super::*;
 
 /// The parent-derived `step_ordinal` is a contiguous monotonic count of

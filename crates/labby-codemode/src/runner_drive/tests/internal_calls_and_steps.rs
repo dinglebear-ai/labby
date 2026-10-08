@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use super::*;
 
 /// The internal-call ceiling: `__lab_internal::*` calls stay excluded from
