@@ -715,6 +715,28 @@ mod tests {
     }
 
     #[test]
+    fn created_owner_assignment_refuses_other_handle_and_hard_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = temp.path().join("first");
+        let second = temp.path().join("second");
+        std::fs::write(&first, b"first").unwrap();
+        std::fs::write(&second, b"second").unwrap();
+        let original = File::open(&first).unwrap();
+        let other = File::open(&second).unwrap();
+        let original_owner = owner_sid(&original);
+        let other_owner = owner_sid(&other);
+        let error = set_created_owner(&second, &original, false).unwrap_err();
+        assert_eq!(error.to_string(), "created object identity changed");
+        let alias = temp.path().join("alias");
+        std::fs::hard_link(&first, &alias).unwrap();
+        assert!(set_created_owner(&alias, &original, false).is_err());
+        assert_eq!(owner_sid(&original), original_owner);
+        assert_eq!(owner_sid(&other), other_owner);
+        assert_eq!(std::fs::read(first).unwrap(), b"first");
+        assert_eq!(std::fs::read(second).unwrap(), b"second");
+    }
+
+    #[test]
     fn native_dacl_hardening_refuses_other_handle_and_hard_links() {
         let temp = tempfile::tempdir().unwrap();
         let first = temp.path().join("first");
