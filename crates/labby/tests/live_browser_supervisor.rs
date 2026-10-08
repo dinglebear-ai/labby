@@ -81,8 +81,9 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
     .await
     .expect("public identity bootstrap");
     let config = format!(
-        "{}\n[web]\nassets_dir = {}\n",
+        "{}\n[[loadouts]]\nname = \"team:{}:production\"\nupstreams = []\nservices = [\"gateway\"]\n\n[web]\nassets_dir = {}\n",
         policy(&["lab:read", "lab", "lab:admin"]),
+        support::LiveLabbyGuard::HARNESS_TEAM_ID,
         serde_json::to_string(&assets.display().to_string()).unwrap()
     );
     identity

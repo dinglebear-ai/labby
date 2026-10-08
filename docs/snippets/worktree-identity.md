@@ -85,6 +85,9 @@ in this dependency set, so detached HEADs without handles can have no PR result.
 Linear branch keys and task/PR mentions are candidates. A matching Linear
 `gitBranchName` or a Linear issue URL explicitly linked by a verified PR provides
 a verified association. Merely finding a valid issue does not establish ownership.
+Linked URLs must contain a complete issue identifier in the exact workspace and
+at most one optional slug segment. Dot segments, encoded path separators, malformed
+prefixes and a URL cut by the PR-body inspection budget stay unverified.
 Every association contains a source, match rule and confidence. None implies
 exclusive/current task ownership. No PR or issue title/body is returned.
 
@@ -190,12 +193,21 @@ async (input = {}) => {
   if(prs.size>maxPrs){result.coverage.github.incomplete=true;result.coverage.github.omitted_handles=prs.size-maxPrs;}
   const keys=new Map();
   const issueKey=/\b([A-Za-z][A-Za-z0-9]{1,11}-[1-9][0-9]{0,8})\b/g;
+  const identity=url=>{
+    if(typeof url!=='string'||/\s/.test(url))return null;
+    const parsed=url.match(/^https:\/\/linear\.app\/([A-Za-z0-9_-]+)\/issue\/([A-Za-z][A-Za-z0-9]{1,11}-[1-9][0-9]{0,8})(?:\/([^/?#\\]*))?(?:[?#].*)?$/);
+    if(!parsed)return null;
+    try {
+      const slug=decodeURIComponent(parsed[3]??'');
+      return slug==='.'||slug==='..'||/[\/\\\x00-\x20\x7f]/.test(slug)?null:parsed;
+    } catch {return null;}
+  };
   const addKey=(key,evidence)=>{
     key=key.toUpperCase();
     if(!/^[A-Z][A-Z0-9]{1,11}-[1-9][0-9]{0,8}$/.test(key))return;
     if(!keys.has(key))keys.set(key,[]);
     const list=keys.get(key);
-    if(list.some(x=>x.source===evidence.source&&x.match===evidence.match))return;
+    if(list.some(x=>x.source===evidence.source&&x.match===evidence.match&&x.issue_url===evidence.issue_url))return;
     if(evidence.match==='explicit_linear_issue_url'){list.unshift(evidence);if(list.length>3)list.pop();}
     else if(list.length<3)list.push(evidence);
   };
@@ -225,8 +237,13 @@ async (input = {}) => {
     for(const text of [typeof p.title==='string'?p.title.slice(0,500):'',body]){
       for(const m of text.matchAll(issueKey))addKey(m[1],{source:url,match:'pr_issue_key_mention',confidence:'candidate'});
     }
-    const link=/https:\/\/linear\.app\/[A-Za-z0-9_-]+\/issue\/([A-Za-z][A-Za-z0-9]{1,11}-[1-9][0-9]{0,8})(?:\/[A-Za-z0-9_/-]*)?/g;
-    for(const m of body.matchAll(link))addKey(m[1],{source:url,field:'body',match:'explicit_linear_issue_url',confidence:'high',issue_url:m[0]});
+    const link=/https:\/\/linear\.app\/[A-Za-z0-9_-]+\/issue\/[^\s<>"')\]]+/g;
+    for(const m of body.matchAll(link)){
+      // A body-budget cut cannot establish where the issue URL actually ends.
+      if(p.body.length>body.length&&m.index+m[0].length===body.length)continue;
+      const expected=identity(m[0]);
+      if(expected)addKey(expected[2],{source:url,field:'body',match:'explicit_linear_issue_url',confidence:'high',issue_url:m[0]});
+    }
   };
   for(let i=0;i<entries.length;i+=3)await codemode.batch(entries.slice(i,i+3).map(p=>()=>inspectPr(p)));
   const candidates=Array.from(keys.entries()).sort((a,b)=>a[0].localeCompare(b[0]));
@@ -235,11 +252,16 @@ async (input = {}) => {
   const inspectIssue=async ([key,evidence])=>{
     const issue=await run('linear-notification-worker::get_issue',{id:key,includeRelations:false,includeCustomerNeeds:false,includeReleases:false},'issue_'+key);
     if(!issue){result.unresolved.linear_issues.push({identifier:key,confidence:'candidate',evidence,status:'lookup_failed'});return;}
-    if(issue.identifier?.toUpperCase()!==key || typeof issue.url!=='string' || !/^https:\/\/linear\.app\//.test(issue.url)) {
+    const returnedIdentity=identity(issue.url);
+    if(issue.identifier?.toUpperCase()!==key || !returnedIdentity || returnedIdentity[2].toUpperCase()!==key) {
       result.unresolved.linear_issues.push({identifier:key,confidence:'candidate',evidence,status:'identity_not_confirmed'});return;
     }
+    const links=evidence.filter(x=>x.match==='explicit_linear_issue_url');
+    const linked=links.some(x=>{const expected=identity(x.issue_url);return expected&&expected[1]===returnedIdentity[1]&&expected[2].toUpperCase()===returnedIdentity[2].toUpperCase();});
+    if(links.length&&!linked){
+      result.unresolved.linear_issues.push({identifier:key,confidence:'candidate',evidence,status:'linked_identity_mismatch'});return;
+    }
     const branchMatch=id.path_state==='live'&&id.branch!==null&&issue.gitBranchName===id.branch;
-    const linked=evidence.some(x=>x.match==='explicit_linear_issue_url');
     const item={identifier:key,id:issue.id,url:issue.url,archived:issue.archivedAt!=null,
       confidence:branchMatch||linked?'high':'candidate',association:branchMatch?'exact_linear_git_branch':linked?'explicitly_linked_by_verified_pr':'key_mention_only',
       evidence:[...evidence,{source:issue.url,tool:'linear-notification-worker::get_issue',field:branchMatch?'gitBranchName':'identifier',match:branchMatch?'exact_branch':'existing_issue'}]};

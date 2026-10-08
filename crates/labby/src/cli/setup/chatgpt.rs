@@ -157,6 +157,9 @@ pub(super) async fn run(
 }
 
 fn ensure_dependencies(interactive: bool, skip_deps: bool, no_browser: bool) -> Result<()> {
+    // These options have platform-specific uses below, but every supported
+    // target must compile cleanly when guided setup is unavailable.
+    let _ = (interactive, skip_deps, no_browser);
     let node_major = Command::new("node")
         .arg("--version")
         .output()
@@ -262,7 +265,7 @@ fn ensure_dependencies(interactive: bool, skip_deps: bool, no_browser: bool) -> 
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     bail!("Guided sandbox setup currently supports macOS Apple Silicon and Linux with KVM");
-    let _ = (interactive, skip_deps, no_browser);
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     Ok(())
 }
 

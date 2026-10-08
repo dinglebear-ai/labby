@@ -1129,7 +1129,9 @@ the trailing expression is returned.
 Explicit `writeArtifact` calls and automatically preserved responses share a
 hard per-run payload budget of 64 MiB and 256 files, in addition to the
 configured per-artifact cap. Empty files consume the file-count budget.
-Exceeding an aggregate limit returns `budget_exceeded`; earlier artifacts remain
+Explicit writes exceeding an aggregate limit return `budget_exceeded`.
+Automatic preservation is best effort and may be unavailable when that same
+execution budget is exhausted; final-result shaping still completes. Earlier artifacts remain
 available and must not be recreated by replaying completed mutations.
 
 Within a gateway process, artifact admission, publication, and retention are

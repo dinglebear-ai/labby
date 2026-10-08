@@ -23,6 +23,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         snippet_max_bytes: usize,
         execution_id: Option<Arc<str>>,
         trace_context: Option<Arc<TraceContext>>,
+        artifact_run_id: String,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Read the openapi registry/client from the host at the config-build site
         // (per the plan's I4 fix — do NOT thread them down the positional arg
@@ -60,6 +61,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             snippet_max_bytes: snippet_max_bytes.min(MAX_SNIPPET_RESOLVED_BYTES_PER_RUN),
             execution_id,
             trace_context,
+            artifact_run_id,
             openapi_registry,
             openapi_http_client,
         };

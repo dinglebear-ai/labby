@@ -198,64 +198,76 @@ pub(super) async fn refresh_tool_header_cache_raw(
     catalog_pagination::list_tools(peer, timeout, MAX_UPSTREAM_TOOLS).await
 }
 
-pub(super) async fn call_tool_once_with_header_recovery(
-    pool: &UpstreamPool,
-    peer: &Peer<RoleClient>,
-    upstream_name: &str,
+pub(super) fn call_tool_once_with_header_recovery<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    upstream_name: &'a str,
     params: CallToolRequestParams,
-) -> Result<CallToolResponse, ServiceError> {
-    match peer.call_tool_once(params.clone()).await {
-        Err(error) if is_tool_header_mismatch(&error) => {
-            record_header_mismatch(pool, upstream_name);
-            refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = peer.call_tool_once(params).await;
-            record_header_retry(pool, upstream_name, &result);
-            result
+) -> impl Future<Output = Result<CallToolResponse, ServiceError>> + Send + 'a {
+    // Keep RPC/recovery state off caller polling stacks while retaining lazy
+    // dispatch and the existing cancellation guard and single retry contract.
+    Box::pin(async move {
+        match peer.call_tool_once(params.clone()).await {
+            Err(error) if is_tool_header_mismatch(&error) => {
+                record_header_mismatch(pool, upstream_name);
+                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                let result = peer.call_tool_once(params).await;
+                record_header_retry(pool, upstream_name, &result);
+                result
+            }
+            result => result,
         }
-        result => result,
-    }
+    })
 }
 
 /// [`call_tool_once_with_header_recovery`] whose RPC cancels upstream if the
 /// returned future is dropped before the response arrives.
-async fn call_tool_once_with_header_recovery_cancel_aware(
-    pool: &UpstreamPool,
-    peer: &Peer<RoleClient>,
-    upstream_name: &str,
+fn call_tool_once_with_header_recovery_cancel_aware<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    upstream_name: &'a str,
     params: CallToolRequestParams,
-) -> Result<CallToolResponse, ServiceError> {
-    match call_tool_once_cancel_aware(peer, upstream_name, params.clone()).await {
-        Err(error) if is_tool_header_mismatch(&error) => {
-            record_header_mismatch(pool, upstream_name);
-            refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = call_tool_once_cancel_aware(peer, upstream_name, params).await;
-            record_header_retry(pool, upstream_name, &result);
-            result
+) -> impl Future<Output = Result<CallToolResponse, ServiceError>> + Send + 'a {
+    // Keep RPC/recovery state off caller polling stacks while retaining lazy
+    // dispatch and the existing cancellation guard and single retry contract.
+    Box::pin(async move {
+        match call_tool_once_cancel_aware(peer, upstream_name, params.clone()).await {
+            Err(error) if is_tool_header_mismatch(&error) => {
+                record_header_mismatch(pool, upstream_name);
+                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                let result = call_tool_once_cancel_aware(peer, upstream_name, params).await;
+                record_header_retry(pool, upstream_name, &result);
+                result
+            }
+            result => result,
         }
-        result => result,
-    }
+    })
 }
 
-pub(super) async fn call_tool_with_header_recovery(
-    pool: &UpstreamPool,
-    peer: &Peer<RoleClient>,
-    upstream_name: &str,
+pub(super) fn call_tool_with_header_recovery<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    upstream_name: &'a str,
     params: CallToolRequestParams,
-) -> Result<CallToolResult, ServiceError> {
-    // Cancel-aware unconditionally: Code Mode reaches the pool through this
-    // helper and abandons the call future on cancellation
-    // (`labby-codemode/src/execute.rs`), so the guard is what stops the
-    // upstream — no token needs threading across the crate boundary.
-    match call_tool_cancel_aware(peer, upstream_name, params.clone()).await {
-        Err(error) if is_tool_header_mismatch(&error) => {
-            record_header_mismatch(pool, upstream_name);
-            refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = call_tool_cancel_aware(peer, upstream_name, params).await;
-            record_header_retry(pool, upstream_name, &result);
-            result
+) -> impl Future<Output = Result<CallToolResult, ServiceError>> + Send + 'a {
+    // Keep RPC/recovery state off caller polling stacks while retaining lazy
+    // dispatch and the existing cancellation guard and single retry contract.
+    Box::pin(async move {
+        // Cancel-aware unconditionally: Code Mode reaches the pool through this
+        // helper and abandons the call future on cancellation
+        // (`labby-codemode/src/execute.rs`), so the guard is what stops the
+        // upstream — no token needs threading across the crate boundary.
+        match call_tool_cancel_aware(peer, upstream_name, params.clone()).await {
+            Err(error) if is_tool_header_mismatch(&error) => {
+                record_header_mismatch(pool, upstream_name);
+                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                let result = call_tool_cancel_aware(peer, upstream_name, params).await;
+                record_header_retry(pool, upstream_name, &result);
+                result
+            }
+            result => result,
         }
-        result => result,
-    }
+    })
 }
 
 impl UpstreamPool {
@@ -535,7 +547,45 @@ mod tests {
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
     use super::super::testsupport::*;
     use super::super::{UpstreamConnection, UpstreamPool};
-    use super::CapabilityCallError;
+    use super::{
+        CapabilityCallError, UpstreamCapability, call_tool_once_with_header_recovery_cancel_aware,
+        call_tool_with_header_recovery,
+    };
+    use std::mem::size_of_val;
+
+    #[tokio::test]
+    async fn pooled_header_recovery_futures_are_heap_owned() {
+        let pool = slow_response_pool("bounded").await;
+        let peer = pool
+            .acquire_peer("bounded", UpstreamCapability::Tools, "test")
+            .await
+            .unwrap();
+        let complete = call_tool_with_header_recovery(
+            &pool,
+            &peer,
+            "bounded",
+            CallToolRequestParams::new("slow.tool"),
+        );
+        let once = call_tool_once_with_header_recovery_cancel_aware(
+            &pool,
+            &peer,
+            "bounded",
+            CallToolRequestParams::new("slow.tool"),
+        );
+        eprintln!(
+            "pooled RPC future bytes: complete={}, once={}",
+            size_of_val(&complete),
+            size_of_val(&once)
+        );
+        assert!(
+            size_of_val(&complete) < 4096,
+            "complete tool RPC state must stay heap-owned below admission"
+        );
+        assert!(
+            size_of_val(&once) < 4096,
+            "once tool RPC state must stay heap-owned below admission"
+        );
+    }
 
     #[tokio::test]
     async fn call_tool_times_out_slow_upstream_response() {

@@ -186,6 +186,21 @@ class ProductRoutingTests(unittest.TestCase):
         result = self.run_aggregate(context, **{"test-windows": "skipped"})
         self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
 
+    def test_auth_conformance_only_routes_its_frontend_prerequisite(self) -> None:
+        for fork in (False, True):
+            with self.subTest(fork=fork):
+                context = self.context("pull_request", fork, ["scripts/ci/test_auth_spec_matrix.py"])
+                self.assertEqual("true", context["needs.changes.outputs.rust_test"])
+                self.assertEqual("false", context["needs.changes.outputs.rust_compile"])
+                self.assertTrue(evaluate_condition(self.jobs["frontend-assets"].get("if"), context))
+                # A job with a skipped prerequisite never reaches its explicit
+                # condition. Both Windows and the fork lane need these assets.
+                lane = "test-fork" if fork else "test-windows"
+                self.assertIn("frontend-assets", self.jobs[lane]["needs"])
+                self.assertTrue(evaluate_condition(self.jobs[lane].get("if"), context))
+                result = self.run_aggregate(context, **{"frontend-assets": "skipped"})
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+
     def test_required_windows_installer_skip_fails_aggregate(self) -> None:
         context = self.context("pull_request", False, ["scripts/install.ps1"])
         result = self.run_aggregate(context, **{"windows-installer": "skipped"})

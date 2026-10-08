@@ -483,6 +483,22 @@ impl GatewayManager {
                         "gateway reconcile failed ({commit_error}); rollback reload failed ({rollback_error})"
                     )));
                 }
+                if let Some(pool) = self.current_pool_sync()
+                    && let Err(rollback_error) = pool.complete_task_config_revocation().await
+                {
+                    tracing::error!(
+                        surface = "dispatch",
+                        service = "gateway",
+                        action = "gateway.config.commit",
+                        event = "rollback.error",
+                        phase = "task_revocation",
+                        rollback_outcome = "failed",
+                        "gateway config rollback task revocation failed"
+                    );
+                    return Err(ToolError::internal_message(format!(
+                        "gateway reconcile failed ({commit_error}); rollback task revocation failed ({rollback_error})"
+                    )));
+                }
                 tracing::warn!(
                     surface = "dispatch",
                     service = "gateway",

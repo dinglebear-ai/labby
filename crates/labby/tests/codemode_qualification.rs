@@ -29,7 +29,7 @@ async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
     let execution = runner
         .execute(
             r#"async () => {
-      const hits = await codemode.search({query:"safe", limit:5});
+      const hits = await codemode.search({query:"safe", limit:5, kinds:["tool"]});
       const hit = hits.results.find((row) => row.path === "forge.forge_safe");
       if (!hit) throw new Error("literal forge.forge_safe discovery result missing");
       const docs = await codemode.describe(hit.path);
@@ -42,13 +42,13 @@ async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
     assert!(
         !execution.is_error,
         "qualification result: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"]["hit"],
         json!("forge.forge_safe"),
         "search result: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"]["described"],
@@ -113,7 +113,7 @@ async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
     assert!(
         !execution.is_error,
         "fanout top-level result must succeed: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"][0]["status"],
@@ -176,7 +176,7 @@ async fn q3_dependent_call_consumes_actual_first_result() {
     assert!(
         !execution.is_error,
         "dependent top-level result must succeed: {}",
-        execution.structured
+        execution.diagnostic()
     );
     let actual = execution.structured["result"]["actual"]
         .as_str()
@@ -261,7 +261,7 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
         execution.structured["result"]["fulfilled"],
         json!(9),
         "stress result: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"]["rejected"],
@@ -383,7 +383,7 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
     assert!(
         !execution.is_error,
         "output fixture failed: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(execution.structured["result"]["truncated"], json!(true));
     assert!(
@@ -510,7 +510,7 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     assert!(
         !execution.is_error,
         "queue response: {}",
-        execution.structured
+        execution.diagnostic()
     );
     let mut kinds = execution.structured["result"]
         .as_array()
@@ -523,7 +523,7 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
         kinds,
         vec!["queue_saturated", "timeout"],
         "queue trace: {}",
-        execution.structured
+        execution.diagnostic()
     );
     runner
         .fixture_settlement_barrier()

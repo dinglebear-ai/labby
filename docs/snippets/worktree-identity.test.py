@@ -4,11 +4,14 @@ from typing import Any
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location("identity",Path(__file__).with_name("worktree-identity.py"))
 identity=importlib.util.module_from_spec(spec)
@@ -52,6 +55,45 @@ class IdentityTest(unittest.TestCase):
     def test_reader_is_repository_owned(self) -> None:
         self.assertEqual(identity.HELPER.parent, Path(identity.__file__).parent)
         self.assertTrue(identity.HELPER.is_file())
+
+    def test_git_capture_overflow_terminates_and_reaps_writer(self) -> None:
+        fake = self.home / 'bin'
+        fake.mkdir()
+        # An unrelated PATH interpreter must never run this owned writer.
+        wrong_interpreter = fake / 'python3'
+        wrong_interpreter.write_text('#!/bin/sh\nexit 92\n')
+        wrong_interpreter.chmod(0o700)
+        pid_file = self.home / 'writer.pid'
+        program = fake / 'git'
+        # Run the fixture with this test's interpreter, avoiding PATH shims or
+        # toolchain activation consuming the product's unchanged 5s deadline.
+        program.write_text(f'#!{sys.executable}\nimport os,sys,time\n'
+                           'open(os.environ["WRITER_PID"],"w").write(str(os.getpid()))\n'
+                           'streams = [sys.stdout.buffer, sys.stderr.buffer] if os.environ["WRITER_STREAM"] == "both" else [sys.stdout.buffer if os.environ["WRITER_STREAM"] == "stdout" else sys.stderr.buffer]\n'
+                           'for stream in streams: stream.write(b"x" * ((192 if len(streams) == 2 else 512) * 1024)); stream.flush()\n'
+                           'time.sleep(30)\n')
+        program.chmod(0o700)
+        for stream in ('stdout', 'stderr', 'both'):
+            with self.subTest(stream=stream), patch.dict(os.environ, PATH=str(fake)+os.pathsep+os.environ['PATH'], WRITER_PID=str(pid_file), WRITER_STREAM=stream):
+                pid_file.unlink(missing_ok=True)
+                with self.assertRaises(self.reader.ContextError) as raised:
+                    self.reader.git(self.wt, 'status')
+                self.assertEqual(raised.exception.kind, 'git_output_budget', str(raised.exception))
+                pid = int(pid_file.read_text())
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+
+    def test_status_stream_preserves_rename_and_bounded_projection(self) -> None:
+        git(self.wt, 'mv', 'file', 'renamed')
+        for number in range(40):
+            (self.wt / f'untracked-{number:02}').write_text('fixture')
+        _, info = self.reader.repository_info(self.wt, None)
+        self.assertEqual(info['changes_count'], 41)
+        self.assertEqual(len(info['changes']), 30)
+        self.assertTrue(info['changes_truncated'])
+        self.assertEqual(info['changes'][0], {'status':'R ', 'path':'renamed', 'original_path':'file'})
+        raw = subprocess.run(['git', '-C', str(self.wt), 'status', '--porcelain=v1', '-z', '--untracked-files=normal'], check=True, capture_output=True).stdout
+        self.assertEqual(info['status_sha256'], self.reader.digest(raw))
 
     def test_symlink_dirty_many_sessions_and_redaction(self) -> None:
         alias=self.home/"alias"

@@ -1,6 +1,7 @@
 //! Response-budget truncation for Code Mode execution responses and log caps.
 
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 
 use super::artifacts::CodeModeArtifactReceipt;
 use super::types::CodeModeExecutionResponse;
@@ -165,6 +166,7 @@ fn result_marker(
     // Reuse one serialization across preview sizes, and probe in place so
     // large logs, UI payloads, and call metadata are never cloned per marker.
     let serialized = serde_json::to_string(&result).unwrap_or_else(|_| "null".to_string());
+    let preserved = preserved_result_receipt(&serialized, &response.artifacts);
     let original_len = serialized.len();
     let shaping = response.result_shaping.take();
     let mut selected = None;
@@ -175,6 +177,7 @@ fn result_marker(
             &response.artifacts,
             preview_bytes,
             compact,
+            preserved,
         );
         let marker_len = serde_json::to_vec(&marker).map_or(usize::MAX, |s| s.len());
         if marker_len >= original_len {
@@ -323,7 +326,27 @@ fn truncation_marker(
         artifacts,
         preview_bytes,
         compact,
+        preserved_result_receipt(&serialized, artifacts),
     )
+}
+
+fn preserved_result_receipt<'a>(
+    serialized: &str,
+    artifacts: &'a [CodeModeArtifactReceipt],
+) -> Option<&'a CodeModeArtifactReceipt> {
+    let mut candidates = artifacts.iter().filter(|receipt| {
+        receipt.path == "automatic/final-result.json"
+            && receipt.artifact_id.is_some()
+            && receipt.bytes == serialized.len()
+    });
+    let first = candidates.next()?;
+    // The path can be chosen by explicit writes. Verify broker-derived bytes
+    // and digest before claiming any receipt holds the complete returned JSON.
+    // Hash once across all preview probes, and only when a candidate exists.
+    let digest = hex::encode(Sha256::digest(serialized.as_bytes()));
+    std::iter::once(first)
+        .chain(candidates)
+        .find(|receipt| receipt.sha256 == digest)
 }
 
 fn truncation_marker_serialized(
@@ -332,6 +355,7 @@ fn truncation_marker_serialized(
     artifacts: &[CodeModeArtifactReceipt],
     preview_bytes: usize,
     compact: bool,
+    preserved: Option<&CodeModeArtifactReceipt>,
 ) -> Value {
     let preview = utf8_prefix_by_bytes(serialized, preview_bytes).to_string();
     let mut marker = json!({
@@ -352,10 +376,7 @@ fn truncation_marker_serialized(
             "Output only; execution already ran. Do not replay mutations. Omitted output is not cached. Use artifact receipts or a read-only query. For a stable resource, read its exact discovered URI, JSON.stringify the envelope, and return small slices without splitting UTF-16 surrogate pairs. Advance the offset by the returned chunk length until the total length is reached; lower the chunk size if needed."
         );
     }
-    if let Some(receipt) = artifacts
-        .iter()
-        .find(|r| r.path == "automatic/final-result.json" && r.artifact_id.is_some())
-    {
+    if let Some(receipt) = preserved {
         marker["preserved_result_artifact_id"] = json!(receipt.artifact_id);
         marker["next_action"] = json!(
             "Complete returned JSON saved in preserved_result_artifact_id. Read it with codemode.readArtifact(id, {offset, length}); offsets are UTF-8 bytes. Do not replay mutations. Artifact retention limits apply."

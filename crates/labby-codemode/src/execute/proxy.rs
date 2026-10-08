@@ -107,6 +107,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         scope: ToolScope,
         execution_id: Option<Arc<str>>,
         trace_context: Option<Arc<TraceContext>>,
+        artifact_run_id: String,
     ) -> Result<CodeModeExecutionResponse, CodeModeExecutionError> {
         // Cloudflare-parity: no typed TypeScript preamble is injected. The
         // sandbox exposes only `callTool(id, params)`; the agent uses tool ids
@@ -170,6 +171,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             snippet_max_bytes,
             execution_id,
             trace_context,
+            artifact_run_id,
         )
         .await
     }

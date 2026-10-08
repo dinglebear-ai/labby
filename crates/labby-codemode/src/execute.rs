@@ -188,6 +188,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             .into());
         }
         let started = std::time::Instant::now();
+        let artifact_run_id = ulid::Ulid::new().to_string();
+        let _active_artifact_run = crate::artifacts::ActiveArtifactRun::register(&artifact_run_id);
         let mut response = self
             .execute_sandboxed(
                 code,
@@ -201,6 +203,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 scope.clone(),
                 execution_id,
                 trace_context,
+                artifact_run_id.clone(),
             )
             .await?;
         // Surface any last-wins captured mcp-ui widget link. `{ __ui: <result> }`
@@ -216,9 +219,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             config.token_estimate_divisor,
         ) {
             if let Some(value) = response.result.as_ref() {
-                let run_id = ulid::Ulid::new().to_string();
-                let _active = crate::artifacts::ActiveArtifactRun::register(&run_id);
-                let root = crate::artifacts::code_mode_artifact_root(&run_id);
+                let root = crate::artifacts::code_mode_artifact_root(&artifact_run_id);
                 if let Some(receipt) = crate::response_artifacts::preserve(
                     &root,
                     "automatic/final-result.json".into(),

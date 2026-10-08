@@ -5,22 +5,18 @@ use labby_runtime::CodeModeResultShapePolicy;
 
 #[test]
 fn automatic_result_marker_points_to_complete_saved_json() {
+    let value = json!("x".repeat(100_000));
+    let serialized = serde_json::to_string(&value).unwrap();
     let receipt = CodeModeArtifactReceipt {
         artifact_id: Some("saved-id".into()),
         path: "automatic/final-result.json".into(),
         absolute_path: "hidden".into(),
         content_type: "application/json".into(),
-        bytes: 100_000,
-        sha256: "digest".into(),
+        bytes: serialized.len(),
+        sha256: hex::encode(Sha256::digest(serialized.as_bytes())),
     };
     for compact in [false, true] {
-        let marker = truncation_marker(
-            &json!("x".repeat(100_000)),
-            4,
-            std::slice::from_ref(&receipt),
-            512,
-            compact,
-        );
+        let marker = truncation_marker(&value, 4, std::slice::from_ref(&receipt), 512, compact);
         assert_eq!(marker["preserved_result_artifact_id"], "saved-id");
         assert!(
             marker["next_action"]
@@ -34,6 +30,40 @@ fn automatic_result_marker_points_to_complete_saved_json() {
                 .unwrap()
                 .contains("not cached")
         );
+    }
+}
+
+#[test]
+fn a_matching_final_result_path_requires_matching_bytes_digest_and_handle() {
+    let value = json!("x".repeat(100_000));
+    let serialized = serde_json::to_string(&value).unwrap();
+    let unrelated = serde_json::to_string(&json!("y".repeat(100_000))).unwrap();
+    let valid = CodeModeArtifactReceipt {
+        artifact_id: Some("saved-id".into()),
+        path: "automatic/final-result.json".into(),
+        absolute_path: "hidden".into(),
+        content_type: "application/json".into(),
+        bytes: serialized.len(),
+        sha256: hex::encode(Sha256::digest(serialized.as_bytes())),
+    };
+    let mut bad_digest = valid.clone();
+    bad_digest.sha256 = hex::encode(Sha256::digest(unrelated.as_bytes()));
+    let mut bad_bytes = valid.clone();
+    bad_bytes.bytes -= 1;
+    let mut legacy = valid;
+    legacy.artifact_id = None;
+    for receipt in [bad_digest, bad_bytes, legacy] {
+        for compact in [false, true] {
+            let marker = truncation_marker(&value, 4, std::slice::from_ref(&receipt), 0, compact);
+            assert!(marker.get("preserved_result_artifact_id").is_none());
+            assert!(
+                !marker["next_action"]
+                    .as_str()
+                    .unwrap()
+                    .contains("Complete returned JSON saved")
+            );
+            assert_eq!(marker["artifacts"].as_array().unwrap().len(), 1);
+        }
     }
 }
 

@@ -90,7 +90,8 @@ class TailcatWorkflowTests(unittest.TestCase):
                     ["bash", "-c", script], capture_output=True, text=True,
                     env={**os.environ, "TAILCAT_ROUTED": routed, "WEB_ROUTED": "false",
                          "WORKFLOW_ROUTED": "false", "RELEASE_ROUTED": "false",
-                         "RUST_TEST_ROUTED": "false", "EVENT_NAME": "pull_request",
+                         "RUST_COMPILE_ROUTED": "false", "RUST_TEST_ROUTED": "false",
+                         "DOCS_CHECK_ROUTED": "false", "EVENT_NAME": "pull_request",
                          "HEAD_REPOSITORY": "fixture/labby", "BASE_REPOSITORY": "fixture/labby"},
                 )
                 self.assertEqual(outcome.returncode, expected, outcome.stdout + outcome.stderr)

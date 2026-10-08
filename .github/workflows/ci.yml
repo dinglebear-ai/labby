@@ -418,6 +418,7 @@ jobs:
     if: >-
       ${{
         needs.changes.outputs.rust_compile == 'true' ||
+        needs.changes.outputs.rust_test == 'true' ||
         needs.changes.outputs.docs_check == 'true' ||
         needs.changes.outputs.web == 'true' ||
         needs.changes.outputs.release == 'true'
@@ -1806,6 +1807,8 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPOSITORY: ${{ github.repository }}
           RUST_TEST_ROUTED: ${{ needs.changes.outputs.rust_test }}
+          RUST_COMPILE_ROUTED: ${{ needs.changes.outputs.rust_compile }}
+          DOCS_CHECK_ROUTED: ${{ needs.changes.outputs.docs_check }}
           WEB_ROUTED: ${{ needs.changes.outputs.web }}
           TAILCAT_ROUTED: ${{ needs.changes.outputs.tailcat }}
           WORKFLOW_ROUTED: ${{ needs.changes.outputs.workflow }}
@@ -1844,7 +1847,11 @@ jobs:
             require_success_or_skipped windows-installer "${{ needs.windows-installer.result }}"
           fi
           require_success_or_skipped macos-installer "${{ needs.macos-installer.result }}"
-          require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
+          if [[ "$RUST_COMPILE_ROUTED" == true || "$RUST_TEST_ROUTED" == true || "$DOCS_CHECK_ROUTED" == true || "$WEB_ROUTED" == true || "$RELEASE_ROUTED" == true ]]; then
+            require_success frontend-assets "${{ needs.frontend-assets.result }}"
+          else
+            require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
+          fi
           if [[ "$WEB_ROUTED" == true ]]; then
             require_success gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           else

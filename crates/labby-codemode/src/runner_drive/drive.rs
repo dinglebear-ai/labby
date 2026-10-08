@@ -38,13 +38,13 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let mut settlement_watch: Option<SettlementWatch> = None;
         // Epoch for per-call start offsets (waterfall timing in the trace).
         let execution_start = std::time::Instant::now();
-        let artifact_run_id = Ulid::new().to_string();
-        let mut state = DriveState::new(&artifact_run_id);
+        let artifact_run_id = &cfg.artifact_run_id;
+        let mut state = DriveState::new(artifact_run_id);
         let mut saw_protocol_activity = false;
         // Mark this run active before any artifact dir exists, so a concurrent
         // run's first-write prune can never delete our directory mid-run. The
         // RAII guard clears the id on every exit path (including early returns).
-        let _active_artifact_run = ActiveArtifactRun::register(&artifact_run_id);
+        let _active_artifact_run = ActiveArtifactRun::register(artifact_run_id);
 
         // pending_tool_calls lives here (not in DriveState) so its lifetime is
         // tied to this async fn rather than being forced to 'static, allowing

@@ -6,6 +6,7 @@ use crate::pool::RunnerSpawn;
 
 pub(super) fn test_config(timeout: Duration) -> RunnerConfig {
     RunnerConfig {
+        artifact_run_id: Ulid::new().to_string(),
         code_to_run: "async () => 1".to_string(),
         proxy: String::new(),
         timeout,

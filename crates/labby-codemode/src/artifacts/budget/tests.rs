@@ -20,6 +20,14 @@ fn run(store: &Path) -> PathBuf {
     store.join(ulid::Ulid::new().to_string())
 }
 
+fn ordered_runs(store: &Path) -> (PathBuf, PathBuf) {
+    // Run protection is process-global. Each fixture needs distinct ids even
+    // though its filesystem store is isolated from concurrent fixtures.
+    let older = ulid::Ulid::new();
+    let newer = ulid::Ulid::from(u128::from(older) + 1);
+    (store.join(older.to_string()), store.join(newer.to_string()))
+}
+
 #[tokio::test]
 async fn repeated_writes_share_bytes_and_count_budgets() {
     let dir = tempfile::tempdir().unwrap();
@@ -172,8 +180,7 @@ async fn preexisting_over_budget_payloads_reject_even_empty_writes() {
 #[tokio::test]
 async fn pressure_reclaims_inactive_runs_after_routine_prune_was_coalesced() {
     let dir = tempfile::tempdir().unwrap();
-    let current = dir.path().join("00000000000000000000000001");
-    let old = dir.path().join("00000000000000000000000002");
+    let (current, old) = ordered_runs(dir.path());
     let _active = ActiveArtifactRun::register(current.file_name().unwrap().to_str().unwrap());
     write_with_limits(&current, "first", b"123", 10, 20, 10)
         .await
@@ -193,8 +200,7 @@ async fn pressure_reclaims_inactive_runs_after_routine_prune_was_coalesced() {
 #[tokio::test]
 async fn admission_reclaims_last_byte_for_store_sized_payload() {
     let dir = tempfile::tempdir().unwrap();
-    let inactive = dir.path().join("00000000000000000000000001");
-    let current = dir.path().join("00000000000000000000000002");
+    let (inactive, current) = ordered_runs(dir.path());
     std::fs::create_dir(&inactive).unwrap();
     std::fs::write(inactive.join("one-byte"), b"1").unwrap();
     write_with_limits(&current, "whole-budget", b"12345", 5, 10, 10)

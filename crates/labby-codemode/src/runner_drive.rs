@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+#[cfg(test)]
 use ulid::Ulid;
 
 use crate::CodeModeCallError;
@@ -204,6 +205,8 @@ type ToolCallFut<'a> = std::pin::Pin<
 /// Collecting these into a struct eliminates the 10-positional-argument call
 /// site (clippy `too_many_arguments`) and makes each field self-documenting.
 pub(crate) struct RunnerConfig {
+    /// Shared with final preservation by the execution orchestrator.
+    pub artifact_run_id: String,
     pub code_to_run: String,
     pub proxy: String,
     pub timeout: Duration,

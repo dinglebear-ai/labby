@@ -175,8 +175,11 @@ credential refresh retains mappings while retiring old peers. Failed durable
 revocation reports an error and quarantines further task routing in that store.
 Revocation intent is persisted before credential or configuration replacement.
 On restart, pending intent is replayed before routes become available; reopening
-fails if deletion still cannot complete. A failed configuration commit can leave
-task routing conservatively quarantined until reconciliation or restart. Task
+fails if deletion still cannot complete. A successful rollback completes the
+prepared revocation durably: affected mappings stay revoked, and unaffected task
+routing becomes available. Failed rollback restoration or revocation cleanup
+reports that failure and keeps task routing quarantined until successful
+reconciliation or restart. Task
 route schema version 3 migrates versions 1 and 2 without discarding unaffected routes;
 older binaries reject the new schema rather than reopening it unsafely.
 Before upgrading, retain a SQLite-consistent backup and check schema version,

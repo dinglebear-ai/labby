@@ -612,3 +612,6 @@ async fn routed_task_resolution_obeys_cancellation_and_deadline_while_sqlite_is_
         }
     }
 }
+
+#[path = "task_config_rollback_tests.rs"]
+mod config_rollback;

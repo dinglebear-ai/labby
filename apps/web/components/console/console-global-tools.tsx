@@ -5,8 +5,7 @@ import Link from 'next/link'
 import { Activity, ArrowUpRight, Bot, Brain, File, Folder, MessagesSquare, Paperclip, PanelRight, Send, Settings, Square, Terminal, X } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Button } from '@/components/ui/button'
-import { useBrowserSession } from '@/lib/auth/session'
-import { authorityIdentity } from '@/lib/auth/authority'
+import { getBrowserSessionContextIdentity, useBrowserSession } from '@/lib/auth/session'
 import { phoenixApi, phoenixSupports, type PhoenixAttachment, type PhoenixEvent, type PhoenixMessage, type PhoenixModel, type PhoenixSessionSummary, type PhoenixStatus } from '@/lib/api/phoenix-client'
 import { Textarea } from '@/components/ui/textarea'
 import { PhoenixRuntimeSummary, phoenixContextWindow, phoenixTotalTokens } from './phoenix-event-timeline'
@@ -23,7 +22,7 @@ export function PhoenixAvailability() {
   const shell = useOptionalConsoleShell()
   const setPhoenixDocked = shell?.setPhoenixDocked
   const session = useBrowserSession()
-  const identity = session.status === 'authenticated' ? authorityIdentity(session.authority) : session.status
+  const identity = getBrowserSessionContextIdentity()
   const [open, setOpen] = useState(false)
   const [status, setStatus] = useState<PhoenixStatus>()
   const [sessionId, setSessionId] = useState<string>()
@@ -80,6 +79,12 @@ export function PhoenixAvailability() {
     setSteering(false)
     setWorkflowNotice(undefined)
     setCopiedIndex(undefined)
+    setThreadHistory([])
+    setTitle('Phoenix')
+    setEditingTitle(false)
+    setThreadMenuOpen(false)
+    setNewThreadOnSend(false)
+    setLoadingDiagnostics(false)
     // Identity changes and unmount revoke pending work; layout changes do not.
     return () => { requestGenerationRef.current += 1 }
   }, [identity])
@@ -105,11 +110,13 @@ export function PhoenixAvailability() {
   }, [identity, open, session.status])
 
   useEffect(() => {
-    if (!open || status?.available !== true) return
+    if (!open || session.status !== 'authenticated' || status?.available !== true) return
     const controller = new AbortController()
-    void phoenixApi.list(controller.signal).then((result) => setThreadHistory(result.sessions ?? []), () => undefined)
+    void phoenixApi.list(controller.signal).then((result) => {
+      if (!controller.signal.aborted && identity === getBrowserSessionContextIdentity()) setThreadHistory(result.sessions ?? [])
+    }, () => undefined)
     return () => controller.abort()
-  }, [open, status?.available])
+  }, [identity, open, session.status, status?.available])
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
@@ -212,6 +219,8 @@ export function PhoenixAvailability() {
     const displayText = text || `Attached: ${outgoingAttachments.map((attachment) => attachment.name).join(', ')}`
     const requestGeneration = ++requestGenerationRef.current
     setSending(true)
+    setSteering(false)
+    setInterrupting(false)
     setError(undefined)
     setInput('')
     setAttachments([])

@@ -1,6 +1,7 @@
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 /** @type {import('next').NextConfig} */
@@ -34,6 +35,28 @@ export function resolveBuildId({
   return createFallbackId()
 }
 
+// Managed worktrees may reuse dependencies through a symlink outside the app.
+// Turbopack needs both the source and resolved dependencies inside its root.
+export function resolveTurbopackRoot(appDirectory, resolveDependencies = () => realpathSync(path.join(appDirectory, 'node_modules'))) {
+  let dependencies
+  try {
+    dependencies = resolveDependencies()
+  } catch (error) {
+    if (error?.code === 'ENOENT') return appDirectory
+    throw new Error('Cannot resolve Gateway Admin dependencies for Turbopack', { cause: error })
+  }
+  let root = path.resolve(appDirectory)
+  while (true) {
+    const relative = path.relative(root, dependencies)
+    if (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)) return root
+    const parent = path.dirname(root)
+    if (parent === root || parent === path.parse(parent).root) {
+      throw new Error('Gateway Admin source and linked dependencies require a filesystem-wide Turbopack root; use dependencies under a shared project directory')
+    }
+    root = parent
+  }
+}
+
 const buildId = resolveBuildId()
 const assetPrefix = process.env.LABBY_ASSET_PREFIX?.trim() || undefined
 
@@ -51,7 +74,7 @@ const nextConfig = {
   assetPrefix,
   generateBuildId: async () => buildId,
   turbopack: {
-    root: dirname,
+    root: resolveTurbopackRoot(dirname),
   },
   trailingSlash: true,
   allowedDevOrigins,

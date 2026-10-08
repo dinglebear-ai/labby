@@ -1,6 +1,6 @@
 //! Host-brokered artifact writes for Code Mode.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
@@ -122,9 +122,9 @@ async fn dir_size_bytes(path: PathBuf) -> u64 {
 /// while that run is still writing into it. Membership here makes a run's
 /// directory un-prunable for as long as it is executing — see
 /// [`ActiveArtifactRun`].
-fn active_runs() -> &'static Mutex<HashSet<String>> {
-    static ACTIVE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
+fn active_runs() -> &'static Mutex<HashMap<String, usize>> {
+    static ACTIVE: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    ACTIVE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Snapshot the currently-active run ids so a prune pass can exclude them.
@@ -132,10 +132,12 @@ pub(crate) fn active_artifact_runs_snapshot() -> HashSet<String> {
     active_runs()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+        .keys()
+        .cloned()
+        .collect()
 }
 
-/// RAII registration of an in-flight run id. Construct once per execution and
+/// RAII registration of an in-flight run id. Nested guards share ownership;
 /// hold it for the whole run; `Drop` removes the id so the directory becomes
 /// eligible for pruning only after the run has finished.
 pub(crate) struct ActiveArtifactRun {
@@ -144,10 +146,11 @@ pub(crate) struct ActiveArtifactRun {
 
 impl ActiveArtifactRun {
     pub(crate) fn register(run_id: &str) -> Self {
-        active_runs()
+        *active_runs()
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(run_id.to_string());
+            .entry(run_id.to_string())
+            .or_default() += 1;
         Self {
             run_id: run_id.to_string(),
         }
@@ -156,10 +159,13 @@ impl ActiveArtifactRun {
 
 impl Drop for ActiveArtifactRun {
     fn drop(&mut self) {
-        active_runs()
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.run_id);
+        let mut runs = active_runs().lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(owners) = runs.get_mut(&self.run_id) {
+            *owners -= 1;
+            if *owners == 0 {
+                runs.remove(&self.run_id);
+            }
+        }
     }
 }
 
@@ -478,3 +484,6 @@ fn has_windows_drive_prefix(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
+
+#[cfg(test)]
+mod active_guard_tests;
