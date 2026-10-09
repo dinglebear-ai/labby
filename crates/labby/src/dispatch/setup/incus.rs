@@ -1181,18 +1181,27 @@ fn write_materialized_file(path: &Path, content: &str, mode: u32) -> Result<(), 
 }
 
 fn resolve_sync_container(explicit: Option<&str>) -> Result<String, ToolError> {
+    resolve_sync_container_with_command(
+        explicit,
+        std::env::var("LABBY_INCUS_CONTAINER").ok().as_deref(),
+        &mut Command::new("incus"),
+    )
+}
+
+fn resolve_sync_container_with_command(
+    explicit: Option<&str>,
+    configured: Option<&str>,
+    command: &mut Command,
+) -> Result<String, ToolError> {
     if let Some(container) = explicit.filter(|value| !value.trim().is_empty()) {
         return Ok(container.to_string());
     }
-    if let Some(container) = std::env::var("LABBY_INCUS_CONTAINER")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    {
-        return Ok(container);
+    if let Some(container) = configured.filter(|value| !value.trim().is_empty()) {
+        return Ok(container.to_string());
     }
 
     let raw = command_stdout(
-        Command::new("incus")
+        command
             .arg("list")
             .arg("--format")
             .arg("csv")
@@ -1843,9 +1852,15 @@ fn command_stdout(
     sdk_kind: &'static str,
     context: &'static str,
 ) -> Result<String, ToolError> {
-    let output = output.map_err(|e| ToolError::Sdk {
-        message: format!("{context}: {e}"),
-        sdk_kind: sdk_kind.into(),
+    let output = output.map_err(|e| {
+        if e.kind() == "incus_client_missing" {
+            e
+        } else {
+            ToolError::Sdk {
+                message: format!("{context}: {e}"),
+                sdk_kind: sdk_kind.into(),
+            }
+        }
     })?;
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
@@ -2241,9 +2256,18 @@ fn command_output_with_timeout(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| ToolError::Sdk {
-            message: format!("failed to run command: {e}"),
-            sdk_kind: kind.into(),
+        .map_err(|e| {
+            if command.get_program() == "incus" && e.kind() == std::io::ErrorKind::NotFound {
+                ToolError::Sdk {
+                    message: "Incus client is not installed or not available on PATH".into(),
+                    sdk_kind: "incus_client_missing".into(),
+                }
+            } else {
+                ToolError::Sdk {
+                    message: format!("failed to run command: {e}"),
+                    sdk_kind: kind.into(),
+                }
+            }
         })?;
     let mut tree_guard = command_tree_guard(&mut child, kind)?;
     let stdout = child.stdout.take().expect("piped stdout");
@@ -2708,6 +2732,66 @@ fn run_bounded_target_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_incus_client_is_typed_without_losing_explicit_or_remote_targets() {
+        let empty_path = tempfile::tempdir().unwrap();
+        let mut command = Command::new("incus");
+        command.env("PATH", empty_path.path());
+        let error = resolve_sync_container_with_command(None, None, &mut command).unwrap_err();
+        assert_eq!(error.kind(), "incus_client_missing");
+        for target in ["labby", "remote:labby"] {
+            assert_eq!(
+                resolve_sync_container_with_command(Some(target), None, &mut command).unwrap(),
+                target
+            );
+            assert_eq!(
+                resolve_sync_container_with_command(None, Some(target), &mut command).unwrap(),
+                target
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_incus_client_keeps_discovery_and_list_failures() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let client = dir.path().join("incus");
+        for (script, expected) in [
+            ("printf 'labby,RUNNING\n'", Ok("labby")),
+            ("printf 'labby-remote,RUNNING\n'", Ok("labby-remote")),
+            ("exit 0", Err("incus_sync_container_discovery_failed")),
+            (
+                "printf 'permission denied' >&2; exit 1",
+                Err("incus_sync_list_failed"),
+            ),
+        ] {
+            std::fs::write(&client, format!("#!/bin/sh\n{script}\n")).unwrap();
+            std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let mut command = Command::new("incus");
+            command.env("PATH", dir.path());
+            let result = resolve_sync_container_with_command(None, None, &mut command);
+            match expected {
+                Ok(target) => assert_eq!(result.unwrap(), target),
+                Err(kind) => assert_eq!(result.unwrap_err().kind(), kind),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unusable_incus_client_is_not_treated_as_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let client = dir.path().join("incus");
+        std::fs::write(&client, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut command = Command::new("incus");
+        command.env("PATH", dir.path());
+        let error = resolve_sync_container_with_command(None, None, &mut command).unwrap_err();
+        assert_eq!(error.kind(), "incus_sync_list_failed");
+    }
 
     #[test]
     fn service_main_pid_accepts_only_numeric_systemd_output() {
