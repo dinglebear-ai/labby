@@ -2257,7 +2257,10 @@ fn command_output_with_timeout(
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| {
-            if command.get_program() == "incus" && e.kind() == std::io::ErrorKind::NotFound {
+            if command.get_program() == "incus"
+                && e.kind() == std::io::ErrorKind::NotFound
+                && incus_client_absent_from_path(command)
+            {
                 ToolError::Sdk {
                     message: "Incus client is not installed or not available on PATH".into(),
                     sdk_kind: "incus_client_missing".into(),
@@ -2304,6 +2307,37 @@ fn command_output_with_timeout(
         stdout_truncated: stdout.truncated,
         stderr_truncated: stderr.truncated,
     })
+}
+
+fn incus_client_absent_from_path(command: &Command) -> bool {
+    #[cfg(unix)]
+    {
+        // ENOENT can also mean an installed client's interpreter or dynamic
+        // loader is missing. Only soften the error when every PATH candidate
+        // is absent; a broken symlink or an unreadable entry stays an error.
+        let path = command
+            .get_envs()
+            .find_map(|(name, value)| (name == "PATH").then(|| value.map(OsString::from)))
+            .unwrap_or_else(|| std::env::var_os("PATH"));
+        let Some(path) = path else {
+            return false;
+        };
+        let cwd = command.get_current_dir().unwrap_or_else(|| Path::new("."));
+        if !cwd.is_dir() {
+            return false;
+        }
+        std::env::split_paths(&path).all(|directory| {
+            matches!(
+                std::fs::symlink_metadata(cwd.join(directory).join(command.get_program())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound
+            )
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+        true
+    }
 }
 
 fn read_output_tail(mut pipe: impl Read) -> std::io::Result<OutputTail> {
@@ -2791,6 +2825,30 @@ mod tests {
         command.env("PATH", dir.path());
         let error = resolve_sync_container_with_command(None, None, &mut command).unwrap_err();
         assert_eq!(error.kind(), "incus_sync_list_failed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incus_client_with_missing_interpreter_is_not_treated_as_missing() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let client = bin.join("incus");
+        let interpreter = dir.path().join("missing-interpreter");
+        std::fs::write(&client, format!("#!{}\n", interpreter.display())).unwrap();
+        std::fs::set_permissions(&client, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        for path in [bin.as_path(), Path::new("bin")] {
+            let mut command = Command::new("incus");
+            command.env("PATH", path).current_dir(dir.path());
+            assert_eq!(
+                command.spawn().unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            let error = resolve_sync_container_with_command(None, None, &mut command).unwrap_err();
+            assert_eq!(error.kind(), "incus_sync_list_failed");
+        }
     }
 
     #[test]
