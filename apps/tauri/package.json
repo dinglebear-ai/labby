@@ -15,6 +15,11 @@
     "vite:dev": "vite --host 127.0.0.1 --port 1420 --strictPort"
   },
   "type": "module",
-  "version": "2.6.0",
-  "license": "AGPL-3.0-only"
+  "version": "2.6.1",
+  "license": "AGPL-3.0-only",
+  "pnpm": {
+    "overrides": {
+      "source-map-js": "1.2.2"
+    }
+  }
 }
