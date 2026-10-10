@@ -2319,6 +2319,23 @@ fn incus_client_absent_from_path(command: &Command) -> bool {
             .get_envs()
             .find_map(|(name, value)| (name == "PATH").then(|| value.map(OsString::from)))
             .unwrap_or_else(|| std::env::var_os("PATH"));
+        // execvp still searches these native defaults when PATH is unset.
+        // Inspect them too so an absent client can be distinguished from an
+        // installed executable whose interpreter is missing.
+        let path = path.or_else(|| {
+            #[cfg(target_os = "macos")]
+            {
+                Some(OsString::from("/usr/bin:/bin"))
+            }
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            {
+                Some(OsString::from("/bin:/usr/bin"))
+            }
+            #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))]
+            {
+                None
+            }
+        });
         let Some(path) = path else {
             return false;
         };
@@ -2766,6 +2783,109 @@ fn run_bounded_target_jobs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    #[test]
+    fn unset_path_preserves_native_lookup_and_missing_client_classification() {
+        const CHILD: &str = "LABBY_TEST_UNSET_PATH_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "dispatch::setup::incus::tests::unset_path_preserves_native_lookup_and_missing_client_classification",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env_remove("PATH")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "unset-PATH child failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"),
+                "child must execute exactly the selected regression test"
+            );
+            return;
+        }
+        assert!(std::env::var_os("PATH").is_none());
+        let private = tempfile::tempdir().unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        let broken_client = private.path().join("incus");
+        std::fs::write(
+            &broken_client,
+            format!(
+                "#!{}\n",
+                private.path().join("absent-interpreter").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&broken_client, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut broken = Command::new(&broken_client);
+        broken.env_remove("PATH");
+        assert_eq!(
+            broken.spawn().unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert!(!incus_client_absent_from_path(&broken));
+        assert_eq!(
+            resolve_sync_container_with_command(None, None, &mut broken)
+                .unwrap_err()
+                .kind(),
+            "incus_sync_list_failed"
+        );
+        let basename = format!("labby-absent-client-{}", std::process::id());
+        for directory in ["/usr/bin", "/bin"] {
+            assert!(
+                matches!(std::fs::symlink_metadata(Path::new(directory).join(&basename)), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+            );
+        }
+        for remove_explicitly in [false, true] {
+            let mut missing = Command::new(&basename);
+            missing.current_dir(private.path());
+            if remove_explicitly {
+                missing.env_remove("PATH");
+            }
+            assert_eq!(
+                missing.spawn().unwrap_err().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            assert!(
+                incus_client_absent_from_path(&missing),
+                "native default PATH must classify an absent executable"
+            );
+
+            let mut present = Command::new("sh");
+            present.env_remove("PATH");
+            assert!(present.arg("-c").arg("exit 0").status().unwrap().success());
+            assert!(
+                !incus_client_absent_from_path(&present),
+                "native default PATH contains sh"
+            );
+
+            // Never contact an installed Incus client on developer machines.
+            // The native lookup directories are independently enumerated here.
+            let absent = ["/usr/bin/incus", "/bin/incus"].into_iter().all(|path| {
+                matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+            });
+            let mut incus = Command::new("incus");
+            incus.current_dir(private.path());
+            if remove_explicitly {
+                incus.env_remove("PATH");
+            }
+            if absent {
+                let error =
+                    resolve_sync_container_with_command(None, None, &mut incus).unwrap_err();
+                assert_eq!(error.kind(), "incus_client_missing");
+            } else {
+                assert!(!incus_client_absent_from_path(&incus));
+            }
+        }
+    }
 
     #[test]
     fn missing_incus_client_is_typed_without_losing_explicit_or_remote_targets() {
