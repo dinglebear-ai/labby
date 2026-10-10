@@ -107,6 +107,12 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.6.2](https://github.com/dinglebear-ai/labby/compare/v2.6.1...v2.6.2) (2026-10-10)
+
+### Fixed
+
+- **host update:** skip optional Incus synchronization when PATH is unset and the Incus client is absent from the operating system's default search path. Existing broken clients and explicitly selected local or remote containers remain strict.
+
 ## [2.6.1](https://github.com/dinglebear-ai/labby/compare/v2.6.0...v2.6.1) (2026-10-09)
 
 ### Fixed
