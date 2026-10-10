@@ -1,6 +1,6 @@
 {
   "name": "@dinglebear/labby-microsandbox",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "private": true,
   "type": "module",
   "description": "Experimental Microsandbox MCP adapter with identity-bound session cleanup",

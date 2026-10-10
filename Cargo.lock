@@ -3038,7 +3038,7 @@ dependencies = [
 
 [[package]]
 name = "labby"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3133,7 +3133,7 @@ dependencies = [
 
 [[package]]
 name = "labby-apis"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "futures",
  "jiff",
@@ -3155,7 +3155,7 @@ dependencies = [
 
 [[package]]
 name = "labby-auth"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -3195,7 +3195,7 @@ dependencies = [
 
 [[package]]
 name = "labby-browser"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "base64 0.23.0",
  "ed25519-dalek",
@@ -3217,7 +3217,7 @@ dependencies = [
 
 [[package]]
 name = "labby-codemode"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "anyhow",
  "futures",
@@ -3247,7 +3247,7 @@ dependencies = [
 
 [[package]]
 name = "labby-gateway"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3299,7 +3299,7 @@ dependencies = [
 
 [[package]]
 name = "labby-model"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -3309,7 +3309,7 @@ dependencies = [
 
 [[package]]
 name = "labby-openapi"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "futures",
  "labby-primitives",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "labby-primitives"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "base64 0.23.0",
  "getrandom 0.4.2",
@@ -3344,7 +3344,7 @@ dependencies = [
 
 [[package]]
 name = "labby-runtime"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "atomic-write-file",
  "base64 0.23.0",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "labby-tailcat"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "labby-gateway",
  "libc",
@@ -3387,7 +3387,7 @@ dependencies = [
 
 [[package]]
 name = "labby-web"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "tempfile",
  "thiserror 2.0.18",
@@ -3397,7 +3397,7 @@ dependencies = [
 
 [[package]]
 name = "labby-winjob"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "tempfile",
  "tracing",
@@ -8003,7 +8003,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "2.6.1"
+version = "2.6.2"
 dependencies = [
  "serde_json",
  "sha2 0.11.0",
