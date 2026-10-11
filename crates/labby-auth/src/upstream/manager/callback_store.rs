@@ -5,8 +5,12 @@ use rmcp::transport::auth::{
 use rmcp_client as rmcp;
 use std::{future::Future, pin::Pin, sync::Arc};
 
-type SaveFenceFuture = Pin<Box<dyn Future<Output = Result<Box<dyn Send>, AuthError>> + Send>>;
-pub type CredentialSaveFence = Arc<dyn Fn() -> SaveFenceFuture + Send + Sync>;
+/// Revalidate publication authority under the lifecycle writer and retain any
+/// credential persistence guard through revocation and replacement.
+pub type CredentialSaveValidation =
+    Pin<Box<dyn Future<Output = Result<Box<dyn Send>, AuthError>> + Send>>;
+pub type CredentialSaveFence =
+    Arc<dyn Fn(CredentialSaveValidation) -> CredentialSaveValidation + Send + Sync>;
 
 pub(super) struct FencedCredentialStore<S> {
     pub(super) inner: S,
@@ -60,7 +64,11 @@ impl<S: CredentialStore> CredentialStore for FencedCredentialStore<S> {
         Self: 'async_trait,
     {
         Box::pin(async move {
-            let _guard = (self.fence)().await?;
+            let _guard = (self.fence)(Box::pin(async {
+                let held: Box<dyn Send> = Box::new(());
+                Ok(held)
+            }))
+            .await?;
             self.inner.save(credentials).await
         })
     }
@@ -78,7 +86,7 @@ mod tests {
     async fn fence_failure_prevents_credential_replacement() {
         let store = FencedCredentialStore {
             inner: InMemoryCredentialStore::default(),
-            fence: Arc::new(|| {
+            fence: Arc::new(|_validate| {
                 Box::pin(async { Err(AuthError::InternalError("revocation unavailable".into())) })
             }),
         };
@@ -91,10 +99,11 @@ mod tests {
         let counter = calls.clone();
         let store = FencedCredentialStore {
             inner: InMemoryCredentialStore::default(),
-            fence: Arc::new(move || {
-                counter.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async {
-                    let held: Box<dyn Send> = Box::new(());
+            fence: Arc::new(move |validate| {
+                let counter = counter.clone();
+                Box::pin(async move {
+                    let held = validate.await?;
+                    counter.fetch_add(1, Ordering::SeqCst);
                     Ok(held)
                 })
             }),

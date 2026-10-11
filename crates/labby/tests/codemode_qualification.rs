@@ -18,7 +18,12 @@ use serde_json::json;
 
 #[tokio::test]
 async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
-    let limits = Limits::default();
+    // Discovery is a functional qualification that includes cold preparation.
+    // Dedicated deadline tests separately exercise the default timeout boundary.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");

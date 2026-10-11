@@ -11,8 +11,10 @@
 const DEFAULT_ARTIFACT_MAX_MIB: usize = 8;
 
 /// Default number of per-run artifact directories retained under
-/// `$LABBY_HOME/code-mode-artifacts/`. Old run directories are pruned during each artifact
-/// admission (never on search / no-write runs). Active runs remain protected. Override with `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS`;
+/// `$LABBY_HOME/code-mode-artifacts/`. Routine retention is coalesced per run;
+/// store-byte pressure triggers an additional pass during admission. Search and
+/// no-write runs do not prune, and active runs remain protected.
+/// Override with `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS`;
 /// set it to `0` to disable *count* pruning.
 const DEFAULT_ARTIFACT_RETENTION_RUNS: usize = 200;
 

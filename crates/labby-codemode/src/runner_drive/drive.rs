@@ -72,6 +72,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             let settlement_grace_timed_out = settlement_watch
                                 .is_some_and(|watch| watch.grace_limited)
                                 && pending_tool_calls.is_empty();
+                            pending_tool_calls.clear();
                             terminate_code_mode_runner(child, child_pid).await;
                             let error = if settlement_grace_timed_out {
                                 let settlement_watchdog_expiry_count =
@@ -106,11 +107,30 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     // `FramedRead::next()` yields `Option<Result<String, LinesCodecError>>`.
                     // `None` = EOF (runner crashed/exited); `Some(Err(_))` = I/O or line-too-long.
                     let Some(line_result) = line else {
-                        // EOF: the runner process died unexpectedly. Surface a
-                        // clean error and evict so a replacement spawns.
-                        let status = child.wait().await;
-                        stderr.flush_settle().await;
-                        let diagnostics = stderr.take_since_and_clear(stderr_start).await;
+                        // EOF does not prove process exit: a live child can close
+                        // stdout. Cancel host work immediately and bound the exit
+                        // wait by the same execution/settlement deadline.
+                        cancellation.cancel();
+                        pending_tool_calls.clear();
+                        let status = match tokio::time::timeout_at(read_deadline, child.wait()).await {
+                            Ok(Ok(status)) => status,
+                            Ok(Err(error)) => {
+                                terminate_code_mode_runner(child, child_pid).await;
+                                return DriveOutcome::RunnerUnhealthy(CodeModeExecutionError::with_trace(
+                                    ToolError::Sdk { sdk_kind: "server_error".into(), message: format!("failed to confirm Code Mode runner exit: {error}") },
+                                    sorted_calls(&state.calls),
+                                ));
+                            }
+                            Err(_) => {
+                                terminate_code_mode_runner(child, child_pid).await;
+                                // An unconfirmed exit is unhealthy, even before
+                                // protocol activity; never replay a live child.
+                                return DriveOutcome::RunnerUnhealthy(code_mode_timeout_error(&state.calls));
+                            }
+                        };
+                        drop(tokio::time::timeout_at(deadline, stderr.flush_settle()).await);
+                        let diagnostics = tokio::time::timeout_at(deadline, stderr.take_since_and_clear(stderr_start))
+                            .await.unwrap_or_default();
                         let diagnostics = labby_runtime::redact::sanitize_error_text(
                             &diagnostics.join("\n"),
                             512,
@@ -170,130 +190,20 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
 
                     match msg {
                         CodeModeRunnerOutput::ToolCall { seq, id, params } => {
-                            // Reserved host-internal pseudo-tool calls (see
-                            // `execute.rs`'s `LAB_INTERNAL_NAMESPACE`) are
-                            // exempt from the ordinary per-run call budget and
-                            // the call trace — but NOT from dispatch routing:
-                            // they still flow through the normal enqueue
-                            // path below so their promise settles normally.
-                            // They ARE metered separately: past
-                            // `MAX_INTERNAL_CALLS_PER_RUN` each internal call
-                            // settles fail-open with an empty "nothing found"
-                            // result shaped for whichever internal tool it is
-                            // (see `enqueue_internal_call_over_ceiling`) so
-                            // sandbox JS cannot loop them into unbounded
-                            // host round trips.
-                            let is_internal = id.starts_with("__lab_internal::");
-                            let call_ordinal = if is_internal {
-                                state.internal_calls_enqueued =
-                                    state.internal_calls_enqueued.saturating_add(1);
-                                None
-                            } else {
-                                state.calls_enqueued = state.calls_enqueued.saturating_add(1);
-                                Some(state.calls_enqueued.saturating_sub(1))
-                            };
-                            if is_internal
-                                && state.internal_calls_enqueued > MAX_INTERNAL_CALLS_PER_RUN
-                            {
-                                // Warn once per run, on the first over-ceiling
-                                // call only.
-                                if state.internal_calls_enqueued
-                                    == MAX_INTERNAL_CALLS_PER_RUN.saturating_add(1)
-                                {
-                                    tracing::warn!(
-                                        surface = "dispatch",
-                                        service = "code_mode",
-                                        action = "codemode",
-                                        kind = "internal_call_budget_exceeded",
-                                        budget = MAX_INTERNAL_CALLS_PER_RUN,
-                                        "Code Mode run exceeded the internal pseudo-tool call ceiling; settling further internal calls with the fail-open empty result"
-                                    );
-                                }
-                                enqueue_internal_call_over_ceiling(
-                                    seq,
-                                    id,
-                                    params,
-                                    cfg,
-                                    &mut pending_tool_calls,
-                                );
-                            } else if !is_internal && state.calls_enqueued > state.max_calls_per_run
-                            {
-                                if let Err(err) = reject_tool_call_over_budget(
-                                    seq,
-                                    id,
-                                    state.max_calls_per_run,
-                                    stdin,
-                                    child,
-                                    child_pid,
-                                    deadline,
-                                    &mut state,
-                                )
-                                .await
-                                {
-                                    return DriveOutcome::RunnerUnhealthy(err);
-                                }
-                            } else {
-                                match crate::local_provider::try_parse_local_provider_call(&id) {
-                                    Ok(Some(local)) => {
-                                        enqueue_local_provider_call(
-                                            self,
-                                            seq,
-                                            call_ordinal,
-                                            id,
-                                            local,
-                                            params,
-                                            execution_start,
-                                            cfg,
-                                            &mut pending_tool_calls,
-                                        );
-                                    }
-                                    Ok(None) => {
-                                        let now = tokio::time::Instant::now();
-                                        let tool_deadline = external_tool_deadline(
-                                            now,
-                                            deadline,
-                                            state.calls_enqueued,
-                                        );
-                                        if tool_deadline < deadline
-                                            && !state.result_ack_reserve_observed
-                                        {
-                                            state.result_ack_reserve_observed = true;
-                                            let result_ack_reserve_use_count =
-                                                record_result_ack_reserve_use();
-                                            tracing::debug!(
-                                                surface = "dispatch",
-                                                service = "code_mode",
-                                                action = "codemode.result_ack.reserve",
-                                                event = "armed",
-                                                reserve_ms = result_ack_reserve(state.calls_enqueued).as_millis(),
-                                                result_ack_reserve_use_count,
-                                                "reserved Code Mode result acknowledgement budget"
-                                            );
-                                        }
-                                        enqueue_tool_call(
-                                            self,
-                                            seq,
-                                            call_ordinal,
-                                            id,
-                                            params,
-                                            tool_deadline,
-                                            execution_start,
-                                            cfg,
-                                            &cancellation,
-                                            &mut pending_tool_calls,
-                                        );
-                                    }
-                                    Err(err) => {
-                                        enqueue_rejected_tool_call(
-                                            seq,
-                                            id,
-                                            params,
-                                            err,
-                                            cfg,
-                                            &mut pending_tool_calls,
-                                        );
-                                    }
-                                }
+                            if let Err(error) = handle_tool_call_event(
+                                self, seq, id, params, execution_start, cfg, deadline,
+                                &cancellation, &mut pending_tool_calls, stdin, child,
+                                child_pid, &mut state,
+                            ).await {
+                                cancellation.cancel();
+                                pending_tool_calls.clear();
+                                terminate_code_mode_runner(child, child_pid).await;
+                                return DriveOutcome::RunnerUnhealthy(error);
+                            }
+                            if pending_tool_calls.is_empty() {
+                                settlement_watch = Some(SettlementWatch::new(
+                                    tokio::time::Instant::now(), deadline,
+                                ));
                             }
                         }
                         CodeModeRunnerOutput::ArtifactWrite {
@@ -439,6 +349,8 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         // error or write-deadline expiry) — the runner is killed
                         // on the deadline path; evict so a replacement spawns.
                         cancellation.cancel();
+                        pending_tool_calls.clear();
+                        terminate_code_mode_runner(child, child_pid).await;
                         return DriveOutcome::RunnerUnhealthy(err);
                     }
                     if pending_tool_calls.is_empty()

@@ -427,6 +427,9 @@ pub struct UpstreamPool {
     /// Ephemeral live relay companions for tasks created by this pool generation.
     /// Durable routing/authorization metadata lives in task_route_store.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,
+    /// Fixed stripes single-flight cold task acquisition without holding the
+    /// upstream-wide definition gate across remote I/O. Warm sends bypass them.
+    task_connect_locks: [Arc<Mutex<()>>; 64],
     /// Durable public-to-native task routing metadata. This store never owns
     /// live peers, relay connections, access tokens, or secrets.
     task_route_store: Option<Arc<TaskRouteStore>>,
@@ -691,6 +694,7 @@ impl UpstreamPool {
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             task_routes: Arc::new(RwLock::new(HashMap::new())),
+            task_connect_locks: std::array::from_fn(|_| Arc::new(Mutex::new(()))),
             task_route_store: None,
             subject_sweep_task: Arc::new(RwLock::new(None)),
             runtime_origin: None,

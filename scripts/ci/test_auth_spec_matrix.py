@@ -6,7 +6,7 @@ from collections import Counter
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from scripts.ci import refresh_mcp_auth_denominator
+from scripts.ci import refresh_mcp_auth_denominator, refresh_openai_auth_denominator
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "tools/verification/conformance/auth-requirements.json"
@@ -16,6 +16,41 @@ OPENAI_NORMATIVE = ROOT / "tools/verification/conformance/openai-auth-normative.
 
 
 class AuthSpecificationMatrixTests(unittest.TestCase):
+    def test_openai_source_check_rejects_drift_and_missing_clauses_offline(self) -> None:
+        import hashlib
+        source = b"reviewed clause"
+        matrix = {
+            "source_sha256": hashlib.sha256(source).hexdigest(),
+            "requirements": [{"id": "fixture", "source_excerpt": "reviewed clause"}],
+        }
+        refresh_openai_auth_denominator.check_source(source, matrix)
+        with self.assertRaisesRegex(SystemExit, "guide drifted"):
+            refresh_openai_auth_denominator.check_source(b"unreviewed", matrix)
+        matrix["requirements"][0]["source_excerpt"] = "missing clause"
+        with self.assertRaisesRegex(SystemExit, "clause excerpt missing: fixture"):
+            refresh_openai_auth_denominator.check_source(source, matrix)
+
+    def test_openai_profile_clauses_have_explicit_conditional_dispositions(self) -> None:
+        data = json.loads(OPENAI_NORMATIVE.read_text())
+        rows = data["requirements"]
+        self.assertEqual([row["id"] for row in rows[:21]], [
+            f"OAI-CLAUSE-{number:03}" for number in range(1, 22)
+        ])
+        profile_rows = [row for row in rows if row.get("family") == "multi_account_profile"]
+        self.assertGreaterEqual(len(profile_rows), 10)
+        for row in profile_rows:
+            with self.subTest(row=row["id"]):
+                self.assertEqual(row["status"], "not_applicable")
+                self.assertEqual(row["applicability"], "not_applicable")
+                self.assertIsNone(row["verification_id"])
+                self.assertIn("openai/profile", row["applicability_condition"])
+                self.assertIn("does not designate", row["disposition"])
+                self.assertTrue(row["source_excerpt"])
+        self.assertEqual(data["profile_tool_declared"], False)
+        # Built-in declarations are the authority, not a profile-like tool name.
+        declarations = (ROOT / "crates/labby/src/mcp/permanent_tools.rs").read_text()
+        self.assertNotIn('"openai/profile"', declarations)
+
     def test_mcp_source_fetch_recovers_from_transient_network_failure(self) -> None:
         response = Mock()
         response.read.return_value = b"source"

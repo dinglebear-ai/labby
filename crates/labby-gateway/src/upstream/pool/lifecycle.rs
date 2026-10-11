@@ -73,6 +73,16 @@ impl UpstreamPool {
         Ok(())
     }
 
+    /// Called while the changed definitions' reconcile gates are held, directly
+    /// before a replacement pool is published. Late work holding the old pool
+    /// must fail its final binding check even after prepared intent is consumed.
+    pub(crate) fn fence_replaced_task_definitions(&self, upstreams: &HashSet<String>) {
+        for upstream in upstreams {
+            self.upstream_config_fingerprints.remove(upstream);
+            self.configured_upstreams.remove(upstream);
+        }
+    }
+
     pub(crate) async fn prepare_lazy_upstream_reconcile(
         &self,
         reconnect_names: &HashSet<String>,
@@ -115,7 +125,13 @@ impl UpstreamPool {
                 .collect::<Vec<_>>();
             ids.into_iter()
                 .filter_map(|id| tasks.remove(&id))
-                .map(|route| (route.record.upstream_name, route.connection._connection))
+                .flat_map(|route| {
+                    let name = route.record.upstream_name;
+                    route
+                        .companions
+                        .into_iter()
+                        .map(move |companion| (name.clone(), companion.connection._connection))
+                })
                 .collect::<Vec<_>>()
         };
         for upstream_name in reconnect_names {

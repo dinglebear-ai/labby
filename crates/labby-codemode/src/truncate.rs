@@ -72,8 +72,8 @@ pub(crate) fn truncate_execution_response(
     // oldest-first until within budget, keeping the newest lines that fit and
     // prepending a sentinel that records how many were dropped. Best-effort:
     // `calls[]` metadata alone can dominate a high fan-out run and is not
-    // trimmed here, so the loop terminates on logs-exhaustion rather than
-    // guaranteeing budget (see report — residual is a follow-up).
+    // trimmed here, so logs-exhaustion can still leave mandatory metadata over
+    // budget. Every candidate includes its sentinel before the fit decision.
     if !response.logs.is_empty()
         && !response_within_budget(
             &response,
@@ -105,9 +105,7 @@ pub(crate) fn truncate_execution_response(
 
         let mut candidate = Vec::with_capacity(original.len() - drop_count + 1);
         if drop_count > 0 {
-            candidate.push(format!(
-                "[logs truncated to fit response budget — {drop_count} line(s) dropped]"
-            ));
+            candidate.push(log_truncation_sentinel(drop_count));
         }
         candidate.extend_from_slice(&original[drop_count..]);
         response.logs = candidate;
@@ -200,21 +198,20 @@ fn result_marker(
     selected
 }
 
+fn log_truncation_sentinel(drop_count: usize) -> String {
+    format!("[logs truncated to fit response budget — {drop_count} line(s) dropped]")
+}
+
 /// Compute the minimum number of oldest log lines to drop so that the overall
 /// response fits within the byte/token budget.
 ///
 /// `response` must already have its `logs` emptied (the caller `take`s them
 /// into `original`). Contract: the returned drop count is the smallest `k`
-/// such that the response serialized with `original[k..]` as `logs` satisfies
-/// [`response_within_budget`] — identical to serializing each candidate, but
-/// derived arithmetically: `logs` is a mandatory `Vec<String>` field, so a
-/// response with `k` kept lines serializes to exactly
-/// `base_len + Σ len(line_i) + (k - 1)` bytes (`base_len` = the empty-logs
-/// serialization, `len` = the line's serialized JSON string length, `k - 1`
-/// commas; zero extra bytes when `k = 0`).
+/// such that the complete response, including a sentinel for nonzero `k`,
+/// satisfies [`response_within_budget`]. The empty-logs serialization already
+/// contains the brackets; add each serialized string and the array commas.
 ///
-/// Returns the drop count (0 = drop nothing, `total` = drop everything).
-/// The caller is responsible for prepending a sentinel when `drop_count > 0`.
+/// Returns `total` as best effort if even the sentinel-only candidate cannot fit.
 fn logs_drop_count(
     original: &[String],
     response: &CodeModeExecutionResponse,
@@ -235,7 +232,7 @@ fn logs_drop_count(
             && estimated_tokens(len, token_estimate_divisor) <= max_response_tokens.max(1)
     };
 
-    // Fast path: dropping everything still over budget → return total.
+    // Mandatory metadata alone cannot fit: dropping logs stays best effort.
     if !fits(base_len) {
         return total;
     }
@@ -254,18 +251,30 @@ fn logs_drop_count(
         .collect();
     let mut kept_sum: usize = line_lens.iter().sum();
 
-    // Walk drop counts in ascending order, shrinking the running suffix sum;
-    // the serialized length is monotonically non-increasing, so the first fit
-    // is the minimal drop count.
-    for (drop_count, line_len) in line_lens.iter().enumerate() {
+    // Test every complete candidate in order, including sentinel-only. Adding
+    // the first sentinel can grow the array, so do not assume monotonicity.
+    for drop_count in 0..=total {
         let kept = total - drop_count;
-        let commas = kept.saturating_sub(1);
-        if fits(base_len + kept_sum + commas) {
+        let (sentinel_bytes, commas) = if drop_count == 0 {
+            (0, kept.saturating_sub(1))
+        } else {
+            let sentinel = log_truncation_sentinel(drop_count);
+            (
+                serde_json::to_string(&sentinel).map_or(usize::MAX, |s| s.len()),
+                kept,
+            )
+        };
+        let candidate_bytes = base_len
+            .saturating_add(kept_sum)
+            .saturating_add(sentinel_bytes)
+            .saturating_add(commas);
+        if fits(candidate_bytes) {
             return drop_count;
         }
-        kept_sum -= line_len;
+        if let Some(line_len) = line_lens.get(drop_count) {
+            kept_sum -= line_len;
+        }
     }
-    // Only the empty-logs shape fits (already verified above).
     total
 }
 

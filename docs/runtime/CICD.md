@@ -6,7 +6,7 @@ updated: "2026-10-11"
 
 # CI/CD
 
-Last updated: 2026-09-30
+Last updated: 2026-10-11
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -26,6 +26,12 @@ receipt tests and its path-routing regression. Every file under
 `plugins/labby/.apm/skills/implement-in-microsandbox/` routes to that job, including
 scripts, tests, locks, and descriptors. These checks do not launch a microVM
 on CI.
+
+The required docs-check job directly executes
+`python3 docs/snippets/worktree-identity.test.py`. Its disposable Git/SQLite
+fixtures exercise the real Python readers independently of the snippet's mocked
+Bash responses. Changes to either reader or the test file route to this job;
+a suite failure fails docs-check and the required aggregate.
 
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,

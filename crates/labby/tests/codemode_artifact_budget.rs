@@ -161,3 +161,40 @@ async fn explicit_final_result_path_cannot_advertise_unrelated_returned_json() {
             .contains("Complete returned JSON saved")
     );
 }
+
+#[tokio::test]
+async fn public_artifact_writes_reject_reserved_metadata_aliases() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = serde_json::to_string(&[
+        ".labby-artifact-metadata/payload",
+        "./.labby-artifact-metadata/payload",
+        "././.labby-artifact-metadata/payload",
+        r".\.\.labby-artifact-metadata\payload",
+        ".//./.labby-artifact-metadata/payload",
+        ".LABBY-ARTIFACT-METADATA/payload",
+        "./.Labby-Artifact-Metadata/payload",
+        r".\.lAbBy-ArTiFaCt-MeTaDaTa\payload",
+    ])
+    .unwrap();
+    let code = format!(
+        r#"
+        const outcomes = [];
+        for (const path of {paths}) {{
+          try {{
+            await writeArtifact(path,"payload");
+            outcomes.push("published");
+          }} catch (error) {{
+            outcomes.push(JSON.parse(error.message).kind);
+          }}
+        }}
+        return outcomes;
+        "#
+    );
+    let response = execute(temp.path(), &code).await;
+    assert_eq!(
+        response["result"],
+        serde_json::json!(vec!["invalid_param"; 8])
+    );
+    assert!(response["artifacts"].as_array().is_none_or(Vec::is_empty));
+    assert!(!temp.path().join("code-mode-artifacts").exists());
+}

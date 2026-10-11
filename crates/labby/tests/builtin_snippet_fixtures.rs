@@ -174,6 +174,62 @@ async fn worktree_identity_verifies_the_linked_linear_workspace() {
 }
 
 #[tokio::test]
+async fn worktree_identity_bounds_errors_and_reports_attachment_coverage() {
+    let _product = PRODUCT_EXECUTION.lock().await;
+    let home = tempfile::tempdir().expect("isolated identity boundary home");
+    let builtin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/snippets");
+    for scenario in [
+        "huge-ascii-kind",
+        "huge-utf8-kind",
+        "nonstring-error-kind",
+        "thrown-huge-kind",
+        "local-error-kind",
+        "local-malformed-error",
+        "output-budget-utf8",
+        "attachment-complete",
+        "attachment-overflow",
+    ] {
+        let fixture_path = builtin.join(format!("worktree-identity.{scenario}.test.json"));
+        let fixture: SnippetFixture = serde_json::from_slice(
+            &std::fs::read(&fixture_path).expect("identity boundary fixture"),
+        )
+        .expect("valid fixture JSON");
+        fixture.validate().expect("bounded fixture");
+        // These fixtures carry their own params, including enrich=false for
+        // local-only coverage and UTF-8 fallback scenarios.
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::process::Command::new(env!("CARGO_BIN_EXE_labby"))
+                .args([
+                    "--json",
+                    "snippet",
+                    "test",
+                    "worktree-identity",
+                    "--fixture",
+                ])
+                .arg(&fixture_path)
+                .env_clear()
+                .env("HOME", home.path())
+                .env("LABBY_HOME", home.path())
+                .env("LABBY_CODE_MODE_RUNNER_BACKEND", "process")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .expect("bounded identity boundary scenario")
+        .expect("fixture CLI");
+        assert!(
+            output.status.success(),
+            "{scenario}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).expect("fixture JSON");
+        assert_eq!(report["passed"], true, "{scenario}: {report}");
+    }
+}
+
+#[tokio::test]
 async fn swallowed_synthetic_operation_errors_still_fail_fixture() {
     let _product = PRODUCT_EXECUTION.lock().await;
     let home = tempfile::tempdir().expect("isolated home");

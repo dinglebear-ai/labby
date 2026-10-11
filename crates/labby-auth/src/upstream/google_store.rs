@@ -17,6 +17,7 @@ use tracing::warn;
 use crate::google::{GoogleProvider, merge_google_scopes};
 use crate::sqlite::SqliteStore;
 use crate::types::{GoogleProviderCredentialRow, GoogleProviderCredentialUpdate};
+use crate::upstream::manager::{CredentialSaveFence, CredentialSaveValidation};
 use crate::upstream::types::OauthError;
 use crate::util::fingerprint;
 
@@ -35,6 +36,7 @@ pub struct GoogleProviderCredentialStore {
     required_scopes: Vec<String>,
     authorization_fence_epoch: Arc<AtomicI64>,
     refresh_attempt: Arc<std::sync::Mutex<Option<(String, i64)>>>,
+    callback_save_fence: Option<CredentialSaveFence>,
 }
 
 impl std::fmt::Debug for GoogleProviderCredentialStore {
@@ -65,7 +67,13 @@ impl GoogleProviderCredentialStore {
             required_scopes: normalize_scopes(required_scopes),
             authorization_fence_epoch: Arc::new(AtomicI64::new(-1)),
             refresh_attempt: Arc::new(std::sync::Mutex::new(None)),
+            callback_save_fence: None,
         }
+    }
+
+    pub(super) fn with_callback_fence(mut self, fence: CredentialSaveFence) -> Self {
+        self.callback_save_fence = Some(fence);
+        self
     }
 
     #[cfg(test)]
@@ -309,6 +317,15 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .token_response
                 .as_ref()
                 .ok_or(AuthError::AuthorizationRequired)?;
+            // Refresh responses may omit ID tokens; a fresh callback must prove
+            // the returned account before any destructive replacement fence.
+            if self.callback_save_fence.is_some()
+                && !token.extra_fields().0.get("id_token").is_some_and(|value| {
+                    value.as_str().is_some_and(|id_token| !id_token.is_empty())
+                })
+            {
+                return Err(AuthError::AuthorizationRequired);
+            }
             let existing = self
                 .credential_row()
                 .await
@@ -325,11 +342,14 @@ impl CredentialStore for GoogleProviderCredentialStore {
             {
                 return Err(AuthError::AuthorizationRequired);
             }
-            let _provider_guard = crate::google_refresh::lock(&subject).lock_owned().await;
             let observed_revocation_epoch = self.authorization_fence_epoch.load(Ordering::Acquire);
             if observed_revocation_epoch < 0 {
                 return Err(AuthError::AuthorizationRequired);
             }
+            let observed_generation = attempted
+                .as_ref()
+                .map(|(_, generation)| *generation)
+                .or_else(|| existing.as_ref().map(|row| row.generation));
             let existing = self
                 .store
                 .find_google_provider_credential(&subject)
@@ -378,10 +398,41 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 scope_upgraded,
             };
             let update_subject = update.subject.clone();
-            let observed_generation = attempted
-                .as_ref()
-                .map(|(_, generation)| *generation)
-                .or_else(|| existing.as_ref().map(|row| row.generation));
+            let database = self.store.clone();
+            let subject = update.subject.clone();
+            let client_id = self.expected_client_id.clone();
+            let validate_epoch =
+                self.callback_save_fence.is_some() || observed_generation.is_none();
+            let validate: CredentialSaveValidation = Box::pin(async move {
+                let guard = crate::google_refresh::lock(&subject).lock_owned().await;
+                let current = database
+                    .find_google_provider_credential(&subject)
+                    .await
+                    .map_err(|error| AuthError::InternalError(error.to_string()))?;
+                if current.as_ref().map(|row| row.generation) != observed_generation
+                    || current
+                        .as_ref()
+                        .is_some_and(|row| !row.client_id.is_empty() && row.client_id != client_id)
+                    || (validate_epoch
+                        && database
+                            .google_provider_fence_epoch()
+                            .await
+                            .map_err(|error| AuthError::InternalError(error.to_string()))?
+                            != observed_revocation_epoch)
+                {
+                    return Err(AuthError::AuthorizationRequired);
+                }
+                let held: Box<dyn Send> = Box::new(guard);
+                Ok(held)
+            });
+            // The lifecycle writer is acquired before the provider lock. All
+            // client/account/token validation and merge preparation precede the
+            // fence; its validation future rejects stale authority before routes
+            // are revoked, and both guards stay held through the CAS publication.
+            let _save_guard = match &self.callback_save_fence {
+                Some(fence) => fence(validate).await?,
+                None => validate.await?,
+            };
             let persisted = if let Some(generation) = observed_generation {
                 self.store
                     .replace_google_provider_token_bundle_if_generation(update, generation)
@@ -473,6 +524,9 @@ pub fn missing_scopes(required: &[String], granted: &[String]) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod callback_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -525,7 +579,7 @@ mod tests {
         .unwrap()
     }
 
-    fn provider() -> Arc<GoogleProvider> {
+    pub(super) fn provider() -> Arc<GoogleProvider> {
         Arc::new(
             GoogleProvider::new(
                 "google-client".to_string(),
@@ -536,7 +590,7 @@ mod tests {
         )
     }
 
-    async fn insert_bundle(store: &SqliteStore, scopes: Vec<String>) {
+    pub(super) async fn insert_bundle(store: &SqliteStore, scopes: Vec<String>) {
         let now = crate::util::now_unix();
         store
             .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {

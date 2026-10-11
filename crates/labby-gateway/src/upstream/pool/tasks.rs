@@ -10,13 +10,18 @@ use rmcp::{RoleClient, RoleServer};
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call_with_timeout;
+use super::capability_call::timed_task_call;
 use super::helpers::estimate_task_response_size;
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
-use super::relay_cache::RelayCachedConnection;
 use super::task_route::{TaskCallContext, TaskRouteAuthorization};
 use super::task_route_store::TaskRouteRecord;
 
+#[cfg(test)]
+#[path = "task_generation_tests.rs"]
+mod generation_tests;
+#[cfg(test)]
+#[path = "task_reconnect_regressions.rs"]
+mod reconnect_regressions;
 #[cfg(test)]
 #[path = "task_registration_tests.rs"]
 mod registration_tests;
@@ -24,6 +29,8 @@ mod registration_tests;
 #[path = "tasks_review_tests.rs"]
 mod review_tests;
 
+#[path = "task_companion.rs"]
+mod companion;
 #[path = "task_reconnect.rs"]
 mod reconnect;
 #[path = "task_registration.rs"]
@@ -32,7 +39,7 @@ const TASK_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 
 pub(super) struct TaskRoute {
     pub(super) record: TaskRouteRecord,
-    pub(super) connection: RelayCachedConnection,
+    pub(super) companions: Vec<companion::TaskCompanion>,
 }
 
 fn mint_task_handle() -> String {
@@ -54,7 +61,12 @@ fn task_not_found() -> String {
 fn prune_task_routes(routes: &mut std::collections::HashMap<String, TaskRoute>) {
     let now = jiff::Timestamp::now().as_millisecond();
     routes.retain(|_, route| {
-        !route.record.expired(now) && !route.connection.peer.is_transport_closed()
+        let expired = route.record.expired(now);
+        route.companions.retain(|companion| {
+            Arc::strong_count(&companion.invocations) > 1
+                || (!expired && !companion.connection.peer.is_transport_closed())
+        });
+        !route.companions.is_empty()
     });
 }
 
@@ -141,11 +153,13 @@ impl UpstreamPool {
         let count = removed.len();
         futures::future::join_all(removed.into_iter().map(|route| async move {
             let upstream_name = route.record.upstream_name;
-            route
-                .connection
-                ._connection
-                .shutdown(&upstream_name, reason)
-                .await
+            for companion in route.companions {
+                companion
+                    .connection
+                    ._connection
+                    .shutdown(&upstream_name, reason)
+                    .await;
+            }
         }))
         .await;
         tracing::debug!(
@@ -176,6 +190,7 @@ impl UpstreamPool {
             Peer<RoleClient>,
             TaskRouteRecord,
             Arc<super::relay::RelayRouteState>,
+            Arc<()>,
         ),
         String,
     > {
@@ -191,13 +206,13 @@ impl UpstreamPool {
             {
                 return Err(task_not_found());
             }
-            let (peer, relay_routes, handler) = self
+            let (peer, relay_routes, handler, invocation) = self
                 .acquire_task_companion(&record, downstream.clone(), context, start)
                 .await?;
             // Downstream rebinding does not hold a fleet-wide task map write lock.
             handler.rebind_downstream(downstream).await;
             self.check_task_binding(&record).await?;
-            Ok((peer, record, relay_routes))
+            Ok((peer, record, relay_routes, invocation))
         })
         .await
     }
@@ -229,7 +244,7 @@ impl UpstreamPool {
     ) -> Result<GetTaskResult, String> {
         let start = Instant::now();
         let gateway_task_id = params.task_id.clone();
-        let (peer, mut durable_route, relay_routes) = self
+        let (peer, mut durable_route, relay_routes, _invocation) = self
             .resolve_task_route(
                 &gateway_task_id,
                 caller_subject,
@@ -246,7 +261,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::task(&upstream_name, &gateway_task_id, "task.get");
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        let mut result = timed_capability_call_with_timeout(
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        let mut result = timed_task_call(
             self,
             self.request_timeout,
             &upstream_name,
@@ -262,6 +278,7 @@ impl UpstreamPool {
                         rmcp::model::ClientRequest::GetTaskRequest(
                             rmcp::model::GetTaskRequest::new(params),
                         ),
+                        &dispatched,
                     )
                     .await?
                 {
@@ -274,6 +291,7 @@ impl UpstreamPool {
             |error| reconnect::task_error(error, &upstream_name, "get"),
             format!("upstream `{upstream_name}` tasks/get timed out after {timeout_ms}ms"),
             Some(&context.cancellation),
+            &dispatched,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -334,7 +352,7 @@ impl UpstreamPool {
         if params.task_id != gateway_task_id {
             return Err(task_not_found());
         }
-        let (peer, durable_route, relay_routes) = self
+        let (peer, durable_route, relay_routes, _invocation) = self
             .resolve_task_route(
                 gateway_task_id,
                 caller_subject,
@@ -355,7 +373,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::task(&upstream_name, gateway_task_id, "task.update");
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_with_timeout(
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        timed_task_call(
             self,
             self.request_timeout,
             &upstream_name,
@@ -371,6 +390,7 @@ impl UpstreamPool {
                         rmcp::model::ClientRequest::UpdateTaskRequest(
                             rmcp::model::UpdateTaskRequest::new(params),
                         ),
+                        &dispatched,
                     )
                     .await?
                 {
@@ -384,6 +404,7 @@ impl UpstreamPool {
             |error| reconnect::task_error(error, &upstream_name, "update"),
             format!("upstream `{upstream_name}` tasks/update timed out after {timeout_ms}ms"),
             Some(&context.cancellation),
+            &dispatched,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -441,7 +462,7 @@ impl UpstreamPool {
         if params.task_id != gateway_task_id {
             return Err(task_not_found());
         }
-        let (peer, durable_route, relay_routes) = self
+        let (peer, durable_route, relay_routes, _invocation) = self
             .resolve_task_route(
                 gateway_task_id,
                 caller_subject,
@@ -460,7 +481,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::task(&upstream_name, gateway_task_id, "task.cancel");
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_with_timeout(
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        timed_task_call(
             self,
             self.request_timeout,
             &upstream_name,
@@ -476,6 +498,7 @@ impl UpstreamPool {
                         rmcp::model::ClientRequest::CancelTaskRequest(
                             rmcp::model::CancelTaskRequest::new(params),
                         ),
+                        &dispatched,
                     )
                     .await?
                 {
@@ -489,6 +512,7 @@ impl UpstreamPool {
             |error| reconnect::task_error(error, &upstream_name, "cancel"),
             format!("upstream `{upstream_name}` tasks/cancel timed out after {timeout_ms}ms"),
             Some(&context.cancellation),
+            &dispatched,
         )
         .await
         .map_err(|error| error.to_string())?;
@@ -546,6 +570,9 @@ pub(in crate::upstream::pool) mod tests {
         publication_gate: Arc<Mutex<Option<Arc<Mutex<()>>>>>,
         publication_holder: Arc<Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>>,
         response_ready: Arc<tokio::sync::Notify>,
+        pub(in crate::upstream::pool) hold_mutations: Arc<std::sync::atomic::AtomicBool>,
+        pub(in crate::upstream::pool) mutation_entered: Arc<tokio::sync::Notify>,
+        pub(in crate::upstream::pool) mutation_release: Arc<tokio::sync::Notify>,
     }
 
     impl TaskServer {
@@ -598,6 +625,13 @@ pub(in crate::upstream::pool) mod tests {
         ) -> Result<(), ErrorData> {
             self.hold_publication_before_response().await;
             self.updates.lock().await.push(request.task_id);
+            if self
+                .hold_mutations
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.mutation_entered.notify_one();
+                self.mutation_release.notified().await;
+            }
             Ok(())
         }
 
@@ -608,6 +642,13 @@ pub(in crate::upstream::pool) mod tests {
         ) -> Result<(), ErrorData> {
             self.hold_publication_before_response().await;
             self.cancellations.lock().await.push(request.task_id);
+            if self
+                .hold_mutations
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.mutation_entered.notify_one();
+                self.mutation_release.notified().await;
+            }
             Ok(())
         }
     }
@@ -630,6 +671,17 @@ pub(in crate::upstream::pool) mod tests {
         task_pool_with_store(None).await
     }
 
+    pub(in crate::upstream::pool) async fn task_pool_with_capabilities(
+        capabilities: ClientCapabilities,
+    ) -> (
+        UpstreamPool,
+        TaskServer,
+        RunningService<RoleServer, DownstreamServer>,
+        super::super::relay_cache::RelayCacheKey,
+    ) {
+        task_pool_fixture(None, capabilities).await
+    }
+
     async fn task_pool_with_store(
         usage_store: Option<Arc<crate::usage::UsageStore>>,
     ) -> (
@@ -639,7 +691,18 @@ pub(in crate::upstream::pool) mod tests {
         super::super::relay_cache::RelayCacheKey,
     ) {
         let capabilities = ClientCapabilities::builder().enable_tasks().build();
+        task_pool_fixture(usage_store, capabilities).await
+    }
 
+    async fn task_pool_fixture(
+        usage_store: Option<Arc<crate::usage::UsageStore>>,
+        capabilities: ClientCapabilities,
+    ) -> (
+        UpstreamPool,
+        TaskServer,
+        RunningService<RoleServer, DownstreamServer>,
+        super::super::relay_cache::RelayCacheKey,
+    ) {
         let (downstream_server_transport, downstream_client_transport) =
             tokio::io::duplex(64 * 1024);
         let mut downstream_client_info = ClientInfo::default();

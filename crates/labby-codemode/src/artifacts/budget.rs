@@ -16,10 +16,13 @@ pub(super) const MAX_RUN_FILES: u64 = 256;
 struct Usage {
     bytes: u64,
     files: u64,
+    // Populated only for whole-store scans. Each ULID directory is sized once
+    // in that same traversal; non-run content still contributes to total bytes.
+    runs: Vec<(String, u64)>,
 }
 
-// Unlike retention's best-effort walk, admission fails closed on unreadable
-// paths. Metadata is bounded separately and is not artifact payload usage.
+// Shared payload classification for admission and retention. Metadata is
+// bounded separately; unreadable payload paths fail closed.
 async fn usage(root: &Path, store: bool) -> Result<Usage, ToolError> {
     #[cfg(test)]
     if store {
@@ -30,8 +33,8 @@ async fn usage(root: &Path, store: bool) -> Result<Usage, ToolError> {
             .or_default() += 1;
     }
     let mut usage = Usage::default();
-    let mut stack = vec![(root.to_path_buf(), !store)];
-    while let Some((path, is_run)) = stack.pop() {
+    let mut stack = vec![(root.to_path_buf(), !store, None)];
+    while let Some((path, is_run, run_index)) = stack.pop() {
         let mut entries = match tokio::fs::read_dir(&path).await {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound && path == root => continue,
@@ -43,21 +46,34 @@ async fn usage(root: &Path, store: bool) -> Result<Usage, ToolError> {
             }
             let kind = entry.file_type().await.map_err(accounting_error)?;
             if kind.is_dir() {
-                let child_is_run = store
-                    && path == root
-                    && entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| ulid::Ulid::from_string(name).is_ok());
-                stack.push((entry.path(), child_is_run));
+                let name = entry.file_name();
+                let run_name = name
+                    .to_str()
+                    .filter(|name| store && path == root && ulid::Ulid::from_string(name).is_ok());
+                let child_index = if let Some(name) = run_name {
+                    let index = usage.runs.len();
+                    usage.runs.push((name.to_owned(), 0));
+                    Some(index)
+                } else {
+                    run_index
+                };
+                stack.push((entry.path(), run_name.is_some(), child_index));
             } else if kind.is_file() {
                 let metadata = entry.metadata().await.map_err(accounting_error)?;
                 usage.bytes = usage.bytes.saturating_add(metadata.len());
                 usage.files = usage.files.saturating_add(1);
+                if let Some(index) = run_index {
+                    let bytes = &mut usage.runs[index].1;
+                    *bytes = bytes.saturating_add(metadata.len());
+                }
             }
         }
     }
     Ok(usage)
+}
+
+pub(super) async fn run_payload_bytes(root: &Path) -> Result<u64, ToolError> {
+    usage(root, false).await.map(|usage| usage.bytes)
 }
 
 fn accounting_error(error: std::io::Error) -> ToolError {
@@ -89,6 +105,25 @@ async fn admit_with_limits(
     max_store_bytes: u64,
     max_run_bytes: u64,
     max_run_files: u64,
+) -> Result<(), ToolError> {
+    admit_with_retention(
+        root,
+        bytes,
+        max_store_bytes,
+        max_run_bytes,
+        max_run_files,
+        super::artifact_retention_runs(),
+    )
+    .await
+}
+
+async fn admit_with_retention(
+    root: &Path,
+    bytes: usize,
+    max_store_bytes: u64,
+    max_run_bytes: u64,
+    max_run_files: u64,
+    retain: usize,
 ) -> Result<(), ToolError> {
     let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
     let current = usage(root, false).await?;
@@ -127,12 +162,7 @@ async fn admit_with_limits(
     let under_pressure = max_store_bytes > 0
         && (stored_before > max_store_bytes
             || bytes > max_store_bytes.saturating_sub(stored_before));
-    let prune = super::prune_artifact_runs_locked(
-        store,
-        super::artifact_retention_runs(),
-        pruning_budget,
-        &active,
-    );
+    let prune = super::prune_artifact_runs_locked(store, retain, pruning_budget, &active);
     let reconciled = if under_pressure {
         prune.await;
         reclaim_inactive(store, max_store_bytes.saturating_sub(bytes), &active).await?;
@@ -166,31 +196,37 @@ async fn reclaim_inactive(
     budget: u64,
     active: &std::collections::HashSet<String>,
 ) -> Result<(), ToolError> {
-    if usage(store, true).await?.bytes <= budget {
+    let inventory = usage(store, true).await?;
+    if inventory.bytes <= budget {
         return Ok(());
     }
-    let mut entries = tokio::fs::read_dir(store).await.map_err(accounting_error)?;
-    let mut eligible = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(accounting_error)? {
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if ulid::Ulid::from_string(&name).is_ok()
-            && !active.contains(&name)
-            && entry.file_type().await.map_err(accounting_error)?.is_dir()
-        {
-            eligible.push(name);
-        }
+    let mut eligible: Vec<_> = inventory
+        .runs
+        .into_iter()
+        .filter(|(name, _)| !active.contains(name))
+        .collect();
+    let reclaimable = eligible
+        .iter()
+        .map(|(_, bytes)| *bytes)
+        .fold(0, u64::saturating_add);
+    if inventory.bytes.saturating_sub(reclaimable) > budget {
+        return Err(quota_error(
+            "Code Mode artifact store has no byte budget available; active and non-run outputs are retained",
+        ));
     }
-    eligible.sort();
-    for name in eligible {
+    eligible.sort_by(|(left, _), (right, _)| left.cmp(right));
+    let mut remaining = inventory.bytes;
+    for (name, bytes) in eligible {
+        if remaining <= budget {
+            break;
+        }
         tokio::fs::remove_dir_all(store.join(name))
             .await
             .map_err(accounting_error)?;
-        if usage(store, true).await?.bytes <= budget {
-            break;
-        }
+        remaining = remaining.saturating_sub(bytes);
     }
+    // These totals select candidates only. The caller rescans the whole store
+    // before admitting bytes, so external changes cannot cause overbooking.
     Ok(())
 }
 

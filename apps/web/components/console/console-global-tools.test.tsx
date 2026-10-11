@@ -743,6 +743,76 @@ for (const transition of ['thread', 'identity', 'read failure'] as const) {
   })
 }
 
+for (const completion of ['after batched A-B-A rerender', 'before batched A-B-A rerender'] as const) {
+  for (const fails of [false, true]) {
+    test(`Phoenix discards an obsolete attachment ${fails ? 'failure' : 'success'} ${completion}`, async () => {
+      const authenticated = (sub: string) => ({ status: 'authenticated' as const, user: { sub }, projectId: `project-${sub}`, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
+      __setBrowserSessionStateForTests(authenticated('A'))
+      const originalFetch = globalThis.fetch
+      const originalReader = globalThis.FileReader
+      const pending: Array<(fails: boolean) => void> = []
+      class DeferredReader extends window.FileReader {
+        override readAsDataURL() {
+          pending.push((fails) => {
+            if (fails) {
+              this.onerror?.(new window.ProgressEvent('error') as unknown as ProgressEvent<FileReader>)
+              return
+            }
+            Object.defineProperty(this, 'result', { configurable: true, value: 'data:text/plain;base64,cHJpdmF0ZQ==' })
+            this.onload?.(new window.ProgressEvent('load') as unknown as ProgressEvent<FileReader>)
+          })
+        }
+      }
+      globalThis.FileReader = DeferredReader
+      globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const { action } = JSON.parse(String(init?.body)) as { action: string }
+        return new Response(JSON.stringify(action === 'phoenix.status' ? { available: true } : action === 'phoenix.models.list' ? { models: [] } : { sessions: [] }))
+      }) as typeof fetch
+      const { PhoenixAvailability } = await import('./console-global-tools.tsx')
+      const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+      const view = await renderClient(<PhoenixAvailability />)
+      const selectFile = async (name: string) => {
+        const picker = document.querySelector<HTMLInputElement>('[aria-label="Attach image or file"]')!
+        assert.ok(picker)
+        Object.defineProperty(picker, 'files', { configurable: true, value: [new window.File(['private'], name, { type: 'text/plain' })] })
+        await act(async () => picker.dispatchEvent(new window.Event('change', { bubbles: true })))
+      }
+      try {
+        await act(async () => view.container.querySelector<HTMLButtonElement>('[aria-label="Ask Phoenix"]')!.click())
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)) })
+        await selectFile('obsolete.txt')
+        assert.equal(pending.length, 1)
+        await act(async () => {
+          __setBrowserSessionStateForTests(authenticated('B'))
+          __setBrowserSessionStateForTests(authenticated('A'))
+          if (completion === 'before batched A-B-A rerender') {
+            pending[0](fails)
+            // Drain the reader continuation before any render/effect can revoke its generation.
+            await new Promise(resolve => setTimeout(resolve, 0))
+          }
+          await view.rerender(<PhoenixAvailability />)
+        })
+        if (completion === 'after batched A-B-A rerender') {
+          await act(async () => { pending[0](fails); await new Promise(resolve => setTimeout(resolve, 0)) })
+        }
+        assert.equal(document.querySelector('[aria-label="Phoenix attachments"]'), null)
+        assert.doesNotMatch(document.body.textContent ?? '', /could not read the selected attachments/)
+
+        await selectFile('current.txt')
+        assert.equal(pending.length, 2)
+        await act(async () => { pending[1](false); await new Promise(resolve => setTimeout(resolve, 0)) })
+        assert.match(document.querySelector('[aria-label="Phoenix attachments"]')?.textContent ?? '', /current\.txt/)
+        assert.doesNotMatch(document.body.textContent ?? '', /obsolete\.txt|could not read the selected attachments/)
+      } finally {
+        await view.unmount()
+        globalThis.fetch = originalFetch
+        globalThis.FileReader = originalReader
+        __setBrowserSessionStateForTests({ status: 'unauthenticated' })
+      }
+    })
+  }
+}
+
 test('Phoenix ignores a rename failure after opening another conversation', async () => {
   __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf' })
   const originalFetch = globalThis.fetch

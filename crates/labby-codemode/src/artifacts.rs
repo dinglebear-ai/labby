@@ -13,16 +13,17 @@ use ulid::Ulid;
 use crate::error::ToolError;
 use crate::util::{lab_home, redact_home};
 use labby_runtime::path_safety::reject_existing_symlink_ancestors;
-use labby_runtime::path_safety::reject_path_traversal;
 
 const DEFAULT_CONTENT_TYPE: &str = "text/plain";
 mod budget;
 mod config;
+mod path;
 mod publication;
 pub use config::install_artifact_config_defaults;
 pub(crate) use config::{artifact_max_bytes, artifact_max_store_bytes, artifact_retention_runs};
 mod read;
 mod retention;
+use path::normalize_artifact_path;
 pub use read::read_receipted_artifact;
 
 /// Upper bound on the `content_type` metadata string.
@@ -86,32 +87,6 @@ fn artifact_store_root() -> PathBuf {
 #[must_use]
 pub(crate) fn code_mode_artifact_root(run_id: &str) -> PathBuf {
     artifact_store_root().join(run_id)
-}
-
-/// Best-effort recursive byte size of a directory. Symlinks are not followed
-/// (`file_type()` does not traverse them), so the count can never wander outside
-/// the store. Unreadable entries are skipped — this only feeds a retention
-/// heuristic, never a correctness decision.
-async fn dir_size_bytes(path: PathBuf) -> u64 {
-    let mut total: u64 = 0;
-    let mut stack = vec![path];
-    while let Some(dir) = stack.pop() {
-        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
-            continue;
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            match entry.file_type().await {
-                Ok(ft) if ft.is_dir() => stack.push(entry.path()),
-                Ok(ft) if ft.is_file() => {
-                    if let Ok(meta) = entry.metadata().await {
-                        total = total.saturating_add(meta.len());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    total
 }
 
 /// Process-global set of run ids whose execution is still in flight.
@@ -252,13 +227,21 @@ async fn prune_artifact_runs_locked(
     // decision loop below.
     let sizes: Vec<u64> = if byte_pruning {
         const SIZE_WALK_CONCURRENCY: usize = 8;
-        stream::iter(newest_first.iter().cloned().map(|name| {
+        let measured: Vec<_> = stream::iter(newest_first.iter().cloned().map(|name| {
             let path = store_root.join(name);
-            async move { dir_size_bytes(path).await }
+            async move { budget::run_payload_bytes(&path).await }
         }))
         .buffered(SIZE_WALK_CONCURRENCY)
         .collect()
-        .await
+        .await;
+        // Retention uses admission's payload classification. If sizing fails,
+        // skip this best-effort pass rather than delete from incomplete totals;
+        // authoritative admission still fails closed on unreadable storage.
+        let Ok(sizes) = measured.into_iter().collect::<Result<Vec<_>, _>>() else {
+            tracing::debug!("code-mode artifact retention: cannot size run payloads");
+            return;
+        };
+        sizes
     } else {
         Vec::new()
     };
@@ -315,7 +298,9 @@ pub(crate) async fn write_code_mode_artifact(
     max_bytes: usize,
 ) -> Result<CodeModeArtifactReceipt, ToolError> {
     let rel_path = normalize_artifact_path(&request.path)?;
-    if rel_path.split('/').next() == Some(crate::artifact_access::METADATA_DIR) {
+    if rel_path.split('/').next().is_some_and(|component| {
+        component.eq_ignore_ascii_case(crate::artifact_access::METADATA_DIR)
+    }) {
         return Err(ToolError::InvalidParam {
             message: "artifact path uses a reserved metadata directory".into(),
             param: "path".into(),
@@ -435,54 +420,6 @@ fn is_content_type_token_char(byte: u8) -> bool {
             byte,
             b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-'
         )
-}
-
-fn normalize_artifact_path(raw: &str) -> Result<String, ToolError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(ToolError::InvalidParam {
-            message: "artifact path must be a non-empty relative path".to_string(),
-            param: "path".to_string(),
-        });
-    }
-    // Normalize Windows-style separators to `/` BEFORE the lexical guards below.
-    // On Unix a backslash is an ordinary filename byte, so `a\..\..\etc\evil`
-    // would pass `is_absolute`/`reject_path_traversal` as a single innocent
-    // component and only afterwards (when the receipt path is built) turn into
-    // real `../` separators that escape the jail. Converting first makes the
-    // guards see exactly the separators the filesystem will.
-    let normalized = trimmed.replace('\\', "/");
-    if is_rooted_or_drive_absolute(&normalized) {
-        return Err(ToolError::InvalidParam {
-            message: "artifact path must be a relative path".to_string(),
-            param: "path".to_string(),
-        });
-    }
-    reject_path_traversal(&normalized)?;
-    Ok(normalized)
-}
-
-/// Cross-platform "is this artifact path rooted or absolute?" check.
-///
-/// `Path::is_absolute()` is platform-dependent: on Windows a POSIX-rooted path
-/// like `/etc/evil` (or `\etc\evil`, which we normalize to `/etc/evil`) is NOT
-/// absolute because it lacks a drive prefix, so it would slip past the guard and
-/// only later be caught — with the wrong error kind — by `reject_path_traversal`.
-/// We operate on the already-`\`->`/`-normalized string so the rule is identical
-/// on every OS: reject a leading `/`, a Windows drive prefix (`C:`), or anything
-/// the current platform already considers absolute.
-fn is_rooted_or_drive_absolute(normalized: &str) -> bool {
-    normalized.starts_with('/')
-        || has_windows_drive_prefix(normalized)
-        || Path::new(normalized).is_absolute()
-}
-
-/// True when the path begins with a Windows drive-letter prefix such as `C:` —
-/// covering both drive-absolute (`C:/foo`) and drive-relative (`C:foo`) forms,
-/// neither of which is a valid jailed relative artifact path on any platform.
-fn has_windows_drive_prefix(path: &str) -> bool {
-    let bytes = path.as_bytes();
-    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 #[cfg(test)]

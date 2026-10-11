@@ -171,7 +171,13 @@ creation. Each invocation supplies its current client capabilities, cancellation
 and deadline budget. Durable owner/route/configuration checks fence submission
 and response publication. Credential revocation and configuration replacement
 delete affected mappings, including routes with no live companion; same-owner
-credential refresh retains mappings while retiring old peers. Failed durable
+credential refresh retains mappings while retiring old peers. Shared Google
+callbacks validate the client, signed ID token, verified email and configured
+account before replacement can revoke routes. Epoch and generation authority
+are rechecked under the lifecycle writer and provider persistence lock. Rejected
+identity or stale authority performs no callback-owned credential replacement or
+task revocation.
+Failed durable
 revocation reports an error and quarantines further task routing in that store.
 Revocation intent is persisted before credential or configuration replacement.
 On restart, pending intent is replayed before routes become available; reopening
@@ -296,6 +302,21 @@ service advertises the canonical OAuth scope, and every action's admin
 requirement is checked against its `ActionSpec` before dispatch. A newly
 inventoried route, registered service, or action therefore fails CI until its
 authentication exposure is explicitly classified.
+
+[`openai-auth-normative.json`](../../tools/verification/conformance/openai-auth-normative.json)
+records the reviewed 2026-10-11 guide digest and 34 stable clause dispositions.
+The original 21 clause IDs retain their evidence. Thirteen additional
+multi-account/profile clauses are explicitly conditional: Labby does not
+designate a built-in tool with `_meta["openai/profile"]: true`, so their profile
+identity, schema, declaration and response obligations are marked not applicable,
+rather than passing implementation claims. The guide allows multiple connections
+without a profile tool; this optional feature is not required for OAuth linking.
+If Labby designates such a tool later, those dispositions must be reconsidered
+and backed by behavioral evidence for credential scoping and stable identity.
+`refresh_openai_auth_denominator.py --check` still fetches the live guide in CI
+and rejects any digest or retained-clause drift. `--source-file <captured-guide>`
+applies the same checks offline to reviewed bytes; it does not establish that the
+live guide is unchanged or execute the requirement-specific auth suites.
 
 The independently generated
 [`tools/verification/conformance/mcp-auth-normative.json`](../../tools/verification/conformance/mcp-auth-normative.json)

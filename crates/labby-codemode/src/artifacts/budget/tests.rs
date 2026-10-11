@@ -237,3 +237,94 @@ async fn coalesced_retention_uses_one_authoritative_store_scan_per_write() {
         "budget_exceeded"
     );
 }
+
+#[tokio::test]
+async fn admission_retains_payload_that_fits_when_metadata_does_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let (inactive, current) = ordered_runs(dir.path());
+    let metadata = inactive.join(crate::artifact_access::METADATA_DIR);
+    std::fs::create_dir_all(&metadata).unwrap();
+    std::fs::write(inactive.join("payload"), b"123456789").unwrap();
+    std::fs::write(metadata.join("receipt"), b"internal metadata").unwrap();
+    write_with_limits(&current, "new", b"0", 10, 10, 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        std::fs::read(inactive.join("payload")).unwrap(),
+        b"123456789"
+    );
+    assert!(metadata.join("receipt").exists());
+    assert_eq!(usage(dir.path(), true).await.unwrap().bytes, 10);
+}
+
+#[tokio::test]
+async fn retention_counts_nested_metadata_names_as_payload() {
+    let dir = tempfile::tempdir().unwrap();
+    let inactive = run(dir.path());
+    let nested = inactive
+        .join("nested")
+        .join(crate::artifact_access::METADATA_DIR);
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::write(nested.join("payload"), b"123456").unwrap();
+    let _reservation = STORE_MUTATION.lock().await;
+    crate::artifacts::prune_artifact_runs_locked(dir.path(), 0, 5, &Default::default()).await;
+    assert!(!inactive.exists());
+}
+
+#[tokio::test]
+async fn impossible_pressure_has_constant_store_scans_and_preserves_outputs() {
+    for inactive_count in [1, 32] {
+        let dir = tempfile::tempdir().unwrap();
+        let current = run(dir.path());
+        std::fs::create_dir(&current).unwrap();
+        std::fs::write(current.join("active"), b"a").unwrap();
+        let _active = ActiveArtifactRun::register(current.file_name().unwrap().to_str().unwrap());
+        std::fs::write(dir.path().join("operator-file"), vec![0; 100]).unwrap();
+        let mut inactive = Vec::new();
+        for _ in 0..inactive_count {
+            let path = run(dir.path());
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("payload"), b"x").unwrap();
+            inactive.push(path);
+        }
+        let _reservation = STORE_MUTATION.lock().await;
+        // Disable count pruning directly, without process-global env mutation.
+        let admission = admit_with_retention(&current, 1, 100, 100, 100, 0).await;
+        if admission.is_ok() {
+            crate::artifacts::publication::publish(&current.join("new"), b"n")
+                .await
+                .unwrap();
+        }
+        let error = admission.unwrap_err();
+        assert_eq!(error.kind(), "budget_exceeded");
+        assert!(store_scan_counts().lock().unwrap()[dir.path()] <= 3);
+        assert!(!current.join("new").exists());
+        assert_eq!(std::fs::read(current.join("active")).unwrap(), b"a");
+        assert_eq!(
+            std::fs::metadata(dir.path().join("operator-file"))
+                .unwrap()
+                .len(),
+            100
+        );
+        assert!(inactive.iter().all(|path| path.join("payload").exists()));
+    }
+}
+
+#[tokio::test]
+async fn exact_reclamation_uses_inventory_and_keeps_an_authoritative_final_check() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut inactive = Vec::new();
+    for _ in 0..8 {
+        let path = run(dir.path());
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("payload"), b"x").unwrap();
+        inactive.push(path);
+    }
+    let _reservation = STORE_MUTATION.lock().await;
+    reclaim_inactive(dir.path(), 0, &Default::default())
+        .await
+        .unwrap();
+    assert_eq!(store_scan_counts().lock().unwrap()[dir.path()], 1);
+    assert!(inactive.iter().all(|path| !path.exists()));
+    assert_eq!(usage(dir.path(), true).await.unwrap().bytes, 0);
+}

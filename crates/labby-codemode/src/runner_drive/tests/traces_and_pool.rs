@@ -276,16 +276,19 @@ async fn call_ordinal_and_trace_context_align_with_fan_out_response_order() {
     }
 
     let script = r#"
-exec 3<&0
-cat <&3 >/dev/null &
-printf '{"type":"tool_call","seq":10,"id":"stub::slow","params":{}}
-'
-printf '{"type":"tool_call","seq":11,"id":"stub::fast","params":{}}
-'
-sleep 1
-printf '{"type":"done"}
-'
-sleep 3600
+IFS= read -r _
+printf '%s\n' '{"type":"artifact_write","seq":5,"path":"first.txt","content":"first"}'
+printf '%s\n' '{"type":"tool_call","seq":10,"id":"stub::slow","params":{}}'
+printf '%s\n' '{"type":"tool_call","seq":11,"id":"__lab_internal::describe_types","params":{"id":"absent::tool"}}'
+printf '%s\n' '{"type":"artifact_write","seq":12,"path":"second.txt","content":"second"}'
+printf '%s\n' '{"type":"tool_call","seq":13,"id":"stub::fast","params":{}}'
+i=0
+while [ "$i" -lt 5 ]; do
+  IFS= read -r _ || exit 21
+  i=$((i+1))
+done
+printf '%s\n' '{"type":"done"}'
+IFS= read -r _
 "#;
     let recorded: Arc<StdMutex<Recorded>> = Arc::new(StdMutex::new(HashMap::new()));
     let host = RecordingCallHost {
@@ -294,6 +297,7 @@ sleep 3600
     };
     let broker = CodeModeBroker::new(Some(&host));
     let mut cfg = test_config(Duration::from_secs(30));
+    cfg.capability_filter = ToolScope::default().read_only();
     cfg.execution_id = Some(Arc::<str>::from("exec_fanout"));
     cfg.trace_context = Some(Arc::new(TraceContext::fresh(0).expect("trace context")));
     let expected_trace_id = cfg
@@ -322,11 +326,20 @@ sleep 3600
             .iter()
             .map(|call| call.id.as_str())
             .collect::<Vec<_>>(),
-        vec!["stub::slow", "stub::fast"],
+        vec![
+            ARTIFACT_WRITE_CALL_ID,
+            "stub::slow",
+            ARTIFACT_WRITE_CALL_ID,
+            "stub::fast"
+        ],
         "final calls remain in runner seq order even when fast settles first"
     );
     let recorded = recorded.lock().expect("recorded mutex");
     for (ordinal, call) in response.calls.iter().enumerate() {
+        if call.id == ARTIFACT_WRITE_CALL_ID {
+            assert_eq!(call.error_kind.as_deref(), Some("forbidden"));
+            continue;
+        }
         let (seen_ordinal, execution_id, trace_id) =
             recorded.get(&call.id).expect("recorded host call");
         assert_eq!(*seen_ordinal, Some(ordinal as u64));

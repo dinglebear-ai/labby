@@ -3,6 +3,7 @@
 from typing import Any
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location("identity",Path(__file__).with_name("worktree-identity.py"))
@@ -134,6 +136,15 @@ class IdentityTest(unittest.TestCase):
         self.assertTrue(out["ok"])
         self.assertEqual(out["identity"]["head"],self.head)
         self.assertEqual(out["sessions"]["coverage"]["reason"],"metadata_read_failed")
+        class LegacyConnection:
+            closed = False
+            def close(connection): connection.closed = True
+        legacy = LegacyConnection()
+        with patch.object(identity.sqlite3, "connect", return_value=legacy):
+            out = self.run_identity()
+        self.assertEqual(out["identity"]["head"], self.head)
+        self.assertEqual(out["sessions"]["coverage"]["reason"], "metadata_byte_limit_unavailable")
+        self.assertTrue(legacy.closed)
     def test_git_only_is_candidate_not_path_ownership(self) -> None:
         self.c.execute("UPDATE threads SET cwd=?",(str(self.home/"old-deleted-name"),))
         self.c.commit()
@@ -189,12 +200,21 @@ class IdentityTest(unittest.TestCase):
                 self.assertTrue(out["ok"])
                 self.assertTrue(out["sessions"]["coverage"]["malformed_metadata"])
                 self.assertEqual(out["identity"]["head"], self.head)
+        # Small byte size does not imply shallow JSON. Metadata parser failures
+        # must retain the separately established Git identity too.
+        self.c.execute("DELETE FROM thread_attachments")
+        nested = '{"worktree":{"root":' + json.dumps(str(self.wt)) + '},"pullRequests":' + '[' * 1200 + '0' + ']' * 1200 + '}'
+        self.c.execute("INSERT INTO thread_attachments VALUES(?,?,?,?)", ("deep", self.sid, "archived_worktree", nested))
+        self.c.commit()
+        out = self.run_identity()
+        self.assertTrue(out["sessions"]["coverage"]["malformed_metadata"])
+        self.assertEqual(out["identity"]["head"], self.head)
 
     def test_nullable_metadata_and_invalid_cursor_types(self) -> None:
         self.c.execute("UPDATE threads SET cwd=NULL,git_origin_url=NULL,git_branch=NULL")
         self.c.commit()
         self.assertEqual(self.run_identity()["sessions"]["verified"], [])
-        for cursor in (None, 0, False, [], {}):
+        for cursor in (None, 0, False, [], {}, "-" * 36, "a" * 36):
             with self.subTest(cursor=cursor):
                 with self.assertRaises(self.reader.ContextError):
                     self.run_identity(session_cursor=cursor)
@@ -205,5 +225,169 @@ class IdentityTest(unittest.TestCase):
         self.assertFalse(self.run_identity()["sessions"]["coverage"]["available"])
         for values in ({"session_limit":0},{"session_cursor":"bad"},{"path":"relative"},{"extra":"command"}):
             with self.assertRaises(self.reader.ContextError):self.run_identity(**values)
+
+    def test_sqlite_byte_limit_precedes_queries(self) -> None:
+        connect = sqlite3.connect
+        seen = []
+        class AdmissionConnection(sqlite3.Connection):
+            def execute(connection, sql, parameters=()):
+                seen.append(connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH))
+                return super().execute(sql, parameters)
+        with patch.object(identity.sqlite3, "connect", side_effect=lambda *a, **kw: connect(*a, **kw, factory=AdmissionConnection)):
+            out = self.run_identity()
+        self.assertTrue(out["sessions"]["coverage"]["available"])
+        self.assertTrue(seen)
+        self.assertTrue(all(value <= 65536 for value in seen), seen)
+
+    def test_attachment_admission_precedes_python_rows_and_json(self) -> None:
+        connect = sqlite3.connect
+        observed = []
+        class ProjectionCursor(sqlite3.Cursor):
+            def fetchall(cursor):
+                rows = super().fetchall()
+                for row in rows:
+                    for value in row:
+                        if isinstance(value, str):
+                            observed.append(len(value.encode("utf-8")))
+                return rows
+        class ProjectionConnection(sqlite3.Connection):
+            def execute(connection, sql, parameters=()):
+                return connection.cursor(factory=ProjectionCursor).execute(sql, parameters)
+        loads = json.loads
+        parsed_sizes = []
+        def bounded_loads(value, *args, **kwargs):
+            if isinstance(value, str): parsed_sizes.append(len(value.encode("utf-8")))
+            return loads(value, *args, **kwargs)
+        for padding in ("x" * 17000, "é" * 9000):
+            with self.subTest(bytes=len(padding.encode("utf-8"))):
+                payload = json.dumps({"root": str(self.wt), "url": "https://github.com/example/repo/pull/9", "padding": padding}, ensure_ascii=False)
+                self.c.execute("DELETE FROM thread_attachments")
+                self.c.execute("INSERT INTO thread_attachments VALUES(?,?,?,?)", ("a", self.sid, "pull_request", payload))
+                self.c.commit()
+                observed.clear(); parsed_sizes.clear()
+                with patch.object(identity.sqlite3, "connect", side_effect=lambda *a, **kw: connect(*a, **kw, factory=ProjectionConnection)), patch.object(identity.json, "loads", side_effect=bounded_loads):
+                    out = self.run_identity()
+                self.assertTrue(out["ok"])
+                self.assertEqual(out["identity"]["head"], self.head)
+                self.assertTrue(out["sessions"]["coverage"]["malformed_metadata"])
+                self.assertTrue(all(size <= 16384 for size in observed), observed)
+                self.assertTrue(all(size <= 16000 for size in parsed_sizes), parsed_sizes)
+                self.assertNotIn(9, [p["number"] for p in out["hints"]["pull_requests"]])
+        self.c.execute("DELETE FROM thread_attachments")
+        self.c.commit()
+        originals = {"cwd": str(self.wt), "git_branch": "feature/LAB-123", "git_origin_url": "https://token@github.com/example/repo.git"}
+        for field in ("cwd", "git_branch", "git_origin_url"):
+            with self.subTest(thread_field=field):
+                self.c.execute(f"UPDATE threads SET {field}=?", ("é" * 9000,))
+                self.c.commit()
+                observed.clear()
+                with patch.object(identity.sqlite3, "connect", side_effect=lambda *a, **kw: connect(*a, **kw, factory=ProjectionConnection)):
+                    out = self.run_identity()
+                self.assertTrue(out["sessions"]["coverage"]["malformed_metadata"])
+                self.assertTrue(all(size <= 16384 for size in observed), observed)
+                self.assertEqual(out["identity"]["head"], self.head)
+                self.c.execute(f"UPDATE threads SET {field}=?", (originals[field],))
+                self.c.commit()
+
+    def test_oversized_root_attachment_is_not_json_parsed(self) -> None:
+        connect = sqlite3.connect
+        loads = json.loads
+        seen = []
+        def json_valid(value):
+            if value is None: return 0
+            seen.append(len(value.encode("utf-8")))
+            try: loads(value); return 1
+            except ValueError: return 0
+        def json_extract(value, field):
+            if value is None: return None
+            seen.append(len(value.encode("utf-8")))
+            obj = loads(value)
+            return obj.get("root") if field == "$.root" else None
+        def monitored_connect(*args, **kwargs):
+            connection = connect(*args, **kwargs)
+            connection.create_function("json_valid", 1, json_valid)
+            connection.create_function("json_extract", 2, json_extract)
+            return connection
+        self.c.execute("UPDATE threads SET cwd=?,git_sha=NULL,git_branch=NULL,git_origin_url=NULL", (str(self.home / "elsewhere"),))
+        for padding in ("x" * 17000, "é" * 9000):
+            with self.subTest(bytes=len(padding.encode("utf-8"))):
+                self.c.execute("DELETE FROM thread_attachments")
+                self.c.execute("INSERT INTO thread_attachments VALUES(?,?,?,?)", ("a", self.sid, "worktree", json.dumps({"root": str(self.wt), "padding": padding}, ensure_ascii=False)))
+                self.c.commit(); seen.clear()
+                with patch.object(identity.sqlite3, "connect", side_effect=monitored_connect):
+                    out = self.run_identity()
+                self.assertTrue(out["sessions"]["coverage"]["malformed_metadata"])
+                self.assertEqual(out["sessions"]["verified"], [])
+                self.assertTrue(all(size <= 16000 for size in seen), seen)
+                self.assertEqual(out["identity"]["head"], self.head)
+
+    def test_large_metadata_records_preserve_git_identity(self) -> None:
+        for field in ("payload", "cwd", "git_sha", "git_branch", "git_origin_url", "title"):
+            for text in ("x" * 1048576, "é" * 524288):
+                with self.subTest(field=field, multibyte=text.startswith("é")):
+                    if field == "payload":
+                        self.c.execute("INSERT INTO thread_attachments VALUES(?,?,?,?)", ("a", self.sid, "worktree", text))
+                    else:
+                        self.c.execute(f"UPDATE threads SET {field}=?", (text,))
+                    self.c.commit()
+                    out = self.run_identity()
+                    self.assertTrue(out["ok"])
+                    self.assertEqual(out["identity"]["head"], self.head)
+                    self.assertFalse(out["sessions"]["coverage"]["available"])
+                    if field == "payload":
+                        cli = subprocess.run([sys.executable, str(identity.__file__), "--input-json", json.dumps({"path": str(self.wt)})], env={**os.environ, "HOME": str(self.home)}, check=True, capture_output=True, text=True, timeout=10)
+                        self.assertLessEqual(len(cli.stdout.encode("utf-8")), 14001)
+                        report = json.loads(cli.stdout)
+                        self.assertEqual(report["identity"]["head"], self.head)
+                        self.assertFalse(report["sessions"]["coverage"]["available"])
+                    self.c.execute("DELETE FROM thread_attachments")
+                    self.c.execute("DELETE FROM threads")
+                    self.c.execute("INSERT INTO threads VALUES(?,?,?,?,?,?,?)", (self.sid, str(self.wt), self.head, "feature/LAB-123", "https://github.com/example/repo.git", 1, ""))
+                    self.c.commit()
+
+    def test_attachment_overflow_is_separate_from_thread_cursor(self) -> None:
+        self.c.execute("UPDATE threads SET title=''")
+        for count in (32, 33):
+            with self.subTest(count=count):
+                self.c.execute("DELETE FROM thread_attachments")
+                for number in range(count):
+                    payload = {"root": str(self.wt)}
+                    if number == 32: payload["url"] = "https://github.com/example/repo/pull/99"
+                    self.c.execute("INSERT INTO thread_attachments VALUES(?,?,?,?)", (f"{number:03}", self.sid, "pull_request", json.dumps(payload)))
+                self.c.commit()
+                out = self.run_identity()
+                coverage = out["sessions"]["coverage"]
+                self.assertEqual(coverage["attachment_inspection_incomplete"], count > 32)
+                self.assertIsNone(coverage["next_cursor"])
+                self.assertFalse(coverage["incomplete"])
+                self.assertEqual(out["hints"]["pull_requests"], [])
+
+    def test_malformed_scan_boundaries_never_publish_unusable_cursors(self) -> None:
+        for bad_id in (lambda n: f"bad-row-{n:03}", lambda n: sqlite3.Binary(f"bad-row-{n:03}".encode())):
+            with self.subTest(storage=type(bad_id(0)).__name__):
+                self.c.execute("DELETE FROM threads")
+                for number in range(201):
+                    self.c.execute("INSERT INTO threads VALUES(?,?,?,?,?,?,?)", (bad_id(number), str(self.wt), None, None, None, 0, ""))
+                self.c.execute("INSERT INTO threads VALUES(?,?,?,?,?,?,?)", ("ffffffff-ffff-4fff-8fff-ffffffffffff", str(self.wt), None, None, None, 0, ""))
+                self.c.commit()
+                out = self.run_identity()
+                coverage = out["sessions"]["coverage"]
+                self.assertTrue(coverage["malformed_metadata"])
+                self.assertTrue(coverage["incomplete"])
+                self.assertIsNone(coverage["next_cursor"])
+                self.assertTrue(coverage["pagination_unavailable"])
+                self.assertEqual(out["identity"]["head"], self.head)
+                serialized = json.dumps(out)
+                self.assertNotIn('bad-row-', serialized)
+                cli = subprocess.run([sys.executable, str(identity.__file__), "--input-json", json.dumps({"path": str(self.wt)})], env={**os.environ, "HOME": str(self.home)}, check=True, capture_output=True, text=True, timeout=10)
+                self.assertEqual(json.loads(cli.stdout)["identity"]["head"], self.head)
+
+    def test_final_serialization_failure_is_structured(self) -> None:
+        output = io.StringIO()
+        with patch.object(identity, "inspect", return_value={"ok": True, "unexpected": b"not-json"}), patch.object(sys, "argv", ["reader", "--input-json", "{}"]), redirect_stdout(output):
+            identity.main()
+        result = json.loads(output.getvalue())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["kind"], "serialization_error")
 
 if __name__=="__main__":unittest.main()

@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-10-02"
+updated: "2026-10-11"
 ---
 
 # Code Mode
@@ -730,6 +730,17 @@ The last two settings accept `[code_mode]` fallbacks, overridden by
 have a separate 32-call ceiling; snippet resolution is limited to 32 resolutions
 and 1 MiB total resolved source per execution.
 
+Tool IDs are limited to 1,024 UTF-8 bytes at both runner and host boundaries.
+Oversized IDs reject before dispatch without retaining the supplied ID. The host
+trace is bounded to 4,096 rows and 4 MiB of serialized call records, including
+artifact writes and rejected calls. Exhaustion returns `trace_budget_exceeded`
+with the retained partial trace and cancels pending work. This host allocation
+limit is separate from best-effort final envelope shaping.
+
+After the internal-call ceiling, search and describe retain their documented
+fallbacks. Resource, Artifact, Prompt and Skill operations return typed budget
+errors instead of a successful search-shaped value.
+
 ### Final Result Shaping
 
 Code Mode can optionally shape the final model-facing `result` of a successful
@@ -889,6 +900,8 @@ Canonical error kinds:
 | `forbidden` / `permission_denied` | Terminal | Caller lacks permission, including destructive tool execution permission. |
 | `path_traversal` | Terminal | Path-safety checks rejected a workspace or artifact path. |
 | `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, or call fan-out budget was exceeded. |
+| `trace_budget_exceeded` | Reduce work and verify outcomes | Host call-record count or serialized byte capacity was exhausted; the execution stops with its retained partial trace. Pending work is canceled and prior mutations may have completed. |
+| `internal_call_budget_exceeded` | Retry with fewer internal operations | The internal Resource, Artifact, Prompt or Skill operation ceiling was exhausted before that operation dispatched. |
 | `result_too_large` / `artifact_too_large` | Retry with smaller output | Returned value or artifact exceeded configured caps. |
 | `timeout` | Retry with smaller work | The live QuickJS/Javy runner wall-clock backstop interrupted execution. |
 | `rate_limited` | Retry later | Upstream or host-side rate limit was hit. |
@@ -957,7 +970,10 @@ and its operator-repair guidance. An omitted credential reference remains
 explicit anonymous configuration. See [Upstream bearer tokens](../services/UPSTREAM.md#bearer-token).
 
 MCP Code Mode executions carry host-owned trace context through the broker;
-outbound tool requests include the execution ID and zero-based call ordinal. This does not grant authority or expose trace baggage in results. See
+outbound tool requests include the execution ID and zero-based trace-row ordinal.
+Artifact and rejected-call rows occupy their own positions; the separate
+upstream admission counter enforces the call ceiling. This does not grant
+authority or expose trace baggage in results. See
 [MCP request trace propagation](OBSERVABILITY.md#mcp-request-trace-propagation).
 
 ## Runner Architecture
@@ -1140,7 +1156,13 @@ before publishing, including payloads from active runs. Inactive runs may be
 pruned to make room; active runs are retained and the new write is rejected when
 space is unavailable. Setting the store byte budget to zero disables that store
 limit, but preserves the per-run limits. Retrieval metadata is excluded from
-payload accounting. The artifact store belongs to one gateway process; this
+payload accounting only at the run's top-level reserved metadata directory;
+nested directories with the same name count as payload. Admission and retention
+use the same accounting. Artifact paths are normalized before reserved-name
+checks, publication and receipt creation, so dot and separator aliases cannot
+write retrieval metadata or bypass quotas. Routine retention is coalesced per
+run; byte pressure triggers an additional bounded inventory and final accounting
+pass. The artifact store belongs to one gateway process; this
 lock does not coordinate independent gateways sharing the same directory.
 
 Artifact content is written to a temporary file in the destination directory,

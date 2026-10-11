@@ -36,6 +36,8 @@ const KINDS: &[&str] = &[
     "quota_exceeded",
     "budget_exceeded",
     "call_budget_exceeded",
+    "internal_call_budget_exceeded",
+    "trace_budget_exceeded",
     "result_too_large",
     "artifact_too_large",
     "snippet_budget_exceeded",
@@ -74,6 +76,25 @@ fn published_schema() -> Value {
     let raw = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     serde_json::from_str(&raw).expect("code-mode-call-error schema is valid JSON")
+}
+
+#[test]
+fn native_host_budget_kinds_keep_their_contract_through_dispatch_conversion() {
+    for kind in ["internal_call_budget_exceeded", "trace_budget_exceeded"] {
+        let error = CodeModeCallError::new(kind, "host budget exhausted");
+        assert_eq!(error.origin, labby_codemode::CodeModeErrorOrigin::Budget);
+        assert_eq!(
+            error.recovery.action,
+            labby_codemode::CodeModeRecoveryAction::ReduceWork
+        );
+        assert_eq!(
+            error.side_effects,
+            labby_codemode::CodeModeSideEffectRisk::Possible
+        );
+        let restored = CodeModeCallError::from(error.clone().into_contract_tool_error());
+        assert_eq!(restored, error);
+        assert_conforms(&restored, &published_schema(), kind);
+    }
 }
 
 fn string_list<'a>(schema: &'a Value, pointer: &str) -> Vec<&'a str> {

@@ -434,6 +434,8 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "quota_exceeded"
         | "budget_exceeded"
         | "call_budget_exceeded"
+        | "internal_call_budget_exceeded"
+        | "trace_budget_exceeded"
         | "result_too_large"
         | "artifact_too_large"
         // `response_too_large` predates this table and was never registered,
@@ -490,6 +492,8 @@ pub fn side_effects_for_kind(kind: &str) -> AgentSideEffectRisk {
             | "response_too_large"
             | "budget_exceeded"
             | "call_budget_exceeded"
+            | "internal_call_budget_exceeded"
+            | "trace_budget_exceeded"
             | "authority_changed"
     ) {
         return AgentSideEffectRisk::Possible;
@@ -680,7 +684,8 @@ pub fn recovery_for_kind(
             guidance: "The response exceeded a size limit; the operation may already have completed. Check its status before repeating a mutation. For a read, use supported pagination, range, or field-selection parameters to request smaller results. Follow any returned resource or artifact reference; do not assume omitted bytes are stored or invent a continuation cursor.".to_string(),
             retry_after_ms: None,
         },
-        "budget_exceeded" | "call_budget_exceeded" => AgentRecoveryAdvice {
+        "budget_exceeded" | "call_budget_exceeded" | "internal_call_budget_exceeded"
+        | "trace_budget_exceeded" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::ReduceWork,
             same_arguments: AgentSameArgumentsRetry::Never,
             guidance: "Inspect the execution trace and operation status for work already completed. Reduce fan-out or split the remaining work into smaller runs; do not replay the entire script or repeat completed mutations. Consult existing operation records and reuse an idempotency key only for the same operation and arguments when supported.".to_string(),

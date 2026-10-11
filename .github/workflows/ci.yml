@@ -939,6 +939,8 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Test the exact worktree identity reader
+        run: python3 docs/snippets/worktree-identity.test.py
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out

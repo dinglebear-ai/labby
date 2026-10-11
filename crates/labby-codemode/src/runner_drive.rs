@@ -53,6 +53,10 @@ use super::types::{
 
 mod artifacts;
 mod finalize;
+mod host_trace;
+mod protocol_boundary;
+use host_trace::HostTrace;
+use protocol_boundary::handle_tool_call_event;
 mod steps;
 use artifacts::{handle_artifact_write_event, handle_snippet_resolve_event};
 use finalize::{code_mode_timeout_error, finalize_done, sorted_calls};
@@ -237,7 +241,7 @@ pub(crate) struct RunnerConfig {
 // ---------------------------------------------------------------------------
 
 struct DriveState {
-    calls: Vec<(u64, CodeModeExecutedCall)>,
+    calls: HostTrace,
     artifacts: Vec<CodeModeArtifactReceipt>,
     artifact_max_bytes: usize,
     artifact_root: PathBuf,
@@ -245,6 +249,8 @@ struct DriveState {
     snippet_resolved_bytes: usize,
     calls_enqueued: u64,
     max_calls_per_run: u64,
+    /// Trace position counts ordinary and artifact events, unlike call admission.
+    next_trace_ordinal: u64,
     /// Reserved `__lab_internal::*` pseudo-tool calls seen this run. Metered
     /// separately from `calls_enqueued` (internal calls never consume the
     /// ordinary budget) against `MAX_INTERNAL_CALLS_PER_RUN`.
@@ -264,11 +270,29 @@ struct DriveState {
 }
 
 impl DriveState {
+    fn reserve_trace_call(&mut self, seq: u64, id: &str) -> Result<u64, CodeModeExecutionError> {
+        self.calls.reserve(seq, id).map_err(|error| {
+            CodeModeExecutionError::with_trace(error, sorted_calls(&self.calls))
+        })?;
+        let ordinal = self.next_trace_ordinal;
+        self.next_trace_ordinal = self.next_trace_ordinal.saturating_add(1);
+        Ok(ordinal)
+    }
+
+    fn record_call(
+        &mut self,
+        call: (u64, CodeModeExecutedCall),
+    ) -> Result<(), CodeModeExecutionError> {
+        self.calls
+            .try_push(call)
+            .map_err(|error| CodeModeExecutionError::with_trace(error, sorted_calls(&self.calls)))
+    }
+
     fn new(artifact_run_id: &str) -> Self {
         let artifact_root = code_mode_artifact_root(artifact_run_id);
         let artifact_max_bytes = super::artifacts::artifact_max_bytes();
         Self {
-            calls: Vec::new(),
+            calls: HostTrace::default(),
             artifacts: Vec::new(),
             artifact_max_bytes,
             artifact_root,
@@ -276,6 +300,7 @@ impl DriveState {
             snippet_resolved_bytes: 0,
             calls_enqueued: 0,
             max_calls_per_run: max_calltool_per_run(),
+            next_trace_ordinal: 0,
             internal_calls_enqueued: 0,
             calltool_result_max_bytes: calltool_result_max_bytes(),
             result_ack_reserve_observed: false,

@@ -41,7 +41,7 @@ pub(super) async fn reject_tool_call_over_budget(
         &state.calls,
     )
     .await?;
-    state.calls.push((
+    state.record_call((
         seq,
         CodeModeExecutedCall {
             id,
@@ -52,7 +52,7 @@ pub(super) async fn reject_tool_call_over_budget(
             error_kind: Some("call_budget_exceeded".to_string()),
             ui: None,
         },
-    ));
+    ))?;
     Ok(())
 }
 
@@ -166,7 +166,7 @@ pub(super) async fn handle_completed_tool_call(
                 )
                 .await?;
                 if !is_internal {
-                    state.calls.push((
+                    state.record_call((
                         seq,
                         CodeModeExecutedCall {
                             id,
@@ -177,12 +177,12 @@ pub(super) async fn handle_completed_tool_call(
                             error_kind: Some("result_too_large".to_string()),
                             ui,
                         },
-                    ));
+                    ))?;
                 }
                 return Ok(());
             }
             if !is_internal {
-                state.calls.push((
+                state.record_call((
                     seq,
                     CodeModeExecutedCall {
                         id,
@@ -193,7 +193,7 @@ pub(super) async fn handle_completed_tool_call(
                         error_kind: None,
                         ui,
                     },
-                ));
+                ))?;
             }
             write_runner_input_by_deadline(
                 stdin,
@@ -231,7 +231,7 @@ pub(super) async fn handle_completed_tool_call(
             )
             .await?;
             if !is_internal {
-                state.calls.push((
+                state.record_call((
                     seq,
                     CodeModeExecutedCall {
                         id,
@@ -242,7 +242,7 @@ pub(super) async fn handle_completed_tool_call(
                         error_kind: Some(kind),
                         ui: None,
                     },
-                ));
+                ))?;
             }
         }
     }

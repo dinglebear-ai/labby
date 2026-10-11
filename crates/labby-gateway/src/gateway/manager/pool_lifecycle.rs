@@ -623,6 +623,14 @@ impl GatewayManager {
         }
 
         let old_pool = existing_pool;
+        // Manual/full publication has the same permanent revocation boundary
+        // as a transactional reconcile. Preserve unchanged definitions across
+        // pool replacement; only changed/removed authority gets durable intent.
+        if let Some(pool) = old_pool.as_ref() {
+            pool.prepare_task_config_revocation(changed_upstreams.iter().cloned().collect())
+                .await
+                .map_err(ToolError::internal_message)?;
+        }
         let before = snapshot_from_pool(
             old_pool.clone(),
             old_code_mode_enabled,
@@ -686,6 +694,13 @@ impl GatewayManager {
         // that the caller subsequently rolls back on disk.
         self.reconcile_runtime_state(&cfg, fresh_pool.as_deref())
             .await?;
+        let task_definition_guards = match old_pool.as_ref() {
+            Some(pool) => Some(
+                pool.prepare_lazy_upstream_reconcile(&changed_upstreams)
+                    .await,
+            ),
+            None => None,
+        };
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -709,6 +724,12 @@ impl GatewayManager {
             None => None,
         };
         let _publication = self.publication_barrier.write().await;
+        if let Some(pool) = old_pool.as_ref() {
+            pool.complete_task_config_revocation()
+                .await
+                .map_err(ToolError::internal_message)?;
+            pool.fence_replaced_task_definitions(&changed_upstreams);
+        }
         self.store
             .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
@@ -743,6 +764,7 @@ impl GatewayManager {
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
         self.advance_runtime_config_generation();
+        drop(task_definition_guards);
         // A private candidate must not retain itself through background tasks
         // if validation/persistence fails or reload is cancelled before swap.
         if let Some(pool) = fresh_pool {

@@ -328,7 +328,8 @@ export function PhoenixAvailability() {
   const addAttachments = async (files: FileList | null) => {
     if (!files?.length) return
     const requestGeneration = requestGenerationRef.current
-    const isCurrent = () => requestGeneration === requestGenerationRef.current
+    const epoch = getBrowserSessionEpoch()
+    const isCurrent = () => requestGeneration === requestGenerationRef.current && epoch === getBrowserSessionEpoch()
     const selected = Array.from(files).slice(0, Math.max(0, 4 - attachments.length))
     const textLike = (file: File) => file.type.startsWith('text/') || /^(application\/(json|javascript|xml|yaml|x-yaml))$/.test(file.type) || /\.(md|txt|json|jsonl|ya?ml|toml|csv|ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|kts|sh|bash|zsh|fish|html?|css|scss|xml|sql|graphql|gql|ini|conf|log)$/i.test(file.name)
     const classify = (file: File): PhoenixAttachment['type'] | undefined => {

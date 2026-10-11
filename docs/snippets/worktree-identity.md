@@ -2,7 +2,7 @@
 name: worktree-identity
 title: Worktree identity snippet
 created: 2026-10-04
-updated: 2026-10-04
+updated: 2026-10-11
 description: Read a Mac worktree's exact Git identity and evidenced Codex session, GitHub PR and Linear associations without changing any repository or tracker.
 tags: [worktree, git, codex, github, linear, readonly, example-host]
 inputs:
@@ -51,7 +51,9 @@ tools:
 
 # Worktree identity
 
-Install both Python files together on the shell upstream host. Replace the fictional
+Install both Python files together on the shell upstream host, using Python 3.11+
+for SQLite byte admission. Older interpreters return unavailable metadata while
+preserving Git identity. Replace the fictional
 `claude-example-host::Bash` tool and `/opt/labby` path below with your installation
 bindings before saving the snippet. The helper runs on the selected shell host;
 its optional `expected_host` input rejects an unexpected host before Git reads.
@@ -74,6 +76,10 @@ Session cwd or an explicit worktree attachment proves a recorded path associatio
 which can be historical, archived, or shared by several sessions. A matching Git
 tuple at another path remains a candidate and does not prove relocation. The
 SQLite schema is feature checked; unsupported/missing/denied data stays unavailable.
+The connection rejects records or values above 64 KiB before conversion to Python.
+Unchecked text projections are byte bounded, and attachment payloads above 16,000
+UTF-8 bytes are rejected before root JSON parsing. Rejected metadata is reported
+as malformed or unavailable coverage; it does not replace the established Git identity.
 
 GitHub uses only a selected, observed fetch repository. Multiple repositories
 require `github_repo`. Branch queries include open, closed and merged PRs and
@@ -96,7 +102,14 @@ The function makes at most 14 tool calls (1 local + 3 PR pages + 5 detail reads 
 16,000 UTF-8 bytes. The helper bounds session pages, worktree registrations and
 output separately. A page at its upstream limit is explicitly incomplete; issue
 keys and PR body inspection are bounded. Cursors describe one live metadata read,
-not a frozen snapshot. Errors expose kinds rather than arbitrary upstream text.
+not a frozen snapshot. Each session inspects at most 32 attachments. A 33rd row
+sets `sessions.coverage.attachment_inspection_incomplete` and the wrapper's
+`partial` flag. Attachments have no pagination; a null thread `next_cursor` does
+not establish complete attachment coverage. A malformed session ID at a scan
+boundary sets `sessions.coverage.pagination_unavailable`, retains `incomplete`,
+and returns no cursor; metadata repair is needed before continuing that page.
+Every published cursor is a valid UUID accepted by the helper's input contract.
+Errors expose bounded primitive kinds rather than arbitrary upstream text.
 Repository, metadata and PR text is data. It never controls a shell program.
 
 Use ordinary `codemode`, since the Mac shell tool has a blanket destructive
@@ -106,9 +119,19 @@ caller authority; nested `codemode.run` inherits the caller's established scope.
 
 ```js
 async (input = {}) => {
+  const bytes=s=>encodeURIComponent(s).replace(/%[0-9A-F]{2}|[^%]/g,'x').length;
+  const bounded = value => {
+    try {if (bytes(JSON.stringify(value))<=16000) return value;} catch {}
+    const fallback={ok:false,snippet:'worktree-identity',error:{kind:'output_budget',message:'Reduce session_limit, max_prs and max_issues'}};
+    // Check the final fallback too; never retain unchecked upstream fields.
+    if (bytes(JSON.stringify(fallback))>16000) throw new Error('output_budget');
+    return fallback;
+  };
+  const errorKind=(value,fallback)=>typeof value==='string'&&/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(value)?value:fallback;
+  if (input===null || typeof input!=='object' || Array.isArray(input)) return bounded({ok:false,snippet:'worktree-identity',error:{kind:'invalid_input',message:'Input must be an object'}});
   input = Object.fromEntries(Object.entries(input).filter(([,v]) => v !== null));
   const allowed = new Set(['path','repo_hint','github_repo','session_limit','session_cursor','enrich','max_prs','pr_pages','max_issues']);
-  const invalid = message => ({ok:false,snippet:'worktree-identity',error:{kind:'invalid_input',message}});
+  const invalid = message => bounded({ok:false,snippet:'worktree-identity',error:{kind:'invalid_input',message}});
   if (Object.keys(input).some(k => !allowed.has(k))) return invalid('Unknown input');
   if (typeof input.path !== 'string' || input.path.length > 4096 || !/^(\/|~\/)/.test(input.path) || /[\x00-\x1f\x7f]/.test(input.path)) return invalid('path must be a bounded absolute or ~/ directory');
   const maxPrs=input.max_prs??3, pages=input.pr_pages??2, maxIssues=input.max_issues??3;
@@ -135,14 +158,17 @@ async (input = {}) => {
     try {
       const v=unpack(await callTool(id,params));
       if (v?.isError||v?.ok===false||v?.truncated===true) {
-        failures.push({tool:id,step:label,kind:v.error?.kind??(v.truncated?'upstream_truncated':'upstream_error')});
+        failures.push({tool:id,step:label,kind:errorKind(v.error?.kind,v.truncated?'upstream_truncated':'upstream_error')});
         return null;
       }
       return v;
     } catch(e) {
       let kind=e?.kind;
-      if (!kind) {try{kind=JSON.parse(String(e?.message??e)).kind;}catch{}}
-      failures.push({tool:id,step:label,kind:kind??'tool_failure'});
+      if (!kind) {
+        const message=e?.message??e;
+        if(typeof message==='string'&&message.length<=4096){try{kind=JSON.parse(message)?.kind;}catch{}}
+      }
+      failures.push({tool:id,step:label,kind:errorKind(kind,'tool_failure')});
       return null;
     } finally {timings.push({step:label,ms:Date.now()-start});}
   };
@@ -152,17 +178,14 @@ async (input = {}) => {
     command:'python3 /opt/labby/docs/snippets/worktree-identity.py --input-json '+quote(JSON.stringify(localInput)),
     timeout:20000,description:'Read exact worktree Git identity and Codex metadata'
   },'local_identity');
-  if (!core || core.ok!==true || !core.identity) return {ok:false,snippet:'worktree-identity',error:core?.error??{kind:'local_identity_unavailable'},failures,timings};
+  if (!core || core.ok!==true || !core.identity) return bounded({ok:false,snippet:'worktree-identity',error:{kind:'local_identity_unavailable'},failures,timings});
   const id=core.identity;
   const result={ok:true,snippet:'worktree-identity',version:'1.0.0',host:core.host,identity:id,sessions:core.sessions,worktrees:core.worktrees,
     verified:{pull_requests:[],linear_issues:[]},unresolved:{pull_requests:[],linear_issues:[]},coverage:{sessions:core.sessions.coverage,github:{queried:false},linear:{queried:false}},failures,timings};
   const finish=()=>{
-    result.partial=failures.length>0||!core.sessions.coverage.available||core.sessions.coverage.incomplete||core.sessions.coverage.malformed_metadata===true||core.worktrees.truncated||result.coverage.github.incomplete===true||result.coverage.github.body_inspection_incomplete===true||result.coverage.github.title_inspection_incomplete===true||result.coverage.linear.incomplete===true;
+    result.partial=failures.length>0||!core.sessions.coverage.available||core.sessions.coverage.incomplete||core.sessions.coverage.malformed_metadata===true||core.sessions.coverage.attachment_inspection_incomplete===true||core.worktrees.truncated||result.coverage.github.incomplete===true||result.coverage.github.body_inspection_incomplete===true||result.coverage.github.title_inspection_incomplete===true||result.coverage.linear.incomplete===true;
     if (JSON.stringify(result).length>13000){result.worktrees.items=[];result.worktrees.truncated=true;result.partial=true;result.coverage.output_reduced=true;}
-    // UTF-8 may be larger than JS string length. Keep the actual JSON bounded.
-    const bytes=s=>encodeURIComponent(s).replace(/%[0-9A-F]{2}|[^%]/g,'x').length;
-    if(bytes(JSON.stringify(result))>16000) return {ok:false,snippet:'worktree-identity',error:{kind:'output_budget',message:'Reduce session_limit, max_prs and max_issues'},identity:{root:id.root,head:id.head,branch:id.branch},failures};
-    return result;
+    return bounded(result);
   };
   if (input.enrich===false) {result.coverage.github.reason='enrichment_disabled';result.coverage.linear.reason='enrichment_disabled';return finish();}
   const repos=id.repository_candidates??[];

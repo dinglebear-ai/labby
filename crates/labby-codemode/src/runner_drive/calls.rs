@@ -266,52 +266,6 @@ pub(super) fn enqueue_rejected_tool_call(
     }));
 }
 
-/// Settle an over-ceiling `__lab_internal::*` pseudo-tool call with the
-/// fail-open empty semantic result — the same `{"ranked": []}` shape
-/// `dispatch_internal_call` returns when the embedding service is degraded —
-/// so `codemode.search()` silently falls back to lexical-only scoring.
-///
-/// This deliberately resolves (never rejects) the in-sandbox promise:
-/// FAIL-OPEN is a hard Code Mode invariant, so exceeding the internal-call
-/// ceiling must not error or hang the run. The call never reaches
-/// `host.semantic_rank` (that is the point — no further embedding-service
-/// round trips) and, being internal, never appears in the call trace.
-pub(super) fn enqueue_internal_call_over_ceiling(
-    seq: u64,
-    id: String,
-    params: Value,
-    cfg: &RunnerConfig,
-    pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
-) {
-    let redacted_params = crate::trace::redact_trace_params(&params, cfg.trace_params);
-    // Shape-aware: each reserved internal tool has its own "nothing found"
-    // contract its sandbox-side caller already handles gracefully —
-    // `codemode.search`'s empty ranked list, `codemode.describe`'s null type
-    // body. Settling every over-ceiling call with `semantic_rank`'s shape
-    // would silently "work" for `describe_types` too today only by a JS
-    // truthiness coincidence (`{ranked: []}.dts` is `undefined`, same falsy
-    // outcome as `{dts: null}.dts`), not by design — keep this explicit so a
-    // future third internal tool doesn't inherit that accident.
-    let fail_open_value = if id == "__lab_internal::describe_types" {
-        json!({ "dts": null })
-    } else {
-        json!({ "ranked": [] })
-    };
-    pending_tool_calls.push(Box::pin(async move {
-        (
-            seq,
-            id,
-            redacted_params,
-            Ok(ToolCallOutcome {
-                value: fail_open_value,
-                ui: None,
-            }),
-            0,
-            0,
-        )
-    }));
-}
-
 pub(super) async fn dispatch_local_provider_stub(
     local: LocalProviderCall,
     params: Value,

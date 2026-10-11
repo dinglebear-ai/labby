@@ -14,6 +14,7 @@ pub(super) async fn handle_artifact_write_event(
     cfg: &RunnerConfig,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
+    state.reserve_trace_call(seq, ARTIFACT_WRITE_CALL_ID)?;
     let writes_allowed = artifact_writes_allowed(&cfg.capability_filter);
     let artifact_root = state.artifact_root.clone();
     let artifact_max_bytes = state.artifact_max_bytes;
@@ -42,7 +43,10 @@ pub(super) async fn handle_artifact_write_event(
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => {
             terminate_code_mode_runner(child, child_pid).await;
-            Err(error.into())
+            Err(CodeModeExecutionError::with_trace(
+                error,
+                sorted_calls(&state.calls),
+            ))
         }
         Err(_) => {
             terminate_code_mode_runner(child, child_pid).await;
@@ -164,7 +168,7 @@ async fn handle_artifact_write(
     stdin: &mut ChildStdin,
     artifact_root: &Path,
     artifacts: &mut Vec<CodeModeArtifactReceipt>,
-    calls: &mut Vec<(u64, CodeModeExecutedCall)>,
+    calls: &mut HostTrace,
     seq: u64,
     request: CodeModeArtifactWrite,
     trace_params: bool,
@@ -182,13 +186,13 @@ async fn handle_artifact_write(
         })
         .with_tool(ARTIFACT_WRITE_CALL_ID);
         let kind = error.kind.clone();
-        calls.push(artifact_call(
+        calls.try_push(artifact_call(
             seq,
             false,
             started.elapsed().as_millis(),
             redacted_params,
             Some(kind),
-        ));
+        ))?;
         return write_runner_input(
             stdin,
             &CodeModeRunnerInput::ToolError {
@@ -210,13 +214,13 @@ async fn handle_artifact_write(
         Ok(receipt) => {
             let result = json!(receipt);
             artifacts.push(receipt);
-            calls.push(artifact_call(
+            calls.try_push(artifact_call(
                 seq,
                 true,
                 started.elapsed().as_millis(),
                 redacted_params,
                 None,
-            ));
+            ))?;
             write_runner_input(stdin, &CodeModeRunnerInput::ToolResult { seq, result }).await
         }
         Err(error) => {
@@ -226,13 +230,13 @@ async fn handle_artifact_write(
                 error.recovery.guidance = "The artifact file was written but retrieval enrollment failed. Inspect the output before repeating the write.".into();
             }
             let kind = error.kind.clone();
-            calls.push(artifact_call(
+            calls.try_push(artifact_call(
                 seq,
                 false,
                 started.elapsed().as_millis(),
                 redacted_params,
                 Some(kind),
-            ));
+            ))?;
             write_runner_input(
                 stdin,
                 &CodeModeRunnerInput::ToolError {

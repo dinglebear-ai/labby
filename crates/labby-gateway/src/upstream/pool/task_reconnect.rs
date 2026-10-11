@@ -1,5 +1,6 @@
 //! Reacquire an ephemeral task companion from authorized durable metadata.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -40,16 +41,29 @@ impl UpstreamPool {
         downstream: Peer<RoleServer>,
         context: &TaskCallContext,
         start: Instant,
-    ) -> Result<(Peer<RoleClient>, Arc<RelayRouteState>, RelayClientHandler), String> {
+    ) -> Result<
+        (
+            Peer<RoleClient>,
+            Arc<RelayRouteState>,
+            RelayClientHandler,
+            Arc<()>,
+        ),
+        String,
+    > {
         let acquire = async {
             let fingerprint = capability_fingerprint(&context.capabilities);
             if let Some(companion) = self.live_task_companion(record, &fingerprint).await? {
                 return Ok(companion);
             }
-            // Reuse the upstream's existing acquisition/reconcile gate. No second
-            // runtime owner, config inventory, or task scheduler is introduced.
+            // Single-flight this task across connection I/O. Fixed stripes keep
+            // the lock registry bounded; unrelated warm sends never use it.
+            let mut hash = std::collections::hash_map::DefaultHasher::new();
+            record.public_task_id.hash(&mut hash);
+            let connect =
+                &self.task_connect_locks[hash.finish() as usize % self.task_connect_locks.len()];
+            let _connect = connect.lock().await;
             let gate = self.lazy_connect_lock(&record.upstream_name).await;
-            let _connect = gate.lock().await;
+            let definition = gate.lock().await;
             self.check_task_binding(record).await?;
             if let Some(companion) = self.live_task_companion(record, &fingerprint).await? {
                 return Ok(companion);
@@ -78,6 +92,9 @@ impl UpstreamPool {
                 record.oauth_subject.clone(),
                 format!("task:{}:{fingerprint}", record.public_task_id),
             );
+            // Definition and credential snapshots are revalidated after I/O;
+            // holding the upstream gate here would block unrelated warm RPCs.
+            drop(definition);
             self.acquire_relay_for_key(
                 &config,
                 record.oauth_subject.as_deref(),
@@ -95,9 +112,11 @@ impl UpstreamPool {
                 .ok_or_else(|| "upstream task connection unavailable".to_string())?;
             // Credential changes may have completed during connection I/O. The
             // durable row is checked again under their existing publication barrier.
+            let _definition = gate.lock().await;
             let _publication = self.oauth_invalidation_barrier.read().await;
             if epoch.as_ref().is_some_and(|epoch| !epoch.is_current()) {
                 drop(_publication);
+                drop(_definition);
                 connection
                     ._connection
                     .shutdown(&record.upstream_name, "task.reconnect.epoch")
@@ -106,6 +125,7 @@ impl UpstreamPool {
             }
             if let Err(error) = self.check_task_binding(record).await {
                 drop(_publication);
+                drop(_definition);
                 connection
                     ._connection
                     .shutdown(&record.upstream_name, "task.reconnect.stale")
@@ -118,27 +138,34 @@ impl UpstreamPool {
             let pending_notifications = routes
                 .register_task_id(&record.native_task_id, &record.public_task_id)
                 .await;
-            let previous = self.task_routes.write().await.insert(
-                record.public_task_id.clone(),
-                TaskRoute {
-                    record: record.clone(),
-                    connection,
-                },
-            );
+            let (invocation, previous) = {
+                let mut routes = self.task_routes.write().await;
+                super::prune_task_routes(&mut routes);
+                let route = routes
+                    .entry(record.public_task_id.clone())
+                    .or_insert_with(|| TaskRoute {
+                        record: record.clone(),
+                        companions: Vec::new(),
+                    });
+                if !route.record.same_binding(record) {
+                    return Err(task_not_found());
+                }
+                route.install_companion(connection)?
+            };
             for notification in pending_notifications {
                 handler.forward_task_status(notification).await;
             }
             drop(_publication);
+            drop(_definition);
             if let Some(previous) = previous {
                 previous
-                    .connection
                     ._connection
                     .shutdown(&record.upstream_name, "task.reconnect.replace")
                     .await;
             }
             tracing::debug!(action = "task.route.reconnect", upstream = %record.upstream_name,
                 "authorized task peer reacquired");
-            Ok((peer, routes, handler))
+            Ok((peer, routes, handler, invocation))
         };
         tokio::select! {
             biased;
@@ -152,27 +179,39 @@ impl UpstreamPool {
         &self,
         record: &TaskRouteRecord,
         fingerprint: &str,
-    ) -> Result<Option<(Peer<RoleClient>, Arc<RelayRouteState>, RelayClientHandler)>, String> {
-        let routes = self.task_routes.read().await;
-        let Some(live) = routes.get(&record.public_task_id) else {
+    ) -> Result<
+        Option<(
+            Peer<RoleClient>,
+            Arc<RelayRouteState>,
+            RelayClientHandler,
+            Arc<()>,
+        )>,
+        String,
+    > {
+        let mut routes = self.task_routes.write().await;
+        let Some(live) = routes.get_mut(&record.public_task_id) else {
             return Ok(None);
         };
         if !live.record.same_binding(record) {
             return Err(task_not_found());
         }
-        if live.connection.peer.is_transport_closed()
-            || live.connection.capability_fingerprint != fingerprint
-        {
+        let Some(companion) = live.companions.iter_mut().find(|companion| {
+            !companion.connection.peer.is_transport_closed()
+                && companion.connection.capability_fingerprint == fingerprint
+        }) else {
             return Ok(None);
-        }
+        };
+        companion.connection.last_used = Instant::now();
         Ok(Some((
-            live.connection.peer.clone(),
-            Arc::clone(&live.connection.routes),
-            live.connection
+            companion.connection.peer.clone(),
+            Arc::clone(&companion.connection.routes),
+            companion
+                .connection
                 ._connection
                 ._client_service
                 .service()
                 .clone(),
+            Arc::clone(&companion.invocations),
         )))
     }
 
@@ -187,7 +226,12 @@ impl UpstreamPool {
             .read()
             .await
             .get(&record.public_task_id)
-            .is_none_or(|live| !Arc::ptr_eq(&live.connection.routes, routes))
+            .is_none_or(|live| {
+                !live
+                    .companions
+                    .iter()
+                    .any(|companion| Arc::ptr_eq(&companion.connection.routes, routes))
+            })
         {
             return Err(task_not_found());
         }
@@ -202,16 +246,19 @@ impl UpstreamPool {
         record: &TaskRouteRecord,
         routes: &Arc<RelayRouteState>,
         request: ClientRequest,
+        dispatched: &std::sync::atomic::AtomicBool,
     ) -> Result<ServerResult, ServiceError> {
         let _publication = self
             .task_publication_guard(record)
             .await
             .map_err(|message| ServiceError::McpError(ErrorData::invalid_params(message, None)))?;
         let companions = self.task_routes.read().await;
-        if companions
-            .get(&record.public_task_id)
-            .is_none_or(|live| !Arc::ptr_eq(&live.connection.routes, routes))
-        {
+        if companions.get(&record.public_task_id).is_none_or(|live| {
+            !live
+                .companions
+                .iter()
+                .any(|companion| Arc::ptr_eq(&companion.connection.routes, routes))
+        }) {
             return Err(ServiceError::McpError(ErrorData::invalid_params(
                 task_not_found(),
                 None,
@@ -223,6 +270,7 @@ impl UpstreamPool {
         let handle = peer
             .send_request_with_option(request, PeerRequestOptions::no_options())
             .await?;
+        dispatched.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut cancellation = CancelUpstreamOnDrop::armed(
             handle.peer.clone(),
             &record.upstream_name,
@@ -261,11 +309,13 @@ impl UpstreamPool {
             .map(|(_, route)| route)
             .collect::<Vec<_>>();
         futures::future::join_all(removed.into_iter().map(|route| async move {
-            route
-                .connection
-                ._connection
-                .shutdown(&route.record.upstream_name, reason)
-                .await;
+            for companion in route.companions {
+                companion
+                    .connection
+                    ._connection
+                    .shutdown(&route.record.upstream_name, reason)
+                    .await;
+            }
         }))
         .await;
     }

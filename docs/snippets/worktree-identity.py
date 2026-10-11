@@ -26,8 +26,18 @@ class IdentityReader(Protocol):
 VERSION = "1.0.0"
 HELPER = Path(__file__).with_name("worktree-identity-reader.py")
 MAX_BYTES = 14000
+SQLITE_RECORD_BYTES = 65536
+ATTACHMENT_BYTES = 16000
+SESSION_ID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 KEY = re.compile(r"(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9]{1,11}-[1-9][0-9]{0,8})(?![A-Za-z0-9])")
 PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]{0,8})(?![0-9])")
+
+def session_id(value: object) -> bool:
+    return isinstance(value, str) and SESSION_ID.fullmatch(value) is not None
+
+def admitted_text(column: str, maximum: int) -> str:
+    """Only fixed caller-owned column names enter this SQL expression."""
+    return f"CASE WHEN typeof({column})='text' AND length(CAST({column} AS BLOB))<={maximum} THEN {column} END"
 
 def refs(text: object, source: str) -> JsonObject:
     """Return handles only; arbitrary task text never becomes commands or output."""
@@ -97,7 +107,8 @@ def attachment_roots(kind: str, value: object) -> list[object]:
 def session_metadata(reader: IdentityReader, home: Path, identity: JsonObject, paths: set[str], limit: int, cursor: str, records: list[JsonObject]) -> JsonObject:
     db = home / ".codex/state_5.sqlite"
     result = {"verified": [], "candidates": [], "issue_keys": [], "pull_requests": [],
-              "coverage": {"source": str(db), "transcripts_read": False, "titles_returned": False, "malformed_metadata": False}}
+              "coverage": {"source": str(db), "transcripts_read": False, "titles_returned": False, "malformed_metadata": False,
+                           "attachment_inspection_incomplete": False, "pagination_unavailable": False}}
     if not db.is_file():
         result["coverage"].update(available=False, reason="metadata_database_missing")
         return result
@@ -105,6 +116,12 @@ def session_metadata(reader: IdentityReader, home: Path, identity: JsonObject, p
     c = None
     try:
         c = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=1)
+        # SQLITE_LIMIT_LENGTH bounds individual values AND encoded rows inside
+        # SQLite, before JSON functions or Python conversion can see a record.
+        if not hasattr(c, "setlimit"):
+            result["coverage"].update(available=False, reason="metadata_byte_limit_unavailable")
+            return result
+        c.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, SQLITE_RECORD_BYTES)
         c.row_factory = sqlite3.Row
         c.set_progress_handler(lambda: 1, 2000000)
         cols = {r[1] for r in c.execute("PRAGMA table_info(threads)")}
@@ -126,23 +143,35 @@ def session_metadata(reader: IdentityReader, home: Path, identity: JsonObject, p
             args.append(identity["branch"])
         attachments = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if "thread_attachments" in attachments:
+            safe_payload = admitted_text("payload", ATTACHMENT_BYTES)
+            # Admission omissions can hide a path association, even when cwd
+            # does not select that session. Expose this without returning text.
+            if c.execute("SELECT 1 FROM thread_attachments WHERE payload IS NULL OR typeof(payload)!='text' OR length(CAST(payload AS BLOB))>? LIMIT 1", (ATTACHMENT_BYTES,)).fetchone():
+                result["coverage"]["malformed_metadata"] = True
             root_terms, root_args = [], []
             for p in paths:
                 for field in ("$.root", "$.worktree.root"):
-                    root_terms.append("json_extract(payload,?) = ?")
+                    # CASE gates JSON evaluation for malformed and oversized
+                    # payloads; SQL AND evaluation order is not an admission guard.
+                    root_terms.append(f"CASE WHEN json_valid({safe_payload}) THEN json_extract({safe_payload},?) END = ?")
                     root_args.extend([field,p])
-            terms.append("id IN (SELECT thread_id FROM thread_attachments WHERE json_valid(payload) AND (" + " OR ".join(root_terms) + "))")
+            terms.append("id IN (SELECT thread_id FROM thread_attachments WHERE attachment_type IN ('worktree','archived_worktree','pull_request') AND (" + " OR ".join(root_terms) + "))")
             args.extend(root_args)
-        query = "SELECT id,cwd,git_sha,git_branch,git_origin_url,archived,substr(title,1,1000) AS title FROM threads WHERE id > ? AND (" + " OR ".join(terms) + ") ORDER BY id LIMIT ?"
+        fields = {"cwd":16384, "git_sha":128, "git_branch":16384, "git_origin_url":16384}
+        projections = [f"{admitted_text(column, maximum)} AS {column}" for column,maximum in fields.items()]
+        rejected = " OR ".join(f"({column} IS NOT NULL AND ({admitted_text(column, maximum)}) IS NULL)" for column,maximum in fields.items())
+        query = "SELECT " + admitted_text("id",36) + " AS id," + ",".join(projections) + ",CASE WHEN typeof(archived)='integer' THEN archived ELSE 0 END AS archived,CASE WHEN typeof(title)='text' THEN substr(title,1,1000) END AS title,(" + rejected + ") AS rejected_fields FROM threads WHERE id > ? AND (" + " OR ".join(terms) + ") ORDER BY id LIMIT ?"
         scan_limit = 200
         rows = c.execute(query, [*args, scan_limit + 1]).fetchall()
         scanned = 0
         for row in rows[:scan_limit]:
             sid = row["id"]
             scanned += 1
-            if not isinstance(sid, str) or not re.fullmatch(r"[0-9a-fA-F-]{36}", sid):
+            if not session_id(sid):
                 result["coverage"]["malformed_metadata"] = True
                 continue
+            if row["rejected_fields"]:
+                result["coverage"]["malformed_metadata"] = True
             cwd = row["cwd"]
             evidence = []
             exact = False
@@ -155,14 +184,16 @@ def session_metadata(reader: IdentityReader, home: Path, identity: JsonObject, p
                 evidence.append({"source":str(db),"record":sid,"field":"threads.cwd","match":"canonical_worktree_path"})
             attached = []
             if "thread_attachments" in attachments:
-                attached = c.execute("SELECT attachment_type,payload FROM thread_attachments WHERE thread_id=? AND attachment_type IN ('worktree','archived_worktree','pull_request') ORDER BY id LIMIT 33", (sid,)).fetchall()
+                attached = c.execute(f"SELECT attachment_type,CASE WHEN json_valid({safe_payload}) THEN {safe_payload} END AS payload FROM thread_attachments WHERE thread_id=? AND attachment_type IN ('worktree','archived_worktree','pull_request') ORDER BY id LIMIT 33", (sid,)).fetchall()
+                if len(attached) > 32:
+                    result["coverage"]["attachment_inspection_incomplete"] = True
             hints = refs(row["title"], f"threads:{sid}:title")
             for a in attached[:32]:
-                if not isinstance(a["payload"], str) or len(a["payload"].encode()) > 16000:
+                if not isinstance(a["payload"], str) or len(a["payload"].encode()) > ATTACHMENT_BYTES:
                     result["coverage"]["malformed_metadata"] = True
                     continue
                 try: value = json.loads(a["payload"])
-                except ValueError:
+                except (ValueError, RecursionError):
                     result["coverage"]["malformed_metadata"] = True
                     continue
                 roots = attachment_roots(a["attachment_type"],value)
@@ -197,9 +228,12 @@ def session_metadata(reader: IdentityReader, home: Path, identity: JsonObject, p
             if exact:
                 result["issue_keys"].extend(hints["issue_keys"])
                 result["pull_requests"].extend(hints["pull_requests"])
-        next_cursor = rows[scanned-1]["id"] if scanned and (scanned < len(rows)) else None
+        has_more = scanned < len(rows)
+        boundary = rows[scanned-1]["id"] if scanned and has_more else None
+        next_cursor = boundary if session_id(boundary) else None
         result["coverage"].update(available=True,scanned=scanned,scan_limit=scan_limit,next_cursor=next_cursor,
-                                  incomplete=next_cursor is not None,attachments_per_session_limit=32,
+                                  incomplete=has_more,pagination_unavailable=has_more and next_cursor is None,attachments_per_session_limit=32,
+                                  sqlite_record_bytes=SQLITE_RECORD_BYTES,attachment_bytes=ATTACHMENT_BYTES,
                                   alias_limit="Only canonical/input spellings are selected by SQL; arbitrary historical symlink aliases may be absent",
                                   association_limit="Recorded path proves a historical association, not exclusive/current ownership; Git-only matches cannot prove relocation")
         result["issue_keys"] = result["issue_keys"][:16]
@@ -233,7 +267,7 @@ def inspect(inp: object, *, reader: IdentityReader | None = None, home: Path | N
     cursor = inp.get("session_cursor","")
     if type(limit) is not int or not 1 <= limit <= 20:
         raise reader.ContextError("invalid_input","session_limit must be 1..20")
-    if not isinstance(cursor, str) or (cursor and not re.fullmatch(r"[0-9a-fA-F-]{36}",cursor)):
+    if not isinstance(cursor, str) or (cursor and not session_id(cursor)):
         raise reader.ContextError("invalid_input","session_cursor must be the returned session ID")
     if target.exists():
         if not target.is_dir(): raise reader.ContextError("invalid_path","path must be a directory")
@@ -287,11 +321,14 @@ def main() -> None:
     except Exception as e:
         # Do not expose exception messages containing filesystem contents/URLs.
         result={"ok":False,"error":{"kind":getattr(e,"kind",type(e).__name__),"message":"Read-only identity/metadata inspection failed; verify path, host and existing helper permissions"}}
-    encoded=json.dumps(result,ensure_ascii=True,separators=(",",":"))
-    if len(encoded.encode())>MAX_BYTES:
-        result["worktrees"]["items"]=[]
-        result["worktrees"]["truncated"]=True
+    try:
         encoded=json.dumps(result,ensure_ascii=True,separators=(",",":"))
+        if len(encoded.encode())>MAX_BYTES and "worktrees" in result:
+            result["worktrees"]["items"]=[]
+            result["worktrees"]["truncated"]=True
+            encoded=json.dumps(result,ensure_ascii=True,separators=(",",":"))
+    except (TypeError, ValueError):
+        encoded=json.dumps({"ok":False,"error":{"kind":"serialization_error","message":"Identity metadata could not be serialized"}})
     if len(encoded.encode())>MAX_BYTES:
         encoded=json.dumps({"ok":False,"error":{"kind":"output_budget","message":"Reduce session_limit and paginate"}})
     print(encoded)

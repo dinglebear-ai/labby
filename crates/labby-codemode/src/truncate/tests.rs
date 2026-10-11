@@ -80,7 +80,7 @@ fn response_with_logs(result: Value, logs: Vec<String>) -> CodeModeExecutionResp
 }
 
 /// Contract-derived expected cut: the smallest `k` such that the response
-/// serialized with `original[k..]` as `logs` passes
+/// serialized with the sentinel and `original[k..]` as `logs` passes
 /// [`response_within_budget`]. Probes real serde output per candidate, so
 /// it is independent of the arithmetic implementation under test.
 fn expected_drop_count(
@@ -93,7 +93,14 @@ fn expected_drop_count(
     (0..=original.len())
         .find(|&k| {
             let mut probe = base.clone();
-            probe.logs = original[k..].to_vec();
+            probe.logs = if k == 0 {
+                Vec::new()
+            } else {
+                vec![format!(
+                    "[logs truncated to fit response budget — {k} line(s) dropped]"
+                )]
+            };
+            probe.logs.extend_from_slice(&original[k..]);
             response_within_budget(&probe, max_bytes, max_tokens, divisor)
         })
         .unwrap_or(original.len())
@@ -293,6 +300,9 @@ fn large_log_set_cut_matches_probe_serialized_contract() {
     )];
     want.extend_from_slice(&logs[expected..]);
     assert_eq!(truncated.logs, want);
+    assert!(response_within_budget(
+        &truncated, max_bytes, max_tokens, divisor
+    ));
 }
 
 #[test]
@@ -316,6 +326,79 @@ fn token_budget_alone_can_force_the_cut() {
     )];
     want.extend_from_slice(&logs[expected..]);
     assert_eq!(truncated.logs, want);
+    assert!(response_within_budget(
+        &truncated, max_bytes, max_tokens, divisor
+    ));
+}
+
+#[test]
+fn complete_log_candidate_reserves_the_sentinel_at_the_boundary() {
+    let logs = vec!["oldest".repeat(100), "é\\\"".repeat(20), "newest".into()];
+    let base = response_with_logs(json!({"ok": true}), Vec::new());
+    let mut suffix_only = base.clone();
+    suffix_only.logs = logs[1..].to_vec();
+    let max_bytes = serde_json::to_vec(&suffix_only).unwrap().len();
+    let mut with_sentinel = suffix_only.clone();
+    with_sentinel.logs.insert(
+        0,
+        "[logs truncated to fit response budget — 1 line(s) dropped]".into(),
+    );
+    assert!(!response_within_budget(
+        &with_sentinel,
+        max_bytes,
+        usize::MAX,
+        4
+    ));
+    let expected = expected_drop_count(&logs, &base, max_bytes, usize::MAX, 4);
+    assert_eq!(
+        expected, 2,
+        "keep the newest line after the smallest complete cut"
+    );
+    let response = response_with_logs(json!({"ok": true}), logs.clone());
+    let truncated = truncate_execution_response(response, max_bytes, usize::MAX, 4);
+    assert_eq!(truncated.logs[1..], logs[expected..]);
+    assert_eq!(
+        truncated.logs[0],
+        "[logs truncated to fit response budget — 2 line(s) dropped]"
+    );
+    assert!(response_within_budget(&truncated, max_bytes, usize::MAX, 4));
+}
+
+#[test]
+fn oversized_mandatory_metadata_keeps_best_effort_calls_and_sentinel() {
+    let mut response = response_with_logs(json!({"ok": true}), vec!["log".into()]);
+    response.calls.push(CodeModeExecutedCall {
+        id: "demo::mandatory".repeat(20),
+        ok: true,
+        elapsed_ms: 1,
+        start_ms: Some(0),
+        params: None,
+        error_kind: None,
+        ui: None,
+    });
+    let calls = response.calls.clone();
+    let truncated = truncate_execution_response(response, 64, 16, 4);
+    assert_eq!(truncated.calls, calls);
+    assert_eq!(truncated.result, Some(json!({"ok": true})));
+    assert_eq!(
+        truncated.logs,
+        vec!["[logs truncated to fit response budget — 1 line(s) dropped]"]
+    );
+    assert!(!response_within_budget(&truncated, 64, 16, 4));
+}
+
+#[test]
+fn sentinel_only_candidate_can_exceed_an_unavoidably_tiny_budget() {
+    let base = response_with_logs(json!({"ok": true}), Vec::new());
+    let budget = serde_json::to_vec(&base).unwrap().len();
+    let response = response_with_logs(json!({"ok": true}), vec!["log".into()]);
+    let truncated = truncate_execution_response(response, budget, usize::MAX, 4);
+    assert_eq!(truncated.result, base.result);
+    assert_eq!(
+        truncated.logs,
+        vec!["[logs truncated to fit response budget — 1 line(s) dropped]"]
+    );
+    assert!(!response_within_budget(&truncated, budget, usize::MAX, 4));
 }
 
 #[test]

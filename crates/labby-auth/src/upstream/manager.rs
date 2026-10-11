@@ -54,7 +54,7 @@ use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
 mod callback_store;
 mod discovery;
-pub use callback_store::CredentialSaveFence;
+pub use callback_store::{CredentialSaveFence, CredentialSaveValidation};
 
 static SHARED_GOOGLE_REFRESH_FLIGHTS: OnceLock<Arc<RefreshLocks>> = OnceLock::new();
 
@@ -374,7 +374,7 @@ impl UpstreamOauthManager {
             .await
     }
 
-    /// Install a callback-only pre-save fence; failed state/code validation never invokes it.
+    /// Fence replacement after state/code and store-specific identity validation.
     pub async fn complete_authorization_callback_with_fence(
         &self,
         subject: &str,
@@ -404,8 +404,7 @@ impl UpstreamOauthManager {
 
         if let Some(fence) = fence {
             match google_store {
-                Some(inner) => auth_manager
-                    .set_credential_store(callback_store::FencedCredentialStore { inner, fence }),
+                Some(inner) => auth_manager.set_credential_store(inner.with_callback_fence(fence)),
                 None => auth_manager.set_credential_store(callback_store::FencedCredentialStore {
                     inner: SqliteCredentialStore::new(
                         self.sqlite.clone(),

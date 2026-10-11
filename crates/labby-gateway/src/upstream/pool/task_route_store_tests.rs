@@ -615,3 +615,8 @@ async fn routed_task_resolution_obeys_cancellation_and_deadline_while_sqlite_is_
 
 #[path = "task_config_rollback_tests.rs"]
 mod config_rollback;
+
+#[path = "task_route_prepared_tests.rs"]
+mod prepared;
+#[path = "task_reload_regressions.rs"]
+mod reload;

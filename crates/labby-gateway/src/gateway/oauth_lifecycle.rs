@@ -717,7 +717,7 @@ impl GatewayManager {
         let target = upstream.to_owned();
         let owner = subject.to_owned();
         let shared = manager.credential_source_label() == "google_provider";
-        let fence: labby_auth::upstream::manager::CredentialSaveFence = Arc::new(move || {
+        let fence: labby_auth::upstream::manager::CredentialSaveFence = Arc::new(move |validate| {
             let lifecycle = lifecycle.clone();
             let target = target.clone();
             let owner = owner.clone();
@@ -726,6 +726,10 @@ impl GatewayManager {
                     Some(cache) => Some(cache.invalidation_barrier().write_owned().await),
                     None => None,
                 };
+                // Identity is already validated. Recheck credential epoch and
+                // generation under the lifecycle writer before retiring routes,
+                // retaining its provider lock through credential publication.
+                let credential_guard = validate.await?;
                 let sessions = if shared {
                     lifecycle
                         .invalidate_shared_oauth_runtime(
@@ -749,7 +753,7 @@ impl GatewayManager {
                         "task route revocation persistence failed".into(),
                     )
                 })?;
-                let held: Box<dyn Send> = Box::new(guard);
+                let held: Box<dyn Send> = Box::new((guard, credential_guard));
                 Ok(held)
             })
         });
