@@ -62,7 +62,7 @@ for path in "${test_files[@]}"; do
   case "$path" in
     *.sh) "$path" ;;
     *.py) python3 "$path" ;;
-    *.ps1) : ;; # Executed by the required native Windows installer job.
+    *.ps1) : ;; # Executed by the optional native Windows installer job.
     *) echo "unsupported lifecycle test type: $path" >&2; exit 1 ;;
   esac
 done

@@ -1,7 +1,7 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-30"
+updated: "2026-10-11"
 ---
 
 # CI/CD
@@ -210,11 +210,13 @@ and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
 fail the aggregate. The classifier runs on every event, including fork PRs,
-without repository credentials. Required native Windows workspace tests follow
-the `rust_test` category; installer checks follow `workflow` or `release`.
-The gate rejects a skipped required Windows or fork product lane when its
-category was routed. The manual `run_windows` input controls only advisory
-Windows desktop checks.
+without repository credentials. Windows workspace, installer, and desktop checks
+are optional: they run only on `workflow_dispatch` with `run_windows: true`,
+which defaults to false. Selected workspace tests follow `rust_test`; selected
+installer checks follow `workflow` or `release`; selected desktop checks follow
+`desktop`. These jobs retain their native assertions and visible failure results,
+but `ci-gate` neither waits for them nor aggregates their results. The gate still
+rejects a skipped required fork product lane when its category was routed.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
@@ -350,7 +352,7 @@ land the required code/tests and the baseline update together.
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - CI uses hosted Linux, macOS, and Windows runners; only advisory Windows desktop checks require manual selection
+  - CI uses hosted Linux and macOS runners; optional Windows workspace, installer, and desktop checks use hosted Windows runners when manually selected
   - Heavy release work starts from an immutable stable-version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners

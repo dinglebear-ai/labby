@@ -839,8 +839,6 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "mcp-regressions",
         "desktop-web",
         "desktop-rust",
-        "test-windows",
-        "windows-installer",
     ] {
         assert!(
             workflow.contains(&format!("- {required}"))
@@ -1088,7 +1086,12 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Advisory jobs excluded from `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &["verification-t1", "desktop-windows"];
+const ADVISORY_JOBS: &[&str] = &[
+    "verification-t1",
+    "test-windows",
+    "windows-installer",
+    "desktop-windows",
+];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow

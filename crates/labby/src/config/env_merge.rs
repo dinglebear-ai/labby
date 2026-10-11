@@ -852,33 +852,59 @@ mod tests {
     fn merged_env_and_backup_support_protected_current_user_reads() {
         let directory = crate::access::test_support::secure_tempdir();
         let path = directory.path().join(".env");
-        for value in ["first", "second"] {
-            let outcome = merge(
-                &path,
-                MergeRequest {
-                    entries: vec![EnvEntry::new("LABBY_LOG", value)],
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-            let parents = labby_winjob::fs::AncestorGuard::for_file(&path).unwrap();
+        let assert_private_contents = |file_path: &Path, expected: &[u8]| {
+            let parents = labby_winjob::fs::AncestorGuard::for_file(file_path).unwrap();
             parents.verify_parent_acl().expect("merged env parent ACL");
-            let file = labby_winjob::fs::open_read(&path, false).unwrap();
+            let file = labby_winjob::fs::open_read(file_path, false).unwrap();
             labby_winjob::fs::verify_private_acl(&file).expect("merged env file owner and ACL");
             drop(file);
             drop(parents);
-            let bytes = crate::installation::secure_file::read_private(&path).unwrap();
-            assert_eq!(
-                String::from_utf8(bytes).unwrap(),
-                format!("LABBY_LOG={value}\n")
-            );
-            if let Some(backup) = outcome.backup_path {
-                assert_eq!(
-                    crate::installation::secure_file::read_private(&backup).unwrap(),
-                    b"LABBY_LOG=first\n"
-                );
-            }
-        }
+            let bytes = crate::installation::secure_file::read_private(file_path).unwrap();
+            assert_eq!(bytes, expected);
+        };
+
+        let initial = merge(
+            &path,
+            MergeRequest {
+                entries: vec![EnvEntry::new("LABBY_LOG", "first")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(initial.written, 1);
+        assert!(initial.skipped.is_empty());
+        assert!(initial.backup_path.is_none());
+        assert_private_contents(&path, b"LABBY_LOG=first\n");
+
+        let skipped = merge(
+            &path,
+            MergeRequest {
+                entries: vec![EnvEntry::new("LABBY_LOG", "second")],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(skipped.written, 0);
+        assert_eq!(skipped.skipped, vec![conflict_warning("LABBY_LOG")]);
+        assert!(skipped.backup_path.is_none());
+        assert_private_contents(&path, b"LABBY_LOG=first\n");
+
+        let overwritten = merge(
+            &path,
+            MergeRequest {
+                entries: vec![EnvEntry::new("LABBY_LOG", "second")],
+                force: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(overwritten.written, 1);
+        assert!(overwritten.skipped.is_empty());
+        let backup = overwritten
+            .backup_path
+            .expect("forced merge creates backup");
+        assert_private_contents(&path, b"LABBY_LOG=second\n");
+        assert_private_contents(&backup, b"LABBY_LOG=first\n");
     }
 
     #[test]

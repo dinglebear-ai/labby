@@ -100,7 +100,7 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     } else {
         match crate::dispatch::setup::incus::sync_incus_binary(
             crate::dispatch::setup::incus::IncusSyncOptions {
-                container: args.container,
+                container: args.container.clone(),
                 binary: Some(binary.clone()),
                 web_assets_dir: None,
                 sync_web_assets: !args.no_web_assets,
@@ -111,7 +111,13 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
             },
         ) {
             Ok(outcome) => (Some(outcome), None),
-            Err(err) if err.kind() == "incus_sync_container_discovery_failed" => {
+            Err(err)
+                if should_skip_optional_incus_sync(
+                    &err,
+                    args.container.as_deref(),
+                    std::env::var("LABBY_INCUS_CONTAINER").ok().as_deref(),
+                ) =>
+            {
                 (None, Some(err.to_string()))
             }
             Err(err) => return Err(anyhow::anyhow!(err.to_string())),
@@ -129,6 +135,22 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     };
     render_outcome(outcome, format)?;
     Ok(ExitCode::SUCCESS)
+}
+
+fn should_skip_optional_incus_sync(
+    error: &crate::dispatch::error::ToolError,
+    explicit_container: Option<&str>,
+    configured_container: Option<&str>,
+) -> bool {
+    let target_requested = [explicit_container, configured_container]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty());
+    !target_requested
+        && matches!(
+            error.kind(),
+            "incus_client_missing" | "incus_sync_container_discovery_failed"
+        )
 }
 
 fn resolve_install_dir(explicit: Option<&PathBuf>) -> Result<PathBuf> {
@@ -162,4 +184,60 @@ fn render_outcome(outcome: UpdateOutcome, format: OutputFormat) -> Result<()> {
         println!("Incus sync skipped: {reason}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dispatch::error::ToolError;
+
+    fn sync_error(kind: &str) -> ToolError {
+        ToolError::Sdk {
+            message: "fixture failure".into(),
+            sdk_kind: kind.into(),
+        }
+    }
+
+    #[test]
+    fn optional_incus_sync_skips_missing_client_and_undiscovered_container() {
+        for kind in [
+            "incus_client_missing",
+            "incus_sync_container_discovery_failed",
+        ] {
+            let error = sync_error(kind);
+            assert!(should_skip_optional_incus_sync(&error, None, None));
+            assert!(should_skip_optional_incus_sync(&error, Some(" "), Some("")));
+        }
+    }
+
+    #[test]
+    fn requested_incus_targets_remain_strict() {
+        for kind in [
+            "incus_client_missing",
+            "incus_sync_container_discovery_failed",
+        ] {
+            let error = sync_error(kind);
+            for target in ["labby", "remote:labby"] {
+                assert!(!should_skip_optional_incus_sync(&error, Some(target), None));
+                assert!(!should_skip_optional_incus_sync(&error, None, Some(target)));
+            }
+        }
+    }
+
+    #[test]
+    fn optional_incus_sync_does_not_hide_other_failures() {
+        for kind in [
+            "incus_sync_list_failed",
+            "incus_command_failed",
+            "incus_sync_exec_failed",
+            "incus_sync_binary_missing",
+            "incus_sync_rolled_back",
+        ] {
+            assert!(!should_skip_optional_incus_sync(
+                &sync_error(kind),
+                None,
+                None
+            ));
+        }
+    }
 }

@@ -60,8 +60,8 @@ class CiPlatformPolicyTests(unittest.TestCase):
         result_jobs = set(re.findall(r"needs\.([A-Za-z0-9_-]+)\.result", checks))
         self.assertEqual(needs, result_jobs)
         self.assertLessEqual(needs, set(jobs))
-        self.assertTrue({"test-windows", "windows-installer"} <= needs)
-        self.assertNotIn("desktop-windows", needs)
+        for job in ("test-windows", "windows-installer", "desktop-windows"):
+            self.assertNotIn(job, needs)
 
     def test_lifecycle_analysis_preserves_shell_and_pinned_powershell_checks(self) -> None:
         steps = yaml.safe_load(self.workflow)["jobs"]["lifecycle-static-analysis"]["steps"]

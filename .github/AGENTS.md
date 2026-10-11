@@ -19,8 +19,9 @@ details there and keep this file focused on rules for editing `.github/`.
   qualification job promotes it. Incus and registry publishers are callable
   gates that complete before promotion and are covered by aggregate
   reconciliation.
-- Preserve hosted Windows native workspace and installer qualification lanes.
-  The manual `run_windows` input selects only advisory desktop checks.
+- Preserve hosted Windows workspace, installer, and desktop qualification lanes
+  as optional manual checks. `run_windows` defaults to false, enables these lanes
+  only on workflow dispatch, and their results are excluded from `ci-gate`.
 - External actions and reusable workflows are pinned to full commit SHAs.
 - Fleet contract callers must pass the same exact workflows commit as
   `implementation-ref`.
@@ -101,7 +102,7 @@ Labby through the pinned fleet policy and repository contract. Keep that opt-in
 visible when adding ARM64 jobs or artifacts; QEMU and cross-platform emulation
 still require a deliberate implementation and verification plan.
 The supported release binary artifacts are Linux x86_64, Linux arm64, and macOS arm64.
-Windows has native CI qualification lanes but is not a release target.
+Windows has optional native CI qualification lanes but is not a release target.
 Keep each release target native to its GitHub-hosted runner; do not add
 emulation, cross-platform image matrices, or QEMU setup.
 
