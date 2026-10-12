@@ -1,7 +1,6 @@
 //! Automatic, owner-bound preservation of oversized JSON outputs.
 use crate::artifacts::{
-    CodeModeArtifactReceipt, CodeModeArtifactWrite, artifact_max_bytes, artifact_retention_runs,
-    prune_artifact_runs, write_code_mode_artifact,
+    CodeModeArtifactReceipt, CodeModeArtifactWrite, artifact_max_bytes, write_code_mode_artifact,
 };
 use crate::{CodeModeCaller, ToolScope};
 use serde_json::Value;
@@ -30,11 +29,15 @@ pub(crate) async fn preserve(
         return None;
     }
     let operation = async {
+        // The final result shares the runner's root. Never overwrite an
+        // explicit artifact that already owns this automatic-output path.
+        if tokio::fs::try_exists(root.join(&path)).await.ok()? {
+            return None;
+        }
         let content = serde_json::to_string(value).ok()?;
         if content.len() > artifact_max_bytes() {
             return None;
         }
-        prune_artifact_runs(artifact_retention_runs()).await;
         let mut receipt = write_code_mode_artifact(
             root,
             &CodeModeArtifactWrite {
@@ -92,5 +95,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(serde_json::from_str::<Value>(&saved).unwrap(), value);
+        assert!(
+            preserve(
+                &root,
+                "automatic/result.json".into(),
+                &serde_json::json!({"different": true}),
+                &CodeModeCaller::TrustedLocal,
+                &ToolScope::default(),
+            )
+            .await
+            .is_none()
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(root.join("automatic/result.json"))
+                .await
+                .unwrap(),
+            saved
+        );
     }
 }

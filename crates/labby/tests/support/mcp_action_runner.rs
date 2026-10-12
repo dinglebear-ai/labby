@@ -1,4 +1,6 @@
 use std::collections::BTreeSet;
+use std::error::Error;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -9,10 +11,12 @@ use rmcp::model::{
     FormElicitationCapability, Implementation, PaginatedRequestParams, PrimitiveSchemaDefinition,
     ProtocolVersion,
 };
-use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService};
+use rmcp::service::{
+    ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService, ServiceError,
+};
 use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
+    StreamableHttpClientTransportConfig, StreamableHttpClientWorker, StreamableHttpError,
 };
 use rmcp::{ClientHandler, ErrorData, RoleClient};
 
@@ -25,6 +29,11 @@ pub(crate) const MAX_CONCURRENCY: usize = 4;
 pub(crate) const MAX_OUTSTANDING: usize = 8;
 pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 const TEST_TOKEN: &str = "live-mcp-action-matrix-token";
+const ERROR_CHAIN_DEPTH: usize = 8;
+const ERROR_NODE_BYTES: usize = 1024;
+const ERROR_CHAIN_BYTES: usize = 8192;
+const FAILURE_DIAGNOSTIC_BYTES: usize = 16 * 1024;
+const DAEMON_DIAGNOSTIC_BYTES: usize = 4096;
 const _: () = assert!(MAX_CONCURRENCY > 0 && MAX_CONCURRENCY <= 4);
 const _: () = assert!(MAX_OUTSTANDING >= MAX_CONCURRENCY && MAX_OUTSTANDING <= 8);
 
@@ -161,6 +170,110 @@ pub(crate) struct BuiltinMcpRunner {
     concurrency: tokio::sync::Semaphore,
     outstanding: tokio::sync::Semaphore,
     stdio_process: Option<u32>,
+    secret_canaries: Vec<String>,
+}
+
+struct BoundedErrorText(String);
+
+impl std::fmt::Write for BoundedErrorText {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.0.len().saturating_add(value.len()) > ERROR_NODE_BYTES {
+            return Err(std::fmt::Error);
+        }
+        self.0.push_str(value);
+        Ok(())
+    }
+}
+
+fn cap_text(mut value: String, maximum: usize) -> String {
+    if value.len() > maximum {
+        let mut end = maximum;
+        while !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        value.truncate(end);
+    }
+    value
+}
+
+fn sanitized_diagnostic(value: &str, canaries: &[String]) -> String {
+    let mut rendered = crate::support::evidence::sanitize(value);
+    for canary in canaries.iter().filter(|canary| !canary.is_empty()) {
+        rendered = rendered.replace(canary, "[REDACTED]");
+    }
+    rendered
+}
+
+fn error_source<'a>(error: &'a (dyn Error + 'static)) -> Option<&'a (dyn Error + 'static)> {
+    // These rmcp variants carry typed errors but do not annotate their tuple
+    // fields as sources. Bridge those two wrappers before walking Error::source.
+    if let Some(ServiceError::TransportSend(transport)) = error.downcast_ref::<ServiceError>() {
+        return Some(transport);
+    }
+    if let Some(StreamableHttpError::Client(client)) =
+        error.downcast_ref::<StreamableHttpError<reqwest::Error>>()
+    {
+        return Some(client);
+    }
+    error.source()
+}
+
+fn transport_error_chain(error: &(dyn Error + 'static), canaries: &[String]) -> String {
+    let mut current = Some(error);
+    let mut chain = String::new();
+    for depth in 0..ERROR_CHAIN_DEPTH {
+        let Some(error) = current else { break };
+        let mut node = BoundedErrorText(String::new());
+        let rendered = if write!(&mut node, "{error}").is_ok() {
+            sanitized_diagnostic(&node.0, canaries)
+        } else {
+            // Discard an oversized node entirely: a byte cut could retain a
+            // partial credential that no longer matches its exact canary.
+            "[error text exceeded diagnostic cap]".to_owned()
+        };
+        let _ = writeln!(chain, "cause[{depth}]={rendered}");
+        current = error_source(error);
+    }
+    if current.is_some() {
+        chain.push_str("[error source depth cap reached]\n");
+    }
+    cap_text(chain, ERROR_CHAIN_BYTES)
+}
+
+fn format_wire_failure(
+    matrix_action: &str,
+    phase: &str,
+    action: &str,
+    error: &str,
+    daemon_evidence: &str,
+    canaries: &[String],
+) -> String {
+    let field = |value: &str, maximum| {
+        if value.len() > maximum {
+            "[diagnostic field exceeded cap]".to_owned()
+        } else {
+            sanitized_diagnostic(value, canaries)
+        }
+    };
+    let matrix_action = field(matrix_action, ERROR_NODE_BYTES);
+    let phase = field(phase, ERROR_NODE_BYTES);
+    let action = field(action, ERROR_NODE_BYTES);
+    let error = field(error, ERROR_CHAIN_BYTES);
+    let context = sanitized_diagnostic(
+        &format!("matrix_action={matrix_action} phase={phase} action={action}\n{error}"),
+        canaries,
+    );
+    let daemon = sanitized_diagnostic(daemon_evidence, canaries);
+    // Keep the newest bounded daemon evidence, after redaction has removed
+    // complete credentials. The owner already bounds the source log read.
+    let mut start = daemon.len().saturating_sub(DAEMON_DIAGNOSTIC_BYTES);
+    while !daemon.is_char_boundary(start) {
+        start += 1;
+    }
+    cap_text(
+        format!("{context}\nowned_daemon_evidence={}\n", &daemon[start..]),
+        FAILURE_DIAGNOSTIC_BYTES,
+    )
 }
 
 fn capped_http_client() -> BodyCappedHttpClient {
@@ -174,6 +287,29 @@ fn capped_http_client() -> BodyCappedHttpClient {
 }
 
 impl BuiltinMcpRunner {
+    pub(crate) fn wire_failure(
+        &self,
+        matrix_action: &str,
+        phase: &str,
+        action: &str,
+        error: &str,
+        additional_canaries: &[String],
+    ) -> String {
+        let mut canaries = self.secret_canaries.clone();
+        canaries.extend_from_slice(additional_canaries);
+        let daemon_evidence = self.guard.as_ref().map_or_else(
+            || "daemon log owned by external fixture".to_owned(),
+            LiveLabbyGuard::diagnostic_log_tail,
+        );
+        format_wire_failure(
+            matrix_action,
+            phase,
+            action,
+            error,
+            &daemon_evidence,
+            &canaries,
+        )
+    }
     pub(crate) fn http_base_url(&self) -> &str {
         &self
             .guard
@@ -218,6 +354,7 @@ impl BuiltinMcpRunner {
             concurrency: tokio::sync::Semaphore::new(MAX_CONCURRENCY),
             outstanding: tokio::sync::Semaphore::new(MAX_OUTSTANDING),
             stdio_process,
+            secret_canaries: vec![TEST_TOKEN.to_owned()],
         })
     }
 
@@ -274,6 +411,7 @@ impl BuiltinMcpRunner {
             concurrency: tokio::sync::Semaphore::new(MAX_CONCURRENCY),
             outstanding: tokio::sync::Semaphore::new(MAX_OUTSTANDING),
             stdio_process: None,
+            secret_canaries: vec![TEST_TOKEN.to_owned()],
         })
     }
 
@@ -326,6 +464,7 @@ impl BuiltinMcpRunner {
             concurrency: tokio::sync::Semaphore::new(MAX_CONCURRENCY),
             outstanding: tokio::sync::Semaphore::new(MAX_OUTSTANDING),
             stdio_process: None,
+            secret_canaries: vec![TEST_TOKEN.to_owned(), credential.to_owned()],
         })
     }
 
@@ -432,7 +571,9 @@ impl BuiltinMcpRunner {
         )
         .await
         .map_err(|_| "tools/call timed out".to_string())
-        .and_then(|result| result.map_err(|error| error.to_string()));
+        .and_then(|result| {
+            result.map_err(|error| transport_error_chain(&error, &self.secret_canaries))
+        });
         self.confirmation_client.clear(&expected_confirmation);
         let result = result?;
         Ok(result)
@@ -516,6 +657,133 @@ async fn wait_for_process_exit(pid: u32) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct DiagnosticError {
+        message: String,
+        cause: Option<Box<DiagnosticError>>,
+    }
+
+    impl std::fmt::Display for DiagnosticError {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str(&self.message)
+        }
+    }
+
+    impl Error for DiagnosticError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            self.cause.as_deref().map(|cause| -> &dyn Error { cause })
+        }
+    }
+
+    #[test]
+    fn wire_failure_retains_action_phase_and_inner_cause_without_secret_values() {
+        let secret = "synthetic-dynamic-cookie-value".to_owned();
+        let error =
+            ServiceError::TransportSend(rmcp::transport::DynamicTransportError::from_parts(
+                "fixture-transport",
+                std::any::TypeId::of::<DiagnosticError>(),
+                Box::new(DiagnosticError {
+                    message: "request failed".to_owned(),
+                    cause: Some(Box::new(DiagnosticError {
+                        message: format!(
+                            "socket reset; raw cookie {secret}; Authorization: Bearer {TEST_TOKEN}"
+                        ),
+                        cause: None,
+                    })),
+                }),
+            ));
+        let canaries = vec![secret.clone(), TEST_TOKEN.to_owned()];
+        let chain = transport_error_chain(&error, &canaries);
+        let rendered = format_wire_failure(
+            "snippets:snippets.artifact",
+            "snippet_receipt_fixture",
+            "snippets.exec",
+            &chain,
+            &format!("owned daemon stopped; raw cookie {secret}"),
+            &canaries,
+        );
+        assert!(rendered.contains("matrix_action=snippets:snippets.artifact"));
+        assert!(rendered.contains("phase=snippet_receipt_fixture action=snippets.exec"));
+        assert!(rendered.contains("cause[3]=socket reset"));
+        assert!(rendered.contains("owned daemon stopped"));
+        assert!(
+            !rendered.contains(&secret),
+            "dynamic credential must be redacted"
+        );
+        assert!(
+            !rendered.contains(TEST_TOKEN),
+            "bearer credential must be redacted"
+        );
+        assert!(rendered.len() <= FAILURE_DIAGNOSTIC_BYTES);
+    }
+
+    #[test]
+    fn error_chain_bridges_the_rmcp_http_client_wrapper_to_its_reqwest_source() {
+        let client_error = reqwest::Client::builder()
+            .user_agent("\n")
+            .build()
+            .expect_err("synthetic invalid HTTP header");
+        let source = client_error
+            .source()
+            .expect("reqwest inner header cause")
+            .to_string();
+        let error =
+            ServiceError::TransportSend(rmcp::transport::DynamicTransportError::from_parts(
+                "fixture-http-transport",
+                std::any::TypeId::of::<StreamableHttpError<reqwest::Error>>(),
+                Box::new(StreamableHttpError::Client(client_error)),
+            ));
+        let rendered = transport_error_chain(&error, &[]);
+        assert!(rendered.contains(&format!("cause[4]={source}")));
+    }
+
+    #[test]
+    fn wire_failure_caps_oversized_nodes_source_depth_and_daemon_evidence() {
+        let mut error = DiagnosticError {
+            message: "unreachable-tail".to_owned(),
+            cause: None,
+        };
+        for depth in 0..ERROR_CHAIN_DEPTH + 2 {
+            error = DiagnosticError {
+                message: format!("node-{depth}"),
+                cause: Some(Box::new(error)),
+            };
+        }
+        let chain = transport_error_chain(&error, &[]);
+        assert_eq!(chain.matches("cause[").count(), ERROR_CHAIN_DEPTH);
+        assert!(chain.contains("error source depth cap reached"));
+        assert!(!chain.contains("unreachable-tail"));
+        assert!(chain.len() <= ERROR_CHAIN_BYTES);
+
+        let secret = "synthetic-boundary-credential".to_owned();
+        let error = DiagnosticError {
+            message: format!("{}{}", "x".repeat(ERROR_NODE_BYTES - 3), secret),
+            cause: Some(Box::new(DiagnosticError {
+                message: "inner socket refused".to_owned(),
+                cause: None,
+            })),
+        };
+        let chain = transport_error_chain(&error, std::slice::from_ref(&secret));
+        assert!(chain.contains("error text exceeded diagnostic cap"));
+        assert!(chain.contains("inner socket refused"));
+        assert!(
+            !chain.contains("synthetic-boundary"),
+            "discard oversized partial credentials"
+        );
+        let daemon = format!(
+            "{} raw cookie {secret}; newest-daemon-line",
+            "界".repeat(DAEMON_DIAGNOSTIC_BYTES)
+        );
+        let rendered = format_wire_failure("matrix", "fixture", "exec", &chain, &daemon, &[secret]);
+        assert!(rendered.contains("newest-daemon-line"));
+        assert!(
+            !rendered.contains("synthetic-boundary"),
+            "daemon credentials must be redacted"
+        );
+        assert!(rendered.len() <= FAILURE_DIAGNOSTIC_BYTES);
+        assert!(rendered.len() < chain.len() + DAEMON_DIAGNOSTIC_BYTES + 128);
+    }
 
     #[test]
     fn transport_body_cap_matches_runner_contract() {

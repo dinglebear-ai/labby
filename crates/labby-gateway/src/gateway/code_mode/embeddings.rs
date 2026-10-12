@@ -413,17 +413,30 @@ mod tests {
 
     #[tokio::test]
     async fn failed_embedding_batch_cancels_stalled_and_queued_batches() {
-        let server = wiremock::MockServer::start().await;
+        // MockServer::start reuses pooled listeners, but TEI batch sizes outlive
+        // mock resets and are cached by URL. Own the listener and cache identity
+        // so an earlier /info=128 cannot bypass this fixture's /info=1.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("owned embedding cancellation listener");
+        let server = wiremock::MockServer::builder()
+            .listener(listener)
+            .start()
+            .await;
+        let namespace = format!("/embedding-cancellation-{}", uuid::Uuid::new_v4());
+        let info_path = format!("{namespace}/info");
+        let embed_path = format!("{namespace}/embed");
+        let endpoint = format!("{}{namespace}", server.uri());
         wiremock::Mock::given(wiremock::matchers::method("GET"))
-            .and(wiremock::matchers::path("/info"))
+            .and(wiremock::matchers::path(&info_path))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .set_body_json(json!({"max_client_batch_size":1})),
             )
+            .expect(1)
             .mount(&server)
             .await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/embed"))
+            .and(wiremock::matchers::path(&embed_path))
             .respond_with(|request: &wiremock::Request| {
                 let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
                 if body["inputs"][0] == "text-1" {
@@ -437,15 +450,37 @@ mod tests {
             .mount(&server)
             .await;
         let texts = (0..32).map(|i| format!("text-{i}")).collect::<Vec<_>>();
-        let result = tokio::time::timeout(
-            Duration::from_millis(250),
-            embed_via_tei(&server.uri(), &texts),
-        )
-        .await
-        .expect("a failed batch must not wait for earlier stalled batches");
-        assert!(result.is_err());
+        let result =
+            tokio::time::timeout(Duration::from_millis(250), embed_via_tei(&endpoint, &texts))
+                .await
+                .expect("a failed batch must not wait for earlier stalled batches");
+        let error = result.expect_err("the first-wave failure must abort embedding");
+        assert_eq!(error.kind(), "upstream_error");
         let requests = server.received_requests().await.unwrap();
-        let submitted = requests.iter().filter(|r| r.url.path() == "/embed").count();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.url.path() == info_path)
+                .count(),
+            1,
+            "the isolated fixture must discover its single-input batch limit"
+        );
+        let batches = requests
+            .iter()
+            .filter(|r| r.url.path() == embed_path)
+            .map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).unwrap())
+            .collect::<Vec<_>>();
+        assert!(
+            batches
+                .iter()
+                .all(|body| body["inputs"].as_array().unwrap().len() == 1),
+            "every request must use the fixture's discovered batch limit"
+        );
+        assert!(
+            batches.iter().any(|body| body["inputs"][0] == "text-1"),
+            "the intended failing batch must actually be submitted"
+        );
+        let submitted = batches.len();
         assert!(
             submitted <= 4,
             "queued batches continued after failure: {submitted}"

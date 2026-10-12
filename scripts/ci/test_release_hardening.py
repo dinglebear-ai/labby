@@ -870,9 +870,26 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_ci_runs_centralized_lifecycle_static_analysis(self) -> None:
         workflow = self.text(".github/workflows/ci.yml")
-        self.assertIn("scripts/ci/check-lifecycle-scripts.sh", workflow)
-        self.assertNotIn("PSScriptAnalyzer", workflow)
-        self.assertNotIn("Invoke-ScriptAnalyzer", workflow)
+        jobs = yaml.safe_load(workflow)["jobs"]
+        lifecycle = jobs["lifecycle-static-analysis"]
+        runs = [step.get("run", "") for step in lifecycle["steps"]]
+        self.assertIn("scripts/ci/check-lifecycle-scripts.sh", runs)
+        # The shell helper inventories PowerShell files but cannot analyze them.
+        # PowerShell analysis belongs to this same centralized job; other jobs
+        # must not duplicate it or select a different script inventory.
+        analyzer = [run for run in runs if "Invoke-ScriptAnalyzer" in run]
+        self.assertEqual(len(analyzer), 1)
+        self.assertIn("scripts/ci/lifecycle-scripts.json", analyzer[0])
+        self.assertIn("$inventory.powershell", analyzer[0])
+        self.assertIn("-Severity Warning,Error", analyzer[0])
+        self.assertIn('if ($results.Count -ne 0) { throw', analyzer[0])
+        self.assertTrue(any("Install-Module PSScriptAnalyzer -RequiredVersion 1.24.0" in run for run in runs))
+        for name, job in jobs.items():
+            if name == "lifecycle-static-analysis":
+                continue
+            for step in job.get("steps", []):
+                self.assertNotIn("PSScriptAnalyzer", step.get("run", ""), name)
+                self.assertNotIn("Invoke-ScriptAnalyzer", step.get("run", ""), name)
 
 class PromotionDurabilityTests(unittest.TestCase):
     def npm_helper(self):

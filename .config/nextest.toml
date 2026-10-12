@@ -44,6 +44,7 @@ filter = '''package(labby) & (
     | binary(=lifecycle_conformance)
     | binary(=live_api_actions)
     | binary(=live_browser_bridge)
+    | binary(=live_browser_supervisor)
     | binary(=live_cli_actions)
     | binary(=live_http_ipv6)
     | binary(=live_http_observability)

@@ -18,7 +18,7 @@ use std::time::Instant;
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
 use rmcp::model::{
-    JsonRpcMessage, ProgressNotificationParam, ServerNotification, ServerRequest,
+    GetMeta, JsonRpcMessage, ProgressNotificationParam, ServerNotification, ServerRequest,
     TaskStatusNotificationParams,
 };
 use rmcp::service::{ClientServiceExt, RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
@@ -144,6 +144,17 @@ impl<T> OrderedRelayNotificationTransport<T> {
         let JsonRpcMessage::Notification(notification) = message else {
             return None;
         };
+        // Subscription notifications belong to RMCP's ID-scoped receiver. The
+        // legacy ordered relay forwards only params and would discard this
+        // metadata, stealing the event from the acknowledged subscription.
+        if notification
+            .notification
+            .get_meta()
+            .subscription_id()
+            .is_some()
+        {
+            return None;
+        }
         match &notification.notification {
             ServerNotification::ProgressNotification(progress) => {
                 Some(OrderedRelayNotification::Progress(progress.params.clone()))

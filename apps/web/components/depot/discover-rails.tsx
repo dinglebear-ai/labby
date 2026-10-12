@@ -56,7 +56,7 @@ export function DiscoverRails({ artifacts, artifactHref, loading = false, incomp
   return <div data-discover-rails="1" aria-busy={loading} className="flex min-w-0 flex-col gap-4">
     <p className="px-0.5 text-xs text-aurora-text-muted">Collections use the currently loaded catalog results.</p>
     {notice}
-    {discoverReferenceRails(artifacts, now).map(rail => <section key={rail.label} aria-label={rail.label} className="flex min-w-0 flex-col gap-2">
+    {discoverReferenceRails(artifacts, now).filter(rail => rail.items.length > 0).map(rail => <section key={rail.label} aria-label={rail.label} className="flex min-w-0 flex-col gap-2">
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 px-0.5">
         <h2 className="font-display text-base font-extrabold text-aurora-text-primary">{rail.label}</h2>
         <span className="text-xs text-aurora-text-muted">{rail.hint}</span>

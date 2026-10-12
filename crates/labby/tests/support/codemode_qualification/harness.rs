@@ -55,6 +55,17 @@ pub(crate) struct Execution {
     pub(crate) is_error: bool,
 }
 
+impl Execution {
+    pub(crate) fn diagnostic(&self) -> String {
+        let projection = self.structured.to_string();
+        format!(
+            "wire_bytes={}, result_prefix={}",
+            self.wire_bytes,
+            projection.chars().take(4096).collect::<String>(),
+        )
+    }
+}
+
 pub(crate) struct CodeModeQualification {
     guard: Option<LiveLabbyGuard>,
     service: Option<RunningService<RoleClient, ()>>,
@@ -174,8 +185,8 @@ impl CodeModeQualification {
                 .call_tool(request),
         )
         .await
-        .map_err(|_| "Code Mode call timed out".to_string())?
-        .map_err(|error| error.to_string())?;
+        .map_err(|_| self.execution_error("Code Mode call timed out"))?
+        .map_err(|error| self.execution_error(&error.to_string()))?;
         let text = result_text(&result);
         let wire_bytes = text.len();
         let is_error = result.is_error == Some(true);
@@ -188,6 +199,23 @@ impl CodeModeQualification {
             wire_bytes,
             is_error,
         })
+    }
+
+    fn execution_error(&self, error: &str) -> String {
+        let tail = self
+            .guard
+            .as_ref()
+            .expect("active guard")
+            .diagnostic_log_tail();
+        let suffix: String = tail
+            .chars()
+            .rev()
+            .take(4000)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        format!("{error}; daemon_stderr_tail={suffix}")
     }
 
     pub(crate) async fn fixture_invocation_count(&self) -> Result<u64, String> {

@@ -32,7 +32,7 @@ const CANCEL_REASON: &str = "downstream caller cancelled the request";
 ///
 /// Armed for exactly the window between the request reaching the wire and its
 /// response arriving, so a completed call never emits a spurious cancellation.
-struct CancelUpstreamOnDrop {
+pub(super) struct CancelUpstreamOnDrop {
     /// `None` once disarmed — the response arrived and nothing needs cancelling.
     peer: Option<Peer<RoleClient>>,
     upstream: String,
@@ -40,7 +40,7 @@ struct CancelUpstreamOnDrop {
 }
 
 impl CancelUpstreamOnDrop {
-    fn armed(peer: Peer<RoleClient>, upstream: &str, id: RequestId) -> Self {
+    pub(super) fn armed(peer: Peer<RoleClient>, upstream: &str, id: RequestId) -> Self {
         Self {
             peer: Some(peer),
             upstream: upstream.to_string(),
@@ -48,7 +48,7 @@ impl CancelUpstreamOnDrop {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(super) fn disarm(&mut self) {
         self.peer = None;
     }
 }

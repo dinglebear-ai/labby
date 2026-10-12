@@ -541,6 +541,15 @@ impl LiveLabbyGuard {
         &self.root
     }
 
+    /// Sanitized bounded daemon evidence without process inventory or mutation.
+    pub(crate) fn diagnostic_log_tail(&self) -> String {
+        format!(
+            "{}\ndaemon_pid={:?}",
+            tail(&self.stderr_path),
+            self.ledger.daemon_pid
+        )
+    }
+
     /// Team context selected by every harness CLI invocation.
     ///
     /// The static-owner bootstrap (`LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1`) seeds

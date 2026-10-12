@@ -92,7 +92,7 @@ impl UpstreamPool {
         capability: UpstreamCapability,
         error: impl Into<String>,
     ) {
-        let mut catalog = self.catalog_write().await;
+        let mut catalog = self.catalog_health_write(upstream_name).await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             record_failure_on_entry(upstream_name, entry, capability, error.into());
         }
@@ -106,7 +106,7 @@ impl UpstreamPool {
 
     /// Record a success for a specific upstream capability, resetting the circuit breaker.
     pub async fn record_success_for(&self, upstream_name: &str, capability: UpstreamCapability) {
-        let mut catalog = self.catalog_write().await;
+        let mut catalog = self.catalog_health_write(upstream_name).await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             record_success_on_entry(upstream_name, entry, capability);
         }
@@ -147,7 +147,7 @@ impl UpstreamPool {
         upstream_name: &str,
         capability: UpstreamCapability,
     ) {
-        let mut catalog = self.catalog_write().await;
+        let mut catalog = self.catalog_health_write(upstream_name).await;
         if let Some(entry) = catalog.get_mut(upstream_name) {
             entry.set_health_for(capability, UpstreamHealth::Healthy);
             entry.set_unhealthy_since_for(capability, None);

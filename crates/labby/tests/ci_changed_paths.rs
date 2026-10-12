@@ -337,6 +337,21 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
 }
 
 #[test]
+fn worktree_identity_readers_collect_their_hermetic_suite() {
+    for path in [
+        "docs/snippets/worktree-identity.py",
+        "docs/snippets/worktree-identity-reader.py",
+        "docs/snippets/worktree-identity.test.py",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
+    let workflow = include_str!("../../../.github/workflows/ci.yml");
+    assert!(workflow.contains("run: python3 docs/snippets/worktree-identity.test.py"));
+}
+
+#[test]
 fn historical_doc_work_products_skip_docs_check() {
     for path in [
         "docs/archive/retired-labby/README.md",
@@ -1086,7 +1101,12 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Advisory jobs excluded from `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &["verification-t1"];
+const ADVISORY_JOBS: &[&str] = &[
+    "verification-t1",
+    "test-windows",
+    "windows-installer",
+    "desktop-windows",
+];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow

@@ -11,6 +11,7 @@ import {
   observeLivePage,
   ownedBrowserLaunchOptions,
   readPrivateCsrf,
+  readScanSecrets,
   readLiveDescriptor,
   runBrowserCleanupIfActive,
   useBrowserWithAbort,
@@ -19,6 +20,7 @@ import {
 
 const liveEnabled = Boolean(process.env.LABBY_LIVE_BROWSER_DESCRIPTOR)
 const nightlyEnabled = process.env.LABBY_LIVE_BROWSER_NIGHTLY === 'true'
+const fixtureTeamId = 'bootstrap-initial-team'
 const progressPath = process.env.LABBY_LIVE_BROWSER_PROGRESS
 let progressBytes = 0
 function progress(message: string) {
@@ -28,7 +30,7 @@ function progress(message: string) {
 }
 
 async function action(page: Page, csrfToken: string, service: string, name: string, params: object) {
-  return page.evaluate(async ({ csrfToken, service, name, params }) => {
+  return page.evaluate(async ({ csrfToken, service, name, params, fixtureTeamId }) => {
     const session = await fetch('/auth/session', { credentials: 'include', cache: 'no-store' })
     const sessionBody = await session.json()
     if (!session.ok || !sessionBody.authenticated) return { status: session.status, body: sessionBody }
@@ -38,6 +40,9 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
         'content-type': 'application/json',
         'x-csrf-token': csrfToken,
         ...(typeof sessionBody.project_id === 'string' ? { 'x-labby-project-id': sessionBody.project_id } : {}),
+        ...(service === 'gateway' && /^gateway\.(loadout|protected_route)\./.test(name)
+          ? { 'x-labby-team-id': fixtureTeamId }
+          : {}),
       },
       body: JSON.stringify({ action: name, params }),
     })
@@ -48,7 +53,7 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       csrfLength: typeof sessionBody.csrf_token === 'string' ? sessionBody.csrf_token.length : 0,
       sessionProjectId: typeof sessionBody.project_id === 'string' ? sessionBody.project_id : null,
     }
-  }, { csrfToken, service, name, params })
+  }, { csrfToken, service, name, params, fixtureTeamId })
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
@@ -57,7 +62,8 @@ async function addGatewayThroughUi(page: Page, name: string) {
     if (request.method() === 'POST') observedPosts.push(`${new URL(request.url()).pathname}:${request.postData() ?? ''}`)
   }
   page.on('request', observePost)
-  await page.getByRole('button', { name: 'Add server', exact: true }).last().click()
+  await page.getByRole('button', { name: 'Gateway actions, search and filters', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Add server', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Add server' })
   await dialog.getByLabel('Name').fill(name)
   await dialog.getByLabel('URL').fill('http://127.0.0.1:9/mcp')
@@ -83,13 +89,24 @@ async function addGatewayThroughUi(page: Page, name: string) {
 
 async function stageProtectedRouteThroughUi(page: Page, name: string) {
   await page.goto('/settings/surfaces/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+  await page.getByRole('button', { name: 'Switch workspace', exact: true }).click()
+  await page.locator('[data-scopemenu] [data-menurow]').filter({ hasText: fixtureTeamId }).click()
+  await page.waitForURL(new URL('/', page.url()).toString())
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click()
+  await page.getByRole('link', { name: 'Settings', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByRole('link', { name: 'Surfaces', exact: true }).click()
   const panel = page.locator('[data-protected-routes-panel]')
   await panel.getByLabel('Name').fill(name)
   await panel.getByLabel('Public host').fill('browser.invalid')
   await panel.getByLabel('Public path').fill('/mcp')
   await panel.getByLabel('Loadout').click()
   await page.getByRole('option', { name: 'production', exact: true }).click()
-  await panel.getByRole('button', { name: 'Add route', exact: true }).click()
+  const mutation = page.waitForResponse(response => response.request().method() === 'POST'
+    && response.request().postData()?.includes('gateway.protected_route.stage_add') === true)
+  // The panel toolbar also has an Add route control; submit the filled editor.
+  await panel.getByRole('button', { name: 'Add route', exact: true }).last().click()
+  const response = await mutation
+  assert.equal(response.status(), 200, `Protected route staging returned ${response.status()}: ${await response.text()}`)
   await assert.doesNotReject(panel.getByText(name, { exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 }))
   await assert.doesNotReject(panel.getByText(/saved for restart/i).waitFor({ state: 'visible', timeout: 10_000 }))
 }
@@ -365,10 +382,9 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.ok(evidence.requests.some((request) => request.path === '/auth/session'))
       assert.ok(evidence.requests.some((request) => request.path === '/v1/catalog'))
       assert.ok(evidence.requests.some((request) => request.path === '/v1/gateway' && request.method === 'POST'))
-      const scanSecrets = (await import('node:fs/promises')).readFile(descriptor.scan_secrets_path, 'utf8')
-        .then((value) => value.split('\n').filter(Boolean))
-      assertCanaryFree(await page.locator('body').innerText(), await scanSecrets, 'DOM')
-      assertCanaryFree(evidence, await scanSecrets, 'browser evidence')
+      const scanSecrets = await readScanSecrets(descriptor, signal)
+      assertCanaryFree(await page.locator('body').innerText(), scanSecrets, 'DOM')
+      assertCanaryFree(evidence, scanSecrets, 'browser evidence')
       progress('evidence-asserted')
       await context.tracing.stop()
       progress('trace-stopped')
@@ -384,7 +400,7 @@ test('embedded Gateway Admin completes a real backend journey', {
         [ownedGatewayId, 'gateway.remove'],
       ] as const) {
         if (!mayContinue()) break
-        const result = await action(page, csrfToken, 'gateway', operation, { name }).catch((error) => ({ status: 0, body: String(error) }))
+        const result = await action(page, csrfToken, 'gateway', operation, { name, confirm: true }).catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:${operation}:${result.status}`)
         if (![200, 404].includes(result.status) && operation === 'gateway.remove') {
           if (!mayContinue()) break

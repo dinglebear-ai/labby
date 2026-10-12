@@ -106,6 +106,10 @@ use super::tools_call::{
 };
 use super::{UpstreamConnection, UpstreamPool};
 
+#[path = "relay_task_pending.rs"]
+mod task_pending;
+use task_pending::{PendingTaskBuffer, PendingTaskLimits};
+
 const RELAY_ROUTE_CLEANUP_GRACE: Duration = Duration::from_secs(2);
 const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 const MAX_PENDING_PROGRESS_ROUTES: usize = 256;
@@ -151,7 +155,19 @@ struct RelayProgressRouteState {
 #[derive(Default)]
 struct RelayTaskRouteState {
     mappings: HashMap<String, String>,
-    pending: HashMap<String, Vec<TaskStatusNotificationParams>>,
+    pending: PendingTaskBuffer,
+    #[cfg(test)]
+    test_pending_limits: Option<PendingTaskLimits>,
+}
+
+impl RelayTaskRouteState {
+    fn pending_limits(&self) -> PendingTaskLimits {
+        #[cfg(test)]
+        if let Some(limits) = self.test_pending_limits {
+            return limits;
+        }
+        PendingTaskLimits::default()
+    }
 }
 
 #[derive(Default)]
@@ -427,7 +443,11 @@ impl RelayRouteState {
         tasks
             .mappings
             .insert(native_task_id.to_string(), gateway_task_id.to_string());
-        let mut pending = tasks.pending.remove(native_task_id).unwrap_or_default();
+        let limits = tasks.pending_limits();
+        let mut pending =
+            tasks
+                .pending
+                .drain(native_task_id, tokio::time::Instant::now(), limits.ttl);
         for params in &mut pending {
             params.task.task.task_id = gateway_task_id.to_string();
         }
@@ -438,17 +458,15 @@ impl RelayRouteState {
         &self,
         mut params: TaskStatusNotificationParams,
     ) -> Option<TaskStatusNotificationParams> {
-        let native_task_id = params.task.task.task_id.clone();
         let mut tasks = self.tasks.lock().await;
-        if let Some(gateway_task_id) = tasks.mappings.get(&native_task_id) {
+        let limits = tasks.pending_limits();
+        let now = tokio::time::Instant::now();
+        if let Some(gateway_task_id) = tasks.mappings.get(params.task.task.task_id.as_str()) {
             params.task.task.task_id = gateway_task_id.clone();
+            tasks.pending.expire(now, limits.ttl);
             Some(params)
         } else {
-            tasks
-                .pending
-                .entry(native_task_id)
-                .or_default()
-                .push(params);
+            tasks.pending.admit(params, limits, now);
             None
         }
     }
@@ -649,20 +667,7 @@ impl RelayClientHandler {
     }
 
     async fn handle_task_status(&self, params: TaskStatusNotificationParams) {
-        let native_task_id = params.task.task.task_id.clone();
-        let status = params.task.status();
-        tracing::debug!(
-            upstream = %self.upstream_name,
-            native_task_id,
-            ?status,
-            "received upstream task notification"
-        );
         let Some(params) = self.routes.translate_or_queue_task_status(params).await else {
-            tracing::debug!(
-                upstream = %self.upstream_name,
-                native_task_id,
-                "queued task notification until gateway task registration"
-            );
             return;
         };
         self.forward_task_status(params).await;
@@ -2183,6 +2188,29 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        let key = (
+            config.name.clone(),
+            session_id,
+            subject.map(str::to_owned),
+            capability_fingerprint(&capabilities),
+        );
+        self.acquire_relay_for_key(config, subject, downstream, capabilities, key)
+            .await
+    }
+
+    pub(super) async fn acquire_relay_for_key(
+        &self,
+        config: &UpstreamConfig,
+        subject: Option<&str>,
+        downstream: Peer<RoleServer>,
+        capabilities: ClientCapabilities,
+        key: RelayCacheKey,
+    ) -> Option<(
+        Peer<RoleClient>,
+        Arc<RelayRouteState>,
+        Option<HttpCancellationSender>,
+        Option<u64>,
+    )> {
         if !self.upstream_config_matches(config) {
             return None;
         }
@@ -2192,12 +2220,6 @@ impl UpstreamPool {
         // cache key so a connection authenticated as one subject is never reused
         // for a call made as another — see the module-level "Cache key" note.
         let requested_capability_fingerprint = capability_fingerprint(&capabilities);
-        let key = (
-            config.name.clone(),
-            session_id,
-            subject.map(str::to_owned),
-            requested_capability_fingerprint.clone(),
-        );
 
         // Fast path: fresh, live cached entry using the same per-request
         // capability snapshot. A changed capability set requires a new MCP
@@ -2466,6 +2488,10 @@ impl UpstreamPool {
         (connections_evicted, locks_pruned)
     }
 }
+
+#[cfg(test)]
+#[path = "relay_task_pending_tests.rs"]
+mod task_pending_tests;
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly

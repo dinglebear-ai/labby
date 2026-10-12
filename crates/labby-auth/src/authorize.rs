@@ -763,6 +763,7 @@ pub async fn callback(
                 .replace_google_provider_token_bundle_if_generation(
                     provider_update,
                     existing.generation,
+                    observed_revocation_epoch.expect("Google callback records its fence epoch"),
                 )
                 .await,
             "server_error"
@@ -2984,7 +2985,8 @@ pub mod tests {
                         refreshed: false,
                         scope_upgraded: true,
                     },
-                    generation
+                    generation,
+                    peer_store.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()

@@ -72,7 +72,7 @@ fn snapshot_gateway_bearer_token_from_path(
     Ok(None)
 }
 
-fn normalize_gateway_bearer_token(token_value: &str) -> String {
+pub(super) fn normalize_gateway_bearer_token(token_value: &str) -> String {
     let trimmed = token_value.trim();
     if trimmed
         .get(..7)

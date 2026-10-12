@@ -15,6 +15,7 @@ mod live_labby;
 mod mcp_action_runner;
 
 mod support {
+    pub(crate) use crate::evidence;
     pub(crate) use crate::live_labby::{
         CleanupResult, LiveLabbyBuilder, LiveLabbyGuard, isolated_command,
     };
@@ -614,6 +615,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     )
     .await
     .expect("raw scoped snippet receipt MCP route");
+    let snippet_canaries = snippet_identity.exact_secret_canaries();
     assert_eq!(
         snippet_runner
             .list_tool_names()
@@ -638,6 +640,9 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             &runner
         };
         let fixture_runner = action_runner;
+        let matrix_action = intent.key();
+        let fixture_matrix_action = matrix_action.as_str();
+        let fixture_canaries = &snippet_canaries;
         let prepared = action_scenarios::prepare_snippet_receipt_case(
             &intent.action,
             |action, params| async move {
@@ -648,7 +653,18 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
                         params.as_object().cloned().expect("snippet fixture params"),
                     )
                     .await
-                    .expect("snippet fixture transport");
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{}",
+                            fixture_runner.wire_failure(
+                                fixture_matrix_action,
+                                "snippet_receipt_fixture",
+                                action,
+                                &error,
+                                fixture_canaries,
+                            )
+                        )
+                    });
                 let text = result_text(&result);
                 assert_ne!(
                     result.is_error,
@@ -671,7 +687,18 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         let result = action_runner
             .call(&intent.service, &intent.action, params)
             .await
-            .unwrap_or_else(|error| panic!("{} wire failure: {error}", intent.key()));
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}",
+                    action_runner.wire_failure(
+                        &intent.key(),
+                        "matrix_action",
+                        &intent.action,
+                        &error,
+                        &snippet_canaries,
+                    )
+                )
+            });
         let text = result_text(&result);
         assert!(
             result.is_error != Some(true) || !text.trim().is_empty(),

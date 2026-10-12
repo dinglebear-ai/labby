@@ -158,3 +158,18 @@ export function describeGatewayOperationalState(
 export function gatewayNeedsAttention(gateway: GatewayOperationalInput): boolean {
   return describeGatewayOperationalState(gateway).needsAttention
 }
+
+/** Calm recovery copy; raw backend diagnostics stay available in the inspector. */
+export function gatewayRecoverySummary(state: GatewayOperationalState): string {
+  if (!state.needsAttention) return state.reason
+  if (/\b401\b|unauthorized|invalid[_ ]token/i.test(state.reason)) {
+    return 'Upstream authentication failed. Review the credentials, then test the connection.'
+  }
+  if (/\b403\b|forbidden/i.test(state.reason)) {
+    return 'Upstream access was denied. Review the account permissions, then test the connection.'
+  }
+  if (/timeout|timed out/i.test(state.reason)) {
+    return 'The upstream did not respond in time. Check its availability, then test the connection.'
+  }
+  return 'The server needs attention. Review its connection settings and technical diagnostics.'
+}

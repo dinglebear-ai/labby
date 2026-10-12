@@ -36,25 +36,62 @@ class CiPlatformPolicyTests(unittest.TestCase):
                 self.assertTrue(provisions, f"{name} runs real Justfile fixtures and needs pinned just")
                 self.assertRegex((ROOT / ".mise.toml").read_text(), r'(?m)^just = "[0-9.]+"$')
 
-    def test_no_workflow_has_a_windows_runner_or_manual_backdoor(self) -> None:
+    def test_windows_qualification_is_bounded_to_declared_ci_lanes(self) -> None:
+        allowed = {("ci.yml", name) for name in ("test-windows", "windows-installer", "desktop-windows")}
         for path in WORKFLOW_DIR.glob("*.y*ml"):
-            with self.subTest(workflow=path.name):
-                text = path.read_text(encoding="utf-8")
-                workflow = yaml.load(text, Loader=yaml.BaseLoader)
-                self.assertNotIn("run_windows", text)
-                for name, job in (workflow.get("jobs") or {}).items():
-                    self.assertNotIn("windows", str(job.get("runs-on", "")).lower(), name)
-                    self.assertNotIn("windows", str(job.get("strategy", {}).get("matrix", {})).lower(), name)
-                for name in ("test-windows", "windows-installer", "desktop-windows"):
-                    self.assertNotIn(name, workflow.get("jobs", {}))
+            workflow = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+            for name, job in (workflow.get("jobs") or {}).items():
+                if "windows" in str(job.get("runs-on", "")).lower():
+                    self.assertIn((path.name, name), allowed)
+                    self.assertEqual("windows-latest", job["runs-on"])
+                    self.assertIn("timeout-minutes", job)
+                self.assertNotIn("windows", str(job.get("strategy", {}).get("matrix", {})).lower(), name)
+            dispatch = workflow.get("on", {}).get("workflow_dispatch")
+            inputs = dispatch.get("inputs", {}) if isinstance(dispatch, dict) else {}
+            if "run_windows" in inputs:
+                self.assertEqual("ci.yml", path.name)
+                self.assertEqual("false", inputs["run_windows"]["default"])
 
-    def test_lifecycle_analysis_keeps_shell_checks_without_powershell(self) -> None:
+    def test_desktop_backport_is_verified_and_optimized_before_advisory_exception(self) -> None:
+        jobs = yaml.safe_load(self.workflow)["jobs"]
+        steps = jobs["desktop-rust"]["steps"]
+        commands = [step.get("run", "") for step in steps]
+        verify = commands.index("python3 scripts/ci/verify_glib_backport.py")
+        regression = commands.index("cargo test --release --manifest-path apps/tauri/glib-backport-check/Cargo.toml --locked")
+        native = commands.index("cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked")
+        audit = next(i for i, command in enumerate(commands) if "check advisories" in command)
+        self.assertIn("--manifest-path apps/tauri/src-tauri/Cargo.toml", commands[audit])
+        self.assertIn("--manifest-path apps/tauri/glib-backport-check/Cargo.toml", commands[audit])
+        self.assertLess(verify, regression)
+        self.assertLess(regression, native)
+        self.assertLess(native, audit)
+        self.assertIn("desktop-rust", jobs["ci-gate"]["needs"])
+        for i in (verify, regression, native, audit):
+            self.assertNotIn("continue-on-error", steps[i])
+
+    def test_gate_result_checks_reference_declared_dependencies(self) -> None:
+        jobs = yaml.safe_load(self.workflow)["jobs"]
+        gate = jobs["ci-gate"]
+        needs = set(gate["needs"])
+        checks = "\n".join(step.get("run", "") for step in gate["steps"])
+        result_jobs = set(re.findall(r"needs\.([A-Za-z0-9_-]+)\.result", checks))
+        self.assertEqual(needs, result_jobs)
+        self.assertLessEqual(needs, set(jobs))
+        for job in ("test-windows", "windows-installer", "desktop-windows"):
+            self.assertNotIn(job, needs)
+
+    def test_lifecycle_analysis_preserves_shell_and_pinned_powershell_checks(self) -> None:
         steps = yaml.safe_load(self.workflow)["jobs"]["lifecycle-static-analysis"]["steps"]
         self.assertTrue(any(step.get("run") == "scripts/ci/check-lifecycle-scripts.sh" for step in steps))
-        for step in steps:
-            self.assertNotEqual("pwsh", step.get("shell"))
-            self.assertNotIn("Pester", step.get("run", ""))
-            self.assertNotIn("PSScriptAnalyzer", step.get("run", ""))
+        modules = next(step for step in steps if step.get("name") == "Install pinned PowerShell validation modules")
+        self.assertEqual("pwsh", modules["shell"])
+        self.assertIn("PSScriptAnalyzer -RequiredVersion 1.24.0", modules["run"])
+        self.assertIn("Pester -RequiredVersion 5.7.1", modules["run"])
+        analyzer = next(step for step in steps if step.get("name") == "Analyze every shipped PowerShell lifecycle script")
+        self.assertEqual("pwsh", analyzer["shell"])
+        self.assertIn("lifecycle-scripts.json", analyzer["run"])
+        self.assertIn("Invoke-ScriptAnalyzer", analyzer["run"])
+        self.assertIn('throw "PSScriptAnalyzer found', analyzer["run"])
 
     def test_self_hosted_jobs_are_declared_non_blocking_and_same_repository(self) -> None:
         # Hosted runners stay the default. The self-hosted fleet is privileged
@@ -158,6 +195,26 @@ class ProductRoutingTests(unittest.TestCase):
         context = self.context("pull_request", False, ["docs/services/ACCESS.md"])
         result = self.run_aggregate(context, **{"test-fork": "skipped", "test": "skipped"})
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_identity_reader_changes_collect_the_real_python_suite(self) -> None:
+        command = "python3 docs/snippets/worktree-identity.test.py"
+        steps = self.jobs["docs-check"]["steps"]
+        collectors = [step for step in steps if command in step.get("run", "")]
+        self.assertEqual(len(collectors), 1, "collect the real reader, beyond mocked snippet fixtures")
+        self.assertEqual(collectors[0]["run"].strip(), command, "preserve the suite's exit status")
+        for path in (
+            "docs/snippets/worktree-identity.py",
+            "docs/snippets/worktree-identity-reader.py",
+            "docs/snippets/worktree-identity.test.py",
+        ):
+            with self.subTest(path=path):
+                context = self.context("pull_request", False, [path])
+                self.assertTrue(evaluate_condition(self.jobs["docs-check"].get("if"), context))
+
+    def test_identity_reader_qualification_failure_blocks_the_required_gate(self) -> None:
+        context = self.context("pull_request", False, ["docs/snippets/worktree-identity.py"])
+        failed = self.run_aggregate(context, **{"docs-check": "failure"})
+        self.assertNotEqual(0, failed.returncode, failed.stdout + failed.stderr)
 
 
 if __name__ == "__main__":

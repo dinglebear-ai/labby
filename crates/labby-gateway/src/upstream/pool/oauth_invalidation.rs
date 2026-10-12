@@ -11,9 +11,17 @@ pub struct OAuthSessionInvalidation {
     pub subject_connections: usize,
     pub relay_connections: usize,
     pub task_routes: usize,
+    pub task_route_storage_failed: bool,
 }
 
 impl OAuthSessionInvalidation {
+    pub fn ensure_task_routes_durable(self) -> Result<(), String> {
+        if self.task_route_storage_failed {
+            Err("task route revocation persistence failed".to_string())
+        } else {
+            Ok(())
+        }
+    }
     pub fn total(self) -> usize {
         self.generic_connections
             + self.subject_connections
@@ -105,11 +113,16 @@ impl UpstreamPool {
         let task_routes = self
             .invalidate_task_routes_for_oauth_subject(upstream, subject, reason)
             .await;
+        if let Err(error) = &task_routes {
+            tracing::error!(action = "task.routes.revoke", error = %error, "durable task revocation failed");
+            self.close_task_companions(reason).await;
+        }
         let counts = OAuthSessionInvalidation {
             generic_connections: usize::from(generic_connection.is_some()),
             subject_connections: usize::from(subject_connection.is_some()),
             relay_connections: relay_connections.len(),
-            task_routes,
+            task_routes: task_routes.as_ref().copied().unwrap_or(0),
+            task_route_storage_failed: task_routes.is_err(),
         };
         let subject_upstream = upstream.to_string();
         let subject_shutdown = async move {
@@ -211,11 +224,16 @@ impl UpstreamPool {
         let task_routes = self
             .invalidate_oauth_task_routes_for_upstreams(&upstreams, reason)
             .await;
+        if let Err(error) = &task_routes {
+            tracing::error!(action = "task.routes.revoke", error = %error, "durable task revocation failed");
+            self.close_task_companions(reason).await;
+        }
         let counts = OAuthSessionInvalidation {
             generic_connections: generic_connections.len(),
             subject_connections: subject_connections.len(),
             relay_connections: relay_connections.len(),
-            task_routes,
+            task_routes: task_routes.as_ref().copied().unwrap_or(0),
+            task_route_storage_failed: task_routes.is_err(),
         };
         let subject_shutdown = futures::future::join_all(subject_connections.into_iter().map(
             |(name, connection)| async move {

@@ -27,6 +27,20 @@ impl Default for GoogleRefreshLocks {
 
 #[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
 static GOOGLE_PROVIDER_REFRESH_LOCKS: OnceLock<GoogleRefreshLocks> = OnceLock::new();
+#[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
+static GOOGLE_REFRESH_OPERATION_LOCKS: OnceLock<GoogleRefreshLocks> = OnceLock::new();
+
+/// Serialize provider token exchanges across inbound and outbound callers.
+/// Acquire this before the shorter credential persistence lock; rmcp save
+/// acquires that persistence lock while its refresh-operation guard is held.
+#[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
+pub(crate) fn refresh_operation_lock(credential_identity: &str) -> Arc<Mutex<()>> {
+    lock_in_registry(
+        GOOGLE_REFRESH_OPERATION_LOCKS.get_or_init(GoogleRefreshLocks::default),
+        credential_identity,
+    )
+}
+
 #[cfg(feature = "http-axum")]
 const SHARED_FAILURE_TTL: Duration = Duration::from_secs(2);
 #[cfg(feature = "http-axum")]
@@ -188,9 +202,9 @@ where
 
 /// Return the process-wide mutex for one stable Google provider subject.
 ///
-/// Inbound Labby token rotation, outbound Google MCP refresh, status probes, and
-/// explicit revocation all use this same lock so one central refresh credential
-/// is never refreshed or deleted concurrently by separate product surfaces.
+/// Credential persistence, inbound refresh, callback installation, and explicit
+/// revocation share this lock. Outbound exchanges hold `refresh_operation_lock`
+/// across load/exchange/save and acquire this shorter lock during persistence.
 #[cfg(any(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
 pub(crate) fn lock(subject: &str) -> Arc<Mutex<()>> {
     lock_in_registry(

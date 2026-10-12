@@ -395,12 +395,12 @@ impl GatewayManager {
         let new_mcp_ui_enabled = runtime_cfg.code_mode.mcp_ui_enabled;
         let new_ns_tokens = code_mode_namespace_tokens(&runtime_cfg);
 
-        let (previous_cfg, pool_settings_unchanged, changed_upstreams) = {
+        let (previous_cfg, pool_settings_unchanged, mut changed_upstreams) = {
             let current = self.config.read().await;
             let mut changed_upstreams = upstream_changed_names(&current, &cfg);
             changed_upstreams.extend(credentials_changed.iter().cloned());
             // Manual reload also refreshes credential inputs outside TOML.
-            // Reconnect configured bearer peers without fingerprinting secrets.
+            // Reconnect configured bearer peers even when authority is unchanged.
             if !allow_in_place_selective {
                 changed_upstreams.extend(
                     cfg.upstream
@@ -416,6 +416,14 @@ impl GatewayManager {
             )
         };
         let existing_pool = self.runtime.current_pool().await;
+        // Connection refresh and permanent authority replacement are separate
+        // boundaries. Compare the live pool's runtime-only bearer observations
+        // using the same normalized process/file resolution as its transports.
+        let mut task_revocations = upstream_changed_names(&previous_cfg, &cfg);
+        if let Some(pool) = existing_pool.as_ref() {
+            task_revocations.extend(pool.task_bearer_authority_changed_names(&cfg.upstream));
+        }
+        changed_upstreams.extend(task_revocations.iter().cloned());
         if pool_settings_unchanged && existing_pool.is_some() && changed_upstreams.is_empty() {
             self.reconcile_runtime_state(&cfg, existing_pool.as_deref())
                 .await?;
@@ -623,6 +631,14 @@ impl GatewayManager {
         }
 
         let old_pool = existing_pool;
+        // Manual/full publication has the same permanent revocation boundary
+        // as a transactional reconcile. Preserve unchanged definitions across
+        // pool replacement; only changed/removed authority gets durable intent.
+        if let Some(pool) = old_pool.as_ref() {
+            pool.prepare_task_config_revocation(task_revocations.iter().cloned().collect())
+                .await
+                .map_err(ToolError::internal_message)?;
+        }
         let before = snapshot_from_pool(
             old_pool.clone(),
             old_code_mode_enabled,
@@ -686,6 +702,13 @@ impl GatewayManager {
         // that the caller subsequently rolls back on disk.
         self.reconcile_runtime_state(&cfg, fresh_pool.as_deref())
             .await?;
+        let task_definition_guards = match old_pool.as_ref() {
+            Some(pool) => Some(
+                pool.prepare_lazy_upstream_reconcile(&changed_upstreams)
+                    .await,
+            ),
+            None => None,
+        };
         tracing::info!(
             surface = "dispatch",
             service = "gateway",
@@ -709,6 +732,12 @@ impl GatewayManager {
             None => None,
         };
         let _publication = self.publication_barrier.write().await;
+        if let Some(pool) = old_pool.as_ref() {
+            pool.complete_task_config_revocation()
+                .await
+                .map_err(ToolError::internal_message)?;
+            pool.fence_replaced_task_definitions(&task_revocations);
+        }
         self.store
             .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);
         self.code_mode_app_state
@@ -743,6 +772,7 @@ impl GatewayManager {
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
         *self.config.write().await = runtime_cfg;
         self.advance_runtime_config_generation();
+        drop(task_definition_guards);
         // A private candidate must not retain itself through background tasks
         // if validation/persistence fails or reload is cancelled before swap.
         if let Some(pool) = fresh_pool {
