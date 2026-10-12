@@ -15,7 +15,7 @@ class GlibBackportTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.desktop = Path(self.temp.name)
         shutil.copytree(DESKTOP / "vendor", self.desktop / "vendor")
-        for name in ("glib-backport.json", "Cargo.toml", "Cargo.lock"):
+        for name in ("glib-backport.json", "glib-compatibility.json", "Cargo.toml", "Cargo.lock"):
             shutil.copyfile(DESKTOP / name, self.desktop / name)
 
     def test_exact_backport_and_path_lock_are_accepted(self) -> None:
@@ -42,6 +42,34 @@ class GlibBackportTests(unittest.TestCase):
             verify(self.desktop)
         path.write_bytes(original)
         (self.desktop / "vendor/glib/unlisted.rs").write_text("drift")
+        with self.assertRaises(AssertionError):
+            verify(self.desktop)
+
+    def test_unreviewed_compatibility_edit_cannot_be_accepted_by_a_new_file_hash(self) -> None:
+        import hashlib
+
+        path = self.desktop / "vendor/glib/src/object.rs"
+        data = path.read_bytes().replace(b"InterfaceRef<'_, T>", b"InterfaceRef<'static, T>")
+        self.assertNotEqual(data, path.read_bytes())
+        path.write_bytes(data)
+        receipt_path = self.desktop / "glib-backport.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["modified_files"]["src/object.rs"] = hashlib.sha256(data).hexdigest()
+        receipt_path.write_text(json.dumps(receipt))
+        with self.assertRaises(AssertionError):
+            verify(self.desktop)
+
+    def test_compatibility_allowlist_and_original_manifest_are_pinned(self) -> None:
+        path = self.desktop / "glib-compatibility.json"
+        original = path.read_bytes()
+        path.write_bytes(original.replace(b"InterfaceRef<'_, T>", b"InterfaceRef<'static, T>"))
+        with self.assertRaises(AssertionError):
+            verify(self.desktop)
+        path.write_bytes(original)
+        receipt_path = self.desktop / "glib-backport.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["upstream_files"]["LICENSE"] = "0" * 64
+        receipt_path.write_text(json.dumps(receipt))
         with self.assertRaises(AssertionError):
             verify(self.desktop)
 

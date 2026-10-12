@@ -129,6 +129,20 @@
     "tests/value.rs": "c796ea2b30559e9c8ab6ebbb6c59c575d365a27b461c20f9ca0b1989dbe01d79"
   },
   "modified_files": {
-    "src/variant_iter.rs": "a0f5ee8acb8faa089bcdfbc9a57372609fce7654026ccef7d9a224d05a654ccc"
-  }
+    "README.md": "04e2d3d3b85e8b6ab9f04aa93dfea8663e96eb69d4bdbe2f9b86caec83a6b832",
+    "src/collections/list.rs": "e23dd1ca864011a291104dbcb35baca101d98b049e83eee9d0a03381ce1dc1cc",
+    "src/collections/slist.rs": "7d3cd457f8b2d1c56ba710525de4fbddec0628886b3ba34c2813a6e352716075",
+    "src/enums.rs": "284beec75075a21ffccebd6947ba2d92c5ffcba4a2c933585e5b3081211ae718",
+    "src/main_context.rs": "3ef005e199eb56e74af8b7fea9a575cec4fca8af36721bd7ade236979f34fda6",
+    "src/object.rs": "8ca4267d2fd4355f49e5f820fc6b291ad0ab81757bf533a352308b7faf5cde93",
+    "src/param_spec.rs": "60f2c331f3578729fe9acb4b4653f38cba1a29b01d7e0cca0bba9aaae05bd755",
+    "src/subclass/types.rs": "db093d5ca3025408ef842410e66f73075eb763029053b1dfe288b20032e66ef9",
+    "src/translate.rs": "a3d9dcbdc3399f58007e491db40ce173459b0d3ec837c731c313ffbe6d3a1cf7",
+    "src/value.rs": "b9719d1e7e0fe7d76714a42109e6766ec63f456cc08c10ecacc6ceee025ab9bc",
+    "src/value_array.rs": "8509fd706cbd4f2dffb75f2001ce4365350ab16f54f555bd72d3c607381d96e5",
+    "src/variant.rs": "fe31f692d591a4c3a1270f2f19a2101fa73725cdf9bee004478639d1ec7ebd8b",
+    "src/variant_iter.rs": "a0f5ee8acb8faa089bcdfbc9a57372609fce7654026ccef7d9a224d05a654ccc",
+    "src/variant_type.rs": "5b0be1eab8effe786282118af55c134a681e10406b6fe5e8ba598a9a46016847"
+  },
+  "compatibility_corrections": "glib-compatibility.json"
 }

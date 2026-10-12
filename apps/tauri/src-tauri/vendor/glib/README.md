@@ -24,7 +24,7 @@ Most types in the GLib family have [`Type`] identifiers.
 Their corresponding Rust types implement the [`StaticType`] trait.
 
 A dynamically typed [`Value`] can carry values of any [`StaticType`].
-[`Variant`](struct@Variant)s can carry values of [`StaticVariantType`].
+[`Variant`](https://docs.rs/glib/0.18.5/glib/variant/struct.Variant.html)s can carry values of [`StaticVariantType`].
 
 ## Errors
 
