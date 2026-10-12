@@ -52,6 +52,23 @@ class CiPlatformPolicyTests(unittest.TestCase):
                 self.assertEqual("ci.yml", path.name)
                 self.assertEqual("false", inputs["run_windows"]["default"])
 
+    def test_desktop_backport_is_verified_and_optimized_before_advisory_exception(self) -> None:
+        jobs = yaml.safe_load(self.workflow)["jobs"]
+        steps = jobs["desktop-rust"]["steps"]
+        commands = [step.get("run", "") for step in steps]
+        verify = commands.index("python3 scripts/ci/verify_glib_backport.py")
+        regression = commands.index("cargo test --release --manifest-path apps/tauri/glib-backport-check/Cargo.toml --locked")
+        native = commands.index("cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked")
+        audit = next(i for i, command in enumerate(commands) if "check advisories" in command)
+        self.assertIn("--manifest-path apps/tauri/src-tauri/Cargo.toml", commands[audit])
+        self.assertIn("--manifest-path apps/tauri/glib-backport-check/Cargo.toml", commands[audit])
+        self.assertLess(verify, regression)
+        self.assertLess(regression, native)
+        self.assertLess(native, audit)
+        self.assertIn("desktop-rust", jobs["ci-gate"]["needs"])
+        for i in (verify, regression, native, audit):
+            self.assertNotIn("continue-on-error", steps[i])
+
     def test_gate_result_checks_reference_declared_dependencies(self) -> None:
         jobs = yaml.safe_load(self.workflow)["jobs"]
         gate = jobs["ci-gate"]

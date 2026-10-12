@@ -446,6 +446,9 @@ async fn refresh_google_provider_credential(
     refresh_token_id: &str,
 ) -> Result<GoogleExchange, AuthError> {
     let subject_id = fingerprint(subject);
+    // Read authority before the row/exchange. A fresh grant can reuse generation 1
+    // after revoke, so every mutation must also retain this durable epoch.
+    let observed_revocation_epoch = state.store.google_provider_fence_epoch().await?;
     let mut credential = state
         .store
         .find_google_provider_credential(subject)
@@ -469,7 +472,11 @@ async fn refresh_google_provider_credential(
     if !authorized {
         let invalidation = state
             .store
-            .invalidate_google_provider_credential(subject, credential.generation)
+            .invalidate_google_provider_credential(
+                subject,
+                credential.generation,
+                observed_revocation_epoch,
+            )
             .await?;
         warn!(
             refresh_token_id = %refresh_token_id,
@@ -529,7 +536,11 @@ async fn refresh_google_provider_credential(
                 if google.subject != subject {
                     let invalidation = state
                         .store
-                        .invalidate_google_provider_credential(subject, credential.generation)
+                        .invalidate_google_provider_credential(
+                            subject,
+                            credential.generation,
+                            observed_revocation_epoch,
+                        )
                         .await?;
                     warn!(
                         refresh_token_id = %refresh_token_id,
@@ -570,6 +581,7 @@ async fn refresh_google_provider_credential(
                             scope_upgraded: false,
                         },
                         credential.generation,
+                        observed_revocation_epoch,
                     )
                     .await?;
                 if !persisted {
@@ -583,7 +595,7 @@ async fn refresh_google_provider_credential(
                         stale_provider_generation = credential.generation,
                         replacement_provider_credential_present = replacement_present,
                         kind = "oauth_needs_reauth",
-                        "oauth provider refresh result discarded because a newer generation was persisted"
+                        "oauth provider refresh result discarded after generation or revocation epoch changed"
                     );
                     return Err(AuthError::OauthNeedsReauth(
                         "google provider credential changed during refresh; reauthorization required"
@@ -595,7 +607,11 @@ async fn refresh_google_provider_credential(
             Err(AuthError::OauthNeedsReauth(message)) => {
                 let invalidation = state
                     .store
-                    .invalidate_google_provider_credential(subject, credential.generation)
+                    .invalidate_google_provider_credential(
+                        subject,
+                        credential.generation,
+                        observed_revocation_epoch,
+                    )
                     .await?;
                 if invalidation.invalidated {
                     warn!(
@@ -611,6 +627,11 @@ async fn refresh_google_provider_credential(
                 }
                 if attempt == 1 {
                     return Err(AuthError::OauthNeedsReauth(message));
+                }
+                if state.store.google_provider_fence_epoch().await? != observed_revocation_epoch {
+                    return Err(AuthError::OauthNeedsReauth(
+                        "google provider authority changed during refresh; reauthorization required".into(),
+                    ));
                 }
                 let replacement = state
                     .store

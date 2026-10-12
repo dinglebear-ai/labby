@@ -7,6 +7,7 @@ use crate::pool::RunnerSpawn;
 pub(super) fn test_config(timeout: Duration) -> RunnerConfig {
     RunnerConfig {
         artifact_run_id: Ulid::new().to_string(),
+        test_artifact_store: Arc::new(tempfile::tempdir().expect("owned test artifact store")),
         code_to_run: "async () => 1".to_string(),
         proxy: String::new(),
         timeout,
@@ -108,3 +109,8 @@ mod traces_and_pool;
 
 #[cfg(not(windows))]
 mod boundary_regressions;
+
+#[cfg(not(windows))]
+mod error_isolation;
+#[cfg(not(windows))]
+mod fixture_roots;

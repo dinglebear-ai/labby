@@ -320,7 +320,7 @@ jobs:
       - name: Test CI policy helpers
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_ci_platform_policy.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py scripts/ci/test_release_hardening.py scripts/ci/test_release_observer.py scripts/ci/test_multi_user_migration_rehearsal.py
+          python3 -m unittest scripts/ci/test_check_rust_coverage.py scripts/ci/test_ci_platform_policy.py scripts/ci/test_glib_backport.py scripts/ci/test_windows_ci_policy.py scripts/ci/test_protected_doc_guard.py scripts/ci/test_release_hardening.py scripts/ci/test_release_observer.py scripts/ci/test_multi_user_migration_rehearsal.py
           python3 -m unittest scripts/ci/test_default_web_build.py
 
   lifecycle-static-analysis:
@@ -1687,6 +1687,10 @@ jobs:
           # 4.1 still fails here, which is the intended outcome above.
           sudo apt-get update || echo "::warning::apt-get update reported a failing index; continuing to install."
           sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev patchelf
+      - name: Verify GTK3-compatible GLib security backport
+        run: python3 scripts/ci/verify_glib_backport.py
+      - name: Qualify GLib string iterators with optimization
+        run: cargo test --release --manifest-path apps/tauri/glib-backport-check/Cargo.toml --locked
       - run: cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
       - uses: taiki-e/install-action@3ae2e1de8b1f6447853fd29a6000b3953b0494ac
         with:
@@ -1696,6 +1700,10 @@ jobs:
           "$CARGO_HOME/bin/cargo-deny" --version
           "$CARGO_HOME/bin/cargo-deny" \
             --manifest-path apps/tauri/src-tauri/Cargo.toml \
+            --config apps/tauri/src-tauri/deny.toml \
+            check advisories
+          "$CARGO_HOME/bin/cargo-deny" \
+            --manifest-path apps/tauri/glib-backport-check/Cargo.toml \
             --config apps/tauri/src-tauri/deny.toml \
             check advisories
 

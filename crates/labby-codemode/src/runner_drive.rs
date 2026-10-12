@@ -232,6 +232,16 @@ pub(crate) struct RunnerConfig {
     pub openapi_registry: labby_openapi::OpenApiRegistry,
     /// Hardened dispatch client for the `openapi` provider (cheap `Arc` clone).
     pub openapi_http_client: reqwest::Client,
+    /// Test-owned store, retained until execution and runner teardown finish.
+    #[cfg(test)]
+    test_artifact_store: Arc<tempfile::TempDir>,
+}
+
+#[cfg(test)]
+impl RunnerConfig {
+    fn test_artifact_root(&self) -> PathBuf {
+        self.test_artifact_store.path().join(&self.artifact_run_id)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +280,16 @@ struct DriveState {
 }
 
 impl DriveState {
+    fn for_config(cfg: &RunnerConfig) -> Self {
+        let state = Self::new(&cfg.artifact_run_id);
+        #[cfg(test)]
+        let state = Self {
+            artifact_root: cfg.test_artifact_root(),
+            ..state
+        };
+        state
+    }
+
     fn reserve_trace_call(&mut self, seq: u64, id: &str) -> Result<u64, CodeModeExecutionError> {
         self.calls.reserve(seq, id).map_err(|error| {
             CodeModeExecutionError::with_trace(error, sorted_calls(&self.calls))
@@ -320,8 +340,8 @@ impl DriveState {
 enum DriveOutcome {
     /// Clean `Done` — return the response and keep (park) the runner.
     Completed(CodeModeExecutionResponse),
-    /// The runner reported a per-execution `Error` and then parked itself; the
-    /// process is healthy and may be reused.
+    /// The runner reported a per-execution `Error`. Preserve its contract and
+    /// partial trace, but evict: old replies/terminal frames may still be in transit.
     ExecutionError(CodeModeExecutionError),
     /// The runner exited before emitting any valid protocol event. The runner
     /// must be replaced, and the execution may be replayed once because no

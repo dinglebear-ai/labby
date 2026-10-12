@@ -4,6 +4,12 @@
 # maintenance-status notices that have no compatible Tauri replacement.
 unmaintained = "none"
 ignore = [
+  # Source-corrected backport, not an exposure waiver. Required Linux CI
+  # verifies the registry source and exact upstream two-line fix, then tests
+  # all VariantStrIter accessors with optimization. The version-only advisory
+  # cannot identify this path patch. Remove when Tauri's GTK3 graph accepts a
+  # fixed upstream release. See ../GLIB_BACKPORT.md and glib-backport.json.
+  { id = "RUSTSEC-2024-0429", reason = "GLib 0.18.5 path source includes upstream gtk-rs-core PR 1343; exact source correction and optimized iterator regressions are required before this audit" },
   # plist 1.9 (via tauri-utils 2.9) constrains quick-xml to 0.39. This shell does
   # not parse caller-controlled XML/plist data; these paths are build/runtime
   # platform metadata only. Remove both exceptions as soon as tauri-utils

@@ -79,6 +79,7 @@ impl UpstreamPool {
     pub(crate) fn fence_replaced_task_definitions(&self, upstreams: &HashSet<String>) {
         for upstream in upstreams {
             self.upstream_config_fingerprints.remove(upstream);
+            self.upstream_bearer_authorities.remove(upstream);
             self.configured_upstreams.remove(upstream);
         }
     }
@@ -112,7 +113,10 @@ impl UpstreamPool {
                 configs
                     .iter()
                     .find(|config| config.name == **name)
-                    .is_none_or(|config| !self.upstream_config_matches(config))
+                    .is_none_or(|config| {
+                        !self.upstream_config_matches(config)
+                            || !self.task_bearer_authority_matches(config)
+                    })
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -142,8 +146,10 @@ impl UpstreamPool {
                     upstream_name.clone(),
                     crate::gateway::code_mode::catalog_cache::fingerprint(config),
                 );
+                self.replace_task_bearer_authority(config);
             } else {
                 self.upstream_config_fingerprints.remove(upstream_name);
+                self.upstream_bearer_authorities.remove(upstream_name);
                 self.configured_upstreams.remove(upstream_name);
             }
         }
@@ -282,6 +288,7 @@ impl UpstreamPool {
         self.close_task_companions(reason).await;
         self.configured_upstreams.clear();
         self.upstream_config_fingerprints.clear();
+        self.upstream_bearer_authorities.clear();
         self.cancel_all_upstream_subscriptions().await;
 
         // Cancel and await stale-while-revalidate work before dropping the cache.

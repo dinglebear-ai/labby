@@ -448,6 +448,7 @@ async fn google_provider_token_bundle_cas_rejects_a_stale_generation() {
             .replace_google_provider_token_bundle_if_generation(
                 update("access-v2", "refresh-v2"),
                 original.generation,
+                store.google_provider_fence_epoch().await.unwrap(),
             )
             .await
             .unwrap()
@@ -457,6 +458,7 @@ async fn google_provider_token_bundle_cas_rejects_a_stale_generation() {
             .replace_google_provider_token_bundle_if_generation(
                 update("stale-access", "stale-refresh"),
                 original.generation,
+                store.google_provider_fence_epoch().await.unwrap(),
             )
             .await
             .unwrap(),
@@ -512,7 +514,11 @@ async fn google_provider_revoke_epoch_prevents_stale_cross_store_recreation() {
 
     assert!(
         revoker
-            .invalidate_google_provider_credential("google-subject-revoked", generation)
+            .invalidate_google_provider_credential(
+                "google-subject-revoked",
+                generation,
+                observed_epoch
+            )
             .await
             .unwrap()
             .invalidated
@@ -1032,7 +1038,11 @@ async fn google_provider_invalidation_is_generation_safe_and_revokes_dependent_g
     assert!(current.generation > first_generation);
 
     let stale = store
-        .invalidate_google_provider_credential("google-subject-123", first_generation)
+        .invalidate_google_provider_credential(
+            "google-subject-123",
+            first_generation,
+            store.google_provider_fence_epoch().await.unwrap(),
+        )
         .await
         .unwrap();
     assert!(!stale.invalidated);
@@ -1046,7 +1056,11 @@ async fn google_provider_invalidation_is_generation_safe_and_revokes_dependent_g
     );
 
     let invalidation = store
-        .invalidate_google_provider_credential("google-subject-123", current.generation)
+        .invalidate_google_provider_credential(
+            "google-subject-123",
+            current.generation,
+            store.google_provider_fence_epoch().await.unwrap(),
+        )
         .await
         .unwrap();
     assert!(invalidation.invalidated);

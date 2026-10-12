@@ -129,6 +129,13 @@ pub(crate) enum CodeModeRunnerOutput {
         result: CodeModeRunnerResult,
         #[serde(default)]
         logs: Vec<String>,
+        /// Native proof that all emitted requests' replies were consumed. A
+        /// caught or unawaited operation can return successfully without this
+        /// proof; with no pending host calls the parent preserves its response
+        /// and evicts without replay. Pending host calls remain a protocol fault.
+        /// Missing proof defaults to no reuse for older runner compatibility.
+        #[serde(default)]
+        reuse_ready: bool,
     },
     Error {
         // As with `CodeModeRunnerInput::ToolError`, no `#[serde(default)]`:
@@ -170,6 +177,7 @@ pub(crate) struct CodeModeRunnerState {
     pub(crate) reader: BufReader<io::Stdin>,
     pub(crate) writer: BufWriter<io::Stdout>,
     pub(crate) next_seq: u64,
+    pub(crate) replies: crate::runner::reply_ownership::ReplyOwnership,
 }
 
 thread_local! {

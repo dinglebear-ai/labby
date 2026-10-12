@@ -198,11 +198,11 @@ mod tests {
             "__lab_internal::get_skill",
             "__lab_internal::unknown",
         ] {
-            let CodeModeRunnerInput::ToolError { seq, error } =
-                internal_call_over_ceiling_response(7, id.into())
-            else {
-                panic!("retrieval must reject")
-            };
+            let (seq, error) = match internal_call_over_ceiling_response(7, id.into()) {
+                CodeModeRunnerInput::ToolError { seq, error } => Some((seq, error)),
+                _ => None,
+            }
+            .expect("retrieval must reject");
             assert_eq!(seq, 7);
             assert_eq!(error.kind(), "internal_call_budget_exceeded");
             assert_eq!(error.origin, crate::CodeModeErrorOrigin::Budget);

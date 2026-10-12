@@ -1153,7 +1153,7 @@ impl UpstreamOauthManager {
     async fn map_refresh_error_and_maybe_invalidate(
         &self,
         error: rmcp::transport::AuthError,
-        attempted_google_generation: Option<(String, i64)>,
+        attempted_google_generation: Option<(String, i64, i64)>,
     ) -> OauthError {
         let (terminal, mapped) = map_refresh_error(error);
         if terminal
@@ -1162,12 +1162,13 @@ impl UpstreamOauthManager {
                 .is_ok_and(|oauth| oauth.credential.is_google_provider())
         {
             match attempted_google_generation {
-                Some((attempted_subject, attempted_generation)) => {
+                Some((attempted_subject, attempted_generation, attempted_epoch)) => {
                     match self
                         .sqlite
                         .invalidate_google_provider_credential(
                             &attempted_subject,
                             attempted_generation,
+                            attempted_epoch,
                         )
                         .await
                     {
@@ -2192,6 +2193,7 @@ mod url_tests {
                         scope_upgraded: false,
                     },
                     current.generation,
+                    sqlite.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()
@@ -2241,6 +2243,7 @@ mod url_tests {
                         scope_upgraded: false,
                     },
                     attempted.generation,
+                    sqlite.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()

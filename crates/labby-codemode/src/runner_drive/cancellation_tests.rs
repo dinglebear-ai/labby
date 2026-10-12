@@ -147,9 +147,11 @@ async fn live_runner_closing_stdout_before_activity_times_out_without_retry() {
     )
     .await
     .expect("EOF exit wait and teardown must be bounded");
-    let DriveOutcome::RunnerUnhealthy(error) = outcome else {
-        panic!("stdout EOF is not proof of an actual pre-protocol process exit");
-    };
+    let error = match outcome {
+        DriveOutcome::RunnerUnhealthy(error) => Some(error),
+        _ => None,
+    }
+    .expect("stdout EOF is not proof of an actual pre-protocol process exit");
     assert_eq!(error.kind(), "timeout");
     assert!(runner.child.try_wait().expect("child status").is_some());
 }
@@ -184,27 +186,36 @@ sleep 3600
         tokio::time::Instant::now() + config.timeout,
     ));
     tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            () = started.notified() => {},
-            _ = &mut execution => panic!("execution ended before host work started"),
-        }
+        let host_started = tokio::select! {
+            () = started.notified() => true,
+            _ = &mut execution => false,
+        };
+        assert!(host_started, "execution ended before host work started");
     })
     .await
     .expect("host request started");
     std::fs::write(&marker, b"started").expect("release stdout close");
     tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            () = dropped.notified() => {},
-            _ = &mut execution => panic!("host work must cancel before the live-child exit wait completes"),
-        }
-    }).await.expect("EOF immediately drops pending host work");
+        let host_dropped = tokio::select! {
+            () = dropped.notified() => true,
+            _ = &mut execution => false,
+        };
+        assert!(
+            host_dropped,
+            "host work must cancel before the live-child exit wait completes"
+        );
+    })
+    .await
+    .expect("EOF immediately drops pending host work");
     let outcome = tokio::time::timeout(Duration::from_secs(6), &mut execution)
         .await
         .expect("bounded exit wait");
     drop(execution);
-    let DriveOutcome::RunnerUnhealthy(error) = outcome else {
-        panic!("post-activity EOF must not replay")
-    };
+    let error = match outcome {
+        DriveOutcome::RunnerUnhealthy(error) => Some(error),
+        _ => None,
+    }
+    .expect("post-activity EOF must not replay");
     assert_eq!(error.kind(), "timeout");
     assert!(runner.child.try_wait().expect("child status").is_some());
 }

@@ -113,16 +113,17 @@ The emitted `ToolError` kind when the wall-clock timer fires is `"timeout"`.
 
 The runner **process** is pooled and long-lived; the **JS runtime is rebuilt
 per execution**. This amortizes the dominant fixed cost (fork + process startup)
-while guaranteeing JS-state isolation by construction.
+while isolating the JS heap. The parent must also enforce ownership of the
+stdio frames: a fresh heap does not remove replies already in the pipes.
 
 - **Runner loop.** `runner.rs` reads a `Start` → builds a FRESH `javy::Runtime`
   + context → installs the bridge globals → runs to settle → emits `Done`/`Error`
   → resets per-execution state and **loops back to read the next `Start`**. The
-  process never exits except on stdin EOF (parent dropped the runner).
+  child loop exits on stdin EOF; the parent terminates failed/recycled runners.
 - **Fresh runtime per `Start` is the contract.** Never reuse a `javy::Runtime`
   across executions — a brand-new runtime has no globals, no
-  `__labPendingToolCalls`, and no captured data from a prior caller. This is
-  where cross-caller leakage would live.
+  `__labPendingToolCalls`, and no captured data from a prior caller. This
+  heap isolation is separate from the parent-enforced protocol boundary.
 - **Per-execution resets** (`runner.rs`): the `next_seq` counter resets to 0, and
   a fresh per-execution cwd jail subdir is created (the previous one removed) so a
   pooled process never accumulates working-directory state across runs.
@@ -130,9 +131,17 @@ while guaranteeing JS-state isolation by construction.
   bounded set of long-lived runner handles, one execution per runner at a time
   (`size` runners ⇒ `size` concurrent executions). Slot ownership uses an explicit
   free-list so concurrent checkouts never collide.
-- **Disposition.** `drive_runner` classifies each run: clean `Done` or a
-  per-execution `Error` → the runner is parked and **released** back to the pool
-  (it stayed alive with a fresh runtime). If a pooled runner exits before emitting
+- **Disposition.** Only `Done` with native `reuse_ready: true` proof and no
+  pending host work is **released** back to the pool. A bounded native ledger
+  tracks emitted requests and consumed replies independently of caller-mutable
+  JS maps, including both step phases on the reused seq. Missing/false proof
+  preserves the successful response and completed trace but **evicts without
+  replay** when host work has settled. `Done` with pending host calls remains a
+  protocol error. A per-execution `Error` cancels/drops pending host work and
+  **evicts without replay**, preserving its structured error and partial trace.
+  Late replies or terminal frames can remain even when the pending set is empty;
+  never reuse an errored runner merely because its JS runtime was dropped.
+  If a pooled runner exits before emitting
   any valid protocol event, it is **evicted** and the execution is replayed once
   on a guaranteed-fresh ephemeral runner; no host-visible side effect could have
   crossed the protocol boundary yet. A crash after protocol activity, timeout, or
@@ -238,14 +247,17 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 { "type": "step_result", "seq": <u64>, "value": <json> }
 
 // Execution completed
-{ "type": "done", "result": { "state": "json"|"undefined", "value": <json> }, "logs": ["..."] }
+{ "type": "done", "result": { "state": "json"|"undefined", "value": <json> }, "logs": ["..."], "reuse_ready": <bool> }
 
 // Execution error (JS exception or internal runner error)
 { "type": "error", "kind": "<error kind>", "message": "<string>" }
 ```
 
-The runner parks for the next `start` after each `done`/`error` and exits only on
-stdin EOF (no explicit `shutdown`/`ready` messages on the wire). Do not add fields
+The child loops after `done`/`error`, but the parent reuses only native-qualified
+`done` with no pending host work and evicts after `error`. Missing `reuse_ready`
+defaults to false, preserving compatible results without assuming reuse proof.
+There is no `shutdown`/`ready` message or execution epoch on the wire.
+Do not add fields
 to the wire protocol without updating both sides and `protocol.rs`.
 
 ---
@@ -282,6 +294,7 @@ env_clear lands" comment — that state is in the past.
 | File | Purpose |
 |------|---------|
 | `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution seq + cwd-jail reset, `PR_SET_DUMPABLE`. |
+| `runner/stdio.rs`, `runner/reply_ownership.rs` | Native framed IO and bounded consumed-reply proof; duplicate/unexpected replies or exhausted tracking capacity disqualify process reuse without changing dispatch budgets. |
 | `runner_drive.rs` + `runner_drive/` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
@@ -318,6 +331,10 @@ env_clear lands" comment — that state is in the past.
   detected on the runner's returned `result` — it adds **no** new parent↔runner
   wire fields.
 - Keep each file under 500 LOC; split following the existing pattern if a file grows.
+- Library driver fixtures use the private `RunnerConfig` test-owned TempDir;
+  keep that owner alive through runner cleanup and assert against the same root
+  used by `DriveState::for_config`. Never use ambient `LABBY_HOME`/`HOME` for a
+  writable or negative artifact fixture, or mutate those globals across tests.
 
 ---
 

@@ -151,7 +151,7 @@ async fn capability_generation_preserves_inflight_task_mutations() {
             .collect::<Vec<_>>();
         assert!(peers.iter().all(|peer| !peer.is_transport_closed()));
         // Definition retirement must close every retained generation.
-        let names = [key.0.clone()].into_iter().collect();
+        let names = std::iter::once(key.0.clone()).collect();
         let guards = pool.prepare_lazy_upstream_reconcile(&names).await;
         let cleanup = pool
             .apply_lazy_upstream_reconcile(&[], &names, &guards)
@@ -194,7 +194,7 @@ impl Respond for StalledDiscovery {
                 .build(),
         );
         ResponseTemplate::new(200)
-            .set_delay(Duration::from_secs(60))
+            .set_delay(Duration::from_mins(1))
             .set_body_json(serde_json::json!({
                 "jsonrpc":"2.0", "id":body["id"], "result": result
             }))

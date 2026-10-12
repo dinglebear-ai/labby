@@ -47,6 +47,7 @@ async fn task_generation_capacity_never_evicts_a_leased_peer() {
         leases.push(lease);
         fixture_downstreams.push(fixture_downstream);
     }
+    assert_eq!(leases.len(), super::companion::MAX_TASK_GENERATIONS);
     let peers = route
         .companions
         .iter()

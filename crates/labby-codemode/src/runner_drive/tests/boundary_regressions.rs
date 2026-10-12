@@ -215,7 +215,7 @@ async fn non_admin_writable_runner_cannot_publish_metadata_path_aliases() {
     };
     assert!(config.caller.can_execute());
     assert!(!config.caller.is_admin());
-    let root = code_mode_artifact_root(&config.artifact_run_id);
+    let root = config.test_artifact_root();
     let outcome = CodeModeBroker::new(Some(&host))
         .drive_runner(
             &mut runner,

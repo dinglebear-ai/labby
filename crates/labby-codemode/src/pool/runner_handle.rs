@@ -214,6 +214,8 @@ pub(crate) struct PooledRunner {
     pub(crate) stderr: StderrBuffer,
     /// Number of executions this runner has served (for recycle-after-K).
     pub(crate) executions: u64,
+    /// Reset before each Start; only native Done proof can qualify pool release.
+    pub(crate) reuse_ready: bool,
     /// Windows Job Object guard; reaps the descendant tree when dropped. On Unix
     /// the process-group + `killpg` covers the same role.
     #[cfg(windows)]
@@ -347,6 +349,7 @@ impl PooledRunner {
             lines,
             stderr,
             executions: 0,
+            reuse_ready: false,
             #[cfg(windows)]
             _job_guard: job_guard,
             drain_task,
@@ -461,6 +464,7 @@ impl PooledRunner {
             lines,
             stderr,
             executions: 0,
+            reuse_ready: false,
             #[cfg(windows)]
             _job_guard: job_guard,
             drain_task,

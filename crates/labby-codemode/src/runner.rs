@@ -1,7 +1,7 @@
 //! Code Mode runner subprocess entry point (`internal code-mode-runner`):
 //! the in-process Javy/QuickJS stdio loop.
 
-use std::io::{self, BufRead, BufReader, BufWriter, Write};
+use std::io::{self, BufReader, BufWriter};
 use std::process::ExitCode;
 
 use serde_json::Value;
@@ -10,6 +10,9 @@ use crate::CodeModeCallError;
 
 mod bridge;
 use bridge::*;
+pub(crate) mod reply_ownership;
+mod stdio;
+use stdio::*;
 
 use super::config::MAX_SNIPPET_RESOLVED_BYTES_PER_RUN;
 use super::protocol::CODE_MODE_STACK_SIZE_LIMIT;
@@ -46,25 +49,27 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
             reader: BufReader::new(io::stdin()),
             writer: BufWriter::new(io::stdout()),
             next_seq: 0,
+            replies: reply_ownership::ReplyOwnership::default(),
         });
     });
 
     // Warm-runner pool (Perf H1): the runner process is long-lived and serves
     // one execution per `Start` message, building a FRESH `javy::Runtime` per
-    // execution so no JS state (globals, `__labPendingToolCalls`, captured data)
-    // can leak across callers. After each execution the process parks on the
+    // execution to isolate JS state (globals, pending calls, captured data).
+    // The parent reuses only Done with native reply-consumption proof. Even a
+    // caught success can abandon a reply in the stdio pipes; evict it without
+    // replay, like Error, while preserving the successful result.
+    // After each execution the process parks on the
     // next `read_line`. The parent pools these processes to amortize the fork
     // cost. EOF on the input (parent closed stdin / dropped the handle) ends the
     // loop with a clean exit. A genuine per-execution failure is reported as an
-    // `Error` line; the runner then continues to the next `Start` so a single bad
-    // snippet does not poison a pooled process (the parent decides whether to
-    // recycle it).
+    // `Error` line; the runner loops, but the parent cancels remaining host work
+    // and evicts that failed process without replay.
     loop {
         match run_code_mode_runner() {
             Ok(RunnerLoopOutcome::Completed) => {
-                // Reset per-execution state and park for the next Start.
+                // Clean up and park; native Start admission resets ownership.
                 cleanup_execution_jail(false);
-                reset_runner_seq();
             }
             Ok(RunnerLoopOutcome::InputClosed) => {
                 // Parent closed the pipe; shut the process down cleanly.
@@ -77,10 +82,9 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
                 runner_emit(CodeModeRunnerOutput::Error { error: err.error }).ok();
                 // Reset and continue: the per-execution javy runtime is dropped
                 // at the end of `run_code_mode_runner`, so a failed execution
-                // leaves no JS state behind. Whether to reuse or recycle this
-                // process is the parent pool's decision.
+                // leaves no JS state behind. Old pipe frames can remain, so
+                // the parent must evict rather than reuse this process.
                 cleanup_execution_jail(false);
-                reset_runner_seq();
             }
         }
     }
@@ -88,21 +92,22 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
 
 /// Why the per-execution loop body returned.
 enum RunnerLoopOutcome {
-    /// An execution ran to a `Done` and the runner is ready for the next Start.
+    /// An execution emitted Done. Its native proof controls parent-side reuse.
     Completed,
     /// The input stream reached EOF before a Start arrived; the process should
     /// exit cleanly (the parent dropped this pooled runner).
     InputClosed,
 }
 
-/// Reset the per-execution sequence counter so the next pooled execution starts
+/// Reset native state only after admitting Start, so the execution starts
 /// from `seq = 0`, matching the spawn-per-execution contract. The javy runtime
 /// (and all JS globals) is constructed fresh inside `run_code_mode_runner`, so
-/// this is the only thread-local carried across executions that needs clearing.
+/// the native reply ledger must also be reset for the next execution.
 fn reset_runner_seq() {
     RUNNER_STATE.with(|state| {
         if let Some(state) = state.borrow_mut().as_mut() {
             state.next_seq = 0;
+            state.replies.reset();
         }
     });
 }
@@ -319,6 +324,7 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
     let CodeModeRunnerInput::Start { code, proxy } = input else {
         return Err("runner expected start message".to_string().into());
     };
+    reset_runner_seq();
 
     // Per-execution cwd jail (Perf H1 isolation): a pooled runner is long-lived,
     // so its process cwd must not accumulate state across executions. Create a
@@ -420,71 +426,24 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
             JavyMainPromiseState::Pending => {
                 // Mid-execution EOF means the parent died while a tool call was
                 // in flight — a genuine fault, not the clean pool-shutdown path.
-                let input = runner_read_input().map_err(RunnerReadError::into_runner_error)?;
+                let input = runner_read_reply().map_err(RunnerReadError::into_runner_error)?;
                 javy_settle_tool_promise(&runtime, &input)?;
             }
         }
     };
 
+    // This native ledger is independent of caller-mutable JS pending maps.
+    let reuse_ready = RUNNER_STATE.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.replies.is_clean())
+    });
     runner_emit(CodeModeRunnerOutput::Done {
         result: CodeModeRunnerResult::from_response_result(resolved_result),
         logs: Vec::new(),
+        reuse_ready,
     })
     .map_err(CodeModeRunnerError::from)?;
     Ok(RunnerLoopOutcome::Completed)
-}
-
-fn runner_emit(output: CodeModeRunnerOutput) -> Result<(), String> {
-    RUNNER_STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let state = state
-            .as_mut()
-            .ok_or_else(|| "runner state is not initialized".to_string())?;
-        serde_json::to_writer(&mut state.writer, &output).map_err(|err| err.to_string())?;
-        state
-            .writer
-            .write_all(b"\n")
-            .map_err(|err| err.to_string())?;
-        state.writer.flush().map_err(|err| err.to_string())
-    })
-}
-
-/// Distinguishes a clean end-of-input (EOF on stdin — the parent dropped this
-/// pooled runner) from any other read failure. The pool loop treats `InputClosed`
-/// as a normal shutdown signal and exits cleanly without emitting an `Error` line.
-enum RunnerReadError {
-    /// EOF: the parent closed/dropped the input stream.
-    InputClosed,
-    /// Any other failure (I/O error, malformed protocol JSON, uninitialized state).
-    Other(String),
-}
-
-impl RunnerReadError {
-    /// Collapse to a `CodeModeRunnerError` for mid-execution reads, where an EOF
-    /// is a genuine fault (the parent died while a tool call was in flight)
-    /// rather than the clean pool-shutdown path.
-    fn into_runner_error(self) -> CodeModeRunnerError {
-        match self {
-            Self::InputClosed => "runner input closed".to_string().into(),
-            Self::Other(message) => message.into(),
-        }
-    }
-}
-
-fn runner_read_input() -> Result<CodeModeRunnerInput, RunnerReadError> {
-    RUNNER_STATE.with(|state| {
-        let mut state = state.borrow_mut();
-        let state = state
-            .as_mut()
-            .ok_or_else(|| RunnerReadError::Other("runner state is not initialized".to_string()))?;
-        let mut line = String::new();
-        let read = state
-            .reader
-            .read_line(&mut line)
-            .map_err(|err| RunnerReadError::Other(err.to_string()))?;
-        if read == 0 {
-            return Err(RunnerReadError::InputClosed);
-        }
-        serde_json::from_str(&line).map_err(|err| RunnerReadError::Other(err.to_string()))
-    })
 }

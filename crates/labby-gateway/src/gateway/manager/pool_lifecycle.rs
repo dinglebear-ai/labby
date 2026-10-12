@@ -395,12 +395,12 @@ impl GatewayManager {
         let new_mcp_ui_enabled = runtime_cfg.code_mode.mcp_ui_enabled;
         let new_ns_tokens = code_mode_namespace_tokens(&runtime_cfg);
 
-        let (previous_cfg, pool_settings_unchanged, changed_upstreams) = {
+        let (previous_cfg, pool_settings_unchanged, mut changed_upstreams) = {
             let current = self.config.read().await;
             let mut changed_upstreams = upstream_changed_names(&current, &cfg);
             changed_upstreams.extend(credentials_changed.iter().cloned());
             // Manual reload also refreshes credential inputs outside TOML.
-            // Reconnect configured bearer peers without fingerprinting secrets.
+            // Reconnect configured bearer peers even when authority is unchanged.
             if !allow_in_place_selective {
                 changed_upstreams.extend(
                     cfg.upstream
@@ -416,6 +416,14 @@ impl GatewayManager {
             )
         };
         let existing_pool = self.runtime.current_pool().await;
+        // Connection refresh and permanent authority replacement are separate
+        // boundaries. Compare the live pool's runtime-only bearer observations
+        // using the same normalized process/file resolution as its transports.
+        let mut task_revocations = upstream_changed_names(&previous_cfg, &cfg);
+        if let Some(pool) = existing_pool.as_ref() {
+            task_revocations.extend(pool.task_bearer_authority_changed_names(&cfg.upstream));
+        }
+        changed_upstreams.extend(task_revocations.iter().cloned());
         if pool_settings_unchanged && existing_pool.is_some() && changed_upstreams.is_empty() {
             self.reconcile_runtime_state(&cfg, existing_pool.as_deref())
                 .await?;
@@ -627,7 +635,7 @@ impl GatewayManager {
         // as a transactional reconcile. Preserve unchanged definitions across
         // pool replacement; only changed/removed authority gets durable intent.
         if let Some(pool) = old_pool.as_ref() {
-            pool.prepare_task_config_revocation(changed_upstreams.iter().cloned().collect())
+            pool.prepare_task_config_revocation(task_revocations.iter().cloned().collect())
                 .await
                 .map_err(ToolError::internal_message)?;
         }
@@ -728,7 +736,7 @@ impl GatewayManager {
             pool.complete_task_config_revocation()
                 .await
                 .map_err(ToolError::internal_message)?;
-            pool.fence_replaced_task_definitions(&changed_upstreams);
+            pool.fence_replaced_task_definitions(&task_revocations);
         }
         self.store
             .set_process_code_mode_enabled(runtime_cfg.code_mode.enabled);

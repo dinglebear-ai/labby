@@ -473,6 +473,9 @@ fn is_identifier(candidate: &str) -> bool {
 fn looks_like_returnable_expression(statement: &str) -> bool {
     let statement = statement.trim();
     !statement.is_empty()
+        // A semicolon inside the final nested block can leave closing braces
+        // in the suffix. Preserve the whole statement body in that case.
+        && !statement.starts_with('}')
         && !matches!(
             statement.split_whitespace().next(),
             Some(

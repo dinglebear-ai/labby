@@ -127,6 +127,7 @@ impl UpstreamPool {
             self.upstream_config_fingerprints
                 .entry(config.name.clone())
                 .or_insert_with(|| crate::gateway::code_mode::catalog_cache::fingerprint(config));
+            self.seed_task_bearer_authority(config);
             catalog.entry(config.name.clone()).or_insert(entry);
 
             if config.proxy_resources {
@@ -149,6 +150,7 @@ impl UpstreamPool {
         self.upstream_config_fingerprints
             .entry(config.name.clone())
             .or_insert_with(|| crate::gateway::code_mode::catalog_cache::fingerprint(config));
+        self.seed_task_bearer_authority(config);
         self.catalog
             .write()
             .await
@@ -533,6 +535,7 @@ impl UpstreamPool {
             config.name.clone(),
             crate::gateway::code_mode::catalog_cache::fingerprint(config),
         );
+        self.seed_task_bearer_authority(config);
     }
 
     #[cfg(test)]

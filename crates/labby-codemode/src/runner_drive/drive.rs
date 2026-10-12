@@ -10,6 +10,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         cfg: &RunnerConfig,
         deadline: tokio::time::Instant,
     ) -> DriveOutcome {
+        runner.reuse_ready = false;
         // Record the stderr buffer position before this execution so we capture
         // only the lines this run produces (a pooled runner's buffer carries
         // prior executions' lines).
@@ -39,7 +40,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // Epoch for per-call start offsets (waterfall timing in the trace).
         let execution_start = std::time::Instant::now();
         let artifact_run_id = &cfg.artifact_run_id;
-        let mut state = DriveState::new(artifact_run_id);
+        let mut state = DriveState::for_config(cfg);
         let mut saw_protocol_activity = false;
         // Mark this run active before any artifact dir exists, so a concurrent
         // run's first-write prune can never delete our directory mid-run. The
@@ -57,6 +58,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let child_pid = runner.child_pid;
         let stdin = &mut runner.stdin;
         let lines = &mut runner.lines;
+        let reuse_ready = &mut runner.reuse_ready;
 
         loop {
             let read_deadline = settlement_watch.map_or(deadline, |watch| watch.deadline);
@@ -281,7 +283,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 return DriveOutcome::RunnerUnhealthy(err);
                             }
                         }
-                        CodeModeRunnerOutput::Done { result, logs } => {
+                        CodeModeRunnerOutput::Done { result, logs, reuse_ready: qualified } => {
                             // Preserve original invariant: Done with in-flight
                             // tool calls is a protocol error → evict.
                             if !pending_tool_calls.is_empty() {
@@ -298,6 +300,10 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                     ),
                                 );
                             }
+                            // Empty host futures do not prove reply consumption.
+                            // Preserve caught success, but release only with the
+                            // runner's native proof of a clean stdio boundary.
+                            *reuse_ready = qualified;
                             let response = finalize_done(result, logs, &state);
                             // Capture only this execution's stderr lines. The
                             // runner is parked (it loops), so do not wait on it;
@@ -321,11 +327,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             });
                         }
                         CodeModeRunnerOutput::Error { error } => {
-                            // A per-execution error. The runner reset and parked
-                            // (it does NOT exit), so it is safe to reuse — return
-                            // ExecutionError so the pool releases rather than
-                            // evicts. The complete structured error survives an
-                            // uncaught JavaScript rejection unchanged.
+                            // Error does not acknowledge a clean pipe boundary:
+                            // another reply may already have reached the parked
+                            // runner. Stop host work before any cleanup await;
+                            // the lease owner evicts without replaying the run.
+                            cancellation.cancel();
+                            pending_tool_calls.clear();
                             stderr.flush_settle().await;
                             stderr.clear().await;
                             return DriveOutcome::ExecutionError(

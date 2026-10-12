@@ -1,0 +1,17 @@
+[package]
+name = "labby-glib-backport-check"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[workspace]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[lints]
+workspace = true
+
+[dependencies]
+glib = { path = "../src-tauri/vendor/glib", default-features = false }

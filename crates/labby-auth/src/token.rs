@@ -3902,6 +3902,7 @@ mod tests {
                         scope_upgraded: false,
                     },
                     generation,
+                    peer_store.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()

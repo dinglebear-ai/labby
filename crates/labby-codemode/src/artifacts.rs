@@ -89,6 +89,12 @@ pub(crate) fn code_mode_artifact_root(run_id: &str) -> PathBuf {
     artifact_store_root().join(run_id)
 }
 
+#[cfg(test)]
+pub(crate) async fn prune_fixture_store(store: &tempfile::TempDir) {
+    let _reservation = budget::STORE_MUTATION.lock().await;
+    prune_artifact_runs_locked(store.path(), 1, 0, &HashSet::new()).await;
+}
+
 /// Process-global set of run ids whose execution is still in flight.
 ///
 /// The artifact store is shared across all concurrent Code Mode executions, and

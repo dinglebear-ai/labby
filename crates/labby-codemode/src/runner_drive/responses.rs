@@ -64,14 +64,15 @@ pub(super) async fn reject_tool_call_over_budget(
 /// it's blocked writing a large `ToolResult` to stdin). The read side of the loop
 /// is already guarded by `timeout_at(deadline, lines.next())`; without this, the
 /// parent→child writeback path was the one reachable *in-loop* `await` the 30 s
-/// wall-clock backstop did not cover (the pre-deadline `Start` write is excluded:
-/// it runs before the deadline exists and against a freshly-parked child that
-/// cannot yet be flooding stdout), so a deadlocked child could hang the drive
+/// wall-clock backstop did not cover, so a deadlocked child could hang the drive
 /// loop and leak the pool slot forever. On expiry we kill the child (killpg) so
 /// the pooled slot respawns, mirroring the read-timeout path, and surface the
 /// stable `timeout` kind — carrying the partial call trace like the other
 /// timeout paths. A plain write I/O error (not a timeout) propagates without a
 /// trace, matching the pre-existing bare-write behavior.
+/// The absolute execution budget starts before runner acquisition/spawn. Start
+/// applies that same deadline directly in the driver; in-loop replies use this
+/// helper. Both initial and subsequent writes are bounded.
 pub(super) async fn write_runner_input_by_deadline(
     stdin: &mut ChildStdin,
     input: &CodeModeRunnerInput,

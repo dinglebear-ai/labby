@@ -364,13 +364,42 @@ impl GatewayManager {
         let credentials_changed = credential.as_ref().map_or_else(Vec::new, |(env_name, _)| {
             credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
         });
+        // Persisted file bytes are not necessarily the winning authority:
+        // normalized-equivalent values and genuine process overrides preserve
+        // durable tasks while still forcing the touched transports to reconnect.
+        let pool = self.current_pool_sync();
+        let credential_authority_changed =
+            credential
+                .as_ref()
+                .map_or_else(Vec::new, |(_, token_value)| {
+                    let file_value = super::persist::normalize_gateway_bearer_token(token_value);
+                    let path = self.store.env_path();
+                    previous
+                        .upstream
+                        .iter()
+                        .filter(|old| credentials_changed.contains(&old.name))
+                        .filter(|old| {
+                            let token = old.bearer_token_env.as_deref().and_then(|env_name| {
+                                crate::upstream::auth::configured_bearer_token_after_file_update(
+                                    env_name,
+                                    &path,
+                                    &file_value,
+                                )
+                            });
+                            pool.as_ref().is_none_or(|pool| {
+                                !pool.task_bearer_authority_matches_token(&old.name, token)
+                            })
+                        })
+                        .map(|old| old.name.clone())
+                        .collect::<Vec<_>>()
+                });
         // Durable task revocation precedes publishing either credentials or
         // configuration. Its pending intent fences registrations until reconcile.
         let task_revocations = previous
             .upstream
             .iter()
             .filter(|old| {
-                credentials_changed.contains(&old.name)
+                credential_authority_changed.contains(&old.name)
                     || candidate
                         .upstream
                         .iter()
@@ -382,7 +411,7 @@ impl GatewayManager {
             })
             .map(|old| old.name.clone())
             .collect();
-        if let Some(pool) = self.current_pool_sync() {
+        if let Some(pool) = pool {
             pool.prepare_task_config_revocation(task_revocations)
                 .await
                 .map_err(ToolError::internal_message)?;

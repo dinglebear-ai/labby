@@ -64,6 +64,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             artifact_run_id,
             openapi_registry,
             openapi_http_client,
+            #[cfg(test)]
+            test_artifact_store: Arc::new(tempfile::tempdir().map_err(|error| ToolError::Sdk {
+                sdk_kind: "internal_error".into(),
+                message: format!("cannot create test artifact store: {error}"),
+            })?),
         };
         self.run_in_runner_with_config(cfg).await
     }
@@ -88,11 +93,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
 
     /// Run one execution against a runner checked out from the shared pool.
     ///
-    /// On a clean completion (`Done`) or a runner-reported execution `Error`,
-    /// the runner is parked and returned to the pool — it stayed alive and built
-    /// a fresh runtime, so it is safe to reuse. On a crash (EOF/exit), timeout,
-    /// or protocol fault the runner is evicted (killed) and the slot respawns on
-    /// the next checkout.
+    /// `Done` with native clean-boundary proof returns the runner to the pool;
+    /// false/missing proof preserves success but evicts without replay. A Done
+    /// with pending host calls remains a protocol error. A runner-reported `Error`
+    /// preserves the error and trace but evicts: late replies or terminal frames
+    /// can outlive the failed JS runtime. Crashes, timeouts and protocol faults
+    /// also evict; only confirmed pre-protocol exit permits one fresh retry.
     pub(super) async fn run_via_pool(
         &self,
         pool: &RunnerPool,
@@ -103,13 +109,19 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let outcome = self.drive_runner(lease.runner_mut(), &cfg, deadline).await;
         match outcome {
             DriveOutcome::Completed(response) => {
-                drop(tokio::time::timeout_at(deadline, lease.release()).await);
+                if lease.runner_mut().reuse_ready {
+                    drop(tokio::time::timeout_at(deadline, lease.release()).await);
+                } else {
+                    // Success can abandon a reply. Preserve it without replay,
+                    // but discard the unqualified process and its pipe frames.
+                    drop(tokio::time::timeout_at(deadline, lease.evict()).await);
+                }
                 Ok(response)
             }
             DriveOutcome::ExecutionError(err) => {
-                // The runner parked after emitting its `Error` line and is
-                // healthy (fresh runtime dropped); reuse it.
-                drop(tokio::time::timeout_at(deadline, lease.release()).await);
+                // Fresh JS state does not flush old protocol frames. Never
+                // release or replay a runner-reported failed execution.
+                drop(tokio::time::timeout_at(deadline, lease.evict()).await);
                 Err(err)
             }
             DriveOutcome::RunnerUnavailableBeforeActivity(err) => {
@@ -130,11 +142,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                 let retry_outcome = self.drive_runner(retry.runner_mut(), &cfg, deadline).await;
                 match retry_outcome {
                     DriveOutcome::Completed(response) => {
-                        drop(tokio::time::timeout_at(deadline, retry.release()).await);
+                        if retry.runner_mut().reuse_ready {
+                            drop(tokio::time::timeout_at(deadline, retry.release()).await);
+                        } else {
+                            drop(tokio::time::timeout_at(deadline, retry.evict()).await);
+                        }
                         Ok(response)
                     }
                     DriveOutcome::ExecutionError(err) => {
-                        drop(tokio::time::timeout_at(deadline, retry.release()).await);
+                        drop(tokio::time::timeout_at(deadline, retry.evict()).await);
                         Err(err)
                     }
                     DriveOutcome::RunnerUnavailableBeforeActivity(err)

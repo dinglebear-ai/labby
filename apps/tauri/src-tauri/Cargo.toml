@@ -58,3 +58,8 @@ tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tokio = { version = "1", features = ["time", "rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# GTK3 requires the 0.18 API. This exact registry source includes the upstream
+# RUSTSEC-2024-0429 pointer fix; provenance is in glib-backport.json.
+[patch.crates-io]
+glib = { path = "vendor/glib" }

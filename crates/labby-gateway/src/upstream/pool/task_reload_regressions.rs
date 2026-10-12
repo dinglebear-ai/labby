@@ -1,4 +1,7 @@
 //! Exercise manual reload and restart against durable task metadata and HTTP peers.
+#[path = "task_bearer_reload_tests.rs"]
+mod bearer;
+
 use super::super::super::tasks::tests::{create_task_response, task_pool};
 use super::super::super::{TaskRouteAuthorization, TaskRouteStore};
 use crate::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
@@ -21,7 +24,19 @@ struct HttpTasks {
 impl Respond for HttpTasks {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-        let result = match body["method"].as_str().unwrap() {
+        let method = body["method"].as_str().unwrap();
+        assert!(
+            [
+                "server/discover",
+                "tools/list",
+                "tasks/get",
+                "tasks/update",
+                "tasks/cancel"
+            ]
+            .contains(&method),
+            "unexpected fixture request {method}"
+        );
+        let result = match method {
             "server/discover" => serde_json::to_value(DiscoverResult::new(
                 vec![ProtocolVersion::V_2026_07_28],
                 ServerCapabilities::builder()
@@ -50,7 +65,7 @@ impl Respond for HttpTasks {
                 self.requests.fetch_add(1, Ordering::SeqCst);
                 serde_json::to_value(TaskAckResult::new()).unwrap()
             }
-            other => panic!("unexpected fixture request {other}"),
+            _ => unreachable!("fixture method was validated"),
         };
         ResponseTemplate::new(200)
             .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":body["id"],"result":result}))

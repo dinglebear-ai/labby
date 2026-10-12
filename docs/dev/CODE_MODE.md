@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-10-11"
+updated: "2026-10-12"
 ---
 
 # Code Mode
@@ -986,20 +986,31 @@ The stdio parent-broker protocol is:
 3. Child emits `tool_call` lines for `callTool` requests.
 4. Parent dispatches through the gateway broker and replies with `tool_result` or
    `tool_error`.
-5. Child settles pending promises and emits `done`.
-6. The child then resets and parks for the next `start` (warm-runner pool).
+5. Child settles the main promise and emits `done` or a structured `error`.
+6. A `done` with native `reuse_ready: true` proof and no pending host calls
+   permits process reuse. Missing/false proof preserves the successful result
+   and completed trace but evicts without replay after host work has settled.
+   `done` with pending host calls remains a protocol error. An `error`
+   cancels remaining host work and evicts the process without replay.
 
 ### Warm-runner pool
 
 The runner **process** is pooled and long-lived; the **JS runtime is rebuilt for
 every execution**. Pooling amortizes the dominant fixed cost (process fork +
-startup) without ever sharing JS state across callers — a brand-new runtime has
-no globals, no leftover pending tool calls, and no captured data from a prior
-run, so isolation holds by construction.
+startup). A brand-new runtime removes globals, pending JS promises and captured
+heap data from a prior run. The parent separately preserves protocol ownership:
+only native-qualified `done` permits reuse; `error` and unqualified `done`
+require eviction because old pipe frames can survive a dropped runtime. A
+bounded native ledger checks consumption of every request's reply, including
+both step acknowledgments on the reused sequence. Caller JavaScript cannot
+qualify reuse by modifying its pending-operation map. Duplicate/unexpected
+replies or tracking-capacity exhaustion disqualify reuse, preserving dispatch
+budgets and response semantics; older/missing proof defaults to false.
 
 - **Process reuse, fresh runtime.** A pooled runner loops: read `start` → build a
   fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
-  `start`. It exits only when the parent closes stdin.
+  `start`. The parent retains it only after native-qualified `done` and
+  terminates it after unqualified `done`, `error`, timeout or protocol failure.
 - **Per-execution isolation.** Each run resets the `callTool` sequence counter and
   creates a fresh, empty per-execution QuickJS working-directory jail (removing
   the prior one), so a long-lived process never accumulates JS runtime state
@@ -1014,8 +1025,12 @@ run, so isolation holds by construction.
 - **Robustness.** If a pooled runner exits before emitting any valid protocol
   event, it is killed and the execution is replayed once on a guaranteed-fresh
   ephemeral runner; at that boundary no host-visible side effect can have run.
-  A crash after protocol activity, timeout, or protocol violation is killed and
-  surfaces a clean error without replay (`timeout` on wall-clock expiry). A
+  A runner-reported `error` cancels/drops pending host work, preserves the
+  structured error and completed partial trace, and kills the runner without
+  replay. Even an empty pending set cannot prove that old replies or terminal
+  frames have left the pipes. Caught tool errors that settle successfully with
+  clean `done` still permit reuse. A crash after protocol activity, timeout, or
+  protocol violation also kills without replay (`timeout` on wall-clock expiry). A
   pooled runner is also recycled after a fixed number of executions as cheap
   insurance against native-side leaks. External `callTool` operations reserve a
   result-ack window inside the same per-execution wall-clock budget when more

@@ -32,6 +32,9 @@ impl RevocationAttempt {
     }
     fn succeed(mut self) {
         self.complete = true;
+    }
+    fn reconciled(mut self) {
+        self.complete = true;
         self.quarantine
             .store(false, std::sync::atomic::Ordering::SeqCst);
     }
@@ -280,7 +283,9 @@ impl TaskRouteStore {
         self.with_connection_unchecked(move |connection| {
             let attempt = RevocationAttempt::new(quarantine);
             task_route_schema::replay_revocations(connection, true)?;
-            attempt.succeed();
+            // Only full replay establishes that every failed intent has been
+            // reconciled. Unrelated scoped success cannot clear prior failure.
+            attempt.reconciled();
             Ok(())
         })
         .await

@@ -167,3 +167,100 @@ async fn interrupted_prepared_intent_replays_only_affected_routes_on_restart() {
             .is_some()
     );
 }
+
+#[tokio::test]
+async fn failed_prepared_cleanup_stays_quarantined_after_unrelated_success() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("routes.db");
+    let store = TaskRouteStore::open(path.clone()).await.unwrap();
+    let mut affected = record();
+    affected.ttl_ms = None;
+    let mut unrelated = affected.clone();
+    unrelated.public_task_id = format!("labby-task-{}", uuid::Uuid::new_v4().simple());
+    unrelated.upstream_name = "unrelated".into();
+    let mut unaffected = affected.clone();
+    unaffected.public_task_id = format!("labby-task-{}", uuid::Uuid::new_v4().simple());
+    unaffected.upstream_name = "unaffected".into();
+    for route in [&affected, &unrelated, &unaffected] {
+        store.insert(route.clone()).await.unwrap();
+    }
+    store
+        .prepare_upstream_revocation(vec![affected.upstream_name.clone()])
+        .await
+        .unwrap();
+    let database = rusqlite::Connection::open(&path).unwrap();
+    database
+        .execute_batch("CREATE TRIGGER fail_affected_cleanup BEFORE DELETE ON task_routes WHEN OLD.upstream_name = 'example' BEGIN SELECT RAISE(ABORT, 'affected failure'); END;")
+        .unwrap();
+    assert!(store.complete_prepared_revocations().await.is_err());
+    assert_eq!(
+        store
+            .remove_oauth_subject(&unrelated.upstream_name, "oauth-alice")
+            .await
+            .unwrap(),
+        1
+    );
+    let pending: i64 = database
+        .query_row(
+            "SELECT COUNT(*) FROM task_route_revocations WHERE prepared = 1 AND upstream_name = 'example'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 1, "unrelated success did not repair failed work");
+    assert!(
+        store
+            .get(&unaffected.public_task_id)
+            .await
+            .unwrap_err()
+            .contains("quarantined")
+    );
+    let mut newly_registered = unaffected.clone();
+    newly_registered.public_task_id = format!("labby-task-{}", uuid::Uuid::new_v4().simple());
+    assert!(
+        store
+            .insert(newly_registered.clone())
+            .await
+            .unwrap_err()
+            .contains("quarantined")
+    );
+    unaffected.updated_at_unix_ms += 1;
+    assert!(
+        store
+            .update_hints(unaffected.clone())
+            .await
+            .unwrap_err()
+            .contains("quarantined")
+    );
+    database
+        .execute_batch("DROP TRIGGER fail_affected_cleanup")
+        .unwrap();
+    store.complete_prepared_revocations().await.unwrap();
+    assert!(store.get(&affected.public_task_id).await.unwrap().is_none());
+    assert!(
+        store
+            .get(&unrelated.public_task_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    store.update_hints(unaffected.clone()).await.unwrap();
+    store.insert(newly_registered).await.unwrap();
+    assert_eq!(
+        store.get(&unaffected.public_task_id).await.unwrap(),
+        Some(unaffected.clone())
+    );
+    drop(store);
+    let reopened = TaskRouteStore::open(path).await.unwrap();
+    assert!(
+        reopened
+            .get(&affected.public_task_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        reopened.get(&unaffected.public_task_id).await.unwrap(),
+        Some(unaffected)
+    );
+}

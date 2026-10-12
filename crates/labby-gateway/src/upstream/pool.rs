@@ -120,6 +120,7 @@ mod skills_provider;
 #[cfg(feature = "skills")]
 mod skills_targeted;
 mod subject_tool_observation;
+mod task_authority;
 #[cfg(feature = "skills")]
 pub use skills_provider::{SepSkillProvider, SkillSearchResult};
 mod skills_tests;
@@ -354,6 +355,9 @@ pub struct UpstreamPool {
     /// replaces changed fingerprints before publishing the new revision so a
     /// request carrying stale config cannot publish or reuse a connection.
     upstream_config_fingerprints: Arc<DashMap<String, String>>,
+    /// Ephemeral digests of normalized winning bearer authority. Never logged
+    /// or persisted; reconnect intent alone does not invalidate durable tasks.
+    upstream_bearer_authorities: Arc<DashMap<String, Option<[u8; 32]>>>,
     /// Trusted definitions for reacquiring durable task routes; never persisted.
     configured_upstreams: Arc<DashMap<String, UpstreamConfig>>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
@@ -671,6 +675,7 @@ impl UpstreamPool {
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
             upstream_config_fingerprints: Arc::new(DashMap::new()),
+            upstream_bearer_authorities: Arc::new(DashMap::new()),
             configured_upstreams: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
