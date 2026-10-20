@@ -1,7 +1,7 @@
 ---
 title: "Development Workflow"
 created: "2026-09-27"
-updated: "2026-09-27"
+updated: "2026-10-20"
 ---
 
 # Development Workflow
@@ -38,7 +38,8 @@ The executable contracts are [rust-toolchain.toml](../../rust-toolchain.toml),
 manifest and lockfile. Check these files rather than assuming a globally
 installed tool has the required version.
 
-The root Rust workspace has 13 members. The verification toolkit under
+The root [Cargo manifest](../../Cargo.toml) declares Rust workspace membership.
+The verification toolkit under
 [tools/verification](../../tools/verification/README.md) is a separate workspace
 with a separate lockfile. The native desktop shell also has its own Cargo
 manifest; root workspace tests do not replace either set of checks.

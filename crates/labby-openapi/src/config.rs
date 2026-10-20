@@ -85,8 +85,8 @@ impl Clone for OpenApiCredential {
 
 /// One configured OpenAPI spec, resolved into runtime-ready form.
 ///
-/// `base_url` is MANDATORY: `rmcp-openapi` never consults the spec's `servers[]`,
-/// so the operator must always supply (and we always SSRF-validate) the base URL.
+/// The operator must supply `base_url`; the converter ignores the spec's
+/// `servers[]`. Registry loading validates this URL through the SSRF guard.
 #[derive(Debug, Clone)]
 pub struct OpenApiSpecConfig {
     /// Provider label — the `<label>` in `openapi::<label>.<operationId>`.

@@ -1,7 +1,7 @@
 ---
 title: "Architecture"
 created: "2026-07-30"
-updated: "2026-09-30"
+updated: "2026-10-20"
 ---
 
 # Architecture
@@ -110,11 +110,14 @@ remains explicitly enabled by the operator.
 
 ### `crates/labby-openapi`
 
-`labby-openapi` owns OpenAPI parsing/projection and hardened outbound execution for the Code Mode local OpenAPI provider. Its HTTP transport stays outside the host-neutral JavaScript kernel.
+`labby-openapi` extracts allowlisted operation IDs, methods, and paths from JSON
+specs and owns their hardened outbound execution for Code Mode's `openapi`
+provider. Hosts supply the registry and client through `CodeModeHost`; spec
+loading and HTTP guards stay in this crate.
 
 ### Development-only crates
 
-`labby-model` owns pure lifecycle models and is never a product dependency. `xtask` owns repository automation, not product behavior. The root workspace has 13 members; `tools/verification` is a separate workspace with its own lockfile. See [Development Workflow](./dev/DEVELOPMENT.md) for the distinct validation gates.
+`labby-model` owns pure lifecycle models and is never a product dependency. `xtask` owns repository automation, not product behavior. The root [Cargo manifest](../Cargo.toml) declares workspace membership; `tools/verification` is a separate workspace with its own lockfile. See [Development Workflow](./dev/DEVELOPMENT.md) for the distinct validation gates.
 
 ### `crates/labby-web`
 

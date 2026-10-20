@@ -1,7 +1,7 @@
 //! LIVE end-to-end smoke test against the public Swagger Petstore
 //! (`https://petstore3.swagger.io`). Exercises the REAL production path —
-//! SSRF-validated spec fetch through the hardened client, `rmcp-openapi`
-//! parse, deny-by-default allowlist, and a hardened outbound dispatch — against
+//! SSRF-validated spec fetch through the hardened client, JSON operation
+//! extraction, deny-by-default allowlist, and hardened outbound dispatch against
 //! a real public OpenAPI document and live endpoint.
 //!
 //! Network-gated: marked `#[ignore]` per the repo convention (CI-safe). Run with:
@@ -33,7 +33,7 @@ async fn petstore_live_load_and_dispatch() {
         }],
     };
 
-    // Real fetch (SSRF-validated hardened client) + rmcp-openapi parse + allowlist.
+    // Real guarded fetch, JSON operation extraction, and exact-ID allowlist.
     let registry = OpenApiRegistry::load(cfg, Duration::from_secs(10)).await;
     assert!(
         registry.labels().contains(&"petstore".to_string()),

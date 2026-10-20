@@ -1,7 +1,9 @@
-//! OpenAPI-spec-to-Code-Mode-tool derivation. Parses specs via `rmcp-openapi`;
-//! executes outbound HTTP via its OWN hardened `reqwest` client (redirects off,
-//! peer-IP re-validated). Isolates `rmcp-openapi`/`reqwest` out of
-//! `labby-codemode`. MUST NOT depend on `labby-codemode`/`labby-gateway`.
+//! Allowlisted OpenAPI operation extraction and hardened outbound HTTP for
+//! Code Mode. Extracts raw operation IDs, methods, and paths from JSON with
+//! `serde_json`; loads specs and dispatches through guarded `reqwest` clients.
+//! Hosts carry the registry and client through their contracts. Loading and
+//! HTTP guards live here; this crate must not depend on `labby-codemode` or
+//! `labby-gateway`.
 pub mod config;
 pub mod convert;
 pub mod dispatch;

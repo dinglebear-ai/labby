@@ -5,10 +5,10 @@ use crate::registry::OpenApiRegistry;
 
 /// Dispatch one `openapi::<label>.<operationId>` call: resolve the operation
 /// (deny-by-default allowlist enforced at load), then execute it through the
-/// hardened client. Emits one scrubbed dispatch event on BOTH the success and
-/// failure path (`service`/`action`/`label`/`host`/`method`/`status`/
-/// `elapsed_ms`, plus `kind` on error) — never a body, query-with-auth, or
-/// credential.
+/// hardened client. After registry and credential checks, emits one scrubbed
+/// event for the completed HTTP execution result (`service`/`action`/`label`/
+/// `host`/`method`/`status`/`elapsed_ms`, plus `kind` on error). The event contains
+/// no body, query-with-auth, or credential.
 ///
 /// The SSRF pin + peer re-check are ALWAYS enforced here (the production path).
 /// Tests that need to reach a loopback mock use

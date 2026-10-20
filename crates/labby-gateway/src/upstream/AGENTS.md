@@ -1,6 +1,6 @@
 # Upstream MCP runtime
 
-This directory owns surface-neutral HTTP, Unix-socket, and stdio upstream connections. Product dispatch/upstream.rs is a compatibility shim. Never import product CLI/API/MCP handlers; use the injected InProcessConnector seam. Runner mechanics belong in labby-codemode, not this pool.
+This directory owns surface-neutral HTTP, WebSocket, Unix-socket, and stdio upstream connections. Product dispatch/upstream.rs is a compatibility shim. Never import product CLI/API/MCP handlers; use the injected InProcessConnector seam. Runner mechanics belong in labby-codemode, not this pool.
 
 For implementation rationale and a source map, consult [Upstream Runtime Maintenance Notes](../../../../docs/dev/UPSTREAM_INTERNALS.md) on demand. Do not automatically import that document. Source files, not copied tables, own numerical limits and current symbols.
 
@@ -14,7 +14,7 @@ For implementation rationale and a source map, consult [Upstream Runtime Mainten
 ## Authorization and lifecycle
 
 - Enforce expose_tools/resources/prompts on discovery AND direct calls, reads, gets, and completion. Catalog, OAuth-subject, and relay paths use the same compiled policy. Admin inspection snapshots may intentionally retain excluded rows; they are not execution authority.
-- OAuth replacement, refresh, clear, and shared-provider revocation go through oauth_invalidation.rs. Close subject, relay, and retained-task peers before success. Fence asynchronous publication against the credential lifecycle epoch so late discovery cannot restore invalidated state. Never log raw subjects or credentials.
+- OAuth replacement, refresh, clear, and shared-provider revocation go through oauth_invalidation.rs. Advance epochs, detach affected cached peers, and invalidate retained-task routes under the credential writer before success; shut down detached transports after releasing that writer. Fence asynchronous publication against the credential lifecycle epoch so late discovery cannot restore invalidated state. Never log raw subjects or credentials.
 - Relay cache ownership includes upstream, session, subject, and capability fingerprint. Preserve generation coexistence for in-flight calls, downstream rebinding, bounded eviction, and task authorization snapshots. Schema caches and catalog freshness do not confer permission to execute.
 - Stdio transport is the single child-exit observer. Classify lifecycle compatibility from protocol_error(), never diagnostic text containing stderr. A dead child or an ordinary "Method not found" log line is not evidence for downgrading and respawning.
 

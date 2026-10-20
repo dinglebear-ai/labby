@@ -38,20 +38,20 @@ the full history) — the rules that keep it correct:
 
 ## Structure
 
-- `authorize.rs` — `/authorize`, `/register`, `/auth/google/callback`,
-  native callback/poll handlers. Route-handler layer.
+- `authorize.rs` — authorization, registration, selected-provider callbacks,
+  and native/desktop handoffs. `routes.rs::auth_route_specs` owns the provider-aware route inventory.
 - `google.rs` — outbound Google OAuth client (`GoogleProvider`): authorize
   URL construction, code exchange, id_token verification, JWKS caching.
 - `sqlite.rs` — `SqliteStore`: all persisted OAuth/session state
   (registered clients, authorization codes/requests, refresh tokens,
   browser sessions, allowed-users allowlist, upstream OAuth credentials).
-  Versioned migrations live in `run_migrations`, keyed by `PRAGMA
-  user_version` / `SCHEMA_VERSION`.
+  Versioned migrations live in `sqlite/migrations.rs::run_migrations`, keyed
+  by `PRAGMA user_version` / `SCHEMA_VERSION`.
 - `token.rs` — `/token` endpoint (authorization_code and refresh_token
   grants).
 - `jwt.rs` — Labby access-token signing/validation with Ed25519 / EdDSA. Google ID-token verification in `google.rs` remains RS256; do not conflate provider verification with Labby token signing.
-- `state.rs` — `AuthState`: shared handle over config, store, signing keys,
-  Google provider, and the in-memory allowed-resource-scope map.
+- `state.rs` — `AuthState`: shared config, store, signing keys, selected
+  inbound provider/generation, and `ResourceRegistry` with configured scopes and temporary resource leases.
 - `upstream/` — outbound OAuth for Labby's own upstream MCP connections
   (gated behind the `upstream-oauth-rmcp` feature) — a different concern
   from the inbound `/authorize` flow above; don't conflate the two when
@@ -66,3 +66,11 @@ verify with `cargo test -p labby-auth --all-features` (or `--features
 http-axum`) before trusting a "tests pass" claim for this crate** — a plain
 `cargo test -p labby-auth` silently skips every test in `authorize.rs`,
 `token.rs`, and friends, with no warning that anything was excluded.
+
+## References
+
+| Need | Reference |
+| --- | --- |
+| Public APIs and initialization | [Developer README](README.md) |
+| Inbound and browser auth contract | [HTTP auth modes](../../docs/runtime/OAUTH.md) |
+| Outbound OAuth ownership | [Upstream runtime](../../docs/services/UPSTREAM.md) |

@@ -1,8 +1,9 @@
 //! Load-time SSRF validation of the mandatory operator-configured base URL.
 //!
-//! `rmcp-openapi` never reads the spec's `servers[]`, so this reduces to running
-//! the mandatory `base_url` through the workspace-canonical guard. Request-time
-//! peer-IP re-validation (the DNS-rebinding defense) lives in `http.rs`, not here.
+//! The converter ignores the spec's `servers[]`. This module validates the
+//! operator's `base_url` and remote spec URL with the canonical static guard.
+//! Request-time DNS validation, address pinning, and peer-IP checks live in
+//! `http.rs`.
 
 use crate::config::OpenApiSpecConfig;
 use crate::error::OpenApiError;
