@@ -409,8 +409,8 @@ semantics:
 | `bash scripts/ci/openai-auth-conformance.sh` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
 | `bash scripts/ci/openai-auth-conformance.sh OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
 
-The 21 `OAI-CLAUSE-*` entries in
-`tools/verification/conformance/openai-auth-normative.json` are source obligations. They map to
+The 24 `OAI-CLAUSE-*` entries in
+`tools/verification/conformance/openai-auth-normative.json` record reviewed source clauses and applicability. Applicable clauses map to
 the 11 executable `OAI-AUTH-*` groups, so a clause ID is not accepted by the
 OpenAI execution script. These auth runners have no Just wrappers. The OpenAI shell runner supports listing and exact or
 complete execution, but has no separate validation-only mode; its matrix
@@ -428,7 +428,8 @@ provider's current metadata and registration still interoperate.
 tools/connectors/MCP guide. Keep source excerpts short, pinned or dated, and map
 each applicable auth clause to exact verification IDs. Build a separate
 tools/connectors denominator for host-specific requirements instead of silently
-folding them into the 21 auth clauses. OpenAI host journeys must add a separate
+folding them into the auth clauses. The optional profile-tool integration has explicit
+non-applicable dispositions; these do not claim profile-tool conformance. OpenAI host journeys must add a separate
 actual-host evidence lane recording host/version, detected capabilities,
 authorization lifecycle, tool/resource behavior, approval and error behavior,
 MCP Apps render and callback outcomes where applicable, and teardown—without
