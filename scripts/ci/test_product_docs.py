@@ -42,6 +42,94 @@ class ProductDocsServiceIndexTests(unittest.TestCase):
         self.assertEqual(MODULE.service_names_from_table(text, "Missing"), set())
 
 
+class ProductDocsCrateReadmeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        root_patch = patch.object(MODULE, "ROOT", self.root)
+        root_patch.start()
+        self.addCleanup(root_patch.stop)
+
+    def make_crate(self, relative_path: str, text: str) -> Path:
+        directory = self.root / relative_path
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "Cargo.toml").write_text(
+            '[package]\nname = "fixture"\nversion = "0.1.0"\n', encoding="utf-8"
+        )
+        readme = directory / "README.md"
+        readme.write_text(text, encoding="utf-8")
+        return readme
+
+    def test_inventory_includes_tracked_and_untracked_crate_readmes(self) -> None:
+        tracked = self.make_crate("crates/labby-new", "# New runtime\n")
+        untracked = self.make_crate("crates/future-helper", "# Future helper\n")
+        subprocess.run(
+            ["git", "-C", str(self.root), "add", "--", str(tracked)], check=True
+        )
+        self.assertEqual(set(MODULE.canonical_docs()), {tracked, untracked})
+
+    def test_new_crate_readme_is_checked_for_stale_product_naming(self) -> None:
+        self.make_crate("crates/future-helper", "# Helper\nUses lab-runtime.\n")
+        failures: list[str] = []
+        for path in MODULE.canonical_docs():
+            MODULE.validate_stale_tokens(path, failures)
+        self.assertTrue(
+            any(
+                "crates/future-helper/README.md" in failure
+                and "stale product naming" in failure
+                for failure in failures
+            ),
+            failures,
+        )
+
+    def test_identical_crate_readmes_are_rejected(self) -> None:
+        self.make_crate("crates/first-runtime", "# Copied documentation\n")
+        self.make_crate("crates/second-runtime", "# Copied documentation\n")
+        failures: list[str] = []
+        MODULE.validate_duplicates(MODULE.canonical_docs(), failures)
+        self.assertTrue(
+            any(
+                "duplicate canonical product docs" in failure
+                and "crates/first-runtime/README.md" in failure
+                and "crates/second-runtime/README.md" in failure
+                for failure in failures
+            ),
+            failures,
+        )
+
+    def test_nested_readmes_and_separate_workspaces_stay_outside_scope(self) -> None:
+        self.make_crate("crates/example", "# Crate overview\n")
+        nested = self.root / "crates/example/src/pages/README.md"
+        nested.parent.mkdir(parents=True)
+        nested.write_text("# Nested asset notes\n", encoding="utf-8")
+        verification = self.make_crate(
+            "tools/verification/crates/example", "# Verification package\n"
+        )
+        desktop = self.make_crate("apps/tauri/src-tauri", "# Desktop package\n")
+        no_manifest = self.root / "crates/not-a-package/README.md"
+        no_manifest.parent.mkdir()
+        no_manifest.write_text("# Other notes\n", encoding="utf-8")
+        inventory = MODULE.canonical_docs()
+        for path in (nested, verification, desktop, no_manifest):
+            with self.subTest(path=path.relative_to(self.root)):
+                self.assertNotIn(path, inventory)
+
+    def test_git_ignored_crate_readme_is_not_audited(self) -> None:
+        (self.root / ".gitignore").write_text("crates/ignored/\n", encoding="utf-8")
+        self.make_crate("crates/ignored", "# Ignored fixture\nUses lab-runtime.\n")
+        self.assertEqual(MODULE.canonical_docs(), [])
+
+    def test_symlinked_crate_readme_is_not_a_second_authored_document(self) -> None:
+        readme = self.make_crate("crates/example", "# Original\n")
+        target = self.root / "reference.md"
+        target.write_text(readme.read_text(encoding="utf-8"), encoding="utf-8")
+        readme.unlink()
+        readme.symlink_to("../../reference.md")
+        self.assertEqual(MODULE.canonical_docs(), [])
+
+
 class ProductDocsInstructionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()

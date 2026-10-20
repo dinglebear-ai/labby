@@ -6,8 +6,8 @@ on runner execution, protocol, snippet/artifact handling, normalization, and
 shared Code Mode data types.
 
 Exception: this crate also owns Labby's runner-reserved local Code Mode
-providers (`state`, `git`, and `openapi`). They are not host upstream tools.
-`state`/`git` remain unscoped admin/trusted-local only. OpenAPI static/no-auth
+providers (`state`, `git`, `openapi`, and `sandbox`). They are not host upstream tools.
+`state`/`git`/`sandbox` remain unscoped admin/trusted-local only. OpenAPI static/no-auth
 operations keep that same boundary, but an operation configured with a
 subject-scoped `oauth_upstream` may be dispatched by an authenticated unscoped
 caller with execution authority and a verified subject. Route/tool-scoped runs
@@ -28,10 +28,19 @@ branches on the provider **before** the lock in `enqueue_local_provider_call`.
 No new files were added to `labby-codemode`; the spec-parsing / HTTP code all
 lives in `labby-openapi`.
 
+`sandbox` is the optional disposable-workload provider. Its `microsandbox-sdk`
+feature and operator-owned `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON` are separate
+from the Linux Microsandbox runner transport below. Workloads use their own
+admission/cleanup lifecycle outside `LOCAL_PROVIDER_LOCK`; they cannot acquire
+caller-selected mounts, networking, or credentials. Without the feature,
+dispatch reports `not_available`. Tests using validation or fake transports do
+not establish that a real microVM works; see [crate reference](README.md).
+
 `codemode.search`/`codemode.describe` intentionally do **not** use the
 `local_provider.rs`/`LOCAL_PROVIDER_LOCK` admin-only gate. `search()`'s matching
 stays a pure in-sandbox JS closure over a catalog that is already
-scope-filtered per-entry via `scope.allows()` before the discovery/proxy JS is
+filtered per-entry through `discovery_entry_visible()` (tool entries use
+`scope.allows()`, metadata authorization belongs to its source) before discovery/proxy JS is
 generated (`execute.rs`'s `build_code_mode_proxy`), and remains available to any
 `can_execute()` caller, including route-scoped and tool-scoped ones.
 
@@ -100,7 +109,7 @@ over a framed stdio line protocol. There is NO Wasmtime/fuel path on any live
 code path; the old Wasmtime runner reference file was deleted during extraction.
 
 Execution limits (QuickJS side):
-- **30-second wall-clock timeout** — enforced by `runner_drive.rs` via `tokio::time::timeout`.
+- **Configurable wall-clock timeout** — `CodeModeConfig.timeout_ms` defaults to 30 seconds, with validated values of 1–300,000 ms. `execute.rs` reserves response time and `runner_drive.rs` enforces the resulting deadline.
 - **64 MiB memory limit** — enforced by the Javy runtime at start-up.
 - **Stack depth limit** — enforced by QuickJS natively.
 
@@ -123,9 +132,12 @@ while guaranteeing JS-state isolation by construction.
   across executions — a brand-new runtime has no globals, no
   `__labPendingToolCalls`, and no captured data from a prior caller. This is
   where cross-caller leakage would live.
-- **Per-execution resets** (`runner.rs`): the `next_seq` counter resets to 0, and
-  a fresh per-execution cwd jail subdir is created (the previous one removed) so a
-  pooled process never accumulates working-directory state across runs.
+- **Per-execution resets** (`runner.rs`): the `next_seq` counter resets to 0.
+  `reset_execution_jail` attempts to remove the previous cwd jail and enter a
+  fresh subdirectory. Filesystem failures are non-fatal; the runner keeps an
+  isolated working directory, but a fresh directory is not guaranteed. This
+  reset is defense-in-depth; fresh JavaScript runtime creation is the required
+  cross-caller JS-state isolation contract.
 - **Parent pool** (`pool.rs`, `pool/runner_handle.rs`, `pool/config.rs`): a
   bounded set of long-lived runner handles, one execution per runner at a time
   (`size` runners ⇒ `size` concurrent executions). Slot ownership uses an explicit
@@ -137,9 +149,11 @@ while guaranteeing JS-state isolation by construction.
   on a guaranteed-fresh ephemeral runner; no host-visible side effect could have
   crossed the protocol boundary yet. A crash after protocol activity, timeout, or
   protocol fault is **evicted without replay**.
-- **Settlement deadline semantics.** External `callTool` work reserves a 250 ms
-  result-ack window inside the same per-execution wall-clock budget when at least
-  twice that budget remains. This leaves time to relay `ToolResult`/`ToolError` and
+- **Settlement deadline semantics.** External `callTool` work reserves a result-ack
+  window that scales with the in-flight call count up to a bounded ceiling;
+  `runner_drive.rs::result_ack_reserve` owns the calculation. The window stays inside
+  the per-execution wall-clock budget and applies only when the remaining time
+  exceeds twice the computed reserve. This leaves time to relay `ToolResult`/`ToolError` and
   receive `Done`/`Error` without materially shortening healthy upstream calls.
   The separate hung-runner watchdog remains 5 seconds. After the final tool result
   is relayed, the runner gets up to that 5-second grace, but never beyond the outer execution
@@ -173,12 +187,12 @@ while guaranteeing JS-state isolation by construction.
   remains the default and rollback backend.
 - **Security invariants persist for the pooled process** because they are set
   once at spawn: `env_clear()`, `process_group(0)`/Job Object, `kill_on_drop`,
-  `prctl(PR_SET_DUMPABLE, 0)`. The 64 MiB heap / 30 s wall-clock / stack limits are
-  enforced PER EXECUTION (heap+stack by the fresh runtime; wall-clock by the parent
+  `prctl(PR_SET_DUMPABLE, 0)`. The 64 MiB heap / configured wall-clock / stack limits
+  are enforced PER EXECUTION (heap+stack by the fresh runtime; wall-clock by the parent
   `drive_runner` deadline, which kills+evicts on expiry rather than reusing a
   runtime interrupted mid-execution).
 
-When the broker has no `GatewayManager` (some tests / standalone paths) there is
+When the broker has no `CodeModeHost` (some tests / standalone paths) there is
 no pool; it spawns a one-shot runner directly (the handle's `Drop` kills it).
 
 ---
@@ -209,11 +223,11 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 // Reply to a tool_call/snippet_resolve with a structured error
 { "type": "tool_error", "seq": <u64>, "kind": "<error kind>", "message": "<string>" }
 
-// Reply to a step_begin: replay the cached value (durable-run resume) or execute fn.
+// Reply to a step_begin: execute fn; replay values are reserved for a future host.
 // replay=null (or absent) ⇒ execute; replay=<json> ⇒ return that value without running fn.
 { "type": "step_decision", "seq": <u64>, "replay": <json|null> }
 
-// Ack a step_result: the step value was durably recorded; the runner returns it.
+// Ack a step_result: the host accepted the value for recording; the runner returns it.
 { "type": "step_recorded", "seq": <u64> }
 ```
 
@@ -248,6 +262,11 @@ The runner parks for the next `start` after each `done`/`error` and exits only o
 stdin EOF (no explicit `shutdown`/`ready` messages on the wire). Do not add fields
 to the wire protocol without updating both sides and `protocol.rs`.
 
+`step_recorded` does not prove that persistent storage has flushed. The gateway's
+`record_step` hook buffers bounded, redacted rows in memory and flushes them at
+the run boundary. Its decision hook always executes; replay variants remain
+reserved and do not provide caller pause, confirmation, or resume.
+
 ---
 
 ## Sandbox Containment Invariants
@@ -264,10 +283,10 @@ items.
 | Env isolation | **Implemented.** Runner transport spawned with `env_clear()` (`pool/runner_handle.rs`, in `PooledRunner::spawn`) — the transport inherits no Labby host environment. Microsandbox receives configuration as validated argv and no host credentials are forwarded; the guest retains only image/runtime defaults. |
 | Optional microVM | **Implemented, opt in on Linux.** Restricted Microsandbox guest; no network; immutable cached image only (`--pull never`); 1 CPU; 256 MiB; process-wide admission defaults to 4 guests (hard cap 16); lifecycle tied to the pooled runner. Explicit cleanup is bounded and failures fall back to a bounded worker queue; unconfirmed cleanup fails closed. Labeled stale guests are reconciled at startup and graceful shutdown awaits pool drainage. A 24-hour guest backstop covers ungraceful host death, and live pools proactively recycle before it. Only the validated Labby executable is mounted read-only. MCP authority and secrets remain in the host. |
 | `PR_SET_DUMPABLE` | **Implemented.** `runner.rs:22` calls `prctl(PR_SET_DUMPABLE, 0)` as the runner's first act on Linux, blocking `/proc/<pid>/environ` readback. Failure is non-fatal and warns via stderr (drained into the parent's response logs). |
-| Per-run cwd isolation | A direct-process runner has a long-lived host `TempDir`; a Microsandbox runner creates its own guest-local `TempDir`. In both cases the runner creates a FRESH per-execution jail subdir on every `Start` and removes the previous one (`runner.rs::reset_execution_jail`), so a pooled process never accumulates cwd state across runs. |
-| Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run jail root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
+| Per-run cwd isolation | A direct-process runner has a long-lived host `TempDir`; a Microsandbox runner creates its own guest-local `TempDir`. On each `Start`, `runner.rs::reset_execution_jail` attempts to remove the previous jail and enter a fresh subdirectory. Failures are non-fatal and can leave filesystem state behind in the isolated runner directory. This is defense-in-depth, not a hard containment boundary. |
+| Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run artifact store root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
 | Artifact size cap | Enforced: 8 MiB default (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB`) |
-| Tool call budget | Not enforced. Code Mode is bounded by wall-clock timeout, sandbox memory/stack, output/log/artifact caps, and host-side tool policy. |
+| Tool call budget | Enforced in `runner_drive.rs`: 512 ordinary calls per run by default, configurable up to 2,048 via `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` or the host-installed `max_calls_per_run` fallback. Excess calls reject as `call_budget_exceeded`. Reserved internal calls have a separate ceiling of 32. |
 
 **Writing tests that assert on env isolation:** `env_clear()` has landed, so a
 test asserting the runner child has a minimal/empty environment reflects real
@@ -281,7 +300,7 @@ env_clear lands" comment — that state is in the past.
 
 | File | Purpose |
 |------|---------|
-| `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution seq + cwd-jail reset, `PR_SET_DUMPABLE`. |
+| `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution sequence reset + best-effort cwd-jail reset, `PR_SET_DUMPABLE`. |
 | `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
@@ -289,7 +308,7 @@ env_clear lands" comment — that state is in the past.
 | `runner_backend.rs` | Fail-closed selection and validation for the direct-process and opt-in Microsandbox runner transports. |
 | `pool/config.rs` | `PoolConfig`: env-driven pool size / recycle / overflow knobs and the kill switch. |
 | `runner_io.rs` | Framed stdio line protocol with the child process. |
-| `execute.rs` | `execute()` entry point: build context, inject preamble, call driver, return result. Also owns mcp-ui widget capture: `extract_ui_link` records an upstream result's `_meta.ui` (last-wins, into the per-run `CodeModeBroker::ui_capture` sink) before the envelope is unwrapped, and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
+| `execute.rs` | `execute()` entry point: build context, inject preamble, call driver, return result. The host extracts widget metadata before unwrapping its tool result; the broker captures the returned `ToolCallOutcome.ui` (last-wins), and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
 | `host.rs` | Host trait and adapters that let gateway or tests provide tool/snippet/artifact behavior without coupling this crate back to gateway. |
 | `broker.rs` | Broker implementation for tool calls, snippet resolution, artifact writes, and per-run UI capture. |
 | `preamble.rs` | Injects the `callTool` bridge stub and catalog proxy into the JS environment. |
@@ -300,7 +319,8 @@ env_clear lands" comment — that state is in the past.
 | `truncate.rs` | Output size limiting before returning to caller. |
 | `trace.rs` | Execution span helpers (`tracing`). |
 | `types.rs` | Shared Code Mode types: tool descriptors, callers, scopes, execution responses, traces, and UI links. |
-| `ts_signatures.rs` | **Live** TypeScript signature / `.d.ts` generator called by `types.rs::CodeModeCatalogEntry::upstream_tool`. NOT legacy shims. |
+| `ts_signatures.rs` | **Live** TypeScript signature / `.d.ts` generator called by `types.rs::CatalogDescriptor::tool_with_safety`. NOT legacy shims. |
+| `sandbox.rs`, `sandbox/sdk.rs`, `sandbox/recovery.rs` | Reserved disposable workloads, optional SDK execution, and owned-guest cleanup/recovery. Separate from the runner transport. |
 | `util.rs` | Small utilities: JS source wrapping, ID generation. |
 | `artifacts.rs` | Artifact write handler: path containment check, size cap, atomic write. |
 | `snippet.rs`, `snippet/store.rs` | Snippet resolution types and filesystem-backed snippet store. |
@@ -323,6 +343,9 @@ env_clear lands" comment — that state is in the past.
 
 ## Related Docs
 
-- `docs/dev/CODE_MODE.md` — surface documentation and examples (authoritative)
-- `docs/dev/ERRORS.md` — `"timeout"` and artifact kinds
-- Host integration: `crates/labby-gateway/src/gateway/AGENTS.md` — gateway trust model and catalog/search wiring
+| Need | Reference |
+| --- | --- |
+| Crate integration and API map | [Crate reference](README.md) |
+| Surface documentation and examples | [Code Mode](../../docs/dev/CODE_MODE.md) |
+| `"timeout"` and artifact kinds | [Errors](../../docs/dev/ERRORS.md) |
+| Gateway trust model and catalog/search wiring | [Gateway instructions](../labby-gateway/src/gateway/AGENTS.md) |

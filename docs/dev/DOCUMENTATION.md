@@ -1,7 +1,7 @@
 ---
 title: "Documentation Maintenance"
 created: "2026-09-27"
-updated: "2026-09-29"
+updated: "2026-10-20"
 ---
 
 # Documentation Maintenance
@@ -233,7 +233,10 @@ legacy reverse-direction symlink rule with strict Git-index validation. See
 [CI/CD](../runtime/CICD.md) for the adapter and required aggregate contract.
 
 `scripts/check-product-docs.py` inventories tracked and nonignored new paths
-through Git. It checks current product links, stale naming, duplicate prose,
+through Git. Crate-root `README.md` files under `crates/` participate automatically
+when they have a sibling `Cargo.toml`; no per-crate allowlist needs updating.
+Nested component READMEs and separate workspaces retain their existing document
+classification. It checks current product links, stale naming, duplicate prose,
 service-index coverage, install/auth guidance, CLI examples, and instruction
 topology. It rejects private instruction filenames that are tracked or not
 ignored, including force-added local overrides. Canonical AGENTS.md files participate in product-doc validation;

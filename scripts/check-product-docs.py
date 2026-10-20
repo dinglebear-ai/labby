@@ -29,8 +29,6 @@ TOP_LEVEL_DOCS = {
     "apps/web/README.md",
     "apps/web/components/aurora/README.md",
     "apps/tauri/README.md",
-    "crates/labby/README.md",
-    "crates/labby-apis/README.md",
     "docs/assets/brand/README.md",
     "docs/specs/stdio-mcp-proxy.md",
     "plugins/labby/README.md",
@@ -114,6 +112,12 @@ def is_canonical(path: Path) -> bool:
     if name.startswith(IGNORED_PREFIXES):
         return False
     if path.name == "AGENTS.md" or name in TOP_LEVEL_DOCS or name in CANONICAL_DEV:
+        return True
+    if (
+        path.name == "README.md"
+        and path.parent.parent == ROOT / "crates"
+        and (path.parent / "Cargo.toml").is_file()
+    ):
         return True
     return name.startswith(CANONICAL_DIRS) and path.suffix.lower() in {".md", ".mdx"}
 

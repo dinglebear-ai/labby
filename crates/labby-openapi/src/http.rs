@@ -1,5 +1,4 @@
-//! The hardened outbound HTTP client. THIS is where the actual HTTP happens —
-//! never `rmcp-openapi`'s executor.
+//! Hardened outbound HTTP for spec loading and operation dispatch.
 //!
 //! Every outbound call (spec fetch and operation dispatch) resolves the target
 //! host, validates every resolved IP against `labby_primitives::ssrf`, pins ONE
@@ -400,7 +399,7 @@ fn build_url_with_params(
         }
     }
     // Ensure the base path ends with '/' so `join` appends rather than replaces
-    // the last segment (mirrors rmcp-openapi's `with_base_url`).
+    // the last segment of the operator-configured base path.
     let mut base = op.base_url.clone();
     let base_path = base.path().to_string();
     let base_prefix = if base_path.ends_with('/') {

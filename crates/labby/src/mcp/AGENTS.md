@@ -64,7 +64,7 @@ hashing synchronized for every supported projection. Registration lives in
 
 ## Dispatch pattern
 
-For normal services, `dispatch/<service>/dispatch.rs` owns action routing, catalog, param validation, and client resolution. See `crates/labby/src/dispatch/AGENTS.md` for the required layout and templates.
+Keep action routing, catalog metadata, parameter validation, and client resolution in each service's shared dispatch module and helpers. Follow the existing service layout; these concerns can live in sibling helper files or a single module. See `crates/labby/src/dispatch/AGENTS.md` for ownership and verification rules.
 
 `mcp/services/` is now an exception layer, not the default adapter surface. Keep a module there only when it owns MCP-specific behavior that cannot live in shared dispatch. Current examples:
 
@@ -243,26 +243,23 @@ Resources are read-only. Do not use them for mutations.
 
 ## Transport auth for fs
 
-The `fs` service exposes workspace filesystem contents (`fs.list`,
-`fs.preview`). The HTTP surface refuses to mount `/v1/fs` when
-`LABBY_WEB_UI_AUTH_DISABLED=true` — see `api/router.rs` and the
-corresponding gate in `cli/serve.rs`. The MCP surface has **no**
-equivalent env-driven refusal: `fs` is registered unconditionally in
-`registry.rs` whenever the `fs` feature is compiled in, regardless of
-MCP transport auth posture.
+The optional `fs` service reads workspace files. HTTP includes `fs.list`
+and byte-streaming `fs.preview`; MCP deliberately omits `fs.preview` from
+both discovery and execution. `registry.rs` registers the MCP-filtered
+service whenever the `fs` feature is compiled, independently of the
+browser UI auth setting.
 
 Existing hard checks (enforced in code):
 
-- Router: `/v1/fs` refuses to mount when
-  `LABBY_WEB_UI_AUTH_DISABLED=true` (`api/router.rs`). This is the only
-  enforcement that fires in the LABBY_WEB_UI_AUTH_DISABLED + LAN-bind
-  scenario, because the bind guard below treats a configured bearer
-  token as "auth configured" even though the `/v1` middleware has been
-  bypassed.
-- Bind: `cli/serve.rs` refuses to bind on a non-loopback address when
-  no auth is configured at all (no bearer token, no OAuth). Does NOT
-  fire when `LABBY_WEB_UI_AUTH_DISABLED=true` is paired with a token —
-  that case relies on the router-level fs mount refusal above.
+- `api/router.rs` delegates `/v1/fs` mounting to
+  `WorkspaceRuntime::should_mount_http_routes`: refuse only when browser
+  UI auth is disabled and API authentication is not configured. A configured
+  bearer/OAuth path still protects `/v1` and `/mcp` when
+  `LABBY_WEB_UI_AUTH_DISABLED=true`; that flag does not bypass their auth
+  middleware. See `api::router::tests::web_ui_auth_disabled_does_not_bypass_v1_auth`.
+- `cli/serve.rs` refuses a non-loopback HTTP bind without configured
+  authentication. Unix-socket serving also requires a supported auth path.
+  Browser UI settings and transport authentication are separate controls.
 
 Operator-side (not enforced in code) — must be ensured before exposing
 a server that has the `fs` feature enabled:
@@ -274,9 +271,8 @@ a server that has the `fs` feature enabled:
   the process is not reachable by untrusted callers — do not expose it
   through a network proxy without front-side auth.
 
-The asymmetry with `/v1/fs` is intentional: MCP registration is not
-structured to fail or skip a single service at runtime, and stdio has
-no single env var equivalent to `LABBY_WEB_UI_AUTH_DISABLED`. Promoting
-this to a runtime invariant (e.g. a startup check that refuses to
-register `fs` when MCP auth posture is not verified) is tracked as
-follow-up work.
+HTTP mount policy and MCP registration remain separate. Do not infer that
+hiding the browser UI or an HTTP route removes the MCP service. Preserve the
+transport policy in `cli/serve.rs` and `api/router.rs`; use
+[Runtime configuration](../../../../docs/runtime/CONFIG.md) and
+[HTTP API](../../../../docs/surfaces/HTTP_API.md) for the owning contracts.

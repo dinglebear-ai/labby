@@ -1,12 +1,14 @@
+import io
 import json
 import subprocess
 import unittest
 import urllib.error
 from collections import Counter
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from scripts.ci import refresh_mcp_auth_denominator
+from scripts.ci import auth_backup_restore_drill, refresh_mcp_auth_denominator
 
 ROOT = Path(__file__).resolve().parents[2]
 MATRIX = ROOT / "tools/verification/conformance/auth-requirements.json"
@@ -160,7 +162,45 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
             cwd=ROOT, capture_output=True, text=True, check=False,
         )
         self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn(
+            "test sqlite::extracted_tests::offline_auth_recovery_set_restores_real_schema_ciphertext_and_signing_key ... ok",
+            completed.stdout,
+        )
         self.assertIn("auth backup restore drill passed", completed.stdout)
+
+    def test_backup_restore_drill_rejects_non_singleton_results(self) -> None:
+        for count in (0, 2):
+            with (
+                self.subTest(matched_tests=count),
+                patch.object(
+                    auth_backup_restore_drill.subprocess,
+                    "run",
+                    return_value=subprocess.CompletedProcess(
+                        args=[], returncode=0,
+                        stdout=f"test result: ok. {count} passed; 0 failed; 0 ignored;\n",
+                        stderr="",
+                    ),
+                ),
+                redirect_stdout(io.StringIO()),
+                self.assertRaisesRegex(SystemExit, "exactly one passing test"),
+            ):
+                auth_backup_restore_drill.main()
+
+    def test_backup_restore_drill_propagates_cargo_failure(self) -> None:
+        with (
+            patch.object(
+                auth_backup_restore_drill.subprocess,
+                "run",
+                return_value=subprocess.CompletedProcess(
+                    args=["cargo", "test"], returncode=1,
+                    stdout="test result: ok. 1 passed; 0 failed; 0 ignored;\n",
+                    stderr="",
+                ),
+            ),
+            redirect_stdout(io.StringIO()),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            auth_backup_restore_drill.main()
 
     def test_full_mcp_normative_denominator_is_preserved(self) -> None:
         data = json.loads(NORMATIVE.read_text())

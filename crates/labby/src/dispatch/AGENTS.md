@@ -6,7 +6,7 @@ This directory is Labby's shared product dispatch layer. CLI, HTTP, and MCP surf
 
 Current operation owners include access/bootstrap and Projects; Agents, Tasks, and the shared Assistant provider; Artifacts, distribution, sources, and protected publication; browser and development-container lifecycles; gateway, setup, doctor, server logs, snippets, optional filesystem access, and Linux File Stash. Inspect this directory and the generated service/action catalogs rather than treating a handwritten module list as exhaustive.
 
-Shared helpers include clients, errors, execution catalogs, OAuth subjects, path safety, redaction, schemas, and security. `upstream.rs` is a compatibility shim to the extracted `labby-gateway` implementation. `artifacts` owns the local library and bounded provider-backed projections; `bundles`, `jobs`, `sources`, and `uploads` support remote authority.
+Shared helpers include clients, errors, execution catalogs, OAuth subjects, path safety, redaction, schemas, and security. `upstream.rs` is a compatibility shim to the extracted `labby-gateway` implementation. `artifacts` composes the local library and bounded provider-backed projections. `artifact_distribution` coordinates managed mirrors; `artifact_sources` admits configured providers; `remote_control` projects bundles, jobs, sources, and uploads through shared provider authority.
 
 Do not reintroduce retired standalone Marketplace, Agent Artifact Manager, Fleet/device-runtime, ACP, Deploy-product, or Registry-browser products. Current File Stash and provider-backed Artifact discovery do not restore those retired product contracts.
 

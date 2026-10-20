@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-10-02"
+updated: "2026-10-20"
 ---
 
 # Code Mode
@@ -287,13 +287,14 @@ credential model for them.
 
 ### OpenAPI Provider (`openapi`)
 
-`openapi` is the third local provider. It turns an operator-configured OpenAPI
-spec into locally-dispatched, LLM-callable operations. Unlike `state`/`git`, it
-performs outbound HTTP — through the isolated `labby-openapi` crate's OWN hardened
-client, never through a sidecar MCP server.
+`openapi` is a local provider for operations from operator-selected JSON specs.
+[`labby-openapi`](../../crates/labby-openapi/README.md) extracts allowlisted
+operation IDs, HTTP methods, and path templates with `serde_json` and owns the
+guarded outbound HTTP. The Code Mode host supplies the registry and client.
 
-**JS API** (flat, non-discoverable in v1 — `codemode.search` does NOT list
-`openapi` operations):
+**JS API.** Call operations through `openapi.call`; `codemode.search` does not
+list them. The shim is available when the host has loaded a spec and the
+execution passes the provider gate described below.
 
 ```ts
 async () => {
@@ -303,10 +304,10 @@ async () => {
 }
 ```
 
-`params` supplies path-template values (substituted, PATH_SEGMENT-encoded) plus
-either query params (GET/HEAD/DELETE) or a JSON body (POST/PUT/PATCH). The JS
-snippet never sees the credential — it is injected server-side after the sandbox
-boundary.
+`params` supplies path-template values, encoded as opaque path segments. The
+remaining values form a JSON body for POST/PUT/PATCH or query parameters for
+other methods. The credential is injected server-side after the sandbox
+boundary and stays outside the JS snippet.
 
 **Config.** Non-secret fields live in `config.toml`. A spec may use either a
 process-global static credential from `.env` (`OPENAPI_<LABEL>_TOKEN` →
@@ -314,7 +315,12 @@ process-global static credential from `.env` (`OPENAPI_<LABEL>_TOKEN` →
 `api_key_header`, default `X-API-Key`) **or** `oauth_upstream = "<name>"` to
 resolve an OAuth bearer token for the authenticated caller's `sub` at dispatch
 time. Static credentials and `oauth_upstream` are mutually exclusive.
-`base_url` is **mandatory** — `rmcp-openapi` never reads the spec's `servers[]`.
+`base_url` is **mandatory**: the converter ignores the spec's `servers[]`.
+Choose exactly one JSON source: `spec_url` for a guarded HTTPS fetch or
+`spec_path` for an explicit local regular file. The host resolves configuration
+and credentials; the OpenAPI crate loads the selected document. The allowlist
+matches raw `operationId` strings exactly. Missing IDs and excluded operations
+do not become callable.
 
 ```toml
 [[openapi.specs]]
@@ -338,19 +344,24 @@ explicitly configure `oauth_upstream` may be used by an authenticated unscoped
 caller with Code Mode execution authority and a verified `sub`; missing-subject
 and route/tool-scoped executions fail closed.
 
-**SSRF containment.** The base URL is validated at load time via the canonical
+**SSRF containment.** The base URL is validated at load time with the canonical
 `labby_primitives::ssrf` guard (https-only, rejects loopback / link-local /
 RFC1918 / CGNAT / private-TLD). At request time the outbound client disables
-redirects, forces `https_only`, resolves + validates every IP, pins one validated
-address, and re-checks the connected peer IP — closing the redirect-bypass and
-DNS-rebinding gaps. Each dispatch emits exactly one structured event on both the
-success and failure path — `service`, `action` (operationId), `label`, `host`,
+redirects and proxies, forces `https_only`, resolves and validates every IP,
+pins one validated address, and re-checks the connected peer IP. An absent or
+mismatched peer address fails closed. After registry and credential checks,
+each completed dispatch emits one structured event on success or failure:
+`service`, `action` (operationId), `label`, `host`,
 `method`, `status` (`ok`/`error`), `elapsed_ms`, plus `kind` on failure — never a
 third-party response body, a query-with-auth, or a credential.
 
-**Refresh.** Specs load once at process start (concurrently, per-spec timeout,
-4 MiB body-size cap). A spec that fails to load is omitted with a WARN;
-`labby serve` still reaches ready. There is no background refresh in v1.
+**Refresh.** Specs load once at process start, concurrently with a per-spec
+timeout and a 4 MiB pre-parse size cap for remote and local sources. A spec that
+fails to load is omitted with a WARN; valid configuration still permits
+`labby serve` to reach ready. Invalid configuration, including missing or
+ambiguous spec sources, fails boot. Registry warnings also report omitted specs
+or operations at the load caps and allowlists with no matching operations.
+There is no background refresh in v1.
 
 **Deferred follow-ups (v1):** discovery-catalog integration (which would
 re-introduce per-operation `input_schema`, per-op JS proxies, and operationId→JS
@@ -639,8 +650,9 @@ includes allowed tools, and direct `callTool` IDs outside the allowlist reject a
 
 Filter names fail closed: every `upstreams` entry, and the namespace of every
 `upstream::tool` entry in `tools`, must name an upstream the caller can use or
-a built-in provider namespace (`unraid`, `state`, `git`, `openapi`, exported by
-the crates that own them). Anything else rejects as `unknown_upstream` instead
+a built-in provider namespace from
+[`LOCAL_PROVIDER_NAMESPACES`](../../crates/labby-codemode/src/local_provider.rs).
+Anything else rejects as `unknown_upstream` instead
 of silently producing an empty run.
 
 Upstream names match regardless of ASCII case and `-`/`_`/`.` separators,

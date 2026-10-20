@@ -78,7 +78,7 @@ Review generated diffs and regenerate docs after schema changes.
 
 Gateway Admin is a static export, not a production Node server. Reuse the [Aurora contract](docs/DESIGN.md), `@aurora` components, and typed API/auth helpers. Preserve export build IDs, generated assets, and bundle budgets. Desktop hosts that same control plane, not a second renderer or durable token store. The browser bridge requires explicit site permissions and approved pairing.
 
-Plugins own skills/MCP metadata; the binary owns setup/repair and host lifecycle. Never restore automatic install hooks. After README edits: `node packages/labby-mcp/scripts/sync-readme.js`.
+Plugins own skills/MCP metadata; the binary owns setup/repair and host lifecycle. Never restore automatic install hooks. After root README edits: `node packages/labby-mcp/scripts/sync-readme.js`.
 
 Regenerate `docs/generated/` with `just docs-generate` after metadata/CLI/schema changes; do not hand-edit catalogs. Standalone ACP/Marketplace/Fleet/Deploy products remain retired; Artifact discovery and Linux File Stash are separate contracts.
 
