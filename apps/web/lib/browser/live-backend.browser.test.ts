@@ -199,7 +199,16 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.ok(descriptor)
   let name = `browser-stash-${descriptor.run_id}.txt`
   const contents = `live browser stash ${descriptor.run_id}\n`
+  // Finish the initial debounced list load before upload refreshes can overlap it.
+  const initialList = page.waitForResponse(response => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/v1/stash')
   await page.goto('/stash/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+  const initialResponse = await initialList
+  assert.equal(initialResponse.status(), 200)
+  assert.equal(await initialResponse.finished(), null)
+  assert.deepEqual((await initialResponse.json()).files, [])
+  await page.getByText('Your Stash is empty', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
+  await page.getByRole('status').filter({ hasText: 'Loading your files…' }).waitFor({ state: 'hidden', timeout: 10_000 })
   const dropTarget = page.getByRole('button', { name: /drop files here or browse/i })
   await dropTarget.waitFor({ state: 'visible', timeout: 10_000 })
   await dropTarget.focus()
