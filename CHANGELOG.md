@@ -47,8 +47,9 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - **auth/cli:** remote stdio MCP bridges share the CLI's encrypted session and
   refresh rotated grants during long-running connections. Local logout stops
-  subsequent authenticated requests. Headless login keeps waiting after browser
-  launch failure, presents colored instructions, and puts routine console logs
+  subsequent authenticated requests, including connections whose old encrypted
+  grant could not be cleaned up after re-login. Headless login keeps waiting after
+  browser launch failure, presents colored instructions, and puts routine console logs
   behind `-v`.
 - **cli (breaking):** reorganize the public command grammar around resource and
   action words such as `server`, `route`, `loadout`, `auth`, `host`, `plugin`,

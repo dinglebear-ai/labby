@@ -122,6 +122,9 @@ their registered callback behavior.
 The bridge reads and refreshes that grant during the MCP session, using the
 same profile lock as CLI sign-in, refresh, and logout. It never opens a browser
 implicitly. Run the explicit login command again if the grant is revoked.
+Each connection stays bound to its original sign-in. Replacing that sign-in or
+logging out stops the connection from using the old grant, even when encrypted
+credential cleanup is deferred; a new connection reads the active profile.
 Both processes must use the same Labby installation root (`LABBY_HOME` when
 set). Credentials remain in Labby's encrypted store; no bearer is placed in the
 MCP client configuration.

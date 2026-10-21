@@ -573,6 +573,7 @@ async fn client_at_profile(
     client.auth_manager.lock().await.set_credential_store(
         profile_store::ProfileCredentialStore::new(
             path.to_owned(),
+            config.name.clone(),
             labby_auth::upstream::store::SqliteCredentialStore::new(
                 runtime.sqlite.clone(),
                 labby_auth::upstream::encryption::load_key(&key)?,
