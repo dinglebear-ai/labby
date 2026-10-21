@@ -111,9 +111,12 @@ command = "labby"
 args = ["--server", "https://lab.example", "--no-input", "--quiet", "mcp"]
 ```
 
-On macOS and Linux, setup uses the same shared sign-in by default. After connecting the
-CLI, run `labby setup clients connect --clients codex` to register the installed
-Labby bridge. Its configuration binds the gateway and installation root without
+On macOS and Linux, setup uses the same shared sign-in by default. Once guided
+client setup has saved the gateway connection in the installation's protected
+`.env`, run `labby setup clients connect --clients codex` to register the installed
+Labby bridge. Use the same installation root as the CLI sign-in. `auth login`
+alone does not create that saved connection; the explicit `--server` MCP entry
+above also works without it. The setup configuration binds the gateway and root without
 copying credentials into Codex. Guided client setup selects this bridge too.
 
 The explicit destination binds the connection to that server's saved session.
