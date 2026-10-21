@@ -232,7 +232,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   // Upload completion precedes the list refresh, which replaces its action menus.
   await emptyRow.waitFor({ state: 'visible', timeout: 10_000 })
   await page.getByRole('status').filter({ hasText: 'Loading your files…' }).waitFor({ state: 'hidden', timeout: 10_000 })
-  await page.locator('[data-console-hero-stat="Files"] [data-console-hero-stat-value="2"][title="2"]').waitFor({ state: 'visible', timeout: 10_000 })
+  assert.equal(await page.getByRole('article').count(), 2)
   const [emptyDownload] = await Promise.all([
     page.waitForEvent('download'),
     stashFileActionThroughUi(page, emptyName, 'Download'),
