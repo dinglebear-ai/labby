@@ -46,7 +46,9 @@ identifiers were removed. Commit links remain the authoritative historical recor
 ### Changed
 
 - **auth/cli:** remote stdio MCP bridges share the CLI's encrypted session and
-  refresh rotated grants during long-running connections. Local logout stops
+  refresh rotated grants during long-running connections. Client setup registers
+  this shared bridge by default for saved OAuth and bearer connections; direct
+  application-owned OAuth remains an explicit choice. Local logout stops
   subsequent authenticated requests, including connections whose old encrypted
   grant could not be cleaned up after re-login. Headless login keeps waiting after
   browser launch failure, presents colored instructions, and puts routine console logs

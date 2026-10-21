@@ -527,12 +527,13 @@ async fn token_at_profile(path: &Path, server: &Url) -> Result<Option<String>> {
 
 /// Use the saved grant for every request, including refresh during long-lived MCP sessions.
 /// The caller must already have selected this exact authority without a token override.
-pub(crate) async fn auth_client(
+pub(crate) async fn auth_client_for_root(
+    root: &Path,
     server: &Url,
     http_client: reqwest::Client,
 ) -> Result<Option<rmcp::transport::auth::AuthClient<reqwest::Client>>> {
     let server = server_url(server.as_str())?;
-    client_at_profile(&profile_path(&server)?, &server, http_client).await
+    client_at_profile(&profile_path_for_root(root, &server)?, &server, http_client).await
 }
 
 async fn client_at_profile(

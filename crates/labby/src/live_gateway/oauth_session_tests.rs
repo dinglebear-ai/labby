@@ -25,8 +25,17 @@ struct Observed {
 
 #[tokio::test]
 async fn saved_cli_session_refreshes_real_mcp_and_logout_fails_closed() {
+    run_fixture(TEST_NAME, false).await;
+}
+
+#[tokio::test]
+async fn saved_oauth_setup_bridge_registers_refreshes_and_logout_fails_closed() {
+    run_fixture("live_gateway::oauth_session_tests::saved_oauth_setup_bridge_registers_refreshes_and_logout_fails_closed", true).await;
+}
+
+async fn run_fixture(test_name: &str, setup: bool) {
     if std::env::var_os(CHILD_ENV).is_some() {
-        tokio::time::timeout(Duration::from_secs(30), exercise_session())
+        tokio::time::timeout(Duration::from_secs(30), exercise_session(setup))
             .await
             .expect("HTTPS/MCP session fixture timed out");
         return;
@@ -51,7 +60,7 @@ async fn saved_cli_session_refreshes_real_mcp_and_logout_fails_closed() {
     std::fs::write(dir.path().join("key.der"), signing_key.serialize_der()).unwrap();
     let output = tokio::process::Command::new(std::env::current_exe().unwrap())
         .kill_on_drop(true)
-        .args(["--exact", TEST_NAME, "--nocapture"])
+        .args(["--exact", test_name, "--nocapture"])
         .env(CHILD_ENV, dir.path())
         .env("LABBY_HOME", dir.path().join("installation"))
         .env("SSL_CERT_FILE", pem)
@@ -73,7 +82,7 @@ async fn saved_cli_session_refreshes_real_mcp_and_logout_fails_closed() {
     );
 }
 
-async fn exercise_session() {
+async fn exercise_session(setup: bool) {
     drop(rustls::crypto::ring::default_provider().install_default());
     let dir = std::path::PathBuf::from(std::env::var_os(CHILD_ENV).unwrap());
     let config = rustls::ServerConfig::builder()
@@ -127,22 +136,96 @@ async fn exercise_session() {
             .as_deref(),
         Some("bridge-initial-token")
     );
-    let gateway = LiveGateway {
-        base_url: server_url.clone(),
-        explicit: true,
-        source: "operator",
-        token: Some("bridge-initial-token".into()),
-        saved_cli_session: true,
-        team_id: None,
-        client: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap(),
-        dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
-        actions: None,
+    // An explicit root with no grant must not borrow the valid ambient profile.
+    let unrelated = tempfile::tempdir().unwrap();
+    assert!(
+        detect_bound_saved_cli_target(unrelated.path(), &origin)
+            .await
+            .is_err()
+    );
+    labby_runtime::secure_atomic_file::write_secure_atomic(
+        &root.root().join(".env"),
+        format!("LABBY_SERVER_URL={origin}\nLABBY_MCP_HTTP_TOKEN=\n").as_bytes(),
+    )
+    .unwrap();
+    let mut bridge = None;
+    let service = if setup {
+        // Registration must write a token-free stdio descriptor for this same
+        // encrypted OAuth profile, retaining unrelated client settings.
+        use crate::dispatch::setup::client_registration::{self, ExternalClient};
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir(home.path().join(".codex")).unwrap();
+        let config_path = home.path().join(".codex/config.toml");
+        std::fs::write(&config_path, "# retained\nmodel = 'fixture'\n").unwrap();
+        let binary = std::env::current_exe().unwrap();
+        let plan = client_registration::saved_plan(
+            home.path().to_owned(),
+            root.root().to_owned(),
+            ExternalClient::Codex,
+            origin.clone(),
+            binary.clone(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(plan.authentication, "protected_saved_cli_bridge");
+        let result = client_registration::saved_register(
+            home.path().to_owned(),
+            root.root().to_owned(),
+            ExternalClient::Codex,
+            origin.clone(),
+            binary,
+            plan.config_version,
+        )
+        .await
+        .unwrap();
+        assert!(result.changed && result.bridge_verified && !result.connected);
+        let registered: toml::Value =
+            toml::from_str(&std::fs::read_to_string(config_path).unwrap()).unwrap();
+        assert_eq!(registered["model"].as_str(), Some("fixture"));
+        let entry = &registered["mcp_servers"]["lab"];
+        assert!(entry.get("url").is_none());
+        assert!(entry.get("command").is_some());
+        assert!(!entry.to_string().contains("bridge-initial-token"));
+        let args = entry["args"].as_array().unwrap();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0].as_str() == Some("--state-root")
+                    && pair[1].as_str() == root.root().to_str())
+        );
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0].as_str() == Some("--client")
+                    && pair[1].as_str() == Some("codex"))
+        );
+        observed.lock().unwrap().protected_calls.clear();
+        use rmcp::ServiceExt as _;
+        let (client_io, bridge_io) = tokio::io::duplex(256 * 1024);
+        let (read, write) = tokio::io::split(bridge_io);
+        bridge = Some(tokio::spawn(crate::dispatch::setup::client_bridge::run_io(
+            root.root().to_path_buf(),
+            origin.clone(),
+            read,
+            write,
+        )));
+        ().serve(client_io).await.unwrap()
+    } else {
+        let gateway = LiveGateway {
+            base_url: server_url.clone(),
+            explicit: true,
+            source: "operator",
+            token: Some("bridge-initial-token".into()),
+            saved_cli_session: Some(root.root().to_path_buf()),
+            team_id: None,
+            client: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap(),
+            dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
+            actions: None,
+        };
+        gateway.connect_service(()).await.unwrap()
     };
-    let service = gateway.connect_service(()).await.unwrap();
-    service.list_tools(None).await.unwrap();
+    service.peer().list_tools(None).await.unwrap();
     assert_eq!(
         observed.lock().unwrap().protected_calls,
         ["bridge-initial-token"]
@@ -158,7 +241,7 @@ async fn exercise_session() {
         let mut saved = credentials.load().await.unwrap().unwrap();
         saved.token_received_at = Some(1);
         credentials.save(saved).await.unwrap();
-        service.list_tools(None).await.unwrap();
+        service.peer().list_tools(None).await.unwrap();
         let saved = credentials.load().await.unwrap().unwrap();
         let token = saved.token_response.unwrap();
         assert_eq!(token.access_token().secret(), access);
@@ -183,10 +266,17 @@ async fn exercise_session() {
             .unwrap()
     );
     assert!(credentials.load().await.unwrap().is_none());
-    assert!(service.list_tools(None).await.is_err());
+    assert!(service.peer().list_tools(None).await.is_err());
     assert_eq!(observed.lock().unwrap().protected_calls.len(), 3);
     assert_eq!(observed.lock().unwrap().refreshes.len(), 2);
     drop(service.cancel().await);
+    if let Some(bridge) = bridge {
+        tokio::time::timeout(Duration::from_secs(3), bridge)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
     server.abort();
 }
 
@@ -213,6 +303,10 @@ async fn respond(
             StatusCode::OK,
             json!({"issuer":origin.trim_end_matches('/'),"authorization_endpoint":format!("{origin}authorize"),"token_endpoint":format!("{origin}token"),"code_challenge_methods_supported":["S256"]}),
         ),
+        "/health" => (StatusCode::OK, json!({"status":"ok"})),
+        "/v1/gateway/actions" if bearer.as_deref() == Some("bridge-initial-token") => {
+            (StatusCode::OK, json!([{"name":"gateway.reload"}]))
+        }
         "/token" => {
             let form: std::collections::HashMap<_, _> =
                 url::form_urlencoded::parse(&body).into_owned().collect();

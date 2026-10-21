@@ -74,7 +74,7 @@ pub struct LiveGateway {
     explicit: bool,
     source: &'static str,
     token: Option<String>,
-    saved_cli_session: bool,
+    saved_cli_session: Option<std::path::PathBuf>,
     /// Team authority selected by the caller (`--team-id`), sent as the
     /// `x-labby-team-id` header on every action dispatch.
     team_id: Option<String>,
@@ -310,7 +310,16 @@ pub async fn detect(
     };
     let mut gateway = detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await?;
     if let Some(gateway) = &mut gateway {
-        gateway.saved_cli_session = saved_cli_session;
+        gateway.saved_cli_session = if saved_cli_session {
+            Some(
+                crate::installation::InstallationPaths::resolve()
+                    .map_err(|_| saved_cli_auth_error())?
+                    .root()
+                    .to_path_buf(),
+            )
+        } else {
+            None
+        };
     }
     Ok(gateway)
 }
@@ -337,6 +346,30 @@ pub(crate) async fn detect_bound_bearer_target(
             "The selected saved gateway is unavailable; local fallback was suppressed",
         )
     })
+}
+
+fn saved_cli_auth_error() -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "auth_failed".to_owned(),
+        message: "Saved CLI sign-in is unavailable; run labby auth login for this server"
+            .to_owned(),
+    }
+}
+
+/// Select only the encrypted OAuth profile under this protected installation.
+/// Retain its root so the MCP transport never reloads an ambient installation.
+pub(crate) async fn detect_bound_saved_cli_target(
+    root: &std::path::Path,
+    server: &str,
+) -> Result<LiveGateway, ToolError> {
+    let base_url = normalize_explicit_target(server)?;
+    let token = crate::oauth::cli_session::token_for_root(root, &base_url)
+        .await
+        .map_err(|_| saved_cli_auth_error())?
+        .ok_or_else(saved_cli_auth_error)?;
+    let mut gateway = detect_bound_bearer_target(server, token).await?;
+    gateway.saved_cli_session = Some(root.to_path_buf());
+    Ok(gateway)
 }
 
 fn token_for_target_from(
@@ -816,7 +849,7 @@ impl LiveGateway {
             explicit,
             source,
             token,
-            saved_cli_session: false,
+            saved_cli_session: None,
             team_id: None,
             client,
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
@@ -1241,15 +1274,18 @@ impl LiveGateway {
                 value,
             );
         }
-        if self.saved_cli_session {
-            let client =
-                crate::oauth::cli_session::auth_client(&self.base_url, self.client.clone())
-                    .await?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "Saved CLI sign-in is unavailable; run labby auth login for this server"
-                        )
-                    })?;
+        if let Some(root) = &self.saved_cli_session {
+            let client = crate::oauth::cli_session::auth_client_for_root(
+                root,
+                &self.base_url,
+                self.client.clone(),
+            )
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Saved CLI sign-in is unavailable; run labby auth login for this server"
+                )
+            })?;
             // Let the SDK read/refresh the saved session on every request.
             transport_config.auth_header = None;
             let worker = StreamableHttpClientWorker::new(client, transport_config);
@@ -1417,7 +1453,7 @@ mod tests {
             explicit: false,
             source: "test",
             token,
-            saved_cli_session: false,
+            saved_cli_session: None,
             team_id: None,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())

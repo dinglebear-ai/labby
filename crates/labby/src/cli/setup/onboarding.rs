@@ -1021,9 +1021,8 @@ async fn register_selected_clients(plan: &SetupPlan) -> serde_json::Value {
             return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
         }
     };
-    let (gateway, bearer) = match crate::dispatch::setup::client_bridge::saved_connection_identity(
-        &root,
-    ) {
+    let (gateway, _) = match crate::dispatch::setup::client_bridge::saved_connection_identity(&root)
+    {
         Ok(identity) => identity,
         Err(error) => {
             return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
@@ -1038,35 +1037,20 @@ async fn register_selected_clients(plan: &SetupPlan) -> serde_json::Value {
             return json!({"status":"needs_attention","connected":false,"message":"Saved client connection does not match the selected gateway"});
         }
     }
-    let oauth_only = !bearer;
-    let results = if oauth_only {
-        let gateway = format!(
-            "{}/mcp",
-            gateway.trim_end_matches('/').trim_end_matches("/mcp")
-        );
-        crate::dispatch::setup::client_registration::register_oauth_clients(
-            plan.invoking_home.clone(),
-            root,
-            gateway,
-            plan.selected_clients.clone(),
-        )
-        .await
-    } else {
-        let binary = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
-            }
-        };
-        crate::dispatch::setup::client_registration::register_saved_clients(
-            plan.invoking_home.clone(),
-            root,
-            gateway,
-            plan.selected_clients.clone(),
-            binary,
-        )
-        .await
+    let binary = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(error) => {
+            return json!({"status":"needs_attention","connected":false,"message":error.to_string()});
+        }
     };
+    let results = crate::dispatch::setup::client_registration::register_saved_clients(
+        plan.invoking_home.clone(),
+        root,
+        gateway,
+        plan.selected_clients.clone(),
+        binary,
+    )
+    .await;
     json!({"status":"client_use_not_verified","connected":false,"clients":results})
 }
 

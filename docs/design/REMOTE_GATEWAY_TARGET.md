@@ -111,6 +111,11 @@ command = "labby"
 args = ["--server", "https://lab.example", "--no-input", "--quiet", "mcp"]
 ```
 
+On macOS and Linux, setup uses the same shared sign-in by default. After connecting the
+CLI, run `labby setup clients connect --clients codex` to register the installed
+Labby bridge. Its configuration binds the gateway and installation root without
+copying credentials into Codex. Guided client setup selects this bridge too.
+
 The explicit destination binds the connection to that server's saved session.
 When the server advertises native callback polling and dynamic registration,
 initial CLI sign-in uses a server-hosted callback. Open its authorization URL in
@@ -132,4 +137,5 @@ MCP client configuration.
 A direct HTTP MCP entry using `url = "https://lab.example/mcp"` instead makes
 the MCP client own a separate OAuth grant and callback flow. A browser's
 existing provider session can shorten consent, but does not share that grant
-with the CLI. The stdio entry needs no `codex mcp login lab` step.
+with the CLI. Select `--connection oauth` explicitly in client setup to use that
+separate client-owned flow. The stdio entry needs no `codex mcp login lab` step.
