@@ -592,6 +592,8 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_root_and_exact_origin_never_borrow_another_profile() {
+        // Unit tests bypass the entrypoint that installs our TLS provider.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let origin = server_url("https://one.example").unwrap();
@@ -702,6 +704,8 @@ mod tests {
             Mock, ResponseTemplate,
             matchers::{body_string_contains, method, path as route},
         };
+        // Unit tests bypass the entrypoint that installs our TLS provider.
+        drop(rustls::crypto::ring::default_provider().install_default());
         for approved in [true, false] {
             let server = wiremock::MockServer::start().await;
             for (path, body) in [
