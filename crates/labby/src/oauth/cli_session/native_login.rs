@@ -308,7 +308,7 @@ mod tests {
                 drop(flow);
                 assert!(
                     early_result.is_none(),
-                    "flow ended before cancellation: {early_result:?}"
+                    "{outcome}: flow ended before cancellation"
                 );
             } else {
                 let result =
@@ -320,7 +320,7 @@ mod tests {
                 assert_eq!(
                     result.is_ok(),
                     outcome == "success",
-                    "{outcome}: {result:?}"
+                    "{outcome}: hosted sign-in result did not match expected outcome"
                 );
             }
             let requests = server.received_requests().await.unwrap();
