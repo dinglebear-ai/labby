@@ -25,7 +25,7 @@ require(installer, "acquire_transaction_lock", "the installer must own a cross-e
 require(installer, "durability_barrier", "activation must have an explicit persistence barrier")
 require(installer, "prune_unreferenced_artifacts", "successful activation must bound artifact retention")
 require(service, "restore_install_state", "failed scheduler transfer must restore the service transaction")
-require(workflow, "cargo test -p labby --all-features --locked self_update::tests", "macOS CI must execute Rust updater tests")
+require(macos_job, "cargo test -p labby --all-features --lib --locked self_update::tests", "macOS CI must scope Rust updater tests to the library harness")
 require(workflow, "cargo test -p labby --all-features --locked --test gateway_auto_reconnect", "macOS CI must execute gateway recovery E2E")
 require(macos_job, "needs.changes.outputs.rust_test == 'true'", "Rust changes must route through the macOS updater job")
 
