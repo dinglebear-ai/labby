@@ -40,6 +40,8 @@ use url::{Host, Url};
 
 #[cfg(feature = "gateway")]
 mod fixture_schemas;
+#[cfg(test)]
+mod oauth_session_tests;
 
 use crate::config::LabConfig;
 use crate::dispatch::error::ToolError;
@@ -72,6 +74,7 @@ pub struct LiveGateway {
     explicit: bool,
     source: &'static str,
     token: Option<String>,
+    saved_cli_session: bool,
     /// Team authority selected by the caller (`--team-id`), sent as the
     /// `x-labby-team-id` header on every action dispatch.
     team_id: Option<String>,
@@ -287,7 +290,7 @@ pub async fn detect(
         std::env::var("CLAUDE_PLUGIN_OPTION_API_TOKEN").ok(),
         std::env::var("LABBY_MCP_HTTP_TOKEN").ok(),
     );
-    if token.is_none()
+    let saved_cli_session = if token.is_none()
         && let TargetSet::Explicit {
             base_url,
             source: ExplicitSource::Operator | ExplicitSource::Argument | ExplicitSource::Context,
@@ -301,8 +304,15 @@ pub async fn detect(
                 message: "Saved CLI sign-in is unavailable; run labby auth login for this server"
                     .to_owned(),
             })?;
+        token.is_some()
+    } else {
+        false
+    };
+    let mut gateway = detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await?;
+    if let Some(gateway) = &mut gateway {
+        gateway.saved_cli_session = saved_cli_session;
     }
-    detect_targets(targets, token, DISCOVERY_TIMEOUT, surface).await
+    Ok(gateway)
 }
 
 /// Connect using a credential already read from a protected, authority-bound
@@ -806,6 +816,7 @@ impl LiveGateway {
             explicit,
             source,
             token,
+            saved_cli_session: false,
             team_id: None,
             client,
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
@@ -1230,6 +1241,27 @@ impl LiveGateway {
                 value,
             );
         }
+        if self.saved_cli_session {
+            let client =
+                crate::oauth::cli_session::auth_client(&self.base_url, self.client.clone())
+                    .await?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Saved CLI sign-in is unavailable; run labby auth login for this server"
+                        )
+                    })?;
+            // Let the SDK read/refresh the saved session on every request.
+            transport_config.auth_header = None;
+            let worker = StreamableHttpClientWorker::new(client, transport_config);
+            return Ok(handler
+                .serve_with_lifecycle(
+                    worker,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+                    },
+                )
+                .await?);
+        }
         let worker = StreamableHttpClientWorker::new(self.client.clone(), transport_config);
         Ok(handler
             .serve_with_lifecycle(
@@ -1385,6 +1417,7 @@ mod tests {
             explicit: false,
             source: "test",
             token,
+            saved_cli_session: false,
             team_id: None,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())

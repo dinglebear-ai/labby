@@ -55,6 +55,7 @@ async fn selected_public_mcp_endpoint_supplies_both_schemas_without_http_actions
         explicit: true,
         source: "test",
         token: Some("test-token".into()),
+        saved_cli_session: false,
         team_id: None,
         client: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -207,6 +208,7 @@ async fn legacy_resource_output_is_supplemented_only_for_verified_native_identit
             explicit: true,
             source: "test",
             token: None,
+            saved_cli_session: false,
             team_id: None,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -280,6 +282,7 @@ async fn native_schema_listing_rejects_incomplete_and_over_budget_catalogs() {
             explicit: true,
             source: "test",
             token: None,
+            saved_cli_session: false,
             team_id: None,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
@@ -385,6 +388,7 @@ async fn truncated_schema_reads_use_bounded_native_metadata_on_the_same_peer() {
             explicit: true,
             source: "test",
             token: Some("test-token".into()),
+            saved_cli_session: false,
             team_id: None,
             client: reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())

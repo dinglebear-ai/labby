@@ -53,6 +53,10 @@ fn human_console_target_enabled(target: &str) -> bool {
         || target.starts_with("labby_gateway::")
 }
 
+fn human_console_event_enabled(diagnostics: bool, level: tracing::Level, target: &str) -> bool {
+    human_console_target_enabled(target) && (diagnostics || level <= tracing::Level::WARN)
+}
+
 fn json_console_target_enabled(console_enabled: bool, _target: &str) -> bool {
     // JSON logging is an operator-selected structured stream. Preserve every
     // target admitted by EnvFilter so diagnostics and conformance consumers do
@@ -69,6 +73,7 @@ fn init_tracing(
     color_policy: ColorPolicy,
     filter_override: Option<&str>,
     console_enabled: bool,
+    console_diagnostics: bool,
 ) -> tracing_appender::non_blocking::WorkerGuard {
     // Priority: explicit CLI override > LABBY_LOG env var > config.toml > default.
     let filter = if let Some(directive) = filter_override {
@@ -148,7 +153,12 @@ fn init_tracing(
             .event_format(PremiumEventFormatter)
             .with_writer(std::io::stderr)
             .with_filter(filter_fn(move |metadata| {
-                console_enabled && human_console_target_enabled(metadata.target())
+                console_enabled
+                    && human_console_event_enabled(
+                        console_diagnostics,
+                        *metadata.level(),
+                        metadata.target(),
+                    )
             }));
         tracing_subscriber::registry()
             .with(filter)
@@ -570,7 +580,8 @@ pub async fn run() -> ExitCode {
     //    directly to avoid mutating the environment (crate forbids unsafe_code).
     // For one-shot CLI commands (not Serve/Mcp) we silence labby's INFO chatter
     // by default — upstream connect/discovery events would otherwise flood
-    // ordinary commands like `server list`. LABBY_LOG still wins when set.
+    // ordinary commands like `server list`. LABBY_LOG still controls collected
+    // events; the human console independently requires -v for routine events.
     let log_filter_override: Option<String> = match &cli.command {
         _ if cli.verbose > 1 => {
             Some("labby=trace,labby_gateway=trace,labby_auth=debug,rmcp=warn".to_string())
@@ -608,6 +619,7 @@ pub async fn run() -> ExitCode {
         color_policy,
         log_filter_override.as_deref(),
         !cli.quiet && !json_output,
+        cli.verbose > 0 || matches!(&cli.command, cli::Command::Serve(_) | cli::Command::Mcp(_)),
     );
 
     // 3. Load .env files (secrets + URL env vars) for runtime paths.
@@ -662,6 +674,35 @@ mod tests {
         human_console_target_enabled, json_console_target_enabled, parse_cli_args,
     };
     use crate::dispatch::error::ToolError;
+
+    #[test]
+    fn routine_console_events_require_verbose_but_warnings_remain_visible() {
+        for target in [
+            "labby::oauth::upstream_stdio",
+            "labby_auth::upstream::http_client",
+            "labby_gateway::upstream",
+        ] {
+            for level in [
+                tracing::Level::INFO,
+                tracing::Level::DEBUG,
+                tracing::Level::TRACE,
+            ] {
+                assert!(
+                    !super::human_console_event_enabled(false, level, target),
+                    "{target} {level}"
+                );
+                assert!(super::human_console_event_enabled(true, level, target));
+            }
+            for level in [tracing::Level::WARN, tracing::Level::ERROR] {
+                assert!(super::human_console_event_enabled(false, level, target));
+            }
+        }
+        assert!(!super::human_console_event_enabled(
+            true,
+            tracing::Level::INFO,
+            "labby::cli::audit"
+        ));
+    }
 
     #[test]
     fn human_console_includes_extracted_gateway_observability() {
