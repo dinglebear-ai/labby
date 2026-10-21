@@ -229,16 +229,24 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.equal((await observedEmptyUpload.response())?.status(), 201, 'File Stash must accept an empty browser upload')
   await page.getByRole('status').filter({ hasText: `${emptyName} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const emptyRow = page.getByRole('article').filter({ hasText: emptyName })
-  const emptyDownload = page.waitForEvent('download')
-  await stashFileActionThroughUi(page, emptyName, 'Download')
-  assert.equal((await readFile(await (await emptyDownload).path()!)).length, 0)
+  // Upload completion precedes the list refresh, which replaces its action menus.
+  await emptyRow.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.getByRole('status').filter({ hasText: 'Loading your files…' }).waitFor({ state: 'hidden', timeout: 10_000 })
+  await page.locator('[data-console-hero-stat="Files"] [data-console-hero-stat-value="2"][title="2"]').waitFor({ state: 'visible', timeout: 10_000 })
+  const [emptyDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    stashFileActionThroughUi(page, emptyName, 'Download'),
+  ])
+  assert.equal((await readFile(await emptyDownload.path()!)).length, 0)
   await stashFileActionThroughUi(page, emptyName, 'Delete')
   await page.getByRole('alertdialog', { name: 'Delete this file?' }).getByRole('button', { name: 'Delete file' }).click()
   await emptyRow.waitFor({ state: 'detached', timeout: 10_000 })
 
-  const download = page.waitForEvent('download')
-  await stashFileActionThroughUi(page, name, 'Download')
-  assert.equal(await readFile(await (await download).path()!, 'utf8'), contents)
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    stashFileActionThroughUi(page, name, 'Download'),
+  ])
+  assert.equal(await readFile(await download.path()!, 'utf8'), contents)
 
   await stashFileActionThroughUi(page, name, 'Manage file')
   const dialog = page.getByRole('dialog', { name: `Manage ${name}` })
