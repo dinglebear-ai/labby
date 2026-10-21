@@ -27,8 +27,8 @@ function progress(message: string) {
   if (progressPath && progressBytes <= 16 * 1024) appendFileSync(progressPath, rendered, { mode: 0o600 })
 }
 
-async function action(page: Page, csrfToken: string, service: string, name: string, params: object) {
-  return page.evaluate(async ({ csrfToken, service, name, params }) => {
+async function action(page: Page, csrfToken: string, service: string, name: string, params: object, teamId?: string) {
+  return page.evaluate(async ({ csrfToken, service, name, params, teamId }) => {
     const session = await fetch('/auth/session', { credentials: 'include', cache: 'no-store' })
     const sessionBody = await session.json()
     if (!session.ok || !sessionBody.authenticated) return { status: session.status, body: sessionBody }
@@ -37,7 +37,7 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       headers: {
         'content-type': 'application/json',
         'x-csrf-token': csrfToken,
-        ...(typeof sessionBody.project_id === 'string' ? { 'x-labby-project-id': sessionBody.project_id } : {}),
+        ...(teamId ? { 'x-labby-team-id': teamId } : typeof sessionBody.project_id === 'string' ? { 'x-labby-project-id': sessionBody.project_id } : {}),
       },
       body: JSON.stringify({ action: name, params }),
     })
@@ -47,8 +47,9 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       sessionAuthenticated: sessionBody.authenticated === true,
       csrfLength: typeof sessionBody.csrf_token === 'string' ? sessionBody.csrf_token.length : 0,
       sessionProjectId: typeof sessionBody.project_id === 'string' ? sessionBody.project_id : null,
+      sessionTeams: Array.isArray(sessionBody.teams) ? sessionBody.teams : [],
     }
-  }, { csrfToken, service, name, params })
+  }, { csrfToken, service, name, params, teamId })
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
@@ -57,7 +58,8 @@ async function addGatewayThroughUi(page: Page, name: string) {
     if (request.method() === 'POST') observedPosts.push(`${new URL(request.url()).pathname}:${request.postData() ?? ''}`)
   }
   page.on('request', observePost)
-  await page.getByRole('button', { name: 'Add server', exact: true }).last().click()
+  await page.getByRole('button', { name: 'Gateway actions, search and filters', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Add server', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Add server' })
   await dialog.getByLabel('Name').fill(name)
   await dialog.getByLabel('URL').fill('http://127.0.0.1:9/mcp')
@@ -81,15 +83,26 @@ async function addGatewayThroughUi(page: Page, name: string) {
   return id
 }
 
-async function stageProtectedRouteThroughUi(page: Page, name: string) {
-  await page.goto('/settings/surfaces/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+async function selectWorkspaceThroughUi(page: Page, teamId?: string) {
+  await page.getByRole('button', { name: 'Switch workspace', exact: true }).click()
+  const menu = page.locator('[data-scopemenu] [data-anim="menu"]')
+  await menu.getByRole('button').filter({ has: page.getByText(teamId ?? 'Personal', { exact: true }) }).click()
+  await menu.waitFor({ state: 'hidden', timeout: 10_000 })
+  await page.waitForURL(url => url.pathname === '/', { timeout: 15_000 })
+}
+
+async function stageProtectedRouteThroughUi(page: Page, name: string, loadout: string) {
+  // Keep the selected Team in the live app session through client navigation.
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click()
+  await page.getByRole('link', { name: 'Settings', exact: true }).click()
+  await page.getByRole('link', { name: /^Client access/ }).click()
   const panel = page.locator('[data-protected-routes-panel]')
   await panel.getByLabel('Name').fill(name)
   await panel.getByLabel('Public host').fill('browser.invalid')
   await panel.getByLabel('Public path').fill('/mcp')
   await panel.getByLabel('Loadout').click()
-  await page.getByRole('option', { name: 'production', exact: true }).click()
-  await panel.getByRole('button', { name: 'Add route', exact: true }).click()
+  await page.getByRole('option', { name: loadout, exact: true }).click()
+  await panel.getByRole('button', { name: 'Add route', exact: true }).last().click()
   await assert.doesNotReject(panel.getByText(name, { exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 }))
   await assert.doesNotReject(panel.getByText(/saved for restart/i).waitFor({ state: 'visible', timeout: 10_000 }))
 }
@@ -173,6 +186,15 @@ async function waitForFile(path: string, timeoutMs = 30_000) {
   throw new Error(`timed out waiting for ${path}`)
 }
 
+async function stashFileActionThroughUi(page: Page, name: string, action: 'Download' | 'Manage file' | 'Delete') {
+  await page.getByRole('article').filter({ hasText: name }).getByRole('button', { name: `Actions for ${name}`, exact: true }).click()
+  await page.getByRole('menuitem', { name: action === 'Download' ? `Download ${name}` : action, exact: true }).click()
+  if (action === 'Download') {
+    await page.keyboard.press('Escape')
+    await page.getByRole('menu').waitFor({ state: 'hidden', timeout: 10_000 })
+  }
+}
+
 async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType<typeof readLiveDescriptor>>) {
   assert.ok(descriptor)
   let name = `browser-stash-${descriptor.run_id}.txt`
@@ -187,14 +209,15 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await dropTarget.press('Enter')
   await (await fileChooser).setFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(contents) })
   const observedUpload = await uploadRequest
-  assert.equal(observedUpload.headers()['content-length'], String(Buffer.byteLength(contents)))
-  assert.equal(observedUpload.postDataBuffer()?.equals(Buffer.from(contents)), true)
+  // File bodies are not inline CDP postData entries. A 201 means the server
+  // validated the exact wire length; downloads below verify persisted bytes.
+  assert.equal((await observedUpload.response())?.status(), 201, 'File Stash must accept the browser upload')
   await page.getByRole('status').filter({ hasText: `${name} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const row = page.getByRole('article').filter({ hasText: name })
   await row.waitFor({ state: 'visible', timeout: 10_000 })
   const uri = await row.getByTitle('Copy canonical URI').locator('code').innerText()
   assert.match(uri, /^stash:\/\/me\/files\/[A-Z0-9]+$/)
-  await assert.doesNotReject(page.locator('[data-console-hero-stat="Files"] [data-console-hero-stat-value="1"]').getByText('1', { exact: true }).waitFor({ state: 'visible' }))
+  await assert.doesNotReject(page.locator('[data-console-hero-stat="Files"] [data-console-hero-stat-value="1"][title="1"]').waitFor({ state: 'visible' }))
   await assert.doesNotReject(page.getByText(`${Buffer.byteLength(contents)} B`, { exact: true }).first().waitFor({ state: 'visible' }))
 
   const emptyName = `browser-stash-empty-${descriptor.run_id}.txt`
@@ -203,19 +226,21 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await dropTarget.press('Enter')
   await (await emptyChooser).setFiles({ name: emptyName, mimeType: 'text/plain', buffer: Buffer.alloc(0) })
   const observedEmptyUpload = await emptyRequest
-  assert.equal(observedEmptyUpload.headers()['content-length'], '0')
-  assert.equal(observedEmptyUpload.postDataBuffer()?.length ?? 0, 0)
+  assert.equal((await observedEmptyUpload.response())?.status(), 201, 'File Stash must accept an empty browser upload')
   await page.getByRole('status').filter({ hasText: `${emptyName} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const emptyRow = page.getByRole('article').filter({ hasText: emptyName })
-  await emptyRow.getByRole('button', { name: `Delete ${emptyName}` }).click()
+  const emptyDownload = page.waitForEvent('download')
+  await stashFileActionThroughUi(page, emptyName, 'Download')
+  assert.equal((await readFile(await (await emptyDownload).path()!)).length, 0)
+  await stashFileActionThroughUi(page, emptyName, 'Delete')
   await page.getByRole('alertdialog', { name: 'Delete this file?' }).getByRole('button', { name: 'Delete file' }).click()
   await emptyRow.waitFor({ state: 'detached', timeout: 10_000 })
 
   const download = page.waitForEvent('download')
-  await row.getByRole('link', { name: `Download ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Download')
   assert.equal(await readFile(await (await download).path()!, 'utf8'), contents)
 
-  await row.getByRole('button', { name: `Rename or share ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Manage file')
   const dialog = page.getByRole('dialog', { name: `Manage ${name}` })
   await dialog.getByLabel('Filename').waitFor({ state: 'visible' })
   assert.equal(await dialog.getByLabel('Filename').evaluate(element => element === document.activeElement), true)
@@ -232,7 +257,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.equal(await renamed.getByTitle('Copy canonical URI').locator('code').innerText(), uri)
   await assert.doesNotReject(page.getByText(previousName, { exact: true }).waitFor({ state: 'detached', timeout: 10_000 }))
 
-  await renamed.getByRole('button', { name: `Rename or share ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Manage file')
   const shareDialog = page.getByRole('dialog', { name: `Manage ${name}` })
   await shareDialog.getByLabel('Find a recipient').fill('Browser Stash')
   await shareDialog.getByText('Browser Stash Recipient', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
@@ -245,7 +270,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   const persisted = page.getByRole('article').filter({ hasText: name })
   await persisted.waitFor({ state: 'visible', timeout: 10_000 })
 
-  await persisted.getByRole('button', { name: `Rename or share ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Manage file')
   const persistedDialog = page.getByRole('dialog', { name: `Manage ${name}` })
   const revoke = persistedDialog.getByRole('button', { name: 'Revoke' })
   await revoke.waitFor({ state: 'visible', timeout: 10_000 })
@@ -253,7 +278,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await page.getByRole('status').filter({ hasText: 'Access revoked' }).waitFor({ state: 'attached', timeout: 10_000 })
 
   const afterRevoke = page.getByRole('article').filter({ hasText: name })
-  await afterRevoke.getByRole('button', { name: `Delete ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Delete')
   const confirmation = page.getByRole('alertdialog', { name: 'Delete this file?' })
   await confirmation.getByRole('button', { name: 'Delete file' }).click()
   await page.getByRole('status').filter({ hasText: `${name} deleted.` }).waitFor({ state: 'attached', timeout: 10_000 })
@@ -296,7 +321,10 @@ test('embedded Gateway Admin completes a real backend journey', {
     const ownedName = `browser-${descriptor.run_id.toLowerCase()}`
     let ownedGatewayId = ownedName
     const ownedRoute = `${ownedName}-route`
-    let ownedRouteRemoved = false
+    let ownedRouteRemoved = true
+    let routeTeamId: string | undefined
+    const ownedLoadout = `${ownedName}-loadout`
+    let ownedLoadoutCreated = false
     const cleanupFailures: string[] = []
     try {
       progress('health-session-catalog')
@@ -332,11 +360,26 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.equal(persisted.status, 200)
       await assert.doesNotReject(page.locator('a:visible').filter({ hasText: ownedName }).first().waitFor({ state: 'visible', timeout: 10_000 }))
 
-      await stageProtectedRouteThroughUi(page, ownedRoute)
+      // Gateway policy belongs to an explicit Team. Use the authority projected
+      // for this authenticated fixture, rather than the installation loadout.
+      routeTeamId = persisted.sessionTeams?.find((team: { id?: unknown }) => typeof team.id === 'string' && team.id.length > 0)?.id
+      assert.ok(routeTeamId, 'live browser owner must have a projected Team workspace')
+      const loadout = await action(page, csrfToken, 'gateway', 'gateway.loadout.add', {
+        loadout: { name: ownedLoadout, upstreams: [], services: [] },
+      }, routeTeamId)
+      assert.equal(loadout.status, 200, `owned Team loadout create failed: ${JSON.stringify(loadout.body)}`)
+      ownedLoadoutCreated = true
+      // Public Team projections strip the internal team:<id>: namespace.
+      // The explicit workspace/header remains the authorization selector.
+      assert.equal(loadout.body.name, ownedLoadout)
+      await selectWorkspaceThroughUi(page, routeTeamId)
+      ownedRouteRemoved = false
+      await stageProtectedRouteThroughUi(page, ownedRoute, ownedLoadout)
       progress('protected-route-staged-through-ui')
       await removeProtectedRouteThroughUi(page, ownedRoute)
       ownedRouteRemoved = true
       progress('protected-route-removed-through-ui')
+      await selectWorkspaceThroughUi(page)
 
       const libraryProbe = await action(page, csrfToken, 'artifacts', 'artifacts.list', { limit: 10 })
       progress(`artifact-library-probe:${libraryProbe.status}:project=${libraryProbe.sessionProjectId}:${JSON.stringify(libraryProbe.body).slice(0, 500)}`)
@@ -384,7 +427,7 @@ test('embedded Gateway Admin completes a real backend journey', {
         [ownedGatewayId, 'gateway.remove'],
       ] as const) {
         if (!mayContinue()) break
-        const result = await action(page, csrfToken, 'gateway', operation, { name }).catch((error) => ({ status: 0, body: String(error) }))
+        const result = await action(page, csrfToken, 'gateway', operation, { name }, operation === 'gateway.protected_route.stage_remove' ? routeTeamId : undefined).catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:${operation}:${result.status}`)
         if (![200, 404].includes(result.status) && operation === 'gateway.remove') {
           if (!mayContinue()) break
@@ -399,6 +442,12 @@ test('embedded Gateway Admin completes a real backend journey', {
           }
         }
         if (![200, 404].includes(result.status)) cleanupFailures.push(`${operation}(${name})=${result.status}`)
+      }
+      if (ownedLoadoutCreated && mayContinue()) {
+        const result = await action(page, csrfToken, 'gateway', 'gateway.loadout.remove', { name: ownedLoadout }, routeTeamId)
+          .catch((error) => ({ status: 0, body: String(error) }))
+        progress(`cleanup:gateway.loadout.remove:${result.status}`)
+        if (![200, 404].includes(result.status)) cleanupFailures.push(`gateway.loadout.remove(${ownedLoadout})=${result.status}`)
       }
       })
       if (!failure) {
