@@ -2341,8 +2341,7 @@ mod tests {
             result["desktop_error"]
                 .as_str()
                 .is_some_and(|reason| reason.contains("expected desktop asset")),
-            "desktop_error must carry the installer's reason; got {:?}",
-            result["desktop_error"]
+            "desktop_error must carry the installer's reason"
         );
         // The client configuration itself is complete.
         assert_eq!(
