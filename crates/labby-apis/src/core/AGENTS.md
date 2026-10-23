@@ -1,22 +1,30 @@
 # core/ — Cross-cutting primitives
 
-This directory is the foundation every service module depends on. Changes here ripple across all service clients — be conservative and align with `docs/ARCH.md`, `docs/CONVENTIONS.md`, `docs/dev/OBSERVABILITY.md`, `docs/dev/ERRORS.md`, and `docs/design/SERIALIZATION.md` before editing.
+This directory owns shared SDK HTTP primitives and contract re-exports. Changes affect SDK consumers; read the owning contracts below before editing.
+
+## External references
+
+| Concern | Contract |
+| --- | --- |
+| Dependency boundaries and conventions | [Architecture](../../../../docs/ARCH.md), [conventions](../../../../docs/CONVENTIONS.md) |
+| Request events and error mapping | [Observability](../../../../docs/dev/OBSERVABILITY.md), [errors](../../../../docs/dev/ERRORS.md) |
+| Wire serialization | [Serialization](../../../../docs/design/SERIALIZATION.md) |
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `auth.rs` | `Auth` enum: `ApiKey { header, key }`, `Bearer { token }`, `Token { token }`, `Basic { username, password }`, `Session { cookie }`, `None`. Debug impl **must** redact secrets. |
-| `http.rs` | `HttpClient` wrapper around `reqwest::Client` — auth injection, `request.start`/`request.finish`/`request.error` tracing events, JSON and GraphQL helpers. No retry logic, no backoff, no spans — callers own those. All service clients build on this. |
-| `error.rs` | `ApiError` canonical taxonomy + `kind()` method. See below. |
+| `http.rs` | `HttpClient` wrapper around `reqwest::Client` — auth injection, `request.start`/`request.finish`/`request.error` tracing events, JSON and GraphQL helpers. No retry logic, no backoff, no spans — callers own those. |
+| `error.rs` | `ApiError` canonical taxonomy + `kind()` method; stable tags appear in the error-kind table. |
 | `status.rs` | `ServiceStatus { reachable, auth_ok, version, latency_ms, message }` — returned by `ServiceClient::health()`. |
-| `action.rs` | Thin `pub use labby_primitives::action::{ActionSpec, ParamSpec}` re-export. `ActionSpec { name, description, destructive, params, returns }` + `ParamSpec { name, ty: &'static str, required, description }` are defined in the `labby-primitives` leaf crate, not here — see `crates/labby-primitives/src/action.rs`. Drives help/schema/catalog. |
-| `plugin.rs` | Thin `pub use labby_primitives::plugin::{Category, EnvVar, PluginMeta}` re-export. `PluginMeta` + `Category` (six variants: Notes, Documents, Network, Notifications, Ai, Bootstrap) + `EnvVar` (per-service compile-time constants) are defined in `crates/labby-primitives/src/plugin.rs`. |
-| `plugin_ui.rs` | Thin `pub use labby_primitives::plugin_ui::{...}` re-export of `UiSchema` and the Bootstrap-wizard field types — defined in `crates/labby-primitives/src/plugin_ui.rs`. |
-| `ssrf.rs` | Thin `pub use labby_primitives::ssrf::{...}` re-export of the static SSRF preflight checks — defined in `crates/labby-primitives/src/ssrf.rs`. |
-| `traits.rs` | `ServiceClient` trait with **native `async fn in trait`** — no `#[async_trait]`, no `Box<dyn>`. |
+| `action.rs` | Re-exports `ActionSpec` and `ParamSpec` from their [canonical definitions](../../../labby-primitives/src/action.rs). Preserve admin/destructive policy separation and complete output schemas. |
+| `plugin.rs` | Re-exports `Category`, `EnvVar`, and `PluginMeta` from their [canonical definitions](../../../labby-primitives/src/plugin.rs). |
+| `plugin_ui.rs` | Re-exports `UiSchema` and wizard field types from their [canonical definitions](../../../labby-primitives/src/plugin_ui.rs). |
+| `ssrf.rs` | Re-exports static SSRF preflight checks from their [canonical implementation](../../../labby-primitives/src/ssrf.rs). |
+| `traits.rs` | `ServiceClient::health` returns `impl Future<Output = Result<ServiceStatus, ApiError>> + Send`; no `#[async_trait]` or `dyn ServiceClient`. |
 
-**Why re-exports, not local definitions:** `labby-gateway` (and, through it, `labby-auth`/`labby-codemode`) also needs `ActionSpec`/`ParamSpec`/`PluginMeta`/`EnvVar`/`UiSchema`, but must not depend on the rest of this SDK crate (`http.rs`'s `reqwest`-based `HttpClient`, the service clients, etc.). `labby-primitives` is the shared, dependency-free home both sides point at — edit the types there, not in these shims.
+Shared vocabulary lives in `labby-primitives`, an internal leaf crate with no workspace dependencies; it has third-party dependencies. Edit those types there, not in these shims. `labby-gateway` also depends on this SDK and uses its SSH configuration parser; preserve the separation from product routing and surfaces.
 
 ## ApiError.kind() — canonical stable tags
 
@@ -38,7 +46,7 @@ Dispatchers in `crates/labby/src/dispatch/` layer additional kinds on top: `unkn
 ## Invariants
 
 - **No `clap`, `rmcp`, `tabled`, `anyhow`** in this directory — ever.
-- **No file or env I/O.** `Auth::from_env()` helpers are allowed to *accept* env values, but the binary calls them. `labby-apis` never reads `std::env` on its own.
+- **No file or env I/O.** Callers resolve configuration and credentials, then inject values. `Auth` does not read environment variables.
 - **Debug impls for anything holding secrets must redact.** Test this.
-- **Keep `ParamSpec.ty` as `&'static str`** (e.g., `"string"`, `"integer"`, `"bool"`). Do not reintroduce a `ParamType` enum — the topic docs standardize on string labels.
-- **`ActionSpec.destructive` is the single source of truth** for elicitation + CLI confirm flows. Never hide destructive ops behind a non-destructive action.
+- **Keep `ParamSpec.ty` as `&'static str`** (for example, `"string"`, `"integer"`, `"boolean"`). Do not reintroduce a `ParamType` enum — the topic docs standardize on string labels.
+- **`ActionSpec.destructive` is the single source of truth** for elicitation + CLI confirm flows. Keep `requires_admin` independent; an admin-only mutation is not automatically destructive. Never hide destructive ops behind a non-destructive action.

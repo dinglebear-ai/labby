@@ -7,9 +7,9 @@ This crate owns the Labby product binary/library and the product-specific adapte
 Use `Cargo.toml` as the source of truth:
 
 - `default = ["gateway-host"]`
-- `gateway-host = ["gateway"]`
-- `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills"]`
-- `proxy-testkit` is test support only.
+- `gateway-host = ["gateway"]` and `integrated-gateway = ["gateway"]`; both include `web-ui` and `skills` through `gateway`.
+- `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills", "tailcat"]`
+- `proxy-testkit` is test support only. `--all-features` also enables it and `codemode-microsandbox`, beyond the `all` feature.
 
 Retired ACP/Marketplace/Agent Artifact Manager/Fleet/Deploy surfaces are deleted rather than feature-gated. Current principal-scoped File Stash is a separate Linux-only contract, not a revival of the retired Stash product.
 
@@ -30,6 +30,12 @@ Reusable gateway, Code Mode, auth, web-asset, and shared runtime behavior belong
 CLI, MCP, and API are peers over shared dispatch. Keep handlers thin and do not reimplement operation semantics at the surface.
 
 See nested instructions in `src/AGENTS.md`, `src/cli/AGENTS.md`, `src/mcp/AGENTS.md`, `src/api/AGENTS.md`, and `src/dispatch/AGENTS.md`.
+
+| Need | Reference |
+| --- | --- |
+| Product module/feature map | [Developer README](README.md) |
+| Shared runtime ownership | [Architecture](../../docs/ARCH.md) |
+| Required checks | [Testing](../../docs/dev/TESTING.md) |
 
 ## ToolError
 

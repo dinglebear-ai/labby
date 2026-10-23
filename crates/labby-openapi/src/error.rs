@@ -1,5 +1,5 @@
 //! Scrubbed error type for the `openapi` provider. NEVER carries a raw
-//! `rmcp_openapi::*` or `reqwest` error string, an upstream response body, or a
+//! JSON parser or `reqwest` error string, an upstream response body, or a
 //! credential — every variant's `Display` is a fixed, operator-safe template.
 //!
 //! The `From<OpenApiError> for ToolError` impl targets the REAL `ToolError`
@@ -19,7 +19,7 @@ pub enum OpenApiError {
         /// SSRF error kind (already scrubbed — no caller secrets).
         reason: String,
     },
-    /// The spec document could not be parsed by the parse-only surface.
+    /// The spec document could not be read as UTF-8 JSON with a `paths` object.
     #[error("failed to parse OpenAPI spec `{label}`")]
     SpecParse {
         /// Spec label.

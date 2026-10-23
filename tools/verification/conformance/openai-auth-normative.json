@@ -1,9 +1,9 @@
 {
   "source_url": "https://developers.openai.com/plugins/build/auth.md",
   "source_sha256": "d6c994c0f628f73eacfbe2d7bd59e1df590f8263a36d62e3df823e76bd4fe345",
-  "captured_at": "2026-10-11",
+  "captured_at": "2026-10-20",
   "profile_tool_declared": false,
-  "review_notes": "Complete captured authentication guide reviewed. The original 21 clause IDs and dispositions are preserved; added multi-account/profile identity, declaration, schema and response obligations are explicitly conditional. Labby does not designate a built-in profile tool; no optional profile feature or passing profile implementation is inferred.",
+  "review_notes": "Complete captured authentication guide reviewed. The original 21 clause IDs and dispositions are preserved; main’s grouped optional-profile rows 022, 023 and 024 correspond to this expanded ledger’s 022, 023–026 and 027–034 respectively; added multi-account/profile identity, declaration, schema and response obligations are explicitly conditional. Labby does not designate a built-in profile tool; no optional profile feature or passing profile implementation is inferred.",
   "requirements": [
     {"id":"OAI-CLAUSE-001","source_excerpt":"anything that exposes customer-specific data or write actions should\nauthenticate users.","strength":"recommended","applicability":"applicable","status":"pass","verification_ids":["OAI-AUTH-011"],"disposition":"The generated HTTP route inventory and registered MCP service/action catalogs are the executable denominator. Every mounted customer-specific or write HTTP route is probed behind shared authentication, runtime-conditional routes are explicitly classified, every MCP descriptor declares the Labby OAuth scope, and ActionSpec drives per-action admin scope enforcement before dispatch."},
     {"id":"OAI-CLAUSE-002","source_excerpt":"expected to implement an OAuth 2.1 flow that conforms to the [MCP authorization spec]","strength":"required","applicability":"applicable","status":"pass","verification_ids":["MCP-2026-AUTH-INDEX-001"],"disposition":"The complete actor-bound MCP 2026-07-28 denominator, rather than an OAuth-metadata subset, is the executable dependency for this claim."},
