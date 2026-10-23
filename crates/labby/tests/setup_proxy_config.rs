@@ -64,6 +64,7 @@ esac
     let mut command = Command::new(env!("CARGO_BIN_EXE_labby"));
     command
         .env_clear()
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", &bin)
         .env("HOME", &home)
         .env("LABBY_HOME", directory.join("state"))

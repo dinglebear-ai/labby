@@ -2797,6 +2797,7 @@ mod tests {
                 ])
                 .env_clear()
                 .env_remove("PATH")
+                .env("TMPDIR", std::env::temp_dir())
                 .env(CHILD, "1")
                 .output()
                 .unwrap();

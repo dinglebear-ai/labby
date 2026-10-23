@@ -28,6 +28,14 @@ NATIVE_SKILL_PATH = {
 }
 
 
+def python_cache(name: str) -> bool:
+    return name == "__pycache__" or name.endswith((".pyc", ".pyo"))
+
+
+def ignore_python_caches(_directory: str, names: list[str]) -> list[str]:
+    return [name for name in names if python_cache(name)]
+
+
 def write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2) + "\n")
@@ -36,7 +44,7 @@ def write_json(path: Path, value: object) -> None:
 def build(target: str, output: Path) -> None:
     """Build the portable package, then retain APM's native target projection."""
     output.mkdir(parents=True)
-    shutil.copytree(SOURCE, output / "skills")
+    shutil.copytree(SOURCE, output / "skills", ignore=ignore_python_caches)
     shutil.copy2(ROOT / "LICENSE", output / "LICENSE")
     manifest = {
         "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
@@ -79,14 +87,14 @@ def build(target: str, output: Path) -> None:
 
     if target in EXPERIMENTAL:
         if target in NATIVE_SKILL_PATH:
-            shutil.copytree(SOURCE, output / NATIVE_SKILL_PATH[target])
+            shutil.copytree(SOURCE, output / NATIVE_SKILL_PATH[target], ignore=ignore_python_caches)
         return
 
     projection_target = "copilot" if target == "intellij" else target
     with tempfile.TemporaryDirectory(prefix=f"labby-{target}-") as scratch:
         source = Path(scratch) / "source"
         source.mkdir()
-        shutil.copytree(SOURCE, source / ".apm/skills")
+        shutil.copytree(SOURCE, source / ".apm/skills", ignore=ignore_python_caches)
         mcp = "" if target in NO_MCP else (
             "  mcp:\n    - name: labby\n      registry: false\n"
             "      transport: stdio\n      command: npx\n"
@@ -121,7 +129,11 @@ def build(target: str, output: Path) -> None:
 
 
 def tree_files(path: Path) -> dict[str, bytes]:
-    return {str(p.relative_to(path)): p.read_bytes() for p in path.rglob("*") if p.is_file()}
+    return {
+        str(p.relative_to(path)): p.read_bytes()
+        for p in path.rglob("*")
+        if p.is_file() and not any(python_cache(part) for part in p.relative_to(path).parts)
+    }
 
 
 def main() -> int:
@@ -151,7 +163,7 @@ def main() -> int:
             print(f"generated {dest.relative_to(ROOT)}")
         if INSTALL_SKILL.exists():
             shutil.rmtree(INSTALL_SKILL)
-        shutil.copytree(SOURCE / "install-labby", INSTALL_SKILL)
+        shutil.copytree(SOURCE / "install-labby", INSTALL_SKILL, ignore=ignore_python_caches)
         print(f"generated {INSTALL_SKILL.relative_to(ROOT)}")
     return 0
 

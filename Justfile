@@ -71,6 +71,7 @@ docs-check:
     python3 scripts/check-product-docs.py
     python3 -m unittest discover -s plugins/labby/.apm/skills/implement-in-microsandbox/tests -v
     python3 -m unittest discover -s scripts/ci -p "test_microsandbox_skill_paths.py"
+    python3 -m unittest discover -s scripts/ci -p 'test_native_plugin_generation.py'
     python3 -m unittest discover -s scripts/ci -p 'test_product_docs.py'
     bash scripts/tests/bin_link_claude_mds_test.sh
     python3 scripts/check-depot-control-plane-contract.py
