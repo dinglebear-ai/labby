@@ -209,6 +209,12 @@ before host tool dispatch. Their methods cannot route to a same-named upstream.
 | `openapi` | Uses `labby-openapi` registry and hardened HTTPS client outside that lock. Static/no-auth operations require unscoped admin/trusted authority. Subject-scoped OAuth operations can admit authenticated, unscoped execution callers with a verified subject; the host resolves credentials after the sandbox boundary. |
 | `sandbox` | Unscoped admin/trusted authority plus the optional `microsandbox-sdk` feature and operator-owned `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON`. Runs disposable workloads through the local SDK, outside the state/Git lock. Without the feature, dispatch reports `not_available`. |
 
+Git uses `/usr/bin/git` on Unix by default. For systems such as Nix where Git
+lives elsewhere, set operator-owned `LABBY_CODE_MODE_GIT_EXE` to an absolute
+executable path. Labby resolves symlinks and, on Unix, requires a root- or
+service-user-owned executable that is not group/world writable. The override
+does not inherit the caller environment or extend the sanitized child `PATH`.
+
 Any namespace, tool, or read-only scope excludes these local providers, including
 the OpenAPI OAuth exception. Workload requests cannot grant mounts, networking,
 or credentials. They must match the pinned profile image; their command and
