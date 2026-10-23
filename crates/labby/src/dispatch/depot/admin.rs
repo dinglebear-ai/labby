@@ -360,7 +360,7 @@ impl Admin {
     pub async fn operation(&self, operation_id: &str) -> Result<StoreOutcome, AdminError> {
         let store = self.store.clone();
         let operation_id = operation_id.to_owned();
-        tokio::task::spawn_blocking(move || store.recover())
+        tokio::task::spawn_blocking(move || store.receipt())
             .await
             .map_err(|_| AdminError::Recovery)?
             .map_err(map_store)?

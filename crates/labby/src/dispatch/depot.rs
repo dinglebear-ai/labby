@@ -1889,6 +1889,65 @@ mod tests {
     }
 
     #[test]
+    fn operation_catalog_accepts_reviewed_depot_schema_updates() {
+        // These exact input schemas were checked against Depot's registry and
+        // its observed MCP catalog. Authority and safety pins stay unchanged.
+        let mut catalog: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let mut updated = 0;
+        for definition in catalog["operations"].as_array_mut().unwrap() {
+            let fingerprint = match definition["name"].as_str().unwrap() {
+                "depot.artifacts.list" => {
+                    definition["inputSchema"]["properties"]["kind"]["enum"] = json!([
+                        "skill",
+                        "prompt",
+                        "agent-definition",
+                        "agent-runtime",
+                        "mcp-server",
+                        "mcp-config",
+                        "agent-plugin",
+                        "apm-package",
+                        "package",
+                        "agent",
+                        "mcp",
+                        "repository",
+                        "command",
+                        "hook",
+                        "tool",
+                        "snippet"
+                    ]);
+                    "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895"
+                }
+                "depot.skills.load" => {
+                    definition["inputSchema"]["properties"]["offset"]["maximum"] =
+                        json!(16_777_216);
+                    "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08"
+                }
+                "depot.skills.read" => {
+                    definition["inputSchema"]["properties"]["offset"]["maximum"] =
+                        json!(16_777_216);
+                    "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8"
+                }
+                "depot.sources.configure" => {
+                    definition["inputSchema"]["properties"]["scanSubdir"] = json!({
+                        "description": "Repository-root-relative scan directory within the enrolled scope; null restores the enrolled scope.",
+                        "minLength": 1, "type": ["string", "null"]
+                    });
+                    definition["inputSchema"]["properties"]["preserveMissing"] = json!({
+                        "description": "Retain repository skills absent from a complete scan.",
+                        "type": "boolean"
+                    });
+                    "d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738"
+                }
+                _ => continue,
+            };
+            definition["schemaFingerprint"] = json!(fingerprint);
+            updated += 1;
+        }
+        assert_eq!(updated, 4);
+        assert!(parse_operation_catalog(&catalog).is_ok());
+    }
+
+    #[test]
     fn operation_catalog_rejects_missing_forged_and_altered_contracts() {
         let valid = catalog_operation(
             "depot.system.status",

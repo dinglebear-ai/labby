@@ -335,7 +335,7 @@ fn provider_state(
             listing_epoch: identity.listing_epoch.into(),
             max_page_size: Some(identity.max_page_size),
             upstream_cursor: None,
-            page: ProviderPage::participating(&provider.view.id, Vec::new(), None, None),
+            page: ProviderPage::pending(&provider.view.id),
         },
         Err(ProviderError::Pending) => FederatedProvider {
             id: provider.view.id.clone(),
@@ -362,15 +362,30 @@ async fn fetch_pages(
     request: &DiscoveryRequest,
     admission: &super::scheduler::Admission,
 ) {
-    let count = federation.providers.len().max(1);
-    let base = usize::from(request.limit) / count;
-    let remainder = usize::from(request.limit) % count;
+    // Rotate only providers that can still contribute. Exhausted providers
+    // cannot consume quota, and a one-item page must eventually visit siblings.
+    let count = federation.providers.len();
+    let eligible = (0..count)
+        .map(|offset| (federation.start + offset) % count)
+        .filter(|&index| {
+            matches!(
+                federation.providers[index].page.outcome.as_str(),
+                "participating" | "pending"
+            )
+        })
+        .collect::<Vec<_>>();
+    let base = usize::from(request.limit) / eligible.len().max(1);
+    let remainder = usize::from(request.limit) % eligible.len().max(1);
+    let mut quotas = vec![0; count];
+    for (position, &index) in eligible.iter().enumerate() {
+        quotas[index] = base + usize::from(position < remainder);
+    }
     let calls = federation
         .providers
         .iter()
         .enumerate()
         .filter_map(|(index, state)| {
-            let quota = base + usize::from(index < remainder);
+            let quota = quotas[index];
             let provider = selected
                 .iter()
                 .find(|provider| provider.view.id == state.id)?;
@@ -504,7 +519,7 @@ fn fail_provider(state: &mut FederatedProvider, kind: &str) {
     state.page = ProviderPage::failed(&state.id, kind);
 }
 
-fn failure_kind(error: ProviderError) -> &'static str {
+pub(crate) fn failure_kind(error: ProviderError) -> &'static str {
     match error {
         ProviderError::UnsupportedKind => "unsupported_kind",
         ProviderError::Pending => "pending",
@@ -515,6 +530,7 @@ fn failure_kind(error: ProviderError) -> &'static str {
         ProviderError::Failed(Failure::SnapshotChanged) => "catalog_changed",
         ProviderError::Failed(Failure::Configuration) => "configuration",
         ProviderError::Failed(Failure::Transient) => "unavailable",
+        ProviderError::Failed(Failure::Timeout) => "timeout",
     }
 }
 

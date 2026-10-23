@@ -69,7 +69,7 @@ impl Binding {
             && !self.authority_epoch.is_empty()
             && self.authority_epoch.len() <= 256
             && self.scope.len() <= 256
-            && self.query.len() <= 200
+            && self.query.chars().count() <= 200
             && self.page_contract.len() <= 128
             && self.registry_epoch.len() <= 256
             && self.providers.len() <= 16

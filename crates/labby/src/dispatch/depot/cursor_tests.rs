@@ -208,3 +208,33 @@ async fn failed_capacity_reservation_leaves_the_input_retriable() {
         PageInput::Compute(_)
     ));
 }
+
+#[tokio::test]
+async fn character_valid_unicode_queries_create_and_replay_cursors() {
+    let store = CursorStore::default();
+    let now = Instant::now();
+    for query in ["界".repeat(100), "界".repeat(200), "e\u{301}".repeat(100)] {
+        super::discovery::validate_request(&query, 1).unwrap();
+        let mut current = binding("actor");
+        current.query = query;
+        let handle = store.create(current.clone(), vec![], now).await.unwrap();
+        let PageInput::Compute(lease) = store.begin(&handle, &current, now).await.unwrap() else {
+            panic!()
+        };
+        lease
+            .complete(b"unicode-page".to_vec(), None, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .begin(&handle, &current, now)
+                .await
+                .unwrap()
+                .replay()
+                .unwrap()
+                .response,
+            b"unicode-page"
+        );
+    }
+    assert!(super::discovery::validate_request(&"界".repeat(201), 1).is_err());
+}
