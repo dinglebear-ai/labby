@@ -2967,12 +2967,12 @@ mod tests {
             // application request so this fixture can retain its server peer.
             tokio::time::timeout(
                 Duration::from_secs(5),
-                running.peer().send_request(ClientRequest::PingRequest(
-                    rmcp::model::PingRequest::default(),
+                running.peer().send_request(ClientRequest::ListToolsRequest(
+                    rmcp::model::ListToolsRequest::default(),
                 )),
             )
             .await
-            .expect("recording agent ping finishes within its deadline")
+            .expect("recording agent activation finishes within its deadline")
             .expect("recording agent activates the downstream server");
             running.waiting().await.expect("recording agent runs");
         });
