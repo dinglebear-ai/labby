@@ -2965,10 +2965,15 @@ mod tests {
                 .expect("recording agent connects");
             // Discovery alone leaves the server in bootstrap. Send the first
             // application request so this fixture can retain its server peer.
-            tokio::time::timeout(Duration::from_secs(5), running.peer().ping())
-                .await
-                .expect("recording agent ping finishes within its deadline")
-                .expect("recording agent activates the downstream server");
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                running.peer().send_request(ClientRequest::PingRequest(
+                    rmcp::model::PingRequest::default(),
+                )),
+            )
+            .await
+            .expect("recording agent ping finishes within its deadline")
+            .expect("recording agent activates the downstream server");
             running.waiting().await.expect("recording agent runs");
         });
         let downstream_server = TrivialServer
