@@ -56,7 +56,7 @@ class CiPlatformPolicyTests(unittest.TestCase):
         jobs = yaml.safe_load(self.workflow)["jobs"]
         steps = jobs["desktop-rust"]["steps"]
         commands = [step.get("run", "") for step in steps]
-        verify = commands.index("python3 scripts/ci/verify_glib_backport.py")
+        verify = commands.index("python3 scripts/ci/verify_glib_backport.py --prepare")
         regression = commands.index("cargo test --release --manifest-path apps/tauri/glib-backport-check/Cargo.toml --locked")
         native = commands.index("cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked")
         audit = next(i for i, command in enumerate(commands) if "check advisories" in command)
@@ -68,6 +68,11 @@ class CiPlatformPolicyTests(unittest.TestCase):
         self.assertIn("desktop-rust", jobs["ci-gate"]["needs"])
         for i in (verify, regression, native, audit):
             self.assertNotIn("continue-on-error", steps[i])
+        windows_commands = [step.get("run", "") for step in jobs["desktop-windows"]["steps"]]
+        self.assertLess(
+            windows_commands.index("python3 scripts/ci/verify_glib_backport.py --prepare"),
+            windows_commands.index("cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked"),
+        )
 
     def test_gate_result_checks_reference_declared_dependencies(self) -> None:
         jobs = yaml.safe_load(self.workflow)["jobs"]

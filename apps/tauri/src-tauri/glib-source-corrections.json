@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "package": "glib",
+  "version": "0.18.5",
+  "purpose": "Reviewed empty collection guards (QUA-V01-001/002), deferred spawn output reads until GLib success (QUA-R03-001), and preserved GStringBuilder clone length (QUA-R02-001). Date parse/subtraction validity guards (QUA-R02-002/003). List/SList container copying, retain views/current head, and container adoption (QUA-R02-004/005/006). Nonblocking zero-capacity try_send (QUA-R02-008) and owned Send/Sync/static Variant data (QUA-R03-003). Owned fixed-size arrays retain array wire type (native regression). Bounded URI segment end offsets (QUA-RGL-001) and full boxed-inline array allocation (QUA-RGL-002). Translation offset bounds (QUA-RGL-003), Send-bound task results (QUA-RGL-004), and cancelled task completion/sender finalization (QUA-RGL-005). Log field byte lifetime (QUA-RGL-006), flag union semantics (QUA-RGL-007), StrV terminators and equality lengths (QUA-RGL-008/009), and parent-owned spawn callbacks (QUA-RGL-010). GStringPtr ownership transfer, foreign byte lengths, and owned string-vector GValue conversion (QUA-R02-011/012/013). URI decoded UTF-8 validation (QUA-RGL-011) and aborted FusedFuture termination consistency (QUA-RGL-005 review follow-up).",
+  "changes": [
+    {
+      "file": "src/collections/slice.rs",
+      "old": "    fn from(value: super::PtrSlice<T>) -> Self {\n",
+      "new": "    fn from(value: super::PtrSlice<T>) -> Self {\n        if value.is_empty() {\n            return Self::new();\n        }\n"
+    },
+    {
+      "file": "src/collections/ptr_slice.rs",
+      "old": "    fn from(value: super::Slice<T>) -> Self {\n",
+      "new": "    fn from(value: super::Slice<T>) -> Self {\n        if value.is_empty() {\n            return Self::new();\n        }\n"
+    },
+    {
+      "file": "src/collections/slice.rs",
+      "old": "    fn to_glib_container(&'a self) -> Stash<'a, *mut T::GlibType, Self> {\n",
+      "new": "    fn to_glib_container(&'a self) -> Stash<'a, *mut T::GlibType, Self> {\n        if self.is_empty() {\n            return Stash(ptr::null_mut(), PhantomData);\n        }\n"
+    },
+    {
+      "file": "src/manual_functions.rs",
+      "old": "        let child_pid = from_glib(child_pid.assume_init());\n        if error.is_null() {\n            Ok(child_pid)",
+      "new": "        if error.is_null() {\n            let child_pid = from_glib(child_pid.assume_init());\n            Ok(child_pid)"
+    },
+    {
+      "file": "src/manual_functions.rs",
+      "old": "        let child_pid = from_glib(child_pid.assume_init());\n        let standard_input = standard_input.assume_init();\n        let standard_output = standard_output.assume_init();\n        let standard_error = standard_error.assume_init();\n        if error.is_null() {",
+      "new": "        if error.is_null() {\n            let child_pid = from_glib(child_pid.assume_init());\n            let standard_input = standard_input.assume_init();\n            let standard_output = standard_output.assume_init();\n            let standard_error = standard_error.assume_init();"
+    },
+    {
+      "file": "src/gstring_builder.rs",
+      "old": "            let allocated_len = (*src).allocated_len;\n            let inner = ffi::GString {\n                str: ffi::g_malloc(allocated_len) as *mut _,\n                len: 0,\n",
+      "new": "            let allocated_len = (*src).allocated_len;\n            let inner = ffi::GString {\n                str: ffi::g_malloc(allocated_len) as *mut _,\n                len: (*src).len,\n"
+    },
+    {
+      "file": "src/date.rs",
+      "old": "        if !unsafe {\n            ffi::g_date_set_parse(c.to_glib_none_mut().0, str.to_glib_none().0);\n            ffi::g_date_valid(c.to_glib_none().0) == 0\n        }",
+      "new": "        if unsafe {\n            ffi::g_date_set_parse(c.to_glib_none_mut().0, str.to_glib_none().0);\n            ffi::g_date_valid(c.to_glib_none().0) == 0\n        }"
+    },
+    {
+      "file": "src/date.rs",
+      "old": "        let julian = self.julian();\n        if julian > n_days {",
+      "new": "        let julian = self.julian();\n        if julian <= n_days {"
+    },
+    {
+      "file": "src/collections/list.rs",
+      "old": "            unsafe extern \"C\" fn copy_item<T: TransparentPtrType>(\n                ptr: ffi::gpointer,\n                _user_data: ffi::gpointer,\n            ) {\n                let item = (*(&ptr as *const ffi::gpointer as *const T)).clone();\n                ptr::write(ptr as *mut T, item);\n            }\n\n            ffi::g_list_foreach(list, Some(copy_item::<T>), ptr::null_mut());",
+      "new": "            let mut node = list;\n            while !node.is_null() {\n                let item = (*(&(*node).data as *const ffi::gpointer as *const T)).clone();\n                ptr::write(&mut (*node).data as *mut ffi::gpointer as *mut T, item);\n                node = (*node).next;\n            }"
+    },
+    {
+      "file": "src/collections/list.rs",
+      "old": "let item = &*((*ptr).data as *const ffi::gpointer as *const T);",
+      "new": "let item = &*(&(*ptr).data as *const ffi::gpointer as *const T);"
+    },
+    {
+      "file": "src/collections/list.rs",
+      "old": "ffi::g_list_delete_link(head.as_ptr(), ptr)",
+      "new": "ffi::g_list_delete_link(self.as_mut_ptr(), ptr)"
+    },
+    {
+      "file": "src/collections/list.rs",
+      "old": "            let ptr = ffi::g_malloc(mem::size_of::<T>().checked_mul(self.len() + 1).unwrap())\n                as *mut ffi::GList;\n            ptr::copy_nonoverlapping(self.as_ptr(), ptr, self.len() + 1);\n            Stash(ptr, PhantomData)",
+      "new": "            Stash(ffi::g_list_copy(self.as_ptr() as *mut _), PhantomData)"
+    },
+    {
+      "file": "src/collections/slist.rs",
+      "old": "            unsafe extern \"C\" fn copy_item<T: TransparentPtrType>(\n                ptr: ffi::gpointer,\n                _user_data: ffi::gpointer,\n            ) {\n                let item = (*(&ptr as *const ffi::gpointer as *const T)).clone();\n                ptr::write(ptr as *mut T, item);\n            }\n\n            ffi::g_slist_foreach(list, Some(copy_item::<T>), ptr::null_mut());",
+      "new": "            let mut node = list;\n            while !node.is_null() {\n                let item = (*(&(*node).data as *const ffi::gpointer as *const T)).clone();\n                ptr::write(&mut (*node).data as *mut ffi::gpointer as *mut T, item);\n                node = (*node).next;\n            }"
+    },
+    {
+      "file": "src/collections/slist.rs",
+      "old": "let item = &*((*ptr).data as *const ffi::gpointer as *const T);",
+      "new": "let item = &*(&(*ptr).data as *const ffi::gpointer as *const T);"
+    },
+    {
+      "file": "src/collections/slist.rs",
+      "old": "ffi::g_slist_delete_link(head.as_ptr(), ptr)",
+      "new": "ffi::g_slist_delete_link(self.as_mut_ptr(), ptr)"
+    },
+    {
+      "file": "src/collections/slist.rs",
+      "old": "            let ptr = ffi::g_malloc(mem::size_of::<T>().checked_mul(self.len() + 1).unwrap())\n                as *mut ffi::GSList;\n            ptr::copy_nonoverlapping(self.as_ptr(), ptr, self.len() + 1);\n            Stash(ptr, PhantomData)",
+      "new": "            Stash(ffi::g_slist_copy(self.as_ptr() as *mut _), PhantomData)"
+    },
+    {
+      "file": "src/main_context_channel.rs",
+      "old": "    fn try_send(&self, t: T) -> Result<(), mpsc::TrySendError<T>> {\n        let mut inner = (self.0).0.lock().unwrap();\n\n        let ChannelBound { bound, ref cond } = (self.0)\n            .1\n            .as_ref()\n            .expect(\"called try_send() on an unbounded channel\");\n\n        // Check if the queue is full and handle the special case of a 0 bound\n        if inner.queue.len() >= *bound && !inner.queue.is_empty() {\n            return Err(mpsc::TrySendError::Full(t));\n        }\n\n        // Error out directly if the receiver is disconnected\n        if inner.receiver_disconnected() {\n            return Err(mpsc::TrySendError::Disconnected(t));\n        }\n\n        // Store the item on our queue\n        inner.queue.push_back(t);\n\n        // and then wake up the GSource\n        inner.set_ready_time(0);\n\n        // If we have a bound of 0 we need to wait until the receiver actually\n        // handled the data\n        if *bound == 0 {\n            while !inner.queue.is_empty() && !inner.receiver_disconnected() {\n                inner = cond.wait(inner).unwrap();\n            }\n\n            // If the receiver was destroyed in the meantime take out the item and report an error\n            if inner.receiver_disconnected() {\n                // If the item is not in the queue anymore then the receiver just handled it before\n                // getting disconnected and all is good\n                if let Some(t) = inner.queue.pop_front() {\n                    return Err(mpsc::TrySendError::Disconnected(t));\n                }\n            }\n        }\n\n        Ok(())\n    }\n",
+      "new": "    fn try_send(&self, t: T) -> Result<(), mpsc::TrySendError<T>> {\n        let mut inner = (self.0).0.lock().unwrap();\n        let bound = (self.0)\n            .1\n            .as_ref()\n            .expect(\"called try_send() on an unbounded channel\")\n            .bound;\n        if inner.receiver_disconnected() {\n            return Err(mpsc::TrySendError::Disconnected(t));\n        }\n        // The main-context receiver cannot synchronously accept a rendezvous.\n        // In particular a zero-capacity try_send must never wait for dispatch.\n        if inner.queue.len() >= bound {\n            return Err(mpsc::TrySendError::Full(t));\n        }\n        inner.queue.push_back(t);\n        inner.set_ready_time(0);\n        Ok(())\n    }\n"
+    },
+    {
+      "file": "src/variant.rs",
+      "old": "pub fn from_data<T: StaticVariantType, A: AsRef<[u8]>>(data: A) -> Self {",
+      "new": "pub fn from_data<T: StaticVariantType, A: AsRef<[u8]> + Send + Sync + 'static>(data: A) -> Self {"
+    },
+    {
+      "file": "src/variant.rs",
+      "old": "pub unsafe fn from_data_trusted<T: StaticVariantType, A: AsRef<[u8]>>(data: A) -> Self {",
+      "new": "pub unsafe fn from_data_trusted<T: StaticVariantType, A: AsRef<[u8]> + Send + Sync + 'static>(data: A) -> Self {"
+    },
+    {
+      "file": "src/variant.rs",
+      "old": "pub fn from_data_with_type<A: AsRef<[u8]>>(data: A, type_: &VariantTy) -> Self {",
+      "new": "pub fn from_data_with_type<A: AsRef<[u8]> + Send + Sync + 'static>(data: A, type_: &VariantTy) -> Self {"
+    },
+    {
+      "file": "src/variant.rs",
+      "old": "pub unsafe fn from_data_with_type_trusted<A: AsRef<[u8]>>(data: A, type_: &VariantTy) -> Self {",
+      "new": "pub unsafe fn from_data_with_type_trusted<A: AsRef<[u8]> + Send + Sync + 'static>(data: A, type_: &VariantTy) -> Self {"
+    },
+    {
+      "file": "src/variant.rs",
+      "old": "impl<A: AsRef<[T]>, T: FixedSizeVariantType> From<FixedSizeVariantArray<A, T>> for Variant {",
+      "new": "impl<A: AsRef<[T]> + Send + Sync + 'static, T: FixedSizeVariantType> From<FixedSizeVariantArray<A, T>> for Variant {"
+    },
+    {
+      "file": "src/variant.rs",
+      "old": "                T::static_variant_type().to_glib_none().0,\n                data_ptr as ffi::gconstpointer,",
+      "new": "                <[T]>::static_variant_type().to_glib_none().0,\n                data_ptr as ffi::gconstpointer,"
+    },
+    {
+      "file": "src/auto/uri.rs",
+      "old": "    #[doc(alias = \"g_uri_unescape_segment\")]\n    pub fn unescape_segment(\n        escaped_string: Option<&str>,\n        escaped_string_end: Option<&str>,\n        illegal_characters: Option<&str>,\n    ) -> Option<crate::GString> {\n        unsafe {\n            from_glib_full(ffi::g_uri_unescape_segment(\n                escaped_string.to_glib_none().0,\n                escaped_string_end.to_glib_none().0,\n                illegal_characters.to_glib_none().0,\n            ))\n        }\n    }\n\n",
+      "new": "    /// Unescapes a prefix ending at the optional byte offset within the input.\n    /// Returns `None` for an out-of-range offset or invalid escaped data.\n    #[doc(alias = \"g_uri_unescape_segment\")]\n    pub fn unescape_segment(\n        escaped_string: Option<&str>,\n        escaped_string_end: Option<usize>,\n        illegal_characters: Option<&str>,\n    ) -> Option<crate::GString> {\n        let escaped_string = escaped_string?;\n        let end = escaped_string_end.unwrap_or(escaped_string.len());\n        if end > escaped_string.len() {\n            return None;\n        }\n        let input = escaped_string.to_glib_none();\n        unsafe {\n            from_glib_full(ffi::g_uri_unescape_segment(\n                input.0,\n                input.0.add(end),\n                illegal_characters.to_glib_none().0,\n            ))\n        }\n    }\n\n"
+    },
+    {
+      "file": "src/boxed_inline.rs",
+      "old": "            fn to_glib_full_from_slice(t: &[Self]) -> *mut $ffi_name {\n                let v_ptr = unsafe {\n                    let v_ptr = $crate::ffi::g_malloc(std::mem::size_of::<$ffi_name>()) as *mut $ffi_name;",
+      "new": "            fn to_glib_full_from_slice(t: &[Self]) -> *mut $ffi_name {\n                if t.is_empty() {\n                    return std::ptr::null_mut();\n                }\n                let v_ptr = unsafe {\n                    let bytes = std::mem::size_of::<$ffi_name>().checked_mul(t.len()).expect(\"boxed array size overflow\");\n                    let v_ptr = $crate::ffi::g_malloc(bytes) as *mut $ffi_name;"
+    },
+    {
+      "file": "src/auto/functions.rs",
+      "old": "pub fn dpgettext(domain: Option<&str>, msgctxtid: &str, msgidoffset: usize) -> crate::GString {\n    unsafe {",
+      "new": "pub fn dpgettext(domain: Option<&str>, msgctxtid: &str, msgidoffset: usize) -> crate::GString {\n    assert!(msgctxtid.is_char_boundary(msgidoffset), \"message offset must be a UTF-8 boundary within the input\");\n    unsafe {"
+    },
+    {
+      "file": "src/main_context_futures.rs",
+      "old": "unsafe impl<T> Send for JoinHandle<T> {}",
+      "new": "unsafe impl<T: Send> Send for JoinHandle<T> {}"
+    },
+    {
+      "file": "src/main_context_futures.rs",
+      "old": "pub fn spawn_from_within<R: 'static, F: Future<Output = R> + 'static>(",
+      "new": "pub fn spawn_from_within<R: Send + 'static, F: Future<Output = R> + 'static>("
+    },
+    {
+      "file": "src/main_context_futures.rs",
+      "old": "pub fn spawn_from_within_with_priority<R: 'static, F: Future<Output = R> + 'static>(",
+      "new": "pub fn spawn_from_within_with_priority<R: Send + 'static, F: Future<Output = R> + 'static>("
+    },
+    {
+      "file": "src/main_context_futures.rs",
+      "old": "        // Drop the waker to unref the underlying GSource\n        ptr::drop_in_place(&mut (*source).waker);",
+      "new": "        // Release the sender even when the task never reached completion.\n        ptr::drop_in_place(&mut (*source).return_tx);\n        // Drop the waker to unref the underlying GSource\n        ptr::drop_in_place(&mut (*source).waker);"
+    },
+    {
+      "file": "src/main_context_futures.rs",
+      "old": "        std::pin::Pin::new(&mut self.rx).poll(cx).map(|r| match r {",
+      "new": "        if self.id.get().is_none() {\n            return Poll::Ready(Err(JoinErrorInner::Cancelled.into()));\n        }\n        std::pin::Pin::new(&mut self.rx).poll(cx).map(|r| match r {"
+    },
+    {
+      "file": "src/log.rs",
+      "old": "pub fn new(key: &'a GStr, value: &[u8]) -> Self {",
+      "new": "pub fn new(key: &'a GStr, value: &'a [u8]) -> Self {"
+    },
+    {
+      "file": "src/enums.rs",
+      "old": ".map(|v| acc + v.value())",
+      "new": ".map(|v| acc | v.value())"
+    },
+    {
+      "file": "src/collections/strv.rs",
+      "old": "    fn eq(&self, other: &[&'a str]) -> bool {\n        for (a, b)",
+      "new": "    fn eq(&self, other: &[&'a str]) -> bool {\n        if self.len() != other.len() {\n            return false;\n        }\n        for (a, b)"
+    },
+    {
+      "file": "src/collections/strv.rs",
+      "old": "            self.ptr = ptr::NonNull::new_unchecked(new_ptr);\n            self.capacity = new_capacity;",
+      "new": "            *new_ptr.add(self.len) = ptr::null_mut();\n            self.ptr = ptr::NonNull::new_unchecked(new_ptr);\n            self.capacity = new_capacity;"
+    },
+    {
+      "file": "src/collections/strv.rs",
+      "old": "            self.len = 0;\n        }\n    }\n\n    // rustdoc-stripper-ignore-next\n    /// Clones and appends",
+      "new": "            self.len = 0;\n            if self.capacity != 0 {\n                *self.ptr.as_ptr() = ptr::null_mut();\n            }\n        }\n    }\n\n    // rustdoc-stripper-ignore-next\n    /// Clones and appends"
+    },
+    {
+      "file": "src/auto/functions.rs",
+      "old": "pub fn spawn_async(\n    working_directory: Option<impl AsRef<std::path::Path>>,\n    argv: &[&std::path::Path],\n    envp: &[&std::path::Path],\n    flags: SpawnFlags,\n    child_setup: Option<Box_<dyn FnOnce() + 'static>>,\n) -> Result<Pid, crate::Error> {\n    let child_setup_data: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::new(child_setup);\n    unsafe extern \"C\" fn child_setup_func(data: ffi::gpointer) {\n        let callback: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::from_raw(data as *mut _);\n        let callback = (*callback).expect(\"cannot get closure...\");\n        callback()\n    }\n    let child_setup = if child_setup_data.is_some() {\n        Some(child_setup_func as _)\n    } else {\n        None\n    };\n    let super_callback0: Box_<Option<Box_<dyn FnOnce() + 'static>>> = child_setup_data;\n    unsafe {\n        let mut child_pid = mem::MaybeUninit::uninit();\n        let mut error = ptr::null_mut();\n        let is_ok = ffi::g_spawn_async(\n            working_directory\n                .as_ref()\n                .map(|p| p.as_ref())\n                .to_glib_none()\n                .0,\n            argv.to_glib_none().0,\n            envp.to_glib_none().0,\n            flags.into_glib(),\n            child_setup,\n            Box_::into_raw(super_callback0) as *mut _,\n            child_pid.as_mut_ptr(),\n            &mut error,\n        );\n        debug_assert_eq!(is_ok == crate::ffi::GFALSE, !error.is_null());\n        if error.is_null() {\n            Ok(from_glib(child_pid.assume_init()))\n        } else {\n            Err(from_glib_full(error))\n        }\n    }\n}\n",
+      "new": "pub fn spawn_async(\n    working_directory: Option<impl AsRef<std::path::Path>>,\n    argv: &[&std::path::Path],\n    envp: &[&std::path::Path],\n    flags: SpawnFlags,\n    child_setup: Option<Box_<dyn FnOnce() + 'static>>,\n) -> Result<Pid, crate::Error> {\n    let child_setup_data: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::new(child_setup);\n    unsafe extern \"C\" fn child_setup_func(data: ffi::gpointer) {\n        let callback: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::from_raw(data as *mut _);\n        let callback = (*callback).expect(\"cannot get closure...\");\n        callback()\n    }\n    let child_setup = if child_setup_data.is_some() {\n        Some(child_setup_func as _)\n    } else {\n        None\n    };\n    let mut super_callback0: Box_<Option<Box_<dyn FnOnce() + 'static>>> = child_setup_data;\n    unsafe {\n        let mut child_pid = mem::MaybeUninit::uninit();\n        let mut error = ptr::null_mut();\n        let is_ok = ffi::g_spawn_async(\n            working_directory\n                .as_ref()\n                .map(|p| p.as_ref())\n                .to_glib_none()\n                .0,\n            argv.to_glib_none().0,\n            envp.to_glib_none().0,\n            flags.into_glib(),\n            child_setup,\n            &mut *super_callback0 as *mut _ as *mut _,\n            child_pid.as_mut_ptr(),\n            &mut error,\n        );\n        debug_assert_eq!(is_ok == crate::ffi::GFALSE, !error.is_null());\n        if error.is_null() {\n            Ok(from_glib(child_pid.assume_init()))\n        } else {\n            Err(from_glib_full(error))\n        }\n    }\n}\n"
+    },
+    {
+      "file": "src/manual_functions.rs",
+      "old": "pub fn spawn_async_with_fds<P: AsRef<std::path::Path>, T: AsRawFd, U: AsRawFd, V: AsRawFd>(\n    working_directory: P,\n    argv: &[&str],\n    envp: &[&str],\n    flags: SpawnFlags,\n    child_setup: Option<Box_<dyn FnOnce() + 'static>>,\n    stdin_fd: T,\n    stdout_fd: U,\n    stderr_fd: V,\n) -> Result<Pid, Error> {\n    let child_setup_data: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::new(child_setup);\n    unsafe extern \"C\" fn child_setup_func(user_data: ffi::gpointer) {\n        let callback: Box_<Option<Box_<dyn FnOnce() + 'static>>> =\n            Box_::from_raw(user_data as *mut _);\n        let callback = (*callback).expect(\"cannot get closure...\");\n        callback()\n    }\n    let child_setup = if child_setup_data.is_some() {\n        Some(child_setup_func as _)\n    } else {\n        None\n    };\n    let super_callback0: Box_<Option<Box_<dyn FnOnce() + 'static>>> = child_setup_data;\n    unsafe {\n        let mut child_pid = mem::MaybeUninit::uninit();\n        let mut error = ptr::null_mut();\n        let _ = ffi::g_spawn_async_with_fds(\n            working_directory.as_ref().to_glib_none().0,\n            argv.to_glib_none().0,\n            envp.to_glib_none().0,\n            flags.into_glib(),\n            child_setup,\n            Box_::into_raw(super_callback0) as *mut _,\n            child_pid.as_mut_ptr(),\n            stdin_fd.as_raw_fd(),\n            stdout_fd.as_raw_fd(),\n            stderr_fd.as_raw_fd(),\n            &mut error,\n        );\n        if error.is_null() {\n            let child_pid = from_glib(child_pid.assume_init());\n            Ok(child_pid)\n        } else {\n            Err(from_glib_full(error))\n        }\n    }\n}\n",
+      "new": "pub fn spawn_async_with_fds<P: AsRef<std::path::Path>, T: AsRawFd, U: AsRawFd, V: AsRawFd>(\n    working_directory: P,\n    argv: &[&str],\n    envp: &[&str],\n    flags: SpawnFlags,\n    child_setup: Option<Box_<dyn FnOnce() + 'static>>,\n    stdin_fd: T,\n    stdout_fd: U,\n    stderr_fd: V,\n) -> Result<Pid, Error> {\n    let child_setup_data: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::new(child_setup);\n    unsafe extern \"C\" fn child_setup_func(user_data: ffi::gpointer) {\n        let callback: Box_<Option<Box_<dyn FnOnce() + 'static>>> =\n            Box_::from_raw(user_data as *mut _);\n        let callback = (*callback).expect(\"cannot get closure...\");\n        callback()\n    }\n    let child_setup = if child_setup_data.is_some() {\n        Some(child_setup_func as _)\n    } else {\n        None\n    };\n    let mut super_callback0: Box_<Option<Box_<dyn FnOnce() + 'static>>> = child_setup_data;\n    unsafe {\n        let mut child_pid = mem::MaybeUninit::uninit();\n        let mut error = ptr::null_mut();\n        let _ = ffi::g_spawn_async_with_fds(\n            working_directory.as_ref().to_glib_none().0,\n            argv.to_glib_none().0,\n            envp.to_glib_none().0,\n            flags.into_glib(),\n            child_setup,\n            &mut *super_callback0 as *mut _ as *mut _,\n            child_pid.as_mut_ptr(),\n            stdin_fd.as_raw_fd(),\n            stdout_fd.as_raw_fd(),\n            stderr_fd.as_raw_fd(),\n            &mut error,\n        );\n        if error.is_null() {\n            let child_pid = from_glib(child_pid.assume_init());\n            Ok(child_pid)\n        } else {\n            Err(from_glib_full(error))\n        }\n    }\n}\n"
+    },
+    {
+      "file": "src/manual_functions.rs",
+      "old": "pub fn spawn_async_with_pipes<\n    P: AsRef<std::path::Path>,\n    T: FromRawFd,\n    U: FromRawFd,\n    V: FromRawFd,\n>(\n    working_directory: P,\n    argv: &[&std::path::Path],\n    envp: &[&std::path::Path],\n    flags: SpawnFlags,\n    child_setup: Option<Box_<dyn FnOnce() + 'static>>,\n) -> Result<(Pid, T, U, V), Error> {\n    let child_setup_data: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::new(child_setup);\n    unsafe extern \"C\" fn child_setup_func(user_data: ffi::gpointer) {\n        let callback: Box_<Option<Box_<dyn FnOnce() + 'static>>> =\n            Box_::from_raw(user_data as *mut _);\n        let callback = (*callback).expect(\"cannot get closure...\");\n        callback()\n    }\n    let child_setup = if child_setup_data.is_some() {\n        Some(child_setup_func as _)\n    } else {\n        None\n    };\n    let super_callback0: Box_<Option<Box_<dyn FnOnce() + 'static>>> = child_setup_data;\n    unsafe {\n        let mut child_pid = mem::MaybeUninit::uninit();\n        let mut standard_input = mem::MaybeUninit::uninit();\n        let mut standard_output = mem::MaybeUninit::uninit();\n        let mut standard_error = mem::MaybeUninit::uninit();\n        let mut error = ptr::null_mut();\n        let _ = ffi::g_spawn_async_with_pipes(\n            working_directory.as_ref().to_glib_none().0,\n            argv.to_glib_none().0,\n            envp.to_glib_none().0,\n            flags.into_glib(),\n            child_setup,\n            Box_::into_raw(super_callback0) as *mut _,\n            child_pid.as_mut_ptr(),\n            standard_input.as_mut_ptr(),\n            standard_output.as_mut_ptr(),\n            standard_error.as_mut_ptr(),\n            &mut error,\n        );\n        if error.is_null() {\n            let child_pid = from_glib(child_pid.assume_init());\n            let standard_input = standard_input.assume_init();\n            let standard_output = standard_output.assume_init();\n            let standard_error = standard_error.assume_init();\n            #[cfg(not(windows))]\n            {\n                Ok((\n                    child_pid,\n                    FromRawFd::from_raw_fd(standard_input),\n                    FromRawFd::from_raw_fd(standard_output),\n                    FromRawFd::from_raw_fd(standard_error),\n                ))\n            }\n        // #[cfg(windows)]\n        // {\n        //     use std::os::windows::io::{FromRawHandle, RawHandle};\n        //     Ok((\n        //         child_pid,\n        //         File::from_raw_handle(standard_input as usize as RawHandle),\n        //         File::from_raw_handle(standard_output as usize as RawHandle),\n        //         File::from_raw_handle(standard_error as usize as RawHandle),\n        //     ))\n        // }\n        } else {\n            Err(from_glib_full(error))\n        }\n    }\n}\n",
+      "new": "pub fn spawn_async_with_pipes<\n    P: AsRef<std::path::Path>,\n    T: FromRawFd,\n    U: FromRawFd,\n    V: FromRawFd,\n>(\n    working_directory: P,\n    argv: &[&std::path::Path],\n    envp: &[&std::path::Path],\n    flags: SpawnFlags,\n    child_setup: Option<Box_<dyn FnOnce() + 'static>>,\n) -> Result<(Pid, T, U, V), Error> {\n    let child_setup_data: Box_<Option<Box_<dyn FnOnce() + 'static>>> = Box_::new(child_setup);\n    unsafe extern \"C\" fn child_setup_func(user_data: ffi::gpointer) {\n        let callback: Box_<Option<Box_<dyn FnOnce() + 'static>>> =\n            Box_::from_raw(user_data as *mut _);\n        let callback = (*callback).expect(\"cannot get closure...\");\n        callback()\n    }\n    let child_setup = if child_setup_data.is_some() {\n        Some(child_setup_func as _)\n    } else {\n        None\n    };\n    let mut super_callback0: Box_<Option<Box_<dyn FnOnce() + 'static>>> = child_setup_data;\n    unsafe {\n        let mut child_pid = mem::MaybeUninit::uninit();\n        let mut standard_input = mem::MaybeUninit::uninit();\n        let mut standard_output = mem::MaybeUninit::uninit();\n        let mut standard_error = mem::MaybeUninit::uninit();\n        let mut error = ptr::null_mut();\n        let _ = ffi::g_spawn_async_with_pipes(\n            working_directory.as_ref().to_glib_none().0,\n            argv.to_glib_none().0,\n            envp.to_glib_none().0,\n            flags.into_glib(),\n            child_setup,\n            &mut *super_callback0 as *mut _ as *mut _,\n            child_pid.as_mut_ptr(),\n            standard_input.as_mut_ptr(),\n            standard_output.as_mut_ptr(),\n            standard_error.as_mut_ptr(),\n            &mut error,\n        );\n        if error.is_null() {\n            let child_pid = from_glib(child_pid.assume_init());\n            let standard_input = standard_input.assume_init();\n            let standard_output = standard_output.assume_init();\n            let standard_error = standard_error.assume_init();\n            #[cfg(not(windows))]\n            {\n                Ok((\n                    child_pid,\n                    FromRawFd::from_raw_fd(standard_input),\n                    FromRawFd::from_raw_fd(standard_output),\n                    FromRawFd::from_raw_fd(standard_error),\n                ))\n            }\n        // #[cfg(windows)]\n        // {\n        //     use std::os::windows::io::{FromRawHandle, RawHandle};\n        //     Ok((\n        //         child_pid,\n        //         File::from_raw_handle(standard_input as usize as RawHandle),\n        //         File::from_raw_handle(standard_output as usize as RawHandle),\n        //         File::from_raw_handle(standard_error as usize as RawHandle),\n        //     ))\n        // }\n        } else {\n            Err(from_glib_full(error))\n        }\n    }\n}\n"
+    },
+    {
+      "file": "src/gstring.rs",
+      "old": "impl IntoGlibPtr<*mut c_char> for GStringPtr {\n    #[inline]\n    unsafe fn into_glib_ptr(self) -> *mut c_char {\n        self.0.as_ptr()\n    }\n}",
+      "new": "impl IntoGlibPtr<*mut c_char> for GStringPtr {\n    #[inline]\n    unsafe fn into_glib_ptr(self) -> *mut c_char {\n        let this = mem::ManuallyDrop::new(self);\n        this.0.as_ptr()\n    }\n}"
+    },
+    {
+      "file": "src/gstring.rs",
+      "old": "    pub fn into_bytes(mut self) -> Vec<u8> {\n        match &mut self.0 {\n            Inner::Native(s) => {\n                let mut s = String::from(mem::replace(s, \"\".into()));\n                let _nul = s.pop();\n                debug_assert_eq!(_nul, Some('\\0'));\n                s.into_bytes()\n            }\n            Inner::Foreign { ptr, len } => {\n                let bytes = unsafe { slice::from_raw_parts(ptr.as_ptr() as *const u8, *len - 1) };\n",
+      "new": "    pub fn into_bytes(mut self) -> Vec<u8> {\n        match &mut self.0 {\n            Inner::Native(s) => {\n                let mut s = String::from(mem::replace(s, \"\".into()));\n                let _nul = s.pop();\n                debug_assert_eq!(_nul, Some('\\0'));\n                s.into_bytes()\n            }\n            Inner::Foreign { ptr, len } => {\n                let bytes = unsafe { slice::from_raw_parts(ptr.as_ptr() as *const u8, *len) };\n"
+    },
+    {
+      "file": "src/gstring.rs",
+      "old": "    pub fn into_bytes_with_nul(mut self) -> Vec<u8> {\n        match &mut self.0 {\n            Inner::Native(s) => str::into_boxed_bytes(mem::replace(s, \"\".into())).into(),\n            Inner::Foreign { ptr, len } => {\n                let bytes = unsafe { slice::from_raw_parts(ptr.as_ptr() as *const u8, *len) };",
+      "new": "    pub fn into_bytes_with_nul(mut self) -> Vec<u8> {\n        match &mut self.0 {\n            Inner::Native(s) => str::into_boxed_bytes(mem::replace(s, \"\".into())).into(),\n            Inner::Foreign { ptr, len } => {\n                let bytes = unsafe { slice::from_raw_parts(ptr.as_ptr() as *const u8, *len + 1) };"
+    },
+    {
+      "file": "src/gstring.rs",
+      "old": "impl From<Vec<GString>> for Value {\n    #[inline]\n    fn from(mut v: Vec<GString>) -> Self {\n        unsafe {\n            let mut value = Value::for_value_type::<Vec<GString>>();\n            let container =\n                ToGlibContainerFromSlice::<*mut *mut c_char>::to_glib_container_from_slice(&v);\n            gobject_ffi::g_value_take_boxed(\n                value.to_glib_none_mut().0,\n                container.0 as *const c_void,\n            );\n            v.set_len(0);\n            value\n        }\n    }\n}\n",
+      "new": "impl From<Vec<GString>> for Value {\n    #[inline]\n    fn from(v: Vec<GString>) -> Self {\n        v.to_value()\n    }\n}"
+    },
+    {
+      "file": "src/main_context_futures.rs",
+      "old": "    fn is_terminated(&self) -> bool {\n        self.rx.is_terminated()\n    }",
+      "new": "    fn is_terminated(&self) -> bool {\n        self.id.get().is_none() || self.rx.is_terminated()\n    }"
+    },
+    {
+      "file": "src/auto/uri.rs",
+      "old": "        if end > escaped_string.len() {\n            return None;\n        }",
+      "new": "        if !escaped_string.is_char_boundary(end) {\n            return None;\n        }"
+    },
+    {
+      "file": "src/auto/uri.rs",
+      "old": "            from_glib_full(ffi::g_uri_unescape_segment(\n                input.0,\n                input.0.add(end),\n                illegal_characters.to_glib_none().0,\n            ))",
+      "new": "            let decoded = ffi::g_uri_unescape_segment(\n                input.0,\n                input.0.add(end),\n                illegal_characters.to_glib_none().0,\n            );\n            if decoded.is_null() {\n                return None;\n            }\n            if std::ffi::CStr::from_ptr(decoded).to_str().is_err() {\n                ffi::g_free(decoded as *mut _);\n                return None;\n            }\n            from_glib_full(decoded)"
+    },
+    {
+      "file": "src/auto/uri.rs",
+      "old": "    #[doc(alias = \"g_uri_unescape_string\")]\n    pub fn unescape_string(\n        escaped_string: &str,\n        illegal_characters: Option<&str>,\n    ) -> Option<crate::GString> {\n        unsafe {\n            from_glib_full(ffi::g_uri_unescape_string(\n                escaped_string.to_glib_none().0,\n                illegal_characters.to_glib_none().0,\n            ))\n        }\n    }",
+      "new": "    #[doc(alias = \"g_uri_unescape_string\")]\n    pub fn unescape_string(\n        escaped_string: &str,\n        illegal_characters: Option<&str>,\n    ) -> Option<crate::GString> {\n        Self::unescape_segment(Some(escaped_string), None, illegal_characters)\n    }"
+    }
+  ]
+}

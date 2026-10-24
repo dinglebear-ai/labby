@@ -10,7 +10,6 @@ publish = false
 [workspace]
 
 [workspace.lints.rust]
-missing_crate_level_docs = "deny"
 unsafe_code = "forbid"
 unsafe_op_in_unsafe_fn = "deny"
 
@@ -19,6 +18,7 @@ missing_safety_doc = "deny"
 mod_module_files = "deny"
 
 [workspace.lints.rustdoc]
+missing_crate_level_docs = "deny"
 broken_intra_doc_links = "deny"
 invalid_codeblock_attributes = "deny"
 invalid_rust_codeblocks = "deny"
@@ -62,4 +62,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # GTK3 requires the 0.18 API. This exact registry source includes the upstream
 # RUSTSEC-2024-0429 pointer fix; provenance is in glib-backport.json.
 [patch.crates-io]
-glib = { path = "vendor/glib" }
+glib = { path = "target/glib-backport/glib" }

@@ -226,7 +226,7 @@ impl Write for CappedByteCounter {
     }
 }
 
-fn json_size(value: &(impl Serialize + ?Sized), cap: usize) -> Option<usize> {
+pub(super) fn json_size(value: &(impl Serialize + ?Sized), cap: usize) -> Option<usize> {
     let mut counter = CappedByteCounter { used: 0, cap };
     serde_json::to_writer(&mut counter, value).ok()?;
     Some(counter.used)

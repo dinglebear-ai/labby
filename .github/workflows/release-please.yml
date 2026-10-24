@@ -272,6 +272,7 @@ jobs:
           cargo update --workspace --offline || cargo update --workspace
           # Desktop is a separate Cargo workspace; the root update cannot repair
           # its package version in the independent lockfile.
+          python3 scripts/ci/verify_glib_backport.py --prepare
           cargo update --manifest-path apps/tauri/src-tauri/Cargo.toml --workspace --offline || cargo update --manifest-path apps/tauri/src-tauri/Cargo.toml --workspace
           cargo update --manifest-path tools/verification/Cargo.toml -p labby-model --offline \
             || cargo update --manifest-path tools/verification/Cargo.toml -p labby-model

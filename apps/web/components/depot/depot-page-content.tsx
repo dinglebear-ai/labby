@@ -361,6 +361,7 @@ function SessionDepotPage() {
         return
       }
       if (event.key === 'Enter' && cursorIndex >= 0) {
+        if (target?.closest('button, a[href], [role="button"], [role="link"]')) return
         event.preventDefault()
         const artifact = results[cursorIndex]
         if (artifact) router.push(artifactHref(artifact.providerId, artifact.artifactId), { scroll: false })

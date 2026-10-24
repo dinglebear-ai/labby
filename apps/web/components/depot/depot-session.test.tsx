@@ -168,3 +168,47 @@ test('Discover bounds deferred continuations, retains successful rows and cancel
     window.clearTimeout = originalClearTimeout
   }
 })
+
+test('Discover cursor Enter leaves focused controls and their icons to native activation', async () => {
+  const originalFetch = globalThis.fetch
+  const pushed: string[] = []
+  const keyboardRouter = { ...router, push: (href: string) => pushed.push(href) }
+  globalThis.fetch = async url => {
+    if (url === '/v1/depot/providers') return Response.json([])
+    if (url === '/v1/depot/discover') return listing('Keyboard catalog item')
+    throw new Error('unexpected endpoint')
+  }
+  const view = await renderClient(<AppRouterContext.Provider value={keyboardRouter as never}>
+    <PathnameContext.Provider value="/depot"><SearchParamsContext.Provider value={new URLSearchParams()}>
+      <DepotPageContent />
+    </SearchParamsContext.Provider></PathnameContext.Provider>
+  </AppRouterContext.Provider>)
+  try {
+    await waitFor(() => assert.match(view.container.textContent ?? '', /Keyboard catalog item/))
+    await act(async () => { document.body.dispatchEvent(new dom.KeyboardEvent('keydown', { key: 'j', bubbles: true, cancelable: true }) as unknown as Event) })
+    const button = view.container.querySelector<HTMLButtonElement>('button')!
+    const link = view.container.querySelector<HTMLAnchorElement>('a[aria-label="Publish artifact"]')!
+    assert.ok(button)
+    assert.ok(link)
+    for (const control of [button, link]) {
+      control.focus()
+      const icon = control.querySelector('svg')
+      assert.ok(icon, 'the tested control contains a nested icon')
+      for (const target of [control, icon]) {
+        const enter = new dom.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+        await act(async () => { target.dispatchEvent(enter as unknown as Event) })
+        assert.equal(enter.defaultPrevented, false, `${control.tagName} Enter must retain native activation`)
+        assert.deepEqual(pushed, [], 'a focused control must not open the cursor result')
+      }
+    }
+    link.blur()
+    const enter = new dom.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+    await act(async () => { document.body.dispatchEvent(enter as unknown as Event) })
+    assert.equal(enter.defaultPrevented, true, 'Enter on the page opens the cursor result')
+    assert.equal(pushed.length, 1)
+    assert.match(pushed[0], /artifact=private/)
+  } finally {
+    await view.unmount()
+    globalThis.fetch = originalFetch
+  }
+})

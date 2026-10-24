@@ -107,10 +107,11 @@ resets sequence state. Never retain a JS runtime between callers. The runner
 also attempts to replace its working directory with a fresh jail subdirectory.
 That reset is best-effort: filesystem failures are non-fatal and can leave state
 in the isolated runner directory. It is defense-in-depth, not a hard containment
-boundary. Clean completion and ordinary execution errors return the process to
-the pool. Timeouts and protocol faults evict it. A pooled process that exits
-before any valid protocol activity gets one attempt on a fresh runner; activity
-followed by a crash does not trigger automatic replay.
+boundary. Only successful completion with native `reuse_ready` consumption proof
+returns the process to the pool. Success without that proof, every execution
+error, timeouts, and protocol faults evict the process without replay. A pooled
+process that exits before any valid protocol activity gets one attempt on a
+fresh runner; activity followed by a crash does not trigger automatic replay.
 
 Pool defaults are two slots, recycle after 100 executions, and eight overflow
 runners. `LABBY_CODE_MODE_POOL_SIZE` (maximum 16),

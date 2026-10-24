@@ -167,6 +167,7 @@ dependencies = [
 name = "labby-glib-backport-check"
 version = "0.1.0"
 dependencies = [
+ "futures-core",
  "glib",
 ]
 

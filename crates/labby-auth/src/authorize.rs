@@ -1010,6 +1010,16 @@ fn sanitize_return_to(state: &AuthState, requested: Option<&str>) -> String {
     let Some(requested) = requested.map(str::trim).filter(|value| !value.is_empty()) else {
         return "/".to_string();
     };
+    // Browsers normalize backslashes and strip URL control characters before
+    // resolving HTTP(S) locations. A raw leading-slash check alone can admit
+    // an external authority such as `/\\attacker.example`.
+    if requested.contains('\\')
+        || requested
+            .chars()
+            .any(|character| character.is_ascii_control())
+    {
+        return "/".to_string();
+    }
     if requested.starts_with('/') && !requested.starts_with("//") {
         return requested.to_string();
     }
@@ -1023,6 +1033,11 @@ fn sanitize_return_to(state: &AuthState, requested: Option<&str>) -> String {
         || url.host_str() != public_url.host_str()
         || url.port_or_known_default() != public_url.port_or_known_default()
     {
+        return "/".to_string();
+    }
+    // Stripping a same-origin absolute URL must not create a protocol-relative
+    // Location: `https://gateway//attacker.example` would otherwise escape.
+    if url.path().starts_with("//") {
         return "/".to_string();
     }
     let mut normalized = url.path().to_string();
@@ -3019,6 +3034,86 @@ pub mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(credential.refresh_token, "fresh-provider-refresh");
+    }
+
+    #[tokio::test]
+    async fn browser_return_targets_stay_on_the_gateway_origin() {
+        let state = test_auth_state().await;
+        let origin = Url::parse("https://lab.example.com/").unwrap();
+        for requested in [
+            "/\\attacker.example/path",
+            "/\t/attacker.example/path",
+            "/\n/attacker.example/path",
+            "//attacker.example/path",
+            "https://lab.example.com//attacker.example/path",
+            "https://attacker.example/path",
+        ] {
+            let target = super::sanitize_return_to(&state, Some(requested));
+            assert_eq!(target, "/", "unsafe return target {requested:?}");
+            assert_eq!(origin.join(&target).unwrap().origin(), origin.origin());
+        }
+        for (requested, expected) in [
+            ("/gateways/?tab=lab#tools", "/gateways/?tab=lab#tools"),
+            (
+                "https://lab.example.com/gateways/?tab=lab#tools",
+                "/gateways/?tab=lab#tools",
+            ),
+            ("/gateways/%5Citem", "/gateways/%5Citem"),
+        ] {
+            assert_eq!(super::sanitize_return_to(&state, Some(requested)), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn browser_login_callback_rejects_browser_normalized_external_return_targets() {
+        for requested in [
+            "/\\attacker.example/path",
+            "/\t/attacker.example/path",
+            "https://lab.example.com//attacker.example/path",
+        ] {
+            let state = test_auth_state_with_mock_google().await;
+            let app = router(state);
+            let mut login_url = Url::parse("https://lab.example.com/auth/login").unwrap();
+            login_url
+                .query_pairs_mut()
+                .append_pair("return_to", requested);
+            let login = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "{}?{}",
+                            login_url.path(),
+                            login_url.query().unwrap()
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(login.status(), StatusCode::FOUND);
+            let provider = Url::parse(login.headers()[header::LOCATION].to_str().unwrap()).unwrap();
+            let state = provider
+                .query_pairs()
+                .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+                .unwrap();
+            let callback = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!(
+                            "/auth/google/callback?state={state}&code=upstream-code"
+                        ))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(callback.status(), StatusCode::SEE_OTHER);
+            let target = callback.headers()[header::LOCATION].to_str().unwrap();
+            assert_eq!(target, "/", "unsafe callback return target {requested:?}");
+            let origin = Url::parse("https://lab.example.com/").unwrap();
+            assert_eq!(origin.join(target).unwrap().origin(), origin.origin());
+        }
     }
 
     #[tokio::test]

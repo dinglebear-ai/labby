@@ -127,6 +127,8 @@ jobs:
           identity="$(security find-identity -v -p codesigning build.keychain | sed -n 's/.*"\(Developer ID Application:[^"]*\)".*/\1/p' | head -1)"
           [[ -n "$identity" ]] || { echo "::error::Developer ID Application identity was not imported"; exit 1; }
           echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+      - name: Prepare pinned off-tree GLib correction
+        run: python3 scripts/ci/verify_glib_backport.py --prepare
       - name: Build notarized macOS desktop app
         if: runner.os == 'macOS' && needs.preflight.outputs.has_apple_secrets == 'true'
         env:

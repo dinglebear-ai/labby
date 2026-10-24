@@ -8,10 +8,13 @@ publish = false
 [workspace]
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 
 [lints]
 workspace = true
 
 [dependencies]
-glib = { path = "../src-tauri/vendor/glib", default-features = false }
+glib = { path = "../src-tauri/target/glib-backport/glib", default-features = false, features = ["v2_66"] }
+
+[dev-dependencies]
+futures-core = "0.3"

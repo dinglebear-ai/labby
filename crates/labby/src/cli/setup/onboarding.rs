@@ -2088,7 +2088,11 @@ fn advertised_url(plan: &SetupPlan) -> String {
     } else {
         plan.host.as_str()
     };
-    format!("http://{host}:{}", plan.port)
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        format!("http://[{host}]:{}", plan.port)
+    } else {
+        format!("http://{host}:{}", plan.port)
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -2783,6 +2787,20 @@ esac
             Some(std::ffi::OsString::from("relative-root")),
         )
         .is_err());
+
+        for host in ["::1", "[::1]", "localhost", "127.0.0.1"] {
+            let specific = SetupPlan {
+                host: host.into(),
+                ..plan.clone()
+            };
+            let emitted = advertised_url(&specific);
+            let url = url::Url::parse(&emitted).expect("advertised listener URL must parse");
+            assert_eq!(url.port(), Some(9123));
+            assert_eq!(
+                url.host_str(),
+                Some(if host == "::1" { "[::1]" } else { host })
+            );
+        }
 
         let bound_to_other_interface = SetupPlan {
             host: "192.0.2.10".into(),

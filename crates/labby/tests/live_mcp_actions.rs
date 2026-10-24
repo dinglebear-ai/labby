@@ -70,6 +70,14 @@ fn result_error_kind(text: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn mcp_action_data(text: &str, service: &str, action: &str) -> serde_json::Value {
+    let envelope: serde_json::Value = serde_json::from_str(text).expect("MCP command JSON");
+    assert_eq!(envelope["ok"], true, "{service}:{action}: {envelope}");
+    assert_eq!(envelope["service"], service);
+    assert_eq!(envelope["action"], action);
+    envelope.get("data").expect("MCP command payload").clone()
+}
+
 async fn assert_mcp_transition_readback(
     runner: &BuiltinMcpRunner,
     intent: &action_matrix::CaseIntent,
@@ -117,7 +125,9 @@ async fn assert_mcp_transition_readback(
                 None,
                 "{key} returned an error-shaped success"
             );
-            true
+            // This fixture supplies an empty values patch, so readback proves
+            // success but does not establish a configuration transition.
+            false
         }
         "gateway:gateway.loadout.add"
         | "gateway:gateway.loadout.patch"
@@ -132,7 +142,12 @@ async fn assert_mcp_transition_readback(
                 ok && text.contains("matrix-owned"),
                 "{key} readback: {text}"
             );
-            true
+            if key.ends_with("patch") {
+                let loadout = mcp_action_data(&text, "gateway", "gateway.loadout.get");
+                assert_eq!(loadout["expose_tools"], false, "{key} patch readback");
+            }
+            // Replacement reuses the create payload in this generic matrix.
+            !key.ends_with("update")
         }
         "gateway:gateway.loadout.remove" => {
             let (ok, text) = read(
@@ -160,21 +175,26 @@ async fn assert_mcp_transition_readback(
             );
             true
         }
-        "gateway:gateway.mcp.disable"
-        | "gateway:gateway.mcp.enable"
-        | "gateway:gateway.mcp.restart" => {
+        "gateway:gateway.mcp.disable" | "gateway:gateway.mcp.enable" => {
             let (ok, text) = read(
                 "gateway",
                 "gateway.get",
                 serde_json::json!({"name":"matrix-owned"}),
             )
             .await;
-            assert!(
-                ok && text.contains("matrix-owned"),
-                "{key} readback: {text}"
+            assert!(ok, "{key} readback: {text}");
+            let gateway = mcp_action_data(&text, "gateway", "gateway.get");
+            assert_eq!(gateway["config"]["name"], "matrix-owned");
+            assert_eq!(
+                gateway["config"]["enabled"],
+                key.ends_with("enable"),
+                "{key} must change the persisted enabled state: {text}"
             );
             true
         }
+        // The matrix's unreachable HTTP fixture has no live process generation
+        // to compare. A successful restart response alone is LiveSuccess.
+        "gateway:gateway.mcp.restart" => false,
         "gateway:gateway.protected_route.add" | "gateway:gateway.protected_route.update" => {
             let (ok, text) = read(
                 "gateway",
@@ -186,7 +206,8 @@ async fn assert_mcp_transition_readback(
                 ok && text.contains("matrix-owned"),
                 "{key} readback: {text}"
             );
-            true
+            // The update fixture repeats the original route unchanged.
+            !key.ends_with("update")
         }
         "gateway:gateway.protected_route.remove" => {
             let (ok, text) = read(
@@ -273,7 +294,9 @@ async fn assert_mcp_transition_readback(
         "setup:draft.commit" | "setup:finalize" | "setup:repair" | "setup:settings.update" => {
             let (ok, text) = read("setup", "state", serde_json::json!({})).await;
             assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
-            true
+            // Setup state availability alone is not an effect oracle. Dedicated
+            // setup workflows own exact before/after configuration evidence.
+            false
         }
         // A multi-user mutation is only proven when the owning surface can
         // read the new state back through its own authority, so each of these
@@ -306,7 +329,24 @@ async fn assert_mcp_transition_readback(
         }
         "access:access.team.create" | "access:access.team.suspend" => {
             let (ok, text) = read("access", "access.team.list", serde_json::json!({})).await;
-            assert!(ok && text.contains("matrix-team"), "{key} readback: {text}");
+            assert!(ok, "{key} readback: {text}");
+            let listed = mcp_action_data(&text, "access", "access.team.list");
+            let params = action_scenarios::fixture_params(intent);
+            let team = listed["teams"]
+                .as_array()
+                .expect("Team collection")
+                .iter()
+                .find(|team| team["team_id"] == params["team_id"])
+                .expect("mutated Team remains listed");
+            assert_eq!(
+                team["status"],
+                if key.ends_with("suspend") {
+                    "suspended"
+                } else {
+                    "active"
+                },
+                "{key} must persist the requested Team status"
+            );
             true
         }
         "access:access.team_project.assign" => {
@@ -317,7 +357,8 @@ async fn assert_mcp_transition_readback(
             )
             .await;
             assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
-            true
+            // A nonempty membership projection need not include this assignment.
+            false
         }
         "agents:agents.create" | "agents:agents.delete" => {
             let (ok, text) = read("agents", "agents.list", serde_json::json!({})).await;
@@ -334,9 +375,29 @@ async fn assert_mcp_transition_readback(
         | "projects:projects.update"
         | "projects:projects.archive"
         | "projects:projects.activate" => {
-            let (ok, text) = read("projects", "projects.list", serde_json::json!({})).await;
-            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
-            true
+            // Archived Projects intentionally leave projects.list. Read the
+            // exact owned Project so unrelated visible rows cannot prove it.
+            let params = action_scenarios::fixture_params(intent);
+            let (ok, text) = read("projects", "projects.get", params.clone()).await;
+            assert!(ok, "{key} readback: {text}");
+            let project = mcp_action_data(&text, "projects", "projects.get");
+            assert_eq!(project["project_id"], params["project_id"]);
+            assert_eq!(project["team_id"], params["team_id"]);
+            assert_eq!(
+                project["status"],
+                if key.ends_with("archive") {
+                    "disabled"
+                } else {
+                    "active"
+                },
+                "{key} must persist the requested Project status"
+            );
+            if key.ends_with("create") || key.ends_with("update") {
+                assert_eq!(project["name"], params["name"]);
+            }
+            // The update fixture reuses the create name: exact readback proves
+            // the requested value, but cannot distinguish an idempotent write.
+            !key.ends_with("update")
         }
         _ => false,
     }
@@ -378,6 +439,15 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
         bind_harness_team_upstream(runner, "matrix-owned", &intent.key()).await;
     }
     let prerequisite = match intent.key().as_str() {
+        // Start on the opposite side so a successful no-op cannot satisfy the
+        // enabled-state readback and be recorded as a live state transition.
+        "gateway:gateway.mcp.disable" | "gateway:gateway.mcp.enable" => Some((
+            "gateway.update",
+            serde_json::json!({
+                "name": "matrix-owned",
+                "patch": {"enabled": intent.action.ends_with("disable")}
+            }),
+        )),
         "setup:draft.commit" => Some((
             "draft.set",
             serde_json::json!({"entries": [{
@@ -437,6 +507,26 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
         intent.key(),
         result_text(&result)
     );
+    if matches!(
+        intent.action.as_str(),
+        "gateway.mcp.disable" | "gateway.mcp.enable"
+    ) {
+        let before = runner
+            .call(
+                "gateway",
+                "gateway.get",
+                serde_json::Map::from_iter([("name".into(), serde_json::json!("matrix-owned"))]),
+            )
+            .await
+            .expect("toggle prerequisite readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "gateway", "gateway.get");
+        assert_eq!(
+            before["config"]["enabled"],
+            intent.action.ends_with("disable"),
+            "toggle must start with the opposite persisted state"
+        );
+    }
 }
 
 #[test]

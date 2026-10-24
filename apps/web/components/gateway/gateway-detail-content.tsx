@@ -1388,6 +1388,7 @@ export function GatewayDetailContent({ gatewayId }: GatewayDetailContentProps) {
                   icon={FileText}
                   items={gateway.discovery.resources.map((resource) => ({
                     name: resource.name,
+                    selectionId: resource.uri,
                     description: resource.description,
                     secondary: resource.uri,
                     exposed: resource.exposed ?? false,

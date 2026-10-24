@@ -110,6 +110,10 @@ use super::{UpstreamConnection, UpstreamPool};
 mod task_pending;
 use task_pending::{PendingTaskBuffer, PendingTaskLimits};
 
+#[path = "relay_advisory_pending.rs"]
+mod advisory_pending;
+use advisory_pending::PendingAdvisories;
+
 const RELAY_ROUTE_CLEANUP_GRACE: Duration = Duration::from_secs(2);
 const CANCELLATION_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 const MAX_PENDING_PROGRESS_ROUTES: usize = 256;
@@ -131,7 +135,7 @@ struct RelayCancellationActivity {
 #[derive(Default)]
 struct RelayRequestRouteState {
     mappings: HashMap<RequestId, RelayRequestRoute>,
-    pending_cancellations: HashMap<RequestId, CancelledNotificationParam>,
+    pending_cancellations: PendingAdvisories<RequestId, CancelledNotificationParam>,
     cancellation_activity: HashMap<RequestId, RelayCancellationActivity>,
 }
 
@@ -149,7 +153,7 @@ enum RelayProgressRoute {
 #[derive(Default)]
 struct RelayProgressRouteState {
     mappings: HashMap<ProgressToken, RelayProgressRoute>,
-    pending: HashMap<ProgressToken, Vec<ProgressNotificationParam>>,
+    pending: PendingAdvisories<ProgressToken, ProgressNotificationParam>,
 }
 
 #[derive(Default)]
@@ -222,6 +226,7 @@ impl RelayRouteState {
             requests
                 .pending_cancellations
                 .remove(&upstream_request_id)
+                .and_then(|pending| pending.into_iter().next())
                 .map(|mut params| {
                     params.request_id = Some(downstream_request_id);
                     params
@@ -286,12 +291,12 @@ impl RelayRouteState {
             self.cancellation_notification_notify.notify_waiters();
             return Some((upstream_request_id, params));
         }
-        if requests.pending_cancellations.len() < MAX_PENDING_REQUEST_CANCELLATIONS {
-            requests
-                .pending_cancellations
-                .entry(upstream_request_id)
-                .or_insert(params);
-        }
+        requests.pending_cancellations.admit(
+            upstream_request_id,
+            params,
+            MAX_PENDING_REQUEST_CANCELLATIONS,
+            1,
+        );
         None
     }
 
@@ -386,15 +391,12 @@ impl RelayRouteState {
             }
             Some(RelayProgressRoute::Disabled) => None,
             Some(RelayProgressRoute::Activating(_)) | None => {
-                if let Some(pending) = progress.pending.get_mut(&upstream_progress_token) {
-                    if pending.len() < MAX_PENDING_PROGRESS_PER_ROUTE {
-                        pending.push(params);
-                    }
-                } else if progress.pending.len() < MAX_PENDING_PROGRESS_ROUTES {
-                    progress
-                        .pending
-                        .insert(upstream_progress_token, vec![params]);
-                }
+                progress.pending.admit(
+                    upstream_progress_token,
+                    params,
+                    MAX_PENDING_PROGRESS_ROUTES,
+                    MAX_PENDING_PROGRESS_PER_ROUTE,
+                );
                 None
             }
         }
@@ -2492,6 +2494,10 @@ impl UpstreamPool {
 #[cfg(test)]
 #[path = "relay_task_pending_tests.rs"]
 mod task_pending_tests;
+
+#[cfg(test)]
+#[path = "relay_advisory_retention_tests.rs"]
+mod advisory_retention_tests;
 
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)] // test fixtures construct upstream Tool values directly

@@ -234,6 +234,55 @@ pub fn snapshot_mtime(path: &Path) -> Option<SystemTime> {
     fs::metadata(path).ok().and_then(|m| m.modified().ok())
 }
 
+fn invalid_dotenv(path: &Path) -> MergeError {
+    MergeError::WriteFailed {
+        path: path.to_path_buf(),
+        reason: WriteFailReason::Other("cannot rewrite an invalid dotenv file".into()),
+    }
+}
+
+fn find_env_value<'a>(
+    values: &'a HashMap<String, String>,
+    key: &str,
+    case_insensitive: bool,
+) -> Option<&'a String> {
+    values.iter().find_map(|(name, value)| {
+        labby_runtime::helpers::environment_names_equal_with_case(name, key, case_insensitive)
+            .then_some(value)
+    })
+}
+
+fn collapse_request_entries(entries: &[EnvEntry], case_insensitive: bool) -> Vec<EnvEntry> {
+    let mut result: Vec<EnvEntry> = Vec::new();
+    for entry in entries {
+        if let Some(slot) = result.iter_mut().find(|existing| {
+            labby_runtime::helpers::environment_names_equal_with_case(
+                &existing.key,
+                &entry.key,
+                case_insensitive,
+            )
+        }) {
+            slot.value = entry.value.clone();
+            slot.force = entry.force;
+        } else {
+            result.push(entry.clone());
+        }
+    }
+    result
+}
+
+fn parse_env_assignments(path: &Path, raw: &str) -> Result<HashMap<String, String>, MergeError> {
+    let mut values: HashMap<String, String> = HashMap::new();
+    for entry in dotenvy::from_read_iter(raw.as_bytes()) {
+        let (key, value) = entry.map_err(|_| invalid_dotenv(path))?;
+        // dotenv loading preserves the first assignment of each name.
+        if find_env_value(&values, &key, cfg!(windows)).is_none() {
+            values.insert(key, value);
+        }
+    }
+    Ok(values)
+}
+
 /// Merge `req.entries` into `path`, writing atomically with backup + prune.
 /// Writers using this primitive are serialized through a sibling lock file.
 pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError> {
@@ -258,32 +307,11 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
         });
     }
 
-    let existing_lines: Vec<&str> = existing_raw.lines().collect();
-    let mut existing_map: HashMap<String, String> = HashMap::new();
-    for line in &existing_lines {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = trimmed.split_once('=') {
-            existing_map.insert(k.trim().to_owned(), strip_quotes(v.trim()).to_owned());
-        }
-    }
+    let existing_map = parse_env_assignments(path, &existing_raw)?;
 
     // Collapse duplicate request keys before comparing against existing state.
     // Last value wins, while the output order follows the first occurrence.
-    let mut request_entries: Vec<EnvEntry> = Vec::new();
-    for entry in &req.entries {
-        if let Some(slot) = request_entries
-            .iter_mut()
-            .find(|existing| existing.key == entry.key)
-        {
-            slot.value = entry.value.clone();
-            slot.force = entry.force;
-        } else {
-            request_entries.push(entry.clone());
-        }
-    }
+    let request_entries = collapse_request_entries(&req.entries, cfg!(windows));
 
     // Classify each final entry.
     let mut skipped: Vec<String> = Vec::new();
@@ -292,7 +320,7 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
     let mut written_count: usize = 0;
 
     for entry in &request_entries {
-        match existing_map.get(&entry.key) {
+        match find_env_value(&existing_map, &entry.key, cfg!(windows)) {
             None => {
                 new_keys.push((entry.key.clone(), entry.value.clone()));
                 written_count += 1;
@@ -328,35 +356,33 @@ pub fn merge(path: &Path, req: MergeRequest) -> Result<MergeOutcome, MergeError>
         None
     };
 
-    // Build output line-by-line.
-    let mut out_lines: Vec<String> = Vec::with_capacity(existing_lines.len() + new_keys.len() + 1);
-    for line in &existing_lines {
-        let trimmed = line.trim();
-        if !trimmed.is_empty()
-            && !trimmed.starts_with('#')
-            && let Some((k, _)) = trimmed.split_once('=')
-        {
-            let key = k.trim();
-            if let Some(new_val) = overrides.get(key) {
-                out_lines.push(format!("{key}={}", quote_value(new_val)));
-                continue;
+    // Rewrite logical assignments, preserving unrelated multiline values and
+    // comments byte-for-byte. The shared parser handles exports and duplicates.
+    let mut output = existing_raw;
+    for (key, value) in &overrides {
+        let assignment = format!("{key}={}", quote_value(value));
+        output = labby_runtime::dotenv::rewrite_key(&output, key, Some(&assignment))
+            .map_err(|_| invalid_dotenv(path))?;
+    }
+    if !new_keys.is_empty() {
+        if !output.is_empty() {
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            if !output.ends_with("\n\n") {
+                output.push('\n');
             }
         }
-        out_lines.push((*line).to_owned());
-    }
-
-    if !new_keys.is_empty() {
-        if !out_lines.last().is_none_or(|l| l.trim().is_empty()) {
-            out_lines.push(String::new());
-        }
         for (key, value) in &new_keys {
-            out_lines.push(format!("{key}={}", quote_value(value)));
+            let assignment = format!("{key}={}", quote_value(value));
+            output = labby_runtime::dotenv::rewrite_key(&output, key, Some(&assignment))
+                .map_err(|_| invalid_dotenv(path))?;
         }
     }
 
     // Atomic write.
     host_lock
-        .write(&(out_lines.join("\n") + "\n"))
+        .write(&output)
         .map_err(|error| MergeError::WriteFailed {
             path: path.to_path_buf(),
             reason: WriteFailReason::Other(error.to_string()),
@@ -442,33 +468,13 @@ pub fn preview(path: &Path, req: &MergeRequest) -> Result<MergePreview, MergeErr
         }
     };
 
-    let mut existing_map: HashMap<String, String> = HashMap::new();
-    for line in existing_raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = trimmed.split_once('=') {
-            existing_map.insert(k.trim().to_owned(), strip_quotes(v.trim()).to_owned());
-        }
-    }
+    let existing_map = parse_env_assignments(path, &existing_raw)?;
 
-    let mut request_entries: Vec<EnvEntry> = Vec::new();
-    for entry in &req.entries {
-        if let Some(slot) = request_entries
-            .iter_mut()
-            .find(|existing| existing.key == entry.key)
-        {
-            slot.value = entry.value.clone();
-            slot.force = entry.force;
-        } else {
-            request_entries.push(entry.clone());
-        }
-    }
+    let request_entries = collapse_request_entries(&req.entries, cfg!(windows));
 
     let mut preview = MergePreview::default();
     for entry in request_entries {
-        match existing_map.get(&entry.key) {
+        match find_env_value(&existing_map, &entry.key, cfg!(windows)) {
             None => {
                 preview.written += 1;
                 preview.changes.push(PreviewChange {
@@ -845,6 +851,89 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, contents).unwrap();
         path
+    }
+
+    #[test]
+    fn merge_preserves_multiline_values_and_exported_assignments() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let path = directory.path().join(".env");
+        let note = "NOTE=\"first\nTOKEN=embedded\nlast\"\n";
+        fs::write(&path, format!("{note}export TOKEN=old\nTOKEN=duplicate\n")).unwrap();
+        let request = MergeRequest {
+            entries: vec![EnvEntry::new("TOKEN", "new")],
+            force: true,
+            ..Default::default()
+        };
+        assert_eq!(merge(&path, request.clone()).unwrap().written, 1);
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.starts_with(note),
+            "unrelated multiline bytes changed: {raw:?}"
+        );
+        let values: Vec<_> = dotenvy::from_read_iter(raw.as_bytes())
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            values,
+            vec![
+                ("NOTE".into(), "first\nTOKEN=embedded\nlast".into()),
+                ("TOKEN".into(), "new".into())
+            ]
+        );
+        assert_eq!(merge(&path, request).unwrap().written, 0);
+        assert_eq!(fs::read_to_string(path).unwrap(), raw);
+    }
+
+    #[test]
+    fn merge_name_resolution_uses_explicit_platform_case_semantics() {
+        let values = HashMap::from([("Token".into(), "old".into())]);
+        assert_eq!(
+            find_env_value(&values, "TOKEN", true).map(String::as_str),
+            Some("old")
+        );
+        assert_eq!(find_env_value(&values, "TOKEN", false), None);
+        let entries = [
+            EnvEntry::new("Token", "first"),
+            EnvEntry::new("TOKEN", "last").force(),
+        ];
+        let windows = collapse_request_entries(&entries, true);
+        assert_eq!(windows.len(), 1);
+        assert_eq!(windows[0].value, "last");
+        assert!(windows[0].force);
+        assert_eq!(collapse_request_entries(&entries, false).len(), 2);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn merge_and_preview_use_windows_environment_name_equivalence() {
+        let directory = crate::access::test_support::secure_tempdir();
+        let path = directory.path().join(".env");
+        fs::write(&path, "Token=old\n").unwrap();
+        let mut request = MergeRequest {
+            entries: vec![EnvEntry::new("TOKEN", "new")],
+            ..Default::default()
+        };
+        assert!(matches!(
+            preview(&path, &request).unwrap().changes[0].status,
+            PreviewStatus::Conflict
+        ));
+        assert_eq!(merge(&path, request.clone()).unwrap().written, 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Token=old\n");
+        request.force = true;
+        assert_eq!(merge(&path, request).unwrap().written, 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "TOKEN=new\n");
+
+        fs::write(&path, "").unwrap();
+        let request = MergeRequest {
+            entries: vec![
+                EnvEntry::new("Token", "first"),
+                EnvEntry::new("TOKEN", "last"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(preview(&path, &request).unwrap().written, 1);
+        assert_eq!(merge(&path, request).unwrap().written, 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Token=last\n");
     }
 
     #[cfg(windows)]
