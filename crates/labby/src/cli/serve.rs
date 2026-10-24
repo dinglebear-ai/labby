@@ -2744,7 +2744,7 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
         .await
         .context("connect to live labby serve daemon for stdio bridging")?;
     let handler = BridgeServerHandler::new(service);
-    let running = handler.serve(rmcp::transport::stdio()).await?;
+    let running = handler.serve(rmcp::transport::stdio_pipes()).await?;
     tracing::info!(
         subsystem = "startup",
         phase = "ready",
@@ -2870,7 +2870,7 @@ fn run_stdio(
             #[cfg(test)]
             code_mode_widget_callbacks_enabled_for_test: false,
         };
-        let running = server.serve(rmcp::transport::stdio()).await;
+        let running = server.serve(rmcp::transport::stdio_pipes()).await;
         let server_result: Result<()> = match running {
             Ok(running) => {
                 tracing::info!(

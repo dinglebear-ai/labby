@@ -53,6 +53,43 @@ The bridge harness owns that task and aborts it when the fixture is dropped.
 The release tag establishes the SDK version; test results must come from the
 current candidate. Updating these pins does not certify full MCP compliance.
 
+## SDK 3.7 integration policies
+
+Initial OAuth sign-in uses explicit configured scopes when they are nonempty.
+Otherwise, Labby selects scopes from the resource challenge, then protected
+resource metadata. It does not use authorization-server-wide scopes as a
+fallback. Automatic selection rechecks resource metadata for each interactive
+sign-in, including when authorization-server metadata is cached. Shared Google
+credentials retain their required scope policy.
+
+A rejected refresh token removes only the credential generation used by that
+refresh. The callback queues runtime invalidation without waiting for the OAuth
+writer lock. At the next connection boundary, the existing invalidation
+coordinator removes the affected cached clients, peers, and task routes. A
+newer authorization makes an older queued rejection inapplicable. Shared Google
+credentials invalidate upstreams that use the same resolved provider account.
+
+Labby's tool cancellation guards remain necessary. The SDK convenience methods
+use best-effort cancellation delivery; Labby also requires bounded delivery,
+request isolation, and typed extension responses. Prompt and resource operations
+use the SDK cancellation behavior. Legacy handshake negotiation uses
+`ProtocolVersion::LATEST_WITH_INITIALIZE`; modern discovery selects its protocol
+version explicitly.
+
+The local stdio server and daemon bridge use `stdio_pipes`. On Linux, pipe-based
+clients use private non-blocking descriptors. Inherited standard-stream flags
+remain unchanged. Other supported stream types and platforms use the SDK fallback.
+Upstream stdio framing sets the SDK line limit to Labby's configured payload
+budget plus its framing newline, rather than the SDK's smaller default limit.
+
+Upstream HTTP clients follow only same-origin 307 and 308 redirects, with a
+maximum of ten redirects. A different scheme, host, or port, URL credentials,
+and redirect statuses that can rewrite POST requests are rejected. Request
+headers, POST bodies, and response-size enforcement remain in effect across
+accepted redirects. This policy preserves the configured upstream network
+boundary; it does not add DNS pinning or prohibit administrator-configured local
+network servers.
+
 ## Scope
 
 Labby has one MCP server product surface.

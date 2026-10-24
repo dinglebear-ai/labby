@@ -644,8 +644,9 @@ impl UpstreamPool {
                 // body deadline here would terminate long-lived SSE responses
                 // before the caller's configured budget expires.
                 .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
+                .redirect(super::http_client::same_origin_redirect_policy())
                 .build()
-                .unwrap_or_default(),
+                .expect("upstream HTTP client must build with redirect policy"),
         );
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {

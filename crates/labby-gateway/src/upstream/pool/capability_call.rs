@@ -92,8 +92,9 @@ where
         return Ok(RawCallOutcome::Timeout);
     }
 
-    // Dropping `rpc` on cancellation stops the local work. Capability futures
-    // that carry side effects upstream arm their own cancel-on-drop guard.
+    // Dropping `rpc` stops the local wait. Prompt/resource convenience methods
+    // use rmcp's best-effort drop guard; tool calls retain Labby's bounded
+    // cancellation delivery for remote side effects.
     // `biased` is load-bearing: `rpc` is lazy, so an already-cancelled caller
     // must win without the request ever reaching the wire.
     let rpc = tokio::time::timeout(rpc_remaining, rpc_future);

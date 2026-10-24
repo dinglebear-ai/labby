@@ -105,6 +105,36 @@ pub struct BodyCappedHttpClient {
     response_weight: u32,
 }
 
+/// Keep transport credentials and POST bodies on the configured origin.
+///
+/// Operator-configured local upstreams remain valid. This policy prevents
+/// redirects from changing that authority; it does not pin DNS resolution.
+pub(super) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    const MAX_REDIRECTS: usize = 10;
+    reqwest::redirect::Policy::custom(|attempt| {
+        let preserves_body = matches!(
+            attempt.status(),
+            reqwest::StatusCode::TEMPORARY_REDIRECT | reqwest::StatusCode::PERMANENT_REDIRECT
+        );
+        let target = attempt.url();
+        let same_origin = attempt
+            .previous()
+            .first()
+            .is_some_and(|original| original.origin() == target.origin());
+        if !preserves_body
+            || !same_origin
+            || !target.username().is_empty()
+            || target.password().is_some()
+        {
+            attempt.stop()
+        } else if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error("upstream HTTP redirect limit exceeded")
+        } else {
+            attempt.follow()
+        }
+    })
+}
+
 const COMPATIBILITY_MARKER_SCAN_BYTES: usize = 8 * 1024;
 
 fn sanitized_transport_error(status: reqwest::StatusCode, body: &[u8]) -> String {
@@ -902,9 +932,183 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
         let inner = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(5))
+            .redirect(same_origin_redirect_policy())
             .build()
             .expect("client");
         BodyCappedHttpClient::new(inner, max_bytes)
+    }
+
+    #[tokio::test]
+    async fn redirects_preserve_same_origin_post_and_reject_other_origins() {
+        for status in [307, 308] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/mcp"))
+                .respond_with(ResponseTemplate::new(status).insert_header("location", "/target"))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/target"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(
+                    r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#,
+                    "application/json",
+                ))
+                .mount(&server)
+                .await;
+            let result = build(1024)
+                .post_message(
+                    format!("{}/mcp", server.uri()).into(),
+                    jsonrpc_request(),
+                    Some(Arc::from("session-1")),
+                    Some("test-token".into()),
+                    HashMap::from([(
+                        HeaderName::from_static("x-api-key"),
+                        HeaderValue::from_static("private-key"),
+                    )]),
+                )
+                .await;
+            assert!(result.is_ok(), "same-origin {status}: {result:?}");
+            let requests = server.received_requests().await.expect("requests");
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].body, requests[1].body);
+            assert_eq!(
+                requests[1].headers.get("authorization").expect("auth"),
+                "Bearer test-token"
+            );
+            assert_eq!(
+                requests[1]
+                    .headers
+                    .get("x-api-key")
+                    .expect("custom credential"),
+                "private-key"
+            );
+            assert_eq!(
+                requests[1].headers.get("mcp-session-id").expect("session"),
+                "session-1"
+            );
+            assert_eq!(
+                requests[0].headers.get("mcp-method"),
+                requests[1].headers.get("mcp-method")
+            );
+        }
+        let target = MockServer::start().await;
+        let source = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{}/capture", target.uri())),
+            )
+            .mount(&source)
+            .await;
+        let _result = build(1024)
+            .post_message(
+                source.uri().into(),
+                jsonrpc_request(),
+                None,
+                Some("test-token".into()),
+                HashMap::from([(
+                    HeaderName::from_static("x-api-key"),
+                    HeaderValue::from_static("private-key"),
+                )]),
+            )
+            .await;
+        assert!(
+            target
+                .received_requests()
+                .await
+                .expect("requests")
+                .is_empty(),
+            "cross-origin redirect must not receive a request or custom credentials"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirects_do_not_rewrite_posts_and_keep_response_limits() {
+        for status in [301, 302, 303] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/mcp"))
+                .respond_with(ResponseTemplate::new(status).insert_header("location", "/target"))
+                .mount(&server)
+                .await;
+            let _result = build(1024)
+                .post_message(
+                    format!("{}/mcp", server.uri()).into(),
+                    jsonrpc_request(),
+                    None,
+                    None,
+                    HashMap::new(),
+                )
+                .await;
+            assert_eq!(
+                server.received_requests().await.expect("requests").len(),
+                1,
+                "must not follow method-rewriting {status}"
+            );
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(308).insert_header("location", "/target"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/target"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("x".repeat(128), "application/json"),
+            )
+            .mount(&server)
+            .await;
+        let error = build(64)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect_err("response cap");
+        assert!(error.to_string().contains("response_too_large"));
+    }
+
+    #[tokio::test]
+    async fn redirects_reject_url_credentials_and_bound_loops() {
+        let server = MockServer::start().await;
+        let credential_target = server.uri().replacen("http://", "http://user:password@", 1);
+        Mock::given(path("/credentials"))
+            .respond_with(
+                ResponseTemplate::new(307)
+                    .insert_header("location", format!("{credential_target}/target")),
+            )
+            .mount(&server)
+            .await;
+        let _result = build(1024)
+            .post_message(
+                format!("{}/credentials", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await;
+        assert_eq!(server.received_requests().await.expect("requests").len(), 1);
+        Mock::given(path("/loop"))
+            .respond_with(ResponseTemplate::new(308).insert_header("location", "/loop"))
+            .mount(&server)
+            .await;
+        let error = build(1024)
+            .post_message(
+                format!("{}/loop", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+            .expect_err("bounded loop");
+        assert!(matches!(error, StreamableHttpError::Client(error) if error.is_redirect()));
+        assert!(server.received_requests().await.expect("requests").len() <= 12);
     }
 
     #[test]

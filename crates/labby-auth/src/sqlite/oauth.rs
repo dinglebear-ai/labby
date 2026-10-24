@@ -40,6 +40,28 @@ impl SqliteStore {
         .await
     }
 
+    /// Remove only the exact encrypted credential used by a rejected refresh.
+    /// A newer authorization has different ciphertext and remains unchanged.
+    pub async fn delete_upstream_oauth_credentials_if_current(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+        expected_blob: Vec<u8>,
+    ) -> Result<bool, AuthError> {
+        let upstream_name = upstream_name.to_string();
+        let subject = subject.to_string();
+        self.with_conn(move |conn| {
+            conn.execute(
+                "DELETE FROM upstream_oauth_credentials
+                 WHERE upstream_name = ?1 AND subject = ?2 AND token_blob = ?3",
+                params![upstream_name, subject, expected_blob],
+            )
+            .map(|changed| changed == 1)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     pub async fn upsert_upstream_oauth_credentials(
         &self,
         row: UpstreamOauthCredentialRow,

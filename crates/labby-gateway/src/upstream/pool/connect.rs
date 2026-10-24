@@ -933,6 +933,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         drop(rustls::crypto::ring::default_provider().install_default());
         reqwest::Client::builder()
             .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
+            .redirect(http_client::same_origin_redirect_policy())
             .build()?
     };
 

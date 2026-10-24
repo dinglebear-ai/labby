@@ -55,6 +55,7 @@ pub struct SqliteCredentialStore {
     // rmcp serializes a client's load/refresh/save through its manager mutex.
     // Separate managers retain independent observations of the durable row.
     loaded_blob: std::sync::Mutex<Option<Vec<u8>>>,
+    refresh_rejection_handler: Option<super::manager::OauthRefreshRejectionHandler>,
 }
 
 impl SqliteCredentialStore {
@@ -70,7 +71,17 @@ impl SqliteCredentialStore {
             upstream_name: upstream_name.into(),
             subject: subject.into(),
             loaded_blob: std::sync::Mutex::new(None),
+            refresh_rejection_handler: None,
         }
+    }
+    /// Notify the host only when this adapter removes a rejected generation.
+    #[must_use]
+    pub fn with_refresh_rejection_handler(
+        mut self,
+        handler: super::manager::OauthRefreshRejectionHandler,
+    ) -> Self {
+        self.refresh_rejection_handler = Some(handler);
+        self
     }
 }
 
@@ -204,6 +215,42 @@ impl CredentialStore for SqliteCredentialStore {
                 .delete_upstream_oauth_credentials(&self.upstream_name, &self.subject)
                 .await
                 .map_err(|e| AuthError::InternalError(e.to_string()))
+        })
+    }
+
+    fn on_refresh_token_rejected<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _credentials: &'life1 StoredCredentials,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let expected = self
+                .loaded_blob
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            let Some(expected) = expected else {
+                return Ok(());
+            };
+            let invalidated = self
+                .store
+                .delete_upstream_oauth_credentials_if_current(
+                    &self.upstream_name,
+                    &self.subject,
+                    expected,
+                )
+                .await
+                .map_err(|_| {
+                    AuthError::CredentialStoreError("remove rejected upstream credential".into())
+                })?;
+            if invalidated && let Some(handler) = &self.refresh_rejection_handler {
+                handler(None);
+            }
+            Ok(())
         })
     }
 

@@ -95,6 +95,11 @@ impl AuthClientTransport {
     }
 }
 
+/// Synchronous notification after a rejected credential generation is removed.
+/// `Some` contains the actual shared Google subject; dedicated credentials use
+/// `None`. The handler must not block or acquire the gateway lifecycle writer.
+pub type OauthRefreshRejectionHandler = Arc<dyn Fn(Option<String>) + Send + Sync>;
+
 /// Upstream OAuth manager for a single upstream MCP server.
 ///
 /// Cheap to clone — all mutable state is behind `Arc`.
@@ -110,6 +115,7 @@ pub struct UpstreamOauthManager {
     refresh_failures: Arc<RefreshFailureCache>,
     /// Cached AS metadata (fetched once per upstream, shared across subjects).
     metadata_cache: Arc<RwLock<Option<AuthorizationMetadata>>>,
+    refresh_rejection_handler: Option<OauthRefreshRejectionHandler>,
 }
 
 impl UpstreamOauthManager {
@@ -132,7 +138,28 @@ impl UpstreamOauthManager {
             locks: Arc::new(RefreshLocks::new()),
             refresh_failures: Arc::new(RefreshFailureCache::new()),
             metadata_cache: Arc::new(RwLock::new(None)),
+            refresh_rejection_handler: None,
         }
+    }
+
+    /// Install a non-blocking notification for a successful refresh rejection CAS.
+    #[must_use]
+    pub fn with_refresh_rejection_handler(mut self, handler: OauthRefreshRejectionHandler) -> Self {
+        self.refresh_rejection_handler = Some(handler);
+        self
+    }
+
+    /// Resolve the actual shared Google subject selected for this upstream.
+    /// Dedicated credentials and a missing shared credential return `None`.
+    pub async fn google_provider_subject(&self) -> Result<Option<String>, OauthError> {
+        if !self.oauth_config()?.credential.is_google_provider() {
+            return Ok(None);
+        }
+        Ok(self
+            .google_credential_store(vec![])?
+            .credential_row()
+            .await?
+            .map(|row| row.subject))
     }
 
     /// Return the `UpstreamConfig` this manager was constructed with.
@@ -226,13 +253,13 @@ impl UpstreamOauthManager {
         subject: &str,
     ) -> Result<BeginAuthorization, OauthError> {
         let started = std::time::Instant::now();
-        let scopes_owned = self.effective_scopes()?;
+        let mut scopes_owned = self.effective_scopes()?;
+        let select_initial_scopes = scopes_owned.is_empty();
         if self.oauth_config()?.credential.is_google_provider() {
             self.google_credential_store(scopes_owned.clone())?
                 .authorization_preflight()
                 .await?;
         }
-        let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
         let upstream_url = self.upstream_url()?;
 
         let mut manager = authorization_manager_for_upstream(upstream_url.as_str())
@@ -253,7 +280,7 @@ impl UpstreamOauthManager {
         manager.set_state_store(state_store);
 
         let metadata = self
-            .get_or_discover_metadata(&mut manager)
+            .get_or_discover_metadata(&mut manager, select_initial_scopes)
             .await
             .map_err(|e| {
                 tracing::warn!(
@@ -283,6 +310,10 @@ impl UpstreamOauthManager {
             );
         })?;
         manager.set_metadata(metadata);
+        if select_initial_scopes {
+            scopes_owned = manager.select_initial_scopes(&[]).await;
+        }
+        let scopes: Vec<&str> = scopes_owned.iter().map(String::as_str).collect();
 
         let client_cfg = self
             .resolve_client_config(
@@ -949,7 +980,7 @@ impl UpstreamOauthManager {
         let state_store = SqliteStateStore::new(self.sqlite.clone(), &self.upstream.name, subject);
         manager.set_state_store(state_store);
 
-        let metadata = self.get_or_discover_metadata(&mut manager).await?;
+        let metadata = self.get_or_discover_metadata(&mut manager, false).await?;
         self.verify_google_provider_issuer(&metadata)?;
         Self::verify_s256(&metadata.code_challenge_methods_supported)?;
         manager.set_metadata(metadata);
@@ -1046,16 +1077,23 @@ impl UpstreamOauthManager {
     ) -> Result<Option<GoogleProviderCredentialStore>, OauthError> {
         match &self.oauth_config()?.credential {
             UpstreamOauthCredentialSource::Dedicated => {
-                manager.set_credential_store(SqliteCredentialStore::new(
+                let mut store = SqliteCredentialStore::new(
                     self.sqlite.clone(),
                     self.key.clone(),
                     &self.upstream.name,
                     subject,
-                ));
+                );
+                if let Some(handler) = &self.refresh_rejection_handler {
+                    store = store.with_refresh_rejection_handler(Arc::clone(handler));
+                }
+                manager.set_credential_store(store);
                 Ok(None)
             }
             UpstreamOauthCredentialSource::GoogleProvider { .. } => {
-                let store = self.google_credential_store(required_scopes)?;
+                let mut store = self.google_credential_store(required_scopes)?;
+                if let Some(handler) = &self.refresh_rejection_handler {
+                    store = store.with_refresh_rejection_handler(Arc::clone(handler));
+                }
                 manager.set_credential_store(store.clone());
                 Ok(Some(store))
             }
@@ -1261,9 +1299,12 @@ impl UpstreamOauthManager {
     async fn get_or_discover_metadata(
         &self,
         manager: &mut AuthorizationManager,
+        initial_scope_selection: bool,
     ) -> Result<AuthorizationMetadata, OauthError> {
         let mut cache = self.metadata_cache.write().await;
-        if let Some(meta) = cache.clone() {
+        // Resource challenge and metadata scope hints belong to this rmcp
+        // manager. AS metadata alone cannot restore them on a cached login.
+        if !initial_scope_selection && let Some(meta) = cache.clone() {
             return Ok(meta);
         }
 
@@ -1293,6 +1334,20 @@ impl UpstreamOauthManager {
         }
 
         self.verify_issuer_binding(&metadata)?;
+        if cache.as_ref().is_some_and(|cached| {
+            cached
+                .issuer
+                .as_deref()
+                .map(|issuer| issuer.trim_end_matches('/'))
+                != metadata
+                    .issuer
+                    .as_deref()
+                    .map(|issuer| issuer.trim_end_matches('/'))
+        }) {
+            return Err(OauthError::IssuerMismatch(
+                "authorization issuer changed during initial scope discovery".to_string(),
+            ));
+        }
 
         *cache = Some(metadata.clone());
         Ok(metadata)

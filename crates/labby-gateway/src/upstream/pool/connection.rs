@@ -260,6 +260,7 @@ impl UpstreamPool {
         capability: UpstreamCapability,
         requested_operation: &'static str,
     ) -> Option<rmcp::service::Peer<rmcp::RoleClient>> {
+        self.drain_oauth_client_capacity_evictions().await;
         let acquire_started = Instant::now();
         tracing::debug!(
             surface = "dispatch",

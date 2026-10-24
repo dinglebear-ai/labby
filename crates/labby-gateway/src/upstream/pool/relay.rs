@@ -2164,6 +2164,7 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        self.drain_oauth_client_capacity_evictions().await;
         self.acquire_or_connect_relay_guarded(config, subject, downstream, session_id, capabilities)
             .await
     }
@@ -4533,6 +4534,33 @@ mod tests {
     /// that subject while preserving other subjects and unauthenticated peers.
     /// This catches an invalidation path that only evicts `OauthClientCache` or
     /// the ordinary subject-connection cache.
+    #[tokio::test]
+    async fn rejected_refresh_boundary_detaches_matching_relay_only() {
+        let clients =
+            labby_auth::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
+        let pool = UpstreamPool::new().with_oauth_client_cache(clients.clone());
+        let (alice, _alice_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (bob, _bob_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        pool.relay_connections
+            .write()
+            .await
+            .insert(relay_cache_key("up", 1, Some("alice")), alice);
+        pool.relay_connections
+            .write()
+            .await
+            .insert(relay_cache_key("up", 2, Some("bob")), bob);
+        let config = super::super::testsupport::named_test_upstream_config("up");
+        let rejected = clients
+            .refresh_rejection_handler(&config, "alice")
+            .await
+            .expect("rejection handler");
+        rejected(None);
+        pool.drain_oauth_client_capacity_evictions().await;
+        let peers = pool.relay_connections.read().await;
+        assert!(!peers.contains_key(&relay_cache_key("up", 1, Some("alice"))));
+        assert!(peers.contains_key(&relay_cache_key("up", 2, Some("bob"))));
+    }
+
     #[tokio::test]
     async fn oauth_subject_invalidation_evicts_only_matching_relay_peers() {
         let pool = UpstreamPool::new();

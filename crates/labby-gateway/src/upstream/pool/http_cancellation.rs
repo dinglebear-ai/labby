@@ -182,8 +182,9 @@ impl HttpCancellationSender {
     }
 }
 
-/// Build the side channel for transports where rmcp does not transmit a
-/// cancelled notification when its local request handle is closed.
+/// Build the side channel for relays that require HTTP cancellation delivery
+/// and cancellation-token acknowledgement. Dropping a low-level rmcp request
+/// handle does not provide either guarantee.
 pub(super) async fn build_http_cancellation_sender(
     config: &UpstreamConfig,
     subject: Option<&str>,
@@ -245,6 +246,7 @@ pub(super) async fn build_http_cancellation_sender(
                     drop(rustls::crypto::ring::default_provider().install_default());
                     reqwest::Client::builder()
                         .timeout(DEFAULT_REQUEST_TIMEOUT)
+                        .redirect(http_client::same_origin_redirect_policy())
                         .build()?
                 }
             };
