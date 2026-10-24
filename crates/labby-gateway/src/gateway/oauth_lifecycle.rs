@@ -838,7 +838,16 @@ impl GatewayManager {
                 .is_some_and(|row| row.access_token_expires_at - now <= 300)
         {
             refresh_attempted = true;
-            match manager.refresh_auth_client_if_due(subject).await {
+            let refresh_manager = match &self.oauth_client_cache {
+                Some(cache) => manager.clone().with_refresh_rejection_handler(
+                    cache
+                        .refresh_rejection_handler(manager.upstream_config(), subject)
+                        .await
+                        .map_err(tool_error_from_oauth)?,
+                ),
+                None => manager.clone(),
+            };
+            match refresh_manager.refresh_auth_client_if_due(subject).await {
                 Ok(did_refresh) => {
                     refreshed = did_refresh;
                     if did_refresh {
@@ -897,8 +906,25 @@ impl GatewayManager {
                         elapsed_ms = started.elapsed().as_millis(),
                         "upstream oauth status: proactive refresh failed"
                     );
+                    row = manager.credential_row(subject).await.map_err(|error| {
+                        tracing::warn!(
+                            service = "upstream_oauth",
+                            action = "status",
+                            upstream,
+                            kind = error.kind(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "upstream oauth status: credential lookup after refresh rejection failed"
+                        );
+                        tool_error_from_oauth(error)
+                    })?;
                 }
             }
+        }
+
+        // The refresh callback only queues successful credential invalidations.
+        // Drain outside all publication readers before returning status.
+        if let Some(pool) = self.current_pool_sync() {
+            pool.drain_oauth_client_capacity_evictions().await;
         }
 
         let (access_token_expires_at, seconds_until_expiry, refresh_token_present) = row

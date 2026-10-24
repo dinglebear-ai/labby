@@ -23,7 +23,7 @@ impl OAuthSessionInvalidation {
 }
 
 impl UpstreamPool {
-    pub(super) async fn drain_oauth_client_capacity_evictions(&self) {
+    pub(crate) async fn drain_oauth_client_capacity_evictions(&self) {
         let Some(cache) = &self.oauth_client_cache else {
             return;
         };

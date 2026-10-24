@@ -142,6 +142,7 @@ impl UpstreamPool {
         ),
         String,
     > {
+        self.drain_oauth_client_capacity_evictions().await;
         let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
         let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
             tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
