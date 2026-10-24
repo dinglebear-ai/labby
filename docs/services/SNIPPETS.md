@@ -40,6 +40,13 @@ still cannot use nested snippet resolution to widen their authority.
 
 Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Promotion and removal are destructive actions.
 
+The native MCP `snippets` router remains visible when Code Mode is enabled.
+Use its `help` and `schema` actions to discover the shared operation catalog,
+then call the selected action directly with `action` and `params`. This exposes
+the CLI's snippet operations without a local shell or SSH connection. Native
+calls preserve the original caller and route authority; privileged operations
+still require `lab:admin`.
+
 Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a promoted user snippet may replace a built-in name.
 
 ## Inputs And Concurrent Edits

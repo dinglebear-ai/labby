@@ -2510,6 +2510,133 @@ async fn list_tools_keeps_server_logs_visible_when_code_mode_hides_raw_tools() {
 }
 
 #[tokio::test]
+async fn code_mode_snippets_router_preserves_cli_discovery_and_contract() {
+    let server = test_server(
+        crate::registry::build_default_registry(),
+        Some(code_mode_manager(true).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let result = running
+        .service()
+        .list_tools_impl(None, context.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        result.tools, contract,
+        "wire discovery and notification descriptors must agree"
+    );
+    assert!(
+        result.tools.iter().any(|tool| tool.name == "snippets"),
+        "snippet management must stay discoverable while Code Mode hides raw tools"
+    );
+
+    let mut request = CallToolRequestParams::new("snippets");
+    request.arguments = Some(
+        serde_json::json!({"action": "help"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    let response = Box::pin(running.service().call_tool_impl(request, context))
+        .await
+        .unwrap();
+    assert!(!response.is_error.unwrap_or(false), "{response:?}");
+    let catalog = &response.structured_content.as_ref().unwrap()["data"]["actions"];
+    for action in [
+        "snippets.list",
+        "snippets.get",
+        "snippets.exec",
+        "snippets.create",
+        "snippets.validate",
+        "snippets.remove",
+        "snippets.test",
+        "snippets.fixture",
+    ] {
+        assert!(
+            catalog
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|spec| spec["name"] == action),
+            "missing CLI operation {action}: {catalog}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn code_mode_snippets_router_keeps_admin_validation_and_denies_non_admins() {
+    for (transport_label, scopes) in [
+        ("http", Some(&["lab:admin"][..])),
+        ("http", Some(&["lab"][..])),
+        ("http", Some(&["lab:read"][..])),
+        ("http", Some(&[][..])),
+        // Internal peers carry no HTTP authentication and must never gain
+        // trusted-local authority merely because their transport is local.
+        (
+            crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL,
+            None,
+        ),
+    ] {
+        let mut server = test_server(
+            crate::registry::build_default_registry(),
+            Some(code_mode_manager(true).await),
+            crate::mcp::route_scope::McpRouteScope::Root,
+            crate::mcp::logging::LoggingLevel::Emergency,
+        );
+        server.transport_label = transport_label;
+        let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let mut request = CallToolRequestParams::new("snippets");
+        request.arguments = Some(
+            serde_json::json!({
+                "action": "snippets.validate",
+                "params": {"name": "parity-check", "body": "async () => ({ ok: true })"}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        );
+        let context = match scopes {
+            Some(scopes) => scoped_context(running.peer().clone(), scopes),
+            None => request_context_with_peer(running.peer().clone()),
+        };
+        let response = Box::pin(running.service().call_tool_impl(request, context))
+            .await
+            .unwrap();
+        let text = serde_json::to_string(&response).unwrap();
+        if scopes.is_some_and(|scopes| scopes.contains(&"lab:admin")) {
+            assert!(!response.is_error.unwrap_or(false), "{text}");
+            assert_eq!(
+                response.structured_content.as_ref().unwrap()["data"]["valid"],
+                true
+            );
+        } else {
+            assert!(
+                response.is_error.unwrap_or(false),
+                "{transport_label} {scopes:?}: {text}"
+            );
+            assert!(
+                text.contains("forbidden"),
+                "admin authority must remain required: {text}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn list_tools_advertises_add_server_app_only_to_admins() {
     let server = test_server(
         crate::registry::build_default_registry(),
