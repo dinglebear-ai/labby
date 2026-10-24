@@ -68,7 +68,7 @@ async fn actual_stdio_http_bridge_lists_and_calls_fixture_tool_with_saved_auth()
     use axum::{Json, Router, routing::get};
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, ListToolsResult, PaginatedRequestParams,
-        ServerCapabilities, ServerInfo,
+        ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::transport::streamable_http_server::{
@@ -80,8 +80,8 @@ async fn actual_stdio_http_bridge_lists_and_calls_fixture_tool_with_saved_auth()
     #[derive(Clone)]
     struct Fixture;
     impl ServerHandler for Fixture {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
         async fn list_tools(
             &self,

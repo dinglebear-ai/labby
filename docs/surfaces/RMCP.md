@@ -1,7 +1,7 @@
 ---
 title: "RMCP"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-10-23"
 ---
 
 # RMCP
@@ -18,9 +18,40 @@ It is the source of truth for:
 
 This document is normative for future work even where the codebase is still converging.
 
-The reproducible production rmcp Git revision, pinned upstream rmcp `3.3.0`
+The reproducible production rmcp Git revision, pinned upstream rmcp `3.7.0`
 conformance fixture, and MCP `2026-07-28` validation matrix are
 documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
+
+## Fork compatibility
+
+Labby uses `dinglebear-ai/rust-sdk`, based on upstream `rmcp-v3.7.0`
+(`5d6a11f2ae022f513aec0f6e0f10f89a57891a7f`). Both the workspace and
+`labby-auth` pin the same fork revision. The auth dependency retains its
+client-only feature set.
+
+The 3.7.0 source comparison retains these fork changes:
+
+| Behavior | Upstream 3.7.0 | Fork policy |
+|---|---|---|
+| Typed extension results | No `Peer::send_request_as` API; core result decoding can discard extension fields | Preserve raw results until the requested type decodes them, across HTTP, SSE, stdio, and Unix sockets |
+| Unix-socket response bodies | JSON and error bodies are collected without a configurable byte limit | Retain `with_max_response_bytes` and enforce it before buffering beyond the limit |
+| Origin validation | Malformed-header status and explicit default-port matching are fixed; duplicate headers and portless wildcard matching still need changes | Reject duplicate headers and non-origin URL components; portless entries match the scheme default, while explicit `:*` entries allow any port |
+
+Upstream's Origin fixes are [PR #1192](https://github.com/modelcontextprotocol/rust-sdk/pull/1192)
+and [PR #1270](https://github.com/modelcontextprotocol/rust-sdk/pull/1270).
+The fork keeps upstream's newer lifecycle, cancellation, header, redirect, and
+OAuth changes when applying the remaining compatibility patches. Handler
+configuration uses `ServerConfig` and `ClientConfig`, replacing the deprecated
+`ServerInfo` and `ClientInfo` aliases.
+
+Discovery remains bootstrap-neutral after [upstream PR #1248](https://github.com/modelcontextprotocol/rust-sdk/pull/1248).
+A modern client can finish `server/discover` before the server's `serve()`
+returns. In-process fixtures must retain the server task independently and let
+the client send its first application request before waiting for server startup.
+The bridge harness owns that task and aborts it when the fixture is dropped.
+
+The release tag establishes the SDK version; test results must come from the
+current candidate. Updating these pins does not certify full MCP compliance.
 
 ## Scope
 

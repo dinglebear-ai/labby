@@ -104,8 +104,8 @@ async fn code_mode_resource_discovery_uses_callers_oauth_connection() {
     #[derive(Clone)]
     struct Resources(&'static str);
     impl rmcp::ServerHandler for Resources {
-        fn get_info(&self) -> rmcp::model::ServerInfo {
-            rmcp::model::ServerInfo::new(
+        fn get_info(&self) -> rmcp::model::ServerConfig {
+            rmcp::model::ServerConfig::new(
                 rmcp::model::ServerCapabilities::builder()
                     .enable_resources()
                     .build(),

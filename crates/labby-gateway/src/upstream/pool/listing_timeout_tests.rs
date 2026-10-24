@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use rmcp::model::{
     ErrorData, ListPromptsResult, ListResourceTemplatesResult, PaginatedRequestParams, Prompt,
-    ResourceTemplate, ServerCapabilities, ServerInfo,
+    ResourceTemplate, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -27,8 +27,8 @@ use super::testsupport::*;
 struct SlowListServer;
 
 impl ServerHandler for SlowListServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_resources()
                 .enable_prompts()

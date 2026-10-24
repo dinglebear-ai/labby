@@ -96,7 +96,7 @@ async fn query_search_returns_first_page_matches_before_provider_deadline() {
     }
 
     impl ServerHandler for SlowSecondPage {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             self.inner.get_info()
         }
 
@@ -234,7 +234,7 @@ async fn concurrent_cold_previews_share_the_completed_traversal() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ServerHandler for GatedServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             self.inner.get_info()
         }
 
@@ -296,7 +296,7 @@ async fn concurrent_expired_previews_share_the_completed_traversal() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ServerHandler for GateSecondList {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             self.inner.get_info()
         }
 
@@ -518,7 +518,7 @@ async fn bounded_discovery_rejects_an_invalidated_in_flight_preview() {
         release: Arc<tokio::sync::Notify>,
     }
     impl ServerHandler for GatedServer {
-        fn get_info(&self) -> ServerInfo {
+        fn get_info(&self) -> ServerConfig {
             self.inner.get_info()
         }
         async fn on_custom_request(

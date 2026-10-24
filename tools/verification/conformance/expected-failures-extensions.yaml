@@ -6,7 +6,7 @@
 # - an unlisted failure fails the build
 # - a listed scenario that starts passing fails as a stale entry
 #
-# RMCP 3.1.0 passes every dated server and client scenario plus the supported
+# RMCP 3.7.0 passes every dated server and client scenario plus the supported
 # client-credentials extensions. The entries below are optional outbound
 # authorization extensions that the pinned RMCP conformance client does not
 # implement. They do not describe Labby's inbound authorization server, which

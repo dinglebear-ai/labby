@@ -6,7 +6,7 @@ struct GetReleasesList {
     get_started: Arc<tokio::sync::Notify>,
 }
 impl ServerHandler for GetReleasesList {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         self.inner.get_info()
     }
     async fn on_custom_request(
@@ -67,7 +67,7 @@ struct GatedGet {
     release: Arc<tokio::sync::Notify>,
 }
 impl ServerHandler for GatedGet {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         self.inner.get_info()
     }
     async fn on_custom_request(

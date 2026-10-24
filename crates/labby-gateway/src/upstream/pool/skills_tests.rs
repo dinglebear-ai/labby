@@ -26,7 +26,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use rmcp::model::{
-    CustomRequest, CustomResult, ErrorCode, ErrorData, ServerCapabilities, ServerInfo,
+    CustomRequest, CustomResult, ErrorCode, ErrorData, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -194,7 +194,7 @@ impl SkillsServer {
 }
 
 impl ServerHandler for SkillsServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::builder().enable_tools().build();
         if self.declares_extension {
             let mut extensions = rmcp::model::ExtensionCapabilities::new();
@@ -204,7 +204,7 @@ impl ServerHandler for SkillsServer {
             );
             capabilities.extensions = Some(extensions);
         }
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
     }
 
     async fn read_resource(

@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-08-30"
+updated: "2026-10-23"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -32,13 +32,13 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.3.0`, Git revision `b19cfc03025047153fa283c0064c651b6e2f623e` |
-| rmcp conformance fixture | stock upstream `3.3.0` |
-| rmcp fixture tag commit | `3e636cab26c013eca5131103c03d20237f12c4df` |
+| Labby rmcp dependency | fork `3.7.0`, Git revision `ec6d9c8024045dd352bb1b98513d82c45fe3d141` |
+| rmcp conformance fixture | stock upstream `3.7.0` |
+| rmcp fixture tag commit | `5d6a11f2ae022f513aec0f6e0f10f89a57891a7f` |
 | MCP conformance package | `0.2.0-alpha.10` |
 
 The stock upstream fixture and Labby's fork are intentionally distinct pins.
-The 3.3.0 fixture does not read `STATELESS`; its default legacy-session support
+The 3.7.0 fixture does not read `STATELESS`; its default legacy-session support
 is not evidence for Labby's stateless HTTP boundary. The real-product HTTP
 oracles separately exercise Labby's request-scoped cancellation and validation.
 
@@ -347,5 +347,5 @@ Primary references:
 - <https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization>
 - <https://developers.openai.com/plugins/build/auth>
 - <https://developers.openai.com/plugins/reference>
-- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.3.0>
+- <https://github.com/modelcontextprotocol/rust-sdk/releases/tag/rmcp-v3.7.0>
 - <https://github.com/modelcontextprotocol/conformance>

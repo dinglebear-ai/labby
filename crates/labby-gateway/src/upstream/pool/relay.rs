@@ -57,7 +57,7 @@ use futures::future::BoxFuture;
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
-    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
+    ClientCapabilities, ClientConfig, ClientRequest, CustomNotification, GetPromptRequest,
     GetPromptRequestParams, GetPromptResponse, Implementation, ProgressNotificationParam,
     ProgressToken, ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
     RequestMetaObject, ResourceUpdatedNotificationParam, ServerNotification, ServerResult,
@@ -673,8 +673,8 @@ impl ClientHandler for RelayClientHandler {
     /// Advertise the exact capability snapshot from the current downstream
     /// request. Anything the caller did not declare for this request is not
     /// claimed on its behalf.
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.client_info = Implementation::new("labby-bridge", env!("CARGO_PKG_VERSION"));
         info.capabilities = self.capabilities.clone();
         info
@@ -2481,7 +2481,7 @@ mod tests {
         GetPromptResponse, Implementation, InputRequest, InputRequests, InputRequiredResult,
         PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-        ServerInfo, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
+        ServerConfig, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
         TaskStatusNotificationParams,
     };
     use rmcp::service::ClientLifecycleMode;
@@ -2872,8 +2872,8 @@ mod tests {
     struct CapableAgent;
 
     impl ClientHandler for CapableAgent {
-        fn get_info(&self) -> ClientInfo {
-            let mut info = ClientInfo::default();
+        fn get_info(&self) -> ClientConfig {
+            let mut info = ClientConfig::default();
             info.capabilities = relay_test_capabilities();
             info
         }
@@ -2885,8 +2885,8 @@ mod tests {
     struct TrivialServer;
 
     impl ServerHandler for TrivialServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::default()
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::default()
         }
     }
 
@@ -2898,8 +2898,8 @@ mod tests {
     }
 
     impl ClientHandler for RecordingAgent {
-        fn get_info(&self) -> ClientInfo {
-            let mut info = ClientInfo::default();
+        fn get_info(&self) -> ClientConfig {
+            let mut info = ClientConfig::default();
             info.capabilities = ClientCapabilities::builder()
                 .enable_elicitation()
                 .enable_tasks()
@@ -3130,8 +3130,8 @@ mod tests {
         }
 
         impl ServerHandler for HeaderMismatchUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -3212,8 +3212,8 @@ mod tests {
         }
 
         impl ServerHandler for SlowHeaderRefreshUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -3333,8 +3333,8 @@ mod tests {
     struct ProgressCancelUpstream;
 
     impl ServerHandler for ProgressCancelUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -3373,8 +3373,8 @@ mod tests {
     }
 
     impl ServerHandler for CancellationAwareUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -3393,8 +3393,8 @@ mod tests {
     struct TaskNotificationUpstream;
 
     impl ServerHandler for TaskNotificationUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tasks()
@@ -3685,8 +3685,8 @@ mod tests {
     struct ElicitingUpstream;
 
     impl ServerHandler for ElicitingUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_prompts()
@@ -4675,8 +4675,8 @@ mod tests {
         #[derive(Clone)]
         struct FailingUpstream;
         impl ServerHandler for FailingUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn call_tool(
                 &self,
@@ -4818,8 +4818,8 @@ mod tests {
         #[derive(Clone)]
         struct OversizedUpstream;
         impl ServerHandler for OversizedUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn call_tool(
                 &self,

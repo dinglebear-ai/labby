@@ -22,7 +22,7 @@ use rmcp::model::{
     InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, RequestMetaObject, ServerCapabilities,
-    ServerInfo, SubscriptionFilter, UpdateTaskParams,
+    ServerConfig, SubscriptionFilter, UpdateTaskParams,
 };
 use rmcp::service::{NotificationContext, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -527,9 +527,9 @@ impl LabMcpServer {
 /// for legacy sessions only.
 ///
 /// Extracted from `initialize` so it can be unit tested against a fabricated
-/// `ServerInfo` without standing up a gateway manager (the flag is
+/// `ServerConfig` without standing up a gateway manager (the flag is
 /// gateway-conditional in `get_info`).
-fn withhold_legacy_unusable_capabilities(info: &mut ServerInfo) {
+fn withhold_legacy_unusable_capabilities(info: &mut ServerConfig) {
     if let Some(resources) = info.capabilities.resources.as_mut() {
         resources.subscribe = None;
     }
@@ -571,7 +571,7 @@ impl ServerHandler for LabMcpServer {
     }
 
     #[allow(deprecated)]
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         #[cfg(feature = "gateway")]
         let gateway_manager_configured = self.gateway_manager.is_some();
         #[cfg(not(feature = "gateway"))]
@@ -605,7 +605,7 @@ impl ServerHandler for LabMcpServer {
         let capabilities = builder.build();
         #[cfg(not(feature = "gateway"))]
         let capabilities = builder.build();
-        let mut info = ServerInfo::new(capabilities);
+        let mut info = ServerConfig::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         // A pointer, not skill content. It reaches clients that never parse the
         // capability map, which is the population most likely to miss an
@@ -1105,8 +1105,9 @@ mod tests {
     use super::verify_upstream_subject_resolution_support;
     use super::{
         LabMcpServer, MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
-        ServerCapabilities, ServerInfo, cancel_tracked_request_by_token, request_cancellation_key,
-        restore_request_meta, track_request_cancellation, withhold_legacy_unusable_capabilities,
+        ServerCapabilities, ServerConfig, cancel_tracked_request_by_token,
+        request_cancellation_key, restore_request_meta, track_request_cancellation,
+        withhold_legacy_unusable_capabilities,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
@@ -1150,7 +1151,7 @@ mod tests {
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
         );
-        running.peer().set_peer_info(rmcp::model::ClientInfo::new(
+        running.peer().set_peer_info(rmcp::model::ClientConfig::new(
             rmcp::model::ClientCapabilities::default(),
             rmcp::model::Implementation::new("legacy-client", "1"),
         ));
@@ -1445,7 +1446,7 @@ mod tests {
             .enable_resources_list_changed()
             .enable_resources_subscribe()
             .build();
-        let mut info = ServerInfo::new(capabilities);
+        let mut info = ServerConfig::new(capabilities);
         assert_eq!(
             info.capabilities
                 .resources
@@ -1481,7 +1482,7 @@ mod tests {
     /// `--no-default-features` the gateway-conditional branch never runs.
     #[test]
     fn withholding_is_safe_when_no_resource_capability_is_advertised() {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         withhold_legacy_unusable_capabilities(&mut info);
         assert!(info.capabilities.resources.is_none());
         assert!(

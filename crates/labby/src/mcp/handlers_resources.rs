@@ -2982,7 +2982,7 @@ mod tests {
     use rmcp::model::{
         ArgumentInfo, CompleteRequestParams, CompleteResult, CompletionInfo,
         ListResourceTemplatesResult, ListResourcesResult, Reference, ResourceTemplate,
-        ServerCapabilities, ServerInfo, Tool,
+        ServerCapabilities, ServerConfig, Tool,
     };
     use rmcp::service::{Peer, RequestContext};
     use rmcp::{RoleClient, ServerHandler, ServiceExt};
@@ -3008,8 +3008,8 @@ mod tests {
     }
 
     impl ServerHandler for ColdResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_resources()
@@ -3615,8 +3615,8 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
     struct UpstreamUiResourceServer;
 
     impl ServerHandler for UpstreamUiResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_resources()
                     .enable_completions()

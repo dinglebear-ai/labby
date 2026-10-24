@@ -606,7 +606,7 @@ mod tests {
         BooleanSchema, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
         CreateTaskResult, ElicitRequest, ElicitRequestParams, ElicitationSchema, InputRequest,
         InputRequests, InputRequiredResult, PrimitiveSchemaDefinition, ServerCapabilities,
-        ServerInfo, Task, TaskStatus, Tool,
+        ServerConfig, Task, TaskStatus, Tool,
     };
     use rmcp::model::{ErrorCode, ErrorData};
     use rmcp::service::RequestContext;
@@ -767,8 +767,8 @@ mod tests {
     }
 
     impl ServerHandler for EchoToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -801,8 +801,8 @@ mod tests {
     }
 
     impl ServerHandler for DelayedToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -827,8 +827,8 @@ mod tests {
     }
 
     impl ServerHandler for TerminalVariantToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -849,8 +849,8 @@ mod tests {
     }
 
     impl ServerHandler for McpErrorToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -1201,8 +1201,8 @@ mod tests {
     }
     #[cfg(feature = "tailcat")]
     impl ServerHandler for CleanupToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
         async fn call_tool(
             &self,

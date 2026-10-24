@@ -8,7 +8,7 @@ use futures::future::BoxFuture;
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult, ClientCapabilities,
-    ClientInfo, ClientRequest, ElicitRequestParams, ElicitResult, ElicitationAction,
+    ClientConfig, ClientRequest, ElicitRequestParams, ElicitResult, ElicitationAction,
     ElicitationCapability, FormElicitationCapability, Implementation, PaginatedRequestParams,
     ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, Tool,
 };
@@ -61,7 +61,7 @@ impl Default for QualificationClient {
 }
 
 impl ClientHandler for QualificationClient {
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         let capabilities = if self.supports_elicitation {
             ClientCapabilities::builder()
                 .enable_elicitation_with(
@@ -71,7 +71,7 @@ impl ClientHandler for QualificationClient {
         } else {
             ClientCapabilities::default()
         };
-        ClientInfo::new(
+        ClientConfig::new(
             capabilities,
             Implementation::new("labby-q1-qualification", "1"),
         )

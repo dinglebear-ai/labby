@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo, ElicitRequestParams,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ElicitRequestParams,
     ElicitResult, ElicitationAction, ElicitationCapability, ElicitationSchema,
     FormElicitationCapability, Implementation, PaginatedRequestParams, PrimitiveSchemaDefinition,
     ProtocolVersion,
@@ -54,8 +54,8 @@ impl ExactDestructiveConfirmationClient {
 }
 
 impl ClientHandler for ExactDestructiveConfirmationClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::new(
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
             ClientCapabilities::builder()
                 .enable_elicitation_with(
                     ElicitationCapability::new().with_form(FormElicitationCapability::new()),

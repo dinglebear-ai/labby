@@ -8,13 +8,13 @@ use axum::Router;
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams, ClientCapabilities,
-    ClientInfo, CompleteRequestParams, CompleteResult, CompletionInfo, ContentBlock,
+    ClientConfig, CompleteRequestParams, CompleteResult, CompletionInfo, ContentBlock,
     CreateTaskResult, DetailedTask, ErrorCode, ErrorData, GetPromptRequestParams,
     GetPromptResponse, GetPromptResult, GetTaskParams, GetTaskResult, Implementation,
     ListPromptsResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
     PaginatedRequestParams, ProgressNotificationParam, Prompt, PromptMessage, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerInfo, Task, TaskPayload,
+    ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerConfig, Task, TaskPayload,
     TaskStatus, Tool, UpdateTaskParams,
 };
 use rmcp::service::{
@@ -48,8 +48,8 @@ pub(crate) struct PrimitiveClient {
 }
 
 impl ClientHandler for PrimitiveClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::new(
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
             ClientCapabilities::builder().enable_tasks().build(),
             Implementation::new("labby-q1-primitives", "1"),
         )
@@ -162,7 +162,7 @@ impl FixtureServer {
 }
 
 impl ServerHandler for FixtureServer {
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let capabilities = match self.mode {
             FixtureMode::Normal => ServerCapabilities::builder()
                 .enable_tools()
@@ -178,7 +178,7 @@ impl ServerHandler for FixtureServer {
                 ServerCapabilities::builder().enable_resources().build()
             }
         };
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
     }
 
     async fn list_tools(

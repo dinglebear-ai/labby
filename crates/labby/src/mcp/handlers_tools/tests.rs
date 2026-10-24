@@ -3368,8 +3368,8 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
 struct ColdSubsetUpstream;
 
 impl ServerHandler for ColdSubsetUpstream {
-    fn get_info(&self) -> rmcp::model::ServerInfo {
-        rmcp::model::ServerInfo::new(
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        rmcp::model::ServerConfig::new(
             rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .build(),

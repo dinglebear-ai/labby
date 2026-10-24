@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Verify Labby's production rmcp pin, then run the independent upstream
-# stock rmcp 3.3.0 fixture against the 2026-07-28 dated protocol, Labby-native
+# stock rmcp 3.7.0 fixture against the 2026-07-28 dated protocol, Labby-native
 # multi-hop proxying, the direct stdio proxy probe, and the separately scored
 # extension suite.
 #
@@ -37,10 +37,10 @@ if [[ $# -ne 0 ]]; then
 fi
 
 LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
-LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-b19cfc03025047153fa283c0064c651b6e2f623e}"
-RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.3.0}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-ec6d9c8024045dd352bb1b98513d82c45fe3d141}"
+RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.7.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
-RMCP_COMMIT="${RMCP_COMMIT:-3e636cab26c013eca5131103c03d20237f12c4df}"
+RMCP_COMMIT="${RMCP_COMMIT:-5d6a11f2ae022f513aec0f6e0f10f89a57891a7f}"
 MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.10}"
 MCP_SPEC_VERSION="${MCP_SPEC_VERSION:-2026-07-28}"
 MCP_CONFORMANCE_PORT="${MCP_CONFORMANCE_PORT:-18002}"

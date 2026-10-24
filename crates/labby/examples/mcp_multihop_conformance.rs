@@ -19,7 +19,7 @@ use anyhow::{Context, Result, ensure};
 use labby::config::{GatewayPreferences, LabConfig, UpstreamConfig};
 use rmcp::model::{
     ArgumentInfo, CallToolRequest, CallToolRequestParams, CallToolResponse, CallToolResult,
-    CancelTaskParams, ClientCapabilities, ClientInfo, ClientRequest, CompleteRequestParams,
+    CancelTaskParams, ClientCapabilities, ClientConfig, ClientRequest, CompleteRequestParams,
     CompleteResult, CompletionInfo, ContentBlock, CreateTaskResult, DetailedTask, ElicitRequest,
     ElicitRequestParams, ElicitationSchema, ErrorData, GetPromptRequestParams, GetPromptResponse,
     GetPromptResult, GetTaskParams, GetTaskResult, Implementation, InputRequest, InputRequests,
@@ -28,7 +28,7 @@ use rmcp::model::{
     PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam, Prompt,
     PromptMessage, ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse,
     ReadResourceResult, Reference, Resource, ResourceContents, ResourceTemplate, Role,
-    ServerCapabilities, ServerInfo, ServerNotification, ServerResult, SubscriptionFilter, Task,
+    ServerCapabilities, ServerConfig, ServerNotification, ServerResult, SubscriptionFilter, Task,
     TaskPayload, TaskStatus, TaskStatusNotification, TaskStatusNotificationParams, Tool,
     ToolAnnotations, UpdateTaskParams,
 };
@@ -137,8 +137,8 @@ fn input_required() -> InputRequiredResult {
 }
 
 impl ServerHandler for LeafServer {
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        let mut info = ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
@@ -536,8 +536,8 @@ struct DriverClient {
 }
 
 impl ClientHandler for DriverClient {
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.client_info = Implementation::new("labby-multihop-conformance", "1.0.0");
         info.capabilities = ClientCapabilities::builder()
             .enable_elicitation()
