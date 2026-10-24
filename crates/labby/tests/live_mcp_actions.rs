@@ -544,13 +544,42 @@ async fn code_mode_hides_raw_service_tools_without_testing_code_mode_primitives(
             BTreeSet::from([
                 "gateway".to_string(),
                 "server_logs".to_string(),
+                "snippets".to_string(),
                 "stash".to_string(),
             ])
         } else {
-            BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
+            BTreeSet::from([
+                "gateway".to_string(),
+                "server_logs".to_string(),
+                "snippets".to_string(),
+            ])
         }
     );
     assert!(advertised.contains("codemode"));
+    let validated = runner
+        .call(
+            "snippets",
+            "snippets.validate",
+            serde_json::json!({
+                "name": "native-mcp-parity",
+                "body": "async () => ({ ok: true })"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .await
+        .expect("native snippet validation over HTTP MCP");
+    assert_ne!(
+        validated.is_error,
+        Some(true),
+        "{}",
+        result_text(&validated)
+    );
+    assert_eq!(
+        validated.structured_content.as_ref().unwrap()["data"]["valid"],
+        true
+    );
     let hidden = runner
         .call("doctor", "help", serde_json::Map::new())
         .await

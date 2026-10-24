@@ -86,7 +86,7 @@ pub(crate) fn native_router_visible(
     native_stash_caller: bool,
 ) -> bool {
     !visibility.hides_raw_tools()
-        || matches!(service, "gateway" | SERVER_LOGS_TOOL_NAME)
+        || matches!(service, "gateway" | "snippets" | SERVER_LOGS_TOOL_NAME)
         || (service == "stash" && native_stash_caller)
 }
 
