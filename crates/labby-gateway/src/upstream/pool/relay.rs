@@ -3449,7 +3449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_translates_progress_and_cancelled_notification_ids() {
+    async fn relay_translates_progress_and_ignores_non_subscription_cancellation() {
         let agent = RecordingAgent::default();
         let capabilities = agent.get_info().capabilities;
         let (pool, config, downstream_server) =
@@ -3496,27 +3496,26 @@ mod tests {
             )
             .await
             .expect("cached relay exists");
+        // Modern servers can cancel listen subscriptions, not ordinary tool
+        // calls. rmcp ignores this unsolicited cancellation before dispatching
+        // notifications to the relay handler (upstream PR #1262).
         assert!(
-            matches!(result, Err(ref error) if error.to_string().contains("upstream cancelled")),
-            "upstream cancellation should terminate the relayed request: {result:?}"
+            matches!(result, Ok(CallToolResponse::Complete(_))),
+            "non-subscription cancellation must not terminate the tool call: {result:?}"
         );
         tokio::time::timeout(
             RELAY_ROUTE_CLEANUP_GRACE + Duration::from_secs(1),
             routes.wait_for_relay_watcher_finish_after(watcher_sequence),
         )
         .await
-        .expect("cancelled response retires its detached relay watcher after bounded grace");
+        .expect("completed response retires its detached relay watcher after bounded grace");
 
         wait_for_recorded_count(&agent.progress, 1).await;
-        wait_for_recorded_count(&agent.cancellations, 1).await;
         assert_eq!(
             agent.progress.lock().await[0].progress_token,
             downstream_progress_token
         );
-        assert_eq!(
-            agent.cancellations.lock().await[0].request_id,
-            Some(downstream_request_id)
-        );
+        assert!(agent.cancellations.lock().await.is_empty());
     }
 
     #[tokio::test]
