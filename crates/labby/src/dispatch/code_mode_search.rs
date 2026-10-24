@@ -31,6 +31,12 @@ enum DepotSearchRequest {
     Artifacts(String, &'static str, CodeModeCatalogKind),
 }
 
+#[derive(Debug)]
+struct DepotSearchBucket {
+    entries: Vec<CatalogDescriptor>,
+    failure: Option<ToolError>,
+}
+
 const DEPOT_SEARCH_CONCURRENCY: usize = 4;
 const DEPOT_ADMISSION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
 const DEPOT_REQUEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
@@ -248,6 +254,7 @@ impl ProductCodeModeArtifactSearchProvider {
         scope: &ToolScope,
         config: &CodeModeSearchConfig,
         depot_providers: &[(String, String)],
+        progress: Option<&std::sync::Mutex<Option<ArtifactSearchResult>>>,
     ) -> Result<ArtifactSearchResult, ToolError> {
         let Some(context) = Self::personal_skill_context(caller, scope) else {
             return Ok(ArtifactSearchResult::default());
@@ -255,7 +262,15 @@ impl ProductCodeModeArtifactSearchProvider {
         let context = context
             .without_depot_skill_upstreams(depot_providers, &config.depot_skill_upstreams)
             .await;
-        let listing = search_visible_skills_bounded(&context, query, limit).await;
+        let listing = search_visible_skills_bounded(&context, query, limit, |listing| {
+            if let Some(progress) = progress {
+                *progress
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(Self::project_skill_listing(listing, limit));
+            }
+        })
+        .await;
         Ok(Self::project_skill_listing(listing, limit))
     }
 
@@ -452,11 +467,14 @@ impl ProductCodeModeArtifactSearchProvider {
                                 .search_skills(query, usize::from(page_limit), &admission)
                                 .await
                             {
-                                Ok(value) => Ok(project_depot_skill_search(
-                                    &provider_id,
-                                    value,
-                                    usize::from(page_limit),
-                                )),
+                                Ok(value) => Ok(DepotSearchBucket {
+                                    entries: project_depot_skill_search(
+                                        &provider_id,
+                                        value,
+                                        usize::from(page_limit),
+                                    ),
+                                    failure: None,
+                                }),
                                 Err(error) => {
                                     tracing::warn!(
                                         surface = surface.tag(),
@@ -464,7 +482,27 @@ impl ProductCodeModeArtifactSearchProvider {
                                         error = %error,
                                         "Code Mode Depot Skill index search degraded"
                                     );
-                                    Err(search_error("upstream_error", "Depot Skill search failed"))
+                                    let provider_kind =
+                                        crate::dispatch::depot::discovery::failure_kind(error);
+                                    let kind = if provider_kind == "pending" {
+                                        "capacity"
+                                    } else {
+                                        provider_kind
+                                    };
+                                    Err(ToolError::contract(
+                                        kind,
+                                        "Depot Skill search failed",
+                                        serde_json::Map::from_iter([
+                                            ("providerId".into(), serde_json::json!(provider_id)),
+                                            (
+                                                "providerFailure".into(),
+                                                serde_json::json!(provider_kind),
+                                            ),
+                                        ]),
+                                        None,
+                                        None,
+                                        None,
+                                    ))
                                 }
                             }
                         } else {
@@ -505,14 +543,31 @@ impl ProductCodeModeArtifactSearchProvider {
             })
             .collect();
         let mut request_buckets = Vec::new();
+        let mut failures = Vec::new();
         let mut failed = 0usize;
         let mut incomplete_sources = BTreeSet::new();
         let (completed, pending) =
             bounded_ordered_until(request_futures, DEPOT_REQUEST_DEADLINE).await;
         for (_, (source, bucket)) in completed {
             match bucket {
-                Ok(bucket) => request_buckets.push((source, bucket)),
-                Err(_) => {
+                Ok(bucket) => {
+                    if let Some(error) = bucket.failure {
+                        tracing::warn!(surface = surface.tag(), error = %error, "Code Mode Depot search bucket was incomplete");
+                        failures.push(error);
+                        failed += 1;
+                        incomplete_sources.insert(
+                            if groups[source].iter().any(|id| id == PUBLIC_ID) {
+                                "public_depot".to_owned()
+                            } else {
+                                "team_depot".to_owned()
+                            },
+                        );
+                    }
+                    request_buckets.push((source, bucket.entries));
+                }
+                Err(error) => {
+                    tracing::warn!(surface = surface.tag(), error = %error, "Code Mode Depot search bucket failed");
+                    failures.push(error);
                     failed += 1;
                     incomplete_sources.insert(if groups[source].iter().any(|id| id == PUBLIC_ID) {
                         "public_depot".to_owned()
@@ -533,6 +588,10 @@ impl ProductCodeModeArtifactSearchProvider {
         for index in pending {
             let source = request_sources[index];
             failed += 1;
+            failures.push(search_error(
+                "timeout",
+                "Depot search bucket exceeded the request deadline",
+            ));
             incomplete_sources.insert(if groups[source].iter().any(|id| id == PUBLIC_ID) {
                 "public_depot".to_owned()
             } else {
@@ -540,9 +599,9 @@ impl ProductCodeModeArtifactSearchProvider {
             });
         }
         if request_buckets.is_empty() && failed > 0 {
-            return Err(search_error(
-                "upstream_error",
+            return Err(aggregate_search_errors(
                 "all Depot search providers failed",
+                failures,
             ));
         }
         if failed > 0 {
@@ -570,7 +629,7 @@ impl ProductCodeModeArtifactSearchProvider {
     ) -> Result<ArtifactSearchResult, ToolError> {
         let providers =
             authorized_depot_providers(&self.depot.snapshot(), &config.sources, caller).await;
-        self.personal_skills_with_providers(query, limit, caller, scope, config, &providers)
+        self.personal_skills_with_providers(query, limit, caller, scope, config, &providers, None)
             .await
     }
 
@@ -635,6 +694,8 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
             } else {
                 Vec::new()
             };
+            // Request-local progress never escapes the captured caller context.
+            let skill_progress = std::sync::Mutex::new(None);
             let search_personal_skills = async {
                 if !config
                     .sources
@@ -650,7 +711,15 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let result = self
-                    .personal_skills_with_providers(query, limit, caller, scope, config, providers)
+                    .personal_skills_with_providers(
+                        query,
+                        limit,
+                        caller,
+                        scope,
+                        config,
+                        providers,
+                        Some(&skill_progress),
+                    )
                     .await;
                 tracing::debug!(
                     surface = surface.tag(),
@@ -770,7 +839,16 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
             if !ready_skills.is_empty() {
                 personal_buckets.push(ready_skills);
             }
+            if personal_skills.is_err()
+                && let Some(ready) = skill_progress
+                    .into_inner()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                && !ready.entries.is_empty()
+            {
+                personal_buckets.push(ready.entries);
+            }
             let mut incomplete_sources = Vec::new();
+            let mut failures = Vec::new();
             match personal_skills {
                 Ok(Some(result)) => {
                     personal_buckets.push(result.entries);
@@ -779,6 +857,7 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(surface = surface.tag(), source = "personal_labby", error = %error, "Code Mode artifact source search degraded");
+                    failures.push(error);
                     incomplete_sources.push("personal_labby".to_owned());
                 }
             }
@@ -790,6 +869,7 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(surface = surface.tag(), source = "personal_labby_artifacts", error = %error, "Code Mode personal Artifact store search degraded");
+                    failures.push(error);
                     incomplete_sources.push("personal_labby".to_owned());
                 }
             }
@@ -804,6 +884,7 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
                 Ok(None) => {}
                 Err(error) => {
                     tracing::warn!(surface = surface.tag(), source = "depot", error = %error, "Code Mode artifact source search degraded");
+                    failures.push(error);
                     if config.sources.contains(&CodeModeSearchSource::PublicDepot) {
                         incomplete_sources.push("public_depot".to_owned());
                     }
@@ -813,9 +894,9 @@ impl CodeModeArtifactSearchProvider for ProductCodeModeArtifactSearchProvider {
                 }
             }
             if source_buckets.is_empty() && !incomplete_sources.is_empty() {
-                return Err(search_error(
-                    "upstream_error",
+                return Err(aggregate_search_errors(
                     "all configured artifact search sources failed",
+                    failures,
                 ));
             }
             incomplete_sources.sort();
@@ -835,16 +916,36 @@ fn search_error(kind: &str, message: &str) -> ToolError {
     }
 }
 
+fn aggregate_search_errors(message: &str, errors: Vec<ToolError>) -> ToolError {
+    let kind = errors
+        .first()
+        .filter(|first| errors.iter().all(|error| error.kind() == first.kind()))
+        .map_or("upstream_error", ToolError::kind)
+        .to_owned();
+    ToolError::contract(
+        kind,
+        message,
+        serde_json::Map::from_iter([("causes".into(), serde_json::json!(errors))]),
+        None,
+        None,
+        None,
+    )
+}
+
 fn project_depot_artifact_search(
     response: crate::dispatch::depot::discovery::DiscoveryResponse,
     kind: CodeModeCatalogKind,
-) -> Result<Vec<CatalogDescriptor>, ToolError> {
+) -> Result<DepotSearchBucket, ToolError> {
+    let entries = response
+        .items
+        .into_iter()
+        .filter_map(|item| depot_descriptor(item, kind))
+        .collect::<Vec<_>>();
     if response.coverage_complete {
-        return Ok(response
-            .items
-            .into_iter()
-            .filter_map(|item| depot_descriptor(item, kind))
-            .collect());
+        return Ok(DepotSearchBucket {
+            entries,
+            failure: None,
+        });
     }
     // A provider need not implement every optional kind (notably all three
     // Subagent aliases). Unsupported kinds are an empty bucket, not an outage.
@@ -854,12 +955,52 @@ fn project_depot_artifact_search(
             .iter()
             .all(|failure| failure.kind == "unsupported_kind")
     {
-        return Ok(Vec::new());
+        return Ok(DepotSearchBucket {
+            entries,
+            failure: None,
+        });
     }
-    Err(search_error(
-        "upstream_error",
+    let pending_kind = if response
+        .provider_outcomes
+        .iter()
+        .any(|provider| provider.state == "pending")
+    {
+        "capacity"
+    } else {
+        "upstream_error"
+    };
+    let failure_kind = response
+        .failures
+        .first()
+        .filter(|first| {
+            response
+                .failures
+                .iter()
+                .all(|failure| failure.kind == first.kind)
+        })
+        .map_or(pending_kind, |failure| failure.kind.as_str());
+    let error = ToolError::contract(
+        failure_kind,
         "Depot artifact search was incomplete",
-    ))
+        serde_json::Map::from_iter([
+            ("failures".into(), serde_json::json!(response.failures)),
+            (
+                "providerOutcomes".into(),
+                serde_json::json!(response.provider_outcomes),
+            ),
+        ]),
+        None,
+        None,
+        None,
+    );
+    if entries.is_empty() {
+        Err(error)
+    } else {
+        Ok(DepotSearchBucket {
+            entries,
+            failure: Some(error),
+        })
+    }
 }
 
 fn fair_merge(mut buckets: Vec<Vec<CatalogDescriptor>>, limit: usize) -> Vec<CatalogDescriptor> {
@@ -1429,6 +1570,166 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "proxy-testkit")]
+    async fn ready_remote_skill_survives_a_stalled_sibling() {
+        use crate::skills::aggregate::ToolAccess;
+        use crate::skills::facade::{
+            SkillCallerScope, SkillRegistryContext, register_code_mode_skill_context,
+        };
+        use labby_gateway::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+        use labby_gateway::upstream::pool::UpstreamPool;
+        use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let runtime = GatewayRuntimeHandle::default();
+        let pool = Arc::new(UpstreamPool::new());
+        let body = "---\nname: remote-needle\ndescription: remote needle skill\n---\n";
+        let uri = "skill://native/remote-needle/SKILL.md";
+        let skill = serde_json::json!({"uri":uri,"frontmatter":{"name":"remote-needle","description":"remote needle skill"},"resources":[{"uri":uri,"digest":labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes()).to_wire(),"size":body.len()}]});
+        pool.insert_scripted_skills_server_for_tests(
+            "fast",
+            serde_json::json!({"resultType":"complete","skills":[skill.clone()]}),
+            skill,
+            std::collections::HashMap::from([(uri.to_owned(), body.to_owned())]),
+        )
+        .await;
+        runtime.swap(Some(pool)).await;
+        let temp = tempfile::tempdir().unwrap();
+        let manager = Arc::new(GatewayManager::new(
+            temp.path().join("config.toml"),
+            runtime,
+        ));
+        let mut upstreams = vec![
+            serde_json::from_value(
+                serde_json::json!({"name":"fast","command":"true","proxy_skills":true}),
+            )
+            .unwrap(),
+        ];
+        // More than the eight active slots: queued siblings must not erase
+        // the already completed provider's result at the grace deadline.
+        for index in 0..9 {
+            let upstream: UpstreamConfig = serde_json::from_value(serde_json::json!({
+                "name":format!("stalled-{index}"), "url":format!("http://{address}/mcp"), "proxy_skills":true
+            })).unwrap();
+            upstreams.push(upstream);
+        }
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                upstream: upstreams,
+                ..Default::default()
+            })
+            .await;
+        let guard = register_code_mode_skill_context(SkillRegistryContext::with_manager(
+            manager,
+            SkillCallerScope::root(Some("reader".into()), ToolAccess::CodeModeOnly),
+        ));
+        let caller = CodeModeCaller::ScopedSkills {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                ..Default::default()
+            },
+            sub: Some("reader".into()),
+            skill_context_token: guard.token().into(),
+        };
+        let provider = ProductCodeModeArtifactSearchProvider {
+            depot: Arc::new(Manager::new(
+                &crate::config::depot::DepotPreferences {
+                    public_enabled: false,
+                    ..Default::default()
+                },
+                Default::default(),
+                Default::default(),
+            )),
+            artifacts: Arc::new(ArtifactStore::new(temp.path().join("artifacts")).unwrap()),
+        };
+        let config = CodeModeSearchConfig {
+            sources: [
+                CodeModeSearchSource::PersonalLabby,
+                CodeModeSearchSource::PublicDepot,
+            ]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            provider.search(
+                "remote-needle",
+                5,
+                &[CodeModeCatalogKind::Skill],
+                &config,
+                &caller,
+                CodeModeSurface::Mcp,
+                &ToolScope::default(),
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            result
+                .entries
+                .iter()
+                .any(|entry| entry.name == "remote-needle"),
+            "a healthy completed remote Skill must survive an unrelated stalled upstream"
+        );
+        assert!(result.incomplete_sources.contains(&"personal_labby".into()));
+
+        // Exercise the shorter post-hit grace with the same real remote SEP
+        // federation and the production join, using a ready indexed result.
+        let progress = std::sync::Mutex::new(None);
+        let scope = ToolScope::default();
+        let skills = async {
+            provider
+                .personal_skills_with_providers(
+                    "remote-needle",
+                    5,
+                    &caller,
+                    &scope,
+                    &config,
+                    &[],
+                    Some(&progress),
+                )
+                .await
+                .map(Some)
+        };
+        let depot = async {
+            Ok(Some(ArtifactSearchResult {
+                entries: vec![CatalogDescriptor::metadata(
+                    CodeModeCatalogKind::Skill,
+                    "public",
+                    "depot::public::target",
+                    "target",
+                    "",
+                    Vec::new(),
+                )],
+                incomplete_sources: Vec::new(),
+            }))
+        };
+        let (skills, _, depot) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            join_search_sources(skills, async { Ok(None) }, depot),
+        )
+        .await
+        .unwrap();
+        assert!(
+            skills.is_err(),
+            "unfinished siblings must report incomplete search"
+        );
+        assert_eq!(depot.unwrap().unwrap().entries.len(), 1);
+        assert!(
+            progress
+                .into_inner()
+                .unwrap()
+                .unwrap()
+                .entries
+                .iter()
+                .any(|entry| entry.name == "remote-needle")
+        );
+    }
+
+    #[tokio::test]
     async fn non_artifact_kinds_skip_personal_store_access() {
         let temp = tempfile::tempdir().unwrap();
         let artifacts = ArtifactStore::new(temp.path().join("store")).unwrap();
@@ -1499,7 +1800,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn depot_search_keeps_public_results_when_team_index_fails() {
+    async fn depot_search_preserves_team_failure_and_keeps_public_results() {
         use axum::{
             Json, Router,
             http::{HeaderMap, StatusCode},
@@ -1557,6 +1858,22 @@ mod tests {
             depot: Arc::new(Manager::new(&preferences, secrets, Default::default())),
             artifacts: Arc::new(ArtifactStore::new(temp.path().join("artifacts")).unwrap()),
         };
+        let error = provider
+            .search(
+                "deep",
+                5,
+                &[CodeModeCatalogKind::Skill],
+                &CodeModeSearchConfig {
+                    sources: [CodeModeSearchSource::TeamDepot].into_iter().collect(),
+                    ..Default::default()
+                },
+                &CodeModeCaller::TrustedLocal,
+                CodeModeSurface::Cli,
+                &ToolScope::default(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "unavailable");
         let results = provider
             .depot_artifacts(
                 "deep",
@@ -1823,6 +2140,70 @@ mod tests {
     }
 
     #[test]
+    fn pending_depot_discovery_is_capacity_incomplete() {
+        let response = serde_json::from_value(serde_json::json!({
+            "schemaVersion": "1", "scope": "public", "scopeEpoch": "epoch",
+            "items": [], "providerOutcomes": [{"providerId": "public", "state": "pending"}],
+            "failures": [], "coverageComplete": false, "knownTotal": null,
+            "totalIsExact": false, "state": "deferred", "nextCursor": null
+        }))
+        .unwrap();
+        let error =
+            project_depot_artifact_search(response, CodeModeCatalogKind::Prompt).unwrap_err();
+        assert_eq!(error.kind(), "capacity");
+    }
+
+    #[test]
+    fn partial_depot_artifact_search_keeps_successful_provider_matches() {
+        let response = serde_json::from_value(serde_json::json!({
+            "schemaVersion": "1", "scope": "team", "scopeEpoch": "epoch",
+            "items": [{"providerId": "team-a", "artifactId": "found", "name": "found-prompt"}],
+            "providerOutcomes": [
+                {"providerId": "team-a", "state": "exhausted"},
+                {"providerId": "team-b", "state": "failed"}
+            ],
+            "failures": [{"providerId": "team-b", "kind": "unauthorized"}],
+            "coverageComplete": false, "knownTotal": 1, "totalIsExact": false,
+            "state": "partial", "nextCursor": null
+        }))
+        .unwrap();
+        let projected =
+            project_depot_artifact_search(response, CodeModeCatalogKind::Prompt).unwrap();
+        assert_eq!(projected.entries.len(), 1);
+        assert_eq!(projected.entries[0].name, "found-prompt");
+        assert_eq!(projected.failure.unwrap().kind(), "unauthorized");
+    }
+
+    #[test]
+    fn depot_artifact_failure_preserves_provider_classification() {
+        for kind in [
+            "unauthorized",
+            "configuration",
+            "incompatible",
+            "unavailable",
+            "catalog_changed",
+        ] {
+            let response = serde_json::from_value(serde_json::json!({
+                "schemaVersion": "1", "scope": "public", "scopeEpoch": "epoch",
+                "items": [], "providerOutcomes": [{"providerId": "public", "state": "failed"}],
+                "failures": [{"providerId": "public", "kind": kind}],
+                "coverageComplete": false, "knownTotal": null, "totalIsExact": false,
+                "state": "partial", "nextCursor": null
+            }))
+            .unwrap();
+            let error =
+                project_depot_artifact_search(response, CodeModeCatalogKind::Prompt).unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(
+                error.extra_fields()["failures"],
+                serde_json::json!([
+                    {"providerId": "public", "kind": kind}
+                ])
+            );
+        }
+    }
+
+    #[test]
     fn unsupported_optional_depot_kind_is_empty_but_other_incompleteness_fails() {
         let response = |failure_kind: &str| {
             serde_json::from_value(serde_json::json!({
@@ -1840,6 +2221,7 @@ mod tests {
                 CodeModeCatalogKind::Subagent
             )
             .unwrap()
+            .entries
             .is_empty()
         );
         assert!(

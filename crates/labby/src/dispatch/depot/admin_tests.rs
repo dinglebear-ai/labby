@@ -232,3 +232,84 @@ deployment_id = "catalog"
         .is_ok()
     );
 }
+
+#[tokio::test]
+async fn operation_receipt_lookup_never_runs_prepared_recovery() {
+    use super::{
+        admin::Admin,
+        manager::Manager,
+        network::NetworkPolicy,
+        store::{Pair, Store},
+    };
+    use std::sync::Arc;
+    let root = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::new(
+        root.path().join("config.toml"),
+        root.path().join("env"),
+        root.path().join("transactions"),
+    ));
+    let version = store.current_version().unwrap();
+    store
+        .commit(
+            "pending",
+            &version,
+            &Pair {
+                config: "new-config".into(),
+                environment: "NEW=1\n".into(),
+            },
+        )
+        .unwrap();
+    let auth = labby_auth::sqlite::SqliteStore::open(root.path().join("auth.sqlite"))
+        .await
+        .unwrap();
+    let admin = Admin::new(
+        Arc::new(Manager::default()),
+        store,
+        labby_auth::reauth::Proofs::new(auth),
+        NetworkPolicy::default(),
+    );
+    use crate::config::host_write::HostConfigLock;
+    for (name, value) in [("config.toml", "later-host-config"), ("env", "ROTATED=1\n")] {
+        HostConfigLock::acquire(&root.path().join(name))
+            .unwrap()
+            .write(value)
+            .unwrap();
+    }
+    assert!(admin.operation("pending").await.unwrap().committed);
+    assert!(matches!(
+        admin.operation("unknown").await,
+        Err(AdminError::Invalid)
+    ));
+    for (name, value) in [("config.toml", "later-host-config"), ("env", "ROTATED=1\n")] {
+        assert_eq!(
+            std::fs::read_to_string(root.path().join(name)).unwrap(),
+            value
+        );
+    }
+    // Model the pre-commit-marker crash separately; status still cannot recover it.
+    for (name, value) in [("config.toml", "new-config"), ("env", "NEW=1\n")] {
+        HostConfigLock::acquire(&root.path().join(name))
+            .unwrap()
+            .write(value)
+            .unwrap();
+    }
+    let path = root.path().join("transactions/active.json");
+    let mut intent: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    intent["phase"] = serde_json::json!("Prepared");
+    std::fs::write(path, serde_json::to_vec(&intent).unwrap()).unwrap();
+    for id in ["pending", "unknown"] {
+        assert!(matches!(
+            admin.operation(id).await,
+            Err(AdminError::Recovery)
+        ));
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("config.toml")).unwrap(),
+            "new-config"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("env")).unwrap(),
+            "NEW=1\n"
+        );
+    }
+}

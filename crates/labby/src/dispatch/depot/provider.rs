@@ -6,7 +6,10 @@ use crate::config::depot::{AuthMode, OpaqueEpoch, ProviderView};
 use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -106,6 +109,7 @@ pub struct ProviderRuntime {
     pub health: Health,
     admission: ProviderAdmission,
     identity: Mutex<Option<Identity>>,
+    identity_invalidated: AtomicBool,
 }
 
 impl ProviderRuntime {
@@ -142,6 +146,7 @@ impl ProviderRuntime {
             health: Health::default(),
             admission: ProviderAdmission::default(),
             identity: Mutex::new(None),
+            identity_invalidated: AtomicBool::new(false),
         }
     }
     pub fn matches(
@@ -172,10 +177,20 @@ impl ProviderRuntime {
         manual: bool,
     ) -> Result<Identity, ProviderError> {
         self.check(manual)?;
-        let mut identity = self
-            .identity
-            .try_lock()
-            .map_err(|_| ProviderError::Pending)?;
+        // Sibling discovery buckets share qualification without consuming a
+        // call permit while waiting. Keep the original receipt deadline and
+        // incarnation cancellation; a waiter must never outlive either.
+        let mut identity = tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => return Err(ProviderError::Stale),
+            () = tokio::time::sleep_until(admission.deadline()) => return Err(ProviderError::Pending),
+            identity = self.identity.lock() => identity,
+        };
+        // The preceding qualification may have recorded a sticky failure.
+        self.check(manual)?;
+        if self.identity_invalidated.swap(false, Ordering::AcqRel) {
+            *identity = None;
+        }
         if !manual && let Some(identity) = identity.as_ref() {
             return Ok(identity.clone());
         }
@@ -244,7 +259,12 @@ impl ProviderRuntime {
             });
         self.observe(&result, provenance)?;
         if matches!(result, Err(ProviderError::Failed(Failure::SnapshotChanged))) {
-            *self.identity.lock().await = None;
+            // Publish invalidation even when a concurrent probe owns the lock.
+            // Cleanup must not extend this call beyond its admission deadline.
+            self.identity_invalidated.store(true, Ordering::Release);
+            if let Ok(mut identity) = self.identity.try_lock() {
+                *identity = None;
+            }
         }
         result
     }
@@ -342,6 +362,7 @@ impl ProviderRuntime {
 
 fn network_failure(error: NetworkError) -> ProviderError {
     ProviderError::Failed(match error {
+        NetworkError::Timeout => Failure::Timeout,
         NetworkError::Status(401 | 403) => Failure::Unauthorized,
         NetworkError::Status(404) => Failure::NotFound,
         NetworkError::Status(409) => Failure::SnapshotChanged,
@@ -358,6 +379,113 @@ fn network_failure(error: NetworkError) -> ProviderError {
 #[cfg(test)]
 mod public_binding_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn snapshot_change_does_not_wait_for_a_contended_identity_lock() {
+        use super::super::{network_tests::tls_fixture, scheduler::Scheduler};
+        let (client, mut received) =
+            tls_fixture("HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\n\r\n".into()).await;
+        let runtime = ProviderRuntime::from_test_client(client);
+        *runtime.identity.lock().await = Some(Identity::parse(serde_json::json!({
+            "contractVersion":"depot.discovery/v1", "deploymentId":"public",
+            "deploymentEpoch":"deployment", "authorityEpoch":"authority", "listingEpoch":"listing",
+            "snapshotContinuations":true, "maxPageSize":200
+        })).unwrap());
+        let scheduler = Scheduler::default();
+        let admission = scheduler
+            .admit(
+                "reader",
+                tokio::time::Instant::now() - std::time::Duration::from_millis(4800),
+            )
+            .await
+            .unwrap();
+        let mut call =
+            Box::pin(runtime.call(Operation::List, serde_json::json!({"limit":1}), &admission));
+        tokio::select! {
+            biased;
+            request = &mut received => { request.unwrap(); },
+            _ = &mut call => panic!("request finished before contention was installed"),
+        }
+        let probe_lock = runtime.identity.lock().await;
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(400), &mut call)
+                .await
+                .expect("snapshot invalidation must not wait behind a probe"),
+            Err(ProviderError::Failed(Failure::SnapshotChanged))
+        ));
+        drop(probe_lock);
+        drop(call);
+        drop(admission);
+        let fresh = scheduler
+            .admit("reader", tokio::time::Instant::now())
+            .await
+            .unwrap();
+        assert!(
+            runtime.qualify(&fresh, false).await.is_err(),
+            "the closed fixture must be contacted again instead of reusing stale cached qualification"
+        );
+    }
+
+    #[test]
+    fn network_timeout_keeps_its_failure_classification() {
+        let ProviderError::Failed(failure) = network_failure(NetworkError::Timeout) else {
+            panic!("a network timeout must remain a provider failure");
+        };
+        assert_eq!(serde_json::to_value(failure).unwrap(), "timeout");
+    }
+
+    #[tokio::test]
+    async fn queued_qualification_stops_when_the_runtime_is_cancelled() {
+        use super::super::{network_tests::tls_fixture, scheduler::Scheduler};
+        let (client, mut received) = tls_fixture(String::new()).await;
+        let runtime = ProviderRuntime::from_test_client(client);
+        let _identity = runtime.identity.lock().await;
+        let scheduler = Scheduler::default();
+        let admission = scheduler
+            .admit("actor", tokio::time::Instant::now())
+            .await
+            .unwrap();
+        let mut queued = Box::pin(runtime.qualify(&admission, false));
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        runtime.cancel();
+        assert_eq!(queued.await, Err(ProviderError::Stale));
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn queued_qualification_keeps_the_original_admission_deadline() {
+        use super::super::{network_tests::tls_fixture, scheduler::Scheduler};
+        let (client, mut received) = tls_fixture(String::new()).await;
+        let runtime = ProviderRuntime::from_test_client(client);
+        let _identity = runtime.identity.lock().await;
+        let scheduler = Scheduler::default();
+        let admission = scheduler
+            .admit(
+                "actor",
+                tokio::time::Instant::now() - std::time::Duration::from_millis(4900),
+            )
+            .await
+            .unwrap();
+        let mut queued = Box::pin(runtime.qualify(&admission, false));
+        assert!(futures::poll!(queued.as_mut()).is_pending());
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), queued)
+                .await
+                .unwrap(),
+            Err(ProviderError::Pending)
+        );
+        assert!(matches!(
+            received.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            runtime.health.view().state,
+            super::super::health::HealthState::Unknown
+        );
+    }
 
     #[tokio::test]
     async fn qualified_deployment_must_match_the_host_binding() {

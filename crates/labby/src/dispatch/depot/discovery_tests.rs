@@ -354,3 +354,137 @@ fn mcp_connection_projection_is_https_and_revision_bound() {
     shell["command"] = json!("curl | sh");
     assert!(project(shell).get("mcpConnection").is_none());
 }
+
+#[tokio::test]
+async fn small_pages_eventually_visit_every_provider_without_duplicates() {
+    use labby_auth::browser_authority::{
+        BrowserAuthority, BrowserPolicy, PermissionState, PolicyFuture,
+    };
+    use labby_auth::types::BrowserSessionRow;
+    use std::{collections::BTreeMap, sync::Arc};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+    struct ReadPolicy;
+    impl BrowserPolicy for ReadPolicy {
+        fn current<'a>(&'a self, _: &'a BrowserSessionRow) -> PolicyFuture<'a> {
+            Box::pin(async {
+                Ok(PermissionState {
+                    epoch: "test".into(),
+                    scopes: vec!["lab:read".into()],
+                })
+            })
+        }
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let auth = labby_auth::sqlite::SqliteStore::open(temp.path().join("auth.sqlite"))
+        .await
+        .unwrap();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    auth.upsert_browser_session(BrowserSessionRow {
+        session_id: "reader".into(),
+        subject: "reader".into(),
+        email: None,
+        csrf_token: "csrf".into(),
+        created_at: now,
+        expires_at: now + 3600,
+        project_binding: None,
+    })
+    .await
+    .unwrap();
+    let authority = BrowserAuthority::verify(auth, "reader", "test", Arc::new(ReadPolicy))
+        .await
+        .unwrap();
+    for a_count in [0_usize, 1, 3] {
+        let mut endpoints = Vec::new();
+        let mut servers = Vec::new();
+        for (id, count) in [("a", a_count), ("b", 1)] {
+            let server = MockServer::start().await;
+            let identity = json!({"contractVersion":"depot.discovery/v1", "deploymentId":id,
+                "deploymentEpoch":"deployment", "authorityEpoch":"authority", "listingEpoch":"listing",
+                "snapshotContinuations":true, "maxPageSize":200, "supportedKinds":["skill"]});
+            Mock::given(method("GET"))
+                .and(path("/api/discovery"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(identity.clone()))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST")).and(path("/api/discovery/list")).respond_with(move |request: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let offset = body["cursor"].as_str().map(|value| value.parse::<usize>().unwrap()).unwrap_or(0);
+                let mut reply = identity.clone();
+                reply["result"] = json!({"artifacts": if offset < count { vec![json!({"id":format!("{id}-{offset}"),"name":"Skill","kind":"skill"})] } else {vec![]},
+                    "nextCursor": (offset + 1 < count).then(|| (offset + 1).to_string()), "total":count});
+                ResponseTemplate::new(200).set_body_json(reply)
+            }).mount(&server).await;
+            endpoints.push(format!("[[local_providers]]\nid = \"{id}\"\nname = \"{id}\"\nendpoint = \"{}\"\nbearer_token_env = \"LABBY_DEPOT_{}_TOKEN\"\n", server.uri(), id.to_uppercase()));
+            servers.push(server);
+        }
+        let preferences = toml::from_str(&format!(
+            "public_enabled = false\nread_project_id = \"test-project\"\n{}",
+            endpoints.join("\n")
+        ))
+        .unwrap();
+        let manager = super::manager::Manager::new(
+            &preferences,
+            super::manager::SecretSnapshot::from_values(BTreeMap::from([
+                ("LABBY_DEPOT_A_TOKEN".into(), "fixture-a".into()),
+                ("LABBY_DEPOT_B_TOKEN".into(), "fixture-b".into()),
+            ])),
+            super::network::NetworkPolicy::default(),
+        );
+        let mut request = super::discovery::DiscoveryRequest {
+            provider: None,
+            query: String::new(),
+            kind: Some("skill".into()),
+            limit: 1,
+            cursor: None,
+        };
+        let mut ids = Vec::new();
+        let mut ended = false;
+        for page in 0..8 {
+            let response = super::discovery::discover(
+                &manager,
+                &authority,
+                &request,
+                tokio::time::Instant::now(),
+            )
+            .await
+            .unwrap();
+            if page == 0 {
+                assert!(
+                    !response.coverage_complete,
+                    "an unvisited provider is incomplete"
+                );
+            }
+            ids.extend(
+                response
+                    .items
+                    .iter()
+                    .map(|item| item["artifactId"].as_str().unwrap().to_owned()),
+            );
+            request.cursor = response.next_cursor;
+            if request.cursor.is_none() {
+                ended = true;
+                break;
+            }
+        }
+        assert!(ended, "cursor chain must terminate");
+        ids.sort();
+        let mut expected = (0..a_count)
+            .map(|index| format!("a-{index}"))
+            .collect::<Vec<_>>();
+        expected.push("b-0".into());
+        assert_eq!(
+            ids, expected,
+            "every authorized provider must be visited exactly once"
+        );
+        drop(servers);
+    }
+}

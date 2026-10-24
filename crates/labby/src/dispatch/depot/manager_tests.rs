@@ -240,6 +240,27 @@ async fn auth_failure_requires_manual_probe_and_successful_qualification_is_cach
 }
 
 #[tokio::test]
+async fn concurrent_qualification_shares_the_inflight_identity_request() {
+    let (client, received) =
+        tls_fixture_delayed(response(identity()), Duration::from_millis(100)).await;
+    let runtime = Arc::new(ProviderRuntime::from_test_client(client));
+    let worker = runtime.clone();
+    let first = tokio::spawn(async move {
+        let scheduler = Scheduler::default();
+        let admission = scheduler.admit("first", Instant::now()).await.unwrap();
+        worker.qualify(&admission, false).await
+    });
+    // The server has received the first request, so qualification owns the lock.
+    received.await.unwrap();
+    let scheduler = Scheduler::default();
+    let admission = scheduler.admit("sibling", Instant::now()).await.unwrap();
+    let sibling = runtime.qualify(&admission, false).await;
+    let first = first.await.unwrap().unwrap();
+    assert_eq!(sibling, Ok(first));
+    assert_eq!(runtime.health.view().state, HealthState::Healthy);
+}
+
+#[tokio::test]
 async fn cancellation_drops_inflight_qualification_and_cannot_publish_health() {
     let (client, received) =
         tls_fixture_delayed(response(identity()), Duration::from_millis(250)).await;

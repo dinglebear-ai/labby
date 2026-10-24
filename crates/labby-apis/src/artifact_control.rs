@@ -12,8 +12,8 @@ use crate::core::{ApiError, HttpClient};
 const MAX_CONTROL_PLANE_RESPONSE_BYTES: usize = 1024 * 1024;
 // Depot's Tool/Snippet discovery expansion adds only two kind enum values to
 // depot.artifacts.list. Keep accepting the previous schema during rollout.
-const ARTIFACTS_LIST_EXPANDED_FINGERPRINT: &str =
-    "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895";
+const ARTIFACTS_LIST_ORIGINAL_FINGERPRINT: &str =
+    "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a";
 
 /// Depot's frozen public operation catalog, captured from the paired Depot
 /// worktree. Tests pin every curated operation's schema and fingerprint to it.
@@ -192,7 +192,7 @@ impl Operation {
                 "fdd4be598017b2dc7dacdb50121c680bf187d74c4aa1da9d98232c300b793909"
             }
             Self::ArtifactsList => {
-                "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a"
+                "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895"
             }
             Self::CandidatesList => {
                 "43dcf18f5fd2e277fe21f98cde881f4125e315636ef241ac6b03526aad1d4142"
@@ -231,8 +231,8 @@ impl Operation {
             }
             Self::SkillsList => "0db47745ef0e81cfef00f22118d4780c67bcf64111a20671366227f96125d178",
             Self::SkillsGet => "8c4fc62b36049b9ffa64dae2eea3c4fae05926ba0ee84c11568bd9e48c0087f4",
-            Self::SkillsLoad => "aec0c16df499c0594ea578400ac77a1f341ceb10d1a3ae7bd33d0d62a00fa00c",
-            Self::SkillsRead => "04a1903f5d932feb184d1a689cd0a29c08358f2e7c45b2f7b9d80bc5d16bf755",
+            Self::SkillsLoad => "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
+            Self::SkillsRead => "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
             Self::SearchArd => "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
             Self::SearchMarketplace => {
                 "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7"
@@ -241,7 +241,7 @@ impl Operation {
                 "cfb8b3b48d34ff9dbdd5f871c924a2d8de67aa4a352e5e43a3839b5cd39a554c"
             }
             Self::SourcesConfigure => {
-                "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4"
+                "d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738"
             }
             Self::SourcesDelete | Self::SourcesRefresh => {
                 "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724"
@@ -264,7 +264,7 @@ impl Operation {
             && operation_contract_is_compatible(
                 definition,
                 self.provider_name(),
-                ARTIFACTS_LIST_EXPANDED_FINGERPRINT,
+                ARTIFACTS_LIST_ORIGINAL_FINGERPRINT,
             ))
     }
 }
@@ -660,12 +660,12 @@ mod tests {
         let kinds = definition["inputSchema"]["properties"]["kind"]["enum"]
             .as_array_mut()
             .unwrap();
-        kinds.extend([json!("tool"), json!("snippet")]);
+        kinds.retain(|kind| kind != "tool" && kind != "snippet");
         assert_eq!(
             schema_fingerprint(&definition["inputSchema"]).as_deref(),
-            Some(ARTIFACTS_LIST_EXPANDED_FINGERPRINT)
+            Some(ARTIFACTS_LIST_ORIGINAL_FINGERPRINT)
         );
-        definition["schemaFingerprint"] = json!(ARTIFACTS_LIST_EXPANDED_FINGERPRINT);
+        definition["schemaFingerprint"] = json!(ARTIFACTS_LIST_ORIGINAL_FINGERPRINT);
         assert!(Operation::ArtifactsList.contract_is_compatible(&definition));
 
         definition["inputSchema"]["properties"]["kind"]["enum"] = json!(["tool"]);
