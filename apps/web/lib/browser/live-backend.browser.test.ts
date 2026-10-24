@@ -20,7 +20,6 @@ import {
 
 const liveEnabled = Boolean(process.env.LABBY_LIVE_BROWSER_DESCRIPTOR)
 const nightlyEnabled = process.env.LABBY_LIVE_BROWSER_NIGHTLY === 'true'
-const fixtureTeamId = 'bootstrap-initial-team'
 const progressPath = process.env.LABBY_LIVE_BROWSER_PROGRESS
 let progressBytes = 0
 function progress(message: string) {
@@ -29,8 +28,8 @@ function progress(message: string) {
   if (progressPath && progressBytes <= 16 * 1024) appendFileSync(progressPath, rendered, { mode: 0o600 })
 }
 
-async function action(page: Page, csrfToken: string, service: string, name: string, params: object) {
-  return page.evaluate(async ({ csrfToken, service, name, params, fixtureTeamId }) => {
+async function action(page: Page, csrfToken: string, service: string, name: string, params: object, teamId?: string) {
+  return page.evaluate(async ({ csrfToken, service, name, params, teamId }) => {
     const session = await fetch('/auth/session', { credentials: 'include', cache: 'no-store' })
     const sessionBody = await session.json()
     if (!session.ok || !sessionBody.authenticated) return { status: session.status, body: sessionBody }
@@ -39,10 +38,7 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       headers: {
         'content-type': 'application/json',
         'x-csrf-token': csrfToken,
-        ...(typeof sessionBody.project_id === 'string' ? { 'x-labby-project-id': sessionBody.project_id } : {}),
-        ...(service === 'gateway' && /^gateway\.(loadout|protected_route)\./.test(name)
-          ? { 'x-labby-team-id': fixtureTeamId }
-          : {}),
+        ...(teamId ? { 'x-labby-team-id': teamId } : typeof sessionBody.project_id === 'string' ? { 'x-labby-project-id': sessionBody.project_id } : {}),
       },
       body: JSON.stringify({ action: name, params }),
     })
@@ -52,8 +48,9 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       sessionAuthenticated: sessionBody.authenticated === true,
       csrfLength: typeof sessionBody.csrf_token === 'string' ? sessionBody.csrf_token.length : 0,
       sessionProjectId: typeof sessionBody.project_id === 'string' ? sessionBody.project_id : null,
+      sessionTeams: Array.isArray(sessionBody.teams) ? sessionBody.teams : [],
     }
-  }, { csrfToken, service, name, params, fixtureTeamId })
+  }, { csrfToken, service, name, params, teamId })
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
@@ -87,23 +84,27 @@ async function addGatewayThroughUi(page: Page, name: string) {
   return id
 }
 
-async function stageProtectedRouteThroughUi(page: Page, name: string) {
-  await page.goto('/settings/surfaces/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+async function selectWorkspaceThroughUi(page: Page, teamId?: string) {
   await page.getByRole('button', { name: 'Switch workspace', exact: true }).click()
-  await page.locator('[data-scopemenu] [data-menurow]').filter({ hasText: fixtureTeamId }).click()
-  await page.waitForURL(new URL('/', page.url()).toString())
+  const menu = page.locator('[data-scopemenu] [data-anim="menu"]')
+  await menu.getByRole('button').filter({ has: page.getByText(teamId ?? 'Personal', { exact: true }) }).click()
+  await menu.waitFor({ state: 'hidden', timeout: 10_000 })
+  await page.waitForURL(url => url.pathname === '/', { timeout: 15_000 })
+}
+
+async function stageProtectedRouteThroughUi(page: Page, name: string, loadout: string) {
+  // Keep the selected Team in the live app session through client navigation.
   await page.getByRole('button', { name: 'Account menu', exact: true }).click()
   await page.getByRole('link', { name: 'Settings', exact: true }).click()
-  await page.getByRole('navigation', { name: 'Settings sections', exact: true }).getByRole('link', { name: 'Surfaces', exact: true }).click()
+  await page.getByRole('link', { name: /^Client access/ }).click()
   const panel = page.locator('[data-protected-routes-panel]')
   await panel.getByLabel('Name').fill(name)
   await panel.getByLabel('Public host').fill('browser.invalid')
   await panel.getByLabel('Public path').fill('/mcp')
   await panel.getByLabel('Loadout').click()
-  await page.getByRole('option', { name: 'production', exact: true }).click()
+  await page.getByRole('option', { name: loadout, exact: true }).click()
   const mutation = page.waitForResponse(response => response.request().method() === 'POST'
     && response.request().postData()?.includes('gateway.protected_route.stage_add') === true)
-  // The panel toolbar also has an Add route control; submit the filled editor.
   await panel.getByRole('button', { name: 'Add route', exact: true }).last().click()
   const response = await mutation
   assert.equal(response.status(), 200, `Protected route staging returned ${response.status()}: ${await response.text()}`)
@@ -190,11 +191,29 @@ async function waitForFile(path: string, timeoutMs = 30_000) {
   throw new Error(`timed out waiting for ${path}`)
 }
 
+async function stashFileActionThroughUi(page: Page, name: string, action: 'Download' | 'Manage file' | 'Delete') {
+  await page.getByRole('article').filter({ hasText: name }).getByRole('button', { name: `Actions for ${name}`, exact: true }).click()
+  await page.getByRole('menuitem', { name: action === 'Download' ? `Download ${name}` : action, exact: true }).click()
+  if (action === 'Download') {
+    await page.keyboard.press('Escape')
+    await page.getByRole('menu').waitFor({ state: 'hidden', timeout: 10_000 })
+  }
+}
+
 async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType<typeof readLiveDescriptor>>) {
   assert.ok(descriptor)
   let name = `browser-stash-${descriptor.run_id}.txt`
   const contents = `live browser stash ${descriptor.run_id}\n`
+  // Finish the initial debounced list load before upload refreshes can overlap it.
+  const initialList = page.waitForResponse(response => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/v1/stash')
   await page.goto('/stash/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+  const initialResponse = await initialList
+  assert.equal(initialResponse.status(), 200)
+  assert.equal(await initialResponse.finished(), null)
+  assert.deepEqual((await initialResponse.json()).files, [])
+  await page.getByText('Your Stash is empty', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
+  await page.getByRole('status').filter({ hasText: 'Loading your files…' }).waitFor({ state: 'hidden', timeout: 10_000 })
   const dropTarget = page.getByRole('button', { name: /drop files here or browse/i })
   await dropTarget.waitFor({ state: 'visible', timeout: 10_000 })
   await dropTarget.focus()
@@ -204,14 +223,15 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await dropTarget.press('Enter')
   await (await fileChooser).setFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(contents) })
   const observedUpload = await uploadRequest
-  assert.equal(observedUpload.headers()['content-length'], String(Buffer.byteLength(contents)))
-  assert.equal(observedUpload.postDataBuffer()?.equals(Buffer.from(contents)), true)
+  // File bodies are not inline CDP postData entries. A 201 means the server
+  // validated the exact wire length; downloads below verify persisted bytes.
+  assert.equal((await observedUpload.response())?.status(), 201, 'File Stash must accept the browser upload')
   await page.getByRole('status').filter({ hasText: `${name} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const row = page.getByRole('article').filter({ hasText: name })
   await row.waitFor({ state: 'visible', timeout: 10_000 })
   const uri = await row.getByTitle('Copy canonical URI').locator('code').innerText()
   assert.match(uri, /^stash:\/\/me\/files\/[A-Z0-9]+$/)
-  await assert.doesNotReject(page.locator('[data-console-hero-stat="Files"] [data-console-hero-stat-value="1"]').getByText('1', { exact: true }).waitFor({ state: 'visible' }))
+  await assert.doesNotReject(page.locator('[data-console-hero-stat="Files"] [data-console-hero-stat-value="1"][title="1"]').waitFor({ state: 'visible' }))
   await assert.doesNotReject(page.getByText(`${Buffer.byteLength(contents)} B`, { exact: true }).first().waitFor({ state: 'visible' }))
 
   const emptyName = `browser-stash-empty-${descriptor.run_id}.txt`
@@ -220,19 +240,29 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await dropTarget.press('Enter')
   await (await emptyChooser).setFiles({ name: emptyName, mimeType: 'text/plain', buffer: Buffer.alloc(0) })
   const observedEmptyUpload = await emptyRequest
-  assert.equal(observedEmptyUpload.headers()['content-length'], '0')
-  assert.equal(observedEmptyUpload.postDataBuffer()?.length ?? 0, 0)
+  assert.equal((await observedEmptyUpload.response())?.status(), 201, 'File Stash must accept an empty browser upload')
   await page.getByRole('status').filter({ hasText: `${emptyName} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const emptyRow = page.getByRole('article').filter({ hasText: emptyName })
-  await emptyRow.getByRole('button', { name: `Delete ${emptyName}` }).click()
+  // Upload completion precedes the list refresh, which replaces its action menus.
+  await emptyRow.waitFor({ state: 'visible', timeout: 10_000 })
+  await page.getByRole('status').filter({ hasText: 'Loading your files…' }).waitFor({ state: 'hidden', timeout: 10_000 })
+  assert.equal(await page.getByRole('article').count(), 2)
+  const [emptyDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    stashFileActionThroughUi(page, emptyName, 'Download'),
+  ])
+  assert.equal((await readFile(await emptyDownload.path()!)).length, 0)
+  await stashFileActionThroughUi(page, emptyName, 'Delete')
   await page.getByRole('alertdialog', { name: 'Delete this file?' }).getByRole('button', { name: 'Delete file' }).click()
   await emptyRow.waitFor({ state: 'detached', timeout: 10_000 })
 
-  const download = page.waitForEvent('download')
-  await row.getByRole('link', { name: `Download ${name}` }).click()
-  assert.equal(await readFile(await (await download).path()!, 'utf8'), contents)
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    stashFileActionThroughUi(page, name, 'Download'),
+  ])
+  assert.equal(await readFile(await download.path()!, 'utf8'), contents)
 
-  await row.getByRole('button', { name: `Rename or share ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Manage file')
   const dialog = page.getByRole('dialog', { name: `Manage ${name}` })
   await dialog.getByLabel('Filename').waitFor({ state: 'visible' })
   assert.equal(await dialog.getByLabel('Filename').evaluate(element => element === document.activeElement), true)
@@ -249,7 +279,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.equal(await renamed.getByTitle('Copy canonical URI').locator('code').innerText(), uri)
   await assert.doesNotReject(page.getByText(previousName, { exact: true }).waitFor({ state: 'detached', timeout: 10_000 }))
 
-  await renamed.getByRole('button', { name: `Rename or share ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Manage file')
   const shareDialog = page.getByRole('dialog', { name: `Manage ${name}` })
   await shareDialog.getByLabel('Find a recipient').fill('Browser Stash')
   await shareDialog.getByText('Browser Stash Recipient', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
@@ -262,7 +292,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   const persisted = page.getByRole('article').filter({ hasText: name })
   await persisted.waitFor({ state: 'visible', timeout: 10_000 })
 
-  await persisted.getByRole('button', { name: `Rename or share ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Manage file')
   const persistedDialog = page.getByRole('dialog', { name: `Manage ${name}` })
   const revoke = persistedDialog.getByRole('button', { name: 'Revoke' })
   await revoke.waitFor({ state: 'visible', timeout: 10_000 })
@@ -270,7 +300,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await page.getByRole('status').filter({ hasText: 'Access revoked' }).waitFor({ state: 'attached', timeout: 10_000 })
 
   const afterRevoke = page.getByRole('article').filter({ hasText: name })
-  await afterRevoke.getByRole('button', { name: `Delete ${name}` }).click()
+  await stashFileActionThroughUi(page, name, 'Delete')
   const confirmation = page.getByRole('alertdialog', { name: 'Delete this file?' })
   await confirmation.getByRole('button', { name: 'Delete file' }).click()
   await page.getByRole('status').filter({ hasText: `${name} deleted.` }).waitFor({ state: 'attached', timeout: 10_000 })
@@ -313,7 +343,10 @@ test('embedded Gateway Admin completes a real backend journey', {
     const ownedName = `browser-${descriptor.run_id.toLowerCase()}`
     let ownedGatewayId = ownedName
     const ownedRoute = `${ownedName}-route`
-    let ownedRouteRemoved = false
+    let ownedRouteRemoved = true
+    let routeTeamId: string | undefined
+    const ownedLoadout = `${ownedName}-loadout`
+    let ownedLoadoutCreated = false
     const cleanupFailures: string[] = []
     try {
       progress('health-session-catalog')
@@ -349,11 +382,26 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.equal(persisted.status, 200)
       await assert.doesNotReject(page.locator('a:visible').filter({ hasText: ownedName }).first().waitFor({ state: 'visible', timeout: 10_000 }))
 
-      await stageProtectedRouteThroughUi(page, ownedRoute)
+      // Gateway policy belongs to an explicit Team. Use the authority projected
+      // for this authenticated fixture, rather than the installation loadout.
+      routeTeamId = persisted.sessionTeams?.find((team: { id?: unknown }) => typeof team.id === 'string' && team.id.length > 0)?.id
+      assert.ok(routeTeamId, 'live browser owner must have a projected Team workspace')
+      const loadout = await action(page, csrfToken, 'gateway', 'gateway.loadout.add', {
+        loadout: { name: ownedLoadout, upstreams: [], services: [] },
+      }, routeTeamId)
+      assert.equal(loadout.status, 200, `owned Team loadout create failed: ${JSON.stringify(loadout.body)}`)
+      ownedLoadoutCreated = true
+      // Public Team projections strip the internal team:<id>: namespace.
+      // The explicit workspace/header remains the authorization selector.
+      assert.equal(loadout.body.name, ownedLoadout)
+      await selectWorkspaceThroughUi(page, routeTeamId)
+      ownedRouteRemoved = false
+      await stageProtectedRouteThroughUi(page, ownedRoute, ownedLoadout)
       progress('protected-route-staged-through-ui')
       await removeProtectedRouteThroughUi(page, ownedRoute)
       ownedRouteRemoved = true
       progress('protected-route-removed-through-ui')
+      await selectWorkspaceThroughUi(page)
 
       const libraryProbe = await action(page, csrfToken, 'artifacts', 'artifacts.list', { limit: 10 })
       progress(`artifact-library-probe:${libraryProbe.status}:project=${libraryProbe.sessionProjectId}:${JSON.stringify(libraryProbe.body).slice(0, 500)}`)
@@ -400,7 +448,7 @@ test('embedded Gateway Admin completes a real backend journey', {
         [ownedGatewayId, 'gateway.remove'],
       ] as const) {
         if (!mayContinue()) break
-        const result = await action(page, csrfToken, 'gateway', operation, { name, confirm: true }).catch((error) => ({ status: 0, body: String(error) }))
+        const result = await action(page, csrfToken, 'gateway', operation, { name, confirm: true }, operation === 'gateway.protected_route.stage_remove' ? routeTeamId : undefined).catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:${operation}:${result.status}`)
         if (![200, 404].includes(result.status) && operation === 'gateway.remove') {
           if (!mayContinue()) break
@@ -415,6 +463,12 @@ test('embedded Gateway Admin completes a real backend journey', {
           }
         }
         if (![200, 404].includes(result.status)) cleanupFailures.push(`${operation}(${name})=${result.status}`)
+      }
+      if (ownedLoadoutCreated && mayContinue()) {
+        const result = await action(page, csrfToken, 'gateway', 'gateway.loadout.remove', { name: ownedLoadout }, routeTeamId)
+          .catch((error) => ({ status: 0, body: String(error) }))
+        progress(`cleanup:gateway.loadout.remove:${result.status}`)
+        if (![200, 404].includes(result.status)) cleanupFailures.push(`gateway.loadout.remove(${ownedLoadout})=${result.status}`)
       }
       })
       if (!failure) {

@@ -3552,3 +3552,46 @@ async fn sqlite_admission_rejects_saturation_and_recovers() {
     drop(held);
     store.with_conn(|_| Ok(())).await.unwrap();
 }
+
+#[tokio::test]
+async fn clearing_upstream_identity_removes_only_its_pending_states() {
+    let store = temp_store().await;
+    for (upstream, subject, csrf) in [
+        ("acme", "alice", "owned"),
+        ("acme", "bob", "other-subject"),
+        ("other", "alice", "other-upstream"),
+    ] {
+        let mut row = sample_upstream_state();
+        row.upstream_name = upstream.into();
+        row.subject = subject.into();
+        row.csrf_token = csrf.into();
+        store.save_upstream_oauth_state(row).await.unwrap();
+    }
+    store
+        .clear_upstream_oauth_identity("acme", "alice")
+        .await
+        .unwrap();
+    assert!(
+        store
+            .find_upstream_oauth_state_subject("acme", "owned", now_unix())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .find_upstream_oauth_state_subject("acme", "other-subject", now_unix())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("bob")
+    );
+    assert_eq!(
+        store
+            .find_upstream_oauth_state_subject("other", "other-upstream", now_unix())
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("alice")
+    );
+}

@@ -112,13 +112,8 @@ pub async fn run(args: ClientsArgs, format: OutputFormat) -> Result<()> {
             let results = match connection {
                 ConnectionArg::SavedCli => {
                     let root = selected_root(state_root)?;
-                    let (saved, bearer) =
+                    let (saved, _) =
                         crate::dispatch::setup::client_bridge::saved_connection_identity(&root)?;
-                    if !bearer {
-                        anyhow::bail!(
-                            "The saved connection uses OAuth. Select --connection oauth and the gateway MCP URL"
-                        );
-                    }
                     let gateway = gateway_url.unwrap_or(saved);
                     operation::register_saved_clients(
                         home,
@@ -232,7 +227,7 @@ mod tests {
             Fixture::try_parse_from(["fixture", "connect", "--clients", "codex,claude-code"])
                 .unwrap();
         assert!(
-            matches!(parsed.args.command, ClientsCommand::Connect { clients, .. } if clients.len() == 2)
+            matches!(parsed.args.command, ClientsCommand::Connect { clients, connection: ConnectionArg::SavedCli, .. } if clients.len() == 2)
         );
         for spelling in ["oauth", "o-auth"] {
             let parsed = Fixture::try_parse_from([

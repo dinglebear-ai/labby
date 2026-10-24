@@ -4,7 +4,8 @@ import React, { act } from 'react'
 import { installTestDom } from '@/lib/testing/dom-install'
 
 test('local setup capability leaves URL before redeem and never uses a bearer header', async () => {
-  installTestDom()
+  const dom = installTestDom()
+  dom.happyDOM.setURL('http://127.0.0.1/settings/')
   const { renderClient } = await import('@/lib/testing/dom-test-utils')
   const { LoginScreen } = await import('./login-screen')
   const { __setBrowserSessionStateForTests } = await import('@/lib/auth/session-store')
