@@ -1,7 +1,7 @@
 ---
 title: "Observability"
 created: "2026-07-30"
-updated: "2026-09-29"
+updated: "2026-10-21"
 ---
 
 # Observability
@@ -750,6 +750,14 @@ when caller correlation is available at the surface, use only its bound
 matching initialized MCP peer and task-retained peer has been closed.
 
 ## Level Rules
+
+Human console output for one-shot CLI commands shows warnings and errors by
+default. Use `-v` for routine diagnostic events or `-vv` for trace detail.
+Configured log filters still govern file logging; they do not enable routine
+human console events without the verbose flag. Long-running `serve` and `mcp`
+commands and explicitly selected structured JSON log streams retain their
+configured console filtering. `--quiet` suppresses console logs, while command
+errors remain visible.
 
 Use these level conventions consistently:
 

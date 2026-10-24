@@ -206,7 +206,7 @@ actions:
         npm install -g "$file"
       }
       # LABBY_SUPPLY: claude_code
-      install_verified @anthropic-ai/claude-code 2.1.163 sha512-aK+hmLIaxp6v2M/fifhrCdYJ+kuQuGOl4Iok+AwRijeZl/HMn55rkwF6lEIq1Ny0xNCp2UKiZcmCegyoMumoWg==
+      install_verified @anthropic-ai/claude-code 2.1.179 sha512-gH8HCWDPK+8m/3miGjD69VfPv/ShrFWp7nMaWbpiLzp45qrQV0wbf5Hgye2ToYvFFbzCa+S0+OZbpQ4UDetQnw==
       # LABBY_SUPPLY: codex
       install_verified @openai/codex 0.130.0 sha512-WGDj+RZ3TXWC/7MlwprgLWOqzpwatPIINPhP3IRzHA0ni+o3QZ4i4xrS2uWwGmHUJ395J5JHwoZAAZYyfJyz6w==
       # LABBY_SUPPLY: gemini_cli

@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 if [ "${LABBY_E2E_GATE_MODE:-helper}" = browser ]; then
   registry=$LABBY_E2E_HELPER_REGISTRY
   set -- "$LABBY_E2E_BROWSER_EXECUTABLE" "$@"
@@ -10,14 +11,24 @@ fi
 if [ "${LABBY_E2E_GATE_MODE:-helper}" != browser ] && [ -n "${LABBY_E2E_ADMISSION_ID:-}" ]; then
   case "$LABBY_E2E_ADMISSION_ID" in *[!a-zA-Z0-9-]*|admission-) exit 70;; admission-*) ;; *) exit 70;; esac
   admission="$registry/$LABBY_E2E_ADMISSION_ID"
-  mkdir "$admission"
+  admission_id=$LABBY_E2E_ADMISSION_ID
+  mkdir "$registry/.claim-$admission_id" || exit 70
+  staging=$(mktemp -d "$registry/.preparing-XXXXXXXXXXXX") || exit 70
 else
-  admission=$(mktemp -d "$registry/admission-XXXXXXXXXXXX") || exit 70
+  staging=$(mktemp -d "$registry/.preparing-XXXXXXXXXXXX") || exit 70
+  staging_id=${staging##*/}
+  admission_id=admission-${staging_id#.preparing-}
+  admission="$registry/$admission_id"
+  mkdir "$registry/.claim-$admission_id" || exit 70
 fi
-admission_id=${admission##*/}
 start=$(ps -o lstart= -p $$) || exit 70
-printf '%s\n%s\n%s\n%s\n' "$$" "$start" "$LABBY_E2E_GROUP_TOKEN" "$admission_id" >"$admission/identity.pending"
-mv "$admission/identity.pending" "$admission/identity"
+printf '%s\n%s\n%s\n%s\n' "$$" "$start" "$LABBY_E2E_GROUP_TOKEN" "$admission_id" >"$staging/identity"
+# Only complete identities enter the outer supervisor's admission namespace.
+# The exclusive claim serializes publishers of this ID, so portable mv cannot
+# nest staging inside an existing destination between this check and rename.
+# Claims and interrupted staging remain private evidence until run teardown.
+[ ! -e "$admission" ] && [ ! -L "$admission" ] || exit 70
+mv "$staging" "$admission" || exit 70
 entries=$(ls -A "$registry") || exit 70
 if printf '%s\n' "$entries" | grep -qx closed; then exit 70; fi
 group=$(ps -o pgid= -p $$) || exit 70

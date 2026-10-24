@@ -107,6 +107,21 @@ impl TrustedOriginOAuthHttpClient {
         })
     }
 
+    /// Execute the native handoff with the same bounded, pinned egress policy.
+    pub(crate) async fn execute_native(
+        &self,
+        request: oauth2::HttpRequest,
+    ) -> Result<oauth2::HttpResponse, OAuthHttpClientError> {
+        let request = reqwest::Request::try_from(request)
+            .map_err(|_| boxed_error(OAuthEgressError::Http("invalid native request".into())))?;
+        self.execute_reqwest(
+            request,
+            OAuthHttpRedirectPolicy::Stop,
+            Some(Duration::from_secs(15)),
+        )
+        .await
+    }
+
     async fn addresses_for(&self, url: &Url) -> Result<Vec<SocketAddr>, OAuthEgressError> {
         validate_request_url(url)?;
         if same_origin(&self.trusted_origin, url) {

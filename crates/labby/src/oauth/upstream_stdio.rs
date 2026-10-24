@@ -35,6 +35,8 @@ use tokio::sync::{Mutex, Notify};
 use tokio::time::{Instant, timeout_at};
 use url::Url;
 
+use crate::output::theme::CliTheme;
+
 const CALLBACK_PATH: &str = "/auth/upstream/callback";
 const DEFAULT_CALLBACK_PORT: u16 = 0;
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_mins(5);
@@ -49,6 +51,22 @@ pub async fn build_stdio_upstream_oauth_runtime(
     upstreams: &[UpstreamConfig],
     auth_config: &AuthConfig,
     encryption_key_raw: Option<&str>,
+) -> Result<Option<UpstreamOauthRuntime>> {
+    build_stdio_upstream_oauth_runtime_with_theme(
+        upstreams,
+        auth_config,
+        encryption_key_raw,
+        default_oauth_theme(),
+    )
+    .await
+}
+
+/// Build a native OAuth runtime using the initiating CLI's presentation policy.
+pub(crate) async fn build_stdio_upstream_oauth_runtime_with_theme(
+    upstreams: &[UpstreamConfig],
+    auth_config: &AuthConfig,
+    encryption_key_raw: Option<&str>,
+    theme: CliTheme,
 ) -> Result<Option<UpstreamOauthRuntime>> {
     if !upstreams.iter().any(|upstream| upstream.oauth.is_some()) {
         return Ok(None);
@@ -83,7 +101,8 @@ pub async fn build_stdio_upstream_oauth_runtime(
         return Ok(None);
     };
 
-    let coordinator = StdioOauthCoordinator::new(runtime.managers.clone(), runtime.sqlite.clone());
+    let coordinator =
+        StdioOauthCoordinator::new(runtime.managers.clone(), runtime.sqlite.clone(), theme);
     coordinator.spawn_callback_server(listener);
     runtime.cache = runtime
         .cache
@@ -174,16 +193,22 @@ impl Drop for PendingFlowGuard<'_> {
 struct StdioOauthCoordinator {
     managers: Arc<DashMap<String, UpstreamOauthManager>>,
     sqlite: SqliteStore,
+    theme: CliTheme,
     pending: DashMap<String, PendingFlow>,
     outcomes: DashMap<String, FlowOutcome>,
     locks: DashMap<(String, String), Arc<Mutex<()>>>,
 }
 
 impl StdioOauthCoordinator {
-    fn new(managers: Arc<DashMap<String, UpstreamOauthManager>>, sqlite: SqliteStore) -> Arc<Self> {
+    fn new(
+        managers: Arc<DashMap<String, UpstreamOauthManager>>,
+        sqlite: SqliteStore,
+        theme: CliTheme,
+    ) -> Arc<Self> {
         Arc::new(Self {
             managers,
             sqlite,
+            theme,
             pending: DashMap::new(),
             outcomes: DashMap::new(),
             locks: DashMap::new(),
@@ -253,17 +278,22 @@ impl StdioOauthCoordinator {
         );
         let mut pending_guard = PendingFlowGuard::new(self, state.clone());
 
-        if let Err(error) = open_in_browser(&authorization.authorization_url).await {
-            return Err(OauthError::Internal(format!(
-                "open OAuth authorization in browser: {error}"
-            )));
+        let browser_result = open_in_browser(&authorization.authorization_url).await;
+        if browser_result.is_ok() {
+            tracing::info!(
+                subsystem = "gateway_client",
+                phase = "oauth.stdio.browser.open",
+                upstream,
+                "opened upstream OAuth authorization in the default browser"
+            );
         }
-        tracing::info!(
-            subsystem = "gateway_client",
-            phase = "oauth.stdio.browser.open",
-            upstream,
-            "opened upstream OAuth authorization in the default browser"
-        );
+        present_browser_result(
+            &authorization.authorization_url,
+            browser_result,
+            &mut std::io::stderr(),
+            self.theme,
+        )
+        .map_err(|error| OauthError::Internal(error.to_string()))?;
 
         let deadline = Instant::now() + AUTHORIZATION_TIMEOUT;
         loop {
@@ -434,7 +464,7 @@ fn callback_response(status: StatusCode, message: &str) -> Response {
     labby_auth::pages::response(status, page, title, message)
 }
 
-fn authorization_state(authorization_url: &str) -> Result<String, OauthError> {
+pub(super) fn authorization_state(authorization_url: &str) -> Result<String, OauthError> {
     Url::parse(authorization_url)
         .map_err(|error| OauthError::Internal(format!("parse authorization URL: {error}")))?
         .query_pairs()
@@ -450,7 +480,64 @@ fn unix_now() -> i64 {
         .as_secs() as i64
 }
 
-async fn open_in_browser(url: &str) -> Result<()> {
+fn default_oauth_theme() -> CliTheme {
+    use crate::output::theme::{ColorPolicy, RenderContext, RenderEnv};
+    CliTheme::from_context(RenderContext::from_policy(
+        ColorPolicy::Auto,
+        RenderEnv::stderr(),
+    ))
+}
+
+fn present_browser_result(
+    url: &str,
+    result: Result<()>,
+    output: &mut impl std::io::Write,
+    theme: CliTheme,
+) -> Result<()> {
+    if let Err(error) = result {
+        tracing::debug!(
+            subsystem = "gateway_client",
+            phase = "oauth.stdio.browser.unavailable",
+            error = %format!("{error:#}"),
+            "automatic OAuth browser launch failed; manual authorization required"
+        );
+        writeln!(
+            output,
+            "{}",
+            theme.warn("Could not open a browser automatically.")
+        )?;
+        writeln!(
+            output,
+            "{}\n{}",
+            theme.section("Open this URL to authorize:"),
+            theme.accent(url)
+        )?;
+        // The browser may be on a different machine from this loopback listener.
+        // Derive the port from this flow rather than assuming the default port.
+        let authorization = Url::parse(url).context("parse OAuth authorization URL")?;
+        if let Some(port) = authorization
+            .query_pairs()
+            .find_map(|(key, value)| (key == "redirect_uri").then(|| value.into_owned()))
+            .and_then(|redirect| Url::parse(&redirect).ok())
+            .and_then(|redirect| redirect.port())
+        {
+            writeln!(
+                output,
+                "\n{}\n  {}",
+                theme.muted("If connected over SSH, first run this on your browser's machine in another terminal:"),
+                theme.accent(&format!("ssh -N -L {port}:127.0.0.1:{port} <ssh-host>"))
+            )?;
+        }
+        writeln!(
+            output,
+            "\n{}",
+            theme.muted("Waiting up to five minutes for authorization; keep this command running.")
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) async fn open_in_browser(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     let mut command = Command::new("open");
     #[cfg(target_os = "linux")]
@@ -460,8 +547,16 @@ async fn open_in_browser(url: &str) -> Result<()> {
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     anyhow::bail!("automatic browser launch is not supported on this platform");
 
-    command.arg(url);
-    let status = command.status().await.context("launch browser command")?;
+    command
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let status = tokio::time::timeout(Duration::from_secs(5), command.status())
+        .await
+        .context("browser launch timed out")?
+        .context("launch browser command")?;
     anyhow::ensure!(status.success(), "browser command exited with {status}");
     Ok(())
 }
@@ -480,6 +575,81 @@ mod tests {
         CALLBACK_PATH, PendingFlow, PendingFlowGuard, StdioOauthCoordinator, authorization_state,
         unix_now,
     };
+
+    #[test]
+    fn missing_browser_provides_manual_authorization_and_ssh_callback_guidance() {
+        let url = "https://issuer.example/authorize?state=test&redirect_uri=http%3A%2F%2F127.0.0.1%3A37811%2Fauth%2Fupstream%2Fcallback";
+        let mut output = Vec::new();
+        let error = anyhow::Error::new(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "browser executable missing",
+        ))
+        .context("launch browser command");
+        super::present_browser_result(url, Err(error), &mut output, super::default_oauth_theme())
+            .unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(url));
+        assert!(output.contains("37811:127.0.0.1:37811"));
+        assert!(!output.contains("browser executable missing"));
+        assert!(output.contains("Waiting"));
+    }
+
+    #[test]
+    fn manual_authorization_uses_cli_colors_and_respects_plain_output() {
+        use crate::output::theme::{CliTheme, ColorPolicy, OutputFormat, RenderEnv};
+        let url = "https://issuer.example/authorize?redirect_uri=http%3A%2F%2F127.0.0.1%3A37811%2Fauth%2Fupstream%2Fcallback";
+        for (policy, json, colored) in [
+            (ColorPolicy::Color, false, true),
+            (ColorPolicy::Plain, false, false),
+            (ColorPolicy::Color, true, false),
+        ] {
+            let format = OutputFormat::from_json_flag(
+                json,
+                policy,
+                RenderEnv {
+                    stream_is_tty: true,
+                    no_color: false,
+                    term: Some("xterm-256color".into()),
+                    colorterm: Some("truecolor".into()),
+                    lang: Some("en_US.UTF-8".into()),
+                    lab_symbols: None,
+                    columns: Some(100),
+                    ci: false,
+                },
+            );
+            let theme = CliTheme::from_context(format.render_context());
+            let mut output = Vec::new();
+            super::present_browser_result(
+                url,
+                Err(anyhow::anyhow!("missing browser")),
+                &mut output,
+                theme,
+            )
+            .unwrap();
+            let output = String::from_utf8(output).unwrap();
+            assert_eq!(output.contains("\x1b["), colored, "{policy:?} json={json}");
+            let plain = strip_ansi_escapes::strip_str(&output);
+            assert!(plain.contains(url));
+            assert!(plain.contains("ssh -N -L 37811:127.0.0.1:37811"));
+            assert!(
+                !plain.contains("missing browser"),
+                "raw browser diagnostics belong in verbose logs"
+            );
+        }
+    }
+
+    #[test]
+    fn successful_browser_launch_does_not_print_authorization_url() {
+        let mut output = Vec::new();
+        super::present_browser_result(
+            "https://issuer.example/authorize?state=private",
+            Ok(()),
+            &mut output,
+            super::default_oauth_theme(),
+        )
+        .unwrap();
+        assert!(output.is_empty());
+    }
 
     #[tokio::test]
     async fn callback_pages_preserve_outcome_and_escape_messages() {
@@ -551,7 +721,11 @@ mod tests {
             })
             .await
             .unwrap();
-        let coordinator = StdioOauthCoordinator::new(Arc::new(DashMap::new()), sqlite.clone());
+        let coordinator = StdioOauthCoordinator::new(
+            Arc::new(DashMap::new()),
+            sqlite.clone(),
+            super::default_oauth_theme(),
+        );
         let task_coordinator = Arc::clone(&coordinator);
         let task = tokio::spawn(async move {
             task_coordinator.pending.insert(
