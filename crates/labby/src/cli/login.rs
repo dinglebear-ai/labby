@@ -24,7 +24,11 @@ pub struct LoginArgs {
     pub dynamic_registration: bool,
 }
 
-pub async fn run(args: LoginArgs, format: OutputFormat) -> Result<ExitCode> {
+pub async fn run(
+    args: LoginArgs,
+    format: OutputFormat,
+    stderr_format: OutputFormat,
+) -> Result<ExitCode> {
     let raw = args
         .server
         .or_else(|| std::env::var("LABBY_SERVER_URL").ok())
@@ -42,7 +46,7 @@ pub async fn run(args: LoginArgs, format: OutputFormat) -> Result<ExitCode> {
     } else {
         None
     };
-    crate::oauth::cli_session::login(&server, registration).await?;
+    crate::oauth::cli_session::login_with_output(&server, registration, stderr_format).await?;
     print(
         &serde_json::json!({"authenticated": true, "server": server.as_str()}),
         format,

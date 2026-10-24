@@ -92,7 +92,11 @@ pub struct Cli {
 impl Cli {
     #[must_use]
     pub fn format(&self) -> OutputFormat {
-        OutputFormat::from_json_flag(self.json, self.color, RenderEnv::stdout())
+        self.format_for(RenderEnv::stdout())
+    }
+
+    fn format_for(&self, environment: RenderEnv) -> OutputFormat {
+        OutputFormat::from_json_flag(self.json, self.color, environment)
     }
 }
 
@@ -289,6 +293,8 @@ pub fn dispatch(cli: Cli, config: LabConfig) -> impl Future<Output = Result<Exit
 fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = Result<ExitCode>> {
     Box::pin(async move {
         let format = cli.format();
+        // OAuth instructions go to stderr, independently of result redirection.
+        let stderr_format = cli.format_for(RenderEnv::stderr());
         context::prepare(&mut cli, &mut config)?;
         #[cfg(feature = "gateway")]
         if let Command::Server(server::ServerArgs {
@@ -323,8 +329,8 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
             Command::Skill(_) => Err(anyhow::anyhow!(
                 "internal skill CLI lowering failure; no operation was dispatched"
             )),
-            Command::Serve(args) => serve::run(args, &config).await,
-            Command::Mcp(args) => serve::run_mcp(args, &config).await,
+            Command::Serve(args) => serve::run(args, &config, stderr_format).await,
+            Command::Mcp(args) => serve::run_mcp(args, &config, stderr_format).await,
             Command::Doctor(args) => doctor::run(args, format, &config).await,
             Command::Docs(args) => docs::run(args, format),
             Command::Health => health::run(format).await,
@@ -333,7 +339,7 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
                 if args.server.is_none() {
                     args.server = Some(session::selected_server(&config)?);
                 }
-                login::run(args, format).await
+                login::run(args, format, stderr_format).await
             }
             Command::Setup(args) => setup::run(args, format).await,
             #[cfg(all(feature = "tailcat", unix))]
@@ -412,6 +418,42 @@ mod tests {
             ],
         ] {
             assert!(Cli::try_parse_from([vec!["labby", "auth", "login"], flags].concat()).is_err());
+        }
+    }
+
+    #[test]
+    fn oauth_output_resolves_cli_policy_for_the_destination_stream() {
+        for command in [vec!["auth", "login"], vec!["mcp"], vec!["serve"]] {
+            for (policy, tty, json, colored) in [
+                ("auto", true, false, true),
+                ("auto", false, false, false),
+                ("plain", true, false, false),
+                ("color", false, false, true),
+                ("color", true, true, false),
+            ] {
+                let mut arguments = vec!["labby", "--color", policy];
+                if json {
+                    arguments.push("--json");
+                }
+                arguments.extend(command.iter().copied());
+                let cli = Cli::parse_from(arguments);
+                let environment = RenderEnv {
+                    stream_is_tty: tty,
+                    no_color: false,
+                    term: Some("xterm-256color".into()),
+                    colorterm: None,
+                    lang: Some("en_US.UTF-8".into()),
+                    lab_symbols: None,
+                    columns: Some(100),
+                    ci: false,
+                };
+                // This may be stderr even when stdout has the opposite TTY state.
+                assert_eq!(
+                    cli.format_for(environment).render_context().styled(),
+                    colored,
+                    "command={command:?} policy={policy} tty={tty} json={json}"
+                );
+            }
         }
     }
 

@@ -42,6 +42,20 @@ Keep the terminal open. In ChatGPT Developer mode, add an OAuth app using the pr
 
 ## Google OAuth and ChatGPT web
 
+On macOS and Linux, guided client setup connects local MCP applications such as
+Codex through Labby's stdio bridge and reuses the saved CLI sign-in, including
+OAuth sessions. After guided client setup has saved the gateway connection in
+the installation's protected `.env`, use
+`labby setup clients connect --clients codex` to register the bridge separately.
+The saved connection and OAuth sign-in must use the same installation root.
+`auth login` alone only creates the OAuth profile; use the explicit `--server`
+MCP entry in the guide below when no saved connection exists.
+Credentials stay in the protected Labby installation; the application does not
+need another OAuth login. The bridge refreshes the saved grant and respects
+replacement and logout. `--connection oauth` explicitly selects a direct HTTP
+entry with a separate application-owned OAuth grant instead. See
+[shared CLI sign-in](../design/REMOTE_GATEWAY_TARGET.md#share-the-cli-sign-in-with-a-local-mcp-client).
+
 Direct `labby setup --role server` prepares authentication in `LABBY_HOME` by
 default, without installing or starting a daemon. Use `--deployment native` or
 `--deployment incus` to install a managed server. Bare interactive `labby setup`

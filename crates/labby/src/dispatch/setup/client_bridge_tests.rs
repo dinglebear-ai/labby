@@ -27,8 +27,9 @@ fn saved_credential_is_bound_to_explicit_target_and_not_in_descriptor() {
     assert_eq!(
         credentials(directory.path(), "http://127.0.0.1:8765/mcp")
             .unwrap()
-            .1,
-        "fixture-credential"
+            .1
+            .as_deref(),
+        Some("fixture-credential")
     );
     let descriptor = descriptor(
         directory.path(),
@@ -40,6 +41,52 @@ fn saved_credential_is_bound_to_explicit_target_and_not_in_descriptor() {
         !serde_json::to_string(&descriptor)
             .unwrap()
             .contains("fixture-credential")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn saved_oauth_connection_keeps_root_and_target_binding_without_exporting_token() {
+    let directory = root();
+    labby_runtime::secure_atomic_file::write_secure_atomic(
+        &directory.path().join(".env"),
+        b"LABBY_SERVER_URL=https://oauth.example\nLABBY_MCP_HTTP_TOKEN=\n",
+    )
+    .unwrap();
+    let bound = credentials(directory.path(), "https://oauth.example/mcp");
+    assert!(
+        bound.is_ok(),
+        "saved OAuth must use the shared CLI profile: {bound:?}"
+    );
+    assert_eq!(
+        serde_json::to_value(bound.unwrap().1).unwrap(),
+        serde_json::Value::Null
+    );
+    assert!(credentials(directory.path(), "https://other.example").is_err());
+    let descriptor = descriptor_for_client(
+        directory.path(),
+        "https://oauth.example/mcp",
+        &std::env::current_exe().unwrap(),
+        super::super::client_registration::ExternalClient::Codex,
+    )
+    .unwrap();
+    assert!(
+        descriptor
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--state-root", directory.path().to_str().unwrap()])
+    );
+    assert!(
+        descriptor
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--gateway-url", "https://oauth.example/"])
+    );
+    assert!(
+        descriptor
+            .args
+            .windows(2)
+            .any(|pair| pair == ["--client", "codex"])
     );
 }
 #[cfg(unix)]

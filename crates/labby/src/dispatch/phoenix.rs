@@ -3195,7 +3195,12 @@ while read request; do
   case "$request" in
     *turn/start*)
       printf '{"id":%s,"result":{"turn":{"id":"turn-abandoned"}}}\n' "$id"
-      sleep 0.05
+      remaining=1000
+      while [ ! -f "$0.release" ]; do
+        remaining=$((remaining - 1))
+        [ "$remaining" -gt 0 ] || exit 99
+        sleep 0.01
+      done
       printf '%s\n' '{"method":"item/agentMessage/delta","params":{"threadId":"thread-container","turnId":"turn-abandoned","delta":"completed after caller left"}}'
       printf '%s\n' '{"method":"turn/completed","params":{"threadId":"thread-container","turn":{"id":"turn-abandoned","status":"completed"}}}' ;;
     *) printf '{"id":%s,"result":{}}\n' "$id" ;;
@@ -3231,24 +3236,27 @@ done
                     .await
             }
         });
-        loop {
-            let state = runtime
-                .dispatch(
-                    "principal-a",
-                    "phoenix.session.read",
-                    json!({"session_id":session_id}),
-                )
-                .await
-                .unwrap();
-            if state["turn_status"] == "in_progress" {
-                break;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = runtime
+                    .dispatch(
+                        "principal-a",
+                        "phoenix.session.read",
+                        json!({"session_id":session_id}),
+                    )
+                    .await
+                    .unwrap();
+                if state["active_turn_id"] == "turn-abandoned" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::task::yield_now().await;
-        }
+        })
+        .await
+        .expect("fixture turn was not admitted");
         abandoned.abort();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        let recovered = runtime
+        assert!(abandoned.await.unwrap_err().is_cancelled());
+        let held = runtime
             .dispatch(
                 "principal-a",
                 "phoenix.session.read",
@@ -3256,6 +3264,27 @@ done
             )
             .await
             .unwrap();
+        assert_eq!(held["turn_status"], "in_progress");
+        // Release the provider only after caller cancellation has completed.
+        fs::write(root.path().join("codex-fixture.release"), b"release").unwrap();
+        let recovered = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let state = runtime
+                    .dispatch(
+                        "principal-a",
+                        "phoenix.session.read",
+                        json!({"session_id":session_id}),
+                    )
+                    .await
+                    .unwrap();
+                if state["turn_status"] == "ready" {
+                    break state;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("abandoned turn did not finish cleanup");
         assert_eq!(recovered["turn_status"], "ready");
         assert_eq!(
             recovered["messages"][1]["text"],

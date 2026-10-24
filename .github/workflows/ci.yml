@@ -371,7 +371,7 @@ jobs:
           python3 scripts/tests/test_npm_release_version.py
       - name: Run macOS updater and recovery lifecycle tests
         run: |
-          cargo test -p labby --all-features --locked self_update::tests
+          cargo test -p labby --all-features --lib --locked self_update::tests
           cargo test -p labby --all-features --locked --test gateway_auto_reconnect
 
   frontend-assets:

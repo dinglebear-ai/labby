@@ -46,8 +46,8 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       body: await response.json(),
       sessionAuthenticated: sessionBody.authenticated === true,
       csrfLength: typeof sessionBody.csrf_token === 'string' ? sessionBody.csrf_token.length : 0,
-      sessionTeams: Array.isArray(sessionBody.teams) ? sessionBody.teams : [],
       sessionProjectId: typeof sessionBody.project_id === 'string' ? sessionBody.project_id : null,
+      sessionTeams: Array.isArray(sessionBody.teams) ? sessionBody.teams : [],
     }
   }, { csrfToken, service, name, params, teamId })
 }
@@ -92,7 +92,7 @@ async function selectWorkspaceThroughUi(page: Page, teamId?: string) {
 }
 
 async function stageProtectedRouteThroughUi(page: Page, name: string, loadout: string) {
-  // Client navigation preserves the explicitly selected Team workspace.
+  // Keep the selected Team in the live app session through client navigation.
   await page.getByRole('button', { name: 'Account menu', exact: true }).click()
   await page.getByRole('link', { name: 'Settings', exact: true }).click()
   await page.getByRole('link', { name: /^Client access/ }).click()
@@ -203,7 +203,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.ok(descriptor)
   let name = `browser-stash-${descriptor.run_id}.txt`
   const contents = `live browser stash ${descriptor.run_id}\n`
-  // Settle the initial list before upload-triggered refreshes can overlap it.
+  // Finish the initial debounced list load before upload refreshes can overlap it.
   const initialList = page.waitForResponse(response => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/v1/stash')
   await page.goto('/stash/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
@@ -222,8 +222,8 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   await dropTarget.press('Enter')
   await (await fileChooser).setFiles({ name, mimeType: 'text/plain', buffer: Buffer.from(contents) })
   const observedUpload = await uploadRequest
-  // Chromium may omit File bodies from CDP postData. The server enforces
-  // the exact wire length; the download below verifies persisted bytes.
+  // File bodies are not inline CDP postData entries. A 201 means the server
+  // validated the exact wire length; downloads below verify persisted bytes.
   assert.equal((await observedUpload.response())?.status(), 201, 'File Stash must accept the browser upload')
   await page.getByRole('status').filter({ hasText: `${name} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const row = page.getByRole('article').filter({ hasText: name })
@@ -242,19 +242,25 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
   assert.equal((await observedEmptyUpload.response())?.status(), 201, 'File Stash must accept an empty browser upload')
   await page.getByRole('status').filter({ hasText: `${emptyName} uploaded.` }).waitFor({ state: 'attached', timeout: 15_000 })
   const emptyRow = page.getByRole('article').filter({ hasText: emptyName })
+  // Upload completion precedes the list refresh, which replaces its action menus.
   await emptyRow.waitFor({ state: 'visible', timeout: 10_000 })
-  const emptyDownload = page.waitForEvent('download')
-  await stashFileActionThroughUi(page, emptyName, 'Download')
-  const downloadedEmpty = await emptyDownload
-  assert.equal(downloadedEmpty.suggestedFilename(), emptyName)
-  assert.deepEqual(await readFile((await downloadedEmpty.path())!), Buffer.alloc(0), 'zero-byte upload must persist exactly')
+  await page.getByRole('status').filter({ hasText: 'Loading your files…' }).waitFor({ state: 'hidden', timeout: 10_000 })
+  assert.equal(await page.getByRole('article').count(), 2)
+  const [emptyDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    stashFileActionThroughUi(page, emptyName, 'Download'),
+  ])
+  assert.equal(emptyDownload.suggestedFilename(), emptyName)
+  assert.deepEqual(await readFile((await emptyDownload.path())!), Buffer.alloc(0), 'zero-byte upload must persist exactly')
   await stashFileActionThroughUi(page, emptyName, 'Delete')
   await page.getByRole('alertdialog', { name: 'Delete this file?' }).getByRole('button', { name: 'Delete file' }).click()
   await emptyRow.waitFor({ state: 'detached', timeout: 10_000 })
 
-  const download = page.waitForEvent('download')
-  await stashFileActionThroughUi(page, name, 'Download')
-  assert.deepEqual(await readFile((await (await download).path())!), Buffer.from(contents), 'uploaded bytes must persist exactly')
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),
+    stashFileActionThroughUi(page, name, 'Download'),
+  ])
+  assert.deepEqual(await readFile((await download.path())!), Buffer.from(contents), 'uploaded bytes must persist exactly')
 
   await stashFileActionThroughUi(page, name, 'Manage file')
   const dialog = page.getByRole('dialog', { name: `Manage ${name}` })
@@ -376,15 +382,18 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.equal(persisted.status, 200)
       await assert.doesNotReject(page.locator('a:visible').filter({ hasText: ownedName }).first().waitFor({ state: 'visible', timeout: 10_000 }))
 
-      // Route policy requires explicit Team authority and a Team-owned loadout.
+      // Gateway policy belongs to an explicit Team. Use the authority projected
+      // for this authenticated fixture, rather than the installation loadout.
       routeTeamId = persisted.sessionTeams?.find((team: { id?: unknown }) => typeof team.id === 'string' && team.id.length > 0)?.id
       assert.ok(routeTeamId, 'live browser owner must have a projected Team workspace')
       const loadout = await action(page, csrfToken, 'gateway', 'gateway.loadout.add', {
         loadout: { name: ownedLoadout, upstreams: [], services: [] },
       }, routeTeamId)
       assert.equal(loadout.status, 200, `owned Team loadout create failed: ${JSON.stringify(loadout.body)}`)
-      assert.equal(loadout.body.name, ownedLoadout)
       ownedLoadoutCreated = true
+      // Public Team projections strip the internal team:<id>: namespace.
+      // The explicit workspace/header remains the authorization selector.
+      assert.equal(loadout.body.name, ownedLoadout)
       await selectWorkspaceThroughUi(page, routeTeamId)
       ownedRouteRemoved = false
       await stageProtectedRouteThroughUi(page, ownedRoute, ownedLoadout)
@@ -458,7 +467,7 @@ test('embedded Gateway Admin completes a real backend journey', {
       }
       if (ownedLoadoutCreated && mayContinue()) {
         const result = await action(page, csrfToken, 'gateway', 'gateway.loadout.remove', { name: ownedLoadout }, routeTeamId)
-          .catch(error => ({ status: 0, body: String(error) }))
+          .catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:gateway.loadout.remove:${result.status}`)
         if (![200, 404].includes(result.status)) cleanupFailures.push(`gateway.loadout.remove(${ownedLoadout})=${result.status}`)
       }

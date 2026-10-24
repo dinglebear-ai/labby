@@ -15,6 +15,7 @@ pub mod encryption;
 pub mod google_store;
 pub mod http_client;
 pub mod manager;
+pub mod native;
 pub mod refresh;
 pub mod runtime;
 pub mod store;
