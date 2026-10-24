@@ -556,6 +556,110 @@ follows stderr's terminal state independently of stdout redirection. Native
 stdio OAuth uses the same explicit CLI policy. Routine OAuth console events and browser-launch error details are available with `-v`
 (`-vv` enables trace diagnostics).
 
+### Unattended upstream OAuth
+
+Use client credentials when the upstream grants access to an application rather
+than a person. This mode uses the existing authenticated caller selection and
+encrypted credential store. It does not permit anonymous calls or open a browser.
+Keep the client secret in the named server environment variable.
+
+```toml
+[[upstream]]
+name = "automation"
+url = "https://mcp.example.com/mcp"
+
+[upstream.oauth]
+scopes = ["read"]
+
+[upstream.oauth.mode.client_credentials]
+authentication = "client_secret"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "automation-client"
+client_secret_env = "EXAMPLE_MCP_CLIENT_SECRET"
+```
+
+For `private_key_jwt`, replace the mode table with:
+
+```toml
+[upstream.oauth.mode.client_credentials.authentication.private_key_jwt]
+signing_key_env = "EXAMPLE_MCP_SIGNING_KEY"
+algorithm = "RS256"
+```
+
+The environment variable holds the PEM private key. Configure the corresponding
+public key with the authorization server. Supported algorithms are `RS256`,
+`RS384`, `RS512`, `ES256`, and `ES384`. Signed JWT authentication does not use
+`client_secret_env`.
+
+Client-credentials tokens renew with another client-credentials grant, even when
+no refresh token is issued. Unattended token responses must include a positive
+`expires_in`. Credentials remain bound to the upstream, caller,
+client registration, mode, and requested scopes. Changing the grant configuration
+must not reuse an incompatible stored token.
+Clearing a cached token does not revoke the application credentials. The next
+authenticated call can request another token. Disable the upstream to stop
+automatic grants.
+
+### Enterprise upstream token exchange
+
+Use enterprise exchange only with an approved identity provider and registered
+clients at both token endpoints. Labby uses rmcp's ID-JAG exchange to obtain a
+resource-bound upstream access token. The subject token comes from the configured
+server environment reference; downstream callers cannot supply a replacement.
+
+```toml
+[[upstream]]
+name = "enterprise"
+url = "https://mcp.example.com/mcp"
+
+[upstream.oauth]
+scopes = ["read"]
+
+[upstream.oauth.mode.enterprise_managed]
+resource_authentication = "client_secret_basic"
+
+[upstream.oauth.mode.enterprise_managed.identity_provider]
+issuer = "https://identity.example.com"
+token_endpoint = "https://identity.example.com/token"
+client_id = "labby-identity-client"
+client_secret_env = "EXAMPLE_IDP_CLIENT_SECRET"
+authentication = "client_secret_basic"
+
+[upstream.oauth.mode.enterprise_managed.subject_token]
+token_env = "EXAMPLE_IDP_SUBJECT_TOKEN"
+kind = "id_token"
+
+[upstream.oauth.registration]
+strategy = "preregistered"
+client_id = "labby-resource-client"
+client_secret_env = "EXAMPLE_RESOURCE_CLIENT_SECRET"
+```
+
+`kind` accepts `id_token` or `refresh_token`. The operator owns the supplied
+subject token's freshness and renewal. An ID-token failure does not silently
+switch to a refresh token. Both endpoints use Labby's existing OAuth egress,
+redirect, response-size, and timeout checks. Declared endpoint origins do not
+bypass those checks.
+
+The pinned SDK currently requires discovered authorization-server metadata to
+include `authorization_endpoint`, including for unattended modes. A token-only
+metadata document without that field is not supported.
+
+### Additional upstream permissions
+
+For interactive PKCE upstreams, a valid `403 insufficient_scope` challenge can
+record the permissions required for that caller. Status returns
+`scope_upgrade_required` and `required_scopes`. Use the existing OAuth authorize
+or start action to open the consent URL, then retry the original operation after
+the callback succeeds. Labby does not replay the failed operation automatically.
+
+Only permissions from the validated challenge, existing grant, and configured
+scopes are requested. Authorization-server scope catalogs do not expand the
+request. Pending challenges and consent attempts have bounded lifetimes and
+counts; one caller's challenge does not change another caller's authorization.
+
 ## Direct Stdio Proxy
 
 `labby config proxy set` writes all ten non-secret `[proxy]` keys to

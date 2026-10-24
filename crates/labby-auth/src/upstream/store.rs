@@ -56,6 +56,8 @@ pub struct SqliteCredentialStore {
     // Separate managers retain independent observations of the durable row.
     loaded_blob: std::sync::Mutex<Option<Vec<u8>>>,
     refresh_rejection_handler: Option<super::manager::OauthRefreshRejectionHandler>,
+    grant_binding: Option<Option<String>>,
+    grant_publication_policy: Option<super::manager::GrantPublicationPolicy>,
 }
 
 impl SqliteCredentialStore {
@@ -72,8 +74,25 @@ impl SqliteCredentialStore {
             subject: subject.into(),
             loaded_blob: std::sync::Mutex::new(None),
             refresh_rejection_handler: None,
+            grant_binding: None,
+            grant_publication_policy: None,
         }
     }
+    pub(crate) fn with_grant_publication_policy(
+        mut self,
+        policy: super::manager::GrantPublicationPolicy,
+    ) -> Self {
+        self.grant_publication_policy = Some(policy);
+        self
+    }
+
+    /// Restrict runtime loads to one grant configuration; `None` selects legacy PKCE.
+    #[must_use]
+    pub fn with_grant_binding(mut self, binding: Option<String>) -> Self {
+        self.grant_binding = Some(binding);
+        self
+    }
+
     /// Notify the host only when this adapter removes a rejected generation.
     #[must_use]
     pub fn with_refresh_rejection_handler(
@@ -120,19 +139,58 @@ impl CredentialStore for SqliteCredentialStore {
                 .loaded_blob
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(row.token_blob);
+            if let Some(required) = &self.grant_binding {
+                let marker = creds
+                    .token_response
+                    .as_ref()
+                    .and_then(|token| token.extra_fields().0.get("_labby_grant_binding"));
+                let matches = match required {
+                    Some(expected) => {
+                        marker.and_then(serde_json::Value::as_str) == Some(expected.as_str())
+                    }
+                    None => marker.is_none(),
+                };
+                if !matches {
+                    return Ok(None);
+                }
+            }
             Ok(Some(creds))
         })
     }
 
     fn save<'life0, 'async_trait>(
         &'life0 self,
-        credentials: StoredCredentials,
+        mut credentials: StoredCredentials,
     ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'async_trait>>
     where
         'life0: 'async_trait,
         Self: 'async_trait,
     {
         Box::pin(async move {
+            if let Some(binding) = &self.grant_binding {
+                let token = credentials
+                    .token_response
+                    .as_mut()
+                    .ok_or(AuthError::AuthorizationRequired)?;
+                if binding.is_some() && token.expires_in().is_none_or(|expiry| expiry.is_zero()) {
+                    return Err(AuthError::CredentialStoreError(
+                        "unattended OAuth response requires positive expires_in".into(),
+                    ));
+                }
+                let mut extra = token.extra_fields().clone();
+                match binding {
+                    Some(binding) => {
+                        extra.0.insert(
+                            "_labby_grant_binding".into(),
+                            serde_json::Value::String(binding.clone()),
+                        );
+                    }
+                    None => {
+                        extra.0.remove("_labby_grant_binding");
+                    }
+                }
+                token.set_extra_fields(extra);
+            }
             let token_received_at = credentials
                 .token_received_at
                 .map(|t| t as i64)
@@ -172,6 +230,23 @@ impl CredentialStore for SqliteCredentialStore {
                 refresh_token_present,
             };
 
+            // Only persistence owns this reader. Provider I/O runs before it,
+            // so credential writers can revoke an in-flight grant immediately.
+            let _publication = match &self.grant_publication_policy {
+                Some(policy) => {
+                    // A checked RPC may already own a reader. Never queue a
+                    // nested reader behind a waiting credential writer.
+                    let reader = policy
+                        .barrier
+                        .try_read()
+                        .map_err(|_| AuthError::AuthorizationRequired)?;
+                    if !policy.epoch.is_current() {
+                        return Err(AuthError::AuthorizationRequired);
+                    }
+                    Some(reader)
+                }
+                None => None,
+            };
             let expected = self
                 .loaded_blob
                 .lock()
@@ -185,6 +260,17 @@ impl CredentialStore for SqliteCredentialStore {
                     .await
                     .map_err(|e| AuthError::InternalError(e.to_string()))?;
                 if !replaced {
+                    return Err(AuthError::AuthorizationRequired);
+                }
+            } else if self.grant_binding.as_ref().is_some_and(Option::is_some) {
+                let inserted = self
+                    .store
+                    .insert_upstream_oauth_credentials_if_absent(row)
+                    .await
+                    .map_err(|_| {
+                        AuthError::CredentialStoreError("insert unattended credential".into())
+                    })?;
+                if !inserted {
                     return Err(AuthError::AuthorizationRequired);
                 }
             } else {

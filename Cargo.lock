@@ -2979,6 +2979,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "11.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature 2.2.0",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3068,7 +3086,7 @@ dependencies = [
  "indicatif",
  "jiff",
  "jsonschema",
- "jsonwebtoken",
+ "jsonwebtoken 10.3.0",
  "labby-apis",
  "labby-auth",
  "labby-browser",
@@ -3165,7 +3183,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.2",
  "hmac",
- "jsonwebtoken",
+ "jsonwebtoken 10.3.0",
  "labby-primitives",
  "labby-runtime",
  "labby-winjob",
@@ -5235,7 +5253,7 @@ dependencies = [
 [[package]]
 name = "rmcp"
 version = "3.7.0"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=ec6d9c8024045dd352bb1b98513d82c45fe3d141#ec6d9c8024045dd352bb1b98513d82c45fe3d141"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=91e33f13254f28f469b7baa691a052d5a12b87fe#91e33f13254f28f469b7baa691a052d5a12b87fe"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
@@ -5248,6 +5266,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "indexmap",
+ "jsonwebtoken 11.1.0",
  "libc",
  "oauth2",
  "pastey",
@@ -5273,7 +5292,7 @@ dependencies = [
 [[package]]
 name = "rmcp-macros"
 version = "3.7.0"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=ec6d9c8024045dd352bb1b98513d82c45fe3d141#ec6d9c8024045dd352bb1b98513d82c45fe3d141"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=91e33f13254f28f469b7baa691a052d5a12b87fe#91e33f13254f28f469b7baa691a052d5a12b87fe"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",

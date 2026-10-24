@@ -107,6 +107,18 @@ work_dir="$(mktemp -d)"
         dependency.pop("version")
         self.assertFalse(matches_auth_pin(manifest, "repo", "revision", None))
 
+    def test_auth_pin_accepts_only_the_approved_client_auth_extensions(self):
+        features = ["client", "auth", "transport-streamable-http-client-reqwest"]
+        dependency = {"package": "rmcp", "git": "repo", "rev": "revision", "version": "=3.7.0", "default-features": False, "features": features, "optional": True}
+        for extra in (["auth-client-credentials-jwt"], ["auth-enterprise-managed"], ["auth-client-credentials-jwt", "auth-enterprise-managed"]):
+            with self.subTest(extra=extra):
+                manifest = {"dependencies": {"rmcp-client": {**dependency, "features": features + extra}}}
+                self.assertTrue(matches_auth_pin(manifest, "repo", "revision", "=3.7.0"))
+        for extra in (["server"], ["auth-enterprise-managed", "server"], ["unknown-feature"]):
+            with self.subTest(extra=extra):
+                manifest = {"dependencies": {"rmcp-client": {**dependency, "features": features + extra}}}
+                self.assertFalse(matches_auth_pin(manifest, "repo", "revision", "=3.7.0"))
+
     def test_default_conformance_pin_accepts_production_manifest(self):
         env = os.environ.copy()
         env.pop("LABBY_RMCP_REPOSITORY", None)

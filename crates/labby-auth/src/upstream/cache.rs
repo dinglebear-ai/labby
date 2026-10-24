@@ -328,6 +328,7 @@ impl OauthClientCache {
         let reauth_handler = self.reauth_handler.clone();
         let upstream_name = config.name.clone();
         let subject_owned = subject.to_string();
+        let publication_epoch = lifecycle_epoch.clone();
         let client = self
             .get_or_insert_with(
                 config,
@@ -344,12 +345,20 @@ impl OauthClientCache {
                                 upstream_name
                             ))
                         })?;
-                    let manager = manager.with_refresh_rejection_handler(
-                        self.refresh_rejection_handler(config, &subject_owned)
-                            .await?,
-                    );
+                    let manager = manager
+                        .with_grant_publication_policy(
+                            self.invalidation_barrier(),
+                            publication_epoch,
+                        )
+                        .with_refresh_rejection_handler(
+                            self.refresh_rejection_handler(config, &subject_owned)
+                                .await?,
+                        );
                     let auth_client = match manager.build_auth_client(&subject_owned).await {
                         Err(OauthError::NeedsReauth(reason)) => {
+                            if manager.is_unattended() {
+                                return Err(OauthError::NeedsReauth(reason));
+                            }
                             let Some(handler) = reauth_handler else {
                                 return Err(OauthError::NeedsReauth(reason));
                             };
@@ -407,6 +416,7 @@ impl OauthClientCache {
                 ))
             })?;
         let manager = manager
+            .with_grant_publication_policy(self.invalidation_barrier(), lifecycle_epoch.clone())
             .with_refresh_rejection_handler(self.refresh_rejection_handler(config, subject).await?);
         let Some(handler) = self.reauth_handler.clone() else {
             let client = manager.build_auth_client_with(subject, http_client).await?;
@@ -416,7 +426,7 @@ impl OauthClientCache {
 
         let retry_client = http_client.clone();
         let client = match manager.build_auth_client_with(subject, http_client).await {
-            Err(OauthError::NeedsReauth(_)) => {
+            Err(OauthError::NeedsReauth(_)) if !manager.is_unattended() => {
                 handler(config.name.clone(), subject.to_string()).await?;
                 manager.build_auth_client_with(subject, retry_client).await
             }
@@ -541,6 +551,50 @@ impl OauthClientCache {
             }
         });
         victims
+    }
+
+    /// Record a real upstream scope challenge for this exact OAuth authority.
+    /// A replaced configuration uses a different manager registry; a credential
+    /// change invalidates the retained epoch before another consent can start.
+    pub fn scope_challenge_handler(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> Result<crate::upstream::manager::OauthScopeChallengeHandler, OauthError> {
+        let manager = self
+            .managers
+            .get(&config.name)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                OauthError::Internal(format!(
+                    "no oauth manager registered for upstream '{}'",
+                    config.name
+                ))
+            })?;
+        let current_config = serde_json::to_value(manager.upstream_config()).map_err(|error| {
+            OauthError::Internal(format!("scope authority configuration: {error}"))
+        })?;
+        let requested_config = serde_json::to_value(config).map_err(|error| {
+            OauthError::Internal(format!("scope authority configuration: {error}"))
+        })?;
+        if current_config != requested_config {
+            return Err(OauthError::NeedsReauth(
+                "upstream configuration changed before scope challenge observation".into(),
+            ));
+        }
+        let managers = Arc::clone(&self.managers);
+        let upstream = config.name.clone();
+        let epoch = self.lifecycle_epoch_for(&config.name, subject);
+        let subject = subject.to_string();
+        Ok(Arc::new(move |scope| {
+            if epoch.is_current()
+                && managers
+                    .get(&upstream)
+                    .is_some_and(|current| current.same_scope_challenge_authority(&manager))
+            {
+                manager.record_scope_challenge_with_epoch(&subject, &scope, Some(epoch.clone()));
+            }
+        }))
     }
 
     /// Bind a rejection callback before credentials are loaded. The callback only
@@ -748,7 +802,7 @@ fn registration_fingerprint(
         .as_ref()
         .ok_or_else(|| OauthError::Internal("upstream has no oauth config".to_string()))?;
 
-    Ok(match &oauth.registration {
+    let registration = match &oauth.registration {
         UpstreamOauthRegistration::Preregistered { client_id, .. } => {
             format!("preregistered:{client_id}")
         }
@@ -762,7 +816,13 @@ fn registration_fingerprint(
             // in-flight) so the initial build is not blocked.
             format!("dynamic:{}", dynamic_client_id.unwrap_or("none"))
         }
-    })
+    };
+    let policy = serde_json::to_string(&(&config.url, oauth))
+        .map_err(|_| OauthError::Internal("serialize OAuth client policy".into()))?;
+    Ok(format!(
+        "{registration}:{}",
+        crate::util::fingerprint(&policy)
+    ))
 }
 
 #[cfg(test)]

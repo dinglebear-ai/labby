@@ -333,3 +333,145 @@ async fn status_refresh_rejection_invalidates_cached_runtime_authority() {
     );
     assert_eq!(cache.ready_client_count(), 0);
 }
+
+#[tokio::test]
+async fn successful_callback_keeps_newly_observed_scope_after_runtime_epoch_replacement() {
+    use labby_auth::upstream::{
+        cache::OauthClientCache, encryption::load_key, manager::UpstreamOauthManager,
+    };
+    use std::sync::Arc;
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(401).insert_header(
+            "www-authenticate",
+            format!("Bearer resource_metadata=\"{}/metadata\"", server.uri()),
+        ))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/metadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "resource":format!("{}/mcp",server.uri()), "authorization_servers":[server.uri()]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET")).and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "issuer":server.uri(),"authorization_endpoint":format!("{}/authorize",server.uri()),
+            "token_endpoint":format!("{}/token",server.uri()), "code_challenge_methods_supported":["S256"]
+        }))).mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token":"upgraded-access","token_type":"Bearer","expires_in":3600,
+            "scope":"read files:write","refresh_token":"upgraded-refresh"
+        })))
+        .mount(&server)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let sqlite = labby_auth::sqlite::SqliteStore::open(directory.path().join("auth.db"))
+        .await
+        .unwrap();
+    let mut config = lifecycle_test_upstream("callback-scopes", true);
+    config.url = Some(format!("{}/mcp", server.uri()));
+    config.oauth.as_mut().unwrap().scopes = Some(vec!["read".into()]);
+    config.oauth.as_mut().unwrap().registration = UpstreamOauthRegistration::Preregistered {
+        client_id: "scope-client".into(),
+        client_secret_env: None,
+    };
+    let oauth = UpstreamOauthManager::new(
+        sqlite,
+        load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap(),
+        config.clone(),
+        "http://127.0.0.1/callback".into(),
+    );
+    let managers = Arc::new(dashmap::DashMap::new());
+    managers.insert(config.name.clone(), oauth.clone());
+    let cache = OauthClientCache::new(Arc::clone(&managers));
+    let gateway = super::GatewayManager::new(
+        directory.path().join("config.toml"),
+        crate::gateway::runtime::GatewayRuntimeHandle::default(),
+    )
+    .with_oauth_client_cache(cache.clone())
+    .with_upstream_oauth_managers(managers);
+    let observed = cache.scope_challenge_handler(&config, "alice").unwrap();
+    observed("files:write".into());
+    let before = cache.lifecycle_epoch_for(&config.name, "alice");
+    let consent = gateway
+        .begin_upstream_authorization(&config.name, "alice")
+        .await
+        .unwrap();
+    let csrf = url::Url::parse(&consent.authorization_url)
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "state")
+        .unwrap()
+        .1
+        .into_owned();
+    observed("admin".into());
+    gateway
+        .complete_upstream_authorization_callback(&config.name, "alice", "code", &csrf)
+        .await
+        .unwrap();
+    assert!(
+        !before.is_current(),
+        "callback must replace runtime authority"
+    );
+    assert_eq!(
+        oauth.required_scope_upgrade("alice"),
+        vec!["admin"],
+        "a newer ungranted challenge must survive the authorized callback epoch change"
+    );
+    let status = gateway
+        .upstream_oauth_status(&config.name, "alice")
+        .await
+        .unwrap();
+    assert_eq!(
+        status.state,
+        crate::gateway::oauth::UpstreamOauthConnectionState::ScopeUpgradeRequired
+    );
+    assert_eq!(status.required_scopes, vec!["admin"]);
+    for _ in 0..2 {
+        let consent = gateway
+            .begin_upstream_authorization(&config.name, "alice")
+            .await
+            .unwrap();
+        let csrf = url::Url::parse(&consent.authorization_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == "state")
+            .unwrap()
+            .1
+            .into_owned();
+        gateway
+            .complete_upstream_authorization_callback(&config.name, "alice", "code", &csrf)
+            .await
+            .unwrap();
+        assert_eq!(oauth.required_scope_upgrade("alice"), vec!["admin"]);
+    }
+    assert!(
+        gateway
+            .begin_upstream_authorization(&config.name, "alice")
+            .await
+            .is_err(),
+        "partial grants and replacement epochs cannot reset the attempt budget"
+    );
+    gateway
+        .clear_upstream_credentials(&config.name, "alice")
+        .await
+        .unwrap();
+    assert!(
+        oauth.required_scope_upgrade("alice").is_empty(),
+        "credential clear must not transfer or resurrect a prior challenge"
+    );
+    observed("admin".into());
+    assert!(
+        oauth.required_scope_upgrade("alice").is_empty(),
+        "the prior transport remains fenced"
+    );
+}

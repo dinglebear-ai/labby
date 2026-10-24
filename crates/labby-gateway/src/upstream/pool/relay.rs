@@ -2273,6 +2273,10 @@ impl UpstreamPool {
             Some(&self.shared_http_client),
             handler,
             Some(notification_interceptor),
+            super::transport_config::HttpTransportBudgets {
+                concurrency: self.call_concurrency,
+                request_timeout: self.request_timeout,
+            },
         )
         .await
         {

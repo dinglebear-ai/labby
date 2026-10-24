@@ -381,6 +381,10 @@ impl UpstreamPool {
             self.runtime_origin.as_deref(),
             runtime_owner,
             Some(&self.shared_http_client),
+            super::transport_config::HttpTransportBudgets {
+                concurrency: self.call_concurrency,
+                request_timeout: self.request_timeout,
+            },
         )
         .await?;
         anyhow::ensure!(

@@ -23,3 +23,9 @@ pub mod types;
 
 #[cfg(all(test, feature = "http-axum"))]
 mod refresh_regression_tests;
+
+#[cfg(all(test, feature = "http-axum"))]
+mod machine_grant_tests;
+
+#[cfg(all(test, feature = "http-axum"))]
+mod machine_grant_failure_tests;

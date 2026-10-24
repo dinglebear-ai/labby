@@ -252,6 +252,11 @@ pub(super) async fn build_http_cancellation_sender(
             };
             let capped = http_client::BodyCappedHttpClient::new(base_client, max_response_bytes());
             let client = if let Some((subject, cache)) = oauth {
+                let capped = capped.with_scope_challenge_handler(
+                    cache
+                        .scope_challenge_handler(config, subject)
+                        .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?,
+                );
                 let auth_client = cache
                     .get_or_build_capped(config, subject, capped)
                     .await
@@ -274,6 +279,11 @@ pub(super) async fn build_http_cancellation_sender(
                 let socket_client =
                     LabbyUnixSocketHttpClient::new(socket_path, url, max_response_bytes());
                 let client = if let Some((subject, cache)) = oauth {
+                    let socket_client = socket_client.with_scope_challenge_handler(
+                        cache
+                            .scope_challenge_handler(config, subject)
+                            .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?,
+                    );
                     let auth_client = cache
                         .get_or_build_capped(config, subject, socket_client)
                         .await

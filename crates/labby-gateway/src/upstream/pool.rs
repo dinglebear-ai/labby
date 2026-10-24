@@ -142,6 +142,7 @@ mod tools_call_exact;
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
 mod tools_exposure_tests;
+mod transport_config;
 mod usage_record;
 mod validate;
 

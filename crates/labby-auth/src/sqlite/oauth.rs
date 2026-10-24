@@ -62,6 +62,21 @@ impl SqliteStore {
         .await
     }
 
+    /// Insert an unattended grant only while its identity remains unclaimed.
+    pub async fn insert_upstream_oauth_credentials_if_absent(
+        &self,
+        row: UpstreamOauthCredentialRow,
+    ) -> Result<bool, AuthError> {
+        self.with_conn(move |conn| {
+            conn.execute("INSERT INTO upstream_oauth_credentials (
+                upstream_name, subject, client_id, granted_scopes_json, token_blob, token_blob_nonce,
+                token_received_at, access_token_expires_at, refresh_token_present
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9) ON CONFLICT(upstream_name,subject) DO NOTHING",
+            params![row.upstream_name,row.subject,row.client_id,row.granted_scopes_json,row.token_blob,row.token_blob_nonce,row.token_received_at,row.access_token_expires_at,i64::from(row.refresh_token_present)])
+                .map(|changed| changed==1).map_err(sqlite_error)
+        }).await
+    }
+
     pub async fn upsert_upstream_oauth_credentials(
         &self,
         row: UpstreamOauthCredentialRow,

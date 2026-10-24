@@ -67,7 +67,9 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
   const isSharedGoogle = status?.credential_source === 'google_provider'
   const hasSharedCredential = isSharedGoogle
     && status?.google_credential_broker?.provider_generation !== undefined
-  const missingScopes = status?.google_credential_broker?.missing_scopes ?? []
+  const isUnattended = status?.authorization_mode === 'client_credentials'
+    || status?.authorization_mode === 'enterprise_managed'
+  const missingScopes = status?.required_scopes ?? status?.google_credential_broker?.missing_scopes ?? []
 
   async function handleDisconnect() {
     setError(null)
@@ -117,8 +119,8 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
     if (!status) return null
     if (status.state === 'scope_upgrade_required') {
       return missingScopes.length > 0
-        ? `Grant ${missingScopes.length} missing Google scope${missingScopes.length === 1 ? '' : 's'}`
-        : 'Grant the Google scopes required by this server'
+        ? `Grant ${missingScopes.length} missing ${isSharedGoogle ? 'Google scope' : 'permission'}${missingScopes.length === 1 ? '' : 's'}`
+        : isSharedGoogle ? 'Grant the Google scopes required by this server' : 'Grant the permissions required by this server'
     }
     if (status.refresh_error) return status.refresh_error
     if (status.discovery_error) return status.discovery_error
@@ -145,7 +147,7 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
         {statusDetail && <p className="text-xs text-aurora-text-muted">{statusDetail}</p>}
         {missingScopes.length > 0 && (
           <details className="text-xs text-aurora-text-muted">
-            <summary className="cursor-pointer">Missing Google scopes</summary>
+            <summary className="cursor-pointer">{isSharedGoogle ? 'Missing Google scopes' : 'Required permissions'}</summary>
             <ul className="mt-1 list-disc space-y-1 pl-5">
               {missingScopes.map((scope) => <li key={scope} className="break-all">{scope}</li>)}
             </ul>
@@ -158,9 +160,9 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
               size="sm"
               onClick={handleDisconnect}
             >
-              {isSharedGoogle ? 'Revoke shared access' : 'Disconnect'}
+              {isSharedGoogle ? 'Revoke shared access' : isUnattended ? 'Clear cached token' : 'Disconnect'}
             </Button>
-          ) : (
+          ) : !isUnattended ? (
             <Button size="sm" onClick={handleConnect} disabled={connecting}>
               {connecting
                 ? 'Waiting…'
@@ -168,7 +170,7 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
                   ? 'Grant scopes'
                   : 'Connect'}
             </Button>
-          )}
+          ) : null}
           {!status?.authenticated && hasSharedCredential && (
             <Button variant="destructive" size="sm" onClick={handleDisconnect}>
               Revoke shared access

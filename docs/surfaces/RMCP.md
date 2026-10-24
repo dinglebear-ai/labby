@@ -34,6 +34,7 @@ The 3.7.0 source comparison retains these fork changes:
 | Behavior | Upstream 3.7.0 | Fork policy |
 |---|---|---|
 | Typed extension results | No `Peer::send_request_as` API; core result decoding can discard extension fields | Preserve raw results until the requested type decodes them, across HTTP, SSE, stdio, and Unix sockets |
+| Signed client-credentials grants | JWT form serializer makes the exchange future non-Send | Finish form encoding in a lexical scope before HTTP I/O; retain a Send regression test |
 | Unix-socket response bodies | JSON and error bodies are collected without a configurable byte limit | Retain `with_max_response_bytes` and enforce it before buffering beyond the limit |
 | Origin validation | Malformed-header status and explicit default-port matching are fixed; duplicate headers and portless wildcard matching still need changes | Reject duplicate headers and non-origin URL components; portless entries match the scheme default, while explicit `:*` entries allow any port |
 
@@ -89,6 +90,21 @@ headers, POST bodies, and response-size enforcement remain in effect across
 accepted redirects. This policy preserves the configured upstream network
 boundary; it does not add DNS pinning or prohibit administrator-configured local
 network servers.
+
+### Additional SDK auth and HTTP policies
+
+- HTTP and Unix-socket workers derive ordinary POST concurrency from the pool's
+  configured call limit. Control requests retain the SDK's separate reserved
+  slot; their timeout is bounded by the request and cancellation-delivery budgets.
+  Session recovery uses the request and discovery budgets, and SSE events use the
+  configured transport response cap. Session-expired recovery remains single-shot;
+  unfinished requests with uncertain effects are not replayed.
+- Unattended grants use SDK client-credentials or enterprise exchange APIs through
+  the existing bounded OAuth HTTP adapter and encrypted credential lifecycle.
+  Secret references stay in configuration; secret values stay out of responses.
+- Interactive scope upgrades require an observed, caller-bound insufficient-scope
+  challenge and explicit consent through the existing PKCE state/callback path.
+  No failed operation is replayed automatically.
 
 ## Scope
 

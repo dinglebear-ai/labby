@@ -53,6 +53,8 @@ use crate::upstream::http_client::{
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
 mod discovery;
+#[path = "machine_grants.rs"]
+mod machine_grants;
 
 static SHARED_GOOGLE_REFRESH_FLIGHTS: OnceLock<Arc<RefreshLocks>> = OnceLock::new();
 
@@ -68,6 +70,12 @@ use discovery::{
 
 use crate::upstream::types::{
     BeginAuthorization, GoogleCredentialBrokerStatus, OAuthEgressKind, OauthError,
+};
+
+#[path = "scope_upgrade.rs"]
+mod scope_upgrade;
+pub use scope_upgrade::{
+    OauthScopeChallengeHandler, ScopeChallengeTransfer, required_scope_from_challenge,
 };
 
 const TOKEN_EXPIRY_WARNING_SECS: i64 = 300;
@@ -100,6 +108,12 @@ impl AuthClientTransport {
 /// `None`. The handler must not block or acquire the gateway lifecycle writer.
 pub type OauthRefreshRejectionHandler = Arc<dyn Fn(Option<String>) + Send + Sync>;
 
+#[derive(Clone)]
+pub(crate) struct GrantPublicationPolicy {
+    pub(crate) barrier: Arc<RwLock<()>>,
+    pub(crate) epoch: crate::upstream::cache::OAuthLifecycleEpoch,
+}
+
 /// Upstream OAuth manager for a single upstream MCP server.
 ///
 /// Cheap to clone — all mutable state is behind `Arc`.
@@ -116,6 +130,8 @@ pub struct UpstreamOauthManager {
     /// Cached AS metadata (fetched once per upstream, shared across subjects).
     metadata_cache: Arc<RwLock<Option<AuthorizationMetadata>>>,
     refresh_rejection_handler: Option<OauthRefreshRejectionHandler>,
+    grant_publication_policy: Option<GrantPublicationPolicy>,
+    scope_challenges: Arc<scope_upgrade::ScopeUpgradeChallenges>,
 }
 
 impl UpstreamOauthManager {
@@ -139,7 +155,20 @@ impl UpstreamOauthManager {
             refresh_failures: Arc::new(RefreshFailureCache::new()),
             metadata_cache: Arc::new(RwLock::new(None)),
             refresh_rejection_handler: None,
+            grant_publication_policy: None,
+            scope_challenges: Arc::new(scope_upgrade::ScopeUpgradeChallenges::default()),
         }
+    }
+
+    /// Bind unattended grant publication to the caller's existing credential lifecycle.
+    #[must_use]
+    pub fn with_grant_publication_policy(
+        mut self,
+        barrier: Arc<RwLock<()>>,
+        epoch: crate::upstream::cache::OAuthLifecycleEpoch,
+    ) -> Self {
+        self.grant_publication_policy = Some(GrantPublicationPolicy { barrier, epoch });
+        self
     }
 
     /// Install a non-blocking notification for a successful refresh rejection CAS.
@@ -252,6 +281,12 @@ impl UpstreamOauthManager {
         &self,
         subject: &str,
     ) -> Result<BeginAuthorization, OauthError> {
+        if self.is_unattended() {
+            return Err(OauthError::UnsupportedMethod(
+                "this OAuth mode obtains unattended grants; browser authorization is not supported"
+                    .into(),
+            ));
+        }
         let started = std::time::Instant::now();
         let mut scopes_owned = self.effective_scopes()?;
         let select_initial_scopes = scopes_owned.is_empty();
@@ -345,16 +380,9 @@ impl UpstreamOauthManager {
             OauthError::Internal(format!("configure client: {e}"))
         })?;
 
-        let authorization_url = manager.get_authorization_url(&scopes).await.map_err(|e| {
-            tracing::warn!(
-                upstream = %self.upstream.name,
-                subject_id = %crate::util::fingerprint(subject),
-                kind = "internal_error",
-                error = %e,
-                "upstream oauth: authorization URL generation failed"
-            );
-            OauthError::Internal(format!("get authorization url: {e}"))
-        })?;
+        let authorization_url = self
+            .authorization_url_with_scope_challenge(&manager, subject, &scopes)
+            .await?;
         let authorization_url = google_offline_access_url(&authorization_url)?;
 
         let _csrf = extract_state_param(&authorization_url).ok_or_else(|| {
@@ -443,6 +471,10 @@ impl UpstreamOauthManager {
         // A fresh grant supersedes whatever was failing before -- don't make
         // the caller wait out the circuit-breaker cooldown after fixing it.
         self.refresh_failures.clear(&self.upstream.name, subject);
+        // The SDK retains the actual grant, including RFC 6749 requested-scope
+        // fallback when the token response omits its scope field.
+        let granted_scopes = auth_manager.get_current_scopes().await;
+        self.clear_completed_scope_challenge(subject, csrf_token, &granted_scopes);
 
         Ok(())
     }
@@ -554,6 +586,9 @@ impl UpstreamOauthManager {
         subject: &str,
         transport: AuthClientTransport,
     ) -> Result<AuthorizationManager, OauthError> {
+        if self.is_unattended() {
+            return self.unattended_authorization_manager(subject).await;
+        }
         let started = std::time::Instant::now();
         self.preflight_shared_google_credential().await?;
 
@@ -745,6 +780,12 @@ impl UpstreamOauthManager {
     }
 
     async fn refresh_auth_client_if_due_owned(&self, subject: &str) -> Result<bool, OauthError> {
+        if self.is_unattended() {
+            return self
+                .unattended_credentials(subject, 300)
+                .await
+                .map(|(_, renewed)| renewed);
+        }
         let started = std::time::Instant::now();
         self.preflight_shared_google_credential().await?;
 
@@ -1082,7 +1123,8 @@ impl UpstreamOauthManager {
                     self.key.clone(),
                     &self.upstream.name,
                     subject,
-                );
+                )
+                .with_grant_binding(None);
                 if let Some(handler) = &self.refresh_rejection_handler {
                     store = store.with_refresh_rejection_handler(Arc::clone(handler));
                 }

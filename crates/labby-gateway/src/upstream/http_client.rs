@@ -103,6 +103,7 @@ pub struct BodyCappedHttpClient {
     max_bytes: usize,
     response_budget: Arc<tokio::sync::Semaphore>,
     response_weight: u32,
+    scope_challenge_handler: Option<labby_auth::upstream::manager::OauthScopeChallengeHandler>,
 }
 
 /// Keep transport credentials and POST bodies on the configured origin.
@@ -193,6 +194,33 @@ impl BodyCappedHttpClient {
             max_bytes,
             response_budget,
             response_weight: u32::try_from(response_weight).unwrap_or(u32::MAX),
+            scope_challenge_handler: None,
+        }
+    }
+
+    /// Observe a subject-scoped insufficient-scope challenge without replaying a request.
+    pub(crate) fn with_scope_challenge_handler(
+        mut self,
+        handler: labby_auth::upstream::manager::OauthScopeChallengeHandler,
+    ) -> Self {
+        self.scope_challenge_handler = Some(handler);
+        self
+    }
+
+    fn observe_scope_challenge(&self, response: &reqwest::Response) {
+        if response.status() != reqwest::StatusCode::FORBIDDEN {
+            return;
+        }
+        if let Some(handler) = &self.scope_challenge_handler {
+            for header in response.headers().get_all(WWW_AUTHENTICATE) {
+                if let Some(scope) = header
+                    .to_str()
+                    .ok()
+                    .and_then(labby_auth::upstream::manager::required_scope_from_challenge)
+                {
+                    handler(scope);
+                }
+            }
         }
     }
 
@@ -226,6 +254,7 @@ impl BodyCappedHttpClient {
             response_budget,
             response_weight: u32::try_from(max_bytes.div_ceil(RESPONSE_BUDGET_QUANTUM).max(1))
                 .unwrap(),
+            scope_challenge_handler: None,
         }
     }
 }
@@ -684,6 +713,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             .send()
             .await
             .map_err(StreamableHttpError::Client)?;
+        self.observe_scope_challenge(&response);
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
         }
@@ -728,6 +758,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         }
         request = apply_custom_headers(request, custom_headers)?;
         let response = request.send().await.map_err(StreamableHttpError::Client)?;
+        self.observe_scope_challenge(&response);
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Ok(());
         }
@@ -782,6 +813,7 @@ impl StreamableHttpClient for BodyCappedHttpClient {
             .send()
             .await
             .map_err(StreamableHttpError::Client)?;
+        self.observe_scope_challenge(&response);
         if response.status() == reqwest::StatusCode::UNAUTHORIZED
             && let Some(header) = response.headers().get(WWW_AUTHENTICATE)
         {
@@ -1109,6 +1141,186 @@ mod tests {
             .expect_err("bounded loop");
         assert!(matches!(error, StreamableHttpError::Client(error) if error.is_redirect()));
         assert!(server.received_requests().await.expect("requests").len() <= 12);
+    }
+
+    #[tokio::test]
+    async fn insufficient_scope_challenge_is_recorded_without_replaying_the_rpc() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).insert_header(
+                "www-authenticate",
+                r#"Bearer error="insufficient_scope", scope="files:write""#,
+            ))
+            .mount(&server)
+            .await;
+        let scopes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = Arc::clone(&scopes);
+        let client = build(1024).with_scope_challenge_handler(Arc::new(move |scope| {
+            observed.lock().unwrap().push(scope);
+        }));
+        let result = client
+            .post_message(
+                server.uri().into(),
+                jsonrpc_request(),
+                None,
+                Some("subject-token".into()),
+                HashMap::new(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(StreamableHttpError::InsufficientScope(_))
+        ));
+        assert_eq!(*scopes.lock().unwrap(), vec!["files:write".to_string()]);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a mutating RPC must not replay before explicit user authorization"
+        );
+    }
+
+    #[tokio::test]
+    async fn real_scope_challenge_drives_only_its_subjects_explicit_consent() {
+        use labby_auth::upstream::{cache::OauthClientCache, manager::UpstreamOauthManager};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(403).insert_header(
+                "www-authenticate",
+                r#"Bearer error="insufficient_scope", scope="files:write""#,
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/mcp"))
+            .respond_with(ResponseTemplate::new(401).insert_header(
+                "www-authenticate",
+                format!(r#"Bearer resource_metadata="{}/metadata""#, server.uri()),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/metadata"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resource":format!("{}/mcp",server.uri()), "authorization_servers":[server.uri()]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET")).and(path("/.well-known/oauth-authorization-server"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "issuer":server.uri(), "authorization_endpoint":format!("{}/authorize",server.uri()),
+                "token_endpoint":format!("{}/token",server.uri()), "code_challenge_methods_supported":["S256"],
+                "scopes_supported":["read","files:write","admin"]
+            }))).mount(&server).await;
+        let db = labby_auth::sqlite::SqliteStore::open_with_key(
+            tempfile::tempdir().unwrap().keep().join("auth.db"),
+            Some(
+                labby_auth::at_rest::TokenEncryptionKey::from_encoded(
+                    "0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+            ),
+        )
+        .await
+        .unwrap();
+        let config: labby_runtime::gateway_config::UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name":"scoped", "url":format!("{}/mcp",server.uri()),
+            "oauth":{"mode":"authorization_code_pkce","registration":{"strategy":"preregistered","client_id":"client"},"scopes":["read"]}
+        })).unwrap();
+        let manager = UpstreamOauthManager::new(
+            db,
+            labby_auth::upstream::encryption::load_key(
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            )
+            .unwrap(),
+            config.clone(),
+            "http://127.0.0.1/callback".into(),
+        );
+        let managers = Arc::new(dashmap::DashMap::new());
+        managers.insert("scoped".into(), manager.clone());
+        let cache = OauthClientCache::new(managers);
+        let client = build(1024)
+            .with_scope_challenge_handler(cache.scope_challenge_handler(&config, "alice").unwrap());
+        let result = client
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                Some("alice-token".into()),
+                HashMap::new(),
+            )
+            .await;
+        assert!(matches!(
+            result,
+            Err(StreamableHttpError::InsufficientScope(_))
+        ));
+        assert_eq!(manager.required_scope_upgrade("alice"), vec!["files:write"]);
+        assert!(manager.required_scope_upgrade("bob").is_empty());
+        let consent = manager.begin_authorization("alice").await.unwrap();
+        let url = url::Url::parse(&consent.authorization_url).unwrap();
+        let query = url.query_pairs().collect::<HashMap<_, _>>();
+        assert_eq!(query.get("scope").unwrap(), "files:write read");
+        assert_eq!(query.get("code_challenge_method").unwrap(), "S256");
+        assert!(query.contains_key("state"));
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method.as_str() == "POST")
+                .count(),
+            1,
+            "consent preparation must not replay the original RPC"
+        );
+        // A replacement credential fences both future observations and the
+        // previously recorded challenge before another consent is generated.
+        {
+            let _writer = cache.invalidation_barrier().write_owned().await;
+            cache.advance_subject_epoch("scoped", "alice");
+        }
+        assert!(manager.required_scope_upgrade("alice").is_empty());
+        let _result = client
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                jsonrpc_request(),
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await;
+        assert!(manager.required_scope_upgrade("alice").is_empty());
+    }
+
+    #[tokio::test]
+    async fn unrelated_forbidden_challenge_cannot_request_scope_escalation() {
+        for challenge in [
+            r#"Bearer error="access_denied", scope="admin""#,
+            r#"Basic scope="admin""#,
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(403).insert_header("www-authenticate", challenge),
+                )
+                .mount(&server)
+                .await;
+            let scopes = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observed = Arc::clone(&scopes);
+            let client = build(1024).with_scope_challenge_handler(Arc::new(move |scope| {
+                observed.lock().unwrap().push(scope);
+            }));
+            let _result = client
+                .post_message(
+                    server.uri().into(),
+                    jsonrpc_request(),
+                    None,
+                    None,
+                    HashMap::new(),
+                )
+                .await;
+            assert!(scopes.lock().unwrap().is_empty());
+        }
     }
 
     #[test]
