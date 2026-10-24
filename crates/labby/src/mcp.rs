@@ -31,6 +31,8 @@ pub mod handlers_tools;
 pub mod in_process_peer;
 pub mod logging;
 pub mod meta;
+pub(crate) mod native_metadata;
+pub(crate) mod native_tasks;
 pub(crate) mod pagination;
 pub(crate) mod peer_contract;
 pub mod peers;

@@ -27,6 +27,7 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
+use crate::mcp::native_metadata::native_resource;
 #[cfg(feature = "gateway")]
 use crate::mcp::resource_errors::fetch_classified as resource_fetch_classified;
 use crate::mcp::resource_errors::{
@@ -496,7 +497,7 @@ impl OwnedAppRegistration {
     /// Build the MCP resource metadata for one registered runtime variant.
     fn resource(self, descriptor: &AppResourceDescriptor) -> Resource {
         let uri = self.versioned_uri(descriptor.uri);
-        Resource::new(uri.clone(), descriptor.name.to_string())
+        native_resource(Resource::new(uri.clone(), descriptor.name.to_string()))
             .with_description(descriptor.resource_description)
             .with_mime_type(descriptor.runtime.mime())
             .with_meta(app_resource_meta_for_descriptor(&uri, descriptor))
@@ -832,7 +833,9 @@ impl LabMcpServer {
                 ("lab://gateway/limits", "Code Mode limits"),
                 ("lab://capabilities", "Capability overview"),
             ] {
-                resources.accept(Resource::new(uri, name).with_mime_type("application/json"));
+                resources.accept(
+                    native_resource(Resource::new(uri, name)).with_mime_type("application/json"),
+                );
                 if resources.finished() {
                     break;
                 }
@@ -848,7 +851,7 @@ impl LabMcpServer {
 
         if !resources.finished() {
             resources.accept(
-                Resource::new("lab://catalog", "catalog")
+                native_resource(Resource::new("lab://catalog", "catalog"))
                     .with_description("Full discovery document for all services")
                     .with_mime_type("application/json"),
             );
@@ -859,30 +862,36 @@ impl LabMcpServer {
         #[cfg(feature = "skills")]
         if !resources.finished() {
             resources.accept(
-                Resource::new(SKILLS_EXTENSION_CONTRACT_URI, "contracts/skills-extension")
-                    .with_description(
-                        "The MCP Skills extension (SEP-2640) contract this server implements: \
+                native_resource(Resource::new(
+                    SKILLS_EXTENSION_CONTRACT_URI,
+                    "contracts/skills-extension",
+                ))
+                .with_description(
+                    "The MCP Skills extension (SEP-2640) contract this server implements: \
                          pinned draft revision, URI grammar, and verification requirements",
-                    )
-                    .with_mime_type("text/markdown"),
+                )
+                .with_mime_type("text/markdown"),
             );
         }
         if !resources.finished() {
             resources.accept(
-                Resource::new(AGENT_ERROR_CONTRACT_URI, "contracts/agent-error")
-                    .with_description(
-                        "JSON Schema for the versioned agent-error contract carried by every \
+                native_resource(Resource::new(
+                    AGENT_ERROR_CONTRACT_URI,
+                    "contracts/agent-error",
+                ))
+                .with_description(
+                    "JSON Schema for the versioned agent-error contract carried by every \
                          Labby error envelope (kind, origin, recovery, side_effects)",
-                    )
-                    .with_mime_type(CONTRACT_SCHEMA_MIME),
+                )
+                .with_mime_type(CONTRACT_SCHEMA_MIME),
             );
         }
         if !resources.finished() {
             resources.accept(
-                Resource::new(
+                native_resource(Resource::new(
                     CODE_MODE_CALL_ERROR_CONTRACT_URI,
                     "contracts/code-mode-call-error",
-                )
+                ))
                 .with_description(
                     "JSON Schema for the structured error object a failed Code Mode \
                      callTool rejects with",
@@ -1003,7 +1012,7 @@ impl LabMcpServer {
                     let uri = format!("lab://{}/actions", svc.name);
                     let name = format!("{}/actions", svc.name);
                     resources.accept(
-                        Resource::new(uri, name)
+                        native_resource(Resource::new(uri, name))
                             .with_description(format!("Action list for {}", svc.name))
                             .with_mime_type("application/json"),
                     );
@@ -1777,6 +1786,8 @@ impl LabMcpServer {
                 ResourceContents::text(SKILLS_EXTENSION_CONTRACT, uri.to_string())
                     .with_mime_type("text/markdown"),
             ])
+            .with_ttl_ms(60_000)
+            .with_cache_scope(rmcp::model::CacheScope::Private)
             .into());
         }
         if uri == AGENT_ERROR_CONTRACT_URI || uri == CODE_MODE_CALL_ERROR_CONTRACT_URI {
@@ -1924,7 +1935,9 @@ impl LabMcpServer {
         .await;
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(schema, uri.to_string()).with_mime_type(CONTRACT_SCHEMA_MIME),
-        ]))
+        ])
+        .with_ttl_ms(60_000)
+        .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn read_local_json_resource(
@@ -3999,7 +4012,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
     async fn contract_schema_resources_are_listed_and_readable() {
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
-            code_mode_server().await,
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await,
             transport,
             None,
         );
@@ -4011,6 +4024,28 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
             .await
             .expect("list resources");
+        assert!(
+            listed.resources.iter().any(|resource| {
+                resource.uri.starts_with("lab://") && resource.uri.ends_with("/actions")
+            }),
+            "the fixture must exercise native action resource metadata"
+        );
+        for resource in listed.resources.iter().filter(|resource| {
+            resource.uri.starts_with("lab://") && resource.uri.ends_with("/actions")
+        }) {
+            assert!(
+                resource
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| !title.is_empty())
+            );
+            assert!(
+                resource
+                    .icons
+                    .as_ref()
+                    .is_some_and(|icons| !icons.is_empty())
+            );
+        }
         for uri in [AGENT_ERROR_CONTRACT_URI, CODE_MODE_CALL_ERROR_CONTRACT_URI] {
             let resource = listed
                 .resources
@@ -4018,6 +4053,18 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .find(|resource| resource.uri == uri)
                 .unwrap_or_else(|| panic!("contract resource {uri} must be listed"));
             assert_eq!(resource.mime_type.as_deref(), Some(CONTRACT_SCHEMA_MIME));
+            assert!(
+                resource
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| !title.is_empty())
+            );
+            assert!(
+                resource
+                    .icons
+                    .as_ref()
+                    .is_some_and(|icons| !icons.is_empty())
+            );
         }
 
         // Each reads back as the embedded, parseable JSON Schema.
@@ -4037,6 +4084,12 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .await
                 .unwrap_or_else(|e| panic!("read {uri}: {e:?}"));
             let result = complete_resource(response);
+            assert_eq!(
+                result.ttl_ms,
+                Some(60_000),
+                "embedded schemas have a short private cache lifetime"
+            );
+            assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Private));
             let ResourceContents::TextResourceContents { text, .. } = &result.contents[0] else {
                 panic!("contract schema must be text content");
             };
@@ -4049,6 +4102,28 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 schema["$id"]
             );
         }
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn embedded_skills_contract_has_private_cache_lifetime() {
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            code_mode_server().await,
+            transport,
+            None,
+        );
+        let response = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILLS_EXTENSION_CONTRACT_URI),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect("read embedded skills contract");
+        let result = complete_resource(response);
+        assert_eq!(result.ttl_ms, Some(60_000));
+        assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Private));
     }
 
     #[tokio::test]

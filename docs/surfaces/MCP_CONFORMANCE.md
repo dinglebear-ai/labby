@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.7.0`, Git revision `91e33f13254f28f469b7baa691a052d5a12b87fe` |
+| Labby rmcp dependency | fork `3.7.0`, Git revision `188f0f2582f9c8e8232a5ed61b6c0692a2f5f64b` |
 | rmcp conformance fixture | stock upstream `3.7.0` |
 | rmcp fixture tag commit | `5d6a11f2ae022f513aec0f6e0f10f89a57891a7f` |
 | MCP conformance package | `0.2.0-alpha.10` |
@@ -113,9 +113,9 @@ unroutable.
 | Unix-socket upstreams | rmcp native Unix Streamable HTTP client; origin-form request targets; bounded JSON/SSE responses; HTTP-equivalent auth, lifecycle, cancellation, and graceful degradation | rmcp Unix transport suite plus Labby adapter/connect/cancellation regressions |
 | SEP-2243 headers | rmcp validates method/name headers before dispatch; Labby's HTTP and Unix adapters defensively replace stale method/name mirrors at the wire boundary | HTTP method/name header tests plus Unix adapter/wire tests |
 | Request envelopes | Metadata, input responses, request state, cancellation, and progress association survive proxy routes | request-envelope tests and relay module |
-| Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope | tool, prompt, resource, and server serialization tests |
+| Cache hints | Dynamic Labby lists/reads emit `ttlMs: 0` with private scope; immutable embedded contracts use 60 seconds, private scope | tool, prompt, resource, and server serialization tests |
 | MRTR | Tool, prompt, and resource intermediate results remain first-class | relay tests and multi-hop driver |
-| Tasks | Opaque, durable-before-ack handles; shared owner/config authorization on get/update/cancel; retained relay still required | task routing, durable-store, registration-race, and relay task-status regressions |
+| Tasks | Native Agent Tasks and upstream tasks use distinct durable handles; current owner/route authorization on get/cancel; native result access remains creator-only; retained upstream relay still required | task routing, durable-store, registration-race, and relay task-status regressions |
 | Subscriptions | Labby consumes upstream listen streams and forwards subscribed list/resource notifications | upstream subscription and peer fanout tests |
 | Resource subscriptions | Labby acknowledges only exact URIs an upstream accepted | subscription filter tests |
 | Progress and cancellation | Request IDs and progress tokens are translated per relay connection; cancellation targets the actual upstream request | relay connector/route tests plus the multi-hop driver |

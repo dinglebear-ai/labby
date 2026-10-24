@@ -586,7 +586,15 @@ For `private_key_jwt`, replace the mode table with:
 [upstream.oauth.mode.client_credentials.authentication.private_key_jwt]
 signing_key_env = "EXAMPLE_MCP_SIGNING_KEY"
 algorithm = "RS256"
+# Optional: use the audience identifier required by your authorization server.
+# token_endpoint_audience = "https://idp.example.com/oauth/token"
 ```
+
+When omitted, the signed assertion audience is the discovered authorization-server
+issuer. An explicit
+`token_endpoint_audience` can also be an opaque identifier such as a URN. It must
+be nonempty and contain no leading/trailing whitespace or control characters.
+Changing it invalidates the cached grant binding.
 
 The environment variable holds the PEM private key. Configure the corresponding
 public key with the authorization server. Supported algorithms are `RS256`,

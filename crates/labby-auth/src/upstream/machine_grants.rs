@@ -373,6 +373,7 @@ impl UpstreamOauthManager {
                     UpstreamMachineAuthentication::PrivateKeyJwt {
                         signing_key_env,
                         algorithm,
+                        token_endpoint_audience,
                     } => ClientCredentialsConfig::PrivateKeyJwt {
                         client_id: client_id.clone(),
                         signing_key: secret(signing_key_env)?.into_bytes(),
@@ -383,7 +384,7 @@ impl UpstreamOauthManager {
                             UpstreamClientJwtAlgorithm::ES256 => JwtSigningAlgorithm::ES256,
                             UpstreamClientJwtAlgorithm::ES384 => JwtSigningAlgorithm::ES384,
                         },
-                        token_endpoint_audience: None,
+                        token_endpoint_audience: token_endpoint_audience.clone(),
                         scopes,
                         resource: Some(resource.to_string()),
                     },

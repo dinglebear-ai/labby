@@ -1037,12 +1037,23 @@ impl UpstreamConfig {
                     UpstreamOauthMode::ClientCredentials {
                         authentication:
                             UpstreamMachineAuthentication::PrivateKeyJwt {
-                                signing_key_env, ..
+                                signing_key_env,
+                                token_endpoint_audience,
+                                ..
                             },
                     } => {
                         if !valid_env(signing_key_env) {
                             return Err(invalid_oauth(
                                 "private_key_jwt requires a valid signing_key_env reference",
+                            ));
+                        }
+                        if token_endpoint_audience.as_ref().is_some_and(|audience| {
+                            audience.trim().is_empty()
+                                || audience.trim() != audience
+                                || audience.chars().any(char::is_control)
+                        }) {
+                            return Err(invalid_oauth(
+                                "private_key_jwt token_endpoint_audience must be nonempty, without surrounding whitespace or control characters",
                             ));
                         }
                     }
@@ -1873,6 +1884,10 @@ pub enum UpstreamMachineAuthentication {
         signing_key_env: String,
         /// Signing algorithm registered for this client.
         algorithm: UpstreamClientJwtAlgorithm,
+        /// Exact registered assertion audience; defaults to the discovered issuer.
+        /// This is an identifier, not a network destination, and may be opaque.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token_endpoint_audience: Option<String>,
     },
 }
 

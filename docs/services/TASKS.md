@@ -1,7 +1,7 @@
 ---
 title: "Agent Tasks and Schedules"
 created: "2026-09-13"
-updated: "2026-09-27"
+updated: "2026-10-24"
 ---
 
 # Agent Tasks and Schedules
@@ -37,8 +37,9 @@ Task. Reusing the identifier for different intent returns the same denial used
 for an unauthorized identifier.
 
 `tasks.queue` rechecks the pinned revision and current authority before moving a
-Task from `created`, `failed`, `cancelled`, or `expired` to `queued`. A successful
-Task cannot be queued again. Each attempt receives a fresh fence and progresses
+Task from `created` to `queued`. A freshly authorized queue call can resume a
+durable `queued` Task with no live worker; it does not start a second live
+attempt. Terminal Tasks cannot be queued again. Each attempt receives a fresh fence and progresses
 through `queued` and `running` to one terminal state:
 
 - `succeeded` with an output digest;
@@ -61,6 +62,27 @@ team administration alone does not grant access to another creator's result.
 Agent update, suspension, deletion, membership change, or other authority drift
 can block a Task before execution or before result commit. Settlement is fenced
 and terminal, so a stale worker cannot overwrite the accepted outcome.
+
+## MCP Task handles
+
+Clients using MCP `2026-07-28` or later can declare the
+`io.modelcontextprotocol/tasks` extension in their request capabilities. For
+those clients, a successful native `tasks.queue` call returns a standard MCP
+Task handle instead of the ordinary queue envelope. `tasks.create` keeps its
+ordinary response. Clients without that declaration keep the existing behavior.
+
+Use the returned handle with `tasks/get` and `tasks/cancel`. Handles belong to
+the same durable job across worker recovery; polling does not enqueue work.
+They recommend a one-second polling interval and expire 24 hours after job
+creation. The ordinary authenticated `tasks.get` and `tasks.result` actions
+remain available after a protocol handle expires.
+
+Each operation rechecks current caller, route, owner, and action access.
+Terminal result details remain creator-only, including for Team administrators.
+The protocol status becomes `completed`, `failed`, or `cancelled` when the
+existing runtime settles the job. Native jobs have no outstanding input
+requests, so `tasks/update` rejects them. Upstream MCP tasks retain their
+existing proxy handles and routing.
 
 ## Create a schedule
 

@@ -1,7 +1,7 @@
 ---
 title: "RMCP"
 created: "2026-07-30"
-updated: "2026-10-23"
+updated: "2026-10-24"
 ---
 
 # RMCP
@@ -36,6 +36,7 @@ The 3.7.0 source comparison retains these fork changes:
 | Typed extension results | No `Peer::send_request_as` API; core result decoding can discard extension fields | Preserve raw results until the requested type decodes them, across HTTP, SSE, stdio, and Unix sockets |
 | Signed client-credentials grants | JWT form serializer makes the exchange future non-Send | Finish form encoding in a lexical scope before HTTP I/O; retain a Send regression test |
 | Unix-socket response bodies | JSON and error bodies are collected without a configurable byte limit | Retain `with_max_response_bytes` and enforce it before buffering beyond the limit |
+| SSE retry policy | Graceful EOF and initial stream errors bypass the retry policy; server hints can exceed the configured delay | Consult the policy on every reconnect path; reject hints above the configured cap |
 | Origin validation | Malformed-header status and explicit default-port matching are fixed; duplicate headers and portless wildcard matching still need changes | Reject duplicate headers and non-origin URL components; portless entries match the scheme default, while explicit `:*` entries allow any port |
 
 Upstream's Origin fixes are [PR #1192](https://github.com/modelcontextprotocol/rust-sdk/pull/1192)
@@ -106,6 +107,29 @@ network servers.
   challenge and explicit consent through the existing PKCE state/callback path.
   No failed operation is replayed automatically.
 
+### Native protocol adoption
+
+- SSE subscriptions allow three consecutive failed reconnect GETs. Successful
+  GET establishment resets that budget. Retry delays use endpoint jitter and
+  stay within 15 seconds and one third of the request timeout. A server retry
+  hint above that cap stops reconnection; Labby never reconnects earlier than
+  a server hint or replays an uncertain POST.
+- Modern clients declaring the Tasks extension receive a standard MCP Task
+  from native `tasks.queue`. `tasks.create` and ordinary non-Tasks calls retain
+  their existing responses. Task get/cancel reuse the durable Agent Task runtime,
+  current route and owner checks, and creator-only result authorization. Handles
+  expire 24 hours after job creation and recommend polling no faster than once
+  per second. Native tasks have no interactive input requests, so update rejects.
+- Immutable embedded contract resources carry a 60-second private cache lifetime.
+  Dynamic catalogs, application resources, and authorization-dependent state keep
+  their existing cache policy.
+- Native tool, resource, and prompt descriptors have stable display titles and
+  an embedded Labby icon. Upstream titles and icons pass through unchanged.
+- Destructive confirmation uses the SDK signed request-state format alongside
+  the existing bounded, expiring single-use store and caller/request binding.
+  Signing keys are process-local; restarting the process invalidates pending
+  confirmations. State contains only an opaque nonce, not credentials.
+
 ## Scope
 
 Labby has one MCP server product surface.
@@ -150,6 +174,7 @@ The baseline posture is:
 | `transport-io` | required | stdio transport |
 | `transport-streamable-http-server` | required | HTTP MCP transport |
 | `elicitation` | required | destructive confirmation and future interactive flows |
+| `request-state` | required | signed, caller-bound destructive continuation state |
 | `schemars` | required in practice | all RMCP-facing input types should have schema support |
 | `client` | required in practice | Labby must be able to act as an outbound MCP client and gateway |
 | `auth` | required | needed for outbound OAuth MCP clients and protected HTTP MCP deployments |

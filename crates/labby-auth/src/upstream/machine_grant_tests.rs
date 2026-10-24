@@ -169,45 +169,53 @@ fn private_key_jwt_uses_a_signed_registered_client_assertion() {
     isolated(
         "private_key_jwt_uses_a_signed_registered_client_assertion",
         async {
-            let (server,_,config,cache,_,_)=client_fixture(serde_json::json!({"private_key_jwt":{"signing_key_env":"LABBY_MACHINE_GRANT_FIXTURE_KEY","algorithm":"RS256"}})).await;
-            access_response(&server).await;
-            let client = cache.get_or_build(&config, "caller").await.unwrap();
-            assert_eq!(client.get_access_token().await.unwrap(), "machine-access");
-            let requests = server.received_requests().await.unwrap();
-            let request = requests
-                .iter()
-                .find(|request| request.method.as_str() == "POST")
-                .unwrap();
-            let form = url::form_urlencoded::parse(&request.body)
-                .collect::<std::collections::HashMap<_, _>>();
-            assert!(!form.contains_key("client_id"));
-            assert!(!form.contains_key("client_secret"));
-            assert_eq!(
-                form.get("client_assertion_type").unwrap(),
-                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-            );
-            let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
-            validation.set_audience(&[format!("{}/mcp", server.uri())]);
-            validation.set_issuer(&["machine-client"]);
-            validation.sub = Some("machine-client".into());
-            let claims = jsonwebtoken::decode::<serde_json::Value>(
-                form.get("client_assertion").unwrap().as_ref(),
-                &jsonwebtoken::DecodingKey::from_rsa_pem(
-                    std::env::var("LABBY_MACHINE_GRANT_FIXTURE_PUBLIC_KEY")
-                        .unwrap()
-                        .as_bytes(),
+            for audience in [None, Some("urn:example:registered-token-service")] {
+                let mut authentication = serde_json::json!({"private_key_jwt":{"signing_key_env":"LABBY_MACHINE_GRANT_FIXTURE_KEY","algorithm":"RS256"}});
+                if let Some(audience) = audience {
+                    authentication["private_key_jwt"]["token_endpoint_audience"] = audience.into();
+                }
+                let (server, _, config, cache, _, _) = client_fixture(authentication).await;
+                access_response(&server).await;
+                let client = cache.get_or_build(&config, "caller").await.unwrap();
+                assert_eq!(client.get_access_token().await.unwrap(), "machine-access");
+                let requests = server.received_requests().await.unwrap();
+                let request = requests
+                    .iter()
+                    .find(|request| request.method.as_str() == "POST")
+                    .unwrap();
+                let form = url::form_urlencoded::parse(&request.body)
+                    .collect::<std::collections::HashMap<_, _>>();
+                assert!(!form.contains_key("client_id"));
+                assert!(!form.contains_key("client_secret"));
+                assert_eq!(
+                    form.get("client_assertion_type").unwrap(),
+                    "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                );
+                let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+                validation.set_audience(&[audience
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("{}/mcp", server.uri()))]);
+                validation.set_issuer(&["machine-client"]);
+                validation.sub = Some("machine-client".into());
+                let claims = jsonwebtoken::decode::<serde_json::Value>(
+                    form.get("client_assertion").unwrap().as_ref(),
+                    &jsonwebtoken::DecodingKey::from_rsa_pem(
+                        std::env::var("LABBY_MACHINE_GRANT_FIXTURE_PUBLIC_KEY")
+                            .unwrap()
+                            .as_bytes(),
+                    )
+                    .unwrap(),
+                    &validation,
                 )
-                .unwrap(),
-                &validation,
-            )
-            .unwrap()
-            .claims;
-            assert_eq!(claims["sub"], "machine-client");
-            assert!(
-                claims["jti"]
-                    .as_str()
-                    .is_some_and(|value| !value.is_empty())
-            );
+                .unwrap()
+                .claims;
+                assert_eq!(claims["sub"], "machine-client");
+                assert!(
+                    claims["jti"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty())
+                );
+            }
         },
     );
 }
@@ -412,4 +420,64 @@ fn enterprise_managed_rejects_an_id_jag_for_another_resource() {
             enterprise_exchange("id_token", true).await;
         },
     );
+}
+
+#[test]
+fn private_key_jwt_audience_replacement_cannot_reuse_cached_or_persisted_authority() {
+    isolated(
+        "private_key_jwt_audience_replacement_cannot_reuse_cached_or_persisted_authority",
+        async {
+            let (server, sqlite, config, cache, _, managers) = client_fixture(serde_json::json!({"private_key_jwt":{"signing_key_env":"LABBY_MACHINE_GRANT_FIXTURE_KEY","algorithm":"RS256"}})).await;
+            access_response(&server).await;
+            cache.get_or_build(&config, "caller").await.unwrap();
+            let mut changed = serde_json::to_value(&config).unwrap();
+            changed["oauth"]["mode"]["client_credentials"]["authentication"]["private_key_jwt"]["token_endpoint_audience"] =
+                "urn:example:replacement".into();
+            let changed: UpstreamConfig = serde_json::from_value(changed).unwrap();
+            managers.insert(
+                "machine".into(),
+                UpstreamOauthManager::new(
+                    sqlite,
+                    load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap(),
+                    changed.clone(),
+                    "http://127.0.0.1/callback".into(),
+                ),
+            );
+            cache.get_or_build(&changed, "caller").await.unwrap();
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(
+                requests
+                    .iter()
+                    .filter(|request| request.method.as_str() == "POST")
+                    .count(),
+                2,
+                "audience replacement must obtain a new grant instead of reusing either cache or persisted token"
+            );
+        },
+    );
+}
+
+#[test]
+fn private_key_jwt_audience_validation_accepts_identifiers_and_rejects_unsafe_values() {
+    for audience in [
+        "urn:example:registered-token-service",
+        "https://issuer.example/token",
+        "opaque-registration-id",
+        "",
+        "  ",
+        " leading",
+        "trailing ",
+        "line\nfeed",
+        "null\0byte",
+    ] {
+        let config: UpstreamConfig = serde_json::from_value(serde_json::json!({"name":"machine", "url":"https://mcp.example/mcp", "oauth":{"mode":{"client_credentials":{"authentication":{"private_key_jwt":{"signing_key_env":"SIGNING_KEY", "algorithm":"RS256", "token_endpoint_audience":audience}}}},"registration":{"strategy":"preregistered", "client_id":"registered-client"}}})).unwrap();
+        let valid = !audience.trim().is_empty()
+            && audience.trim() == audience
+            && !audience.chars().any(char::is_control);
+        assert_eq!(
+            config.validate().is_ok(),
+            valid,
+            "audience validation must preserve opaque identifiers and reject blank, padded or control-bearing values"
+        );
+    }
 }

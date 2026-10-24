@@ -594,7 +594,9 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts()
             .enable_prompts_list_changed()
             .enable_completions();
-        let builder = builder.enable_extensions_with(mcp_extensions());
+        let builder = builder
+            .enable_extensions_with(mcp_extensions())
+            .enable_tasks();
         #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
             builder.enable_resources_subscribe().enable_tasks()
@@ -976,6 +978,14 @@ impl ServerHandler for LabMcpServer {
         request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
+        if request
+            .task_id
+            .starts_with(crate::mcp::native_tasks::NATIVE_TASK_PREFIX)
+        {
+            return Box::pin(self.get_native_task(&request.task_id, &context))
+                .await
+                .map(provenance::stamp_get_task_result);
+        }
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let result = pool
@@ -1003,6 +1013,12 @@ impl ServerHandler for LabMcpServer {
         request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        if request
+            .task_id
+            .starts_with(crate::mcp::native_tasks::NATIVE_TASK_PREFIX)
+        {
+            return Box::pin(self.update_native_task(&request.task_id, &context)).await;
+        }
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
@@ -1031,6 +1047,12 @@ impl ServerHandler for LabMcpServer {
         request: CancelTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        if request
+            .task_id
+            .starts_with(crate::mcp::native_tasks::NATIVE_TASK_PREFIX)
+        {
+            return Box::pin(self.cancel_native_task(&request.task_id, &context)).await;
+        }
         let gateway_task_id = request.task_id.clone();
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {

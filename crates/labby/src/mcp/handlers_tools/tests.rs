@@ -6782,6 +6782,15 @@ async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths(
     expected.title = Some("Reviewed upstream title".to_string());
     let mut upstream_tool = fixture_upstream_tool(&upstream_name, "annotated.read", None);
     upstream_tool.tool.annotations = Some(expected.clone());
+    let expected_title = "Provider-authored display name";
+    let expected_icons = vec![
+        rmcp::model::Icon::new("https://upstream.example/logo.svg")
+            .with_mime_type("image/svg+xml")
+            .with_sizes(vec!["any".into()])
+            .with_theme(rmcp::model::IconTheme::Dark),
+    ];
+    upstream_tool.tool.title = Some(expected_title.into());
+    upstream_tool.tool.icons = Some(expected_icons.clone());
 
     let pool = Arc::new(UpstreamPool::new());
     pool.insert_entry_for_test(
@@ -6817,6 +6826,10 @@ async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths(
         .peer_contract_for_request(&context)
         .visible_tool_descriptors()
         .await;
+    let snapshot = running
+        .service()
+        .snapshot_tool_catalog_for_request(&context)
+        .await;
     let listed = running
         .service()
         .list_tools_impl(None, context)
@@ -6834,11 +6847,22 @@ async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths(
             .as_ref()
             .expect("upstream annotations on downstream descriptor");
         assert_eq!(annotations, &expected);
+        assert_eq!(descriptor.title.as_deref(), Some(expected_title));
+        assert_eq!(
+            descriptor.icons.as_ref(),
+            Some(&expected_icons),
+            "provider icon source, MIME, sizes and theme must pass through verbatim"
+        );
         let serialized = serde_json::to_value(descriptor).unwrap();
         let expected_security = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
         assert_eq!(serialized["_meta"]["securitySchemes"], expected_security);
     }
     assert_eq!(listed, contract_tools);
+    assert_eq!(
+        ToolCatalogSnapshot::from_descriptors(&listed),
+        snapshot,
+        "display metadata must agree between the wire catalog and its change hash"
+    );
 }
 
 /// AC-3 both axes: the success envelope is always present as

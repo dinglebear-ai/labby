@@ -1,10 +1,57 @@
 //! HTTP worker budgets shared by TCP, Unix-socket and relay connections.
 
+use rmcp::transport::common::client_side_sse::SseRetryPolicy;
+use std::sync::Arc;
 use std::time::Duration;
 
 use super::helpers::{DEFAULT_REQUEST_TIMEOUT, DISCOVERY_TIMEOUT, upstream_call_concurrency};
 use super::relay_cancellation::CANCELLATION_DELIVERY_TIMEOUT;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+
+const SSE_RECONNECT_ATTEMPTS: usize = 3;
+
+/// One immutable policy is shared by independent streams; rmcp owns each
+/// stream's consecutive-failure counter and resets it after a successful GET.
+struct BoundedSseReconnect {
+    endpoint: Arc<str>,
+    max_delay: Duration,
+}
+
+impl std::fmt::Debug for BoundedSseReconnect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BoundedSseReconnect")
+            .field("max_attempts", &SSE_RECONNECT_ATTEMPTS)
+            .field("max_delay", &self.max_delay)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SseRetryPolicy for BoundedSseReconnect {
+    fn retry(&self, current_times: usize) -> Option<Duration> {
+        if current_times >= SSE_RECONNECT_ATTEMPTS {
+            return None;
+        }
+        Some(
+            super::notifications::subscription_retry_delay(&self.endpoint, current_times as u32)
+                .min(self.max_delay),
+        )
+    }
+
+    fn retry_with_server_hint(
+        &self,
+        current_times: usize,
+        server_hint: Option<Duration>,
+    ) -> Option<Duration> {
+        // A server hint is a minimum. Decline an excessive delay rather than
+        // reconnecting earlier than requested or sleeping beyond our budget.
+        if server_hint.is_some_and(|hint| hint > self.max_delay) {
+            return None;
+        }
+        self.retry(current_times)
+            .map(|delay| server_hint.map_or(delay, |hint| hint.max(delay)))
+    }
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct HttpTransportBudgets {
@@ -22,6 +69,11 @@ impl HttpTransportBudgets {
             .max_concurrent_requests(self.concurrency)
             .control_request_timeout(self.request_timeout.min(CANCELLATION_DELIVERY_TIMEOUT))
             .session_recovery_timeout(self.request_timeout.min(DISCOVERY_TIMEOUT));
+        config.retry_config = Arc::new(BoundedSseReconnect {
+            endpoint: Arc::clone(&config.uri),
+            max_delay: (self.request_timeout / SSE_RECONNECT_ATTEMPTS as u32)
+                .min(DISCOVERY_TIMEOUT),
+        });
         // The underlying HTTP/Unix client and SSE decoder share one ceiling.
         config.max_sse_event_size = max_response_bytes;
         config
@@ -76,3 +128,7 @@ mod tests {
         assert_eq!(config.max_sse_event_size, 1024);
     }
 }
+
+#[cfg(test)]
+#[path = "sse_retry_tests.rs"]
+mod sse_retry_tests;
