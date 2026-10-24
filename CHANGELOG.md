@@ -13,6 +13,9 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Added
 
+- **auth:** CLI sign-in uses server-hosted callback polling when advertised with
+  dynamic registration, allowing authorization from another workstation without
+  an SSH tunnel or pasted callback URL. Saved custom client bindings are preserved.
 - **auth/gateway:** add a central Google credential broker that reuses one
   encrypted, subject-scoped provider credential across inbound Labby OAuth and
   compatible Google Workspace MCP upstreams. Shared upstreams validate issuer,
@@ -42,6 +45,14 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Changed
 
+- **auth/cli:** remote stdio MCP bridges share the CLI's encrypted session and
+  refresh rotated grants during long-running connections. Client setup registers
+  this shared bridge by default for saved OAuth and bearer connections; direct
+  application-owned OAuth remains an explicit choice. Local logout stops
+  subsequent authenticated requests, including connections whose old encrypted
+  grant could not be cleaned up after re-login. Headless login keeps waiting after
+  browser launch failure, presents colored instructions, and puts routine console logs
+  behind `-v`.
 - **cli (breaking):** reorganize the public command grammar around resource and
   action words such as `server`, `route`, `loadout`, `auth`, `host`, `plugin`,
   `config`, `code`, `snippet`, `skill`, `state`, and `context`. Retired command

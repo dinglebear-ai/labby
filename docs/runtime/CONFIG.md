@@ -1,7 +1,7 @@
 ---
 title: "Runtime Configuration"
 created: "2026-07-30"
-updated: "2026-09-30"
+updated: "2026-10-21"
 ---
 
 # Runtime Configuration
@@ -531,6 +531,30 @@ provider callback on a listener bound only to `127.0.0.1`. Set
 `LABBY_STDIO_OAUTH_CALLBACK_PORT` only when the provider requires a fixed
 loopback port; `0` (the default) uses an ephemeral port. Do not put OAuth
 tokens, authorization codes, or client secrets in TOML.
+
+For `labby auth login`, servers advertising Labby's native authorization polling
+extension and dynamic client registration receive the browser callback on the
+server. The CLI polls that server over HTTPS for up to five minutes, then exchanges
+the authorization code using PKCE and stores the resulting grant in its existing
+encrypted session store. Open the displayed URL on any workstation; no SSH tunnel
+or callback URL paste is needed. Explicit `--client-id` or
+`--client-metadata-url` registrations retain their registered callback behavior.
+
+For other providers, native OAuth prints the authorization URL to stderr if the
+browser launcher is unavailable or fails, and waits up to five minutes for you to
+open it manually. When the CLI runs over SSH and the browser
+runs on your workstation, forward the displayed callback port from that
+workstation to the CLI host before opening the URL. For example, for callback
+port `37811`, run `ssh -N -L 37811:127.0.0.1:37811 <ssh-host>` in another local
+terminal. Keep both the SSH tunnel and the login command running until the
+callback completes. The callback listener remains bound only to loopback.
+
+`labby auth login` uses the shared CLI colors for the browser notice, link,
+and SSH command. Use `--color plain` to disable styling or `--color color` to
+force it; `--json` keeps the instructions unstyled on stderr. Automatic styling
+follows stderr's terminal state independently of stdout redirection. Native
+stdio OAuth uses the same explicit CLI policy. Routine OAuth console events and browser-launch error details are available with `-v`
+(`-vv` enables trace diagnostics).
 
 ## Direct Stdio Proxy
 

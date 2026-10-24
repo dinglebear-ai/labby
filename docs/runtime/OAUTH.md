@@ -147,12 +147,25 @@ for subsequent commands. Login does not create an identity grant or bypass
 platform authorization: the authenticated account must already have authority
 for the requested operation.
 
-Client registration is selected from server metadata. A current Labby server
-publishes its native client at `/.well-known/labby-cli-client.json`; the CLI uses
-that CIMD identity when the server advertises support. Otherwise it uses an
-advertised dynamic registration endpoint. The selection is saved with the
-server profile so refresh keeps the same client binding. Reverse proxies must
-forward the public native-client document to Labby along with OAuth routes.
+Client registration is selected from server metadata. Automatic login prefers
+Labby's server-hosted callback when the server advertises the complete native
+authorization extension and a dynamic registration endpoint. That flow uses
+dynamic registration and does not need a local callback listener or SSH tunnel.
+Explicit preregistered or metadata-document selections, and saved preregistered
+or custom metadata-document bindings, retain their selected registration and
+loopback callback behavior.
+
+For a first login that uses loopback, automatic selection uses the native client
+at `/.well-known/labby-cli-client.json` when the server advertises CIMD support
+and publishes that document. An incompatible published document fails login
+with guidance to select an explicit client. When CIMD is unsupported or the
+document is not published, the CLI uses an advertised dynamic registration
+endpoint. Existing saved registrations are retained when hosted authorization
+is unavailable. The selected registration is saved with the server profile so
+refresh keeps the same client binding.
+Reverse proxies must forward the public native-client document to Labby along
+with OAuth routes. See [shared CLI sign-in](../design/REMOTE_GATEWAY_TARGET.md#share-the-cli-sign-in-with-a-local-mcp-client)
+for reusing the encrypted CLI session through the default MCP bridge.
 
 Explicit alternatives are available for deployment policy and older servers:
 

@@ -186,27 +186,27 @@ pub fn saved_connection_identity(root: &Path) -> Result<(String, bool)> {
     Ok((server, token.is_some()))
 }
 
-fn credentials(root: &Path, gateway: &str) -> Result<(String, String)> {
+fn credentials(root: &Path, gateway: &str) -> Result<(String, Option<String>)> {
     let (server, token) = saved_connection(root)?;
     if server != crate::config::cli::normalize_server(gateway)? {
         bail!(
             "Saved CLI credentials belong to a different gateway. No fallback or credential reuse was attempted"
         );
     }
-    Ok((
-        server,
-        token.context("Saved CLI bearer credential is missing or invalid")?,
-    ))
+    Ok((server, token))
 }
 
 #[cfg(feature = "gateway")]
 async fn connect(root: &Path, gateway: &str) -> Result<crate::live_gateway::LiveGateway> {
     let (server, token) = credentials(root, gateway)?;
-    Ok(crate::live_gateway::detect_bound_bearer_target(&server, token).await?)
+    Ok(match token {
+        Some(token) => crate::live_gateway::detect_bound_bearer_target(&server, token).await?,
+        None => crate::live_gateway::detect_bound_saved_cli_target(root, &server).await?,
+    })
 }
 
 #[cfg(feature = "gateway")]
-async fn run_io<R, W>(root: PathBuf, gateway: String, read: R, write: W) -> Result<()>
+pub(crate) async fn run_io<R, W>(root: PathBuf, gateway: String, read: R, write: W) -> Result<()>
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,

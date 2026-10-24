@@ -9,7 +9,7 @@
   "chezmoi_installer": {"version":"2.72.1","source_commit":"f901167e4685db90da56d6a2a19df642cb3e0247","sha256":"75de125a45a82b53c16546db7057052e98c11866ded27c4b6f95a51f59432e7b"},
   "crgx_installer": {"version":"0.1.0","sha256":"232ca80d014043bfac12afd7a48e75d7cd98d35e6d0e7384062093535e3eb998"},
   "tailscale_installer": {"version":"1.102.3","sha256":"805e85ed6f6f81a7ea2e70d52d47e7d5290863299e5c922b2787d71aa312f22e"},
-  "claude_code": {"version":"2.1.163","integrity":"sha512-aK+hmLIaxp6v2M/fifhrCdYJ+kuQuGOl4Iok+AwRijeZl/HMn55rkwF6lEIq1Ny0xNCp2UKiZcmCegyoMumoWg=="},
+  "claude_code": {"version":"2.1.179","integrity":"sha512-gH8HCWDPK+8m/3miGjD69VfPv/ShrFWp7nMaWbpiLzp45qrQV0wbf5Hgye2ToYvFFbzCa+S0+OZbpQ4UDetQnw=="},
   "codex": {"version":"0.130.0","integrity":"sha512-WGDj+RZ3TXWC/7MlwprgLWOqzpwatPIINPhP3IRzHA0ni+o3QZ4i4xrS2uWwGmHUJ395J5JHwoZAAZYyfJyz6w=="},
   "gemini_cli": {"version":"0.58.0","integrity":"sha512-++LtUYMcLE8dVxMcuwv6kIp8+h6z+std/7iVE+vSunkrwNDaWMFkWw/psv2RSySWjr2A1SsEEIGCK0xULWY2sA=="}
 }

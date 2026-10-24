@@ -15,6 +15,11 @@ use labby_runtime::gateway_config::{UpstreamConfig, UpstreamOauthRegistration};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+mod native_login;
+mod profile_store;
+#[cfg(test)]
+pub(crate) mod test_support;
+
 const SUBJECT: &str = "gateway";
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -276,6 +281,24 @@ pub(crate) async fn login(
     server: &Url,
     selection: Option<UpstreamOauthRegistration>,
 ) -> Result<()> {
+    login_with_output(
+        server,
+        selection,
+        crate::output::OutputFormat::from_json_flag(
+            false,
+            crate::output::ColorPolicy::Plain,
+            crate::output::RenderEnv::stderr(),
+        ),
+    )
+    .await
+}
+
+/// Sign in using the initiating CLI's color and output policy.
+pub(crate) async fn login_with_output(
+    server: &Url,
+    selection: Option<UpstreamOauthRegistration>,
+    format: crate::output::OutputFormat,
+) -> Result<()> {
     let path = profile_path(server)?;
     let root = crate::installation::InstallationPaths::resolve()?;
     root.prepare_root()?;
@@ -284,7 +307,7 @@ pub(crate) async fn login(
     crate::installation::InstallationPaths::from_root(&path)?.prepare_root()?;
     let _lock = lock_profile(&path).await?;
     let key = private_key(&path, true)?;
-    login_locked(&path, &key, server, selection).await
+    login_locked(&path, &key, server, selection, format).await
 }
 
 async fn login_locked(
@@ -292,12 +315,50 @@ async fn login_locked(
     key: &str,
     server: &Url,
     selection: Option<UpstreamOauthRegistration>,
+    format: crate::output::OutputFormat,
 ) -> Result<()> {
     let metadata =
         labby_auth::upstream::manager::discover_published_metadata(server.join("mcp")?.as_str())
             .await?
             .context("server does not publish OAuth metadata")?;
     let previous = previous_profile_for_login(path)?;
+    let selection = native_login::preserve_client_selection(
+        server,
+        selection,
+        previous.as_ref().map(|saved| &saved.registration),
+    )?;
+    let native = native_login::plan(server, &metadata, selection.as_ref())?;
+    if let Some(native) = native {
+        let registration = UpstreamOauthRegistration::Dynamic;
+        let mut config = upstream(server, &registration)?;
+        config.name = fresh_upstream_name()?;
+        let runtime = build_upstream_oauth_runtime_with_redirect(
+            std::slice::from_ref(&config),
+            &auth_config(path),
+            Some(key),
+            native.callback_uri().to_owned(),
+        )
+        .await?
+        .context("CLI OAuth runtime unavailable")?;
+        let result = native_login::authorize(
+            &runtime,
+            &config,
+            native,
+            crate::output::theme::CliTheme::from_context(format.render_context()),
+        )
+        .await;
+        return finish_login(
+            path,
+            &runtime.sqlite,
+            SessionProfile {
+                registration,
+                upstream_name: config.name,
+            },
+            previous,
+            result,
+        )
+        .await;
+    }
     let selection = match selection {
         Some(selection) => selection,
         None => match previous.as_ref() {
@@ -313,10 +374,11 @@ async fn login_locked(
             "server disables dynamic registration; use --client-metadata-url or --client-id"
         );
     }
-    let runtime = super::upstream_stdio::build_stdio_upstream_oauth_runtime(
+    let runtime = super::upstream_stdio::build_stdio_upstream_oauth_runtime_with_theme(
         std::slice::from_ref(&config),
         &auth_config(path),
         Some(key),
+        crate::output::theme::CliTheme::from_context(format.render_context()),
     )
     .await?
     .context("CLI OAuth runtime unavailable")?;
@@ -457,6 +519,28 @@ pub(crate) async fn token_for_root(root: &Path, server: &Url) -> Result<Option<S
 }
 
 async fn token_at_profile(path: &Path, server: &Url) -> Result<Option<String>> {
+    let Some(client) = client_at_profile(path, server, reqwest::Client::new()).await? else {
+        return Ok(None);
+    };
+    Ok(Some(client.get_access_token().await?))
+}
+
+/// Use the saved grant for every request, including refresh during long-lived MCP sessions.
+/// The caller must already have selected this exact authority without a token override.
+pub(crate) async fn auth_client_for_root(
+    root: &Path,
+    server: &Url,
+    http_client: reqwest::Client,
+) -> Result<Option<rmcp::transport::auth::AuthClient<reqwest::Client>>> {
+    let server = server_url(server.as_str())?;
+    client_at_profile(&profile_path_for_root(root, &server)?, &server, http_client).await
+}
+
+async fn client_at_profile(
+    path: &Path,
+    server: &Url,
+    http_client: reqwest::Client,
+) -> Result<Option<rmcp::transport::auth::AuthClient<reqwest::Client>>> {
     if !path.try_exists()? {
         return Ok(None);
     }
@@ -484,8 +568,22 @@ async fn token_at_profile(path: &Path, server: &Url) -> Result<Option<String>> {
         manager.has_credentials(SUBJECT).await?,
         "no valid CLI session; run labby auth login again"
     );
-    let client = manager.build_auth_client(SUBJECT).await?;
-    Ok(Some(client.get_access_token().await?))
+    let client = manager.build_auth_client_with(SUBJECT, http_client).await?;
+    // Startup refresh is covered by the profile lock above. Subsequent SDK
+    // refreshes must use that same cross-process lock through the durable store.
+    client.auth_manager.lock().await.set_credential_store(
+        profile_store::ProfileCredentialStore::new(
+            path.to_owned(),
+            config.name.clone(),
+            labby_auth::upstream::store::SqliteCredentialStore::new(
+                runtime.sqlite.clone(),
+                labby_auth::upstream::encryption::load_key(&key)?,
+                config.name,
+                SUBJECT,
+            ),
+        ),
+    );
+    Ok(Some(client))
 }
 
 #[cfg(test)]
@@ -494,6 +592,8 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_root_and_exact_origin_never_borrow_another_profile() {
+        // Unit tests bypass the entrypoint that installs our TLS provider.
+        drop(rustls::crypto::ring::default_provider().install_default());
         let first = tempfile::tempdir().unwrap();
         let second = tempfile::tempdir().unwrap();
         let origin = server_url("https://one.example").unwrap();
@@ -540,6 +640,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hosted_login_prefers_native_dynamic_registration_and_preserves_explicit_clients() {
+        let server = server_url("https://lab.example").unwrap();
+        let mut metadata: rmcp::transport::auth::AuthorizationMetadata = serde_json::from_value(
+            serde_json::json!({
+                "issuer": "https://lab.example", "authorization_endpoint":"https://lab.example/authorize",
+                "token_endpoint":"https://lab.example/token", "registration_endpoint":"https://lab.example/register",
+                "native_callback_endpoint":"https://lab.example/native/callback",
+                "native_poll_endpoint_v2":"https://lab.example/native/poll",
+                "native_authorization_start_media_type":"application/vnd.labby.native-oauth-start+json"
+            })
+        ).unwrap();
+        assert!(
+            native_login::plan(&server, &metadata, None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            native_login::plan(
+                &server,
+                &metadata,
+                Some(&UpstreamOauthRegistration::Dynamic)
+            )
+            .unwrap()
+            .is_some()
+        );
+        for selection in [
+            UpstreamOauthRegistration::Preregistered {
+                client_id: "existing-client".into(),
+                client_secret_env: None,
+            },
+            UpstreamOauthRegistration::ClientMetadataDocument {
+                url: "https://client.example/metadata.json".into(),
+            },
+        ] {
+            assert!(
+                native_login::plan(&server, &metadata, Some(&selection))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        metadata.additional_fields.remove("native_poll_endpoint_v2");
+        assert!(
+            native_login::plan(&server, &metadata, None).is_err(),
+            "partial advertised extension must not silently downgrade"
+        );
+        metadata.additional_fields.clear();
+        assert!(
+            native_login::plan(&server, &metadata, None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     async fn selected_profile_refreshes_expired_grant_and_fails_closed_on_rejection() {
         use oauth2::{AccessToken, RefreshToken, basic::BasicTokenType};
@@ -550,6 +704,8 @@ mod tests {
             Mock, ResponseTemplate,
             matchers::{body_string_contains, method, path as route},
         };
+        // Unit tests bypass the entrypoint that installs our TLS provider.
+        drop(rustls::crypto::ring::default_provider().install_default());
         for approved in [true, false] {
             let server = wiremock::MockServer::start().await;
             for (path, body) in [
@@ -567,10 +723,20 @@ mod tests {
                     .mount(&server)
                     .await;
             }
-            Mock::given(route("/token")).and(method("POST")).and(body_string_contains("grant_type=refresh_token"))
+            Mock::given(route("/token")).and(method("POST")).and(body_string_contains("grant_type=refresh_token")).and(body_string_contains("refresh_token=selected-refresh"))
                 .respond_with(if approved {
                     ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token":"fresh-selected-token","refresh_token":"rotated-selected-grant","token_type":"Bearer","expires_in":3600}))
                 } else { ResponseTemplate::new(400).set_body_json(serde_json::json!({"error":"invalid_grant"})) }).expect(1).mount(&server).await;
+            if approved {
+                Mock::given(route("/token"))
+                    .and(method("POST"))
+                    .and(body_string_contains("refresh_token=rotated-selected-grant"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "access_token":"bridge-refreshed-token", "refresh_token":"bridge-rotated-grant",
+                        "token_type":"Bearer", "expires_in":3600
+                    })))
+                    .expect(1).mount(&server).await;
+            }
             let dir = tempfile::tempdir().unwrap();
             let key = private_key(dir.path(), true).unwrap();
             publish_profile(
@@ -624,6 +790,28 @@ mod tests {
             let result = token_at_profile(dir.path(), &Url::parse(&server.uri()).unwrap()).await;
             if approved {
                 assert_eq!(result.unwrap().as_deref(), Some("fresh-selected-token"));
+                let client = client_at_profile(
+                    dir.path(),
+                    &Url::parse(&server.uri()).unwrap(),
+                    reqwest::Client::new(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+                // A bridge remains alive while another CLI process updates the grant.
+                // Its next request must reload and refresh rather than freeze startup's bearer.
+                let mut saved = credentials.load().await.unwrap().unwrap();
+                saved.token_received_at = Some(1);
+                credentials.save(saved).await.unwrap();
+                assert_eq!(
+                    client.get_access_token().await.unwrap(),
+                    "bridge-refreshed-token"
+                );
+                credentials.clear().await.unwrap();
+                assert!(matches!(
+                    client.get_access_token().await,
+                    Err(rmcp::transport::auth::AuthError::AuthorizationRequired)
+                ));
             } else {
                 assert!(
                     result.is_err(),
@@ -777,6 +965,11 @@ mod tests {
                 client_id: "replacement".into(),
                 client_secret_env: Some("LABBY_TEST_ABSENT_CLI_SECRET_2AB7F1".into()),
             }),
+            crate::output::OutputFormat::from_json_flag(
+                false,
+                crate::output::ColorPolicy::Plain,
+                crate::output::RenderEnv::stderr(),
+            ),
         )
         .await
         .unwrap_err();

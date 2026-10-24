@@ -296,7 +296,11 @@ pub struct ServeArgs {
 }
 
 /// Run the top-level `labby mcp` stdio shortcut.
-pub async fn run_mcp(args: McpServeArgs, config: &LabConfig) -> Result<ExitCode> {
+pub async fn run_mcp(
+    args: McpServeArgs,
+    config: &LabConfig,
+    stderr_format: crate::output::OutputFormat,
+) -> Result<ExitCode> {
     run(
         ServeArgs {
             auto_update: false,
@@ -308,6 +312,7 @@ pub async fn run_mcp(args: McpServeArgs, config: &LabConfig) -> Result<ExitCode>
             command: None,
         },
         config,
+        stderr_format,
     )
     .await
 }
@@ -453,11 +458,19 @@ fn bootstrap_selected_skill_library_with<T>(
 }
 
 /// Run the serve subcommand.
-pub fn run(args: ServeArgs, config: &LabConfig) -> impl Future<Output = Result<ExitCode>> {
+pub fn run(
+    args: ServeArgs,
+    config: &LabConfig,
+    stderr_format: crate::output::OutputFormat,
+) -> impl Future<Output = Result<ExitCode>> {
     // Keep the long-lived server future off the CLI and stdio shortcut frames.
     // Those frames remain on the main thread during MCP initialization, which
     // must leave room for the protocol decoder on a one-mebibyte stack.
-    Box::pin(run_server(args, config))
+    Box::pin(run_server(
+        args,
+        config,
+        CliTheme::from_context(stderr_format.render_context()),
+    ))
 }
 
 async fn initialize_selected_file_stash_runtime(
@@ -497,7 +510,13 @@ async fn initialize_selected_file_stash_runtime(
     }
 }
 
-async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
+async fn run_server(
+    args: ServeArgs,
+    config: &LabConfig,
+    oauth_theme: CliTheme,
+) -> Result<ExitCode> {
+    #[cfg(not(feature = "gateway"))]
+    let _ = oauth_theme;
     if config.tailcat.enabled && !cfg!(all(feature = "tailcat", unix)) {
         anyhow::bail!("Tailcat requires a macOS/Linux build with the tailcat feature");
     }
@@ -790,6 +809,7 @@ async fn run_server(args: ServeArgs, config: &LabConfig) -> Result<ExitCode> {
         resource_registry.clone(),
         integrated_trusted_host,
         Arc::clone(&depot_manager),
+        oauth_theme,
     )
     .await?;
     #[cfg(feature = "gateway")]
@@ -2317,6 +2337,7 @@ async fn build_gateway_runtime(
     resource_registry: Option<labby_auth::resource_registry::ResourceRegistry>,
     integrated_trusted_host: bool,
     depot_manager: Arc<crate::dispatch::depot::manager::Manager>,
+    oauth_theme: CliTheme,
 ) -> Result<Arc<GatewayManager>> {
     let gateway_runtime = GatewayRuntimeHandle::default();
     let upstream_oauth_runtime = if suppress_upstream_runtime {
@@ -2331,10 +2352,11 @@ async fn build_gateway_runtime(
     } else {
         let upstream_oauth_key = std::env::var("LABBY_OAUTH_ENCRYPTION_KEY").ok();
         if matches!(transport, Transport::Stdio) {
-            crate::oauth::upstream_stdio::build_stdio_upstream_oauth_runtime(
+            crate::oauth::upstream_stdio::build_stdio_upstream_oauth_runtime_with_theme(
                 &config.upstream,
                 auth_config,
                 upstream_oauth_key.as_deref(),
+                oauth_theme,
             )
             .await?
         } else {

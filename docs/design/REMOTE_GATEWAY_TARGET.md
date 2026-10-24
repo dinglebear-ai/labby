@@ -1,7 +1,7 @@
 ---
 title: "Remote Gateway Target Resolution"
 created: "2026-08-15"
-updated: "2026-09-20"
+updated: "2026-10-21"
 ---
 
 # Remote Gateway Target Resolution
@@ -98,3 +98,47 @@ probe failed, they could create a local gateway view and read another
 6. Redirects are not followed, post-detection explicit failures never execute
    locally, overall discovery is bounded, and stalled MCP initialization fails
    within its configured startup timeout.
+
+## Share the CLI sign-in with a local MCP client
+
+A client running on the same host and account can launch Labby's stdio bridge
+and reuse the encrypted session from `labby auth login --server https://lab.example`.
+For example, configure Codex with:
+
+```toml
+[mcp_servers.lab]
+command = "labby"
+args = ["--server", "https://lab.example", "--no-input", "--quiet", "mcp"]
+```
+
+On macOS and Linux, setup uses the same shared sign-in by default. Once guided
+client setup has saved the gateway connection in the installation's protected
+`.env`, run `labby setup clients connect --clients codex` to register the installed
+Labby bridge. Use the same installation root as the CLI sign-in. `auth login`
+alone does not create that saved connection; the explicit `--server` MCP entry
+above also works without it. The setup configuration binds the gateway and root without
+copying credentials into Codex. Guided client setup selects this bridge too.
+
+The explicit destination binds the connection to that server's saved session.
+When the server advertises native callback polling and dynamic registration,
+initial CLI sign-in uses a server-hosted callback. Open its authorization URL in
+your browser and leave the CLI running; it retrieves the authorization code over
+HTTPS and completes the PKCE exchange without an SSH tunnel or pasted callback.
+Tokens remain in the CLI's encrypted store. Explicit client registrations retain
+their registered callback behavior.
+
+The bridge reads and refreshes that grant during the MCP session, using the
+same profile lock as CLI sign-in, refresh, and logout. It never opens a browser
+implicitly. Run the explicit login command again if the grant is revoked.
+Each connection stays bound to its original sign-in. Replacing that sign-in or
+logging out stops the connection from using the old grant, even when encrypted
+credential cleanup is deferred; a new connection reads the active profile.
+Both processes must use the same Labby installation root (`LABBY_HOME` when
+set). Credentials remain in Labby's encrypted store; no bearer is placed in the
+MCP client configuration.
+
+A direct HTTP MCP entry using `url = "https://lab.example/mcp"` instead makes
+the MCP client own a separate OAuth grant and callback flow. A browser's
+existing provider session can shorten consent, but does not share that grant
+with the CLI. Select `--connection oauth` explicitly in client setup to use that
+separate client-owned flow. The stdio entry needs no `codex mcp login lab` step.

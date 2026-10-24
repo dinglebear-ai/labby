@@ -3033,9 +3033,18 @@ mod tests {
         let admission = supervised_admission_path(&wrapper, registry.path()).unwrap();
         // Deterministically recreate the retained record for this exact new
         // leader's PID before admission, without waiting for kernel PID wrap.
+        let identity_probe = "start=$(ps -o lstart= -p $$) || exit 70";
+        assert_eq!(
+            CLEANUP_HELPER_ADMISSION_GATE
+                .matches(identity_probe)
+                .count(),
+            1
+        );
         let script = CLEANUP_HELPER_ADMISSION_GATE.replace(
-            "admission_id=${admission##*/}",
-            "mkdir \"$registry/$$\"\nprintf '0\\n' >\"$registry/$$/status\"\nadmission_id=${admission##*/}",
+            identity_probe,
+            &format!(
+                "mkdir \"$registry/$$\"\nprintf '0\\n' >\"$registry/$$/status\"\n{identity_probe}"
+            ),
         );
         let mut command = Command::new("/bin/sh");
         command

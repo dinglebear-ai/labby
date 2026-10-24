@@ -349,6 +349,127 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_admission_preparation_never_publishes_an_unowned_entry() {
+        let supervisor = include_str!("../../../../../scripts/ci/labby-live-e2e.sh");
+        let adoption = supervisor
+            .split_once("adopt_cleanup_helpers() {")
+            .unwrap()
+            .1
+            .split_once("\nterminate_children() {")
+            .unwrap()
+            .0;
+        for failure in ["identity-probe", "identity-write"] {
+            let registry = tempfile::tempdir().unwrap();
+            let marker = registry.path().join("command-executed");
+            let script = format!(
+                r#"
+ps() {{
+  [ "$FAIL_PREPARATION" != identity-probe ] || return 70
+  command ps "$@"
+}}
+printf() {{
+  if [ "$FAIL_PREPARATION" = identity-write ] && [ "$1" = '%s\n%s\n%s\n%s\n' ]; then
+    return 70
+  fi
+  command printf "$@"
+}}
+{CLEANUP_HELPER_ADMISSION_GATE}
+"#
+            );
+            let status = Command::new("/bin/sh")
+                .args(["-c", &script, "interrupted-admission"])
+                .arg(registry.path())
+                .args(["/usr/bin/touch"])
+                .arg(&marker)
+                .env("FAIL_PREPARATION", failure)
+                .env("LABBY_E2E_GROUP_TOKEN", "preparation-regression")
+                .env(
+                    "LABBY_E2E_ADMISSION_ID",
+                    format!("admission-{}", "b".repeat(48)),
+                )
+                .process_group(0)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(70), "{failure}: {status}");
+            assert!(!marker.exists(), "unpublished admission executed a command");
+            let observe = format!(
+                "helper_registry=$1; cleanup=0; register_group() {{ exit 98; }}; adopt_cleanup_helpers() {{{adoption}\nadopt_cleanup_helpers; exit $cleanup"
+            );
+            let adopted = Command::new("/bin/bash")
+                .args(["-c", &observe, "observe-interrupted-admission"])
+                .arg(registry.path())
+                .status()
+                .unwrap();
+            assert!(
+                adopted.success(),
+                "{failure}: incomplete preparation polluted admission: {adopted}"
+            );
+            // A malformed published entry remains a failure; staging must not
+            // weaken the existing fail-closed ownership contract.
+            std::fs::create_dir(registry.path().join("admission-malformed")).unwrap();
+            let malformed = Command::new("/bin/bash")
+                .args(["-c", &observe, "observe-malformed-admission"])
+                .arg(registry.path())
+                .status()
+                .unwrap();
+            assert_eq!(malformed.code(), Some(1));
+        }
+    }
+
+    #[test]
+    fn admission_publication_rejects_existing_destinations_and_claims() {
+        for collision in ["directory", "symlink", "claim"] {
+            let registry = tempfile::tempdir().unwrap();
+            let id = format!("admission-{}", "c".repeat(48));
+            let admission = registry.path().join(&id);
+            let marker = registry.path().join("command-executed");
+            match collision {
+                "directory" => {
+                    std::fs::create_dir(&admission).unwrap();
+                    std::fs::write(admission.join("identity"), b"preserved").unwrap();
+                }
+                "symlink" => {
+                    std::os::unix::fs::symlink(registry.path().join("missing"), &admission)
+                        .unwrap();
+                }
+                "claim" => {
+                    std::fs::create_dir(registry.path().join(format!(".claim-{id}"))).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let status = Command::new("/bin/sh")
+                .args(["-c", CLEANUP_HELPER_ADMISSION_GATE, "collision-admission"])
+                .arg(registry.path())
+                .arg("/usr/bin/touch")
+                .arg(&marker)
+                .env("LABBY_E2E_GROUP_TOKEN", "collision-regression")
+                .env("LABBY_E2E_ADMISSION_ID", &id)
+                .process_group(0)
+                .status()
+                .unwrap();
+            assert_eq!(status.code(), Some(70), "{collision}: {status}");
+            assert!(!marker.exists(), "colliding admission executed a command");
+            if collision == "directory" {
+                assert_eq!(
+                    std::fs::read(admission.join("identity")).unwrap(),
+                    b"preserved"
+                );
+                assert_eq!(std::fs::read_dir(&admission).unwrap().count(), 1);
+            } else if collision == "symlink" {
+                assert!(
+                    admission
+                        .symlink_metadata()
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
+            } else {
+                assert!(!admission.exists());
+            }
+        }
+    }
+
+    #[test]
     fn adoption_rechecks_an_exited_leader_before_reporting_cleanup_failure() {
         let supervisor = include_str!("../../../../../scripts/ci/labby-live-e2e.sh");
         let adoption = supervisor
