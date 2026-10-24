@@ -64,6 +64,7 @@ pub(crate) struct CodeModeQualification {
 
 impl CodeModeQualification {
     pub(crate) async fn start(limits: Limits) -> Result<Self, String> {
+        let startup_started = Instant::now();
         drop(rustls::crypto::ring::default_provider().install_default());
         let fixture = env!("CARGO_BIN_EXE_stdio-mcp-fixture");
         let owned_parent = std::env::temp_dir().join("labby-live-e2e");
@@ -123,6 +124,15 @@ impl CodeModeQualification {
         .await
         .map_err(|_| "Code Mode MCP initialize timed out".to_string())?
         .map_err(|error| error.to_string())?;
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            eprintln!(
+                "q3_diagnostic {}",
+                json!({
+                    "stage": "startup_ready",
+                    "elapsed_ms": startup_started.elapsed().as_millis(),
+                })
+            );
+        }
         Ok(Self {
             guard: Some(guard),
             service: Some(service),
@@ -182,6 +192,28 @@ impl CodeModeQualification {
         let structured = result.structured_content.clone().unwrap_or_else(|| {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"text": text}))
         });
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            let message = structured["error"]["message"].as_str().map(|message| {
+                crate::evidence::sanitize(message)
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
+            });
+            eprintln!(
+                "q3_diagnostic {}",
+                json!({
+                    "stage": "execute_response",
+                    "rpc_elapsed_ms": started.elapsed().as_millis(),
+                    "trace_elapsed_ms": structured["elapsed_ms"],
+                    "is_error": is_error,
+                    "error_kind": structured["error_kind"],
+                    "message": message,
+                    "origin": structured["error"]["origin"],
+                    "call_count": structured["call_count"],
+                    "wire_bytes": wire_bytes,
+                })
+            );
+        }
         Ok(Execution {
             structured,
             elapsed: started.elapsed(),
