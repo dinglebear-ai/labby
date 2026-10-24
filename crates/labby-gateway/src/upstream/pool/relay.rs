@@ -3761,6 +3761,17 @@ mod tests {
                 )
                 .await
                 .expect("agent connects");
+            // Discovery is bootstrap-neutral; activate the downstream server
+            // before the fixture waits for its running service.
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                running.peer().send_request(ClientRequest::ListToolsRequest(
+                    rmcp::model::ListToolsRequest::default(),
+                )),
+            )
+            .await
+            .expect("agent activation finishes within its deadline")
+            .expect("agent activates the downstream server");
             running.waiting().await.expect("agent runs");
         });
         let gw_server = TrivialServer

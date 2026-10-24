@@ -467,6 +467,19 @@ mod tests {
                 )
                 .await
             {
+                // Discovery does not finish server startup until the first
+                // application request reaches the downstream peer.
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    running
+                        .peer()
+                        .send_request(rmcp::model::ClientRequest::ListToolsRequest(
+                            rmcp::model::ListToolsRequest::default(),
+                        )),
+                )
+                .await
+                .expect("downstream activation finishes within its deadline")
+                .expect("downstream client activates the server");
                 running.waiting().await.ok();
             }
         });
