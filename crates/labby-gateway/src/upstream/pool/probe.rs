@@ -265,6 +265,22 @@ impl UpstreamPool {
                 );
                 return Ok(false);
             }
+            let Some(_idle_peer) = self
+                .try_acquire_upstream_reconnect_permit(&config.name)
+                .await
+                .map_err(anyhow::Error::msg)?
+            else {
+                tracing::info!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "upstream.reprobe",
+                    event = "reconnect.deferred",
+                    operation = "health",
+                    upstream = %config.name,
+                    "heartbeat recovery deferred while upstream calls are active"
+                );
+                return Ok(false);
+            };
             self.reconnect_upstream(config, oauth_subject, runtime_owner)
                 .await?;
         }
