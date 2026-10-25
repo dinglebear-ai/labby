@@ -2,6 +2,7 @@ async (source, fixture, input, nativeBatch) => {
   // Snippet code shares this realm. Retain trusted operations before it can
   // replace globals/prototypes, and shield harness JSON from inherited toJSON.
   const stringify = JSON.stringify;
+  const encodeResult = __labEncodeResult;
   const parse = JSON.parse;
   const keys = Object.keys;
   const isArray = Array.isArray;
@@ -142,9 +143,14 @@ async (source, fixture, input, nativeBatch) => {
   } catch (error) {
     exception = slice(text(error?.message || error), 0, 1024);
   }
+  // Only source-owned values pass through the ordinary wire codec. It may
+  // consult snippet-mutated globals, so never expose trusted capture to it.
+  const encodedResult = encodeResult(result);
   const metadata = protectJson({exception, calls, contract_calls: contractCalls, attempted, unexpected, max_in_flight: maxInFlight,
-    unused: filter(map(remaining, (count, index) => ({index, count})), rule => rule.count > 0)});
-  // Preserve the snippet result's own wire serialization semantics.
-  metadata.result = result;
-  return metadata;
+    unused: filter(map(remaining, (count, index) => ({index, count})), rule => rule.count > 0), result: encodedResult});
+  // Export trusted evidence as a primitive. The ordinary result codec runs
+  // after this function and may consult globals replaced by snippet code.
+  // Captured stringify uses built-in property traversal, while result retains
+  // its own JSON serialization semantics.
+  return stringify(metadata);
 }

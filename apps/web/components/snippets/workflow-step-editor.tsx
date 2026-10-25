@@ -46,6 +46,7 @@ export function WorkflowStepEditor({
   onSchema: (id: string, schema: ParameterSchema) => void
 }) {
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({})
+  const [dependencyDrafts, setDependencyDrafts] = useState<Record<string, string>>({})
   const [renameError, setRenameError] = useState('')
   const [query, setQuery] = useState('')
   const [hits, setHits] = useState<ToolSearchHit[]>([])
@@ -153,6 +154,10 @@ export function WorkflowStepEditor({
         delete value[oldId]
         return value
       })
+      setDependencyDrafts(current => Object.fromEntries(Object.entries(current).map(([id, value]) => [
+        id === oldId ? newId : id,
+        value.split(',').map(token => token.trim() === oldId ? token.replace(oldId, newId) : token).join(','),
+      ])))
       setRenameError('')
       onChange(next)
     } catch (error) {
@@ -342,15 +347,14 @@ export function WorkflowStepEditor({
             </Label>
             <Input
               id={`dependencies-${step.id}`}
-              value={step.dependsOn.join(', ')}
-              onChange={(event) =>
-                patch(step.id, {
-                  dependsOn: event.target.value
-                    .split(',')
-                    .map((value) => value.trim())
-                    .filter(Boolean),
-                })
-              }
+              value={dependencyDrafts[step.id] ?? step.dependsOn.join(', ')}
+              onChange={(event) => setDependencyDrafts(current => ({ ...current, [step.id]: event.target.value }))}
+              onBlur={() => {
+                if (!Object.prototype.hasOwnProperty.call(dependencyDrafts, step.id)) return
+                patch(step.id, { dependsOn: dependencyDrafts[step.id].split(',').map(value => value.trim()).filter(Boolean) })
+                setDependencyDrafts(current => { const next = { ...current }; delete next[step.id]; return next })
+              }}
+              onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur() } }}
             />
             <div className="flex flex-wrap gap-2">
               {plan.steps
@@ -363,13 +367,14 @@ export function WorkflowStepEditor({
                     <input
                       type="checkbox"
                       checked={step.dependsOn.includes(prior.id)}
-                      onChange={(event) =>
+                      onChange={(event) => {
+                        setDependencyDrafts(current => { const next = { ...current }; delete next[step.id]; return next })
                         patch(step.id, {
                           dependsOn: event.target.checked
                             ? [...step.dependsOn, prior.id]
                             : step.dependsOn.filter((id) => id !== prior.id),
                         })
-                      }
+                      }}
                     />
                     After {prior.id}
                   </label>

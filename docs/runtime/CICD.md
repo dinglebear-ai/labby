@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-09-30"
+updated: "2026-10-25"
 ---
 
 # CI/CD
 
-Last updated: 2026-09-30
+Last updated: 2026-10-25
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -372,8 +372,32 @@ native build actions.
 
 Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04`; native ARM64
 release builds use `ubuntu-24.04-arm`.
-Native macOS jobs use GitHub-hosted Apple Silicon runners. No repository-defined job selects a
-self-hosted runner or a custom runner label.
+Native macOS product jobs use GitHub-hosted Apple Silicon runners. Product CI,
+release jobs, and merge gates do not select self-hosted runners or custom labels.
+
+### Manual Farm acceptance exception
+
+`farm-runner-smoke.yml` is the sole manual infrastructure acceptance exception.
+It has only `workflow_dispatch`, one fixed probe on one uniquely labeled
+`farm-u8-smoke-<nonce>` Linux X64 runner, empty workflow/job permissions, no
+checkout, no action imports, no repository/environment secrets, and no image
+pull or product source execution. Its execution budget is five minutes per job
+and one minute for the only step. The repository policy pins the reviewed probe
+body and rejects broader triggers, extra jobs, runner selectors, permissions,
+commands, and cancellation of another run. This is a review guard, not a security
+boundary against repository writers who can change the policy itself.
+
+This exception does not reroute existing CI, gate merges, build releases, or
+permit automatic dispatch. The operator must separately authorize the one-run
+scope and credentials, record the exact run/runner/Farm owner IDs, enforce a
+ten-minute queue-plus-execution observation budget, and stop/unregister only
+that owned runner with positive cleanup and capacity release. Do not infer a
+real job pass from workflow lint or runner registration.
+
+Publishing requires explicit push approval. GitHub requires this workflow on
+the default branch before manual dispatch is available; a task branch or draft
+PR alone does not enable it. Human merge approval remains required. See the
+[operator acceptance notes](../../scripts/ci/fixtures/farm-runner-smoke-review.md).
 
 Rust jobs use the repository `setup-rust-kache` composite in credentialless
 GitHub Actions cache mode. Do not configure `KACHE_S3_ACCESS_KEY` or

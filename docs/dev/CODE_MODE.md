@@ -19,8 +19,10 @@ include permitted non-admin built-in actions through in-process peers, described
 below. Use native management surfaces for admin operations; Code Mode does not
 grant those actions merely because its caller is an administrator.
 
-The native `gateway` and `server_logs` router tools remain visible while Code
-Mode is enabled. The native `stash` router also remains visible for callers with
+The native `gateway`, `snippets`, and `server_logs` router tools remain visible
+while Code Mode is enabled. Call `snippets` directly with `action` and `params`
+to manage or execute saved workflows with the original request's authority.
+The native `stash` router also remains visible for callers with
 a verified identity and read scope on an outer native transport. Call `stash`
 directly to save or retrieve [context documents](../services/STASH.md); its
 actions retain the caller's identity and ordinary Stash authorization.

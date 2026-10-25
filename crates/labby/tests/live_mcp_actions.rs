@@ -544,13 +544,42 @@ async fn code_mode_hides_raw_service_tools_without_testing_code_mode_primitives(
             BTreeSet::from([
                 "gateway".to_string(),
                 "server_logs".to_string(),
+                "snippets".to_string(),
                 "stash".to_string(),
             ])
         } else {
-            BTreeSet::from(["gateway".to_string(), "server_logs".to_string()])
+            BTreeSet::from([
+                "gateway".to_string(),
+                "server_logs".to_string(),
+                "snippets".to_string(),
+            ])
         }
     );
     assert!(advertised.contains("codemode"));
+    let validated = runner
+        .call(
+            "snippets",
+            "snippets.validate",
+            serde_json::json!({
+                "name": "native-mcp-parity",
+                "body": "async () => ({ ok: true })"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        )
+        .await
+        .expect("native snippet validation over HTTP MCP");
+    assert_ne!(
+        validated.is_error,
+        Some(true),
+        "{}",
+        result_text(&validated)
+    );
+    assert_eq!(
+        validated.structured_content.as_ref().unwrap()["data"]["valid"],
+        true
+    );
     let hidden = runner
         .call("doctor", "help", serde_json::Map::new())
         .await
@@ -1020,4 +1049,130 @@ async fn read_only_non_admin_discovers_mixed_service_but_cannot_execute_admin_ac
     runner.disconnect().await;
     let cleanup = identity.cleanup().await.expect("identity cleanup");
     assert!(cleanup.is_clean(), "cleanup: {:?}", cleanup.failures);
+}
+
+#[tokio::test]
+async fn selected_daemon_snippet_keeps_local_source_and_durable_receipts() {
+    let guard = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
+        .start()
+        .await
+        .expect("disposable snippet daemon");
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".labby/snippets")).unwrap();
+    std::fs::create_dir_all(home.path().join("tmp")).unwrap();
+    // The selected daemon deliberately has no copy of either local snippet.
+    for (name, declaration, raw) in [
+        ("remote-legacy", "", false),
+        ("remote-deny-all", "tools: []\n", false),
+        ("remote-bare-js", "", true),
+    ] {
+        let body = if raw {
+            "async () => ({ok:true, source:'local-only', markdown:'```js'})".to_owned()
+        } else {
+            format!(
+                "---\nname: {name}\ndescription: Local selected source\n{declaration}---\n```js\nasync () => ({{ok:true, source:'local-only'}})\n```\n"
+            )
+        };
+        let extension = if raw { "js" } else { "md" };
+        std::fs::write(
+            home.path()
+                .join(format!(".labby/snippets/{name}.{extension}")),
+            &body,
+        )
+        .unwrap();
+        let mut command = tokio::process::Command::from(live_labby::isolated_command(home.path()));
+        // This exercises the root MCP endpoint; Team-bound CLI selection is a separate guarded contract.
+        let mut authorization = tokio::process::Command::new(env!("CARGO_BIN_EXE_labby"));
+        guard.authorize_cli(&mut authorization);
+        for (key, value) in authorization.as_std().get_envs() {
+            if let Some(value) = value {
+                command.env(key, value);
+            }
+        }
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            command.args(["--json", "snippet", "run", name]).output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let response = response.get("data").unwrap_or(&response);
+        assert_eq!(response["result"]["source"], "local-only", "{response}");
+        assert_eq!(response["receipt_status"], "persisted", "{response}");
+        assert!(
+            response["execution_id"]
+                .as_str()
+                .unwrap()
+                .starts_with("snippet_"),
+            "{response}"
+        );
+        assert!(
+            !guard
+                .root()
+                .join(format!("labby-home/snippets/{name}.md"))
+                .exists(),
+            "inline source must not publish into the daemon store"
+        );
+    }
+    assert!(guard.finish().await.is_clean());
+}
+
+#[tokio::test]
+async fn selected_daemon_snippet_failure_keeps_receipt_identity() {
+    let guard = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
+        .start()
+        .await
+        .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(home.path().join(".labby/snippets")).unwrap();
+    std::fs::create_dir_all(home.path().join("tmp")).unwrap();
+    std::fs::write(
+        home.path().join(".labby/snippets/remote-failure.js"),
+        "async () => { throw new Error('synthetic execution failure'); }",
+    )
+    .unwrap();
+    let mut command = tokio::process::Command::from(live_labby::isolated_command(home.path()));
+    let mut authorization = tokio::process::Command::new(env!("CARGO_BIN_EXE_labby"));
+    guard.authorize_cli(&mut authorization);
+    for (key, value) in authorization.as_std().get_envs() {
+        if let Some(value) = value {
+            command.env(key, value);
+        }
+    }
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        command
+            .args(["--json", "snippet", "run", "remote-failure"])
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    let bytes = if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    };
+    let response: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+    assert_eq!(
+        response["error"]["receipt_status"], "persisted",
+        "{response}"
+    );
+    assert!(
+        response["error"]["execution_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("snippet_"),
+        "{response}"
+    );
+    assert!(guard.finish().await.is_clean());
 }

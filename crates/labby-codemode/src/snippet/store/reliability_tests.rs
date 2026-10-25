@@ -107,6 +107,64 @@ fn editing_legacy_js_keeps_one_override_and_metadata() {
     assert!(!dir.join("demo.md").exists());
     let snippet = resolve_snippet(home.path(), &dir, "demo").unwrap();
     assert!(snippet.inputs["value"].nullable);
+    assert_eq!(
+        code_for_snippet(&snippet).unwrap(),
+        "async (input) => input"
+    );
+}
+
+#[test]
+fn legacy_bare_js_preserves_markdown_fences_inside_string_values() {
+    let home = tempfile::tempdir().unwrap();
+    let builtin = tempfile::tempdir().unwrap();
+    let dir = user_snippet_dir(home.path());
+    fs::create_dir_all(&dir).unwrap();
+    let code = "async () => ({text:'```js'})";
+    fs::write(dir.join("bare.js"), code).unwrap();
+    let snippet = resolve_snippet(home.path(), builtin.path(), "bare").unwrap();
+    assert_eq!(code_for_snippet(&snippet).unwrap(), code);
+    let listing = list_snippets_with_diagnostics(home.path(), builtin.path()).unwrap();
+    assert!(listing.diagnostics.is_empty(), "{:?}", listing.diagnostics);
+    assert!(
+        listing
+            .snippets
+            .iter()
+            .any(|snippet| snippet.name == "bare")
+    );
+}
+
+#[test]
+fn inline_source_format_preserves_bare_javascript_and_authoritative_frontmatter() {
+    let code = "async () => ({text:'```js'})";
+    let inline = resolve_inline_snippet("bare", code, SnippetSourceFormat::JavaScript).unwrap();
+    assert_eq!(inline.path, PathBuf::from("bare.js"));
+    assert_eq!(code_for_snippet(&inline).unwrap(), code);
+    assert!(resolve_inline_snippet("bare", code, SnippetSourceFormat::Markdown).is_err());
+    assert!(resolve_inline_snippet("../escape", code, SnippetSourceFormat::JavaScript).is_err());
+
+    let declared = body(true).replace("description: Demo", "description: Demo\ntools: []");
+    for format in [
+        SnippetSourceFormat::Markdown,
+        SnippetSourceFormat::JavaScript,
+    ] {
+        let inline = resolve_inline_snippet("demo", &declared, format).unwrap();
+        assert!(inline.inputs["value"].nullable);
+        assert!(inline.tools.unwrap().as_slice().is_empty());
+        let inline = resolve_inline_snippet("demo", &declared, format).unwrap();
+        assert_eq!(code_for_snippet(&inline).unwrap(), "async (input) => input");
+        assert!(resolve_inline_snippet("other", &declared, format).is_err());
+        let malformed = declared.replace("tools: []", "tools: unrestricted");
+        assert!(resolve_inline_snippet("demo", &malformed, format).is_err());
+    }
+    let malformed = resolve_inline_snippet(
+        "broken",
+        "async () => { broken( }",
+        SnippetSourceFormat::JavaScript,
+    )
+    .unwrap();
+    assert!(code_for_snippet(&malformed).is_err());
+    let oversized = format!("async () => 1 //{}", "x".repeat(crate::MAX_SOURCE_BYTES));
+    assert!(resolve_inline_snippet("large", &oversized, SnippetSourceFormat::JavaScript).is_err());
 }
 
 #[test]

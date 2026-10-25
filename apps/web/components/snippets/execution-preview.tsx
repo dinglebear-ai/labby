@@ -50,10 +50,6 @@ export function ExecutionPreview({
       .then(async (detail) => {
         if (controller.signal.aborted) return
         setSnippet(detail)
-        if (executionId)
-          setParams(
-            JSON.stringify(safeReplayDefaults(detail.inputs ?? {}), null, 2),
-          )
         const plan = readWorkflowPlan(detail.body)
         const tools = [...new Set(plan?.steps.map((step) => step.tool) ?? [])]
         const loaded: Record<string, ParameterSchema> = {}
@@ -74,6 +70,9 @@ export function ExecutionPreview({
           }
         }
         if (!controller.signal.aborted) {
+          if (executionId) setParams(JSON.stringify(safeReplayDefaults(
+            detail.inputs ?? {}, inheritedInputSchema(plan, loaded),
+          ), null, 2))
           setSchemas(loaded)
           setSchemaReady(true)
         }

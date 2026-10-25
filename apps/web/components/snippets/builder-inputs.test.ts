@@ -45,3 +45,12 @@ test('new required inputs preserve schema type without manufactured defaults and
     },
   )
 })
+
+test('mapped input sensitivity omits new and existing generic defaults from saved frontmatter', () => {
+  const sensitivity = { type: 'object', properties: { value: { writeOnly: true }, settings: { properties: { value: { format: 'password' } } } } }
+  const specs = builderInputSpecs({ value: { ty: 'string', default: 'old-secret', required: false, description: 'Credential alias' } }, { value: 'new-secret', settings: { value: 'nested-secret' }, host: 'node' }, sensitivity)
+  assert.deepEqual(specs.value, { ty: 'string', required: true, description: 'Credential alias' })
+  assert.deepEqual(specs.settings, { ty: 'json', required: true })
+  assert.equal(specs.host.default, 'node')
+  assert.doesNotMatch(inputSpecsFrontmatter(specs).join('\n'), /old-secret|new-secret|nested-secret/)
+})
