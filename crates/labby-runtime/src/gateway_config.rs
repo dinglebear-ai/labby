@@ -1067,6 +1067,13 @@ impl UpstreamConfig {
                             ));
                         }
                     }
+                    UpstreamOauthMode::WorkloadIdentityFederation { assertion_env } => {
+                        if !valid_env(assertion_env) || client_secret_env.is_some() {
+                            return Err(invalid_oauth(
+                                "workload identity requires a valid assertion_env and public registration without client_secret_env",
+                            ));
+                        }
+                    }
                     UpstreamOauthMode::AuthorizationCodePkce => {}
                 }
                 if let UpstreamOauthMode::EnterpriseManaged {
@@ -1860,6 +1867,11 @@ pub enum UpstreamOauthMode {
         /// Authentication for the preregistered client.
         authentication: UpstreamMachineAuthentication,
     },
+    /// Workload identity using an externally issued, operator-managed JWT assertion.
+    WorkloadIdentityFederation {
+        /// Environment variable containing the external assertion, never a signing key.
+        assertion_env: String,
+    },
     /// Enterprise ID-JAG exchange using an operator-approved subject token.
     EnterpriseManaged {
         /// Approved identity provider and client registration.
@@ -2330,6 +2342,37 @@ fn normalize_string_list(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workload_identity_requires_public_registration_and_valid_assertion_env() {
+        let raw = serde_json::json!({"name":"workload", "url":"https://mcp.example/mcp", "oauth":{
+            "mode":{"workload_identity_federation":{"assertion_env":"LABBY_WORKLOAD_ASSERTION"}},
+            "registration":{"strategy":"preregistered","client_id":"workload-client"}, "scopes":["read"]
+        }});
+        let config: UpstreamConfig =
+            serde_json::from_value(raw.clone()).expect("workload mode must deserialize");
+        config
+            .validate()
+            .expect("public workload registration must validate");
+        for env in ["", "bad-name", "1ASSERTION", "ASSERTION VALUE"] {
+            let mut invalid = raw.clone();
+            invalid["oauth"]["mode"]["workload_identity_federation"]["assertion_env"] = env.into();
+            assert!(
+                serde_json::from_value::<UpstreamConfig>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut confidential = raw;
+        confidential["oauth"]["registration"]["client_secret_env"] = "UNUSED_SECRET".into();
+        assert!(
+            serde_json::from_value::<UpstreamConfig>(confidential)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+
     #[test]
     fn code_mode_search_defaults_cover_all_sources_and_requested_kinds() {
         let search = CodeModeSearchConfig::default();

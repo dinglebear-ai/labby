@@ -17,6 +17,7 @@ Runs the pinned MCP conformance suite and a direct stdio proxy probe.
 --direct-proxy-only runs only the real Labby + fixture stdio server scenario.
 --check-sdk-pin validates the production SDK pin without building or running scenarios.
 Set MCP_CONFORMANCE_OUTPUT_DIR to choose the artifact directory.
+LABBY_RMCP_FIXTURE_REPOSITORY may select a local mirror of the exact production SDK pin.
 EOF
   exit 0
 fi
@@ -37,11 +38,13 @@ if [[ $# -ne 0 ]]; then
 fi
 
 LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
-LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-188f0f2582f9c8e8232a5ed61b6c0692a2f5f64b}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-053dada7816a9fd6c9c2bddd2eca3fbfb37a45b9}"
+# Override only to use a local mirror containing an unpublished candidate during development.
+LABBY_RMCP_FIXTURE_REPOSITORY="${LABBY_RMCP_FIXTURE_REPOSITORY:-$LABBY_RMCP_REPOSITORY}"
 RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.7.0}"
 RMCP_TAG="${RMCP_TAG:-rmcp-v${RMCP_FIXTURE_VERSION}}"
 RMCP_COMMIT="${RMCP_COMMIT:-5d6a11f2ae022f513aec0f6e0f10f89a57891a7f}"
-MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.10}"
+MCP_CONFORMANCE_VERSION="${MCP_CONFORMANCE_VERSION:-0.2.0-alpha.12}"
 MCP_SPEC_VERSION="${MCP_SPEC_VERSION:-2026-07-28}"
 MCP_CONFORMANCE_PORT="${MCP_CONFORMANCE_PORT:-18002}"
 MCP_CONFORMANCE_LABBY_PORT="${MCP_CONFORMANCE_LABBY_PORT:-18003}"
@@ -315,9 +318,10 @@ conformance_token="mcp-conformance-test-token"
 # This smoke test asserts the direct gateway descriptor, independently of the
 # product default catalog regime. Bind its configuration to an isolated home.
 smoke_home="${work_dir}/home"
-mkdir -p "$smoke_home"
+mkdir -m 700 "$smoke_home"
 printf '[code_mode]\nenabled = false\n' >"${smoke_home}/config.toml"
 HOME="$smoke_home" LABBY_HOME="$smoke_home" LABBY_MCP_HTTP_TOKEN="$conformance_token" \
+  LABBY_AUTH_MODE=bearer LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1 \
   LABBY_LOG="labby=warn,labby_auth=warn" \
   "${cargo_target_dir}/debug/labby" serve \
   --host 127.0.0.1 --port "$MCP_CONFORMANCE_LABBY_PORT" \
@@ -371,6 +375,10 @@ fi
 jq --exit-status '.jsonrpc == "2.0" and .id == 1 and (.result.tools | map(.name) | index("gateway") != null)' \
   "${output_dir}/labby-tools-list.json" >/dev/null
 
+LABBY_CONFORMANCE_TOKEN="$conformance_token" python3 "${repo_root}/scripts/ci/mcp_conformance_labby.py" server \
+  --port "$MCP_CONFORMANCE_LABBY_PORT" --runner "$conformance" \
+  --output "${output_dir}/labby-official"
+
 # Score the dated protocol against rmcp's purpose-built fixture catalog.
 PORT="$MCP_CONFORMANCE_PORT" \
   "${rmcp_target_dir}/debug/conformance-server" \
@@ -394,25 +402,26 @@ fi
 
 "$conformance" server \
   --url "http://127.0.0.1:${MCP_CONFORMANCE_PORT}/mcp" \
-  --suite all \
-  --spec-version "$MCP_SPEC_VERSION" \
+  --requirements "$MCP_SPEC_VERSION" \
   --expected-failures "$dated_baseline" \
   -o "${output_dir}/server-dated"
 
-task_scenarios=(
-  tasks-lifecycle
-  tasks-capability-negotiation
-  tasks-wire-fields
-  tasks-request-state-removal
-  tasks-mrtr-input
-  tasks-request-headers
-  tasks-dispatch-and-envelope
-  tasks-status-notifications
-  tasks-required-task-error
-  tasks-mrtr-composition
-)
+# Keep post-release and optional failures enforceable: --requirements reports
+# unscored failures without failing its exit status.
+"$conformance" server \
+  --url "http://127.0.0.1:${MCP_CONFORMANCE_PORT}/mcp" \
+  --suite all --spec-version "$MCP_SPEC_VERSION" \
+  --expected-failures "$dated_baseline" \
+  -o "${output_dir}/server-latest"
 
-for scenario in "${task_scenarios[@]}"; do
+server_extensions=(
+  tasks-lifecycle tasks-capability-negotiation tasks-wire-fields
+  tasks-request-state-removal tasks-mrtr-input tasks-request-headers
+  tasks-dispatch-and-envelope tasks-status-notifications
+  tasks-required-task-error tasks-mrtr-composition
+  sep-2640-skills-directory sep-2640-skills-enumeration sep-2640-skills-manifest
+)
+for scenario in "${server_extensions[@]}"; do
   "$conformance" server \
     --url "http://127.0.0.1:${MCP_CONFORMANCE_PORT}/mcp" \
     --scenario "$scenario" \
@@ -420,17 +429,62 @@ for scenario in "${task_scenarios[@]}"; do
     -o "${output_dir}/server-extensions"
 done
 
+# Session lifecycle and SSE retry belong to the legacy wire, not stateless HTTP.
+"$conformance" server \
+  --url "http://127.0.0.1:${MCP_CONFORMANCE_PORT}/mcp" \
+  --scenario server-session-lifecycle --spec-version 2025-11-25 \
+  -o "${output_dir}/server-legacy"
 "$conformance" client \
   --command "${rmcp_target_dir}/debug/conformance-client" \
-  --suite all \
-  --spec-version "$MCP_SPEC_VERSION" \
+  --scenario sse-retry --spec-version 2025-11-25 \
+  -o "${output_dir}/client-legacy"
+
+"$conformance" client \
+  --command "${rmcp_target_dir}/debug/conformance-client" \
+  --requirements "$MCP_SPEC_VERSION" \
   -o "${output_dir}/client-dated"
+
+"$conformance" client \
+  --command "${rmcp_target_dir}/debug/conformance-client" \
+  --suite all --spec-version "$MCP_SPEC_VERSION" \
+  -o "${output_dir}/client-latest"
 
 "$conformance" client \
   --command "${rmcp_target_dir}/debug/conformance-client" \
   --suite extensions \
   --expected-failures "$extension_baseline" \
   -o "${output_dir}/client-extensions"
+
+# The stock SDK client does not implement all optional authorization extensions.
+# Qualify the actual production fork's public APIs separately, with no failure baseline.
+git init --quiet "${work_dir}/production-sdk"
+git -C "${work_dir}/production-sdk" fetch --quiet --depth 1 \
+  "$LABBY_RMCP_FIXTURE_REPOSITORY" "$LABBY_RMCP_REVISION"
+git -C "${work_dir}/production-sdk" checkout --quiet --detach FETCH_HEAD
+if [[ "$(git -C "${work_dir}/production-sdk" rev-parse HEAD)" != "$LABBY_RMCP_REVISION" ]]; then
+  echo "production SDK fixture does not match the pinned revision" >&2
+  exit 1
+fi
+CARGO_TARGET_DIR="$rmcp_target_dir" cargo build --manifest-path "${work_dir}/production-sdk/Cargo.toml" \
+  -p mcp-conformance --bin conformance-client
+"$conformance" client \
+  --command "${rmcp_target_dir}/debug/conformance-client" \
+  --suite extensions \
+  -o "${output_dir}/production-client-extensions"
+
+# Exercise the gateway's production Skills client, not the SDK fixture, which
+# does not implement these scenario-specific host operations.
+skills_client_command="$(python3 -c 'import shlex, sys; print(shlex.join(["python3", sys.argv[1], "client", "--binary", sys.argv[2]]))' \
+  "${repo_root}/scripts/ci/mcp_conformance_labby.py" "${cargo_target_dir}/debug/labby")"
+for scenario in sep-2640-client-no-prefetch sep-2640-client-verify-digest \
+  sep-2640-client-verify-size sep-2640-client-verify-frontmatter; do
+  "$conformance" client \
+    --command "$skills_client_command" \
+    --scenario "$scenario" --spec-version "$MCP_SPEC_VERSION" --force \
+    -o "${output_dir}/labby-client-skills"
+  python3 "${repo_root}/scripts/ci/mcp_conformance_labby.py" evidence \
+    --output "${output_dir}/labby-client-skills" --scenario "$scenario"
+done
 
 run_direct_proxy
 

@@ -1215,7 +1215,7 @@ jobs:
       - name: Run dated protocol and extension suites
         if: matrix.lane == 'dated-suites'
         run: |
-          python3 -m unittest scripts/ci/test_mcp_conformance_script.py
+          python3 -m unittest scripts/ci/test_mcp_conformance_script.py scripts/ci/test_mcp_conformance_labby.py
           scripts/ci/mcp-conformance.sh
       - name: Upload conformance reports
         if: always()

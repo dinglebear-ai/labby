@@ -444,17 +444,19 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
 /// previous whole-function gate meant a `--features skills` build without
 /// `gateway` advertised no extensions block at all, and so could never announce
 /// skills support.
-fn mcp_extensions() -> ExtensionCapabilities {
+fn mcp_extensions(directory_read: bool) -> ExtensionCapabilities {
+    let _ = directory_read;
     let mut extensions = ExtensionCapabilities::new();
     #[cfg(feature = "gateway")]
     extensions.extend(mcp_apps_ui_extension());
     #[cfg(feature = "skills")]
     extensions.insert(
         labby_runtime::skills::wire::SKILLS_EXTENSION_KEY.to_string(),
-        // Empty object: supported, with no optional features. Labby does not
-        // implement `resources/directory/read`, and a client must not call it
-        // against a server that has not declared `directoryRead`.
-        serde_json::Map::new(),
+        if directory_read {
+            serde_json::Map::from_iter([("directoryRead".into(), serde_json::Value::Bool(true))])
+        } else {
+            serde_json::Map::new()
+        },
     );
     extensions
 }
@@ -595,7 +597,18 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts_list_changed()
             .enable_completions();
         let builder = builder
-            .enable_extensions_with(mcp_extensions())
+            .enable_extensions_with(mcp_extensions({
+                #[cfg(feature = "gateway")]
+                {
+                    self.gateway_manager.is_none()
+                        && self.route_scope.exposes_skills()
+                        && self.route_scope.exposes_resources()
+                }
+                #[cfg(not(feature = "gateway"))]
+                {
+                    self.route_scope.exposes_skills() && self.route_scope.exposes_resources()
+                }
+            }))
             .enable_tasks();
         #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
@@ -672,6 +685,13 @@ impl ServerHandler for LabMcpServer {
             return self.handle_skills_request(&request, &context).await;
         }
 
+        #[cfg(feature = "skills")]
+        if request.method == labby_runtime::skills::wire::RESOURCES_DIRECTORY_READ_METHOD {
+            return self
+                .handle_skill_directory_request(&request, &context)
+                .await;
+        }
+
         if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode::METHOD_NOT_FOUND,
@@ -699,10 +719,23 @@ impl ServerHandler for LabMcpServer {
         #[cfg(feature = "gateway")]
         self.observe_client(&context).await;
 
-        Ok(DiscoverResult::from_server_info(
+        let mut result = DiscoverResult::from_server_info(
             self.supported_protocol_versions().into_owned(),
             self.get_info(),
-        ))
+        );
+        #[cfg(feature = "skills")]
+        {
+            result
+                .capabilities
+                .extensions
+                .get_or_insert_with(ExtensionCapabilities::new)
+                .extend(mcp_extensions(self.supports_skill_directories().await));
+            // Route and configuration can change; do not share or retain the
+            // optional namespace guarantee across authorization contexts.
+            result.ttl_ms = 0;
+            result.cache_scope = CacheScope::Private;
+        }
+        Ok(result)
     }
 
     fn accepted_subscription_filter(
@@ -1082,7 +1115,7 @@ use crate::mcp::catalog::CatalogChangeSet;
 /// Extension capability map, for tests that assert what `initialize` declares.
 #[cfg(test)]
 pub(crate) fn mcp_extensions_for_test() -> ExtensionCapabilities {
-    mcp_extensions()
+    mcp_extensions(true)
 }
 
 impl LabMcpServer {
@@ -1164,6 +1197,109 @@ mod tests {
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
         }
+    }
+
+    #[cfg(all(feature = "skills", feature = "gateway", feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn directory_request_rechecks_config_after_discovery_without_hiding_skills() {
+        use labby_gateway::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+        use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+        use labby_runtime::skills::wire::{
+            RESOURCES_DIRECTORY_READ_METHOD, SKILLS_EXTENSION_KEY, SKILLS_LIST_METHOD,
+        };
+        use rmcp::model::CacheScope;
+        use rmcp::service::RequestContext;
+        use std::sync::Arc;
+
+        let directory = tempfile::tempdir().unwrap();
+        let manager = Arc::new(GatewayManager::new(
+            directory.path().join("gateway.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let mut server = stateless_test_server(Default::default());
+        server.gateway_manager = Some(Arc::clone(&manager));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = || RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        let initial = running.service().discover(context()).await.unwrap();
+        assert_eq!(
+            initial.capabilities.extensions.as_ref().unwrap()[SKILLS_EXTENSION_KEY]
+                .get("directoryRead"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(initial.ttl_ms, 0);
+        assert_eq!(initial.cache_scope, CacheScope::Private);
+        assert!(initial.capabilities.supports_tasks());
+        let directory_request = CustomRequest::new(
+            RESOURCES_DIRECTORY_READ_METHOD,
+            Some(serde_json::json!({"uri":"skill://labby/using-labby"})),
+        );
+        let result = running
+            .service()
+            .on_custom_request(directory_request.clone(), context())
+            .await
+            .unwrap();
+        assert!(!result.0["resources"].as_array().unwrap().is_empty());
+        let listed = running
+            .service()
+            .list_resources(None, context())
+            .await
+            .unwrap();
+        let manifest = listed
+            .resources
+            .iter()
+            .find(|resource| resource.uri == "skill://labby/using-labby/SKILL.md")
+            .unwrap();
+        let directory_manifest = result.0["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["uri"] == manifest.uri)
+            .unwrap();
+        assert_eq!(
+            *directory_manifest,
+            serde_json::to_value(manifest).unwrap(),
+            "directory and resource listings must expose identical canonical manifest metadata"
+        );
+        let remote: UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name":"remote", "url":"http://127.0.0.1:1/mcp", "enabled":true, "proxy_skills":true
+        }))
+        .unwrap();
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                upstream: vec![remote],
+                ..Default::default()
+            })
+            .await;
+        let denied = running
+            .service()
+            .on_custom_request(directory_request, context())
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        let changed = running.service().discover(context()).await.unwrap();
+        assert!(
+            !changed.capabilities.extensions.as_ref().unwrap()[SKILLS_EXTENSION_KEY]
+                .contains_key("directoryRead")
+        );
+        let skills = running
+            .service()
+            .on_custom_request(
+                CustomRequest::new(SKILLS_LIST_METHOD, Some(serde_json::json!({}))),
+                context(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            skills.0["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["uri"] == "skill://labby/using-labby/SKILL.md")
+        );
+        running.cancel().await.unwrap();
     }
 
     #[tokio::test]

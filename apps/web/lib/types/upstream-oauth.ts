@@ -18,7 +18,7 @@ export interface UpstreamOauthStatus {
   authenticated: boolean
   upstream: string
   credential_source: 'dedicated' | 'google_provider'
-  authorization_mode?: 'authorization_code_pkce' | 'client_credentials' | 'enterprise_managed'
+  authorization_mode?: 'authorization_code_pkce' | 'client_credentials' | 'enterprise_managed' | 'workload_identity_federation'
   required_scopes?: string[]
   google_credential_broker?: GoogleCredentialBrokerStatus
   expires_within_5m: boolean

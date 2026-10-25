@@ -119,19 +119,23 @@ test('scope upgrades for a dedicated upstream use provider-neutral consent text'
 })
 
 
-test('unattended OAuth does not offer browser sign-in when its grant fails', async () => {
-  const view = await renderCard({
-    authenticated: false,
-    credential_source: 'dedicated',
-    state: 'refresh_failed',
-    refresh_error: 'Service credential is unavailable',
-    ...{ authorization_mode: 'client_credentials' },
+const unattendedModes = ['client_credentials', 'enterprise_managed', 'workload_identity_federation'] as const
+
+for (const authorization_mode of unattendedModes) {
+  test(`${authorization_mode} does not offer browser sign-in when its grant fails`, async () => {
+    const view = await renderCard({
+      authenticated: false,
+      credential_source: 'dedicated',
+      state: 'refresh_failed',
+      refresh_error: 'Service credential is unavailable',
+      authorization_mode,
+    })
+    try {
+      assert.match(view.container.textContent ?? '', /Service credential is unavailable/)
+      assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === 'Connect'))
+    } finally { await view.unmount() }
   })
-  try {
-    assert.match(view.container.textContent ?? '', /Service credential is unavailable/)
-    assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === 'Connect'))
-  } finally { await view.unmount() }
-})
+}
 
 test('upstream scope challenges remain visible when the Google grant has no missing scopes', async () => {
   const view = await renderCard({
@@ -153,15 +157,17 @@ test('upstream scope challenges remain visible when the Google grant has no miss
 })
 
 
-test('clearing an unattended grant does not claim to disconnect its service identity', async () => {
-  const view = await renderCard({
-    authenticated: true,
-    credential_source: 'dedicated',
-    state: 'connected',
-    authorization_mode: 'client_credentials',
+for (const authorization_mode of unattendedModes) {
+  test(`clearing ${authorization_mode} does not claim to disconnect its service identity`, async () => {
+    const view = await renderCard({
+      authenticated: true,
+      credential_source: 'dedicated',
+      state: 'connected',
+      authorization_mode,
+    })
+    try {
+      assert.ok([...view.container.querySelectorAll('button')].some(node => node.textContent === 'Clear cached token'))
+      assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === 'Disconnect'))
+    } finally { await view.unmount() }
   })
-  try {
-    assert.ok([...view.container.querySelectorAll('button')].some(node => node.textContent === 'Clear cached token'))
-    assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === 'Disconnect'))
-  } finally { await view.unmount() }
-})
+}

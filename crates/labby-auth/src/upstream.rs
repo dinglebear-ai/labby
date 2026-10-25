@@ -29,3 +29,6 @@ mod machine_grant_tests;
 
 #[cfg(all(test, feature = "http-axum"))]
 mod machine_grant_failure_tests;
+
+#[cfg(all(test, feature = "http-axum"))]
+mod machine_workload_tests;

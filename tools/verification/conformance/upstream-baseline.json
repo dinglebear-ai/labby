@@ -14,7 +14,7 @@
   "conformance": {
     "npm_package": "@modelcontextprotocol/conformance",
     "npm_dist_tag": "alpha",
-    "version": "0.2.0-alpha.10"
+    "version": "0.2.0-alpha.12"
   },
   "skills_extension": {
     "repository": "modelcontextprotocol/modelcontextprotocol",

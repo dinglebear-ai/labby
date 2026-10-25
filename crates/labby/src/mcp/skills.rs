@@ -441,6 +441,8 @@ async fn dispatch_native_with_registry(
         let result = SkillsGetResult {
             result_type: Default::default(),
             skill: entry,
+            ttl_ms: Some(0),
+            cache_scope: Some(CACHE_SCOPE_PRIVATE.to_string()),
         };
         return serde_json::to_value(result)
             .map(CustomResult::new)
@@ -702,6 +704,8 @@ mod serve_tests {
         )
         .await
         .unwrap();
+        assert_eq!(got.0["ttlMs"], 0);
+        assert_eq!(got.0["cacheScope"], CACHE_SCOPE_PRIVATE);
         let result: SkillsGetResult = serde_json::from_value(got.0).unwrap();
         let resource = result
             .skill
@@ -742,12 +746,15 @@ mod serve_tests {
     }
 
     #[test]
-    fn the_capability_is_advertised_with_no_optional_features() {
+    fn native_only_capability_advertises_directory_read() {
         let extensions = crate::mcp::server::mcp_extensions_for_test();
         let declared = extensions
             .get(labby_runtime::skills::wire::SKILLS_EXTENSION_KEY)
             .expect("skills extension is advertised when the feature is on");
-        assert!(declared.is_empty(), "directoryRead must not be advertised");
+        assert_eq!(
+            declared.get("directoryRead"),
+            Some(&serde_json::Value::Bool(true))
+        );
     }
 
     #[tokio::test]

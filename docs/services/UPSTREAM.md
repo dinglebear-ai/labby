@@ -297,6 +297,24 @@ Configuration shape and examples live in
 [CONFIG.md — Upstream OAuth](../runtime/CONFIG.md#upstream-oauth-authorization_code--pkce).
 Operator browser flow lives in [GATEWAY.md](./GATEWAY.md).
 
+### Workload identity federation
+
+Unattended upstreams can use an externally issued workload JWT with
+`oauth.mode = { workload_identity_federation = { assertion_env = "WORKLOAD_JWT" } }`.
+Use a preregistered public client ID without `client_secret_env`. The provider's
+discovered metadata must explicitly advertise the JWT-bearer grant and `none`
+client authentication; absent or incompatible metadata rejects the exchange.
+
+The operator supplies a fresh, audience-bound assertion through the named
+environment variable. Labby sends it once to the approved token endpoint using
+the SDK's RFC 7523 grant, with the configured resource and scopes. It never
+falls back to another grant or a browser flow after rejection. Token requests
+reject redirects. Labby stores only the resulting access token, encrypted and
+bound to the upstream, caller and grant configuration; it does not retain the
+workload assertion. Access tokens require a positive lifetime and renew through
+the same configured assertion source when they expire. The external identity
+provider or operator owns assertion renewal.
+
 ### Scope
 
 - HTTP upstream transport only at the wire level. `labby mcp` stdio mode now

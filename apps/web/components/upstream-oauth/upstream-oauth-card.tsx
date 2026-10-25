@@ -69,6 +69,7 @@ export function UpstreamOauthCard({ name }: UpstreamOauthCardProps) {
     && status?.google_credential_broker?.provider_generation !== undefined
   const isUnattended = status?.authorization_mode === 'client_credentials'
     || status?.authorization_mode === 'enterprise_managed'
+    || status?.authorization_mode === 'workload_identity_federation'
   const missingScopes = status?.required_scopes ?? status?.google_credential_broker?.missing_scopes ?? []
 
   async function handleDisconnect() {

@@ -1,7 +1,7 @@
 ---
 title: "MCP 2026-07-28 Conformance"
 created: "2026-07-30"
-updated: "2026-10-23"
+updated: "2026-10-24"
 ---
 
 # MCP 2026-07-28 Conformance
@@ -32,10 +32,10 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.7.0`, Git revision `188f0f2582f9c8e8232a5ed61b6c0692a2f5f64b` |
+| Labby rmcp dependency | fork `3.7.0`, Git revision `053dada7816a9fd6c9c2bddd2eca3fbfb37a45b9` |
 | rmcp conformance fixture | stock upstream `3.7.0` |
 | rmcp fixture tag commit | `5d6a11f2ae022f513aec0f6e0f10f89a57891a7f` |
-| MCP conformance package | `0.2.0-alpha.10` |
+| MCP conformance package | `0.2.0-alpha.12` |
 
 The stock upstream fixture and Labby's fork are intentionally distinct pins.
 The 3.7.0 fixture does not read `STATELESS`; its default legacy-session support
@@ -53,11 +53,48 @@ fixture tag commit, installs the JavaScript conformance dependency once, builds
 a fresh Labby binary, and then runs:
 
 1. a Labby-native client -> root Labby -> middle Labby -> synthetic leaf chain
-2. the authenticated stateless Labby HTTP boundary smoke checks
-3. every dated `2026-07-28` server scenario
-4. every Tasks extension server scenario
-5. every dated `2026-07-28` client scenario
-6. the complete client extension suite
+2. authenticated stateless Labby HTTP checks, with a durable fixture owner
+3. official tool ordering, cache hints, and Skills server scenarios against Labby
+4. frozen `--requirements 2026-07-28` server and client runs
+5. expanded server and client suites for that wire version, including new schema checks
+6. Tasks and Skills server extension scenarios against the stock fixture
+7. legacy `2025-11-25` session lifecycle and SSE retry scenarios
+8. client authorization extensions against the stock SDK client
+9. client authorization extensions against the exact production fork, with no expected failures
+10. official Skills client scenarios against Labby's production gateway
+11. the direct stdio proxy probe
+
+The frozen requirement runs report optional and post-release failures without
+failing their exit status. Separate expanded and extension runs enforce those
+results with strict baselines. This prevents a frozen release score from hiding
+new regressions.
+
+The official CLI has no server authorization-header option. A task-local,
+loopback-only HTTP relay adds the fixture bearer credential; requests still
+cross Labby's production authentication and access middleware. It forwards
+protocol headers and error responses without interpreting MCP results. The
+relay bounds request/response sizes and deadlines and stops when the checks end.
+
+The Skills client driver connects a real Labby stdio gateway to the official
+HTTP fixture. Listing must not fetch files. The three negative cases attempt to
+load a manifest with an invalid digest, size, or frontmatter, then request a
+supporting file only if Labby accepts the manifest. Verification stays in the
+production provider; the driver contains no duplicate verification logic.
+
+Skills server checks use Labby's populated embedded catalog. A wholly skipped
+listing, manifest, or directory scenario fails the native evidence gate. The
+native fixture must execute all six directory assertions and both manifest
+metadata assertions successfully. Native Skills manifests appear in
+`resources/list` with their authored names and descriptions; listing does not
+cold-discover Skills-only upstreams. Resource cursors recheck the current caller,
+Team, project, route, and visible manifest URI set before replaying a snapshot.
+
+Directory support is conditional: modern discovery advertises it only when
+Skills and Resources are exposed and no enabled, route-visible upstream proxies
+Skills. Each request rechecks that guarantee. Native directory pages use the
+captured authorized manifest, with bounded direct children and cursors bound to
+visibility and manifest contents. Proxied Skills remain listed and readable;
+the route does not advertise directory support for those namespaces.
 
 Reports are written under `target/mcp-conformance/`. Known dated fixture gaps
 use the strict `tools/verification/conformance/expected-failures-dated.yaml` baseline, while
@@ -242,10 +279,19 @@ inline or HTTPS JWKS and enforces issuer, audience, client, resource, scope,
 expiry, and one-time `jti`.
 
 The expected-failure entries for enterprise-managed authorization, DPoP,
-DPoP nonce, and WIF JWT-bearer describe experimental outbound flows not
-implemented by the pinned rmcp conformance client. They do not describe Labby's
-inbound authorization server. Product-server coverage runs before the SDK
-fixture harness in the same CI job.
+DPoP nonce, and WIF JWT-bearer belong only to the independent stock upstream
+fixture. Its client rejects these scenario names before sending OAuth requests.
+A separate production-fork extension gate runs all six authorization extensions
+without an expected-failure baseline. It builds the client from the exact
+production SDK Git revision and runs after the stock client, preserving the
+stock server fixture and reporting both implementations separately.
+
+The fork provides enterprise and external workload JWT grants, plus opt-in
+DPoP proof-bound HTTP clients. Labby exposes workload grants through its existing
+unattended, caller-scoped credential lifecycle. Labby's current gateway OAuth
+client remains a bearer client; the SDK's DPoP conformance pass does not claim
+that Labby has a DPoP session or persistent proof-key mode. These outbound
+fixtures do not qualify Labby's inbound authorization server.
 
 ### Authorization requirement denominator
 

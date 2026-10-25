@@ -1,5 +1,5 @@
 # Known failures for optional extension scenarios in
-# @modelcontextprotocol/conformance 0.2.0-alpha.10.
+# @modelcontextprotocol/conformance 0.2.0-alpha.12.
 #
 # Extensions are excluded from the 2026-07-28 dated-protocol score. CI runs
 # them separately with this strict baseline:

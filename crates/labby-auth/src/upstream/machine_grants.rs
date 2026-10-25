@@ -8,6 +8,8 @@ use super::*;
 mod enterprise_grant;
 #[path = "machine_grant_store.rs"]
 mod grant_store;
+#[path = "machine_workload.rs"]
+mod workload_grant;
 use grant_store::{GrantStore, RenewingGrantStore};
 use labby_runtime::gateway_config::{
     UpstreamClientJwtAlgorithm, UpstreamMachineAuthentication, UpstreamOauthMode,
@@ -106,6 +108,9 @@ impl UpstreamOauthManager {
         match self.upstream.oauth.as_ref().map(|oauth| &oauth.mode) {
             Some(UpstreamOauthMode::ClientCredentials { .. }) => "client_credentials",
             Some(UpstreamOauthMode::EnterpriseManaged { .. }) => "enterprise_managed",
+            Some(UpstreamOauthMode::WorkloadIdentityFederation { .. }) => {
+                "workload_identity_federation"
+            }
             _ => "authorization_code_pkce",
         }
     }
@@ -398,6 +403,10 @@ impl UpstreamOauthManager {
             }
             UpstreamOauthMode::EnterpriseManaged { .. } => {
                 self.exchange_enterprise_grant(&metadata, store.as_ref(), http.as_ref())
+                    .await?;
+            }
+            UpstreamOauthMode::WorkloadIdentityFederation { .. } => {
+                self.exchange_workload_grant(&metadata, store.as_ref(), http.as_ref())
                     .await?;
             }
             UpstreamOauthMode::AuthorizationCodePkce => {

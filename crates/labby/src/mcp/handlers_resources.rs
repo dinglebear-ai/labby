@@ -75,6 +75,29 @@ use crate::mcp::runtime::{
 };
 use crate::mcp::server::LabMcpServer;
 
+/// Project validated canonical Skill metadata without rewriting its author or
+/// origin. Ordinary upstream Resource descriptors follow their existing path.
+#[cfg(feature = "skills")]
+pub(crate) fn skill_manifest_resource(skill: &labby_runtime::skills::wire::SkillEntry) -> Resource {
+    let mut resource = Resource::new(
+        &skill.uri,
+        skill.frontmatter_str("name").unwrap_or("SKILL.md"),
+    );
+    resource.description = skill.frontmatter_str("description").map(str::to_owned);
+    resource.mime_type = Some("text/markdown".to_owned());
+    resource.meta = skill.meta.clone().map(Into::into);
+    resource.size = skill.resources.as_ref().and_then(|files| {
+        files
+            .iter()
+            .find(|file| file.uri == skill.uri)
+            .map(|file| file.size)
+    });
+    if skill.origin().as_deref() == Some("labby") {
+        resource = native_resource(resource);
+    }
+    resource
+}
+
 #[cfg(feature = "skills")]
 fn skill_library_resource_error_correlation(context: &RequestContext<RoleServer>) -> String {
     static REQUESTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -688,7 +711,30 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
+        // Skill manifests may contain private Artifact Library metadata. Capture
+        // current authorization before both first-page discovery and cursor
+        // replay, including selected project/team membership and route scope.
+        #[cfg(feature = "skills")]
+        let skill_registry =
+            if self.route_scope.exposes_skills() && code_mode_read_scope_allowed(auth) {
+                Some(
+                    Box::pin(self.skill_registry_context(&context))
+                        .await
+                        .map_err(crate::mcp::skills::skill_read_error)?,
+                )
+            } else {
+                None
+            };
         let snapshot_audience = catalog_snapshot_audience(auth);
+        #[cfg(feature = "skills")]
+        let snapshot_audience = format!(
+            "{}:skills:{}",
+            snapshot_audience,
+            skill_registry.as_ref().map_or_else(
+                || "hidden".to_owned(),
+                crate::skills::facade::SkillRegistryContext::catalog_visibility_key
+            )
+        );
 
         // Cursor pages must resume the exact catalog captured by page one. In
         // particular, do not turn every offset into another catalog rebuild
@@ -898,6 +944,14 @@ impl LabMcpServer {
                 )
                 .with_mime_type(CONTRACT_SCHEMA_MIME),
             );
+        }
+
+        #[cfg(feature = "skills")]
+        if let Some(registry) = skill_registry.as_ref() {
+            let listing = crate::skills::facade::first_party_skill_listing(registry);
+            for skill in listing.skills {
+                resources.accept(skill_manifest_resource(&skill));
+            }
         }
 
         #[cfg(feature = "skills")]
@@ -3126,6 +3180,55 @@ mod tests {
         (server, pool, task)
     }
 
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn native_manifest_listing_does_not_discover_slow_skills_only_upstream() {
+        let fixture = ColdResourceServer {
+            entered: Some(Arc::new(tokio::sync::Notify::new())),
+            release: Some(Arc::new(tokio::sync::Notify::new())),
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture.clone(), 5000).await;
+        let manager = server.gateway_manager.as_ref().unwrap();
+        let mut config = manager.current_config().await;
+        config.upstream[0].proxy_resources = false;
+        config.upstream[0].proxy_skills = true;
+        pool.seed_lazy_upstreams(&config.upstream).await;
+        manager.seed_config_unchecked_for_tests(config).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            running
+                .service()
+                .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"])),
+        )
+        .await;
+        task.abort();
+        drop(task.await);
+        let result = result
+            .expect("native listing must not await slow Skills discovery")
+            .unwrap();
+        assert!(
+            result
+                .resources
+                .iter()
+                .any(|resource| resource.uri.starts_with("skill://labby/"))
+        );
+        assert_eq!(
+            fixture.connects.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Skills-only peers must not be cold discovered by resources/list"
+        );
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty()
+        );
+    }
+
     #[tokio::test]
     async fn cold_discovery_singleflights_zero_tool_connections() {
         let fixture = ColdResourceServer {
@@ -4348,6 +4451,124 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         assert!(
             server_logs_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised server logs URI must carry a cache-bust token: {server_logs_uris:?}"
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_manifest_projection_preserves_author_metadata_and_origin() {
+        let skill = labby_runtime::skills::wire::SkillEntry {
+            uri: "skill://remote/demo/SKILL.md".to_owned(),
+            frontmatter: serde_json::from_value(json!({"name":"demo", "description":"Original description\nwith spacing", "title":"authored"})).unwrap(),
+            resources: None,
+            meta: Some(serde_json::from_value(json!({"io.modelcontextprotocol.skills/origin":{"name":"remote"}})).unwrap()),
+        };
+        let resource = skill_manifest_resource(&skill);
+        assert_eq!(resource.uri, skill.uri);
+        assert_eq!(resource.name, "demo");
+        assert_eq!(
+            resource.description.as_deref(),
+            skill.frontmatter_str("description")
+        );
+        assert_eq!(resource.meta.map(|meta| meta.0), skill.meta);
+        assert!(
+            resource.icons.is_none(),
+            "upstream skill must not get Labby's icon"
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn disabled_skills_route_hides_manifest_resources() {
+        let loadout: crate::config::GatewayLoadoutConfig =
+            serde_json::from_value(serde_json::json!({"name": "hidden", "expose_skills": false}))
+                .unwrap();
+        let scope = crate::mcp::route_scope::McpRouteScope::protected_subset_with_capabilities(
+            "hidden",
+            std::iter::empty::<&str>(),
+            ["skills"],
+            crate::mcp::route_scope::McpRouteCapabilityGates::from_loadout(&loadout),
+        );
+        assert!(!scope.exposes_skills());
+        let server = resource_scope_server(scope).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .unwrap();
+        assert!(
+            result
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with("skill://"))
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn skill_manifest_resources_match_authorized_frontmatter() {
+        let server = resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+        let registry = running
+            .service()
+            .skill_registry_context(&context)
+            .await
+            .unwrap();
+        let expected = crate::skills::facade::list_visible_skills(&registry).await;
+        assert!(
+            !expected.skills.is_empty(),
+            "fixture must expose real skills"
+        );
+        let mut listed = Vec::new();
+        let mut request = None;
+        for _ in 0..100 {
+            let page = running
+                .service()
+                .list_resources_impl(request, context.clone())
+                .await
+                .unwrap();
+            listed.extend(page.resources);
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            request = Some(PaginatedRequestParams::default().with_cursor(Some(cursor)));
+        }
+        for skill in &expected.skills {
+            let resource = listed
+                .iter()
+                .find(|resource| resource.uri == skill.uri)
+                .unwrap_or_else(|| {
+                    panic!("skill manifest missing from resources/list: {}", skill.uri)
+                });
+            assert_eq!(Some(resource.name.as_str()), skill.frontmatter_str("name"));
+            assert_eq!(
+                resource.description.as_deref(),
+                skill.frontmatter_str("description")
+            );
+            assert_eq!(resource.mime_type.as_deref(), Some("text/markdown"));
+            assert_eq!(
+                serde_json::to_value(&resource.meta).unwrap(),
+                serde_json::to_value(&skill.meta).unwrap()
+            );
+        }
+        let denied = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["profile"]))
+            .await
+            .unwrap();
+        assert!(
+            denied
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with("skill://"))
         );
     }
 

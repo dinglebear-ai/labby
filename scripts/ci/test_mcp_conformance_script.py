@@ -94,6 +94,36 @@ work_dir="$(mktemp -d)"
         )
         self.assertEqual(preserved.returncode, 7, preserved.stderr)
 
+    def test_latest_runner_keeps_frozen_and_expanded_coverage_separate(self):
+        script = (ROOT / "scripts/ci/mcp-conformance.sh").read_text()
+        self.assertIn("0.2.0-alpha.12", script)
+        self.assertEqual(script.count('--requirements "$MCP_SPEC_VERSION"'), 2)
+        self.assertIn('server-latest', script)
+        self.assertIn('client-latest', script)
+        self.assertIn('server-session-lifecycle', script)
+        self.assertIn('--scenario sse-retry', script)
+        self.assertIn('mcp_conformance_labby.py" server', script)
+        self.assertIn('mcp_conformance_labby.py" evidence', script)
+        self.assertIn('LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1', script)
+        for scenario in ("sep-2640-client-no-prefetch", "sep-2640-client-verify-digest",
+                         "sep-2640-client-verify-size", "sep-2640-client-verify-frontmatter"):
+            self.assertIn(scenario, script)
+        for scenario in ("sep-2640-skills-directory", "sep-2640-skills-enumeration", "sep-2640-skills-manifest"):
+            self.assertIn(scenario, script)
+
+    def test_production_extension_gate_is_separate_from_stock_baseline(self):
+        script = (ROOT / "scripts/ci/mcp-conformance.sh").read_text()
+        self.assertIn('production-client-extensions', script)
+        self.assertIn('"$LABBY_RMCP_FIXTURE_REPOSITORY" "$LABBY_RMCP_REVISION"', script)
+        section = script[script.index('# Qualify the actual production fork'):script.index("# Exercise the gateway's production Skills client")]
+        self.assertNotIn('--expected-failures', section)
+        self.assertIn('--suite extensions', section)
+        self.assertIn('CARGO_TARGET_DIR="$rmcp_target_dir" cargo build', section)
+
+    def test_ci_runs_auth_bridge_and_evidence_gate_regressions(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.assertIn("python3 -m unittest scripts/ci/test_mcp_conformance_script.py scripts/ci/test_mcp_conformance_labby.py", workflow)
+
     def test_auth_alias_retains_same_immutable_client_only_sdk_pin(self):
         dependency = {"package": "rmcp", "git": "repo", "rev": "revision", "version": "=3.3.0", "default-features": False, "features": ["client", "auth", "transport-streamable-http-client-reqwest"], "optional": True}
         manifest = {"dependencies": {"rmcp-client": dependency}}

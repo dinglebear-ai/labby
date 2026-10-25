@@ -55,6 +55,8 @@ pub mod server;
 pub mod services;
 #[cfg(feature = "skills")]
 pub mod skills;
+#[cfg(feature = "skills")]
+pub(crate) mod skills_directory;
 #[cfg(feature = "gateway")]
 pub(crate) mod tool_execution;
 #[cfg(feature = "gateway")]
