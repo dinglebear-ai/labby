@@ -75,9 +75,18 @@ export function withSnippetDescription(body: string, description: string): strin
   const match = FRONTMATTER_RE.exec(body)
   if (!match) return body // Bare source uses the create action's description field.
   const newline = match[0].includes('\r\n') ? '\r\n' : '\n'
-  const header = /^description:[^\r\n]*$/m.test(match[0])
-    ? match[0].replace(/^description:[^\r\n]*/m, () => `description: ${description}`)
-    : match[0].replace(/^(---\r?\n)/, prefix => `${prefix}description: ${description}${newline}`)
+  let found = false
+  // The native parser skips two-space-indented fields and lets the last
+  // top-level duplicate win. Update all accepted descriptions consistently.
+  const replaced = match[0].replace(/^[^\r\n]+/gm, line => {
+    const colon = line.indexOf(':')
+    const key = line.slice(0, colon).replace(/^[\s\u0085]+|[\s\u0085]+$/g, '')
+    if (line.startsWith('  ') || colon < 0 || key !== 'description') return line
+    found = true
+    return `${line.slice(0, colon + 1)} ${description}`
+  })
+  const header = found ? replaced
+    : replaced.replace(/^(---\r?\n)/, prefix => `${prefix}description: ${description}${newline}`)
   return header + body.slice(match[0].length)
 }
 

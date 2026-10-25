@@ -183,7 +183,7 @@ MCP and API callers pass the same shape through `params`:
   "action": "snippets.exec",
   "params": {
     "name": "homelab-readonly-pulse",
-    "params": { "host": "node-a" }
+    "params": { "timezone": "UTC" }
   }
 }
 ```

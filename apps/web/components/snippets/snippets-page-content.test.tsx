@@ -902,6 +902,35 @@ test('description edits round-trip authoritative frontmatter and preserve other 
   } finally { await view.unmount() }
 })
 
+for (const declaration of [' description : Original description', 'description: Earlier description\ndescription: Original description']) {
+  test(`description edits reopen the effective value for ${JSON.stringify(declaration)}`, async () => {
+    let stored = `---\nname: description-edit\n${declaration}\ntags: [kept]\n---\n\n\`\`\`js\nasync () => ({ok:true})\n\`\`\``
+    // Match the native parser's top-level, last-field-wins contract.
+    const description = () => stored.split('\n')
+      .filter(line => !line.startsWith('  ') && line.split(':')[0].trim() === 'description')
+      .at(-1)?.split(':').slice(1).join(':').trim()
+    const info = () => ({ name: 'description-edit', description: description(), source: 'user', path: '/description-edit.md', shadowed: false, tags: ['kept'], content_digest: 'snapshot', body: stored })
+    const view = await remediationPage((async (_input, init) => {
+      const { action, params } = JSON.parse(String(init?.body))
+      if (action === 'snippets.list') return jsonResponse({ snippets: [info()] })
+      if (action === 'snippets.get') return jsonResponse(info())
+      if (action === 'snippets.create') { stored = params.body; return jsonResponse(info()) }
+      if (action === 'snippets.history') return jsonResponse({ receipts: [] })
+      return jsonResponse({ valid: true })
+    }) as typeof fetch)
+    try {
+      await waitFor(() => assert.equal(buttonNamed('Edit').disabled, false))
+      await act(async () => buttonNamed('Edit').click())
+      await act(async () => reactChange(document.body.querySelector<HTMLInputElement>('#snippet-edit-description')!, 'Updated description'))
+      await act(async () => buttonNamed('Validate and save').click())
+      await waitFor(() => assert.equal(description(), 'Updated description'))
+      await act(async () => buttonNamed('Edit').click())
+      assert.equal(document.body.querySelector<HTMLInputElement>('#snippet-edit-description')!.value, 'Updated description')
+      assert.match(stored, /tags: \[kept\]/)
+    } finally { await view.unmount() }
+  })
+}
+
 test('guided save drops schema-sensitive aliased defaults while preserving ephemeral example values', async () => {
   const { generateWorkflowCode } = await import('./workflow-model')
   const plan = { version: 1 as const, steps: [{ id: 'connect', tool: 'host::connect', mapping: { config: '$input.settings' }, dependsOn: [] }] }

@@ -185,6 +185,25 @@ test('description updates preserve literal replacement characters and CRLF metad
   assert.equal(withSnippetDescription(missing, 'Literal $& value'), '---\ndescription: Literal $& value\nname: example\ntools: []\n---\ncode')
 })
 
+test('description edits update every parser-accepted top-level field without touching nested descriptions', () => {
+  const declarations = [
+    ['description : Original', 'description : Updated'],
+    [' description: Original', ' description: Updated'],
+    ['\tdescription:\tOriginal', '\tdescription: Updated'],
+    ['\u0085description\u0085: Original', '\u0085description\u0085: Updated'],
+    ['description: Earlier\ndescription: Original', 'description: Updated\ndescription: Updated'],
+  ]
+  for (const [original, updated] of declarations) {
+    for (const newline of ['\n', '\r\n']) {
+      const body = ['---', 'name: example', original, 'tags: [kept]', 'inputs:',
+        '  count:', '    type: integer', '    description: Keep input description',
+        '---', '', '```js', 'async () => ({ok:true})', '```'].join('\n').replaceAll('\n', newline)
+      const expected = body.replace(original.replaceAll('\n', newline), updated.replaceAll('\n', newline))
+      assert.equal(withSnippetDescription(body, 'Updated'), expected)
+    }
+  }
+})
+
 test('explicit __proto__ inputs remain own JSON keys without changing the returned plain object prototype', () => {
   for (const [ty, raw, expected] of [
     ['string', 'explicit value', 'explicit value'],
