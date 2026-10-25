@@ -7,7 +7,7 @@
 // have a stable cache key even when the field array reference changes
 // across renders.
 
-import { z, type ZodTypeAny } from 'zod'
+import { z } from 'zod'
 
 import type { ServiceEnvVar, UiFieldSchema } from '@/lib/api/setup-client'
 
@@ -109,7 +109,7 @@ function isSafeRelativePath(val: string): boolean {
   return !val.split(/[\\/]/).includes('..')
 }
 
-function fieldRule(field: FieldView): ZodTypeAny {
+function fieldRule(field: FieldView): z.ZodType<string, string> {
   const v = field.ui.validation
   const isRequired = field.required || v.required
 
@@ -181,8 +181,8 @@ function fieldRule(field: FieldView): ZodTypeAny {
 /** Produce a Zod object schema covering every field in `fields`. */
 export function buildSchema(
   fields: readonly FieldView[],
-): z.ZodObject<Record<string, ZodTypeAny>> {
-  const shape: Record<string, ZodTypeAny> = {}
+): z.ZodObject<Record<string, z.ZodType<string, string>>> {
+  const shape: Record<string, z.ZodType<string, string>> = {}
   for (const field of fields) {
     shape[field.name] = fieldRule(field)
   }

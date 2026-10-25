@@ -67,6 +67,35 @@ agreement and pins required scope, transport availability, and read-only and
 destructive annotations. Missing, forged, or changed known contracts reject the
 catalog; additive unpinned operations remain unavailable until this Labby build
 admits them. Browser metadata is presentation, not execution authority.
+
+During mixed-version rollout, `depot.sources.configure` supports exactly the
+current input fingerprint `d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738`
+and historical `36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4`.
+Both retain contract version 1, declared/recomputed/pinned input agreement and
+the same write scope, transport, read-only and destructive policy. The historical
+schema is frozen in `fixtures/depot-control-plane/sources-configure-legacy-v1.json`,
+from the captured served descriptor whose release sidecar identifies Depot
+`da2f6933da8c19b32314c6b564067f35b8137ea1`; only the actor-specific
+`authorized` projection was removed. Its input fingerprint was independently
+recomputed against the captured Catalog contract. The current descriptor is the
+reviewed `4932f3630dbe51644951bac43223bb967c0e7237` contract in the golden catalog.
+These release-sidecar identities are provenance labels, not signed build attestations.
+
+The SDK checks the served catalog on each call. The generic backend retains a
+compact admitted configure version in its actor-bound, five-minute catalog
+snapshot. When the admitted contract is historical, both paths reject keys absent
+from that schema before sending a request or recording destructive intent. This
+includes `scanSubdir` and `preserveMissing` even when null or false. The current
+contract accepts those fields; neither path strips parameters or silently
+changes their meaning.
+
+A provider can roll back after catalog admission. If the generic cache still
+holds the current contract, a request with newer fields can reach the historical
+provider. That provider rejects unknown keys before its executor runs; this case
+does not promise local rejection, zero requests or zero authorization bookkeeping.
+Provider validation also owns parameter types and bounds. These two pinned input
+contracts keep unrelated read-only operations available without changing provider
+data. They do not admit arbitrary fingerprints or add output-schema hashing.
 Administration renders Depot's
 published `labby.depot-operation-schema/v1` subset as typed controls. The subset,
 cardinality limits, authority states, fingerprint binding, and fail-closed

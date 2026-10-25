@@ -846,6 +846,8 @@ div[data-palette] {
 /* ── Mobile dock (verbatim from the mock's max-width: 900px block) ──────── */
 @media (max-width: 900px) {
   div[data-palette] {
+    /* Include the sheet border inside the full viewport width. */
+    box-sizing: border-box;
     top: auto !important;
     bottom: 0 !important;
     left: 0 !important;
