@@ -558,6 +558,33 @@ fn reject_protected_overlap(
     Ok(())
 }
 
+#[derive(Debug, thiserror::Error)]
+enum StdioLifecycleError {
+    #[error("stdio MCP lifecycle negotiation failed: {0}")]
+    Protocol(#[source] Box<dyn std::error::Error + Send + Sync>),
+    #[error("stdio MCP lifecycle negotiation task failed")]
+    Task(#[source] tokio::task::JoinError),
+}
+
+/// Poll SDK negotiation independently of the API/dispatch serving call stack.
+/// Dropping the caller aborts this owned task; the caller retains the process
+/// tree guard until a fully negotiated connection takes ownership of it.
+async fn run_stdio_negotiation<T: Send + 'static>(
+    negotiation: impl Future<Output = Result<T, rmcp::service::ClientInitializeError>> + Send + 'static,
+) -> Result<T, StdioLifecycleError> {
+    use tracing::Instrument as _;
+    use tracing::instrument::WithSubscriber as _;
+
+    let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(
+        Box::pin(negotiation)
+            .in_current_span()
+            .with_current_subscriber(),
+    ));
+    task.await
+        .map_err(StdioLifecycleError::Task)?
+        .map_err(|error| StdioLifecycleError::Protocol(Box::new(error)))
+}
+
 async fn connect_stdio_upstream_once<H: ClientHandler>(
     command: &StdioCommandSpec,
     handler: H,
@@ -691,11 +718,19 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
     let job_guard = pid.map(super::super::process_guard::JobObjectGuard::arm);
 
     let process = OrderedRelayNotificationTransport::new(process, notification_interceptor);
+    // Construct the SDK future inside each owned async task below; constructing
+    // it before the task boundary would retain its serving-stack temporaries.
     let service = match lifecycle {
         LifecycleAttempt::Modern => {
-            let service = match handler
-                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(process, lifecycle.mode())
-                .await
+            let service = match run_stdio_negotiation(async move {
+                handler
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        process,
+                        lifecycle.mode(),
+                    )
+                    .await
+            })
+            .await
             {
                 Ok(service) => service,
                 Err(error) => {
@@ -722,9 +757,15 @@ async fn connect_stdio_upstream_once<H: ClientHandler>(
             UpstreamClientService::Direct(service)
         }
         LifecycleAttempt::LegacyInitialize => {
-            let service = match VersionedClientHandler::new(handler, legacy_protocol_version())
-                .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(process, lifecycle.mode())
-                .await
+            let service = match run_stdio_negotiation(async move {
+                VersionedClientHandler::new(handler, legacy_protocol_version())
+                    .serve_with_lifecycle::<_, _, TransportAdapterIdentity>(
+                        process,
+                        lifecycle.mode(),
+                    )
+                    .await
+            })
+            .await
             {
                 Ok(service) => service,
                 Err(error) => {
@@ -1161,6 +1202,81 @@ mod conformance_tests {
 mod tests {
     use super::super::testsupport::named_test_upstream_config;
     use super::*;
+
+    #[tokio::test]
+    async fn stdio_negotiation_preserves_typed_lifecycle_errors() {
+        let error = run_stdio_negotiation(async {
+            Err::<(), _>(
+                rmcp::service::ClientInitializeError::NoCompatibleProtocolVersion {
+                    client_supported: vec![rmcp::model::ProtocolVersion::V_2026_07_28],
+                    server_supported: vec![rmcp::model::ProtocolVersion::LATEST_WITH_INITIALIZE],
+                },
+            )
+        })
+        .await
+        .unwrap_err();
+        assert!(anyhow::Error::new(error).chain().any(|cause| matches!(
+            cause.downcast_ref::<rmcp::service::ClientInitializeError>(),
+            Some(rmcp::service::ClientInitializeError::NoCompatibleProtocolVersion { .. })
+        )));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cancelled_stdio_negotiation_reaps_its_started_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let receipt = directory.path().join("child.pid");
+        let mut config = named_test_upstream_config("cancelled-stdio-negotiation");
+        config.command = Some("sh".into());
+        config.args = vec![
+            "-c".into(),
+            "printf '%s' \"$$\" > \"$1\"; exec sleep 60".into(),
+            "stdio-cancellation-fixture".into(),
+            receipt.to_string_lossy().into_owned(),
+        ];
+        let caller = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            connect_stdio_upstream("sh", &config.args, &config, None, None, (), None).await
+        }));
+        let pid = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(contents) = tokio::fs::read_to_string(&receipt).await
+                    && let Ok(pid) = contents.parse::<u32>()
+                {
+                    break pid;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("stdio child must start and record its pid");
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while crate::process::unix::pid_is_alive(pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("cancelled negotiation must reap its child");
+    }
+
+    #[tokio::test]
+    async fn dropped_caller_aborts_its_owned_stdio_negotiation() {
+        let cancelled = tokio_util::sync::CancellationToken::new();
+        let dropped = cancelled.clone().drop_guard();
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let caller = tokio::spawn(run_stdio_negotiation(async move {
+            let _dropped = dropped;
+            let _ = started.send(());
+            std::future::pending::<Result<(), rmcp::service::ClientInitializeError>>().await
+        }));
+        entered.await.expect("negotiation task entered");
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        tokio::time::timeout(std::time::Duration::from_secs(1), cancelled.cancelled())
+            .await
+            .expect("owned negotiation must be dropped with its caller");
+    }
 
     #[test]
     fn remembers_legacy_lifecycle_for_exact_stdio_command() {
