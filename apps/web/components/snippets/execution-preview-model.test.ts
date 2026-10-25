@@ -106,3 +106,16 @@ test('closed known object aliases preserve ordinary defaults and visible safe va
   assert.deepEqual(safeReplayDefaults({ settings: { ty: 'json', default: settings } }, schema), { settings })
   assert.deepEqual(redactWorkflowValue({ settings }, schema), { settings })
 })
+
+test('numeric top-level input aliases omit sensitive new, existing and replay defaults', () => {
+  const schema = inheritedInputSchema(
+    { version: 1, steps: [{ id: 'connect', tool: 'host::connect', dependsOn: [], mapping: { credential: '$input.0' } }] },
+    { connect: { type: 'object', properties: { credential: { type: 'string', writeOnly: true } } } },
+  )
+  const inputs = { '0': { ty: 'string' as const, default: 'synthetic-private' } }
+  assert.equal(schema.properties?.['0']?.writeOnly, true)
+  assert.deepEqual(builderInputSpecs({}, { '0': 'synthetic-private' }, schema), { '0': { ty: 'string', required: true } })
+  assert.deepEqual(builderInputSpecs(inputs, {}, schema), { '0': { ty: 'string', required: true } })
+  assert.deepEqual(safeReplayDefaults(inputs, schema), {})
+  assert.deepEqual(redactWorkflowValue({ '0': 'synthetic-private' }, schema), { '0': '[redacted]' })
+})

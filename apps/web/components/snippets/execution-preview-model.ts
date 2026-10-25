@@ -68,11 +68,11 @@ export function inheritedInputSchema(
   }
   const mark = (path: string[], schema: ParameterSchema) => {
     let current = root
-    for (const key of path) {
+    for (const [index, key] of path.entries()) {
       if (!key || ['__proto__', 'constructor', 'prototype'].includes(key)) return
-      // Numeric selectors refer to array elements. Mask the containing input
-      // conservatively rather than inventing an incompatible object schema.
-      if (/^\d+$/.test(key)) { current.writeOnly = true; return }
+      // The first segment always names an input, including a numeric name.
+      // Numeric descendants may be array elements: mask their containing input.
+      if (index > 0 && /^\d+$/.test(key)) { current.writeOnly = true; return }
       current.properties ??= Object.create(null)
       if (!Object.prototype.hasOwnProperty.call(current.properties, key))
         current.properties![key] = { properties: Object.create(null) }
