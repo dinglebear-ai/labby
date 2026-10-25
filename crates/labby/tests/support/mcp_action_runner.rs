@@ -319,6 +319,14 @@ impl BuiltinMcpRunner {
             .base_url
     }
 
+    pub(crate) fn owned_labby_home(&self) -> std::path::PathBuf {
+        self.guard
+            .as_ref()
+            .expect("owned HTTP runner")
+            .root()
+            .join("labby-home")
+    }
+
     pub(crate) async fn start() -> Result<Self, String> {
         // This runner exercises raw service/action dispatch. Its separate Code
         // Mode constructor covers the intentionally enabled product default.
@@ -358,7 +366,7 @@ impl BuiltinMcpRunner {
         })
     }
 
-    async fn start_with_config(config_text: Option<&str>) -> Result<Self, String> {
+    pub(crate) async fn start_with_config(config_text: Option<&str>) -> Result<Self, String> {
         drop(rustls::crypto::ring::default_provider().install_default());
         let mut builder = LiveLabbyBuilder::new()
             .env("LABBY_MCP_HTTP_TOKEN", TEST_TOKEN)
