@@ -3030,7 +3030,10 @@ strategy = "dynamic"
             .validate()
             .expect_err("reserved prefix must be rejected");
         let rendered = error.to_string();
-        assert!(rendered.contains("__in_process__"), "{rendered}");
+        assert!(
+            rendered.contains("__in_process__"),
+            "reserved-prefix rejection must identify the reserved namespace"
+        );
 
         // Ordinary names that merely contain the token are fine — only the
         // prefix is reserved.
