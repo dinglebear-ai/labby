@@ -1,5 +1,5 @@
 //! A receipt-capable older daemon ignores unknown fields; negotiate before effects.
-use super::test_gateway;
+use super::tests::test_gateway;
 use crate::dispatch::snippets::store::SnippetSourceFormat;
 use serde_json::{Value, json};
 use std::sync::{
