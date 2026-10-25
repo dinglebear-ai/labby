@@ -102,6 +102,16 @@ impl OAuthHttpClient for GrantHttpClient {
 }
 
 impl UpstreamOauthManager {
+    #[cfg(test)]
+    pub(in crate::upstream) fn unattended_grant_running(&self, subject: &str) -> bool {
+        self.locks.is_running(&self.upstream.name, subject)
+    }
+
+    #[cfg(test)]
+    pub(in crate::upstream) fn unattended_coordination_owners(&self) -> usize {
+        Arc::strong_count(&self.locks)
+    }
+
     /// Stable mode name for status and authorization surfaces.
     #[must_use]
     pub fn authorization_mode_label(&self) -> &'static str {
@@ -165,16 +175,51 @@ impl UpstreamOauthManager {
         let changed_owner = Arc::clone(&changed);
         let (executed, result) = self
             .locks
-            .run_shared(&self.upstream.name, subject, || async move {
-                tokio::spawn(async move {
-                    let (_, renewed) = worker
-                        .unattended_credentials_owned(&identity, renewal_window)
-                        .await?;
-                    changed_owner.store(renewed, Ordering::Release);
-                    Ok(())
-                })
+            .run_shared_owned(&self.upstream.name, subject, move || async move {
+                let result = tokio::time::timeout(
+                    Duration::from_secs(90),
+                    worker.unattended_credentials_owned(&identity, renewal_window),
+                )
                 .await
-                .map_err(|_| OauthError::Internal("unattended grant task failed".into()))?
+                .unwrap_or_else(|_| {
+                    Err(OauthError::Egress {
+                        kind: OAuthEgressKind::Timeout,
+                        message: "unattended OAuth grant exceeded its deadline".into(),
+                    })
+                });
+                let policy = worker.grant_publication_policy.as_ref().ok_or_else(|| {
+                    OauthError::Internal("unattended grant publication policy is missing".into())
+                })?;
+                if !policy.epoch.is_current() {
+                    return Err(OauthError::NeedsReauth(
+                        "unattended credential authority changed".into(),
+                    ));
+                }
+                let _publication = policy.barrier.try_read().map_err(|_| {
+                    OauthError::NeedsReauth("unattended credential authority is changing".into())
+                })?;
+                if !policy.epoch.is_current() {
+                    return Err(OauthError::NeedsReauth(
+                        "unattended credential authority changed".into(),
+                    ));
+                }
+                match result {
+                    Ok((_, renewed)) => {
+                        worker
+                            .refresh_failures
+                            .clear(&worker.upstream.name, &identity);
+                        changed_owner.store(renewed, Ordering::Release);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        worker.refresh_failures.record_failure(
+                            &worker.upstream.name,
+                            &identity,
+                            &error,
+                        );
+                        Err(error)
+                    }
+                }
             })
             .await;
         if !policy.epoch.is_current() {
@@ -182,7 +227,7 @@ impl UpstreamOauthManager {
                 "unattended credential authority changed".into(),
             ));
         }
-        // Failure-cache updates belong to the same authority as the grant.
+        // Credential use belongs to the same authority as the completed grant.
         // This reader begins after provider work and guards only local state.
         // Renewal can run inside a checked RPC that already holds a reader.
         // A queued writer must reject this publication instead of deadlocking.
@@ -194,12 +239,7 @@ impl UpstreamOauthManager {
                 "unattended credential authority changed".into(),
             ));
         }
-        if let Err(error) = result {
-            self.refresh_failures
-                .record_failure(&self.upstream.name, subject, &error);
-            return Err(error);
-        }
-        self.refresh_failures.clear(&self.upstream.name, subject);
+        result?;
         let store = SqliteCredentialStore::new(
             self.sqlite.clone(),
             self.key.clone(),
@@ -291,15 +331,9 @@ impl UpstreamOauthManager {
             failure: std::sync::Mutex::new(None),
             invalid_expiry: AtomicBool::new(false),
         });
-        let result = tokio::time::timeout(
-            Duration::from_secs(90),
-            Box::pin(self.exchange_unattended_grant(Arc::clone(&store), Arc::clone(&http))),
-        )
-        .await
-        .map_err(|_| OauthError::Egress {
-            kind: OAuthEgressKind::Timeout,
-            message: "unattended OAuth grant exceeded its deadline".into(),
-        })?;
+        let result = self
+            .exchange_unattended_grant(Arc::clone(&store), Arc::clone(&http))
+            .await;
         if let Err(error) = result {
             if http.invalid_expiry.load(Ordering::Acquire) {
                 return Err(OauthError::Egress {

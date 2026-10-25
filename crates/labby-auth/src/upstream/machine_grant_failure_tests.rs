@@ -319,3 +319,218 @@ fn machine_renewal_does_not_wait_behind_a_writer_while_its_rpc_holds_a_reader() 
         },
     );
 }
+
+#[test]
+fn cancelled_machine_grant_callers_retain_one_worker_and_failure_cooldown() {
+    isolated(
+        "upstream::machine_grant_failure_tests::cancelled_machine_grant_callers_retain_one_worker_and_failure_cooldown",
+        async {
+            let (server, _, config, cache, store, managers) =
+                client_fixture(serde_json::json!("client_secret")).await;
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let observed = Arc::clone(&entered);
+            Mock::given(method("POST"))
+                .respond_with(move |_: &wiremock::Request| {
+                    observed.notify_one();
+                    ResponseTemplate::new(400)
+                        .set_delay(std::time::Duration::from_millis(750))
+                        .set_body_json(serde_json::json!({"error":"invalid_grant"}))
+                })
+                .mount(&server)
+                .await;
+            let start = || {
+                let cache = cache.clone();
+                let config = config.clone();
+                tokio::spawn(async move { cache.get_or_build(&config, "caller").await })
+            };
+            let first = start();
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                .await
+                .unwrap();
+            first.abort();
+            assert!(first.await.unwrap_err().is_cancelled());
+            for _ in 0..3 {
+                let caller = start();
+                tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+                caller.abort();
+                assert!(caller.await.unwrap_err().is_cancelled());
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while managers
+                    .get("machine")
+                    .unwrap()
+                    .unattended_grant_running("caller")
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("retained worker must finish within its provider response budget");
+            let result = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                cache.get_or_build(&config, "caller"),
+            )
+            .await
+            .expect("the retained worker must have published the cooldown");
+            assert!(result.is_err());
+            let posts = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|request| request.method.as_str() == "POST")
+                .count();
+            assert_eq!(
+                posts, 1,
+                "cancelled callers must join one retained worker, including failure publication"
+            );
+            assert!(store.load().await.unwrap().is_none());
+        },
+    );
+}
+
+#[test]
+fn machine_grant_deadline_includes_credential_guard_admission() {
+    isolated(
+        "upstream::machine_grant_failure_tests::machine_grant_deadline_includes_credential_guard_admission",
+        async {
+            let (server, _, config, cache, store, managers) =
+                client_fixture(serde_json::json!("client_secret")).await;
+            let guard = store.acquire_refresh_guard().await.unwrap();
+            let request = {
+                let cache = cache.clone();
+                let config = config.clone();
+                tokio::spawn(async move { cache.get_or_build(&config, "caller").await })
+            };
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(91)).await;
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+            assert!(
+                request.is_finished(),
+                "grant deadline must include waiting for the identity guard"
+            );
+            assert_eq!(
+                request
+                    .await
+                    .unwrap()
+                    .expect_err("deadline must fail")
+                    .kind(),
+                "timeout"
+            );
+            assert!(
+                !managers
+                    .get("machine")
+                    .unwrap()
+                    .unattended_grant_running("caller")
+            );
+            drop(guard);
+            tokio::time::resume();
+            assert!(
+                server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.method.as_str() != "POST")
+            );
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    cache.get_or_build(&config, "caller")
+                )
+                .await
+                .unwrap()
+                .is_err()
+            );
+            assert!(
+                server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.method.as_str() != "POST")
+            );
+        },
+    );
+}
+
+#[test]
+fn cancelled_machine_status_waiters_release_coordination_ownership() {
+    isolated(
+        "upstream::machine_grant_failure_tests::cancelled_machine_status_waiters_release_coordination_ownership",
+        async {
+            let (server, _, _, cache, _, managers) =
+                client_fixture(serde_json::json!("client_secret")).await;
+            let manager = managers
+                .get("machine")
+                .unwrap()
+                .clone()
+                .with_grant_publication_policy(
+                    cache.invalidation_barrier(),
+                    cache.lifecycle_epoch_for("machine", "caller"),
+                );
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let observed = Arc::clone(&entered);
+            Mock::given(method("POST"))
+                .respond_with(move |_: &wiremock::Request| {
+                    observed.notify_one();
+                    ResponseTemplate::new(400)
+                        .set_delay(std::time::Duration::from_millis(750))
+                        .set_body_json(serde_json::json!({"error":"invalid_grant"}))
+                })
+                .mount(&server)
+                .await;
+            let mut first = Box::pin(manager.refresh_auth_client_if_due("caller"));
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    first.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+                .await
+                .unwrap();
+            drop(first);
+            let baseline = manager.unattended_coordination_owners();
+            for _ in 0..3 {
+                let mut waiter = Box::pin(manager.refresh_auth_client_if_due("caller"));
+                assert!(
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(
+                        waiter.as_mut().poll(cx).is_pending()
+                    ))
+                    .await
+                );
+                for _ in 0..100 {
+                    tokio::task::yield_now().await;
+                }
+                drop(waiter);
+                assert_eq!(
+                    manager.unattended_coordination_owners(),
+                    baseline,
+                    "cancelled status callers must not leave detached coordination waiters"
+                );
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while manager.unattended_grant_running("caller") {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(manager.refresh_auth_client_if_due("caller").await.is_err());
+            assert_eq!(
+                server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .filter(|request| request.method.as_str() == "POST")
+                    .count(),
+                1
+            );
+        },
+    );
+}

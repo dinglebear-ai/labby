@@ -767,6 +767,14 @@ impl UpstreamOauthManager {
     /// short refresh buffer. Status checks need an explicit refresh so UI state
     /// cannot report a stale credential row as connected.
     pub async fn refresh_auth_client_if_due(&self, subject: &str) -> Result<bool, OauthError> {
+        // Unattended grants retain only their elected provider worker. Let a
+        // cancelled status request drop its waiter instead of detaching it.
+        if self.is_unattended() {
+            return self
+                .unattended_credentials(subject, 300)
+                .await
+                .map(|(_, renewed)| renewed);
+        }
         // Once admitted, persist a provider's rotated token even if the status
         // request disappears. Dropping the JoinHandle detaches this bounded
         // provider operation instead of cancelling between exchange and save.
@@ -780,12 +788,6 @@ impl UpstreamOauthManager {
     }
 
     async fn refresh_auth_client_if_due_owned(&self, subject: &str) -> Result<bool, OauthError> {
-        if self.is_unattended() {
-            return self
-                .unattended_credentials(subject, 300)
-                .await
-                .map(|(_, renewed)| renewed);
-        }
         let started = std::time::Instant::now();
         self.preflight_shared_google_credential().await?;
 
