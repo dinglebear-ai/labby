@@ -869,3 +869,29 @@ test('v2 detail README must belong to the current revision and match its declare
     assert.deepEqual((await getArtifact('public', 'artifact-1')).artifact.readme, { state: 'unavailable', reason: 'too_large' })
   })
 })
+
+
+test('operation schemas retain fractional values within the finite safe range', async () => {
+  const catalog = (value: number) => ({ operations: [{
+    name: 'depot.fraction', title: 'Fraction', description: 'Fractional schema',
+    inputSchema: { type: 'object', properties: {
+      amount: { type: 'number', minimum: value, maximum: 2.75, default: 1.5, enum: [1.5, 2.75] },
+    }, required: [], additionalProperties: false },
+  }] })
+  await withFetch(json(catalog(0.25)), async () => {
+    const result = await depotOperations()
+    assert.equal(result[0].inputSchema.properties?.amount.minimum, 0.25)
+    assert.equal(result[0].inputSchema.properties?.amount.default, 1.5)
+    assert.deepEqual(result[0].inputSchema.properties?.amount.enum, [1.5, 2.75])
+  })
+  for (const value of [Number.MIN_SAFE_INTEGER - 1, Number.MAX_SAFE_INTEGER + 1, Infinity, -Infinity, NaN]) {
+    for (const constraints of [{ minimum: value }, { maximum: value }, { enum: [value] }, ...(Number.isFinite(value) ? [{ default: value }] : [])]) {
+      const invalid = catalog(0.25)
+      Object.assign(invalid.operations[0].inputSchema.properties, { amount: { type: 'number', ...constraints } })
+      // JSON encodes nonfinite numbers as null; those wire values must also fail.
+      await withFetch(json(invalid), async () => {
+        await assert.rejects(depotOperations(), /incompatible/)
+      })
+    }
+  }
+})

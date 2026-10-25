@@ -11,7 +11,7 @@ const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
 const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
 const bounded = (max: number) => z.string().max(max)
-const optionalCatalogText = z.string().nullish().transform(value => value ?? undefined)
+const optionalCatalogText = z.string().nullish().transform(value => value ?? undefined).optional()
 const rawId = bounded(2048).refine(value => new TextEncoder().encode(value).length <= 2048, 'artifact ID exceeds 2048 UTF-8 bytes')
 const cursorSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/)
 const descriptorTags = z.array(z.string().refine(value => {
@@ -25,7 +25,9 @@ const contractSchema = z.object({
   contractVersion: z.literal(1).optional(),
 }).passthrough()
 
-const schemaScalar = z.union([z.string().max(4096), z.number().safe()])
+// Schema numbers may be fractional; Zod 4 safe() accepts integers only.
+const schemaNumber = z.number().min(Number.MIN_SAFE_INTEGER).max(Number.MAX_SAFE_INTEGER)
+const schemaScalar = z.union([z.string().max(4096), schemaNumber])
 const schemaBaseType = z.enum(['string', 'boolean', 'integer', 'number', 'object', 'array'])
 const nullableSchemaType = z.union([
   z.tuple([schemaBaseType, z.literal('null')]),
@@ -36,7 +38,7 @@ const schemaItem = z.object({
   type: schemaType,
   description: bounded(4096).optional(),
   enum: z.array(schemaScalar).max(100).optional(),
-  minimum: z.number().safe().optional(), maximum: z.number().safe().optional(),
+  minimum: schemaNumber.optional(), maximum: schemaNumber.optional(),
   minLength: z.number().int().min(0).max(16_384).optional(), maxLength: z.number().int().min(0).max(16_384).optional(),
   pattern: bounded(512).optional(),
   minProperties: z.number().int().min(0).max(256).optional(), maxProperties: z.number().int().min(0).max(256).optional(),
@@ -173,7 +175,7 @@ const controlReadmeSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('unavailable'), reason: z.enum(['absent', 'not_distributable', 'too_large', 'storage_unavailable', 'invalid_text']) }).passthrough(),
 ])
 
-const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
+const artifactSchema: z.ZodType<DepotArtifact, unknown> = z.object({
   providerId: bounded(64).min(1).refine(value => value !== 'all').optional(),
   id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(),
   name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
@@ -213,7 +215,7 @@ function safeDepotError(value: string, status: number): string {
   return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Labby catalog request failed (${status}, ${value})` : `Labby catalog request failed (${status})`
 }
 
-function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown, label: string): T {
+function validate<T>(schema: z.ZodType<T, unknown>, value: unknown, label: string): T {
   const result = schema.safeParse(value)
   if (result.success) return result.data
   const issue = result.error.issues[0]
@@ -430,7 +432,7 @@ export type DepotSource = z.infer<typeof depotSourceSchema>
 export type DepotIngestJob = z.infer<typeof depotIngestJobSchema>
 export type DepotRepoInput = { url: string; namespace?: string; ref?: string; subdir?: string; credential?: string; intervalSeconds?: number }
 
-function operationResult<T>(value: unknown, schema: z.ZodType<T, z.ZodTypeDef, unknown>, label: string): T {
+function operationResult<T>(value: unknown, schema: z.ZodType<T, unknown>, label: string): T {
   const envelope = validate(genericResultSchema, value, label)
   return validate(schema, envelope.result, label)
 }
@@ -536,10 +538,12 @@ export const mcpConnectionSchema = z.object({
   revisionId: bounded(512).min(1),
   transport: z.literal('http'),
   authentication: z.enum(['none', 'bearer']),
-  url: bounded(2048).url().refine(value => {
+  url: bounded(2048).refine(value => {
     if (/[\s\\]/.test(value) || Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return false
-    const url = new URL(value)
-    return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search
+    try {
+      const url = new URL(value)
+      return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search
+    } catch { return false }
   }, 'Use an HTTPS MCP endpoint without credentials, query, or fragment'),
 }).strict()
 export type CatalogMcpConnection = z.infer<typeof mcpConnectionSchema>

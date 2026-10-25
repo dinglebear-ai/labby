@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { zodResolver } from '@hookform/resolvers/zod'
 
 import {
   DEFAULT_UI,
@@ -177,4 +178,19 @@ test('stripBlankSecrets keeps non-blank secrets', () => {
   const fields = [field({ name: 'FOO_API_KEY', secret: true, hasStoredSecret: true })]
   const out = stripBlankSecrets({ FOO_API_KEY: 'real-secret' }, fields)
   assert.deepEqual(out, { FOO_API_KEY: 'real-secret' })
+})
+
+
+test('form resolver returns field errors and preserves stored secrets on valid input', async () => {
+  const resolver = zodResolver(buildSchema([
+    field({ name: 'URL', required: true }),
+    field({ name: 'SECRET', required: true, secret: true, hasStoredSecret: true }),
+  ]))
+  const options = { fields: {}, shouldUseNativeValidation: false }
+  const invalid = await resolver({ URL: '', SECRET: '' }, undefined, options)
+  assert.ok(invalid.errors.URL?.message)
+  assert.deepEqual(invalid.values, {})
+  const valid = await resolver({ URL: 'configured', SECRET: '' }, undefined, options)
+  assert.deepEqual(valid.errors, {})
+  assert.deepEqual(stripBlankSecrets(valid.values, [field({ name: 'URL' }), field({ name: 'SECRET', secret: true, hasStoredSecret: true })]), { URL: 'configured' })
 })
