@@ -1,0 +1,52 @@
+# Inactive acceptance fixture. Activating this under .github/workflows requires
+# review of Labby's GitHub-hosted-only CI policy and explicit push approval.
+name: Farm native runner acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: Unique label for the single Farm acceptance runner
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: farm-native-acceptance-${{ inputs.runner_label }}
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: One bounded Farm runner job
+    runs-on: [self-hosted, Linux, X64, '${{ inputs.runner_label }}']
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify runner, resource limits, and private Docker readiness
+        shell: bash
+        timeout-minutes: 1
+        env:
+          OBSERVED_RUNNER_OS: ${{ runner.os }}
+          OBSERVED_RUNNER_ARCH: ${{ runner.arch }}
+          REQUESTED_RUNNER_LABEL: ${{ inputs.runner_label }}
+        run: |
+          set -euo pipefail
+          case "$REQUESTED_RUNNER_LABEL" in
+            farm-u8-smoke-*) ;;
+            *) printf '%s\n' 'Use the reviewed unique Farm acceptance label.' >&2; exit 2 ;;
+          esac
+          test "$OBSERVED_RUNNER_OS" = Linux
+          test "$OBSERVED_RUNNER_ARCH" = X64
+          test "$(uname -m)" = x86_64
+          timeout 20s docker info --format 'Docker ready: {{.ServerVersion}} ({{.Driver}})'
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path('/sys/fs/cgroup')
+          quota, period = (root / 'cpu.max').read_text().split()
+          assert quota != 'max' and int(quota) == 2 * int(period), 'expected two charged CPUs'
+          assert (root / 'memory.max').read_text().strip() == str(12288 << 20), 'expected 12 GiB charge'
+          assert (root / 'pids.max').read_text().strip() == '4096', 'expected bounded process count'
+          assert (root / 'cgroup.type').read_text().strip() == 'domain', 'expected private domain'
+          print('Farm GitHub job passed: Linux X64, 2 CPUs, 12 GiB, bounded PIDs, Docker ready.')
+          PY
