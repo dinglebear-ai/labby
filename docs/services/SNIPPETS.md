@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-10-02"
+updated: "2026-10-24"
 ---
 
 # Snippets Service
@@ -49,6 +49,29 @@ still require `lab:admin`.
 
 Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a promoted user snippet may replace a built-in name.
 
+## Selected-Daemon CLI Execution
+
+`labby snippet run` keeps selecting source from the CLI's local snippet store
+when a daemon is selected. It sends that source to native `snippets.exec` with
+an optional `body`, rather than using generic `codemode`. `source_format` is
+`markdown` by default or `javascript` for legacy bare `.js` files; frontmatter
+declarations remain authoritative in either format. The daemon validates
+source and inputs, intersects its declaration with the authenticated route's
+scope, and runs the ordinary execution/receipt lifecycle. The source is ephemeral:
+it never creates or replaces a daemon-side snippet. An explicit empty tool list
+remains deny-all. A saved-source `expected_preview_fingerprint` cannot accompany
+an inline body because that preview describes the daemon's saved bytes.
+Before execution, the CLI checks the authenticated daemon's action schema for
+inline source support; older daemons fail closed instead of running their own
+same-named snippet after ignoring unfamiliar source fields.
+
+These receipts record the receiving MCP surface. History and receipt lookup use
+that route and authenticated caller. Receipts retain digests rather than source;
+server-side replay still requires the current named snippet to exist on the
+daemon. A local-only source must be supplied again by an explicit CLI run.
+Selecting `--team-id` does not silently retarget a root MCP endpoint; the existing
+Team-bound endpoint requirement still applies.
+
 ## Inputs And Concurrent Edits
 
 Declared inputs reject unknown keys and enforce their types. Explicit `null`
@@ -66,7 +89,9 @@ use unique temporary files and preserve the effective legacy `.js` path.
 Lock acquisition waits at most 1.5 seconds. Contention returns `conflict` with
 `existing_id: snippet-write-lock`, `side_effects: none_expected`, and conditional
 retry guidance. A later attempt still rechecks `expected_digest` under the lock;
-stale edits remain a separate conflict requiring reload.
+stale edits remain a separate conflict requiring reload. The asynchronous dispatch
+surfaces perform publication, removal and promotion on blocking workers so lock
+contention does not monopolize the async executor.
 
 ## Execution Receipts
 
@@ -75,13 +100,18 @@ Saved live execution returns an `execution_id` and `receipt_status`:
 execution result and must never cause a mutation to be replayed.
 `snippets.receipt` accepts `execution_id` and requires admin authority plus the
 original owner, route and caller-capability fingerprint. There is no admin
-cross-owner bypass. Receipt reads use the existing Code Mode journal database;
+cross-owner bypass. The verified initiating principal is retained separately from
+a team OAuth credential subject, including when telemetry actor keys are
+unavailable. Native legacy team routes revalidate current credential bindings
+before contextual snippet actions. Receipt reads use the existing Code Mode journal database;
 when journaling is disabled or unavailable, lookup reports `journal_unavailable`.
 
 Receipts retain exact snippet and merged-input digests, the effective tool scope,
 Labby runtime version/engine, surface, timestamps, status, wall time, final-result
 digest/byte count, and bounded tool-call identities, parameter digests and
-artifact references. They contain no raw source, parameters, logs or results.
+artifact references. Tool argument digests are captured before public trace
+redaction or truncation; their private capture does not enable public parameter
+tracing. They contain no raw source, parameters, logs or results.
 The first 32 calls are retained with explicit total and omitted counts; artifact
 references are bounded to 16. Receipts identify output rather than providing a
 full-result replay store. Artifact bytes retain their existing authorization and

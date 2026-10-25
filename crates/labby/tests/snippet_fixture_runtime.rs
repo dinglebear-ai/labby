@@ -580,7 +580,104 @@ fn own_mock_response_serializers_preserve_live_json_mutability() {
 }
 
 #[test]
-fn missing_contract_metadata_cannot_pass_after_result_encoder_tampering() {
+fn fixture_results_preserve_live_binary_and_date_wire_encoding() {
+    let home = tempfile::tempdir().unwrap();
+    install(
+        home.path(),
+        "wire-values",
+        "async () => ({bytes:new Uint8Array([1,2,3]), buffer:new Uint8Array([4,5]).buffer, date:new Date('2026-01-02T03:04:05Z'), own:{toJSON:()=>({\"count\":7})}})",
+        Some(json!({"expect":{
+            "/bytes":{"__labBinary":"base64","type":"Uint8Array","data":"AQID"},
+            "/buffer":{"__labBinary":"base64","type":"ArrayBuffer","data":"BAU="},
+            "/date":"2026-01-02T03:04:05.000Z",
+            "/own":{"count":7}
+        }})),
+    );
+    let output = invoke(home.path(), &["test", "wire-values"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(report(&output)["passed"], true);
+}
+
+#[test]
+fn fixture_json_inputs_and_rule_results_preserve_own_proto_keys() {
+    let home = tempfile::tempdir().unwrap();
+    install(
+        home.path(),
+        "json-keys",
+        r"async (input) => {
+          const result=await callTool('synthetic::lookup',{});
+          const own=(v)=>Object.prototype.hasOwnProperty.call(v,'__proto__');
+          return {
+            inputOwn:own(input), nestedOwn:own(input.nested), resultOwn:own(result),
+            inputPlain:Object.getPrototypeOf(input)===Object.prototype,
+            nestedPlain:Object.getPrototypeOf(input.nested)===Object.prototype,
+            resultPlain:Object.getPrototypeOf(result)===Object.prototype,
+            inputValue:input.__proto__.marker==='input',
+            nestedValue:input.nested.__proto__.marker==='nested',
+            resultValue:result.__proto__.marker==='response'
+          };
+        }",
+        Some(json!({
+            "params":{"__proto__":{"marker":"input"},"nested":{"__proto__":{"marker":"nested"}}},
+            "calls":[{"tool":"synthetic::lookup","result":{"__proto__":{"marker":"response"}}}],
+            "expect":{
+                "/inputOwn":true,"/nestedOwn":true,"/resultOwn":true,
+                "/inputPlain":true,"/nestedPlain":true,"/resultPlain":true,
+                "/inputValue":true,"/nestedValue":true,"/resultValue":true
+            }
+        })),
+    );
+    let output = invoke(home.path(), &["test", "json-keys"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(report(&output)["passed"], true);
+}
+
+#[test]
+fn fixture_runtime_codec_preserves_own_proto_keys_without_changing_prototypes() {
+    let home = tempfile::tempdir().unwrap();
+    install(
+        home.path(),
+        "codec-keys",
+        r#"async () => {
+          const original=JSON.parse('{"__proto__":{"marker":"root"},"nested":{"__proto__":{"marker":"nested"}},"items":[{"__proto__":{"marker":"array"}}]}');
+          const encoded=__labEncodeResult(original);
+          const decoded=__labDecodeResult(original);
+          const own=(v)=>Object.prototype.hasOwnProperty.call(v,'__proto__');
+          const plain=(v)=>Object.getPrototypeOf(v)===Object.prototype;
+          return {
+            encodedOwn:own(encoded)&&own(encoded.nested)&&own(encoded.items[0]),
+            decodedOwn:own(decoded)&&own(decoded.nested)&&own(decoded.items[0]),
+            encodedPlain:plain(encoded)&&plain(encoded.nested)&&plain(encoded.items[0]),
+            decodedPlain:plain(decoded)&&plain(decoded.nested)&&plain(decoded.items[0]),
+            encodedEqual:JSON.stringify(encoded)===JSON.stringify(original),
+            decodedEqual:JSON.stringify(decoded)===JSON.stringify(original)
+          };
+        }"#,
+        Some(json!({"expect":{
+            "/encodedOwn":true,"/decodedOwn":true,
+            "/encodedPlain":true,"/decodedPlain":true,
+            "/encodedEqual":true,"/decodedEqual":true
+        }})),
+    );
+    let output = invoke(home.path(), &["test", "codec-keys"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(report(&output)["passed"], true);
+}
+
+#[test]
+fn contract_metadata_survives_result_encoder_key_filtering() {
     let home = tempfile::tempdir().unwrap();
     install(
         home.path(),
@@ -596,5 +693,47 @@ fn missing_contract_metadata_cannot_pass_after_result_encoder_tampering() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(text.contains("contract_calls"), "{text}");
+    assert!(text.contains("input schema"), "{text}");
+}
+
+#[test]
+fn forged_contract_metadata_cannot_hide_invalid_arguments_and_unused_rules() {
+    for hook in [
+        "",
+        "const keys=Object.keys; Object.keys=value=>{ if(value && value.contract_calls && 'attempted' in value){ value.contract_calls=[]; value.unexpected=0; value.unused=[]; value.attempted=0; } return keys(value); };",
+        "__labEncodeResult=()=>JSON.stringify({result:{ok:true},exception:null,calls:[],contract_calls:[],attempted:0,unexpected:0,max_in_flight:0,unused:[]});",
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let code = format!(
+            "async () => {{ {hook} await callTool('synthetic::lookup',{{query:1}}); return {{ok:true}}; }}"
+        );
+        install(
+            home.path(),
+            "forged-capture",
+            &code,
+            Some(json!({
+                "calls":[{"tool":"synthetic::lookup","result":true,"times":2}],
+                "schemas":{"synthetic::lookup":{"input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}}
+            })),
+        );
+        let output = invoke(home.path(), &["test", "forged-capture"]);
+        assert!(
+            !output.status.success(),
+            "invalid arguments and an unused rule passed (hook={hook}): {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let value = report(&output);
+        assert_eq!(value["passed"], false);
+        let failures = value["failures"].as_array().unwrap();
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.as_str().unwrap().contains("input schema"))
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|failure| failure.as_str().unwrap().contains("not fully consumed"))
+        );
+    }
 }

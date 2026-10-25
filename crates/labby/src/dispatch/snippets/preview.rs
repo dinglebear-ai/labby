@@ -155,6 +155,32 @@ pub(super) async fn prepare(
 ) -> Result<PreparedSnippet, ToolError> {
     authorize(context)?;
     let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
+    prepare_resolved(manager, snippet, supplied, context, previous).await
+}
+
+/// Execute caller-selected local source through the ordinary saved-execution
+/// lifecycle without creating or replacing anything in the daemon's store.
+pub(super) async fn prepare_source(
+    manager: &GatewayManager,
+    name: &str,
+    body: String,
+    format: super::store::SnippetSourceFormat,
+    supplied: Value,
+    context: &SnippetDispatchContext,
+) -> Result<PreparedSnippet, ToolError> {
+    authorize(context)?;
+    let snippet = super::store::resolve_inline_snippet(name, &body, format)?;
+    prepare_resolved(manager, snippet, supplied, context, None).await
+}
+
+async fn prepare_resolved(
+    manager: &GatewayManager,
+    snippet: ResolvedSnippet,
+    supplied: Value,
+    context: &SnippetDispatchContext,
+    previous: Option<&SnippetExecutionReceipt>,
+) -> Result<PreparedSnippet, ToolError> {
+    let name = snippet.name.clone();
     let code = code_for_snippet(&snippet)?;
     let provided_keys: Vec<String> = supplied
         .as_object()
@@ -256,7 +282,7 @@ pub(super) async fn prepare(
         .map(|old| drift(old, &fingerprints, schema_digests.as_ref()))
         .unwrap_or_default();
     let preview_fingerprint =
-        fingerprint::assemble(name, &fingerprints, &config, context, previous, &drift);
+        fingerprint::assemble(&name, &fingerprints, &config, context, previous, &drift);
     // `enabled` controls the synthetic MCP surface; native snippet execution
     // uses the same caller/scope policies even when raw MCP tools are exposed.
     let can_execute = context.execution_caller.can_use_snippets()
@@ -270,7 +296,7 @@ pub(super) async fn prepare(
         warnings.push("Some declared descriptors are unavailable, filtered by authority, or exceed the bounded metadata budget. Their schemas are unverifiable.".into());
     }
     let preview = SnippetPreview {
-        name: name.into(),
+        name: name.clone(),
         execution_id: previous.map(|r| r.execution_id.clone()),
         mode: "metadata".into(),
         dynamic_unknown: true,

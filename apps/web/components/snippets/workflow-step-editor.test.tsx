@@ -132,3 +132,26 @@ test('duplicate steps coalesce automatic schemas and keep separate edited mappin
     await view.unmount()
   }
 })
+
+test('dependency input keeps typed commas until commit and synchronizes checkbox edits', async () => {
+  installTestDom()
+  const { WorkflowStepEditor } = await import('./workflow-step-editor')
+  globalThis.fetch = (async () => new Response(JSON.stringify({ input_schema: { type: 'object', properties: {} } }), { headers: { 'content-type': 'application/json' } })) as typeof fetch
+  let current: WorkflowPlan = { version: 1, steps: ['first', 'second', 'third'].map(id => ({ id, tool: 'host::status', mapping: {}, dependsOn: [] })) }
+  function Harness() {
+    const [plan, setPlan] = useState(current)
+    return <WorkflowStepEditor plan={plan} onChange={next => { current = next; setPlan(next) }} inputs={{}} onInputsChange={()=>{}} schemas={{}} onSchema={()=>{}} onValidationError={()=>{}} onInputSchema={()=>{}} />
+  }
+  const view = await renderClient(<Harness />)
+  try {
+    const field = view.container.querySelector<HTMLInputElement>('#dependencies-third')!
+    const props = () => (field as unknown as Record<string, {onChange:(event:{target:{value:string}})=>void;onBlur?:()=>void}>)[Object.keys(field).find(key=>key.startsWith('__reactProps$'))!]!
+    for (const character of 'first, second') await act(async () => props().onChange({ target: { value: field.value + character } }))
+    assert.equal(field.value, 'first, second', 'controlled field must retain trailing separator during typing')
+    await act(async () => props().onBlur?.())
+    assert.deepEqual(current.steps[2].dependsOn, ['first', 'second'])
+    const checkbox = field.closest('section')!.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    await act(async () => checkbox.click())
+    assert.equal(field.value, 'second', 'checkbox changes must update committed dependency text')
+  } finally { await view.unmount() }
+})

@@ -801,3 +801,131 @@ test('guided edits preserve required nullable typed contracts and optimistic dig
  const view=await renderClient(<SidebarProvider><SnippetsPageContent/></SidebarProvider>);const click=async(text:string)=>{const button=Array.from(document.body.querySelectorAll('button')).find(button=>button.textContent?.trim()===text);assert.ok(button,text);await act(async()=>button.click())}
  try{await waitFor(()=>assert.ok(Array.from(document.body.querySelectorAll('button')).some(button=>button.textContent==='Edit workflow')));await click('Edit workflow');await waitFor(()=>assert.ok(document.body.querySelector('[aria-label="Value source for host::status ratio"]')));await click('Build draft');await waitFor(()=>assert.match(document.body.textContent??'',/Runnable draft/));const body=Array.from(document.body.querySelectorAll('pre')).find(pre=>pre.textContent?.includes('```js'))!.textContent!;assert.match(body,/ratio:\n {4}type: number\n {4}required: true\n {4}nullable: false\n {4}description: Current ratio/);assert.match(body,/flag:\n {4}type: boolean\n {4}required: false\n {4}default: false/);assert.match(body,/token:\n {4}type: string\n {4}required: true/);await click('Validate and save');await waitFor(()=>assert.ok(created));assert.equal(created!.expected_digest,'source-digest');assert.equal(created!.force,true)}finally{await view.unmount()}
 })
+
+function reactChange(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
+  const key = Object.keys(element).find(key => key.startsWith('__reactProps$'))!
+  ;(element as unknown as Record<string, { onChange: (event: { target: { value: string } }) => void }>)[key].onChange({ target: { value } })
+}
+function buttonNamed(name: string) {
+  const button = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent?.trim() === name || button.getAttribute('aria-label') === name)
+  assert.ok(button, `Missing button ${name}`)
+  return button
+}
+async function remediationPage(fetcher: typeof fetch) {
+  const window = installTestDom()
+  for (const name of ['NodeFilter', 'HTMLInputElement', 'HTMLTextAreaElement'] as const) Object.defineProperty(globalThis, name, { value: window[name], configurable: true })
+  globalThis.fetch = fetcher
+  const { SidebarProvider } = await import('@/components/ui/sidebar')
+  const { SnippetsPageContent } = await import('./snippets-page-content')
+  return renderClient(<SidebarProvider><SnippetsPageContent /></SidebarProvider>)
+}
+const jsonResponse = (value: unknown) => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } })
+
+test('guided edit waits for the newly selected workflow body', async () => {
+  const { generateWorkflowCode } = await import('./workflow-model')
+  const make = (name: string) => ({ name, source: 'user', path: `/${name}.md`, shadowed: false, tags: [], description: name, content_digest: name, body: `---\nname: ${name}\ndescription: ${name}\n---\n\n\`\`\`js\n${generateWorkflowCode({ version: 1, steps: [{ id: 'read', tool: 'host::read', mapping: {}, dependsOn: [] }] })}\n\`\`\`` })
+  const a = make('alpha'), b = make('beta')
+  let resolveB: (value: Response) => void = () => {}
+  const view = await remediationPage((async (_input, init) => {
+    const { action, params } = JSON.parse(String(init?.body))
+    if (action === 'snippets.list') return jsonResponse({ snippets: [a, b] })
+    if (action === 'snippets.get') return params.name === 'alpha' ? jsonResponse(a) : new Promise<Response>(resolve => { resolveB = resolve })
+    return jsonResponse({ receipts: [] })
+  }) as typeof fetch)
+  try {
+    await waitFor(() => assert.ok(buttonNamed('Edit workflow')))
+    const row = Array.from(view.container.querySelectorAll('[role="button"]')).find(row => row.textContent?.includes('beta'))!
+    await act(async () => row.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    const edit = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent?.trim() === 'Edit workflow')
+    assert.ok(!edit || edit.disabled, 'old workflow must not remain editable under beta selection')
+    await act(async () => resolveB(jsonResponse(b)))
+    await waitFor(() => assert.equal(buttonNamed('Edit workflow').disabled, false))
+    await act(async () => buttonNamed('Edit workflow').click())
+    assert.equal(document.body.querySelector<HTMLInputElement>('#snippet-name')?.value, 'beta')
+  } finally { await view.unmount() }
+})
+
+test('start from code saves a zero-tool custom snippet without guided generation', async () => {
+  let saved: Record<string, unknown> | undefined
+  const view = await remediationPage((async (_input, init) => {
+    const { action, params } = JSON.parse(String(init?.body))
+    if (action === 'snippets.list') return jsonResponse({ snippets: [{ name: 'existing', source: 'user', path: '/existing.md', tags: [], shadowed: false }] })
+    if (action === 'snippets.create') { saved = params; return jsonResponse({ name: params.name, source: 'user' }) }
+    return jsonResponse({ valid: true })
+  }) as typeof fetch)
+  try {
+    await waitFor(() => assert.ok(buttonNamed('New snippet')))
+    await act(async () => buttonNamed('New snippet').click())
+    const custom = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent?.includes('Start from code'))!
+    await act(async () => custom.click())
+    const next = Array.from(document.body.querySelectorAll('button')).find(button => button.textContent?.includes('Use this pattern'))!
+    await act(async () => next.click())
+    await act(async () => reactChange(document.body.querySelector<HTMLInputElement>('#snippet-name')!, 'custom-workflow'))
+    await act(async () => reactChange(document.body.querySelector<HTMLInputElement>('#snippet-description')!, 'Custom workflow'))
+    const continueButton = Array.from(document.body.querySelectorAll('button')).find(button => /Build draft|Review code/.test(button.textContent ?? ''))!
+    await act(async () => continueButton.click())
+    const body = document.body.querySelector<HTMLTextAreaElement>('#snippet-body')
+    assert.ok(body, 'custom branch must expose source editor without requiring a tool')
+    await act(async () => reactChange(body, 'async () => ({ ok: true, custom: 42 })'))
+    await act(async () => buttonNamed('Validate and save').click())
+    await waitFor(() => assert.ok(saved))
+    assert.equal(saved?.body, 'async () => ({ ok: true, custom: 42 })')
+    assert.equal(saved?.name, 'custom-workflow')
+  } finally { await view.unmount() }
+})
+
+test('description edits round-trip authoritative frontmatter and preserve other metadata', async () => {
+  const original = '---\nname: description-edit\ndescription: Original description\ntags: [kept]\ninputs:\n  count:\n    type: integer\n    default: 2\ntools: []\n---\n\n```js\nasync () => ({ok:true})\n```'
+  let stored = original
+  const info = () => ({ name: 'description-edit', description: stored.match(/^description: (.*)$/m)?.[1], source: 'user', path: '/description-edit.md', shadowed: false, tags: ['kept'], content_digest: 'snapshot', body: stored })
+  const view = await remediationPage((async (_input, init) => {
+    const { action, params } = JSON.parse(String(init?.body))
+    if (action === 'snippets.list') return jsonResponse({ snippets: [info()] })
+    if (action === 'snippets.get') return jsonResponse(info())
+    if (action === 'snippets.create') { stored = params.body; return jsonResponse(info()) }
+    if (action === 'snippets.history') return jsonResponse({ receipts: [] })
+    return jsonResponse({ valid: true })
+  }) as typeof fetch)
+  try {
+    await waitFor(() => assert.equal(buttonNamed('Edit').disabled, false))
+    await act(async () => buttonNamed('Edit').click())
+    await act(async () => reactChange(document.body.querySelector<HTMLInputElement>('#snippet-edit-description')!, 'Updated description'))
+    await act(async () => buttonNamed('Validate and save').click())
+    await waitFor(() => assert.match(stored, /^description: Updated description$/m))
+    assert.equal(stored.replace('Updated description', 'Original description'), original)
+    await act(async () => buttonNamed('Edit').click())
+    assert.equal(document.body.querySelector<HTMLInputElement>('#snippet-edit-description')!.value, 'Updated description')
+    // Source stays authoritative when the separate description control is untouched.
+    await act(async () => reactChange(document.body.querySelector<HTMLTextAreaElement>('#snippet-edit-body')!, stored.replace('Updated description', 'Source description')))
+    await act(async () => buttonNamed('Validate and save').click())
+    await waitFor(() => assert.match(stored, /^description: Source description$/m))
+  } finally { await view.unmount() }
+})
+
+test('guided save drops schema-sensitive aliased defaults while preserving ephemeral example values', async () => {
+  const { generateWorkflowCode } = await import('./workflow-model')
+  const plan = { version: 1 as const, steps: [{ id: 'connect', tool: 'host::connect', mapping: { config: '$input.settings' }, dependsOn: [] }] }
+  const snippet = { name: 'sensitive-workflow', source: 'user', path: '/sensitive-workflow.md', shadowed: false, tags: [], description: 'Connect', content_digest: 'saved-digest', inputs: { settings: { ty: 'json', default: { value: 'private-fixture-value', host: 'node' }, required: false } }, body: `---\nname: sensitive-workflow\ndescription: Connect\n---\n\n\`\`\`js\n${generateWorkflowCode(plan)}\n\`\`\`` }
+  let saved: Record<string, unknown> | undefined
+  const view = await remediationPage((async (input, init) => {
+    if (String(input).includes('/tools/describe')) return jsonResponse({ path: 'host.connect', id: 'host::connect', namespace: 'host', name: 'connect', description: 'Connect', helper: 'host.connect', signature: '()', tags: [], input_schema: { type: 'object', properties: { config: { type: 'object', properties: { value: { type: 'string', writeOnly: true }, host: { type: 'string' } } } } } })
+    const { action, params } = JSON.parse(String(init?.body))
+    if (action === 'snippets.list') return jsonResponse({ snippets: [snippet] })
+    if (action === 'snippets.get') return jsonResponse(snippet)
+    if (action === 'snippets.create') { saved = params; return jsonResponse(snippet) }
+    if (action === 'snippets.history') return jsonResponse({ receipts: [] })
+    return jsonResponse({ valid: true })
+  }) as typeof fetch)
+  try {
+    await waitFor(() => assert.ok(buttonNamed('Edit workflow')))
+    await act(async () => buttonNamed('Edit workflow').click())
+    await waitFor(() => assert.match(document.body.textContent ?? '', /Parameters from the current tool schema/))
+    assert.match(document.body.querySelector<HTMLTextAreaElement>('#snippet-inputs')!.value, /private-fixture-value/)
+    await act(async () => buttonNamed('Build draft').click())
+    await act(async () => buttonNamed('Validate and save').click())
+    await waitFor(() => assert.ok(saved))
+    assert.doesNotMatch(String(saved?.body), /private-fixture-value/)
+    assert.match(String(saved?.body), /settings:\n {4}type: json\n {4}required: true/)
+    assert.equal(saved?.expected_digest, 'saved-digest')
+  } finally { await view.unmount() }
+})

@@ -12,6 +12,17 @@ pub enum SnippetSource {
     User,
 }
 
+/// Source representation for an inline snippet without filesystem lookup.
+/// Explicit frontmatter remains authoritative in either representation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum SnippetSourceFormat {
+    #[default]
+    #[serde(rename = "markdown")]
+    Markdown,
+    #[serde(rename = "javascript")]
+    JavaScript,
+}
+
 /// Discovery metadata for a built-in or user Code Mode snippet.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnippetInfo {
