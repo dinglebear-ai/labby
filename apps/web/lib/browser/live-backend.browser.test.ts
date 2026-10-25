@@ -368,6 +368,26 @@ test('embedded Gateway Admin completes a real backend journey', {
 
       await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
       progress('embedded-ui-loaded')
+      // The palette loads its catalog only after an actual user opens it.
+      // APIRequestContext probes above are not browser page-request evidence.
+      const paletteTrigger = page.getByRole('button', { name: 'Search and filter', exact: true })
+      const [paletteCatalog] = await Promise.all([
+        page.waitForResponse(response => new URL(response.url()).origin === new URL(descriptor.base_url).origin
+          && new URL(response.url()).pathname === '/v1/catalog'
+          && response.request().method() === 'GET', { timeout: 15_000 }),
+        paletteTrigger.click(),
+      ])
+      assert.equal(paletteCatalog.status(), 200)
+      const paletteDialog = page.getByRole('dialog', { name: 'Command Palette', exact: true })
+      await paletteDialog.waitFor({ state: 'visible' })
+      const paletteSearch = paletteDialog.getByRole('textbox', { name: 'Search command palette', exact: true })
+      await paletteSearch.waitFor({ state: 'visible' })
+      assert.equal(await paletteSearch.evaluate(element => element === document.activeElement), true)
+      await page.keyboard.press('Escape')
+      await paletteDialog.waitFor({ state: 'hidden' })
+      assert.equal(await paletteTrigger.evaluate(element => element === document.activeElement), true)
+      progress('palette-catalog-through-ui')
+
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
       progress(`page-errors:${evidence.pageErrors.length}:csp:${evidence.cspViolations.length}`)
       assert.equal(evidence.pageErrors.length, 0)
