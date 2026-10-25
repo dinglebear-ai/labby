@@ -7,6 +7,8 @@ import unittest
 
 import yaml
 
+from scripts.ci import check_workflow_policy as policy
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -98,13 +100,17 @@ class CiPlatformPolicyTests(unittest.TestCase):
         self.assertIn("Invoke-ScriptAnalyzer", analyzer["run"])
         self.assertIn('throw "PSScriptAnalyzer found', analyzer["run"])
 
-    def test_self_hosted_jobs_are_declared_non_blocking_and_same_repository(self) -> None:
+    def test_self_hosted_jobs_require_legacy_guard_or_exact_manual_acceptance(self) -> None:
         # Hosted runners stay the default. The self-hosted fleet is privileged
         # (DinD on an Unraid host), so a job may only target it when it cannot
         # gate a merge and cannot execute fork-PR code.
         allowed = {("ci.yml", "test")}
         for path in WORKFLOW_DIR.glob("*.y*ml"):
-            workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            if path.name == policy.FARM_ACCEPTANCE_FILE:
+                self.assertEqual(policy.farm_acceptance_errors(path, yaml.load(text, Loader=yaml.BaseLoader)), [])
+                continue
+            workflow = yaml.safe_load(text)
             for name, job in (workflow.get("jobs") or {}).items():
                 runner = job.get("runs-on")
                 labels = runner if isinstance(runner, list) else [runner]
