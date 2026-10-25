@@ -144,6 +144,23 @@ impl LiveIdentity {
         .await
     }
 
+    /// Issue the credential only after its complete bound policy is installed.
+    pub(crate) async fn bootstrap_with_policy_and_scopes(
+        subject: &str,
+        policy_text: &str,
+        scopes: &[&str],
+    ) -> Result<Self, String> {
+        Self::bootstrap_with_policy_issuer_and_loadout(
+            subject,
+            300,
+            policy_text,
+            PUBLIC_HOST,
+            LOADOUT_ID,
+            scopes,
+        )
+        .await
+    }
+
     pub(crate) async fn bootstrap_with_scopes(
         subject: &str,
         scopes: &[&str],
