@@ -80,8 +80,10 @@ export function withSnippetDescription(body: string, description: string): strin
   // top-level duplicate win. Update all accepted descriptions consistently.
   const replaced = match[0].replace(/^[^\r\n]+/gm, line => {
     const colon = line.indexOf(':')
-    const key = line.slice(0, colon).replace(/^[\s\u0085]+|[\s\u0085]+$/g, '')
-    if (line.startsWith('  ') || colon < 0 || key !== 'description') return line
+    if (line.startsWith('  ') || colon < 0) return line
+    // Rust trim accepts NEL; JavaScript trim needs it mapped explicitly.
+    const key = line.slice(0, colon).replaceAll('\u0085', ' ').trim()
+    if (key !== 'description') return line
     found = true
     return `${line.slice(0, colon + 1)} ${description}`
   })

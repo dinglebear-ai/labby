@@ -204,6 +204,31 @@ test('description edits update every parser-accepted top-level field without tou
   }
 })
 
+test('description edits stay responsive with long unrelated metadata keys', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const { resolve } = await import('node:path')
+  const { pathToFileURL } = await import('node:url')
+  const moduleUrl = pathToFileURL(resolve('components/snippets/snippet-model.ts')).href
+  // Run in a separate process so a synchronous regression cannot block the
+  // test runner's own timeout. This header fits the native snippet size limit.
+  const script = `
+    const { withSnippetDescription } = await import(${JSON.stringify(moduleUrl)});
+    const key = 'x' + ' '.repeat(500_000) + 'y';
+    const body = ['---', 'name: example', 'description: Original', key + ': ignored',
+      '---', '', '\x60\x60\x60js', 'async () => ({ok:true})', '\x60\x60\x60'].join('\\n');
+    const updated = withSnippetDescription(body, 'Updated');
+    if (!updated.includes('description: Updated') || !updated.includes(key + ': ignored'))
+      throw new Error('Description edit changed unrelated metadata');
+    console.log('complete');
+  `
+  const child = spawnSync(process.execPath,
+    ['--experimental-strip-types', '--input-type=module', '--eval', script],
+    { encoding: 'utf8', timeout: 10_000 })
+  assert.ifError(child.error)
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(child.stdout.trim(), 'complete')
+})
+
 test('explicit __proto__ inputs remain own JSON keys without changing the returned plain object prototype', () => {
   for (const [ty, raw, expected] of [
     ['string', 'explicit value', 'explicit value'],
