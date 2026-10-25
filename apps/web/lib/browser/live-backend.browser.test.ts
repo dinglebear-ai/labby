@@ -377,6 +377,42 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.equal(persisted.status, 200)
       await assert.doesNotReject(page.locator('a:visible').filter({ hasText: ownedName }).first().waitFor({ state: 'visible', timeout: 10_000 }))
 
+      // Exercise the real catalog wire `name` through the lazy schema, action
+      // drill-down, parameter form, and adapter. The existing continuation
+      // supplies CSRF; every response still comes from the owned Labby daemon.
+      for (const width of [1360, 390]) {
+        await page.setViewportSize({ width, height: 900 })
+        await page.getByRole('button', { name: 'Search and filter', exact: true }).click()
+        const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true })
+        await palette.getByRole('textbox', { name: 'Search command palette' }).fill('> gateway')
+        await palette.getByRole('option').filter({ has: page.getByText('gateway', { exact: true }) }).click({ timeout: 10_000 })
+        await palette.getByRole('textbox', { name: 'Search command palette' }).fill('gateway.server.get')
+        await palette.getByRole('option').filter({ has: page.getByText('gateway.server.get', { exact: true }) }).click({ timeout: 10_000 })
+        const serverId = palette.locator('#param-id')
+        assert.equal(await serverId.getAttribute('required'), '', 'catalog must project the required server id')
+        await serverId.fill(ownedGatewayId)
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+        const [paletteResponse] = await Promise.all([
+          page.waitForResponse(response => response.request().method() === 'POST'
+            && new URL(response.url()).pathname === '/v1/gateway'
+            && response.request().postDataJSON()?.action === 'gateway.server.get', { timeout: 10_000 }),
+          palette.getByRole('button', { name: 'Run', exact: true }).click(),
+        ])
+        assert.deepEqual(paletteResponse.request().postDataJSON(), {
+          action: 'gateway.server.get', params: { id: ownedGatewayId },
+        })
+        assert.equal(paletteResponse.status(), 200, 'palette lookup must succeed against the real gateway')
+        const paletteServer = await paletteResponse.json()
+        assert.equal(paletteServer.id, ownedGatewayId)
+        assert.equal(paletteServer.name, ownedName)
+        assert.equal(paletteServer.source, 'custom_gateway')
+        assert.equal(paletteServer.configured, true)
+        await palette.waitFor({ state: 'hidden', timeout: 10_000 })
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+        progress(`catalog-palette-owned-server-get-through-ui:${width}`)
+      }
+      await page.setViewportSize({ width: 1360, height: 900 })
+
       // Gateway policy belongs to an explicit Team. Use the authority projected
       // for this authenticated fixture, rather than the installation loadout.
       routeTeamId = persisted.sessionTeams?.find((team: { id?: unknown }) => typeof team.id === 'string' && team.id.length > 0)?.id
