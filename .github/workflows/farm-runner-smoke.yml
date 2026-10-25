@@ -40,7 +40,7 @@ jobs:
           test "$OBSERVED_RUNNER_ARCH" = X64
           test "$(uname -m)" = x86_64
           timeout 20s docker info --format 'Docker ready: {{.ServerVersion}} ({{.Driver}})'
-          python3 - <<'PY'
+          python3 -I - <<'PY'
           from pathlib import Path
           root = Path('/sys/fs/cgroup')
           quota, period = (root / 'cpu.max').read_text().split()

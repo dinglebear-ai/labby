@@ -26,7 +26,7 @@ SAME_REPOSITORY_GUARD = "github.event.pull_request.head.repo.full_name == github
 FARM_ACCEPTANCE_FILE = "farm-runner-smoke.yml"
 # Reviewed fixed probe only; changing its body requires a new explicit review.
 # This is a repository policy guard, not a trust boundary against repo writers.
-FARM_ACCEPTANCE_PROBE_SHA256 = "2612e2b89003c9f6b33b1bda1942bc383a8edcf3e993a6f9e72a57075e05c877"
+FARM_ACCEPTANCE_PROBE_SHA256 = "b7958d4255b0bc96cf31d1116bc3b1d3e7345f891b8512a95dae14e3b314517c"
 
 
 def farm_acceptance_errors(path: pathlib.Path, workflow: dict) -> list[str]:

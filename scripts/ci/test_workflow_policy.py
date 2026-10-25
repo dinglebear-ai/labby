@@ -1,4 +1,8 @@
 import re
+import os
+import shlex
+import subprocess
+import sys
 from copy import deepcopy
 import unittest
 
@@ -63,6 +67,32 @@ class FarmAcceptancePolicyTests(unittest.TestCase):
 
     def test_exact_manual_acceptance_is_allowed(self):
         self.assertEqual(policy.farm_acceptance_errors(self.path, self.workflow), [])
+
+    def test_resource_probe_cannot_be_disabled_by_python_optimization(self):
+        lines = self.workflow["jobs"]["smoke"]["steps"][0]["run"].splitlines()
+        start = next(i for i, line in enumerate(lines) if line.startswith("python3 "))
+        command = shlex.split(lines[start].split(" <<", 1)[0])
+        probe = "\n".join(lines[start + 1:lines.index("PY", start + 1)])
+        fixture = """import pathlib
+class FixturePath:
+    def __init__(self, name): self.name = str(name)
+    def __truediv__(self, name): return FixturePath(name)
+    def read_text(self): return VALUES[self.name]
+pathlib.Path = FixturePath
+"""
+        good = {"cpu.max": "200000 100000", "memory.max": str(12288 << 20), "pids.max": "4096", "cgroup.type": "domain"}
+        bad = dict(good, **{"cpu.max": "max 100000"})
+        for limits, expected in ((good, 0), (bad, 1)):
+            with self.subTest(limits=limits):
+                result = subprocess.run(
+                    [sys.executable, *command[1:]],
+                    input="VALUES = " + repr(limits) + "\n" + fixture + probe,
+                    text=True, capture_output=True, timeout=10,
+                    env=dict(os.environ, PYTHONOPTIMIZE="1"),
+                )
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                if expected:
+                    self.assertNotIn("Farm GitHub job passed", result.stdout)
 
     def test_exception_rejects_broadened_execution_and_authority(self):
         mutations = {
