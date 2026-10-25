@@ -560,6 +560,8 @@ fn reject_protected_overlap(
 
 #[derive(Debug, thiserror::Error)]
 enum StdioLifecycleError {
+    // Keep the original SDK error visible to source-chain downcasts while
+    // avoiding a large inline error in the caller's negotiation future.
     #[error("stdio MCP lifecycle negotiation failed: {0}")]
     Protocol(#[source] Box<dyn std::error::Error + Send + Sync>),
     #[error("stdio MCP lifecycle negotiation task failed")]
