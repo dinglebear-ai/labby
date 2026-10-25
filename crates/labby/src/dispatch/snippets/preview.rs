@@ -500,7 +500,14 @@ pub(super) async fn dispatch(
         &params.expected_preview_fingerprint,
         &params.acknowledged_drift,
     )?;
-    outcome_json(super::execution::execute_prepared_outcome(manager, prepared, &context).await?)
+    // Keep the execution future on the heap: replay retains its receipt and
+    // preview state while awaiting the runner, which can exhaust worker stacks.
+    outcome_json(
+        Box::pin(super::execution::execute_prepared_outcome(
+            manager, prepared, &context,
+        ))
+        .await?,
+    )
 }
 
 #[cfg(test)]
