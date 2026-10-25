@@ -45,6 +45,38 @@ class ConformanceRelayTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Failed assertions"):
                 require_evidence(output, "sep-2640-client-verify-digest")
 
+    def test_client_target_assertions_and_matching_receipts_are_required(self):
+        scenarios = {
+            "sep-2640-client-no-prefetch": ("sep-2640-host-no-prefetch", "listed"),
+            "sep-2640-client-verify-digest": ("sep-2640-host-verify-digest", "verification-rejected"),
+            "sep-2640-client-verify-size": ("sep-2640-host-size-mismatch-failure", "verification-rejected"),
+            "sep-2640-client-verify-frontmatter": ("sep-2640-host-frontmatter-comparison", "verification-rejected"),
+        }
+        with tempfile.TemporaryDirectory() as output:
+            for scenario, (target_id, outcome) in scenarios.items():
+                path = Path(output) / f"{scenario}-fixture"
+                path.mkdir()
+                receipt = {"labbySkillsDriver": scenario, "outcome": outcome}
+                (path / "stdout.txt").write_text(json.dumps(receipt) + "\n")
+                unrelated = {"id": "client-initialized", "status": "SUCCESS"}
+                for status in (None, "SKIPPED", "WARNING"):
+                    with self.subTest(scenario=scenario, target_status=status):
+                        checks = [unrelated]
+                        if status is not None:
+                            checks.append({"id": target_id, "status": status})
+                        (path / "checks.json").write_text(json.dumps(checks))
+                        with self.assertRaisesRegex(RuntimeError, "Missing exercised"):
+                            require_evidence(output, scenario)
+                (path / "checks.json").write_text(json.dumps([
+                    unrelated, {"id": target_id, "status": "SUCCESS"}]))
+                require_evidence(output, scenario)
+                for invalid_receipt in ({}, {**receipt, "labbySkillsDriver": "other-scenario"},
+                                        {**receipt, "outcome": "wrong-outcome"}):
+                    with self.subTest(scenario=scenario, receipt=invalid_receipt):
+                        (path / "stdout.txt").write_text(json.dumps(invalid_receipt) + "\n")
+                        with self.assertRaisesRegex(RuntimeError, "Missing production driver receipt"):
+                            require_evidence(output, scenario)
+
     def test_native_directory_support_must_execute_every_official_check(self):
         with tempfile.TemporaryDirectory() as output:
             path = Path(output) / "server-sep-2640-skills-directory-fixture"

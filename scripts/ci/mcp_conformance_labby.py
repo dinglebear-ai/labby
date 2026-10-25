@@ -81,7 +81,13 @@ def require_evidence(output, scenario, server=False):
     substantive = [c for c in checks if c["id"] != "wire-schema-valid"]
     if any(c["status"] == "FAILURE" for c in checks):
         raise RuntimeError(f"Failed assertions for {scenario}")
+    # Exact substantive IDs from the pinned official runner. An unrelated
+    # SUCCESS must never hide a skipped or missing target assertion.
     required = {
+        "sep-2640-client-no-prefetch": {"sep-2640-host-no-prefetch"},
+        "sep-2640-client-verify-digest": {"sep-2640-host-verify-digest"},
+        "sep-2640-client-verify-size": {"sep-2640-host-size-mismatch-failure"},
+        "sep-2640-client-verify-frontmatter": {"sep-2640-host-frontmatter-comparison"},
         "tools-list": {"tools-list", "tools-list-deterministic-order"},
         "caching": {"sep-2549-resources-read-caching-hints"},
         "sep-2640-skills-enumeration": {"sep-2640-skills-list-implemented", "sep-2640-skills-get-cache-attributes"},
