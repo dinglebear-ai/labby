@@ -1699,10 +1699,41 @@ mod tests {
         let snapshot_items = (0..101)
             .map(|index| rmcp::model::Resource::new(format!("file:///{index}"), index.to_string()))
             .collect::<Vec<_>>();
-        snapshot_server
+        let (snapshot_transport, _snapshot_client) = tokio::io::duplex(64 * 1024);
+        let snapshot_running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
+            snapshot_server,
+            snapshot_transport,
+            None,
+        );
+        let matching_context = project_shadow_context(
+            snapshot_running.peer().clone(),
+            Some(ProjectAccessObservation::Bound(Arc::new(cursor_transport))),
+        );
+        // protected_subset exposes Skills independently of its service names.
+        // Capture the same current request registry as resources/list: this
+        // manager-less fixture has a first-party registry, not hidden Skills.
+        #[cfg(feature = "skills")]
+        let skill_visibility = {
+            assert!(snapshot_running.service().route_scope.exposes_skills());
+            Some(
+                snapshot_running
+                    .service()
+                    .skill_registry_context(&matching_context)
+                    .await
+                    .expect("request Skills registry")
+                    .catalog_visibility_key(),
+            )
+        };
+        #[cfg(not(feature = "skills"))]
+        let skill_visibility: Option<String> = None;
+        snapshot_running
+            .service()
             .route_runtime
             .store_resource_snapshot(
-                crate::mcp::handlers_resources::resource_snapshot_audience(None, None),
+                crate::mcp::handlers_resources::resource_snapshot_audience(
+                    crate::mcp::context::auth_context_from_extensions(&matching_context.extensions),
+                    skill_visibility.as_deref(),
+                ),
                 "wave31".into(),
                 Arc::from(snapshot_items),
                 Arc::from([crate::mcp::runtime::ResourceProvenance {
@@ -1712,12 +1743,6 @@ mod tests {
                 Some(cursor_key),
             )
             .await;
-        let (snapshot_transport, _snapshot_client) = tokio::io::duplex(64 * 1024);
-        let snapshot_running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
-            snapshot_server,
-            snapshot_transport,
-            None,
-        );
         let cursor = rmcp::model::PaginatedRequestParams::default()
             .with_cursor(Some("v1:100:wave31".into()));
         use tracing::instrument::WithSubscriber as _;
@@ -1730,13 +1755,7 @@ mod tests {
             .finish();
         let matching = snapshot_running
             .service()
-            .list_resources_impl(
-                Some(cursor.clone()),
-                project_shadow_context(
-                    snapshot_running.peer().clone(),
-                    Some(ProjectAccessObservation::Bound(Arc::new(cursor_transport))),
-                ),
-            )
+            .list_resources_impl(Some(cursor.clone()), matching_context)
             .with_subscriber(tracing::Dispatch::new(matching_subscriber))
             .await
             .unwrap();
