@@ -75,6 +75,21 @@ use crate::mcp::runtime::{
 };
 use crate::mcp::server::LabMcpServer;
 
+/// Bind resource pages to the caller and current Skills catalog visibility.
+/// Templates and prompts keep their separate, caller-only snapshot audiences.
+pub(crate) fn resource_snapshot_audience(
+    auth: Option<&labby_auth::auth_context::AuthContext>,
+    _skill_visibility: Option<&str>,
+) -> String {
+    let audience = catalog_snapshot_audience(auth);
+    #[cfg(feature = "skills")]
+    let audience = format!(
+        "{audience}:skills:{}",
+        _skill_visibility.unwrap_or("hidden")
+    );
+    audience
+}
+
 /// Project validated canonical Skill metadata without rewriting its author or
 /// origin. Ordinary upstream Resource descriptors follow their existing path.
 #[cfg(feature = "skills")]
@@ -725,16 +740,13 @@ impl LabMcpServer {
             } else {
                 None
             };
-        let snapshot_audience = catalog_snapshot_audience(auth);
         #[cfg(feature = "skills")]
-        let snapshot_audience = format!(
-            "{}:skills:{}",
-            snapshot_audience,
-            skill_registry.as_ref().map_or_else(
-                || "hidden".to_owned(),
-                crate::skills::facade::SkillRegistryContext::catalog_visibility_key
-            )
-        );
+        let skill_visibility = skill_registry
+            .as_ref()
+            .map(crate::skills::facade::SkillRegistryContext::catalog_visibility_key);
+        #[cfg(not(feature = "skills"))]
+        let skill_visibility: Option<String> = None;
+        let snapshot_audience = resource_snapshot_audience(auth, skill_visibility.as_deref());
 
         // Cursor pages must resume the exact catalog captured by page one. In
         // particular, do not turn every offset into another catalog rebuild

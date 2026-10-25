@@ -1702,7 +1702,7 @@ mod tests {
         snapshot_server
             .route_runtime
             .store_resource_snapshot(
-                crate::mcp::runtime::catalog_snapshot_audience(None),
+                crate::mcp::handlers_resources::resource_snapshot_audience(None, None),
                 "wave31".into(),
                 Arc::from(snapshot_items),
                 Arc::from([crate::mcp::runtime::ResourceProvenance {
