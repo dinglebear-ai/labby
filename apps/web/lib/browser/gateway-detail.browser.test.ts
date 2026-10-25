@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import http from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
-import { publishPreviewExport, exportPath } from './preview-export.ts'
+import { publishPreviewExport, exportPath, cleanupPreviewExport } from './preview-export.ts'
 
 import { chromium } from 'playwright'
 
@@ -122,22 +122,7 @@ async function startPreviewServer() {
 }
 
 test.after(async () => {
-  if (!previewServer) {
-    if (previewRoot) await rm(previewRoot, { recursive: true, force: true })
-    return
-  }
-
-  previewServer.kill('SIGTERM')
-  await Promise.race([
-    once(previewServer, 'exit').catch(() => undefined),
-    new Promise((resolve) => setTimeout(resolve, 2_000)),
-  ])
-
-  if (previewServer.exitCode === null) {
-    previewServer.kill('SIGKILL')
-    await once(previewServer, 'exit').catch(() => undefined)
-  }
-  if (previewRoot) await rm(previewRoot, { recursive: true, force: true })
+  await cleanupPreviewExport(previewServer, previewRoot)
 })
 
 test('Stash repo folders support filtering and moving with a stable URI on mobile', { concurrency: false }, async (t) => {
