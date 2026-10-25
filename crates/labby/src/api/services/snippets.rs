@@ -90,6 +90,7 @@ async fn handle(
         },
     );
     let dispatch_context = crate::dispatch::snippets::dispatch::SnippetDispatchContext {
+        authenticated_principal: auth.as_ref().map(|value| value.0.sub.clone()),
         actor_key: auth
             .as_ref()
             .and_then(|value| value.0.actor_key.as_deref())

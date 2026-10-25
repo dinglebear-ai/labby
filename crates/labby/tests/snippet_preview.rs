@@ -13,6 +13,7 @@ use std::{fs, path::Path, sync::Arc};
 
 fn context(subject: &str) -> SnippetDispatchContext {
     let mut context = SnippetDispatchContext::trusted_local();
+    context.authenticated_principal = Some(subject.into());
     context.execution_surface = CodeModeSurface::Api;
     context.actor_key = Some("preview-operator".into());
     context.execution_caller = CodeModeCaller::Scoped {
@@ -106,8 +107,10 @@ fn run(home: &Path) {
         let store=StepJournalStore::open(home.join("journal.db")).await.unwrap();
         let mut config = labby::config::LabConfig::default();
         config.code_mode.enabled = std::env::var("LABBY_PREVIEW_CODE_MODE_ENABLED").unwrap().parse().unwrap();
+        let gateway_config = config.to_gateway_config();
         let manager=GatewayManager::with_store(home.join("config.toml"),GatewayRuntimeHandle::default(), Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(Arc::new(std::sync::RwLock::new(config)),home.join("config.toml"))))
             .with_step_journal(Arc::new(store)).with_code_mode_runner_spawn(RunnerSpawn {program:env!("CARGO_BIN_EXE_labby").into(),args:vec!["internal".into(),"code-mode-runner".into()]});
+        manager.seed_config(gateway_config).await;
         let alice=context("alice");
         let secret="ephemeral-preview-secret-must-not-be-stored-90b76";
         let input=json!({"secret":secret});
@@ -167,4 +170,170 @@ fn run(home: &Path) {
             );
         }
     }
+}
+
+#[test]
+fn declared_snippet_metadata_survives_disabled_synthetic_advertisement() {
+    if let Ok(home) = std::env::var("LABBY_DECLARED_PREVIEW_CHILD") {
+        declared_metadata_contract(Path::new(&home));
+        return;
+    }
+    for enabled in [true, false] {
+        let home = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "declared_snippet_metadata_survives_disabled_synthetic_advertisement",
+                "--nocapture",
+            ])
+            .env("LABBY_DECLARED_PREVIEW_CHILD", home.path())
+            .env("LABBY_PREVIEW_CODE_MODE_ENABLED", enabled.to_string())
+            .env("LABBY_HOME", home.path())
+            .env("HOME", home.path())
+            .env("LABBY_MCP_HTTP_PORT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "enabled={enabled}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn declared_metadata_contract(home: &Path) {
+    fs::create_dir_all(home.join("snippets")).unwrap();
+    fs::write(home.join("snippets/declared.md"), "---\nname: declared\ndescription: Declared metadata\ntools: [\"fixture::echo\"]\n---\n```js\nasync () => ({ ok: true })\n```\n").unwrap();
+    let script = home.join("metadata.py");
+    fs::write(&script, r"import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18', 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'snippet-metadata-fixture', 'version': '1'}}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'echo', 'description': 'Synthetic echo', 'inputSchema': {'type': 'object', 'properties': {'value': {'type': 'string'}}}, 'outputSchema': {'type': 'object', 'properties': {'ok': {'type': 'boolean'}}}, 'annotations': {'readOnlyHint': True}}]}
+    elif method == 'ping':
+        result = {}
+    elif method == 'tools/call':
+        raise RuntimeError('metadata must never invoke a tool')
+    else:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'Method not found'}}), flush=True)
+        continue
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+").unwrap();
+    let python = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(python.status.success());
+    let python = String::from_utf8(python.stdout).unwrap().trim().to_owned();
+    let enabled = std::env::var("LABBY_PREVIEW_CODE_MODE_ENABLED").unwrap();
+    let text = format!(
+        "[code_mode]\nenabled = {enabled}\n[gateway]\nextra_stdio_commands = [{}]\n[[upstream]]\nname = \"fixture\"\ntransport = \"stdio\"\ncommand = {}\nargs = [{}]\n",
+        serde_json::to_string(&python).unwrap(),
+        serde_json::to_string(&python).unwrap(),
+        serde_json::to_string(script.to_str().unwrap()).unwrap()
+    );
+    let config: labby::config::LabConfig = toml::from_str(&text).unwrap();
+    let gateway_config = config.to_gateway_config();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let manager = GatewayManager::with_store(
+                home.join("config.toml"),
+                GatewayRuntimeHandle::default(),
+                Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(
+                    Arc::new(std::sync::RwLock::new(config)),
+                    home.join("config.toml"),
+                )),
+            );
+            manager.seed_config(gateway_config).await;
+            let caller = SnippetDispatchContext::trusted_local();
+            let preview = call(
+                &manager,
+                "snippets.preview",
+                json!({"name":"declared"}),
+                &caller,
+            )
+            .await
+            .unwrap();
+            assert_eq!(preview["can_execute"], true, "{preview}");
+            assert_eq!(
+                preview["declared_tools"][0]["status"], "allowed",
+                "{preview}"
+            );
+            let fixture = call(
+                &manager,
+                "snippets.fixture",
+                json!({"name":"declared"}),
+                &caller,
+            )
+            .await
+            .unwrap();
+            assert!(fixture.to_string().contains("fixture::echo"), "{fixture}");
+        });
+}
+
+#[test]
+fn contended_snippet_publication_does_not_block_async_worker() {
+    if let Ok(home) = std::env::var("LABBY_PUBLICATION_TEST_CHILD") {
+        let home = Path::new(&home);
+        fs::create_dir_all(home.join("snippets")).unwrap();
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(home.join("snippets/.snippet-write.lock"))
+            .unwrap();
+        lock.lock().unwrap();
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let started = std::time::Instant::now();
+                let publish = labby::dispatch::snippets::dispatch(
+                    "snippets.create",
+                    json!({"name":"contended","body":"async () => ({\"ok\":true})"}),
+                );
+                let heartbeat = async {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_millis(500),
+                        "contended storage monopolized the async worker for {:?}",
+                        started.elapsed()
+                    );
+                };
+                let (result, ()) = tokio::join!(publish, heartbeat);
+                assert!(
+                    result.is_err(),
+                    "the held publication lock must remain authoritative"
+                );
+                assert!(!home.join("snippets/contended.md").exists());
+            });
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "contended_snippet_publication_does_not_block_async_worker",
+            "--nocapture",
+        ])
+        .env("LABBY_PUBLICATION_TEST_CHILD", home.path())
+        .env("LABBY_HOME", home.path())
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

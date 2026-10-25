@@ -120,9 +120,14 @@ pub(super) fn metadata(
     name: &str,
     body: &str,
     source: SnippetSource,
+    format: SnippetSourceFormat,
 ) -> Result<Metadata, ToolError> {
     static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
     let digest = digest(body);
+    // The same bytes can be valid raw JavaScript but invalid Markdown. Source
+    // representation therefore participates in cache identity independently
+    // of the content digest returned to callers.
+    let revision = format!("{format:?}:{digest}");
     let builtin = source == SnippetSource::Builtin;
     let mut cache = CACHE
         .get_or_init(|| Mutex::new(Cache::default()))
@@ -131,7 +136,7 @@ pub(super) fn metadata(
     if let Some(index) = cache
         .entries
         .iter()
-        .position(|entry| entry.0 == name && entry.1 == digest && entry.2 == builtin)
+        .position(|entry| entry.0 == name && entry.1 == revision && entry.2 == builtin)
     {
         let entry = cache.entries.remove(index).expect("cache hit position");
         let metadata = entry.3.clone();
@@ -139,18 +144,23 @@ pub(super) fn metadata(
         return metadata;
     }
     let metadata = (|| {
-        let frontmatter = frontmatter(body)?;
-        if builtin && frontmatter.is_none() {
+        if builtin && !has_frontmatter(body) {
             return Err(ToolError::InvalidParam {
                 message: "built-in snippet requires frontmatter".into(),
                 param: "body".into(),
             });
         }
-        validate_snippet_body(name, body)?;
-        let (description, tags, inputs, tools) = snippet_metadata_fields(frontmatter);
-        Ok((description, tags, inputs, tools, digest.clone()))
+        let resolved = resolve_inline_snippet(name, body, format)?;
+        code_for_snippet(&resolved)?;
+        Ok((
+            resolved.description,
+            resolved.tags,
+            resolved.inputs,
+            resolved.tools,
+            digest.clone(),
+        ))
     })();
-    cache.insert(name.to_string(), digest, builtin, metadata.clone());
+    cache.insert(name.to_string(), revision, builtin, metadata.clone());
     metadata
 }
 #[cfg(test)]

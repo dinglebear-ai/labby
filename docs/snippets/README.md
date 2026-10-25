@@ -54,17 +54,16 @@ Before writing or running a snippet, use `codemode.search()` and `codemode.descr
 
 ## How Users Should Build Snippets
 
-The following schema-driven builder is an authoring design, not a description of
-a shipped schema-driven call-plan editor. The current Snippets UI lists,
-inspects, edits, and runs saved source, and builds drafts from manually entered
-tool IDs, snippet inputs, and a separate parameter mapping for each tool. Parallel
-drafts defer calls through `codemode.batch` and retain each call's success or
-failure. The UI offers editable offline fixtures alongside explicit live tests. Runtime
-syntax/frontmatter/input validation is implemented;
-`snippet validate` does not execute tools or statically prove every embedded
-call's parameters against live upstream schemas.
+The Snippets UI searches the authorized tool catalog and loads current tool
+schemas for named steps, including repeated calls to the same tool. It supports
+typed parameter forms, explicit input/output mappings, named dependencies,
+parallel waves, guided editing of recognized builder source, and expert source
+editing. Missing or complex schemas retain Advanced JSON. Offline fixtures and
+explicit live tests remain separate. See [Snippet UI](../dev/SNIPPET_UI.md).
 
-The snippet builder should make authoring feel like assembling a small checklist, not writing JavaScript.
+`snippet validate` checks source, frontmatter and input declarations without
+executing tools. It does not statically prove arbitrary JavaScript calls against
+live schemas; backend execution still validates actual tool arguments.
 
 ### 1. Search the live gateway tools
 
@@ -83,25 +82,25 @@ its `schema_status`; search does not inject full input/output schemas or DTS.
 
 The user should search this live catalog with in-sandbox `codemode.search()` by service, tool name, or description, then select the tools they want the snippet to call.
 
-### 2. Render a form from each selected tool schema
+### 2. Fill parameters from each selected tool schema
 
-For each selected tool, the builder should read the upstream JSON schema and render the available fields:
+For each selected tool, the builder loads its input schema and offers supported fields:
 
 - strings become text inputs
 - booleans become toggles
 - numbers and integers become numeric inputs
 - enums become selects
-- arrays and objects become structured editors
+- arrays and objects use JSON values
 - required fields are clearly marked
 - descriptions and defaults are shown inline
 
-The user should not need to know the parameter names ahead of time. The schema tells Labby what fields exist and what values are valid.
+The schema supplies parameter names and constraints. Complex contracts stay in Advanced JSON; schema discovery failures remain visible.
 
 ### 3. Validate before saving
 
-Every call step should be validated against the same upstream schema that Code Mode uses at runtime. Invalid params should fail before a snippet is saved or executed.
+Known top-level constraints and required mappings are checked before draft generation. Runtime validation remains authoritative for full schemas and actual resolved values.
 
-Example validation failures should be concrete:
+Validation failures identify missing or invalid values, for example:
 
 ```text
 Axon::axon.params.action is required
@@ -116,7 +115,7 @@ Most snippets are one of two shapes:
 - **Parallel:** call independent tools at the same time, then combine results.
 - **Chained:** call one tool, use its result to fill parameters for the next tool.
 
-The first builder pass can make parallel snippets easy and reserve advanced chaining for a later step. Even a parallel-only builder covers many useful workflows: health pulses, docs briefs, repo triage, and multi-source search.
+Named dependencies and `$steps.stepId.path` mappings connect steps. Independent steps share a wave; failed prerequisites skip dependent steps. Reordering keeps step identity, while renaming updates references.
 
 ### 5. Save a readable Markdown snippet
 
@@ -174,7 +173,7 @@ The returned value must be JSON-serializable. The sandbox has `callTool` and, wh
 CLI execution passes repeated `--param key=value` flags as the `input` object:
 
 ```bash
-labby snippet run homelab-readonly-pulse --param host=node-a
+labby snippet run homelab-readonly-pulse --param timezone=UTC
 ```
 
 MCP and API callers pass the same shape through `params`:
@@ -233,11 +232,12 @@ test can supply an inline `fixture` object. A failed report produces a nonzero
 CLI exit status, with structured stdout preserved under `--json`.
 
 The fixture harness uses the production parser and isolated QuickJS runner,
-with synthetic `callTool()` responses and native `codemode.batch()`. Discovery,
-generated helpers, resources, artifact writes, and nested snippets are not
-mocked. Older examples using those helpers need explicit live verification or
-a separately designed fixture-compatible workflow; `--all` does not skip them
-or silently execute them live. See [Snippet development and testing](../dev/SNIPPET_TESTING.md)
+with synthetic `callTool()` responses and native `codemode.batch()`. Fixtures
+also support synthetic child results for `codemode.run()` and checked in-memory
+`writeArtifact()` receipts; they do not execute child source or persist artifact
+files. Discovery, generated tool helpers, resources, and live schema-contract
+verification remain unsupported. Unsupported calls fail; `--all` does not skip
+them or silently execute them live. See [Snippet development and testing](../dev/SNIPPET_TESTING.md)
 for assertions, snapshots, and budgets.
 
 Real upstream smoke tests require `labby snippet test <name> --live` or

@@ -531,33 +531,21 @@ async fn execute_remote_snippet(
     name: &str,
     params: Value,
 ) -> Result<Value> {
-    use crate::dispatch::snippets::store::{
-        builtin_snippet_dir, code_for_snippet, merge_snippet_input, resolve_snippet,
-    };
-
+    use crate::dispatch::snippets::store::{builtin_snippet_dir, resolve_snippet};
     let snippet = resolve_snippet(
         &crate::dispatch::helpers::lab_home(),
         &builtin_snippet_dir(),
         name,
     )?;
-    let input = merge_snippet_input(&snippet, params)?;
-    let code = code_for_snippet(&snippet)?;
-    let code = crate::dispatch::snippets::store::wrap_snippet_with_input_bounded(
-        &code,
-        &input,
-        labby_codemode::MAX_SOURCE_BYTES,
-    )?;
-    if snippet
-        .tools
-        .as_ref()
-        .is_some_and(|tools| tools.as_slice().is_empty())
+    let format = if snippet.path.extension().is_some_and(|ext| ext == "js")
+        && crate::dispatch::snippets::store::frontmatter(&snippet.body)?.is_none()
     {
-        anyhow::bail!(
-            "snippet `{name}` declares no upstream tools; remote execution cannot preserve that restriction"
-        );
-    }
+        crate::dispatch::snippets::store::SnippetSourceFormat::JavaScript
+    } else {
+        crate::dispatch::snippets::store::SnippetSourceFormat::Markdown
+    };
     Ok(live
-        .call_codemode_tool_scoped(&code, snippet.tools.as_ref().map(|tools| tools.as_slice()))
+        .call_snippet_source(name, &snippet.body, format, params)
         .await?)
 }
 

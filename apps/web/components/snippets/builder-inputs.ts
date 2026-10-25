@@ -25,8 +25,14 @@ export function inputSpecFromSchema(schema: ParameterSchema): SnippetInputSpec {
 export function builderInputSpecs(
   existing: Record<string, SnippetInputSpec>,
   examples: Record<string, unknown>,
+  sensitivity?: ParameterSchema,
 ): Record<string, SnippetInputSpec> {
-  const result = { ...existing }
+  const result = Object.fromEntries(Object.entries(existing).map(([name, spec]) => {
+    if (!containsSensitiveValue(spec.default, sensitivity?.properties?.[name], name)) return [name, spec]
+    const { default: omittedDefault, ...metadata } = spec
+    void omittedDefault
+    return [name, { ...metadata, required: true }]
+  }))
   for (const [name, value] of Object.entries(examples))
     if (!Object.prototype.hasOwnProperty.call(result, name)) {
       const ty =
@@ -41,7 +47,7 @@ export function builderInputSpecs(
               : 'json'
       result[name] = {
         ty,
-        ...(containsSensitiveValue(value, undefined, name)
+        ...(containsSensitiveValue(value, sensitivity?.properties?.[name], name)
           ? { required: true }
           : { default: value, required: false }),
         ...(value === null ? { nullable: true } : {}),

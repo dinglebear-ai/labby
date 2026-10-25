@@ -432,6 +432,7 @@ mod tests {
             elapsed_ms: 42,
             start_ms: Some(1),
             params: Some(json!({"q": "everything"})),
+            params_digest: None,
             error_kind: None,
             ui: None,
         }];
@@ -498,6 +499,7 @@ mod tests {
                     "command": format!("ssh host-{i} {}", "x".repeat(2048)),
                     "timeout": 20_000
                 })),
+                params_digest: None,
                 error_kind: None,
                 ui: None,
             })
@@ -537,6 +539,7 @@ mod tests {
                     "command": format!("ssh host-{i} {}", "x".repeat(2048)),
                     "timeout": 20_000
                 })),
+                params_digest: None,
                 error_kind: None,
                 ui: None,
             })

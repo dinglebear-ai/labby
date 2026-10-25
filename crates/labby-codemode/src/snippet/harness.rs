@@ -446,8 +446,10 @@ pub async fn run_fixture_with_source_limit(
     let code_json = encode(&Value::String(code))?;
     let fixture_json = encode(&serde_json::to_value(fixture).map_err(|e| invalid(e.to_string()))?)?;
     let input_json = encode(&input)?;
+    let fixture_json = encode(&Value::String(fixture_json))?;
+    let input_json = encode(&Value::String(input_json))?;
     let wrapped = format!(
-        "async () => {{ return await ({WRAPPER})({code_json}, {fixture_json}, {input_json}, codemode.batch); }}"
+        "async () => {{ return await ({WRAPPER})({code_json}, JSON.parse({fixture_json}), JSON.parse({input_json}), codemode.batch); }}"
     );
     let preparation_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let remaining_ms = fixture
@@ -477,12 +479,14 @@ pub async fn run_fixture_with_source_limit(
         .map_err(crate::CodeModeExecutionError::into_contract_tool_error)?
         .raw_response;
     let escaped = !response.calls.is_empty() || !response.artifacts.is_empty();
-    let raw: RawReport = serde_json::from_value(
-        response
-            .result
-            .ok_or_else(|| invalid("fixture runner returned no result"))?,
-    )
-    .map_err(|e| invalid(format!("invalid fixture runner response: {e}")))?;
+    let encoded = response
+        .result
+        .ok_or_else(|| invalid("fixture runner returned no result"))?;
+    let encoded = encoded
+        .as_str()
+        .ok_or_else(|| invalid("fixture runner returned untrusted evidence encoding"))?;
+    let raw: RawReport = serde_json::from_str(encoded)
+        .map_err(|e| invalid(format!("invalid fixture runner response: {e}")))?;
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     evaluate(&snippet.name, raw, fixture, elapsed_ms, escaped)
 }

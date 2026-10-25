@@ -274,6 +274,7 @@ fn artifact_call(
             elapsed_ms,
             start_ms: None,
             params,
+            params_digest: None,
             error_kind,
             ui: None,
         },

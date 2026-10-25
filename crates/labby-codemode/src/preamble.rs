@@ -123,9 +123,9 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
 /// - `delete` → `delete_` (reserved word)
 /// - `2fa_setup` → `_2fa_setup` (leading digit prefixed with `_`)
 ///
-/// KNOWN COLLISION: `status.get` and `status_get` both map to `status_get`
-/// — last insert wins when building the namespace. A `tracing::debug!` is emitted
-/// when a collision is detected.
+/// `status.get` and `status_get` both map to `status_get`. Proxy generation
+/// rejects colliding normalized names, including final namespace/tool keys,
+/// rather than choosing one tool implicitly.
 pub(crate) fn tool_name_to_snake(name: &str) -> String {
     if name.is_empty() {
         return "_".to_string();

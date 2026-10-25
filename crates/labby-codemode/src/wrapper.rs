@@ -70,7 +70,9 @@ function __labEncodeResult(value) {
       return __labEncodeResult(value.toJSON());
     }
     const out = {};
-    for (const key of Object.keys(value)) out[key] = __labEncodeResult(value[key]);
+    for (const key of Object.keys(value)) Object.defineProperty(out, key, {
+      value: __labEncodeResult(value[key]), enumerable: true, writable: true, configurable: true
+    });
     return out;
   }
   return value;
@@ -104,7 +106,9 @@ function __labDecodeResult(value) {
   if (Array.isArray(value)) return value.map(__labDecodeResult);
   if (typeof value === "object") {
     const out = {};
-    for (const key of Object.keys(value)) out[key] = __labDecodeResult(value[key]);
+    for (const key of Object.keys(value)) Object.defineProperty(out, key, {
+      value: __labDecodeResult(value[key]), enumerable: true, writable: true, configurable: true
+    });
     return out;
   }
   return value;

@@ -33,7 +33,7 @@ pub(super) fn value_digest(value: &Value) -> String {
 pub(super) fn receipt_owner(context: &SnippetDispatchContext) -> SnippetReceiptOwner {
     SnippetReceiptOwner {
         owner_key: value_digest(
-            &json!({"actor":context.actor_key,"subject":context.execution_caller.subject(),"trusted_local":matches!(context.execution_caller.without_authority(), CodeModeCaller::TrustedLocal)}),
+            &json!({"actor":context.actor_key,"subject":context.authenticated_principal,"trusted_local":matches!(context.execution_caller.without_authority(), CodeModeCaller::TrustedLocal)}),
         ),
         route_scope: context.route_scope.clone(),
         capability_fingerprint: context.capability_filter_fingerprint.clone(),
@@ -46,7 +46,7 @@ fn receipt_calls(calls: &[labby_codemode::CodeModeExecutedCall]) -> Vec<SnippetR
         .take(32)
         .map(|call| SnippetReceiptCall {
             tool: call.id.clone(),
-            params_digest: call.params.as_ref().map(value_digest),
+            params_digest: call.params_digest.clone(),
             ok: call.ok,
             elapsed_ms: call.elapsed_ms,
             error_kind: call.error_kind.clone(),
@@ -104,10 +104,12 @@ pub(super) async fn execute_snippet_outcome(
     };
     let mut fallback = SnippetDispatchContext::trusted_local();
     fallback.execution_caller = caller.clone();
+    fallback.authenticated_principal = caller.subject().map(ToOwned::to_owned);
     fallback.execution_surface = surface;
     fallback.execution_scope = caller_scope.clone();
     fallback.capability_filter_fingerprint = caller_scope.fingerprint();
     let context = context.unwrap_or(&fallback);
+    context.validate_principal()?;
     let prepared = prepare(manager, name, input, context, None).await?;
     execute_prepared_outcome(manager, prepared, context).await
 }
@@ -117,22 +119,20 @@ pub(super) async fn execute_prepared_outcome(
     prepared: PreparedSnippet,
     context: &SnippetDispatchContext,
 ) -> Result<SnippetExecutionOutcome, ToolError> {
+    context.validate_principal()?;
     let broker = CodeModeBroker::new(Some(manager));
     let PreparedSnippet {
         snippet,
         code,
         input,
         scope,
-        mut config,
+        config,
         schema_digests,
         preview,
     } = prepared;
     let name = snippet.name.as_str();
     let caller = &context.execution_caller;
     let surface = context.execution_surface;
-    let return_trace_params = config.trace_params;
-    // Capture argument digests for the receipt, then restore the response policy.
-    config.trace_params = true;
     let wrapped = wrap_snippet_with_input_bounded(
         &code,
         &input,
@@ -251,16 +251,6 @@ pub(super) async fn execute_prepared_outcome(
         manager.discard_step_buffer(&execution_id);
         tracing::warn!(%execution_id, "snippet journal flush timed out");
     }
-    if !return_trace_params && let Ok(outcome) = &mut outcome {
-        for call in outcome
-            .raw_response
-            .calls
-            .iter_mut()
-            .chain(outcome.display_response.calls.iter_mut())
-        {
-            call.params = None;
-        }
-    }
     let receipt_status = persist(manager, &receipt, &owner).await;
     let outcome = outcome.map_err(|error| {
         let mut error = error.into_contract_tool_error();
@@ -304,11 +294,18 @@ mod tests {
             sub: Some("alice".into()),
             capabilities: Default::default(),
         };
+        context.authenticated_principal = Some("alice".into());
         let alice = receipt_owner(&context).owner_key;
+        context.execution_caller = CodeModeCaller::Scoped {
+            sub: Some("team:shared-oauth-subject".into()),
+            capabilities: Default::default(),
+        };
+        assert_eq!(alice, receipt_owner(&context).owner_key);
         context.execution_caller = CodeModeCaller::Scoped {
             sub: Some("bob".into()),
             capabilities: Default::default(),
         };
+        context.authenticated_principal = Some("bob".into());
         assert_ne!(alice, receipt_owner(&context).owner_key);
     }
 }

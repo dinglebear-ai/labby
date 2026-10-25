@@ -43,6 +43,7 @@ import { SafeMarkdown } from '@/components/markdown/safe-markdown'
 import { AURORA_PAGE_FRAME, AURORA_PAGE_SHELL } from '@/components/aurora/tokens'
 import { SnippetHistory } from './snippet-history'
 import { builderInputSpecs, inputSpecFromSchema, inputSpecsFrontmatter } from './builder-inputs'
+import { inheritedInputSchema } from './execution-preview-model'
 import { ExecutionPreview } from './execution-preview'
 import { WorkflowStepEditor } from './workflow-step-editor'
 import { generateWorkflowCode, readWorkflowPlan, type WorkflowPlan } from './workflow-model'
@@ -56,6 +57,7 @@ import {
   filterSnippets,
   inputPlaceholder,
   parseSnippetBody,
+  withSnippetDescription,
   snippetKey,
   sortSnippetsByName,
   tokenizeSnippetSource,
@@ -451,6 +453,7 @@ export function SnippetsPageContent() {
       setCreateError('Description must fit on one line and cannot start or end with a double quote.')
       return
     }
+    if (createIntent === 'custom') { setExpertCreate(true); setCreateStep(2); return }
     let execution: string
     const unresolved = workflowPlan.steps.flatMap(step=>JSON.stringify(step.mapping).match(/\$input\.[A-Za-z0-9_-]+/g)??[]).map(reference=>reference.slice(7)).find(name=>!Object.prototype.hasOwnProperty.call(exampleInput,name)&&!Object.prototype.hasOwnProperty.call(builderInputSpecsState,name))
     if (unresolved) { setCreateError(`Unknown snippet input ${unresolved}`); return }
@@ -462,7 +465,7 @@ export function SnippetsPageContent() {
       execution = generateWorkflowCode(workflowPlan)
     } catch (err) { setCreateError(errorMessage(err)); return }
     let inputLines:string[]
-    try { inputLines=inputSpecsFrontmatter(builderInputSpecs(builderInputSpecsState,exampleInput)) } catch(error){setCreateError(errorMessage(error));return}
+    try { inputLines=inputSpecsFrontmatter(builderInputSpecs(builderInputSpecsState,exampleInput,inheritedInputSchema(workflowPlan,toolSchemas))) } catch(error){setCreateError(errorMessage(error));return}
     const body = [
       '---',
       `name: ${safeName}`,
@@ -545,10 +548,12 @@ export function SnippetsPageContent() {
     setSaving(true)
     setEditError(null)
     try {
-      await snippetsApi.validate(selected.name, editBody)
+      const descriptionChanged = editDescription !== (selectedDetail?.description ?? '')
+      const body = descriptionChanged ? withSnippetDescription(editBody, editDescription.trim()) : editBody
+      await snippetsApi.validate(selected.name, body)
       const updated = await snippetsApi.create({
         name: selected.name,
-        body: editBody,
+        body,
         ...(editDescription.trim() ? { description: editDescription.trim() } : {}),
         force: true,
         expected_digest: editDigest,
@@ -1007,7 +1012,7 @@ export function SnippetsPageContent() {
                           />
                           {snippet.source !== 'builtin' ? (
                             <>
-                              {selectedDetail && readWorkflowPlan(selectedDetail.body) ? <DetailButton label="Edit workflow" icon={<Pencil size={11}/>} disabled={running !== null || !selectedDetail.content_digest} onClick={()=>{const plan=readWorkflowPlan(selectedDetail.body);if(!plan)return;resetCreate();setWorkflowPlan(plan);setCreateName(selectedDetail.name);setCreateDescription(selectedDetail.description??'');setCreateInputJson(JSON.stringify(Object.fromEntries(Object.entries(selectedDetail.inputs??{}).filter(([,spec])=>spec.default!==undefined).map(([name,spec])=>[name,spec.default])),null,2));setBuilderInputSpecsState(selectedDetail.inputs??{});setBuilderEditDigest(selectedDetail.content_digest??undefined);setCreateStep(1);setCreateOpen(true)}}/> : null}
+                              {selectedDetailLoaded && selectedDetail && readWorkflowPlan(selectedDetail.body) ? <DetailButton label="Edit workflow" icon={<Pencil size={11}/>} disabled={running !== null || !selectedDetailLoaded || !selectedDetail.content_digest} onClick={()=>{const plan=readWorkflowPlan(selectedDetail.body);if(!plan)return;resetCreate();setWorkflowPlan(plan);setCreateName(selectedDetail.name);setCreateDescription(selectedDetail.description??'');setCreateInputJson(JSON.stringify(Object.fromEntries(Object.entries(selectedDetail.inputs??{}).filter(([,spec])=>spec.default!==undefined).map(([name,spec])=>[name,spec.default])),null,2));setBuilderInputSpecsState(selectedDetail.inputs??{});setBuilderEditDigest(selectedDetail.content_digest??undefined);setCreateStep(1);setCreateOpen(true)}}/> : null}
                               <DetailButton
                                 label="Edit"
                                 icon={<Pencil size={11} />}
@@ -1271,11 +1276,11 @@ export function SnippetsPageContent() {
                   <div className="grid gap-2"><Label htmlFor="snippet-description">What should it accomplish?</Label><Input id="snippet-description" value={createDescription} onChange={(event) => setCreateDescription(event.target.value)} placeholder="Check the fleet and highlight anything unhealthy" /></div>
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="snippet-tools">Selected tools</Label>
-                  <p className="text-xs text-aurora-text-muted">Choose tools below. Each addition creates a separate named step.</p>
-                  <p className="text-xs text-aurora-text-muted">Search the current authorized catalog. Add distinct steps, map values, and review dependencies before building.</p>
+                  <Label htmlFor="snippet-tools">{createIntent === 'custom' ? 'Custom source' : 'Selected tools'}</Label>
+                  <p className="text-xs text-aurora-text-muted">{createIntent === 'custom' ? 'Continue to edit your async JavaScript source. Tools are optional for custom code.' : 'Choose tools below. Each addition creates a separate named step.'}</p>
+                  <p className="text-xs text-aurora-text-muted">{createIntent === 'custom' ? 'Validation checks source syntax and metadata before saving.' : 'Search the current authorized catalog. Add distinct steps, map values, and review dependencies before building.'}</p>
                 </div>
-                <WorkflowStepEditor key={authorityEpoch} plan={workflowPlan} sequential={createIntent === 'transform'} onChange={setWorkflowPlan} inputs={(() => { try { const parsed = JSON.parse(createInputJson); return isObject(parsed) && !Array.isArray(parsed) ? parsed : {} } catch { return {} } })()} onInputsChange={inputs => setCreateInputJson(JSON.stringify(inputs,null,2))} schemas={toolSchemas} onValidationError={setBuilderMappingError} declaredInputs={builderInputSpecsState} onInputSchema={(name,schema)=>setBuilderInputSpecsState(current=>({...current,...Object.prototype.hasOwnProperty.call(current,name)?{}:{[name]:inputSpecFromSchema(schema)}}))} onSchema={(id,schema)=>setToolSchemas(current=>({...current,[id]:schema}))} />
+                {createIntent !== 'custom' ? <WorkflowStepEditor key={authorityEpoch} plan={workflowPlan} sequential={createIntent === 'transform'} onChange={setWorkflowPlan} inputs={(() => { try { const parsed = JSON.parse(createInputJson); return isObject(parsed) && !Array.isArray(parsed) ? parsed : {} } catch { return {} } })()} onInputsChange={inputs => setCreateInputJson(JSON.stringify(inputs,null,2))} schemas={toolSchemas} onValidationError={setBuilderMappingError} declaredInputs={builderInputSpecsState} onInputSchema={(name,schema)=>setBuilderInputSpecsState(current=>({...current,...Object.prototype.hasOwnProperty.call(current,name)?{}:{[name]:inputSpecFromSchema(schema)}}))} onSchema={(id,schema)=>setToolSchemas(current=>({...current,[id]:schema}))} /> : null}
                 <div className="grid gap-2">
                   <Label htmlFor="snippet-inputs">Example inputs</Label>
                   <Textarea id="snippet-inputs" value={createInputJson} onChange={(event) => setCreateInputJson(event.target.value)} placeholder={'{"query":"unhealthy services","limit":10}'} className="min-h-20 font-mono text-xs" />
@@ -1293,7 +1298,7 @@ export function SnippetsPageContent() {
           <DialogFooter className="shrink-0">
             {createStep > 0 ? <Button variant="outline" onClick={() => setCreateStep((step) => step - 1)} disabled={creating}><ChevronLeft className="size-4" /> Back</Button> : <Button variant="outline" onClick={() => setCreateOpen(false)}>Cancel</Button>}
             <div className="flex-1" />
-            {createStep === 0 ? <Button onClick={() => setCreateStep(1)}>Use this pattern <ChevronRight className="size-4" /></Button> : createStep === 1 ? <Button onClick={applyBuilderDraft} disabled={!createName.trim()}>Build draft <ChevronRight className="size-4" /></Button> : <><Button variant="outline" onClick={() => void createSnippet(false)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />} Validate and save</Button><Button onClick={() => void createSnippet(true)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />} Save and run</Button></>}
+            {createStep === 0 ? <Button onClick={() => setCreateStep(1)}>Use this pattern <ChevronRight className="size-4" /></Button> : createStep === 1 ? <Button onClick={applyBuilderDraft} disabled={!createName.trim()}>{createIntent === 'custom' ? 'Review code' : 'Build draft'} <ChevronRight className="size-4" /></Button> : <><Button variant="outline" onClick={() => void createSnippet(false)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />} Validate and save</Button><Button onClick={() => void createSnippet(true)} disabled={creating}>{creating ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />} Save and run</Button></>}
           </DialogFooter>
         </DialogContent>
       </Dialog>

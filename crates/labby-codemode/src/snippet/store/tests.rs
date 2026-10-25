@@ -53,6 +53,15 @@ fn validate_snippet_code_accepts_trailing_line_comment() {
         validate_snippet_code(code).is_ok(),
         "the validator's generated closing delimiter must not be swallowed by a trailing // comment"
     );
+    let wrapped =
+        wrap_snippet_with_input_bounded(code, &json!({"value": 7}), crate::MAX_SOURCE_BYTES)
+            .expect("source fits the invocation limit");
+    validate_snippet_code(&wrapped)
+        .expect("accepted source must compile inside the actual live invocation envelope");
+    assert!(wrap_snippet_with_input_bounded(code, &json!({"value": 7}), wrapped.len()).is_ok());
+    assert!(
+        wrap_snippet_with_input_bounded(code, &json!({"value": 7}), wrapped.len() - 1).is_err()
+    );
 }
 
 #[test]
