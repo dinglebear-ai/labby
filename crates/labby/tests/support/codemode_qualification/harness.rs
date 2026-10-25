@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -98,6 +99,12 @@ impl CodeModeQualification {
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .config(config)
             .existing_root(owned_root.path());
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            builder = builder.env(
+                "LABBY_LOG",
+                "warn,labby_gateway::gateway::code_mode::search=debug,labby_codemode::execute=debug",
+            ).env("LABBY_LOG_FORMAT", "json");
+        }
         if let Some(max_calls) = limits.max_calls_per_run {
             builder = builder.env("LABBY_CODE_MODE_MAX_CALLS_PER_RUN", max_calls.to_string());
         }
@@ -214,12 +221,85 @@ impl CodeModeQualification {
                 })
             );
         }
+        let elapsed = started.elapsed();
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            self.project_catalog_diagnostics();
+        }
         Ok(Execution {
             structured,
-            elapsed: started.elapsed(),
+            elapsed,
             wire_bytes,
             is_error,
         })
+    }
+
+    /// Project only fixed catalog stages and numeric fields; never print raw logs.
+    fn project_catalog_diagnostics(&self) {
+        const MAX_BYTES: u64 = 64 * 1024;
+        const MAX_EVENTS: usize = 16;
+        let Some(guard) = self.guard.as_ref() else {
+            return;
+        };
+        let Ok(mut file) = std::fs::File::open(guard.root().join("stderr.log")) else {
+            return;
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            return;
+        };
+        if file
+            .seek(SeekFrom::Start(length.saturating_sub(MAX_BYTES)))
+            .is_err()
+        {
+            return;
+        }
+        let mut bytes = Vec::new();
+        if file.take(MAX_BYTES).read_to_end(&mut bytes).is_err() {
+            return;
+        }
+        let tail = String::from_utf8_lossy(&bytes);
+        let mut events = Vec::new();
+        for line in tail.lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(fields) = record.get("fields").and_then(Value::as_object) else {
+                continue;
+            };
+            let stage = match fields.get("action").and_then(Value::as_str) {
+                Some("catalog.enumerate") => "catalog.enumerate",
+                Some("catalog.snapshot") => "catalog.snapshot",
+                _ if fields.get("message").and_then(Value::as_str)
+                    == Some("code_mode.proxy_generation_timed_out") =>
+                {
+                    "proxy.timeout"
+                }
+                _ => continue,
+            };
+            let mut event = Map::new();
+            event.insert("stage".into(), json!(stage));
+            for key in ["elapsed_ms", "tool_count", "entry_count", "timeout_ms"] {
+                let value = fields.get(key).and_then(|value| {
+                    value.as_u64().or_else(|| {
+                        let digits = value.as_str()?;
+                        (!digits.is_empty()
+                            && digits.len() <= 20
+                            && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                        .then(|| digits.parse::<u64>().ok())
+                        .flatten()
+                    })
+                });
+                if let Some(value) = value {
+                    event.insert(key.into(), json!(value));
+                }
+            }
+            events.push(Value::Object(event));
+            if events.len() > MAX_EVENTS {
+                events.remove(0);
+            }
+        }
+        for event in events {
+            eprintln!("q3_diagnostic {event}");
+        }
     }
 
     pub(crate) async fn fixture_invocation_count(&self) -> Result<u64, String> {
