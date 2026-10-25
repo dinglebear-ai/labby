@@ -62,6 +62,13 @@ That means the client connects only to Labby:
 
 The client never connects directly to the upstreams once Labby is acting as the gateway.
 
+A catalog heartbeat timeout does not cancel an active upstream RPC. Automatic
+reconnection waits until that upstream's call admission gate is idle. The
+replacement holds that same gate so a new call cannot dispatch onto the peer
+being replaced. The failed heartbeat remains visible; unrelated upstream calls
+do not block recovery. Explicit operator lifecycle changes retain their own
+contracts.
+
 ## Configuration
 
 Upstream servers are configured in `config.toml` using `[[upstream]]` array entries.
