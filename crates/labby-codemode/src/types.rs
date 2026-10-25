@@ -591,6 +591,10 @@ pub struct CodeModeExecutedCall {
     /// Redacted/capped params captured at the broker boundary. Raw params must
     /// never be stored in this public trace type.
     pub params: Option<Value>,
+    /// SHA-256 of original JSON arguments before public trace redaction.
+    /// Host-only execution metadata: deliberately omitted from Serialize and
+    /// the public schema, even when trace parameters are enabled.
+    pub params_digest: Option<String>,
     /// Stable error kind when the brokered call failed.
     pub error_kind: Option<String>,
     /// Captured MCP Apps (mcp-ui) widget link for this specific tool call.

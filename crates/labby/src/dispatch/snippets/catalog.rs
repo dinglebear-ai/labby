@@ -229,6 +229,18 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Snippet name",
             },
             ParamSpec {
+                name: "body",
+                ty: "string",
+                required: false,
+                description: "Optional ephemeral caller-selected source; validated and executed with receipts without publishing it. Cannot combine with a saved-source preview guard.",
+            },
+            ParamSpec {
+                name: "source_format",
+                ty: "string",
+                required: false,
+                description: "Inline body format: markdown (default) or javascript for legacy bare .js source. Frontmatter declarations remain authoritative in either format.",
+            },
+            ParamSpec {
                 name: "params",
                 ty: "object",
                 required: false,

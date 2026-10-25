@@ -672,6 +672,7 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
                 "query": "bug",
                 "token": "[redacted]"
             })),
+            params_digest: None,
             error_kind: None,
             ui: None,
         }],

@@ -8,6 +8,7 @@ import {
   filterSnippets,
   inputPlaceholder,
   parseSnippetBody,
+  withSnippetDescription,
   sortSnippetsByName,
   tokenizeSnippetSource,
 } from './snippet-model'
@@ -168,4 +169,80 @@ test('buildSnippetParams coerces typed inputs and skips blanks', () => {
 test('nullable inputs accept explicit JSON null across declared types', () => {
   assert.deepEqual(buildSnippetParams({ host: { ty: 'string', nullable: true }, count: { ty: 'integer', nullable: true } }, { host: 'null', count: 'null' }), { ok: true, params: { host: null, count: null } })
   assert.deepEqual(buildSnippetParams({ host: { ty: 'string' } }, { host: 'null' }), { ok: true, params: { host: 'null' } })
+})
+
+test('typed inputs omit inherited prototype values while preserving explicitly supplied prototype names', () => {
+  const inputs = { toString: { ty: 'string' as const }, constructor: { ty: 'string' as const }, host: { ty: 'string' as const } }
+  assert.deepEqual(buildSnippetParams(inputs, { host: 'node' }), { ok: true, params: { host: 'node' } })
+  assert.deepEqual(buildSnippetParams(inputs, { toString: 'explicit', constructor: 'own' }), { ok: true, params: { toString: 'explicit', constructor: 'own' } })
+})
+
+
+test('description updates preserve literal replacement characters and CRLF metadata bytes', () => {
+  const body = '---\r\nname: example\r\ndescription: Original\r\ntools: []\r\n---\r\ncode'
+  assert.equal(withSnippetDescription(body, 'Literal $& value'), body.replace('Original', () => 'Literal $& value'))
+  const missing = '---\nname: example\ntools: []\n---\ncode'
+  assert.equal(withSnippetDescription(missing, 'Literal $& value'), '---\ndescription: Literal $& value\nname: example\ntools: []\n---\ncode')
+})
+
+test('description edits update every parser-accepted top-level field without touching nested descriptions', () => {
+  const declarations = [
+    ['description : Original', 'description : Updated'],
+    [' description: Original', ' description: Updated'],
+    ['\tdescription:\tOriginal', '\tdescription: Updated'],
+    ['\u0085description\u0085: Original', '\u0085description\u0085: Updated'],
+    ['description: Earlier\ndescription: Original', 'description: Updated\ndescription: Updated'],
+  ]
+  for (const [original, updated] of declarations) {
+    for (const newline of ['\n', '\r\n']) {
+      const body = ['---', 'name: example', original, 'tags: [kept]', 'inputs:',
+        '  count:', '    type: integer', '    description: Keep input description',
+        '---', '', '```js', 'async () => ({ok:true})', '```'].join('\n').replaceAll('\n', newline)
+      const expected = body.replace(original.replaceAll('\n', newline), updated.replaceAll('\n', newline))
+      assert.equal(withSnippetDescription(body, 'Updated'), expected)
+    }
+  }
+})
+
+test('description edits stay responsive with long unrelated metadata keys', async () => {
+  const { spawnSync } = await import('node:child_process')
+  const { resolve } = await import('node:path')
+  const { pathToFileURL } = await import('node:url')
+  const moduleUrl = pathToFileURL(resolve('components/snippets/snippet-model.ts')).href
+  // Run in a separate process so a synchronous regression cannot block the
+  // test runner's own timeout. This header fits the native snippet size limit.
+  const script = `
+    const { withSnippetDescription } = await import(${JSON.stringify(moduleUrl)});
+    const key = 'x' + ' '.repeat(500_000) + 'y';
+    const body = ['---', 'name: example', 'description: Original', key + ': ignored',
+      '---', '', '\x60\x60\x60js', 'async () => ({ok:true})', '\x60\x60\x60'].join('\\n');
+    const updated = withSnippetDescription(body, 'Updated');
+    if (!updated.includes('description: Updated') || !updated.includes(key + ': ignored'))
+      throw new Error('Description edit changed unrelated metadata');
+    console.log('complete');
+  `
+  const child = spawnSync(process.execPath,
+    ['--experimental-strip-types', '--input-type=module', '--eval', script],
+    { encoding: 'utf8', timeout: 10_000 })
+  assert.ifError(child.error)
+  assert.equal(child.status, 0, child.stderr)
+  assert.equal(child.stdout.trim(), 'complete')
+})
+
+test('explicit __proto__ inputs remain own JSON keys without changing the returned plain object prototype', () => {
+  for (const [ty, raw, expected] of [
+    ['string', 'explicit value', 'explicit value'],
+    ['object', '{"marker":"own object value"}', { marker: 'own object value' }],
+    ['json', 'null', null],
+  ] as const) {
+    const inputs = { ['__proto__']: { ty, nullable: true } }
+    const values = JSON.parse(JSON.stringify({ ['__proto__']: raw }))
+    const result = buildSnippetParams(inputs, values)
+    assert.equal(result.ok, true)
+    if (!result.ok) throw new Error('Expected valid explicit input')
+    assert.equal(Object.getPrototypeOf(result.params), Object.prototype)
+    assert.equal(Object.prototype.hasOwnProperty.call(result.params, '__proto__'), true)
+    assert.deepEqual(result.params['__proto__'], expected)
+    assert.equal(JSON.stringify(result.params), JSON.stringify({ ['__proto__']: expected }))
+  }
 })

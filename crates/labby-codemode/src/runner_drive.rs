@@ -186,6 +186,7 @@ type ToolCallFut<'a> = std::pin::Pin<
                     u64,
                     String,
                     Option<Value>,
+                    Option<String>,
                     Result<ToolCallOutcome, CodeModeCallError>,
                     u128,
                     u128,
@@ -977,6 +978,19 @@ fn classify_line_result(
 // Named arm helpers (free functions so they don't capture `self` lifetimes)
 // ---------------------------------------------------------------------------
 
+/// Capture original argument identity without retaining its payload in call metadata.
+fn original_argument_digest(params: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(params).expect("JSON Value serialization is infallible");
+    format!(
+        "sha256:{}",
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
 /// Enqueue a `ToolCall` request from the runner into `pending_tool_calls`.
 ///
 /// Free function (not `&self` method) so the returned future can capture
@@ -996,6 +1010,7 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
     let call_id = id.clone();
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
@@ -1026,7 +1041,15 @@ fn enqueue_tool_call<'a, H: CodeModeHost>(
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();
-        (seq, call_id, redacted_params, result, elapsed_ms, start_ms)
+        (
+            seq,
+            call_id,
+            redacted_params,
+            params_digest,
+            result,
+            elapsed_ms,
+            start_ms,
+        )
     }));
 }
 
@@ -1052,6 +1075,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
@@ -1077,6 +1101,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 seq,
                 id,
                 redacted_params,
+                params_digest,
                 Err(error),
                 call_start.elapsed().as_millis(),
                 start_ms,
@@ -1100,6 +1125,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         seq,
                         id,
                         redacted_params,
+                        params_digest,
                         Ok(ToolCallOutcome { value, ui: None }),
                         call_start.elapsed().as_millis(),
                         start_ms,
@@ -1112,6 +1138,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         seq,
                         id,
                         redacted_params,
+                        params_digest,
                         Err(error),
                         call_start.elapsed().as_millis(),
                         start_ms,
@@ -1154,6 +1181,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 seq,
                 id,
                 redacted_params,
+                params_digest,
                 Err(error),
                 call_start.elapsed().as_millis(),
                 start_ms,
@@ -1166,6 +1194,7 @@ fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             seq,
             id,
             redacted_params,
+            params_digest,
             result,
             call_start.elapsed().as_millis(),
             start_ms,
@@ -1236,10 +1265,11 @@ fn enqueue_rejected_tool_call(
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
 ) {
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
         let error = CodeModeCallError::from(err).with_tool(id.clone());
-        (seq, id, redacted_params, Err(error), 0, 0)
+        (seq, id, redacted_params, params_digest, Err(error), 0, 0)
     }));
 }
 
@@ -1260,6 +1290,7 @@ fn enqueue_internal_call_over_ceiling(
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
 ) {
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = super::trace::redact_trace_params(&params, cfg.trace_params);
     // Shape-aware: each reserved internal tool has its own "nothing found"
     // contract its sandbox-side caller already handles gracefully —
@@ -1279,6 +1310,7 @@ fn enqueue_internal_call_over_ceiling(
             seq,
             id,
             redacted_params,
+            params_digest,
             Ok(ToolCallOutcome {
                 value: fail_open_value,
                 ui: None,
@@ -1371,6 +1403,7 @@ async fn reject_tool_call_over_budget(
             elapsed_ms: 0,
             start_ms: None,
             params: None,
+            params_digest: None,
             error_kind: Some("call_budget_exceeded".to_string()),
             ui: None,
         },
@@ -1417,6 +1450,7 @@ async fn handle_completed_tool_call(
         u64,
         String,
         Option<Value>,
+        Option<String>,
         Result<ToolCallOutcome, CodeModeCallError>,
         u128,
         u128,
@@ -1428,7 +1462,7 @@ async fn handle_completed_tool_call(
     state: &mut DriveState,
     cfg: &RunnerConfig,
 ) -> Result<(), CodeModeExecutionError> {
-    let Some((seq, id, params, result, elapsed_ms, start_ms)) = completed else {
+    let Some((seq, id, params, params_digest, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
     // Reserved host-internal pseudo-tool calls never appear in the call
@@ -1496,6 +1530,7 @@ async fn handle_completed_tool_call(
                             elapsed_ms,
                             start_ms: Some(start_ms),
                             params,
+                            params_digest,
                             error_kind: Some("result_too_large".to_string()),
                             ui,
                         },
@@ -1512,6 +1547,7 @@ async fn handle_completed_tool_call(
                         elapsed_ms,
                         start_ms: Some(start_ms),
                         params,
+                        params_digest,
                         error_kind: None,
                         ui,
                     },
@@ -1561,6 +1597,7 @@ async fn handle_completed_tool_call(
                         elapsed_ms,
                         start_ms: Some(start_ms),
                         params,
+                        params_digest,
                         error_kind: Some(kind),
                         ui: None,
                     },

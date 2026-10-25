@@ -169,6 +169,7 @@ mod tests {
                 elapsed_ms: 1,
                 start_ms: None,
                 params: None,
+                params_digest: None,
                 error_kind: None,
                 ui: None,
             },

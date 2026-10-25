@@ -68,6 +68,30 @@ export function parseSnippetBody(body: string | null | undefined): ParsedSnippet
   return { frontmatter, tutorial, source, tools, servers }
 }
 
+/** Update only the top-level description, preserving the rest of an authored body. */
+export function withSnippetDescription(body: string, description: string): string {
+  if (!description.trim() || /[\r\n]/.test(description) || description.startsWith('"') || description.endsWith('"'))
+    throw new Error('Description must fit on one line without boundary quotes.')
+  const match = FRONTMATTER_RE.exec(body)
+  if (!match) return body // Bare source uses the create action's description field.
+  const newline = match[0].includes('\r\n') ? '\r\n' : '\n'
+  let found = false
+  // The native parser skips two-space-indented fields and lets the last
+  // top-level duplicate win. Update all accepted descriptions consistently.
+  const replaced = match[0].replace(/^[^\r\n]+/gm, line => {
+    const colon = line.indexOf(':')
+    if (line.startsWith('  ') || colon < 0) return line
+    // Rust trim accepts NEL; JavaScript trim needs it mapped explicitly.
+    const key = line.slice(0, colon).replaceAll('\u0085', ' ').trim()
+    if (key !== 'description') return line
+    found = true
+    return `${line.slice(0, colon + 1)} ${description}`
+  })
+  const header = found ? replaced
+    : replaced.replace(/^(---\r?\n)/, prefix => `${prefix}description: ${description}${newline}`)
+  return header + body.slice(match[0].length)
+}
+
 function extractToolIds(code: string): string[] {
   const ids: string[] = []
   CALL_TOOL_RE.lastIndex = 0
@@ -292,9 +316,9 @@ export function buildSnippetParams(
   inputs: Record<string, SnippetInputSpec> | undefined,
   values: Record<string, string> | undefined,
 ): SnippetParamsResult {
-  const params: Record<string, unknown> = {}
+  const params: Record<string, unknown> = Object.create(null)
   for (const [name, spec] of Object.entries(inputs ?? {})) {
-    const raw = (values?.[name] ?? '').trim()
+    const raw = (values && Object.prototype.hasOwnProperty.call(values, name) ? values[name] : '').trim()
     if (!raw) continue
     if (raw === 'null' && spec.nullable) {
       params[name] = null
@@ -343,5 +367,5 @@ export function buildSnippetParams(
         params[name] = raw
     }
   }
-  return { ok: true, params }
+  return { ok: true, params: Object.fromEntries(Object.entries(params)) }
 }

@@ -15,7 +15,7 @@ use inputs::parse_inputs_block;
 pub use validation::{frontmatter, validate_snippet_body, validate_snippet_code};
 use validation::{
     has_frontmatter, render_user_snippet_body, snippet_metadata_fields,
-    validate_snippet_body_structure,
+    validate_snippet_source_structure,
 };
 mod publication;
 #[cfg(test)]
@@ -57,8 +57,14 @@ pub fn wrap_snippet_with_input_bounded(
         message: format!("snippet params must be JSON-serializable: {e}"),
         param: "params".to_string(),
     })?;
+    // JSON object literals give __proto__ special prototype-setting semantics.
+    // Parse quoted JSON instead so every caller key remains ordinary data.
+    let input = serde_json::to_string(&input).map_err(|e| ToolError::InvalidParam {
+        message: format!("snippet params must be JSON-serializable: {e}"),
+        param: "params".to_string(),
+    })?;
     let wrapped = format!(
-        "async () => {{\n  const __labSnippetInput = {input};\n  return await ({code})(__labSnippetInput);\n}}"
+        "async () => {{\n  const __labSnippetInput = JSON.parse({input});\n  return await (\n{code}\n)(__labSnippetInput);\n}}"
     );
     if wrapped.len() > max_source_bytes {
         return Err(ToolError::InvalidParam {
@@ -147,14 +153,16 @@ pub fn extract_javascript_block(source: &str) -> Result<String, ToolError> {
 
 /// Resolve and validate the executable JavaScript source for a snippet.
 pub fn code_for_snippet(snippet: &ResolvedSnippet) -> Result<String, ToolError> {
-    let code = if snippet
+    let code = if has_frontmatter(&snippet.body) {
+        extract_javascript_block(&snippet.body)?
+    } else if snippet
         .path
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext == "js")
     {
         snippet.body.clone()
-    } else if has_frontmatter(&snippet.body) || snippet.body.contains("```") {
+    } else if snippet.body.contains("```") {
         extract_javascript_block(&snippet.body)?
     } else {
         snippet.body.trim().to_string()
@@ -382,8 +390,13 @@ fn collect_snippets(
             }
             continue;
         }
+        let format = if path.extension().and_then(|extension| extension.to_str()) == Some("js") {
+            SnippetSourceFormat::JavaScript
+        } else {
+            SnippetSourceFormat::Markdown
+        };
         let metadata =
-            read_snippet_body(&path).and_then(|body| cache::metadata(stem, &body, source));
+            read_snippet_body(&path).and_then(|body| cache::metadata(stem, &body, source, format));
         let (description, tags, inputs, tools, content_digest) = match metadata {
             Ok(metadata) => metadata,
             Err(error) => {
@@ -456,14 +469,50 @@ fn read_resolved(
     path: PathBuf,
 ) -> Result<ResolvedSnippet, ToolError> {
     let body = read_snippet_body(&path)?;
+    let format = if path.extension().and_then(|extension| extension.to_str()) == Some("js") {
+        SnippetSourceFormat::JavaScript
+    } else {
+        SnippetSourceFormat::Markdown
+    };
+    resolved_from_body(name, source, path, body, format)
+}
+
+/// Resolve inline source without reading or publishing any file. Resolution
+/// checks metadata and byte limits; `code_for_snippet` performs the single
+/// authoritative JavaScript parse before execution, just as for saved files.
+pub fn resolve_inline_snippet(
+    name: &str,
+    body: &str,
+    format: SnippetSourceFormat,
+) -> Result<ResolvedSnippet, ToolError> {
+    validate_snippet_name(name)?;
+    let extension = match format {
+        SnippetSourceFormat::Markdown => "md",
+        SnippetSourceFormat::JavaScript => "js",
+    };
+    resolved_from_body(
+        name,
+        SnippetSource::User,
+        PathBuf::from(format!("{name}.{extension}")),
+        body.to_owned(),
+        format,
+    )
+}
+
+fn resolved_from_body(
+    name: &str,
+    source: SnippetSource,
+    path: PathBuf,
+    body: String,
+    format: SnippetSourceFormat,
+) -> Result<ResolvedSnippet, ToolError> {
     // Resolution is a host-side lookup, not a second execution validator. Keep
     // the file/frontmatter/size contract here, then let code_for_snippet() do
     // the single authoritative Javy parse immediately before execution (or an
     // explicit existing-snippet validation). This avoids compiling the same
     // saved program twice per invocation.
-    validate_snippet_body_structure(name, &body)?;
-    let (description, tags, inputs, tools) =
-        snippet_metadata_fields(frontmatter(&body)?.filter(|m| m.name == name));
+    let metadata = validate_snippet_source_structure(name, &body, format)?;
+    let (description, tags, inputs, tools) = snippet_metadata_fields(metadata);
     Ok(ResolvedSnippet {
         content_digest: Some(cache::digest(&body)),
         tools,

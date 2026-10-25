@@ -29,6 +29,10 @@ struct CreateParams {
 #[derive(Debug, Deserialize)]
 struct ExecParams {
     name: Option<String>,
+    /// Ephemeral local source submitted to a selected daemon; never published.
+    body: Option<String>,
+    #[serde(default)]
+    source_format: super::store::SnippetSourceFormat,
     #[serde(default)]
     params: Value,
     expected_preview_fingerprint: Option<String>,
@@ -54,6 +58,9 @@ struct PromoteParams {
 #[derive(Debug, Clone)]
 pub struct SnippetDispatchContext {
     pub actor_key: Option<String>,
+    /// Verified initiating principal, separate from the upstream OAuth subject.
+    /// Optional actor telemetry and shared team credentials cannot own receipts.
+    pub authenticated_principal: Option<String>,
     pub is_admin: bool,
     pub route_scope: String,
     pub capability_filter_fingerprint: String,
@@ -78,6 +85,7 @@ impl SnippetDispatchContext {
     pub fn trusted_local() -> Self {
         Self {
             actor_key: None,
+            authenticated_principal: None,
             is_admin: true,
             route_scope: "root".to_string(),
             capability_filter_fingerprint: ToolScope::default().fingerprint(),
@@ -85,6 +93,24 @@ impl SnippetDispatchContext {
             execution_caller: CodeModeCaller::TrustedLocal,
             execution_surface: CodeModeSurface::Cli,
         }
+    }
+
+    /// Scoped execution must retain the verified caller even without actor telemetry.
+    pub fn validate_principal(&self) -> Result<(), ToolError> {
+        if matches!(
+            self.execution_caller.without_authority(),
+            CodeModeCaller::TrustedLocal
+        ) || self
+            .authenticated_principal
+            .as_deref()
+            .is_some_and(|principal| !principal.trim().is_empty())
+        {
+            return Ok(());
+        }
+        Err(ToolError::Forbidden {
+            message: "Scoped snippet requests require an authenticated initiating principal".into(),
+            required_scopes: Vec::new(),
+        })
     }
 }
 
@@ -144,6 +170,11 @@ async fn dispatch_inner(
     dispatch_context: Option<SnippetDispatchContext>,
     source_limit_override: Option<usize>,
 ) -> Result<Value, ToolError> {
+    if requires_execution_context(action)
+        && let Some(context) = &dispatch_context
+    {
+        context.validate_principal()?;
+    }
     let execution_scope = dispatch_context
         .as_ref()
         .map(|context| context.execution_scope.clone())
@@ -197,14 +228,20 @@ async fn dispatch_inner(
         }
         "snippets.create" => {
             let params: CreateParams = parse_params(params)?;
-            to_json(create_user_snippet_checked(
-                &lab_home(),
-                &params.name,
-                &params.body,
-                params.description.as_deref(),
-                params.force,
-                params.expected_digest.as_deref(),
-            )?)
+            let home = lab_home();
+            to_json(
+                publication(move || {
+                    create_user_snippet_checked(
+                        &home,
+                        &params.name,
+                        &params.body,
+                        params.description.as_deref(),
+                        params.force,
+                        params.expected_digest.as_deref(),
+                    )
+                })
+                .await?,
+            )
         }
         "snippets.promote" => {
             let params: PromoteParams = parse_params(params)?;
@@ -215,18 +252,43 @@ async fn dispatch_inner(
             validate_snippet(params.name.as_deref(), params.body.as_deref())
         }
         "snippets.remove" => {
-            let name = require_str(&params, "name")?;
-            to_json(remove_user_snippet(
-                &lab_home(),
-                &builtin_snippet_dir(),
-                &name,
-            )?)
+            let name = require_str(&params, "name")?.to_owned();
+            let home = lab_home();
+            let builtins = builtin_snippet_dir();
+            to_json(publication(move || remove_user_snippet(&home, &builtins, &name)).await?)
         }
         "snippets.exec" => {
             let params: ExecParams = parse_params(params)?;
             let Some(name) = params.name else {
                 return Err(missing_param("missing required parameter `name`", "name"));
             };
+            if let Some(body) = params.body {
+                if params.expected_preview_fingerprint.is_some() {
+                    return Err(ToolError::InvalidParam {
+                        message: "an inline source cannot use a saved-source preview guard".into(),
+                        param: "expected_preview_fingerprint".into(),
+                    });
+                }
+                let manager = manager.ok_or_else(|| {
+                    ToolError::internal_message("inline snippet execution requires a gateway")
+                })?;
+                let context =
+                    dispatch_context.unwrap_or_else(SnippetDispatchContext::trusted_local);
+                let prepared = super::preview::prepare_source(
+                    manager,
+                    &name,
+                    body,
+                    params.source_format,
+                    params.params,
+                    &context,
+                )
+                .await?;
+                let outcome =
+                    super::execution::execute_prepared_outcome(manager, prepared, &context).await?;
+                let mut response = to_json(outcome.display_response)?;
+                response["receipt_status"] = json!(outcome.receipt_status);
+                return Ok(response);
+            }
             if let Some(expected) = params.expected_preview_fingerprint {
                 return super::preview::guarded_exec(
                     manager,
@@ -271,6 +333,18 @@ async fn dispatch_inner(
     }
 }
 
+// Publication may wait for another process's advisory lock. Keep that bounded
+// synchronous wait off the async executor on every mutation surface.
+async fn publication<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
+) -> Result<T, ToolError> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .map_err(|error| {
+            ToolError::internal_message(format!("snippet publication worker failed: {error}"))
+        })?
+}
+
 async fn promote_snippet(
     manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
     params: PromoteParams,
@@ -293,15 +367,21 @@ async fn promote_snippet(
             },
         )
         .await?;
-    let info = create_promoted_user_snippet(
-        &lab_home(),
-        &builtin_snippet_dir(),
-        &params.name,
-        &source.code,
-        params.description.as_deref(),
-        params.force,
-        params.shadow_builtin,
-    )?;
+    let home = lab_home();
+    let builtins = builtin_snippet_dir();
+    let code = source.code.clone();
+    let info = publication(move || {
+        create_promoted_user_snippet(
+            &home,
+            &builtins,
+            &params.name,
+            &code,
+            params.description.as_deref(),
+            params.force,
+            params.shadow_builtin,
+        )
+    })
+    .await?;
     to_json(json!({
         "execution_id": source.execution_id,
         "source": {

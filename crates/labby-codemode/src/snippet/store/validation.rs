@@ -21,13 +21,22 @@ pub(super) fn snippet_metadata_fields(
 }
 
 pub(super) fn validate_snippet_body_structure(name: &str, body: &str) -> Result<(), ToolError> {
+    validate_snippet_source_structure(name, body, SnippetSourceFormat::Markdown).map(|_| ())
+}
+
+pub(super) fn validate_snippet_source_structure(
+    name: &str,
+    body: &str,
+    format: SnippetSourceFormat,
+) -> Result<Option<SnippetFrontmatter>, ToolError> {
     if body.len() > MAX_SNIPPET_FILE_BYTES {
         return Err(ToolError::InvalidParam {
             message: format!("snippet file exceeds {MAX_SNIPPET_FILE_BYTES} bytes"),
             param: "body".to_string(),
         });
     }
-    if let Some(metadata) = frontmatter(body)? {
+    let metadata = frontmatter(body)?;
+    if let Some(metadata) = &metadata {
         if metadata.name != name {
             return Err(ToolError::InvalidParam {
                 message: format!(
@@ -38,18 +47,19 @@ pub(super) fn validate_snippet_body_structure(name: &str, body: &str) -> Result<
             });
         }
     }
-    let code = if has_frontmatter(body) || body.contains("```") {
-        extract_javascript_block(body)?
-    } else {
-        body.trim().to_string()
-    };
+    let code =
+        if metadata.is_some() || format == SnippetSourceFormat::Markdown && body.contains("```") {
+            extract_javascript_block(body)?
+        } else {
+            body.trim().to_string()
+        };
     if code.len() > MAX_SNIPPET_CODE_BYTES {
         return Err(ToolError::InvalidParam {
             message: format!("snippet code exceeds {MAX_SNIPPET_CODE_BYTES} bytes"),
             param: "body".to_string(),
         });
     }
-    Ok(())
+    Ok(metadata)
 }
 
 /// Validate snippet source size, syntax, and frontmatter/name consistency.

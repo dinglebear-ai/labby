@@ -16,7 +16,7 @@ use crate::mcp::context::auth_context_from_extensions;
 use crate::mcp::envelope::build_error;
 use crate::mcp::error::DispatchError;
 use crate::mcp::result_format::{
-    error_result_from_envelope, estimate_tokens_args, format_dispatch_result,
+    error_result_from_envelope, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -78,7 +78,19 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope));
         };
 
+        // A captured namespace ceiling does not establish that its team binding
+        // is still current. Match the generic Code Mode execution gate.
+        if !self.route_team_credentials_current().await {
+            return Ok(error_result_from_envelope(build_error(
+                service,
+                action,
+                "forbidden",
+                "Gateway credential is unavailable",
+            )));
+        }
+
         let auth = auth_context_from_extensions(&context.extensions);
+        let authenticated_principal = self.request_subject(context).map(ToOwned::to_owned);
         let execution_scope = execution_scope_for_route(&self.route_scope);
         let capability_filter_fingerprint = execution_scope.fingerprint();
         let sub = self
@@ -94,6 +106,7 @@ impl LabMcpServer {
             execution_caller_for_mcp(auth.map(|auth| auth.scopes.as_slice()), sub, host_provider);
         let dispatch_context = crate::dispatch::snippets::dispatch::SnippetDispatchContext {
             actor_key: actor_key.map(ToOwned::to_owned),
+            authenticated_principal,
             is_admin: auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin")),
             route_scope: self.route_scope.label(),
             capability_filter_fingerprint,
@@ -108,11 +121,17 @@ impl LabMcpServer {
             params,
             Some(dispatch_context),
         )
-        .await
-        .map_err(|te| anyhow::Error::from(DispatchError::from(te)));
+        .await;
+        // Keep receipt identity and refined recovery metadata before the legacy
+        // logging formatter erases ToolError's additive contract fields.
+        let error_envelope = result
+            .as_ref()
+            .err()
+            .map(|error| tool_error_envelope(service, action, error));
+        let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
         let elapsed_ms = start.elapsed().as_millis();
         let input_tokens = estimate_tokens_args(args);
-        let (result, outcome) = format_dispatch_result(
+        let (mut result, outcome) = format_dispatch_result(
             result,
             service,
             action,
@@ -121,6 +140,9 @@ impl LabMcpServer {
             actor_key,
             input_tokens,
         );
+        if let Some(envelope) = error_envelope {
+            result = error_result_from_envelope(envelope);
+        }
         self.emit_dispatch_notification(context, service, action, elapsed_ms, outcome)
             .await;
         Ok(result)
