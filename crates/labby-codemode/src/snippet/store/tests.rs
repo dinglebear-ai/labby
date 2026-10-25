@@ -27,6 +27,31 @@ fn generated_frontmatter_description_is_single_line() {
 }
 
 #[test]
+fn frontmatter_description_accepts_whitespace_and_uses_last_top_level_value() {
+    for declaration in [
+        "description : Original",
+        " description: Original",
+        "\tdescription:\tOriginal",
+        "\u{85}description\u{85}: Original",
+        "description: Earlier\ndescription: Original",
+    ] {
+        for newline in ["\n", "\r\n"] {
+            let body = format!(
+                "---\nname: demo\n{declaration}\ntags: [kept]\ninputs:\n  count:\n    type: integer\n    description: Keep input description\n---\n\n```js\nasync () => ({{ ok: true }})\n```\n"
+            )
+            .replace('\n', newline);
+            let metadata = frontmatter(&body).unwrap().unwrap();
+            assert_eq!(metadata.description, "Original", "{declaration:?}");
+            assert_eq!(metadata.tags, ["kept"]);
+            assert_eq!(
+                metadata.inputs["count"].description.as_deref(),
+                Some("Keep input description")
+            );
+        }
+    }
+}
+
+#[test]
 fn frontmatter_requires_exact_closing_delimiter_line() {
     let body = "---\nname: demo\ndescription: Demo snippet\n--- trailing\n\n```js\nasync () => ({ ok: true })\n```\n";
 
