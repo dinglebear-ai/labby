@@ -131,7 +131,9 @@ async fn ensure_action_fixture(
             "/v1/snippets",
             "snippets.create",
             serde_json::json!({
-                "name":"matrix-owned","body":"async () => ({ ok: true })","force":true
+                "name":"matrix-owned",
+                "body":action_scenarios::fixtures()["snippets"].parameters["body"].clone(),
+                "force":true
             }),
         ))
     } else {
@@ -585,8 +587,8 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .env("LABBY_E2E_DETERMINISTIC_EXECUTORS", "1")
             .existing_root(owned_root.path())
-            // The action matrix seeds deliberately unreachable upstreams. Pure
-            // snippet execution must retain the raw-mode catalog contract.
+            // The matrix seeds unreachable upstreams. Its pure snippet declares
+            // tools: [] so native execution needs no catalog probes in raw mode.
             .config(format!("[workspace]\nroot = {:?}\n[code_mode]\nenabled = false\n", workspace))
             .start()
             .await
