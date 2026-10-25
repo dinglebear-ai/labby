@@ -117,6 +117,7 @@ pub(super) fn isolated(name: &str, future: impl Future<Output = ()>) {
 pub(super) async fn client_fixture(
     authentication: serde_json::Value,
 ) -> (
+    tempfile::TempDir,
     MockServer,
     SqliteStore,
     UpstreamConfig,
@@ -133,7 +134,8 @@ pub(super) async fn client_fixture(
     let config:UpstreamConfig=serde_json::from_value(serde_json::json!({"name":"machine","url":format!("{}/mcp",server.uri()),"oauth":{
         "mode":{"client_credentials":{"authentication":authentication}},"registration":{"strategy":"preregistered","client_id":"machine-client","client_secret_env":"LABBY_MACHINE_GRANT_FIXTURE_SECRET"},"scopes":["read"]
     }})).unwrap();
-    let sqlite = SqliteStore::open(tempfile::tempdir().unwrap().keep().join("auth.db"))
+    let directory = tempfile::tempdir().unwrap();
+    let sqlite = SqliteStore::open(directory.path().join("auth.db"))
         .await
         .unwrap();
     let key = load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap();
@@ -149,6 +151,7 @@ pub(super) async fn client_fixture(
         ),
     );
     (
+        directory,
         server,
         sqlite,
         config,
@@ -174,7 +177,8 @@ fn private_key_jwt_uses_a_signed_registered_client_assertion() {
                 if let Some(audience) = audience {
                     authentication["private_key_jwt"]["token_endpoint_audience"] = audience.into();
                 }
-                let (server, _, config, cache, _, _) = client_fixture(authentication).await;
+                let (_directory, server, _, config, cache, _, _) =
+                    client_fixture(authentication).await;
                 access_response(&server).await;
                 let client = cache.get_or_build(&config, "caller").await.unwrap();
                 assert_eq!(client.get_access_token().await.unwrap(), "machine-access");
@@ -225,7 +229,7 @@ fn machine_grant_rejection_deletes_only_current_authority_and_fails_closed() {
     isolated(
         "machine_grant_rejection_deletes_only_current_authority_and_fails_closed",
         async {
-            let (server, _, config, cache, credentials, _) =
+            let (_directory, server, _, config, cache, credentials, _) =
                 client_fixture(serde_json::json!("client_secret")).await;
             access_response(&server).await;
             let client = cache.get_or_build(&config, "caller").await.unwrap();
@@ -250,7 +254,7 @@ fn changed_grant_policy_cannot_reuse_old_cached_authority() {
     isolated(
         "changed_grant_policy_cannot_reuse_old_cached_authority",
         async {
-            let (server, sqlite, config, cache, credentials, managers) =
+            let (_directory, server, sqlite, config, cache, credentials, managers) =
                 client_fixture(serde_json::json!("client_secret")).await;
             access_response(&server).await;
             let _before = cache.get_or_build(&config, "caller").await.unwrap();
@@ -312,7 +316,8 @@ async fn enterprise_exchange(kind: &str, wrong_resource: bool) {
             "subject_token":{"token_env":"LABBY_MACHINE_GRANT_FIXTURE_SUBJECT","kind":kind},"resource_authentication":"client_secret_basic"}},
         "registration":{"strategy":"preregistered","client_id":"machine-client","client_secret_env":"LABBY_MACHINE_GRANT_FIXTURE_SECRET"},"scopes":["read"]
     }})).unwrap();
-    let sqlite = SqliteStore::open(tempfile::tempdir().unwrap().keep().join("auth.db"))
+    let directory = tempfile::tempdir().unwrap();
+    let sqlite = SqliteStore::open(directory.path().join("auth.db"))
         .await
         .unwrap();
     let managers = Arc::new(dashmap::DashMap::new());
@@ -427,7 +432,7 @@ fn private_key_jwt_audience_replacement_cannot_reuse_cached_or_persisted_authori
     isolated(
         "private_key_jwt_audience_replacement_cannot_reuse_cached_or_persisted_authority",
         async {
-            let (server, sqlite, config, cache, _, managers) = client_fixture(serde_json::json!({"private_key_jwt":{"signing_key_env":"LABBY_MACHINE_GRANT_FIXTURE_KEY","algorithm":"RS256"}})).await;
+            let (_directory, server, sqlite, config, cache, _, managers) = client_fixture(serde_json::json!({"private_key_jwt":{"signing_key_env":"LABBY_MACHINE_GRANT_FIXTURE_KEY","algorithm":"RS256"}})).await;
             access_response(&server).await;
             cache.get_or_build(&config, "caller").await.unwrap();
             let mut changed = serde_json::to_value(&config).unwrap();
@@ -480,4 +485,28 @@ fn private_key_jwt_audience_validation_accepts_identifiers_and_rejects_unsafe_va
             "audience validation must preserve opaque identifiers and reject blank, padded or control-bearing values"
         );
     }
+}
+
+#[tokio::test]
+async fn oauth_fixture_removes_database_directory_after_its_owners_drop() {
+    const CHILD: &str = "LABBY_OAUTH_FIXTURE_CLEANUP_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        let (_directory, _server, _sqlite, _config, _cache, _credentials, _managers) =
+            client_fixture(serde_json::json!("client_secret")).await;
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "upstream::machine_grant_tests::oauth_fixture_removes_database_directory_after_its_owners_drop", "--nocapture"])
+        .env(CHILD, "1")
+        .env("TMPDIR", root.path())
+        .env("TMP", root.path())
+        .env("TEMP", root.path())
+        .status().unwrap();
+    assert!(status.success(), "isolated fixture must complete");
+    assert_eq!(
+        std::fs::read_dir(root.path()).unwrap().count(),
+        0,
+        "OAuth fixture must clean up its database directory"
+    );
 }

@@ -3,7 +3,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use futures::FutureExt;
+
 use super::UpstreamPool;
+
+pub(super) type OAuthInvalidationDrain =
+    futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OAuthSessionInvalidation {
@@ -27,41 +32,62 @@ impl UpstreamPool {
         let Some(cache) = &self.oauth_client_cache else {
             return;
         };
-        if !cache.has_pending_invalidations() {
-            return;
-        }
-        // The lifecycle writer owns a complete invalidation even if the RPC
-        // waiting for this boundary is cancelled while a registry lock is busy.
-        let pool = self.clone();
-        let cache = cache.clone();
-        let drain = tokio::spawn(async move {
-            let barrier = Arc::clone(&pool.oauth_invalidation_barrier)
-                .write_owned()
-                .await;
-            let victims = cache.take_pending_invalidations();
-            for event in victims {
-                if !event.is_current() {
-                    continue;
+        loop {
+            let drain = {
+                let mut owner = self.oauth_invalidation_drain.lock().await;
+                if owner.as_ref().is_some_and(|drain| drain.peek().is_some()) {
+                    *owner = None;
                 }
-                if let Some(subject) = event.subject {
-                    pool.invalidate_oauth_subject_sessions_guarded(
-                        &event.upstream,
-                        &subject,
-                        "oauth.client_cache.invalidate",
-                    )
-                    .await;
+                if let Some(drain) = owner.as_ref() {
+                    drain.clone()
                 } else {
-                    pool.invalidate_oauth_upstream_sessions_guarded(
-                        &[event.upstream],
-                        "oauth.refresh.rejected",
-                    )
-                    .await;
+                    if !cache.has_pending_invalidations() {
+                        return;
+                    }
+                    // Claim ownership before spawning. Cancellation drops only
+                    // this caller's shared wait, never the owned lifecycle work.
+                    let pool = self.clone();
+                    let cache = cache.clone();
+                    let task = tokio::spawn(async move {
+                        let _barrier = Arc::clone(&pool.oauth_invalidation_barrier)
+                            .write_owned()
+                            .await;
+                        while cache.has_pending_invalidations() {
+                            for event in cache.take_pending_invalidations() {
+                                if !event.is_current() {
+                                    continue;
+                                }
+                                if let Some(subject) = event.subject {
+                                    pool.invalidate_oauth_subject_sessions_guarded(
+                                        &event.upstream,
+                                        &subject,
+                                        "oauth.client_cache.invalidate",
+                                    )
+                                    .await;
+                                } else {
+                                    pool.invalidate_oauth_upstream_sessions_guarded(
+                                        &[event.upstream],
+                                        "oauth.refresh.rejected",
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                    });
+                    let drain = async move {
+                        if let Err(error) = task.await {
+                            tracing::warn!(error = %error, "OAuth lifecycle invalidation task failed");
+                        }
+                    }
+                    .boxed()
+                    .shared();
+                    *owner = Some(drain.clone());
+                    drain
                 }
-            }
-            drop(barrier);
-        });
-        if let Err(error) = drain.await {
-            tracing::warn!(error = %error, "OAuth lifecycle invalidation task failed");
+            };
+            drain.await;
+            // Recheck the queue after completion: an event may have arrived
+            // after the worker's final snapshot while this caller was waiting.
         }
     }
 
@@ -358,6 +384,46 @@ mod rejection_tests {
         .await
         .expect("next boundary drains");
         assert!(!pool.connections.read().await.contains_key("alpha"));
+        assert!(!cache.has_pending_invalidations());
+    }
+
+    #[tokio::test]
+    async fn cancelled_boundaries_share_one_owned_drain() {
+        let (pool, cache) = fixture().await;
+        let pool = Arc::new(pool);
+        let callback = cache
+            .refresh_rejection_handler(&named_test_upstream_config("alpha"), "alice")
+            .await
+            .expect("rejection handler");
+        let epoch = cache.lifecycle_epoch_for("alpha", "alice");
+        callback(None);
+        let writer = cache.invalidation_barrier().write_owned().await;
+        let baseline = Arc::strong_count(&pool.connections);
+        for _ in 0..32 {
+            let (started, waiting) = tokio::sync::oneshot::channel();
+            let caller_pool = Arc::clone(&pool);
+            let caller = tokio::spawn(async move {
+                let _ = started.send(());
+                caller_pool.drain_oauth_client_capacity_evictions().await;
+            });
+            waiting.await.expect("caller polls to held writer");
+            caller.abort();
+            assert!(caller.await.expect_err("caller cancelled").is_cancelled());
+        }
+        // Each detached worker owns a pool clone. Cancelled callers must leave
+        // only one worker retaining the live connection registry.
+        assert_eq!(Arc::strong_count(&pool.connections), baseline + 1);
+        assert!(epoch.is_current());
+        drop(writer);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while pool.connections.read().await.contains_key("alpha") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("shared worker completes without any surviving caller");
+        assert!(!epoch.is_current());
+        assert!(pool.connections.read().await.contains_key("beta"));
         assert!(!cache.has_pending_invalidations());
     }
 

@@ -27,15 +27,17 @@ fn credentials(access: &str) -> StoredCredentials {
     StoredCredentials::new("client".into(), Some(token), vec!["openid".into()], Some(1))
 }
 
-async fn database() -> SqliteStore {
-    SqliteStore::open_with_key(
-        tempfile::tempdir().unwrap().keep().join("auth.db"),
+async fn database() -> (tempfile::TempDir, SqliteStore) {
+    let directory = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open_with_key(
+        directory.path().join("auth.db"),
         Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
             "refresh-tests",
         )),
     )
     .await
-    .unwrap()
+    .unwrap();
+    (directory, store)
 }
 
 fn ordinary(store: &SqliteStore) -> SqliteCredentialStore {
@@ -107,7 +109,7 @@ async fn manager(uri: &str, store: impl CredentialStore + 'static) -> Authorizat
 }
 
 async fn refresh_racing_identity_change(replace: bool) {
-    let db = database().await;
+    let (_directory, db) = database().await;
     ordinary(&db)
         .save(credentials("initial-access"))
         .await
@@ -169,7 +171,7 @@ async fn ordinary_refresh_cannot_overwrite_reauthorized_identity_with_identical_
 
 #[tokio::test]
 async fn existing_ordinary_credential_refreshes_without_schema_migration() {
-    let db = database().await;
+    let (_directory, db) = database().await;
     ordinary(&db)
         .save(credentials("initial-access"))
         .await
@@ -203,7 +205,7 @@ async fn existing_ordinary_credential_refreshes_without_schema_migration() {
 
 #[tokio::test]
 async fn google_refresh_operation_guard_is_distinct_from_persistence_lock() {
-    let db = database().await;
+    let (_directory, db) = database().await;
     db.upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
         subject: "account".into(),
         email: Some("operator@example.com".into()),
@@ -268,7 +270,7 @@ async fn google_refresh_operation_guard_is_distinct_from_persistence_lock() {
 }
 
 async fn rejected_refresh(replace: bool) {
-    let db = database().await;
+    let (_directory, db) = database().await;
     ordinary(&db)
         .save(credentials("initial-access"))
         .await
@@ -392,8 +394,9 @@ async fn initial_scopes(
     let upstream = serde_json::from_value(serde_json::json!({"name":"scope-tests","url":format!("{}/mcp",server.uri()),"oauth":{
         "mode":"authorization_code_pkce","registration":{"strategy":"preregistered","client_id":"client"},"scopes":configured
     }})).unwrap();
+    let (_directory, db) = database().await;
     let manager = super::manager::UpstreamOauthManager::new(
-        database().await,
+        db,
         load_key("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=").unwrap(),
         upstream,
         "http://127.0.0.1/callback".into(),

@@ -6,13 +6,23 @@ use wiremock::{
     matchers::{method, path},
 };
 
-async fn fixture() -> (UpstreamOauthManager, MockServer, SqliteStore) {
+async fn fixture() -> (
+    tempfile::TempDir,
+    UpstreamOauthManager,
+    MockServer,
+    SqliteStore,
+) {
     fixture_with_token_scope(Some("read files:write")).await
 }
 
 async fn fixture_with_token_scope(
     token_scope: Option<&str>,
-) -> (UpstreamOauthManager, MockServer, SqliteStore) {
+) -> (
+    tempfile::TempDir,
+    UpstreamOauthManager,
+    MockServer,
+    SqliteStore,
+) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/mcp"))
@@ -47,8 +57,9 @@ async fn fixture_with_token_scope(
         .respond_with(ResponseTemplate::new(200).set_body_json(token_response))
         .mount(&server)
         .await;
+    let directory = tempfile::tempdir().unwrap();
     let db = SqliteStore::open_with_key(
-        tempfile::tempdir().unwrap().keep().join("auth.db"),
+        directory.path().join("auth.db"),
         Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
             "scope-tests",
         )),
@@ -60,6 +71,7 @@ async fn fixture_with_token_scope(
     let config = serde_json::from_value(serde_json::json!({"name":"scoped","url":format!("{}/mcp",server.uri()),
             "oauth":{"mode":"authorization_code_pkce","registration":{"strategy":"preregistered","client_id":"client"},"scopes":["read"]}})).unwrap();
     (
+        directory,
         UpstreamOauthManager::new(db.clone(), key, config, "http://127.0.0.1/callback".into()),
         server,
         db,
@@ -77,7 +89,7 @@ fn query(url: &str, key: &str) -> String {
 
 #[tokio::test]
 async fn observed_scope_upgrade_uses_subject_bound_persisted_pkce_and_callback() {
-    let (manager, _server, db) = fixture().await;
+    let (_directory, manager, _server, db) = fixture().await;
     let existing = SqliteCredentialStore::new(db.clone(), manager.key.clone(), "scoped", "alice");
     CredentialStore::save(&existing, serde_json::from_value(serde_json::json!({
             "client_id":"client", "token_response":{"access_token":"existing-access", "token_type":"Bearer", "expires_in":3600},
@@ -134,7 +146,7 @@ async fn observed_scope_upgrade_uses_subject_bound_persisted_pkce_and_callback()
 
 #[tokio::test]
 async fn observed_scope_upgrade_attempts_remain_bounded_across_fresh_sdk_managers() {
-    let (manager, _server, _) = fixture().await;
+    let (_directory, manager, _server, _) = fixture().await;
     manager.record_scope_challenge("alice", "files:write");
     for _ in 0..3 {
         manager.begin_authorization("alice").await.unwrap();
@@ -211,7 +223,7 @@ fn scope_challenge_parser_rejects_ambiguous_and_injected_parameters() {
 
 #[tokio::test]
 async fn newer_challenge_survives_an_earlier_consents_callback() {
-    let (manager, _server, _) = fixture().await;
+    let (_directory, manager, _server, _) = fixture().await;
     manager.record_scope_challenge("alice", "files:write");
     let consent = manager.begin_authorization("alice").await.unwrap();
     manager.record_scope_challenge("alice", "admin");
@@ -228,7 +240,7 @@ async fn newer_challenge_survives_an_earlier_consents_callback() {
 
 #[tokio::test]
 async fn scope_challenge_registry_bounds_subjects_and_permission_input() {
-    let (manager, _server, _) = fixture().await;
+    let (_directory, manager, _server, _) = fixture().await;
     manager.record_scope_challenge("alice", &"x".repeat(MAX_SCOPE_BYTES + 1));
     manager.record_scope_challenge("alice", "read\nadmin");
     let too_many = (0..=MAX_SCOPES)
@@ -312,7 +324,7 @@ impl StateStore for PausedState {
 #[tokio::test]
 async fn changed_authority_during_pkce_save_cannot_publish_scope_consent() {
     drop(rustls::crypto::ring::default_provider().install_default());
-    let (manager, server, db) = fixture().await;
+    let (_directory, manager, server, db) = fixture().await;
     let cache = crate::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
     manager.record_scope_challenge_with_epoch(
         "alice",
@@ -365,7 +377,7 @@ async fn changed_authority_during_pkce_save_cannot_publish_scope_consent() {
 
 #[tokio::test]
 async fn scope_handoff_survives_status_pruning() {
-    let (manager, _server, _) = fixture_with_token_scope(Some("read")).await;
+    let (_directory, manager, _server, _) = fixture_with_token_scope(Some("read")).await;
     let cache = crate::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
     manager.record_scope_challenge_with_epoch(
         "alice",
@@ -407,7 +419,7 @@ async fn scope_handoff_survives_status_pruning() {
 
 #[tokio::test]
 async fn narrowed_callback_grant_preserves_required_scope_and_attempt_budget() {
-    let (manager, _server, _) = fixture_with_token_scope(Some("read")).await;
+    let (_directory, manager, _server, _) = fixture_with_token_scope(Some("read")).await;
     manager.record_scope_challenge("alice", "files:write");
     for _ in 0..3 {
         let begin = manager.begin_authorization("alice").await.unwrap();
@@ -443,7 +455,7 @@ async fn narrowed_callback_grant_preserves_required_scope_and_attempt_budget() {
 
 #[tokio::test]
 async fn omitted_token_scope_uses_the_requested_grant_for_scope_completion() {
-    let (manager, _server, _) = fixture_with_token_scope(None).await;
+    let (_directory, manager, _server, _) = fixture_with_token_scope(None).await;
     manager.record_scope_challenge("alice", "files:write");
     let begin = manager.begin_authorization("alice").await.unwrap();
     manager

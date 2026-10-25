@@ -631,7 +631,8 @@ impl OauthClientCache {
                 })?;
             expected_provider = manager.google_provider_subject().await?;
             if let Some(provider) = expected_provider.as_ref() {
-                for manager in &managers {
+                let memberships = manager.google_provider_subjects_for(&managers).await?;
+                for (manager, membership) in managers.iter().zip(memberships) {
                     if !manager
                         .upstream_config()
                         .oauth
@@ -645,7 +646,7 @@ impl OauthClientCache {
                     {
                         continue;
                     }
-                    let candidate_subject = match manager.google_provider_subject().await {
+                    let candidate_subject = match membership {
                         Ok(subject) => subject,
                         // An unselected account cannot share authority with this
                         // provider. Its configuration error belongs to that upstream.

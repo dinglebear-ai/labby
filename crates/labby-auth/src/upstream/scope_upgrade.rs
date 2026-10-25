@@ -20,7 +20,7 @@ struct Challenge {
     attempts: u8,
     created: Instant,
     epoch: Option<OAuthLifecycleEpoch>,
-    consent: Option<(String, Vec<String>)>,
+    consent: Option<String>,
 }
 
 /// Remaining permissions that belong to one completed, current callback.
@@ -334,7 +334,7 @@ impl UpstreamOauthManager {
             .ok_or_else(|| OauthError::NeedsReauth(
                 "Credentials or required permissions changed during scope authorization; start authorization again".into(),
             ))?;
-        entry.consent = Some((csrf, requested));
+        entry.consent = Some(csrf);
         Ok(url)
     }
 
@@ -351,12 +351,7 @@ impl UpstreamOauthManager {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let granted = granted.iter().map(String::as_str).collect::<BTreeSet<_>>();
         let completed = entries.get_mut(subject).is_some_and(|entry| {
-            if !entry.live()
-                || !entry
-                    .consent
-                    .as_ref()
-                    .is_some_and(|(state, _)| state == csrf)
-            {
+            if !entry.live() || !entry.consent.as_ref().is_some_and(|state| state == csrf) {
                 return false;
             }
             // A successful exchange can explicitly grant fewer permissions than
@@ -384,11 +379,7 @@ impl UpstreamOauthManager {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let entry = entries.get(subject).filter(|entry| {
-            entry.live()
-                && entry
-                    .consent
-                    .as_ref()
-                    .is_some_and(|(state, _)| state == csrf)
+            entry.live() && entry.consent.as_ref().is_some_and(|state| state == csrf)
         })?;
         Some(ScopeChallengeTransfer {
             authority: Arc::downgrade(&self.scope_challenges),
@@ -425,7 +416,7 @@ impl UpstreamOauthManager {
                 && entry
                     .consent
                     .as_ref()
-                    .is_some_and(|(state, _)| *state == transfer.state)
+                    .is_some_and(|state| *state == transfer.state)
         }) {
             entry.epoch = Some(epoch);
             entry.consent = None;

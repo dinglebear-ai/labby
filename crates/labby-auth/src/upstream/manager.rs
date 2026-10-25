@@ -191,6 +191,55 @@ impl UpstreamOauthManager {
             .map(|row| row.subject))
     }
 
+    /// Resolve sibling membership with one metadata read for this store.
+    /// Managers backed by a different store retain their own authority lookup.
+    pub(super) async fn google_provider_subjects_for(
+        &self,
+        managers: &[Self],
+    ) -> Result<Vec<Result<Option<String>, OauthError>>, OauthError> {
+        let selectors = managers
+            .iter()
+            .map(|manager| {
+                manager
+                    .upstream
+                    .oauth
+                    .as_ref()
+                    .and_then(|oauth| oauth.credential.account())
+                    .map(ToOwned::to_owned)
+            })
+            .collect();
+        let memberships = self
+            .sqlite
+            .google_provider_subject_memberships(selectors)
+            .await
+            .map_err(|error| OauthError::Internal(error.to_string()))?;
+        let mut resolved = Vec::with_capacity(managers.len());
+        for (manager, membership) in managers.iter().zip(memberships) {
+            if !manager
+                .upstream
+                .oauth
+                .as_ref()
+                .is_some_and(|oauth| oauth.credential.is_google_provider())
+            {
+                resolved.push(Ok(None));
+            } else if !self.sqlite.shares_google_provider_store(&manager.sqlite) {
+                resolved.push(manager.google_provider_subject().await);
+            } else {
+                // Preserve registration/provider configuration checks, while
+                // leaving unrelated encrypted token bundles unopened.
+                resolved.push(manager.google_credential_store(vec![]).and_then(|_| {
+                    membership.map_err(|error| match error {
+                        crate::error::AuthError::Config(message) => {
+                            OauthError::AccountAmbiguous(message)
+                        }
+                        other => OauthError::Internal(other.to_string()),
+                    })
+                }));
+            }
+        }
+        Ok(resolved)
+    }
+
     /// Return the `UpstreamConfig` this manager was constructed with.
     ///
     /// Used to persist transient (probe-created) managers back into the gateway

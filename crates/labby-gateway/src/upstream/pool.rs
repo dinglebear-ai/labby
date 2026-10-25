@@ -353,6 +353,8 @@ pub struct UpstreamPool {
     /// Shared with `OauthClientCache`: readers cover the entire authenticated
     /// connect-and-publish path; credential mutation takes the sole writer.
     oauth_invalidation_barrier: Arc<RwLock<()>>,
+    /// One cancellation-independent capacity/rejection drain shared by callers.
+    oauth_invalidation_drain: Arc<Mutex<Option<oauth_invalidation::OAuthInvalidationDrain>>>,
     /// Stable config fingerprint for each upstream name. Selective reconcile
     /// replaces changed fingerprints before publishing the new revision so a
     /// request carrying stale config cannot publish or reuse a connection.
@@ -669,6 +671,7 @@ impl UpstreamPool {
             subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
+            oauth_invalidation_drain: Arc::new(Mutex::new(None)),
             upstream_config_fingerprints: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(

@@ -9,7 +9,8 @@ fn missing_machine_secret_and_anonymous_callers_fail_without_a_provider_request(
     isolated(
         "upstream::machine_grant_failure_tests::missing_machine_secret_and_anonymous_callers_fail_without_a_provider_request",
         async {
-            let (server, _, config, cache, _, managers) =
+            let directory = tempfile::tempdir().unwrap();
+            let (_directory, server, _, config, cache, _, managers) =
                 client_fixture(serde_json::json!("client_secret")).await;
             let mut missing = config.clone();
             if let labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
@@ -29,11 +30,9 @@ fn missing_machine_secret_and_anonymous_callers_fail_without_a_provider_request(
                 cache.get_or_build(&config, "").await.is_err(),
                 "machine mode cannot admit anonymous callers"
             );
-            let sqlite = crate::sqlite::SqliteStore::open(
-                tempfile::tempdir().unwrap().keep().join("auth.db"),
-            )
-            .await
-            .unwrap();
+            let sqlite = crate::sqlite::SqliteStore::open(directory.path().join("auth.db"))
+                .await
+                .unwrap();
             managers.insert(
                 "machine".into(),
                 super::manager::UpstreamOauthManager::new(
@@ -62,7 +61,7 @@ fn missing_machine_token_expiry_fails_closed_without_persisting_a_token() {
     isolated(
         "upstream::machine_grant_failure_tests::missing_machine_token_expiry_fails_closed_without_persisting_a_token",
         async {
-            let (server, _, config, cache, store, _) =
+            let (_directory, server, _, config, cache, store, _) =
                 client_fixture(serde_json::json!("client_secret")).await;
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(
@@ -81,7 +80,7 @@ fn a_late_grant_rejection_cannot_delete_newer_authorization() {
     isolated(
         "upstream::machine_grant_failure_tests::a_late_grant_rejection_cannot_delete_newer_authorization",
         async {
-            let (server, _, config, cache, store, _) =
+            let (_directory, server, _, config, cache, store, _) =
                 client_fixture(serde_json::json!("client_secret")).await;
             access_response(&server).await;
             let client = cache.get_or_build(&config, "caller").await.unwrap();
@@ -117,7 +116,7 @@ fn a_late_grant_rejection_cannot_delete_newer_authorization() {
 }
 
 async fn initial_grant_race(clear: bool) {
-    let (server, sqlite, config, cache, store, _) =
+    let (_directory, server, sqlite, config, cache, store, _) =
         client_fixture(serde_json::json!("client_secret")).await;
     let entered = Arc::new(tokio::sync::Notify::new());
     let observed = Arc::clone(&entered);
@@ -199,7 +198,7 @@ fn repeated_machine_rejection_uses_the_existing_failure_cooldown() {
     isolated(
         "upstream::machine_grant_failure_tests::repeated_machine_rejection_uses_the_existing_failure_cooldown",
         async {
-            let (server, _, config, cache, _, _) =
+            let (_directory, server, _, config, cache, _, _) =
                 client_fixture(serde_json::json!("client_secret")).await;
             Mock::given(method("POST"))
                 .respond_with(
@@ -228,7 +227,7 @@ fn unattended_grant_errors_never_invoke_the_browser_reauthorization_hook() {
     isolated(
         "upstream::machine_grant_failure_tests::unattended_grant_errors_never_invoke_the_browser_reauthorization_hook",
         async {
-            let (_server, sqlite, mut config, cache, _, managers) =
+            let (_directory, _server, sqlite, mut config, cache, _, managers) =
                 client_fixture(serde_json::json!("client_secret")).await;
             if let labby_runtime::gateway_config::UpstreamOauthRegistration::Preregistered {
                 client_secret_env,
@@ -279,7 +278,7 @@ fn machine_renewal_does_not_wait_behind_a_writer_while_its_rpc_holds_a_reader() 
     isolated(
         "upstream::machine_grant_failure_tests::machine_renewal_does_not_wait_behind_a_writer_while_its_rpc_holds_a_reader",
         async {
-            let (server, _, config, cache, credentials, _) =
+            let (_directory, server, _, config, cache, credentials, _) =
                 client_fixture(serde_json::json!("client_secret")).await;
             access_response(&server).await;
             let client = cache.get_or_build(&config, "caller").await.unwrap();
@@ -325,7 +324,7 @@ fn cancelled_machine_grant_callers_retain_one_worker_and_failure_cooldown() {
     isolated(
         "upstream::machine_grant_failure_tests::cancelled_machine_grant_callers_retain_one_worker_and_failure_cooldown",
         async {
-            let (server, _, config, cache, store, managers) =
+            let (_directory, server, _, config, cache, store, managers) =
                 client_fixture(serde_json::json!("client_secret")).await;
             let entered = Arc::new(tokio::sync::Notify::new());
             let observed = Arc::clone(&entered);
@@ -394,7 +393,7 @@ fn machine_grant_deadline_includes_credential_guard_admission() {
     isolated(
         "upstream::machine_grant_failure_tests::machine_grant_deadline_includes_credential_guard_admission",
         async {
-            let (server, _, config, cache, store, managers) =
+            let (_directory, server, _, config, cache, store, managers) =
                 client_fixture(serde_json::json!("client_secret")).await;
             let guard = store.acquire_refresh_guard().await.unwrap();
             let request = {
@@ -462,7 +461,7 @@ fn cancelled_machine_status_waiters_release_coordination_ownership() {
     isolated(
         "upstream::machine_grant_failure_tests::cancelled_machine_status_waiters_release_coordination_ownership",
         async {
-            let (server, _, _, cache, _, managers) =
+            let (_directory, server, _, _, cache, _, managers) =
                 client_fixture(serde_json::json!("client_secret")).await;
             let manager = managers
                 .get("machine")
