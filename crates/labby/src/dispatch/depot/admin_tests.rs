@@ -313,3 +313,261 @@ async fn operation_receipt_lookup_never_runs_prepared_recovery() {
         );
     }
 }
+
+fn public_mutation(enabled: bool) -> Mutation {
+    Mutation {
+        id: "public".into(),
+        name: "Public Depot".into(),
+        endpoint: crate::config::depot::PUBLIC_ENDPOINT.into(),
+        enabled,
+        auth_mode: AuthMode::Anonymous,
+        credential: CredentialChange::Retain,
+    }
+}
+
+async fn replay_authority(
+    root: &std::path::Path,
+) -> labby_auth::browser_authority::BrowserAuthority {
+    use labby_auth::browser_authority::{
+        BrowserAuthority, BrowserPolicy, PermissionState, PolicyFuture,
+    };
+    use labby_auth::types::BrowserSessionRow;
+    struct AdminPolicy;
+    impl BrowserPolicy for AdminPolicy {
+        fn current<'a>(&'a self, _: &'a BrowserSessionRow) -> PolicyFuture<'a> {
+            Box::pin(async {
+                Ok(PermissionState {
+                    epoch: "admin-replay".into(),
+                    scopes: vec!["lab:admin".into()],
+                })
+            })
+        }
+    }
+    let auth = labby_auth::sqlite::SqliteStore::open(root.join("auth.sqlite"))
+        .await
+        .unwrap();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    auth.upsert_browser_session(BrowserSessionRow {
+        session_id: "admin-replay".into(),
+        subject: "admin-replay".into(),
+        email: None,
+        csrf_token: "csrf".into(),
+        created_at: now,
+        expires_at: now + 3600,
+        project_binding: None,
+    })
+    .await
+    .unwrap();
+    BrowserAuthority::verify(
+        auth,
+        "admin-replay",
+        "admin-replay",
+        std::sync::Arc::new(AdminPolicy),
+    )
+    .await
+    .unwrap()
+}
+
+async fn replay_admin(
+    root: &std::path::Path,
+    store: std::sync::Arc<super::store::Store>,
+    manager: std::sync::Arc<super::manager::Manager>,
+) -> super::admin::Admin {
+    let auth = labby_auth::sqlite::SqliteStore::open(root.join("auth.sqlite"))
+        .await
+        .unwrap();
+    super::admin::Admin::new(
+        manager,
+        store,
+        labby_auth::reauth::Proofs::new(auth),
+        super::network::NetworkPolicy::default(),
+    )
+}
+
+fn replay_store(root: &std::path::Path) -> std::sync::Arc<super::store::Store> {
+    std::sync::Arc::new(super::store::Store::new(
+        root.join("config.toml"),
+        root.join("env"),
+        root.join("transactions"),
+    ))
+}
+
+fn replay_manager(pair: &super::store::Pair) -> std::sync::Arc<super::manager::Manager> {
+    let built = build_upsert(&pair.config, &pair.environment, &public_mutation(false)).unwrap();
+    std::sync::Arc::new(super::manager::Manager::new(
+        &built.preferences,
+        built.secrets,
+        super::network::NetworkPolicy::default(),
+    ))
+}
+
+fn assert_public_enabled(manager: &super::manager::Manager, enabled: bool) {
+    assert_eq!(
+        manager
+            .snapshot()
+            .providers
+            .get("public")
+            .unwrap()
+            .view
+            .enabled,
+        enabled
+    );
+}
+
+#[tokio::test]
+async fn historical_upsert_retry_after_restart_preserves_host_disabled_runtime() {
+    use crate::config::host_write::HostConfigLock;
+    let root = tempfile::tempdir().unwrap();
+    let store = replay_store(root.path());
+    let authority = replay_authority(root.path()).await;
+    let initial = build_upsert("", "", &public_mutation(false)).unwrap().pair;
+    HostConfigLock::acquire(&root.path().join("config.toml"))
+        .unwrap()
+        .write(&initial.config)
+        .unwrap();
+    let manager = replay_manager(&initial);
+    let admin = replay_admin(root.path(), store.clone(), manager).await;
+    let expected = store.current_version().unwrap();
+    let payload = serde_json::json!({"enabled":true});
+    let first = admin
+        .upsert(
+            &authority,
+            None,
+            &expected,
+            "public-enable",
+            &public_mutation(true),
+            &payload,
+        )
+        .await
+        .unwrap();
+    let committed = store.read_pair().unwrap();
+    let disabled = build_upsert(
+        &committed.config,
+        &committed.environment,
+        &public_mutation(false),
+    )
+    .unwrap()
+    .pair;
+    HostConfigLock::acquire(&root.path().join("config.toml"))
+        .unwrap()
+        .write(&disabled.config)
+        .unwrap();
+    let restarted = replay_manager(&disabled);
+    let admin = replay_admin(root.path(), store.clone(), restarted.clone()).await;
+    let replay = admin
+        .upsert(
+            &authority,
+            None,
+            &expected,
+            "public-enable",
+            &public_mutation(true),
+            &payload,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, first, "historical receipt semantics remain intact");
+    assert_eq!(store.read_pair().unwrap(), disabled);
+    assert_public_enabled(&restarted, false);
+}
+
+#[tokio::test]
+async fn unchanged_upsert_retry_remains_idempotent_and_current() {
+    let root = tempfile::tempdir().unwrap();
+    let store = replay_store(root.path());
+    let authority = replay_authority(root.path()).await;
+    let manager = replay_manager(&store.read_pair().unwrap());
+    let admin = replay_admin(root.path(), store.clone(), manager.clone()).await;
+    let expected = store.current_version().unwrap();
+    let payload = serde_json::json!({"enabled":true});
+    let first = admin
+        .upsert(
+            &authority,
+            None,
+            &expected,
+            "public-enable",
+            &public_mutation(true),
+            &payload,
+        )
+        .await
+        .unwrap();
+    let committed = store.read_pair().unwrap();
+    let replay = admin
+        .upsert(
+            &authority,
+            None,
+            &expected,
+            "public-enable",
+            &public_mutation(true),
+            &payload,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, first);
+    assert_eq!(store.read_pair().unwrap(), committed);
+    assert_public_enabled(&manager, true);
+}
+
+#[tokio::test]
+async fn current_upsert_retry_repairs_failed_runtime_publication() {
+    let root = tempfile::tempdir().unwrap();
+    let store = replay_store(root.path());
+    let authority = replay_authority(root.path()).await;
+    let manager = replay_manager(&store.read_pair().unwrap());
+    let admin = replay_admin(root.path(), store.clone(), manager.clone()).await;
+    let expected = store.current_version().unwrap();
+    let built = build_upsert("", "", &public_mutation(true)).unwrap();
+    let stale_candidate = manager.prepare(
+        &built.preferences,
+        built.secrets,
+        super::network::NetworkPolicy::default(),
+    );
+    let competing = build_upsert("", "", &public_mutation(false)).unwrap();
+    manager
+        .publish(manager.prepare(
+            &competing.preferences,
+            competing.secrets,
+            super::network::NetworkPolicy::default(),
+        ))
+        .unwrap();
+    let payload = serde_json::json!({"enabled":true});
+    assert!(matches!(
+        admin
+            .commit_candidate(
+                &authority,
+                None,
+                false,
+                "providers.upsert",
+                "public",
+                &expected,
+                "public-enable",
+                &payload,
+                built.pair,
+                stale_candidate
+            )
+            .await,
+        Err(AdminError::Stale)
+    ));
+    let committed = store.read_pair().unwrap();
+    let historical = store.receipt().unwrap().unwrap();
+    assert_public_enabled(&manager, false);
+    let replay = admin
+        .upsert(
+            &authority,
+            None,
+            &expected,
+            "public-enable",
+            &public_mutation(true),
+            &payload,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay, historical);
+    assert_eq!(store.read_pair().unwrap(), committed);
+    assert_public_enabled(&manager, true);
+}

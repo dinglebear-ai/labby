@@ -221,3 +221,49 @@ fn prepared_recovery_restores_partial_pair_once_then_retires_intent() {
         );
     }
 }
+
+#[test]
+fn publication_holds_both_file_locks_and_skips_superseded_replays() {
+    use crate::config::host_write::HostWriteError;
+    let root = TempDir::new().unwrap();
+    let store = store(&root);
+    let expected = store.current_version().unwrap();
+    let pair = Pair {
+        config: "committed".into(),
+        environment: "TOKEN=committed\n".into(),
+    };
+    let publish = || {
+        for path in [
+            root.path().join("config.toml"),
+            root.path().join("labby.env"),
+        ] {
+            assert!(matches!(
+                HostConfigLock::acquire_with_timeout(&path, Duration::ZERO),
+                Err(HostWriteError::Busy)
+            ));
+        }
+        Ok(())
+    };
+    let first = store
+        .commit_with_publication("operation", &expected, &pair, publish)
+        .unwrap();
+    assert_eq!(
+        store
+            .commit_with_publication("operation", &expected, &pair, publish)
+            .unwrap(),
+        first
+    );
+    HostConfigLock::acquire(&root.path().join("config.toml"))
+        .unwrap()
+        .write("superseding")
+        .unwrap();
+    assert_eq!(
+        store
+            .commit_with_publication("operation", &expected, &pair, || panic!(
+                "historical replay must not publish"
+            ))
+            .unwrap(),
+        first
+    );
+    assert_eq!(store.read_pair().unwrap().config, "superseding");
+}

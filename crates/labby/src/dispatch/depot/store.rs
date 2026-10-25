@@ -140,6 +140,18 @@ impl Store {
         expected_version: &str,
         pair: &Pair,
     ) -> Result<Outcome, StoreError> {
+        self.commit_with_publication(operation, expected_version, pair, || Ok(()))
+    }
+
+    /// Publish only a newly committed or still-current replay while holding
+    /// both host-file locks. Historical receipts never reactivate older state.
+    pub(super) fn commit_with_publication(
+        &self,
+        operation: &str,
+        expected_version: &str,
+        pair: &Pair,
+        publish: impl FnOnce() -> Result<(), StoreError>,
+    ) -> Result<Outcome, StoreError> {
         validate_operation(operation)?;
         if pair.config.len() > 8 * 1024 * 1024 || pair.environment.len() > 8 * 1024 * 1024 {
             return Err(StoreError::Invalid);
@@ -152,6 +164,13 @@ impl Store {
             && outcome.operation_id == operation
         {
             if outcome.version == digest(&key, pair)? {
+                let live = Pair {
+                    config: config.read_raw().map_err(map_host)?,
+                    environment: environment.read_raw().map_err(map_host)?,
+                };
+                if digest(&key, &live)? == outcome.version {
+                    publish()?;
+                }
                 return Ok(outcome);
             }
             return Err(StoreError::Invalid);
@@ -183,6 +202,9 @@ impl Store {
         environment.write(&pair.environment).map_err(map_host)?;
         intent.phase = Phase::Committed;
         self.write_intent(&intent)?;
+        // The receipt is already durable if publication fails. A current replay
+        // can retry publication without replaying file writes.
+        publish()?;
         Ok(Outcome {
             operation_id: operation.into(),
             version: intent.new_integrity,
