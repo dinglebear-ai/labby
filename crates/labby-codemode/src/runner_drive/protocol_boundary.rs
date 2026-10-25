@@ -43,6 +43,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
                     elapsed_ms: 0,
                     start_ms: None,
                     params: None,
+                    params_digest: None,
                     error_kind: Some(error.kind.clone()),
                     ui: None,
                 },

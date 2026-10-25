@@ -94,9 +94,10 @@ schema cannot describe per-action payloads.
 
 Scope and caveats:
 
-- **On `tools/list` this is Raw-mode-only.** Builtins are suppressed from
-  `tools/list` whenever Code Mode is enabled, so under Code Mode the only
-  service schemas retained there are `server_logs` and `gateway`. The `codemode*` tools
+- **Most builtin routers are hidden under Code Mode.** The native
+  `server_logs`, `gateway`, and `snippets` routers retain their service schemas
+  on `tools/list`, together with `stash` for eligible caller-bound transports.
+  Other builtin routers are suppressed. The `codemode*` tools
   advertise their own execution-trace schema instead. Under Code Mode,
   eligible context-free services instead join the **Code Mode catalog** as in-process
   peers (`__in_process__<service>` namespaces, root scope only), so the

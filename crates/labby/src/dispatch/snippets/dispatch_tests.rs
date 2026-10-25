@@ -194,6 +194,7 @@ fn snippets_test_fails_when_a_batched_upstream_call_failed() {
         elapsed_ms: 0,
         start_ms: Some(0),
         params: Some(json!({})),
+        params_digest: None,
         error_kind: Some("unknown_upstream".into()),
         ui: None,
     });

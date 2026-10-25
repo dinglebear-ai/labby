@@ -244,6 +244,7 @@ mod tests {
                 elapsed_ms: 12,
                 start_ms: Some(4),
                 params: None,
+                params_digest: None,
                 error_kind: None,
                 ui: Some(UiLink {
                     ui_meta: json!({

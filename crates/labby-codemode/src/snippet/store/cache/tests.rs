@@ -78,3 +78,34 @@ fn nested_defaults_and_tool_strings_are_charged() {
     ));
     assert!(metadata_bytes(&metadata) > 11_000);
 }
+
+#[test]
+fn metadata_cache_distinguishes_source_formats_for_identical_bytes() {
+    let code = "async () => ({text:'```js'})";
+    let javascript = metadata(
+        "format-cache",
+        code,
+        SnippetSource::User,
+        SnippetSourceFormat::JavaScript,
+    )
+    .expect("raw JavaScript is discoverable");
+    assert_eq!(javascript.4, digest(code));
+    assert!(
+        metadata(
+            "format-cache",
+            code,
+            SnippetSource::User,
+            SnippetSourceFormat::Markdown
+        )
+        .is_err()
+    );
+    assert!(
+        metadata(
+            "format-cache",
+            code,
+            SnippetSource::User,
+            SnippetSourceFormat::JavaScript
+        )
+        .is_ok()
+    );
+}

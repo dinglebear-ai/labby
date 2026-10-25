@@ -27,6 +27,7 @@ fn source(code: &str) -> String {
 }
 fn scoped(subject: &str) -> SnippetDispatchContext {
     let mut context = SnippetDispatchContext::trusted_local();
+    context.authenticated_principal = Some(subject.into());
     context.actor_key = Some("operator".into());
     context.route_scope = "team-a".into();
     context.execution_surface = CodeModeSurface::Api;
@@ -298,7 +299,7 @@ fn run_receipt_contract(home: &Path) {
         )
         .await
         .unwrap_err();
-        assert_eq!(denied.kind(), "unknown_execution");
+        assert_eq!(denied.kind(), "forbidden");
         let history = call(&reopened,"snippets.history",json!({"name":"receipt-demo","limit":1}),&alice).await;
         assert_eq!(history["receipt_status"],"persisted");
         assert_eq!(history["receipts"].as_array().unwrap().len(),1);
@@ -309,8 +310,8 @@ fn run_receipt_contract(home: &Path) {
         let artifact=call(&reopened,"snippets.artifact",json!({"execution_id":id,"path":"report.txt"}),&alice).await;
         assert_eq!(artifact["content_base64"],"cmVjZWlwdC1iYWNrZWQgZG93bmxvYWQ=");
         assert_eq!(artifact["bytes"],23);
-        for denied in [scoped("bob"),unsubjected] {
-            assert_eq!(dispatch_scoped(&reopened,"snippets.artifact",json!({"execution_id":id,"path":"report.txt"}),Some(denied)).await.unwrap_err().kind(),"unknown_execution");
+        for (denied, kind) in [(scoped("bob"), "unknown_execution"), (unsubjected, "forbidden")] {
+            assert_eq!(dispatch_scoped(&reopened,"snippets.artifact",json!({"execution_id":id,"path":"report.txt"}),Some(denied)).await.unwrap_err().kind(),kind);
         }
         assert_eq!(dispatch_scoped(&reopened,"snippets.artifact",json!({"execution_id":id,"path":"../journal.db"}),Some(alice.clone())).await.unwrap_err().kind(),"artifact_unavailable");
         let own_history=call(&reopened,"snippets.history",json!({"name":"artifact-demo"}),&alice).await;
@@ -332,4 +333,177 @@ fn run_receipt_contract(home: &Path) {
 }
 fn super_source_failed() -> String {
     source("async () => ({ok:false, reason:'expected fixture failure'})")
+}
+
+#[test]
+fn saved_receipt_parameter_digests_identify_original_arguments_without_public_payloads() {
+    const CHILD: &str = "LABBY_ARGUMENT_DIGEST_TEST_CHILD";
+    if let Ok(home) = std::env::var(CHILD) {
+        let home = Path::new(&home);
+        fs::create_dir(home.join("snippets")).unwrap();
+        fs::write(
+            home.join("snippets/digest-demo.md"),
+            "---\nname: digest-demo\ndescription: Argument digest regression\ntools: [\"synthetic::lookup\"]\n---\n```js\nasync (input) => { try { await callTool('synthetic::lookup', input); } catch (_) {} return {ok:true}; }\n```\n",
+        ).unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let manager = new_manager(home).await;
+            let mut config = labby::config::LabConfig::default();
+            config.code_mode.trace_params = false;
+            manager.seed_config(config.to_gateway_config()).await;
+            let owner = SnippetDispatchContext::trusted_local();
+            let arguments = [
+                json!({"password":"digest-secret-one"}),
+                json!({"password":"digest-secret-two"}),
+                json!({"payload":format!("{}-one", "x".repeat(6000))}),
+                json!({"payload":format!("{}-two", "x".repeat(6000))}),
+            ];
+            let mut digests = Vec::new();
+            for params in arguments {
+                let response = call(
+                    &manager,
+                    "snippets.exec",
+                    json!({"name":"digest-demo","params":params}),
+                    &owner,
+                )
+                .await;
+                assert_eq!(response["receipt_status"], "persisted");
+                let receipt = call(
+                    &manager,
+                    "snippets.receipt",
+                    json!({"execution_id":response["execution_id"]}),
+                    &owner,
+                )
+                .await;
+                assert_eq!(receipt["tool_calls"], 1, "{receipt}");
+                let captured = &receipt["calls"][0];
+                // No upstream is configured: the real runner's failed invocation
+                // must retain the same argument identity as successful dispatch.
+                assert_eq!(captured["tool"], "synthetic::lookup");
+                assert_eq!(captured["ok"], false);
+                assert_eq!(
+                    captured["params_digest"],
+                    digest(&serde_json::to_vec(&params).unwrap())
+                );
+                let wire = serde_json::to_string(&response).unwrap();
+                assert!(!wire.contains("digest-secret-"));
+                assert!(response["calls"][0].get("params").is_none());
+                assert!(
+                    response["calls"][0].get("params_digest").is_none(),
+                    "private digest leaked to trace"
+                );
+                digests.push(captured["params_digest"].clone());
+            }
+            assert_ne!(digests[0], digests[1]);
+            assert_ne!(digests[2], digests[3]);
+            manager.shutdown_code_mode_runner_pool().await;
+        });
+        for name in ["journal.db", "journal.db-wal", "journal.db-shm"] {
+            if let Ok(bytes) = fs::read(home.join(name)) {
+                assert!(
+                    !bytes
+                        .windows(b"digest-secret-".len())
+                        .any(|part| part == b"digest-secret-"),
+                    "raw argument persisted in {name}"
+                );
+            }
+        }
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "saved_receipt_parameter_digests_identify_original_arguments_without_public_payloads",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("LABBY_HOME", home.path())
+        .env(CHILD, home.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "argument digest child failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn saved_snippet_json_inputs_preserve_own_proto_keys() {
+    const CHILD: &str = "LABBY_JSON_KEY_TEST_CHILD";
+    if let Ok(home) = std::env::var(CHILD) {
+        let home = Path::new(&home);
+        fs::create_dir(home.join("snippets")).unwrap();
+        fs::write(
+            home.join("snippets/json-keys.md"),
+            r"---
+name: json-keys
+description: JSON own-key regression
+tools: []
+---
+```js
+async (input) => ({
+  own:Object.prototype.hasOwnProperty.call(input,'__proto__'),
+  nestedOwn:Object.prototype.hasOwnProperty.call(input.nested,'__proto__'),
+  plain:Object.getPrototypeOf(input)===Object.prototype,
+  nestedPlain:Object.getPrototypeOf(input.nested)===Object.prototype,
+  value:input.__proto__.marker==='input',
+  nestedValue:input.nested.__proto__.marker==='nested'
+})
+```
+",
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let manager = new_manager(home).await;
+            let owner = SnippetDispatchContext::trusted_local();
+            let response = call(
+                &manager,
+                "snippets.exec",
+                json!({"name":"json-keys","params":{
+                    "__proto__":{"marker":"input"},"nested":{"__proto__":{"marker":"nested"}}
+                }}),
+                &owner,
+            )
+            .await;
+            assert_eq!(
+                response["result"],
+                json!({
+                    "own":true,"nestedOwn":true,"plain":true,"nestedPlain":true,
+                    "value":true,"nestedValue":true
+                })
+            );
+            manager.shutdown_code_mode_runner_pool().await;
+        });
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "saved_snippet_json_inputs_preserve_own_proto_keys",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env("HOME", home.path())
+        .env("LABBY_HOME", home.path())
+        .env(CHILD, home.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "JSON key child failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

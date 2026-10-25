@@ -49,6 +49,7 @@ pub(super) async fn reject_tool_call_over_budget(
             elapsed_ms: 0,
             start_ms: None,
             params: None,
+            params_digest: None,
             error_kind: Some("call_budget_exceeded".to_string()),
             ui: None,
         },
@@ -96,6 +97,7 @@ pub(super) async fn handle_completed_tool_call(
         u64,
         String,
         Option<Value>,
+        Option<String>,
         Result<ToolCallOutcome, CodeModeCallError>,
         u128,
         u128,
@@ -107,7 +109,7 @@ pub(super) async fn handle_completed_tool_call(
     state: &mut DriveState,
     cfg: &RunnerConfig,
 ) -> Result<(), CodeModeExecutionError> {
-    let Some((seq, id, params, result, elapsed_ms, start_ms)) = completed else {
+    let Some((seq, id, params, params_digest, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
     // Reserved host-internal pseudo-tool calls never appear in the call
@@ -175,6 +177,7 @@ pub(super) async fn handle_completed_tool_call(
                             elapsed_ms,
                             start_ms: Some(start_ms),
                             params,
+                            params_digest,
                             error_kind: Some("result_too_large".to_string()),
                             ui,
                         },
@@ -191,6 +194,7 @@ pub(super) async fn handle_completed_tool_call(
                         elapsed_ms,
                         start_ms: Some(start_ms),
                         params,
+                        params_digest,
                         error_kind: None,
                         ui,
                     },
@@ -240,6 +244,7 @@ pub(super) async fn handle_completed_tool_call(
                         elapsed_ms,
                         start_ms: Some(start_ms),
                         params,
+                        params_digest,
                         error_kind: Some(kind),
                         ui: None,
                     },

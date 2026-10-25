@@ -191,6 +191,7 @@ type ToolCallFut<'a> = std::pin::Pin<
                     u64,
                     String,
                     Option<Value>,
+                    Option<String>,
                     Result<ToolCallOutcome, CodeModeCallError>,
                     u128,
                     u128,

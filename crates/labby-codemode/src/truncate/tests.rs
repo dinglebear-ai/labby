@@ -121,6 +121,7 @@ fn over_budget_result_becomes_object_marker_and_calls_survive() {
         elapsed_ms: 42,
         start_ms: Some(1),
         params: Some(json!({"q": "everything"})),
+        params_digest: None,
         error_kind: None,
         ui: None,
     }];
@@ -186,6 +187,7 @@ fn high_fanout_trace_params_are_dropped_before_compact_result() {
                 "command": format!("ssh host-{i} {}", "x".repeat(2048)),
                 "timeout": 20_000
             })),
+            params_digest: None,
             error_kind: None,
             ui: None,
         })
@@ -225,6 +227,7 @@ fn high_fanout_trace_params_stay_dropped_when_result_also_needs_truncation() {
                 "command": format!("ssh host-{i} {}", "x".repeat(2048)),
                 "timeout": 20_000
             })),
+            params_digest: None,
             error_kind: None,
             ui: None,
         })
@@ -373,6 +376,7 @@ fn oversized_mandatory_metadata_keeps_best_effort_calls_and_sentinel() {
         elapsed_ms: 1,
         start_ms: Some(0),
         params: None,
+        params_digest: None,
         error_kind: None,
         ui: None,
     });
@@ -426,6 +430,7 @@ fn preservation_probe_matches_truncation_and_restores_every_field() {
                 elapsed_ms: 4,
                 start_ms: Some(1),
                 params: with_params.then(|| json!({"query": "x".repeat(8000)})),
+                params_digest: None,
                 error_kind: None,
                 ui: None,
             });

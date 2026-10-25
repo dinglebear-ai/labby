@@ -86,8 +86,9 @@ Rules:
 5. Draft Markdown with frontmatter, tutorial text, declared inputs, and one `js`/`javascript` fenced block.
 6. Validate without saving: `labby snippet validate my-workflow --file draft.md`.
 7. Save as a user snippet: `labby snippet add my-workflow --file draft.md --description "..."`.
-8. Smoke-test execution: `labby snippet test my-workflow --param topic="mcp-ui rust"`.
-9. Run normally: `labby snippet run my-workflow --param topic="mcp-ui rust"`.
+8. Generate an editable synthetic fixture: `labby snippet fixture my-workflow --output ./my-workflow.test.json`. Review responses, repeated calls, matching and assertions; generation readiness does not prove branch coverage. Use `--schemas ./schemas.json` for offline schema input and explicit synthetic `--results` for missing output contracts. Never save credentials or raw private production payloads.
+9. Run offline: `labby snippet test my-workflow --fixture ./my-workflow.test.json --param topic="mcp-ui rust"`. Without `--fixture`, the command requires an adjacent `<name>.test.json` beside the resolved snippet. Missing fixtures fail; they never trigger live fallback.
+10. Only when real upstream effects are explicitly requested, smoke-test with `labby snippet test my-workflow --live --param topic="mcp-ui rust"`, or run normally with `labby snippet run my-workflow --param topic="mcp-ui rust"`. Review the source and authority first.
 
 Use `--force` only when intentionally replacing a user snippet.
 
@@ -135,7 +136,7 @@ intentionally shadowing a built-in name.
 - Keep responses compact; large Markdown, tables, screenshots, or manifests should be written with `writeArtifact("relative/path.md", content, { contentType })`.
 - Include enough ids, URLs, labels, and raw evidence handles for follow-up verification.
 - Code Mode final-result shaping may be enabled by the operator. It can shape the displayed final `result`, but it does not change values the snippet sees from `callTool()`/`codemode.*` during execution.
-- `snippets.test` evaluates pass/fail from the pre-shape result, so return `{ ok: true }` or `{ ok: false }` deliberately. `snippets.exec` and the `response` inside `snippets.test` show the shaped display response when shaping is enabled.
+- Default `snippets.test` executes offline fixtures and evaluates their assertions, rule consumption and budgets against raw output. An explicit `"/ok": false` assertion can test an expected failure. Only `live: true` invokes real tools: live tests inspect the pre-shape result, reject failed calls and shaping/truncation changes, and include a display `response`. `snippets.exec` returns the shaped display response when shaping is enabled.
 - Truncation is not redaction. Do not return secrets and rely on output shaping to hide them.
 
 ## Validation Checklist
@@ -155,4 +156,4 @@ Before calling the work done:
 - Required inputs fail fast with clear validation.
 - Fan-out is bounded by explicit snippet limits and the Code Mode wall-clock/output budgets.
 - `labby snippet validate` passes.
-- `labby snippet test` passes for one snippet, or `labby snippet test --all` passes when changing shared built-ins.
+- An edited synthetic fixture passes `labby snippet test` for the snippet, or `labby snippet test --all` passes when changing shared built-ins with adjacent fixtures. Record live verification separately; an offline pass is not provider acceptance.

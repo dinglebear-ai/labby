@@ -10894,6 +10894,9 @@
           "name"
         ],
         "properties": {
+          "body": {
+            "type": "string"
+          },
           "expected_preview_fingerprint": {
             "type": "string"
           },
@@ -10902,6 +10905,9 @@
           },
           "params": {
             "type": "object"
+          },
+          "source_format": {
+            "type": "string"
           }
         }
       },

@@ -44,6 +44,7 @@ impl HostTrace {
             elapsed_ms: 0,
             start_ms: None,
             params: None,
+            params_digest: None,
             error_kind: None,
             ui: None,
         };
@@ -155,6 +156,7 @@ mod tests {
             elapsed_ms: 0,
             start_ms: None,
             params: None,
+            params_digest: None,
             error_kind: Some("call_budget_exceeded".into()),
             ui: None,
         }

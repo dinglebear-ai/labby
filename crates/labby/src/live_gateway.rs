@@ -1200,6 +1200,108 @@ impl LiveGateway {
         codemode_result_value(call_result?)
     }
 
+    /// Execute local saved source on the selected MCP route with native snippet
+    /// authorization, exact-tool narrowing, and durable receipt ownership.
+    pub async fn call_snippet_source(
+        &self,
+        name: &str,
+        body: &str,
+        source_format: labby_codemode::snippet::store::SnippetSourceFormat,
+        params: Value,
+    ) -> Result<Value, ToolError> {
+        use rmcp::model::CallToolRequestParams;
+        let service = self
+            .connect_service_with_timeout((), MCP_INITIALIZATION_TIMEOUT)
+            .await?;
+        let peer = service.peer().clone();
+        let arguments = serde_json::json!({"action":"snippets.exec","params":{"name":name,"body":body,"source_format":source_format,"params":params}}).as_object().expect("object literal").clone();
+        let (result, cleanup) = bounded_codemode_call_and_cleanup(
+            async {
+                // Older receipt-capable daemons ignore unknown body fields and
+                // execute their own saved name. Negotiate before any execution.
+                let schema = peer.call_tool(CallToolRequestParams::new("snippets").with_arguments(
+                    serde_json::json!({"action":"schema","params":{"action":"snippets.exec"}}).as_object().expect("object literal").clone(),
+                )).await?;
+                let text = schema.content.iter().find_map(|block| block.as_text().map(|text| text.text.as_str())).unwrap_or_default();
+                let payload = schema.structured_content.clone().unwrap_or_else(|| serde_json::from_str(text).unwrap_or(Value::Null));
+                let data = payload.get("data").unwrap_or(&payload);
+                let supported = schema.is_error != Some(true)
+                    && payload.get("ok") != Some(&Value::Bool(false))
+                    && data.get("action").and_then(Value::as_str) == Some("snippets.exec")
+                    && data.get("params").and_then(Value::as_array).is_some_and(|parameters| {
+                        ["body", "source_format"].iter().all(|name| parameters.iter().any(|parameter| {
+                            parameter.get("name").and_then(Value::as_str) == Some(*name)
+                                && parameter.get("type").and_then(Value::as_str) == Some("string")
+                                && parameter.get("required").and_then(Value::as_bool) == Some(false)
+                        }))
+                    });
+                if !supported {
+                    return Ok(Err(ToolError::Sdk {
+                        sdk_kind: "unsupported_operation".into(),
+                        message: "Selected daemon does not advertise native inline snippet source support; update it before executing caller-local source".into(),
+                    }));
+                }
+                peer.call_tool(CallToolRequestParams::new("snippets").with_arguments(arguments)).await.map(Ok)
+            },
+            CODEMODE_EXECUTION_TIMEOUT, MCP_CLEANUP_TIMEOUT, service.cancel(),
+        ).await;
+        if let Err(error) = cleanup {
+            tracing::warn!(surface="cli", service="snippets", action="snippets.exec", error=%error, "remote snippet MCP shutdown failed");
+        }
+        let result = result??;
+        let text = result
+            .content
+            .iter()
+            .find_map(|block| block.as_text().map(|text| text.text.clone()))
+            .unwrap_or_default();
+        let payload = result
+            .structured_content
+            .unwrap_or_else(|| serde_json::from_str(&text).unwrap_or(Value::Null));
+        if result.is_error == Some(true) || payload.get("ok") == Some(&Value::Bool(false)) {
+            let error = payload.get("error").unwrap_or(&payload);
+            let mut extra = error.as_object().cloned().unwrap_or_default();
+            for key in [
+                "kind",
+                "message",
+                "origin",
+                "recovery",
+                "side_effects",
+                "contract_version",
+            ] {
+                extra.remove(key);
+            }
+            return Err(ToolError::contract(
+                error
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("bridge_transport_error"),
+                error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(labby_runtime::redact::redact_secret_like_segments)
+                    .unwrap_or_else(|| "remote snippet execution failed".to_owned()),
+                extra,
+                error
+                    .get("origin")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok()),
+                error
+                    .get("recovery")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok()),
+                error
+                    .get("side_effects")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value(value).ok()),
+            ));
+        }
+        let data = payload.get("data").unwrap_or(&payload);
+        if !data.is_object() || data.get("receipt_status").is_none() {
+            return Err(ToolError::Sdk { sdk_kind:"decode_error".into(), message:"selected daemon returned no native snippet receipt status; do not retry to recover telemetry".into() });
+        }
+        Ok(data.clone())
+    }
+
     /// Forward a byte-stream client to this authenticated gateway without
     /// constructing a second gateway or owning local OAuth state.
     pub(crate) async fn serve_client_bridge<R, W>(
@@ -1432,6 +1534,9 @@ fn typed_response_error(error: serde_json::Error) -> ToolError {
 }
 
 #[cfg(test)]
+mod snippet_source_compat;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -1446,7 +1551,7 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
     }
 
-    fn test_gateway(base_url: String, token: Option<String>) -> LiveGateway {
+    pub(super) fn test_gateway(base_url: String, token: Option<String>) -> LiveGateway {
         ensure_tls_provider();
         LiveGateway {
             base_url: normalize_base_url(&base_url).expect("test URL parses"),

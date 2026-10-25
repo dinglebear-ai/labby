@@ -1,5 +1,18 @@
 use super::*;
 
+/// Capture original argument identity without retaining its payload in call metadata.
+fn original_argument_digest(params: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(params).expect("JSON Value serialization is infallible");
+    format!(
+        "sha256:{}",
+        Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    )
+}
+
 /// Enqueue a `ToolCall` request from the runner into `pending_tool_calls`.
 ///
 /// Free function (not `&self` method) so the returned future can capture
@@ -19,6 +32,7 @@ pub(super) fn enqueue_tool_call<'a, H: CodeModeHost>(
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
     let call_id = id.clone();
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = crate::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
@@ -49,7 +63,15 @@ pub(super) fn enqueue_tool_call<'a, H: CodeModeHost>(
             )
             .await;
         let elapsed_ms = call_start.elapsed().as_millis();
-        (seq, call_id, redacted_params, result, elapsed_ms, start_ms)
+        (
+            seq,
+            call_id,
+            redacted_params,
+            params_digest,
+            result,
+            elapsed_ms,
+            start_ms,
+        )
     }));
 }
 
@@ -75,6 +97,7 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
 ) {
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = crate::trace::redact_trace_params(&params, cfg.trace_params);
     let caller = cfg.caller.clone();
     let capability_filter = cfg.capability_filter.clone();
@@ -100,6 +123,7 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 seq,
                 id,
                 redacted_params,
+                params_digest,
                 Err(error),
                 call_start.elapsed().as_millis(),
                 start_ms,
@@ -123,6 +147,7 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         seq,
                         id,
                         redacted_params,
+                        params_digest,
                         Ok(ToolCallOutcome { value, ui: None }),
                         call_start.elapsed().as_millis(),
                         start_ms,
@@ -135,6 +160,7 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         seq,
                         id,
                         redacted_params,
+                        params_digest,
                         Err(error),
                         call_start.elapsed().as_millis(),
                         start_ms,
@@ -177,6 +203,7 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                 seq,
                 id,
                 redacted_params,
+                params_digest,
                 Err(error),
                 call_start.elapsed().as_millis(),
                 start_ms,
@@ -189,6 +216,7 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             seq,
             id,
             redacted_params,
+            params_digest,
             result,
             call_start.elapsed().as_millis(),
             start_ms,
@@ -259,10 +287,11 @@ pub(super) fn enqueue_rejected_tool_call(
     cfg: &RunnerConfig,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'_>>,
 ) {
+    let params_digest = Some(original_argument_digest(&params));
     let redacted_params = crate::trace::redact_trace_params(&params, cfg.trace_params);
     pending_tool_calls.push(Box::pin(async move {
         let error = CodeModeCallError::from(err).with_tool(id.clone());
-        (seq, id, redacted_params, Err(error), 0, 0)
+        (seq, id, redacted_params, params_digest, Err(error), 0, 0)
     }));
 }
 

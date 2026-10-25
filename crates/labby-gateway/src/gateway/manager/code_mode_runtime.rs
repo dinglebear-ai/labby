@@ -704,9 +704,8 @@ impl GatewayManager {
         use crate::gateway::code_mode::catalog_cache;
 
         let cfg = self.config.read().await.clone();
-        if !cfg.code_mode.enabled {
-            return Ok(Vec::new());
-        }
+        // The enabled flag controls synthetic MCP advertisement. Native saved
+        // workflows still need authorized, bounded metadata in raw-tool mode.
         if allowed_upstreams.is_some_and(BTreeSet::is_empty) {
             return Ok(Vec::new());
         }
