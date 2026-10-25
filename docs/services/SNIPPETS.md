@@ -106,6 +106,12 @@ unavailable. Native legacy team routes revalidate current credential bindings
 before contextual snippet actions. Receipt reads use the existing Code Mode journal database;
 when journaling is disabled or unavailable, lookup reports `journal_unavailable`.
 
+Upgrade note: historical team-route receipts keyed to a shared team OAuth
+credential subject may no longer match the initiating principal's receipt owner.
+Those ambiguous records are not automatically reassigned, and lookup has no
+cross-owner fallback. This does not delete the stored records. A fresh explicitly
+requested run creates a new execution; it does not recover the old receipt.
+
 Receipts retain exact snippet and merged-input digests, the effective tool scope,
 Labby runtime version/engine, surface, timestamps, status, wall time, final-result
 digest/byte count, and bounded tool-call identities, parameter digests and
@@ -193,8 +199,8 @@ after preparation, so the preview does not freeze an external server.
 historical `execution_id`, fresh `params`, the current preview fingerprint and
 `acknowledged_drift` matching every changed or unverifiable field. It compares
 snippet, input, effective scope, runtime and tool-schema evidence. Older receipts
-without schema evidence remain readable and report that comparison as
-unverifiable. Receipts retain optional bounded schema digests, never raw input
+without schema evidence remain readable when their owner, route and capability
+binding still match, and report that comparison as unverifiable. Receipts retain optional bounded schema digests, never raw input
 or tool parameters. Replay neither resumes a journal nor reconstructs historical
 input; it never runs automatically to recover an incomplete receipt.
 
