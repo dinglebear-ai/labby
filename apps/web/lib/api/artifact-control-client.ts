@@ -132,7 +132,7 @@ export function controlPlaneAction<T>(service: 'artifacts' | 'sources' | 'jobs' 
   })
 }
 
-function parseReceipt<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown, label: string): T {
+function parseReceipt<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
   const parsed = schema.safeParse(value)
   if (parsed.success) return parsed.data
   const issue = parsed.error.issues[0]

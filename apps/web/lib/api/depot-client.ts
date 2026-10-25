@@ -11,7 +11,7 @@ const USE_MOCK_DATA = process.env.NEXT_PUBLIC_MOCK_DATA === 'true'
 const COMPATIBILITY_SCHEMA = 'labby.depot-compatibility/v1'
 const FEDERATED_SCHEMA = 'labby.depot-compatibility/v2'
 const bounded = (max: number) => z.string().max(max)
-const optionalCatalogText = z.string().nullish().transform(value => value ?? undefined)
+const optionalCatalogText = z.string().nullable().transform(value => value ?? undefined).optional()
 const rawId = bounded(2048).refine(value => new TextEncoder().encode(value).length <= 2048, 'artifact ID exceeds 2048 UTF-8 bytes')
 const cursorSchema = z.string().length(43).regex(/^[A-Za-z0-9_-]+$/)
 const descriptorTags = z.array(z.string().refine(value => {
@@ -173,7 +173,7 @@ const controlReadmeSchema = z.discriminatedUnion('state', [
   z.object({ state: z.literal('unavailable'), reason: z.enum(['absent', 'not_distributable', 'too_large', 'storage_unavailable', 'invalid_text']) }).passthrough(),
 ])
 
-const artifactSchema: z.ZodType<DepotArtifact, z.ZodTypeDef, unknown> = z.object({
+const artifactSchema: z.ZodType<DepotArtifact> = z.object({
   providerId: bounded(64).min(1).refine(value => value !== 'all').optional(),
   id: z.string().optional(), kind: z.string().optional(), namespace: z.string().optional(),
   name: z.string().optional(), title: optionalCatalogText, description: optionalCatalogText,
@@ -213,7 +213,7 @@ function safeDepotError(value: string, status: number): string {
   return /^[a-z][a-z0-9_]{0,127}$/.test(value) ? `Labby catalog request failed (${status}, ${value})` : `Labby catalog request failed (${status})`
 }
 
-function validate<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, value: unknown, label: string): T {
+function validate<T>(schema: z.ZodType<T>, value: unknown, label: string): T {
   const result = schema.safeParse(value)
   if (result.success) return result.data
   const issue = result.error.issues[0]
@@ -430,7 +430,7 @@ export type DepotSource = z.infer<typeof depotSourceSchema>
 export type DepotIngestJob = z.infer<typeof depotIngestJobSchema>
 export type DepotRepoInput = { url: string; namespace?: string; ref?: string; subdir?: string; credential?: string; intervalSeconds?: number }
 
-function operationResult<T>(value: unknown, schema: z.ZodType<T, z.ZodTypeDef, unknown>, label: string): T {
+function operationResult<T>(value: unknown, schema: z.ZodType<T>, label: string): T {
   const envelope = validate(genericResultSchema, value, label)
   return validate(schema, envelope.result, label)
 }
@@ -536,10 +536,14 @@ export const mcpConnectionSchema = z.object({
   revisionId: bounded(512).min(1),
   transport: z.literal('http'),
   authentication: z.enum(['none', 'bearer']),
-  url: bounded(2048).url().refine(value => {
+  url: bounded(2048).refine(value => {
+    // Validate the original bytes: Zod 4's URL check normalizes tabs/newlines
+    // before later refinements, which would hide forbidden endpoint input.
     if (/[\s\\]/.test(value) || Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return false
-    const url = new URL(value)
-    return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search
+    try {
+      const url = new URL(value)
+      return url.protocol === 'https:' && !url.username && !url.password && !url.hash && !url.search
+    } catch { return false }
   }, 'Use an HTTPS MCP endpoint without credentials, query, or fragment'),
 }).strict()
 export type CatalogMcpConnection = z.infer<typeof mcpConnectionSchema>
