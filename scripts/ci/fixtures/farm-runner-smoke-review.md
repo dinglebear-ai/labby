@@ -1,9 +1,10 @@
-# Farm runner acceptance fixture
+# Farm runner acceptance review
 
-This file is inactive under `scripts/ci/fixtures/`. No workflow is installed or
-published. Labby's `.github/AGENTS.md` and CI contract require GitHub-hosted
+The activation candidate is `.github/workflows/farm-runner-smoke.yml` in the
+owned local task branch. Nothing is pushed, installed remotely, or dispatched.
+The explicit user exception and push approval are still pending at preparation. Labby's `.github/AGENTS.md` and CI contract require GitHub-hosted
 product CI. Activating this manual acceptance workflow needs a reviewed explicit
-exception and authorized push; it must not reroute existing jobs or modify
+exception, authorized push and human merge; it must not reroute existing jobs or modify
 `AGENTS.md`.
 
 The intended target is `dinglebear-ai/labby`, chosen by the user for one Farm
@@ -29,3 +30,7 @@ Preserve unrelated runners, jobs, caches and GitHub state.
 This acceptance does not replace Labby CI, the complete Core local-check suite,
 scale/recycle/restart/recovery journeys, or remote-host setup acceptance. A YAML
 lint pass is not a real GitHub job result.
+
+GitHub only exposes `workflow_dispatch` after the workflow exists on the default
+branch. Pushing this task branch or opening a draft PR does not make it runnable.
+Keep human merge and the later bounded live runner/dispatch authorization separate.

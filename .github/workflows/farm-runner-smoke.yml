@@ -1,5 +1,5 @@
-# Inactive acceptance fixture. Activating this under .github/workflows requires
-# review of Labby's GitHub-hosted-only CI policy and explicit push approval.
+# Manual Farm acceptance only. Publishing requires explicit task exception
+# and push approval; human merge is required before workflow_dispatch is usable.
 name: Farm native runner acceptance
 
 on:
