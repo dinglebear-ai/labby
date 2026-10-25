@@ -80,6 +80,8 @@ mod oauth_invalidation;
 #[cfg(test)]
 mod pooled_cancellation_tests;
 mod probe;
+#[cfg(test)]
+mod probe_active_calls_tests;
 mod prompts_exposure;
 #[cfg(test)]
 mod prompts_exposure_tests;
@@ -816,19 +818,7 @@ impl UpstreamPool {
         &self,
         upstream_name: &str,
     ) -> Result<AcquiredUpstreamCallPermit, String> {
-        let semaphore = if let Some(existing) = self.call_semaphores.read().await.get(upstream_name)
-        {
-            Arc::clone(existing)
-        } else {
-            let mut semaphores = self.call_semaphores.write().await;
-            Arc::clone(
-                semaphores
-                    .entry(upstream_name.to_string())
-                    .or_insert_with(|| {
-                        Arc::new(tokio::sync::Semaphore::new(self.call_concurrency))
-                    }),
-            )
-        };
+        let semaphore = self.upstream_call_semaphore(upstream_name).await;
         match Arc::clone(&semaphore).try_acquire_owned() {
             Ok(permit) => Ok(AcquiredUpstreamCallPermit {
                 permit,
@@ -842,6 +832,41 @@ impl UpstreamPool {
                     queued: true,
                 })
                 .map_err(|_| format!("upstream `{upstream_name}` concurrency gate was closed")),
+            Err(tokio::sync::TryAcquireError::Closed) => Err(format!(
+                "upstream `{upstream_name}` concurrency gate was closed"
+            )),
+        }
+    }
+
+    async fn upstream_call_semaphore(&self, upstream_name: &str) -> Arc<tokio::sync::Semaphore> {
+        if let Some(existing) = self.call_semaphores.read().await.get(upstream_name) {
+            return Arc::clone(existing);
+        }
+        let mut semaphores = self.call_semaphores.write().await;
+        Arc::clone(
+            semaphores
+                .entry(upstream_name.to_string())
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(self.call_concurrency))),
+        )
+    }
+
+    /// Fence heartbeat-driven replacement against this upstream's RPCs.
+    /// Acquiring every permit atomically both proves idle and keeps a new call
+    /// from dispatching until the replacement has finished. Busy peers defer;
+    /// they are never waited on or cancelled by a catalog heartbeat.
+    pub(super) async fn try_acquire_upstream_reconnect_permit(
+        &self,
+        upstream_name: &str,
+    ) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, String> {
+        let permits = u32::try_from(self.call_concurrency)
+            .map_err(|_| "upstream concurrency limit is invalid".to_string())?;
+        match self
+            .upstream_call_semaphore(upstream_name)
+            .await
+            .try_acquire_many_owned(permits)
+        {
+            Ok(permit) => Ok(Some(permit)),
+            Err(tokio::sync::TryAcquireError::NoPermits) => Ok(None),
             Err(tokio::sync::TryAcquireError::Closed) => Err(format!(
                 "upstream `{upstream_name}` concurrency gate was closed"
             )),
