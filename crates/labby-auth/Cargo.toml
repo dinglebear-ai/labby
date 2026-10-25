@@ -61,7 +61,7 @@ oauth2 = { version = "5.0", default-features = false, optional = true }
 package = "rmcp"
 version = "=3.7.0"
 git = "https://github.com/dinglebear-ai/rust-sdk.git"
-rev = "053dada7816a9fd6c9c2bddd2eca3fbfb37a45b9"
+rev = "c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2"
 default-features = false
 features = ["client", "auth", "auth-client-credentials-jwt", "auth-enterprise-managed", "transport-streamable-http-client-reqwest"]
 optional = true

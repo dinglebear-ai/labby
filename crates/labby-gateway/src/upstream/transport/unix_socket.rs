@@ -208,62 +208,76 @@ mod tests {
     #[tokio::test]
     async fn unix_scope_challenge_is_observed_without_replaying_the_request() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let directory = tempfile::tempdir().unwrap();
-        let socket = directory.path().join("scope.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = Vec::new();
-            let mut buffer = [0_u8; 4096];
-            loop {
-                let read = stream.read(&mut buffer).await.unwrap();
-                assert!(read > 0);
-                request.extend_from_slice(&buffer[..read]);
-                assert!(request.len() < 16 * 1024);
-                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
-                    let headers = String::from_utf8_lossy(&request[..end]);
-                    let length = headers
-                        .lines()
-                        .find_map(|line| {
-                            let (name, value) = line.split_once(':')?;
-                            name.eq_ignore_ascii_case("content-length")
-                                .then(|| value.trim().parse::<usize>().unwrap())
-                        })
-                        .unwrap_or(0);
-                    if request.len() >= end + 4 + length {
-                        break;
+        for challenges in [
+            "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+            "WWW-Authenticate: Basic realm=\"local, proxy\"\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+            "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"\r\nWWW-Authenticate: Basic realm=\"proxy\"",
+            "WWW-Authenticate: Basic realm=\"local, proxy\", Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+            "WWW-Authenticate: Bearer realm=\"other\"\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("scope.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                    assert!(request.len() < 16 * 1024);
+                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
                     }
                 }
-            }
-            stream.write_all(b"HTTP/1.1 403 Forbidden\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
-            stream.flush().await.unwrap();
-        });
-        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let recorded = Arc::clone(&observed);
-        let client =
-            LabbyUnixSocketHttpClient::new(socket.to_str().unwrap(), "http://local.test/mcp", 1024)
-                .with_scope_challenge_handler(Arc::new(move |scope| {
-                    recorded.lock().unwrap().push(scope)
-                }));
-        let request = serde_json::from_value(
-            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
-        )
-        .unwrap();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            client.post_message("/mcp".into(), request, None, None, HashMap::new()),
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            result,
-            Err(StreamableHttpError::InsufficientScope(_))
-        ));
-        assert_eq!(*observed.lock().unwrap(), vec!["files:write"]);
-        tokio::time::timeout(std::time::Duration::from_secs(5), server)
-            .await
-            .unwrap()
+                let response = format!(
+                    "HTTP/1.1 403 Forbidden\r\n{challenges}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+            });
+            let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&observed);
+            let client = LabbyUnixSocketHttpClient::new(
+                socket.to_str().unwrap(),
+                "http://local.test/mcp",
+                1024,
+            )
+            .with_scope_challenge_handler(Arc::new(move |scope| {
+                recorded.lock().unwrap().push(scope)
+            }));
+            let request = serde_json::from_value(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
             .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.post_message("/mcp".into(), request, None, None, HashMap::new()),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                result,
+                Err(StreamableHttpError::InsufficientScope(_))
+            ));
+            assert_eq!(*observed.lock().unwrap(), vec!["files:write"]);
+            tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
     }
 
     #[test]

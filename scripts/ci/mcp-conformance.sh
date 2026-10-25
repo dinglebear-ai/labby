@@ -38,7 +38,7 @@ if [[ $# -ne 0 ]]; then
 fi
 
 LABBY_RMCP_REPOSITORY="${LABBY_RMCP_REPOSITORY:-https://github.com/dinglebear-ai/rust-sdk.git}"
-LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-053dada7816a9fd6c9c2bddd2eca3fbfb37a45b9}"
+LABBY_RMCP_REVISION="${LABBY_RMCP_REVISION:-c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2}"
 # Override only to use a local mirror containing an unpublished candidate during development.
 LABBY_RMCP_FIXTURE_REPOSITORY="${LABBY_RMCP_FIXTURE_REPOSITORY:-$LABBY_RMCP_REPOSITORY}"
 RMCP_FIXTURE_VERSION="${RMCP_FIXTURE_VERSION:-3.7.0}"
