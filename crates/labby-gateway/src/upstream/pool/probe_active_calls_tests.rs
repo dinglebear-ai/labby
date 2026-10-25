@@ -71,10 +71,7 @@ async fn failed_heartbeat_preserves_active_tool_and_exact_connection() {
     let result = pool
         .reprobe_tools_for_upstream(&named_test_upstream_config("active-effect"))
         .await;
-    assert!(
-        matches!(result, Ok(false)),
-        "busy recovery must defer: {result:?}"
-    );
+    assert!(matches!(result, Ok(false)), "busy recovery must defer");
     assert!(!call.is_finished(), "a heartbeat cancelled the tool effect");
     assert!(
         pool.observe_connection_catalog_entry("active-effect")
