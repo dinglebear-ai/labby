@@ -334,7 +334,9 @@ Native Windows process-tree containment is verified separately through the
 required Windows Job Object tests. The Unix checks do not replace those tests
 or make them advisory.
 
-`nightly` adds the one-worker live browser lane, `collision` runs two isolated
+The PR tier includes the one-worker native live browser lane, including snippet
+replay, retained history, and exact artifact downloads. `nightly` adds fault
+qualification and the mobile browser checks. `collision` runs two isolated
 copies of the stateful HTTP/CLI/API shard, and `repeat10` executes the hermetic
 PR tier ten times with seeds 1 through 10.
 `manual` is the credential-free operator tier. External-provider probes remain

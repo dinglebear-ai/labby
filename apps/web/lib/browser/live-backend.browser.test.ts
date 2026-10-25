@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import test from 'node:test'
@@ -51,6 +52,70 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       sessionTeams: Array.isArray(sessionBody.teams) ? sessionBody.teams : [],
     }
   }, { csrfToken, service, name, params, teamId })
+}
+
+async function exerciseSnippetReplayThroughUi(page: Page, csrfToken: string, name: string) {
+  const contents = 'owned browser replay artifact\n'
+  const digest = createHash('sha256').update(contents).digest('hex')
+  const body = `---\nname: ${name}\ndescription: Owned live browser replay regression\ntools: []\n---\n\`\`\`js\nasync () => { await writeArtifact('report.txt', ${JSON.stringify(contents)}, {contentType:'text/plain'}); return {ok:true}; }\n\`\`\`\n`
+  const created = await action(page, csrfToken, 'snippets', 'snippets.create', { name, body })
+  assert.equal(created.status, 200, 'owned live snippet must be created')
+  try {
+    const seed = await action(page, csrfToken, 'snippets', 'snippets.exec', { name, params: {} })
+    assert.equal(seed.status, 200, 'seed must execute through the native runtime')
+    assert.equal(seed.body.receipt_status, 'persisted')
+    const seedId = seed.body.execution_id
+    assert.equal(typeof seedId, 'string')
+    await page.goto('/snippets/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+    await page.getByLabel('Search snippets', { exact: true }).fill(name)
+    await page.getByText(name, { exact: true }).first().click()
+    const history = page.getByRole('region', { name: `Run history for ${name}`, exact: true })
+    await history.getByRole('button').filter({ hasText: seedId }).click()
+    await history.getByRole('button', { name: 'Preview replay', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: `Replay preview · ${name}`, exact: true })
+    const run = preview.getByRole('button', { name: 'Run now', exact: true })
+    await run.waitFor({ state: 'visible', timeout: 10_000 })
+    // Only acknowledge drift actually reported by this native preview.
+    const acknowledgment = preview.getByRole('checkbox')
+    if (await acknowledgment.count()) await acknowledgment.check()
+    const replayResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/v1/snippets'
+      && response.request().postDataJSON()?.action === 'snippets.replay', { timeout: 15_000 })
+    await run.click({ timeout: 10_000 })
+    const response = await replayResponse
+    assert.equal(response.status(), 200, 'UI replay must complete against the real native backend')
+    const replay = await response.json()
+    assert.equal(replay.receipt_status, 'persisted')
+    assert.equal(typeof replay.execution_id, 'string')
+    assert.notEqual(replay.execution_id, seedId, 'replay creates a new retained execution')
+    const request = response.request().postDataJSON()
+    assert.equal(request.params.execution_id, seedId)
+    assert.ok(request.params.expected_preview_fingerprint)
+    await history.getByRole('button').filter({ hasText: replay.execution_id }).click({ timeout: 10_000 })
+    const receipt = await action(page, csrfToken, 'snippets', 'snippets.receipt', { execution_id: replay.execution_id })
+    assert.equal(receipt.status, 200)
+    assert.equal(receipt.body.status, 'succeeded')
+    assert.equal(receipt.body.artifacts.length, 1)
+    assert.equal(receipt.body.artifacts[0].sha256, digest)
+    assert.equal(receipt.body.artifacts[0].bytes, Buffer.byteLength(contents))
+    const downloading = page.waitForEvent('download', { timeout: 10_000 })
+    await history.getByRole('button', { name: 'Download artifact', exact: true }).click()
+    const download = await downloading
+    assert.equal(download.suggestedFilename(), 'report.txt')
+    const downloadedPath = await download.path()
+    assert.ok(downloadedPath)
+    const bytes = await readFile(downloadedPath)
+    assert.equal(bytes.toString('utf8'), contents)
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), digest)
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 })
+    await page.getByLabel('Search snippets', { exact: true }).fill(name)
+    await page.getByText(name, { exact: true }).first().click()
+    await history.getByRole('button').filter({ hasText: replay.execution_id }).waitFor({ state: 'visible', timeout: 10_000 })
+    progress('snippet-native-replay-history-download-reload')
+  } finally {
+    const removed = await action(page, csrfToken, 'snippets', 'snippets.remove', { name })
+    assert.equal(removed.status, 200, 'owned browser snippet cleanup must succeed')
+  }
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
@@ -430,6 +495,7 @@ test('embedded Gateway Admin completes a real backend journey', {
       progress('artifact-lifecycle-through-ui')
       await exerciseActionableImportFailure(page)
       progress('artifact-import-failure-through-ui')
+      await exerciseSnippetReplayThroughUi(page, csrfToken, `${ownedName}-replay`)
 
       if (descriptor.stash_supported) {
         await exerciseStashThroughUi(page, descriptor)

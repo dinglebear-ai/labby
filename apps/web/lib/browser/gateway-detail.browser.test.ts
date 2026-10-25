@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import http from 'node:http'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import os from 'node:os'
@@ -1481,12 +1481,17 @@ test('Snippets show persisted history and schema forms enforce required tool map
   const snippet = { name: 'pulse', source: 'user', path: '/user/pulse.md', description: 'Pulse workflow', tags: [], shadowed: false, content_digest: 'digest', body: 'async () => ({ok:true})' }
   const receipt = { execution_id: 'run-ui-1', snippet_name: 'pulse', snippet_digest: 'digest', input_digest: 'input', effective_scope_fingerprint: 'scope', runtime_version: '3.0.0', surface: 'api', created_at_ms: 100, elapsed_ms: 17, status: 'failed', error_kind: 'tool_error', result_digest: null, result_bytes: null, tool_calls: 1, omitted_calls: 0, calls: [{ tool: 'host::status', ok: false, elapsed_ms: 8, params_digest: null, error_kind: 'timeout' }], artifacts: [{ path: 'runs/run-ui-1/output.json', sha256: 'hash', bytes: 2, content_type: 'application/json' }] }
   let historyCalls = 0
+  let artifactAvailable = false
   const executions: Array<{action:string;params:Record<string,unknown>}> = []
   await page.route('**/v1/snippets', async route => {
     const { action,params } = route.request().postDataJSON()
     if(action==='snippets.exec'||action==='snippets.replay')executions.push({action,params})
-    if (action === 'snippets.artifact') { await route.fulfill({ status: 404, json: { message: 'Artifact is no longer retained', code: 'artifact_unavailable' } }); return }
-    const value = action === 'snippets.list' ? { snippets: [snippet] } : action === 'snippets.get' ? snippet : action === 'snippets.history' ? (historyCalls++, { receipts: [receipt], next_cursor: null, receipt_status: 'persisted' }) : action === 'snippets.receipt' ? receipt : action === 'snippets.preview' ? {name:'pulse',mode:'metadata',dynamic_unknown:true,coverage:'declared_tools_only',can_execute:true,input_summary:{keys:[],provided_keys:[],defaulted_keys:[]},declared_tools:[],fingerprints:{},preview_fingerprint:'guard',drift:[],warnings:[]} : { result: { ok: true }, execution_id: 'run-ui-2', receipt_status: 'persisted' }
+    if (action === 'snippets.artifact') {
+      assert.deepEqual(params, { execution_id: 'run-ui-1', path: receipt.artifacts[0].path })
+      await route.fulfill(artifactAvailable ? { json: { ...receipt.artifacts[0], content_base64: 'e30=' } } : { status: 404, json: { message: 'Artifact is no longer retained', code: 'artifact_unavailable' } })
+      return
+    }
+    const value = action === 'snippets.list' ? { snippets: [snippet] } : action === 'snippets.get' ? snippet : action === 'snippets.history' ? (historyCalls++, { receipts: [receipt], next_cursor: null, receipt_status: 'persisted' }) : action === 'snippets.receipt' ? receipt : action === 'snippets.preview' ? {name:'pulse',mode:'metadata',dynamic_unknown:true,coverage:'declared_tools_only',can_execute:true,input_summary:{keys:[],provided_keys:[],defaulted_keys:[]},declared_tools:[],fingerprints:{},preview_fingerprint:'guard',drift:params.execution_id ? [{field:'input',status:'changed'}] : [],warnings:[]} : { result: { ok: true }, execution_id: 'run-ui-2', receipt_status: 'persisted' }
     await route.fulfill({ json: value })
   })
   await page.route('**/v1/gateway/codemode/tools/search', async route=>route.fulfill({json:{results:[{path:'host.status',id:'host::status',kind:'tool',namespace:'host',name:'status',description:'Host status',signature:'()',tags:[],score:1}],total:1,truncated:false}}))
@@ -1496,16 +1501,27 @@ test('Snippets show persisted history and schema forms enforce required tool map
   await page.getByText('1. host::status · failed (timeout) · 8 ms', { exact: true }).waitFor()
   await page.getByRole('button', { name: 'Download artifact', exact: true }).click()
   await page.getByText('Artifact is no longer retained', { exact: true }).waitFor()
+  artifactAvailable = true
+  const downloadReady = page.waitForEvent('download')
+  await page.getByRole('button', { name: 'Download artifact', exact: true }).click()
+  const download = await downloadReady
+  assert.equal(download.suggestedFilename(), 'output.json')
+  const downloadPath = await download.path()
+  assert.ok(downloadPath)
+  assert.equal(await readFile(downloadPath, 'utf8'), '{}')
   await page.getByRole('button',{name:'Preview replay',exact:true}).click()
   await page.getByRole('button',{name:'Run now',exact:true}).waitFor()
   await page.getByText('Starts a new run of the whole workflow; it does not resume the earlier run.',{exact:false}).waitFor()
   assert.equal(executions.length,0,'preview must never execute')
+  assert.equal(await page.getByRole('button',{name:'Run now',exact:true}).isDisabled(), true, 'changed inputs require explicit acknowledgment')
+  await page.getByRole('checkbox', { name: 'I acknowledge current drift: input (changed)', exact: true }).check()
   const replayHistoryRefresh=page.waitForResponse(response=>response.url().endsWith('/v1/snippets')&&response.request().postDataJSON()?.action==='snippets.history')
   await page.getByRole('button',{name:'Run now',exact:true}).click()
   await replayHistoryRefresh
   await page.waitForFunction(()=>!document.querySelector('#preview-inputs'))
   assert.equal(executions[0].action,'snippets.replay')
   assert.equal(executions[0].params.expected_preview_fingerprint,'guard')
+  assert.deepEqual(executions[0].params.acknowledged_drift, ['input'])
   const beforeExecute = historyCalls
   await page.getByRole('button', { name: 'Execute', exact: true }).click()
   const executionHistoryRefresh=page.waitForResponse(response=>response.url().endsWith('/v1/snippets')&&response.request().postDataJSON()?.action==='snippets.history')
@@ -1606,5 +1622,69 @@ test('mobile palette loading can be cancelled before opening within the viewport
     await page.keyboard.press('Escape')
     await search.waitFor({ state: 'hidden' })
     assert.equal(await trigger.evaluate(element => element === document.activeElement), true)
+  } finally { holdChunks = false; release() }
+})
+
+
+test('failed cold palette import shows a generic error and Cancel restores focus', { concurrency: false }, async t => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage()
+  let rejectChunks = false
+  await page.route('**/_next/static/chunks/*.js', async route => {
+    if (rejectChunks) await route.abort('failed')
+    else await route.continue()
+  })
+  await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+  const trigger = page.getByRole('button', { name: 'Search and filter', exact: true })
+  rejectChunks = true
+  await trigger.click()
+  const error = page.getByRole('alert').filter({ hasText: 'The command palette could not load. Try again.' })
+  await error.waitFor({ state: 'visible' })
+  assert.doesNotMatch(await error.innerText(), /_next|ChunkLoadError|https?:/)
+  assert.equal(await error.getByRole('button', { name: 'Try again', exact: true }).isEnabled(), true)
+  await error.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await error.waitFor({ state: 'hidden' })
+  assert.equal(await trigger.evaluate(element => element === document.activeElement), true)
+  assert.equal(await page.getByRole('dialog', { name: 'Command Palette', exact: true }).isVisible(), false)
+})
+
+test('navigation cancels a pending palette import without taking focus from the new page', { concurrency: false }, async t => {
+  await startPreviewServer()
+  const browser = await chromium.launch({ headless: true })
+  t.after(async () => { await browser.close() })
+  const page = await browser.newPage()
+  let holdChunks = false
+  let release!: () => void
+  const pending = new Promise<void>(resolve => { release = resolve })
+  await page.route('**/_next/static/chunks/*.js', async route => {
+    if (holdChunks) await pending
+    await route.continue()
+  })
+  try {
+    await page.goto(`${baseUrl}/gateways/`, { waitUntil: 'networkidle' })
+    holdChunks = true
+    await page.getByRole('button', { name: 'Search and filter', exact: true }).click()
+    const loading = page.getByRole('status').filter({ hasText: 'Loading command palette' })
+    await loading.waitFor({ state: 'visible' })
+    // Next's native-history integration updates the pathname without loading
+    // another route's chunks, keeping the palette import deliberately pending.
+    await page.evaluate(() => window.history.pushState(null, '', '/settings/'))
+    await loading.waitFor({ state: 'hidden' })
+    const destination = page.getByRole('button', { name: 'Account menu', exact: true })
+    await destination.focus()
+    holdChunks = false
+    release()
+    await page.waitForLoadState('networkidle')
+    assert.equal(await page.getByRole('dialog', { name: 'Command Palette', exact: true }).isVisible(), false)
+    assert.equal(await destination.evaluate(element => element === document.activeElement), true)
+    await page.keyboard.press('Control+k')
+    const search = page.getByRole('textbox', { name: 'Search command palette', exact: true })
+    await search.waitFor({ state: 'visible' })
+    assert.equal(await search.evaluate(element => element === document.activeElement), true)
+    await page.keyboard.press('Escape')
+    await search.waitFor({ state: 'hidden' })
+    assert.equal(await destination.evaluate(element => element === document.activeElement), true)
   } finally { holdChunks = false; release() }
 })

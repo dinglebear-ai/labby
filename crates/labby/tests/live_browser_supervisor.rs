@@ -82,7 +82,11 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
     .expect("public identity bootstrap");
     let config = format!(
         "{}\n[[loadouts]]\nname = \"team:{}:production\"\nupstreams = []\nservices = [\"gateway\"]\n\n[web]\nassets_dir = {}\n",
-        policy(&["lab:read", "lab", "lab:admin"]),
+        policy(&["lab:read", "lab", "lab:admin"]).replacen(
+            "services = [\"gateway\"]",
+            "services = [\"gateway\", \"snippets\"]\nexpose_code_mode = false",
+            1,
+        ) + "\n[code_mode]\nenabled = true\n",
         support::LiveLabbyGuard::HARNESS_TEAM_ID,
         serde_json::to_string(&assets.display().to_string()).unwrap()
     );
