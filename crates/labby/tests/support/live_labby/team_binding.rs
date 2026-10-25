@@ -9,6 +9,9 @@ pub(super) async fn bind(
     upstream: &str,
     deadline: tokio::time::Instant,
 ) -> Result<(), String> {
+    // Direct fixture-helper tests bypass LiveLabby::wait_ready, which normally
+    // installs the provider for the workspace's rustls-no-provider client.
+    drop(rustls::crypto::ring::default_provider().install_default());
     let client = reqwest::Client::builder()
         .no_proxy()
         .build()
