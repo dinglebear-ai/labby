@@ -61,12 +61,83 @@ fn scopes(value: &str) -> Option<Vec<String>> {
     (!values.is_empty() && values.len() <= MAX_SCOPES).then(|| values.into_iter().collect())
 }
 
-/// Accept one complete Bearer insufficient-scope challenge. Quoted commas and
-/// duplicate parameters cannot inject a permission through another parameter.
-pub fn required_scope_from_challenge(header: &str) -> Option<String> {
-    if header.len() > 8192 {
+fn auth_token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
+}
+
+/// Separate challenge schemes without treating quoted commas or auth-parameter
+/// whitespace as a scheme boundary. Check the complete field before selecting
+/// a challenge so trailing unterminated quotes cannot be ignored.
+fn authentication_challenges(header: &str) -> Option<Vec<&str>> {
+    if header.len() > 8192 || header.chars().any(|ch| ch.is_control() && ch != '\t') {
         return None;
     }
+    let header = header.trim_matches([' ', '\t']);
+    let first_token = header.bytes().take_while(|byte| auth_token(*byte)).count();
+    if first_token == 0
+        || header[first_token..]
+            .chars()
+            .next()
+            .is_some_and(|ch| ch != ' ' && ch != '\t' && ch != ',')
+    {
+        return None;
+    }
+    let mut challenges = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    let mut fields = 1;
+    for (index, ch) in header.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quoted && ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            quoted = !quoted;
+        } else if ch == ',' && !quoted {
+            fields += 1;
+            if fields > 256 {
+                return None;
+            }
+            let next = header[index + 1..].trim_start_matches([' ', '\t']);
+            let token_end = next.bytes().take_while(|byte| auth_token(*byte)).count();
+            if token_end == 0 {
+                return None;
+            }
+            let tail = &next[token_end..];
+            if !tail.trim_start_matches([' ', '\t']).starts_with('=') {
+                if tail
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch != ' ' && ch != '\t' && ch != ',')
+                {
+                    return None;
+                }
+                challenges.push(header[start..index].trim_matches([' ', '\t']));
+                if challenges.len() >= 16 {
+                    return None;
+                }
+                start = header.len() - next.len();
+            }
+        }
+    }
+    if quoted || escaped || header.is_empty() {
+        return None;
+    }
+    challenges.push(header[start..].trim_matches([' ', '\t']));
+    Some(challenges)
+}
+
+/// Select a complete Bearer insufficient-scope challenge from a bounded field.
+/// Parameters belong to their own scheme; quoted text and duplicate parameters
+/// cannot inject a permission through another challenge.
+pub fn required_scope_from_challenge(header: &str) -> Option<String> {
+    authentication_challenges(header)?
+        .into_iter()
+        .find_map(required_scope_from_bearer_challenge)
+}
+
+fn required_scope_from_bearer_challenge(header: &str) -> Option<String> {
     let (scheme, mut rest) = header.trim().split_once(char::is_whitespace)?;
     if !scheme.eq_ignore_ascii_case("Bearer") {
         return None;

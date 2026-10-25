@@ -1181,14 +1181,33 @@ mod tests {
 
     #[tokio::test]
     async fn real_scope_challenge_drives_only_its_subjects_explicit_consent() {
+        for challenges in [
+            vec![r#"Bearer error="insufficient_scope", scope="files:write""#],
+            vec![
+                r#"Basic realm="gateway", Bearer error="insufficient_scope", scope="files:write""#,
+            ],
+            vec![
+                r#"Bearer error="insufficient_scope", scope="files:write", Basic realm="gateway""#,
+            ],
+            vec![
+                r#"Basic realm="gateway""#,
+                r#"Bearer error="insufficient_scope", scope="files:write""#,
+            ],
+        ] {
+            real_scope_challenge_consent(challenges).await;
+        }
+    }
+
+    async fn real_scope_challenge_consent(challenges: Vec<&'static str>) {
         use labby_auth::upstream::{cache::OauthClientCache, manager::UpstreamOauthManager};
         let server = MockServer::start().await;
+        let mut response = ResponseTemplate::new(403);
+        for challenge in challenges {
+            response = response.append_header("www-authenticate", challenge);
+        }
         Mock::given(method("POST"))
             .and(path("/mcp"))
-            .respond_with(ResponseTemplate::new(403).insert_header(
-                "www-authenticate",
-                r#"Bearer error="insufficient_scope", scope="files:write""#,
-            ))
+            .respond_with(response)
             .mount(&server)
             .await;
         Mock::given(method("GET"))

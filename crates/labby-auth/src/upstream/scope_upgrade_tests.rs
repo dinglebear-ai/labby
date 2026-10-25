@@ -149,6 +149,49 @@ async fn observed_scope_upgrade_attempts_remain_bounded_across_fresh_sdk_manager
     );
 }
 #[test]
+fn scope_challenge_parser_accepts_combined_authentication_schemes() {
+    for header in [
+        r#"Basic realm="gateway", Bearer error="insufficient_scope", scope="write read""#,
+        r#"Bearer error="insufficient_scope", scope="write read", Basic realm="gateway""#,
+        r#"Bearer error="invalid_token", Bearer error="insufficient_scope", scope="write read""#,
+        r#"Negotiate YWJjZA==, Bearer error="insufficient_scope", scope="write read""#,
+        r#"Basic, Bearer scope = "write read", error = "insufficient_scope""#,
+        r#"Negotiate token, Basic, Bearer scope="write read", error="insufficient_scope""#,
+        r#"Basic realm="gateway, Bearer scope=admin", Bearer error="insufficient_scope", scope="write read", error_description="escaped \"quote\", comma""#,
+    ] {
+        assert_eq!(
+            required_scope_from_challenge(header),
+            Some("read write".into()),
+            "{header}"
+        );
+    }
+}
+
+#[test]
+fn scope_challenge_parser_bounds_combined_challenges_and_rejects_injection() {
+    for header in [
+        r#"Basic error="insufficient_scope", scope="admin", Bearer error="invalid_token""#,
+        r#"Basic realm="Bearer error=insufficient_scope, scope=admin", Bearer error="access_denied""#,
+        r#"Basic realm="gateway", Bearer error="insufficient_scope", scope="read", scope="admin""#,
+        r#"Bearer error="insufficient_scope", scope="read", Basic realm="unterminated"#,
+        "Bearer error=\"insufficient_scope\", scope=\"read\"\r\n",
+        "Basic realm=\"escaped\\\ncontrol\", Bearer error=\"insufficient_scope\", scope=\"read\"",
+    ] {
+        assert!(required_scope_from_challenge(header).is_none(), "{header}");
+    }
+    let excessive = format!(
+        "{}Bearer error=\"insufficient_scope\", scope=\"read\"",
+        "Basic realm=\"gateway\", ".repeat(16)
+    );
+    assert!(required_scope_from_challenge(&excessive).is_none());
+    let oversized = format!(
+        "Basic realm=\"{}\", Bearer error=\"insufficient_scope\", scope=\"read\"",
+        "x".repeat(8192)
+    );
+    assert!(required_scope_from_challenge(&oversized).is_none());
+}
+
+#[test]
 fn scope_challenge_parser_rejects_ambiguous_and_injected_parameters() {
     assert_eq!(
         required_scope_from_challenge(r#"Bearer scope="write read", error="insufficient_scope""#),
