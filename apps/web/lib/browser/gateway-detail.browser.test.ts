@@ -380,6 +380,7 @@ test('Depot Administration renders live schemas and guards destructive operation
         { name: 'depot.tokens.create', title: 'Create access token', description: 'Create a bearer token.', group: 'access', inputSchema: { type: 'object', properties: { name: { type: 'string', description: 'Token name.' }, scopes: { type: 'array', description: 'Granted scopes.', items: { type: 'string' } } }, required: ['name', 'scopes'] }, annotations: { readOnlyHint: false, destructiveHint: false } },
         { name: 'depot.tokens.revoke', title: 'Revoke access token', description: 'Revoke a token.', group: 'access', inputSchema: { type: 'object', properties: { tokenId: { type: 'string', description: 'Token id.' } }, required: ['tokenId'] }, annotations: { readOnlyHint: false, destructiveHint: true } },
         { name: 'depot.artifacts.set_license', title: 'Set Artifact license policy', description: 'Set authoritative license review state.', group: 'catalog', requiredScope: 'write', transportAvailable: true, inputSchema: { type: 'object', properties: { artifactId: { type: 'string', description: 'Hosted Artifact ID.', minLength: 1 }, expectedVersion: { type: 'string', description: 'Mutable Artifact state version.', minLength: 1 }, declared: { type: ['string', 'null'], description: 'Declared license; null clears it.', minLength: 1 }, detected: { type: 'array', description: 'Detected license evidence.', items: {} } }, required: ['artifactId', 'expectedVersion'], additionalProperties: false }, annotations: { readOnlyHint: false, destructiveHint: false } },
+        { name: 'depot.test.fraction', title: 'Validate fractional quantity', description: 'Exercise a provider-declared number schema.', group: 'catalog', inputSchema: { type: 'object', properties: { amount: { type: 'number', minimum: 0.25, maximum: 2.75, default: 1.5 } }, required: ['amount'], additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false } },
         { name: 'depot.maintenance.gc', title: 'Collect unreferenced CAS blobs', description: 'Run garbage collection.', group: 'operations', inputSchema: { type: 'object', properties: {}, required: [] }, annotations: { readOnlyHint: false, destructiveHint: true } },
       ] }) })
       return
@@ -437,6 +438,19 @@ test('Depot Administration renders live schemas and guards destructive operation
   await page.getByRole('button', { name: 'Review and run' }).click()
   await page.getByText('"ok": true').waitFor()
   assert.deepEqual(calls[3], { operation: 'depot.artifacts.set_license', params: { artifactId: 'artifact-1', expectedVersion: 'version-7', declared: null, detected: [{ kind: 'license', value: 'MIT' }] } })
+
+  await page.getByRole('button', { name: 'Close' }).first().click()
+  await page.getByRole('button', { name: /Validate fractional quantity/ }).click()
+  const amount = page.getByRole('spinbutton', { name: /^amount/ })
+  assert.equal(await amount.inputValue(), '1.5', 'fractional provider default must survive catalog validation')
+  await amount.fill('0.1')
+  await page.getByRole('button', { name: 'Run operation', exact: true }).click()
+  await page.getByText('amount must be at least 0.25.', { exact: true }).waitFor()
+  assert.equal(calls.length, 4, 'an out-of-bounds fraction must not reach the provider')
+  await amount.fill('1.5')
+  await page.getByRole('button', { name: 'Run operation', exact: true }).click()
+  await page.getByText('"ok": true').waitFor()
+  assert.deepEqual(calls[4], { operation: 'depot.test.fraction', params: { amount: 1.5 } })
 
   await page.keyboard.press('Escape')
   await page.setViewportSize({ width: 390, height: 844 })

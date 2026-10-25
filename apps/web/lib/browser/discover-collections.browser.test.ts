@@ -76,6 +76,18 @@ test('production Discover collections use retrieved catalog evidence and recover
     await page.route('**/v1/**', async route => {
       const pathname = new URL(route.request().url()).pathname
       if (pathname === '/v1/depot/providers') return route.fulfill({ json: ['catalog-a', 'catalog-b'].map(id => ({ id, name: id, enabled: true, health: { state: 'healthy', observedAt: null, provenance: null, retryNotBefore: null } })) })
+      if (pathname === '/v1/depot/artifacts/detail') {
+        const request = route.request().postDataJSON()
+        assert.deepEqual(request, { providerId: 'catalog-b', artifactId: 'loadout' })
+        // The provider omits optional metadata, including inside present objects.
+        // Production detail decoding must preserve the provider's sparse evidence.
+        return route.fulfill({ json: {
+          schemaVersion: 'labby.depot-compatibility/v2', providerId: 'catalog-b', artifactId: 'loadout',
+          artifact: { id: 'loadout', kind: 'loadout', name: 'Operations loadout', currentRevisionId: 'revision-loadout',
+            descriptor: { id: 'loadout', kind: 'loadout', name: 'Operations loadout' },
+            currentRevision: { id: 'revision-loadout' }, provenance: {}, license: {} },
+        } })
+      }
       if (pathname !== '/v1/depot/discover') return route.fulfill({ status: 503, json: { kind: 'fixture_unavailable', message: 'Runtime data unavailable in the isolated fixture.' } })
       reads++
       const request = route.request().postDataJSON()
@@ -142,6 +154,21 @@ test('production Discover collections use retrieved catalog evidence and recover
     await snapshot('success-dark')
     await page.evaluate(() => { document.documentElement.classList.remove('dark'); document.documentElement.classList.add('light') })
     await snapshot('success-light')
+    // Exercise the production detail adapter rather than the mock Depot shortcut.
+    const detailResponse = page.waitForResponse(response => new URL(response.url()).pathname === '/v1/depot/artifacts/detail')
+    await loadout.click()
+    assert.equal((await detailResponse).status(), 200)
+    const inspection = page.getByRole('dialog')
+    await inspection.getByRole('heading', { name: 'Operations loadout', exact: true }).waitFor()
+    await inspection.getByText('Source and revision', { exact: true }).click()
+    await inspection.getByText('revision-loadout', { exact: false }).first().waitFor()
+    await page.keyboard.press('Escape')
+    await inspection.waitFor({ state: 'hidden' })
+    const restoredHref = await page.evaluate(() => document.activeElement?.getAttribute('href'))
+    assert.ok(restoredHref, 'closing details restores focus to an artifact link')
+    const restored = new URL(restoredHref, page.url())
+    assert.equal(restored.searchParams.get('artifactProvider'), 'catalog-b')
+    assert.equal(restored.searchParams.get('artifact'), 'loadout')
     mode = 'partial'
     await page.reload({ waitUntil: 'networkidle' })
     await collections.getByRole('heading', { name: 'Loadouts to explore', exact: true }).waitFor()
