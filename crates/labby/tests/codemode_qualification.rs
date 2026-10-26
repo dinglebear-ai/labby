@@ -418,7 +418,9 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
 
 #[tokio::test]
 async fn q3_call_budget_rejects_before_the_third_effect() {
+    // Allow cold-start preparation before checking the two-call budget.
     let limits = Limits {
+        timeout_ms: 5_000,
         max_calls_per_run: Some(2),
         ..Limits::default()
     };
@@ -445,7 +447,11 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
         )
         .await
         .expect("call budget response");
-    assert!(!execution.is_error);
+    assert!(
+        !execution.is_error,
+        "qualification result: {}",
+        execution.structured
+    );
     assert_eq!(execution.structured["result"][0]["ok"], json!(true));
     assert_eq!(execution.structured["result"][1]["ok"], json!(true));
     assert_eq!(execution.structured["result"][2]["ok"], json!(false));
