@@ -9,6 +9,28 @@ mod recovery;
 #[cfg(unix)]
 mod transaction;
 
+// Parallel fixtures may fork while another test holds a CLOEXEC descriptor.
+// The child briefly inherits the open-file description until exec/exit, so
+// closing the parent's descriptor need not make flock immediately available.
+// Bound that lifecycle window without retrying unrelated filesystem errors.
+fn assert_lock_released(mut acquire: impl FnMut() -> Result<fs::File>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match acquire() {
+            Ok(_lock) => break,
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<fs::TryLockError>(),
+                    Some(fs::TryLockError::WouldBlock)
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("lock was not released: {error:#}"),
+        }
+    }
+}
+
 #[test]
 fn schedule_lock_child() {
     let Some(path) = std::env::var_os("LABBY_TEST_SCHEDULE_LOCK") else {
@@ -32,25 +54,7 @@ fn schedule_lock_excludes_other_processes_and_survives_replacement() {
         .unwrap();
     assert!(child.success());
     drop(lock);
-    // A child that briefly held an inherited descriptor may still be
-    // finishing kernel cleanup when wait() returns on macOS. Require the
-    // released lock to become available within a bounded interval, while
-    // still failing immediately for unrelated filesystem errors.
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        match acquire_schedule_lock(&plist) {
-            Ok(_lock) => break,
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<fs::TryLockError>(),
-                    Some(fs::TryLockError::WouldBlock)
-                ) && std::time::Instant::now() < deadline =>
-            {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(error) => panic!("schedule lock was not released: {error:#}"),
-        }
-    }
+    assert_lock_released(|| acquire_schedule_lock(&plist));
 }
 
 #[cfg(unix)]
@@ -691,5 +695,5 @@ fn schedule_channel_changes_hold_installer_lock_and_restore_absent_marker_on_fai
     );
     assert!(!dir.path().join(".labby-update-channel").exists());
     assert!(!plist.exists());
-    assert!(acquire_update_lock(dir.path()).is_ok());
+    assert_lock_released(|| acquire_update_lock(dir.path()));
 }

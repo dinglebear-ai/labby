@@ -2,6 +2,7 @@ use super::*;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 async fn catalog_server(bodies: Vec<(String, bool)>) -> (String, tokio::task::JoinHandle<()>) {
+    drop(rustls::crypto::ring::default_provider().install_default());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}/releases", listener.local_addr().unwrap());
     let task = tokio::spawn(async move {
