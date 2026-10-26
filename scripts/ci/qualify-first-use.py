@@ -18,6 +18,11 @@ import time
 import urllib.parse
 import urllib.request
 
+try:
+    from release_channel import identity
+except ModuleNotFoundError:
+    from scripts.ci.release_channel import identity
+
 CHECKS = {"gateway_authenticated", "agent_provider", "agent_run", "selected_clients", "catalog_search", "mcp_tool_call"}
 STAGES = ("bootstrap", "agent", "clients", "discover", "mcp")
 
@@ -209,8 +214,12 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
     plan = validate_plan(json.loads(args.plan.read_text()))
     if not args.disposable_machine:
         raise QualificationError("--disposable-machine is required: installer and drivers change native service/client state")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?", args.tag):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.repo) or not args.tag.startswith("v"):
         raise QualificationError("repo or immutable release tag is invalid")
+    try:
+        channel = identity(args.tag)["channel"]
+    except ValueError as error:
+        raise QualificationError("repo or immutable release tag is invalid") from error
     if sys.platform != "darwin" and not sys.platform.startswith("linux"):
         raise QualificationError("native qualification supports macOS and Linux only")
     fresh_targets(plan)
@@ -227,7 +236,7 @@ def run(args: argparse.Namespace) -> tuple[dict, int]:
               "account_free": True, "standalone_bootstrap": True, "stages": []}
     environment = os.environ.copy()
     environment.update({"LABBY_INSTALL_DIR": plan["install_dir"], "LABBY_INSTALL_REPO": args.repo,
-                        "LABBY_INSTALL_VERSION": args.tag, "LABBY_INSTALL_NO_SETUP": "1",
+                        "LABBY_INSTALL_VERSION": args.tag, "LABBY_INSTALL_CHANNEL": channel, "LABBY_INSTALL_NO_SETUP": "1",
                         "LABBY_ALLOW_SOURCE_FALLBACK": "0"})
     # Reject lifecycle/local-candidate escapes inherited from the invoking shell.
     for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_HOST", "LABBY_INSTALL_LOCAL_BINARY", "LABBY_INSTALL_LOCAL_SHA256",

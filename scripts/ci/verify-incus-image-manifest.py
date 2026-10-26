@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -11,7 +13,15 @@ root = Path(sys.argv[1])
 manifest = json.loads((root / "incus-image-manifest.json").read_text())
 if manifest.get("schema") != "ai.dinglebear.labby/incus-image-manifest/v1":
     raise SystemExit("unsupported Incus image manifest")
-if manifest.get("tag") != f'incus-{manifest.get("commit", "")}':
+channel = manifest.get("channel", "stable")
+if channel not in ("stable", "dev"):
+    raise SystemExit("invalid Incus image channel")
+if "RELEASE_CHANNEL" in os.environ and os.environ["RELEASE_CHANNEL"] != channel:
+    raise SystemExit("image manifest channel mismatch")
+if not re.fullmatch(r"[0-9a-f]{40}", manifest.get("commit", "")):
+    raise SystemExit("invalid image source commit")
+prefix = "incus-dev" if channel == "dev" else "incus"
+if manifest.get("tag") != f'{prefix}-{manifest.get("commit", "")}':
     raise SystemExit("image tag does not match source commit")
 expected = {row["name"] for row in manifest["assets"]} | {"incus-image-manifest.json"}
 actual = {path.name for path in root.iterdir() if path.is_file()} - {"generation.json"}

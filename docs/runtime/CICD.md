@@ -350,7 +350,7 @@ land the required code/tests and the baseline update together.
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
   - CI uses Linux and macOS runners only, with no manual Windows lanes
-  - Heavy release work starts from an immutable stable-version tag while the
+  - Heavy release work starts from an immutable stable or dev version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
 
@@ -452,13 +452,67 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 ## Release Process
 
+Stable is the default channel. Dev releases require explicit selection and use
+`vX.Y.Z-dev.N`, where `N` is a positive integer without leading zeros.
+The channel controls each consumer pointer:
+
+| Surface | Stable | Dev |
+| --- | --- | --- |
+| GitHub release | Normal release | Prerelease, excluded from Latest |
+| npm consumer tag | `latest` | `dev` |
+| MCP Registry | Published after qualification | Not published |
+| Installer and updater | Default selection | Explicit opt-in |
+
+### Prepare a dev release
+
+1. Merge the reviewed feature changes through the normal human merge process.
+2. Wait for the selected main commit's latest main CI attempt to succeed.
+3. Run **Prepare dev release** from `main`. Set `tag` to a new version such as
+   `v2.7.0-dev.1`. Set `source` to `main` or a full commit SHA on main.
+4. Monitor the resulting **Release** workflow. It owns qualification and publication.
+
+The source must contain the channel helpers. Preparation creates a version-only
+child commit and pushes its immutable tag. It never updates a branch. The
+`RELEASE_PLEASE_TOKEN` must permit tag pushes and trigger the tag workflow.
+The default GitHub Actions token cannot trigger a second workflow through a tag push.
+
+Preflight regenerates the version-only tree from the parent and compares the
+complete tree. It also verifies the parent's latest main CI attempt. Changes to
+product code in a stamped child fail preflight. A dev draft is created only after
+source and metadata validation. Dev candidates pass the same native, integrity,
+provenance, and stateful upgrade gates as stable candidates. N-1 comes from an
+older published stable release. The candidate's npm version is published before
+promotion, but only the matching channel pointer can advance. Dev publication
+omits the MCP Registry so its default catalog entry remains stable.
+
+### Select the dev channel
+
+For the archive installer, set `LABBY_INSTALL_CHANNEL=dev`. A pinned dev version
+also requires this opt-in. The installer saves the channel beside the binary in
+`.labby-update-channel` as part of its rollback transaction.
+
+Use `labby host update --channel dev --version latest` for a manual dev update.
+For scheduled updates, use `labby host update auto enable --channel dev`. Automatic
+checks use the saved channel. Select `--channel stable` to return to stable.
+A dry run does not change the saved selection. The npm launcher uses its
+package version to select the matching channel and saves that selection with
+the installed binary.
+
+Incus substrate images contain no bundled product binary and have separate
+channel pointers. Automatic main builds use `incus-dev-SHA` and
+`labby-incus-dev`. Manual stable builds use `incus-SHA` and
+`labby-incus-latest`. Neither image channel becomes GitHub Latest.
+`scripts/incus-bootstrap.sh --channel dev --version latest` opts the installed CLI into dev.
+
+### Stable release qualification
+
 1. Release Please prepares the version/changelog PR after green main CI. If
    another trigger sees an open release PR built from the same main commit, it
    preserves that branch and its running checks instead of rewriting identical
    commits. Manual dispatch can still force a refresh.
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
 3. The immutable tag triggers candidate work; no maintainer manually publishes
-   the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
+   the draft. Preflight requires canonical stable or dev SemVer, verified source ancestry, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
    required npm/MCP publisher credentials, verifies npm authentication, and
    resolves the published x86_64/macOS N-1 baselines and the ARM64 published
@@ -518,7 +572,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. If publication fails, the rollback transaction attempts npm stable-pointer
+7. If publication fails, the rollback transaction attempts npm channel-pointer
    restoration before returning a previously draft GitHub
    release to draft. Attempted npm writes are explicitly compensated even when
    registry reads still show the old tag. If either consumer pointer cannot be
@@ -572,16 +626,18 @@ replacement tag or bump the version merely to hide partial publication.
 `incus-image.yml` runs on pull requests and main pushes that change the image
 definition, pinned supply, bootstrap, or image build/smoke/promotion logic. A
 manual run on `main` can rebuild it when an external supply source needs
-requalification. PR runs build and smoke without publishing. A successful main
-run creates an immutable `incus-<full commit SHA>` GitHub release with a
+requalification. PR runs build and smoke without publishing. A successful automatic main
+run creates an immutable `incus-dev-<full commit SHA>` GitHub prerelease with a
 checksummed image manifest, attests and verifies the artifacts, and advances
-`labby-incus-latest` with a leased rollback-capable pointer update. The image
+`labby-incus-dev` with a leased rollback-capable pointer update. A manual main
+run with `channel: stable` uses `incus-<full commit SHA>` and
+`labby-incus-latest`. Neither image channel becomes GitHub Latest. The image
 contains the container substrate and toolchains; bootstrap installs the selected
 Labby release. Normal `vX.Y.Z` releases never wait for or publish an image.
 Older version releases with an Incus asset remain covered by the reconciler's
 legacy manifest check.
 
-**Binary release tag format:** `vX.Y.Z`. Independent Incus publication uses
+**Binary release tag formats:** stable `vX.Y.Z`, dev `vX.Y.Z-dev.N`. Independent Incus publication uses
 the distinct tags described above.
 
 **Version policy:** single version across the entire workspace. `labby` and

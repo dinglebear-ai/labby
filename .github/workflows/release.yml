@@ -29,6 +29,9 @@ env:
 jobs:
   preflight:
     name: Release preflight
+    permissions:
+      contents: write # Create a dev draft only after source and version validation.
+      actions: read
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -45,18 +48,15 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
       - name: Validate release tag, ancestry, and version lockstep
+        env:
+          GH_TOKEN: ${{ github.token }}
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           set -euo pipefail
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "::error::release tag must be stable SemVer vMAJOR.MINOR.PATCH"
-            exit 1
-          fi
-          git fetch --no-tags origin main
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
-            echo "::error::tag commit is not reachable from origin/main"
-            exit 1
-          }
+          python3 scripts/ci/release_channel.py "$GITHUB_REF_NAME"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          python3 scripts/ci/release_source.py --tag "$GITHUB_REF_NAME" \
+            --candidate "$GITHUB_SHA" --repository "$GITHUB_REPOSITORY"
           expected="${GITHUB_REF_NAME#v}"
           cargo_version="$(sed -n '/^\[workspace.package\]$/,/^\[/s/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
           npm_version="$(node -p "require('./packages/labby-mcp/package.json').version")"
@@ -75,13 +75,31 @@ jobs:
         env:
           NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
           MCP_PRIVATE_KEY_PRESENT: ${{ secrets.MCP_PRIVATE_KEY != '' }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          channel=$(python3 scripts/ci/release_channel.py "$RELEASE_TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["channel"])')
           test "$NPM_TOKEN_PRESENT" = true || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
-          test "$MCP_PRIVATE_KEY_PRESENT" = true || { echo '::error::MCP_PRIVATE_KEY is not configured'; exit 1; }
+          if [[ "$channel" == stable ]]; then
+            test "$MCP_PRIVATE_KEY_PRESENT" = true || { echo '::error::MCP_PRIVATE_KEY is not configured'; exit 1; }
+          fi
       - name: Validate npm publication identity before building
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm whoami >/dev/null
+      - name: Prepare dev release draft
+        if: contains(github.ref_name, '-dev.')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft; then
+            gh release create "$RELEASE_TAG" --verify-tag --target "$GITHUB_SHA" \
+              --draft --prerelease --latest=false --title "$RELEASE_TAG" \
+              --notes "Development channel. Explicit dev opt-in is required."
+          fi
+          [[ $(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft) == true ]]
       - name: Resolve N-1 baselines before building
         env:
           GH_TOKEN: ${{ github.token }}
@@ -459,6 +477,8 @@ jobs:
           fi
 
   mcp-candidate:
+    # Dev is opt-in through npm; leave the default MCP Registry entry stable.
+    if: ${{ !contains(github.ref_name, '-dev.') }}
     needs: [upgrade-qualification, npm-candidate]
     uses: ./.github/workflows/mcp-registry.yml
     with:
@@ -467,6 +487,14 @@ jobs:
 
   release:
     name: Publish validated release
+    if: >-
+      ${{ always() && !cancelled() &&
+          needs.build.result == 'success' &&
+          needs.upgrade-qualification.result == 'success' &&
+          needs.desktop-candidate.result == 'success' &&
+          needs.npm-candidate.result == 'success' &&
+          (needs.mcp-candidate.result == 'success' ||
+           (contains(github.ref_name, '-dev.') && needs.mcp-candidate.result == 'skipped')) }}
     # npm lacks conditional dist-tag writes. Serialize the complete promotion
     # and rollback transaction across all tags; version guards reject stale runs.
     concurrency:
@@ -650,7 +678,7 @@ jobs:
           python3 scripts/ci/compound-release-rollback.py \
             --pointer-rc 0 --github-rc "$github_rc" --npm-pointer-rc "$npm_rc" \
             --npm-candidate-published true \
-            --mcp-version-published true \
+            --mcp-version-published "${{ needs.mcp-candidate.result == 'success' }}" \
             --output "$ROLLBACK_STATUS_FILE"
       - name: Persist compound rollback status
         if: failure()

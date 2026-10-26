@@ -10,13 +10,16 @@ use crate::output::{OutputFormat, print};
 
 #[derive(Debug, Args, Clone)]
 pub struct UpdateArgs {
-    /// Install a newer stable release on this host only (macOS Apple Silicon).
+    /// Release channel; stable by default. Automatic checks retain the saved selection.
+    #[arg(long, value_enum)]
+    pub channel: Option<crate::self_update::UpdateChannel>,
+    /// Install a newer selected-channel release on this host only (macOS Apple Silicon).
     #[arg(long, conflicts_with_all = ["auto_update", "version", "install_dir", "container", "check_url", "force_fallback", "no_force_fallback", "no_web_assets"])]
     pub automatic: bool,
     /// Enable, disable, or inspect daily native macOS updates.
     #[arg(long, value_parser = ["enable", "disable", "status"], conflicts_with_all = ["automatic", "version", "install_dir", "container", "check_url", "force_fallback", "no_force_fallback", "no_web_assets", "no_incus_sync"])]
     pub auto_update: Option<String>,
-    /// Release tag to install. Defaults to the latest GitHub release with a Labby binary asset.
+    /// Release tag to install. Defaults to the latest selected-channel release with a Labby binary asset.
     #[arg(long, default_value = "latest")]
     pub version: String,
     /// Install directory for the host binary.
@@ -47,6 +50,7 @@ pub struct UpdateArgs {
 
 #[derive(Debug, serde::Serialize)]
 struct UpdateOutcome {
+    channel: crate::self_update::UpdateChannel,
     version: String,
     install_dir: PathBuf,
     binary: PathBuf,
@@ -63,21 +67,25 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
         );
     }
     if let Some(action) = &args.auto_update {
-        let outcome = crate::self_update::schedule(action, args.dry_run)?;
+        let outcome = crate::self_update::schedule(action, args.dry_run, args.channel)?;
         print(&outcome, format)?;
         return Ok(ExitCode::SUCCESS);
     }
     if args.automatic {
         let outcome =
-            crate::self_update::automatic(&std::env::current_exe()?, args.dry_run).await?;
+            crate::self_update::automatic(&std::env::current_exe()?, args.dry_run, args.channel)
+                .await?;
         print(&outcome, format)?;
         return Ok(ExitCode::SUCCESS);
     }
+    let channel = args.channel.unwrap_or_default();
+    crate::self_update::validate_requested_release(&args.version, channel)?;
     let install_dir = resolve_install_dir(args.install_dir.as_ref())?;
     let binary = install_dir.join("labby");
 
     if args.dry_run {
         let outcome = UpdateOutcome {
+            channel,
             version: args.version,
             install_dir,
             binary,
@@ -94,7 +102,7 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    crate::self_update::install_requested_release(&args.version, &install_dir).await?;
+    crate::self_update::install_requested_release(&args.version, &install_dir, channel).await?;
     let (incus_sync, incus_sync_skipped) = if args.no_incus_sync {
         (None, Some("--no-incus-sync requested".to_string()))
     } else {
@@ -125,6 +133,7 @@ pub async fn run(args: UpdateArgs, format: OutputFormat) -> Result<ExitCode> {
     };
 
     let outcome = UpdateOutcome {
+        channel,
         version: args.version,
         install_dir,
         binary,
@@ -190,6 +199,78 @@ fn render_outcome(outcome: UpdateOutcome, format: OutputFormat) -> Result<()> {
 mod tests {
     use super::*;
     use crate::dispatch::error::ToolError;
+
+    #[test]
+    fn channel_arguments_default_stable_and_require_known_streams() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Fixture {
+            #[command(flatten)]
+            options: UpdateArgs,
+        }
+        assert_eq!(
+            Fixture::try_parse_from(["labby"])
+                .unwrap()
+                .options
+                .channel
+                .unwrap_or_default(),
+            crate::self_update::UpdateChannel::Stable
+        );
+        assert_eq!(
+            Fixture::try_parse_from(["labby", "--channel", "dev"])
+                .unwrap()
+                .options
+                .channel,
+            Some(crate::self_update::UpdateChannel::Dev)
+        );
+        assert!(Fixture::try_parse_from(["labby", "--channel", "preview"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn dry_run_rejects_dev_tag_without_channel_opt_in() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Fixture {
+            #[command(flatten)]
+            options: UpdateArgs,
+        }
+        let args = Fixture::try_parse_from(["labby", "--version", "v1.2.3-dev.1", "--dry-run"])
+            .unwrap()
+            .options;
+        assert!(
+            run(
+                args,
+                OutputFormat::from_json_flag(
+                    true,
+                    crate::output::ColorPolicy::Plain,
+                    crate::output::RenderEnv::stdout()
+                )
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_rejects_noncanonical_release_tags() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Fixture {
+            #[command(flatten)]
+            options: UpdateArgs,
+        }
+        let format = OutputFormat::from_json_flag(
+            true,
+            crate::output::ColorPolicy::Plain,
+            crate::output::RenderEnv::stdout(),
+        );
+        for tag in ["1.2.3", "v1.2.3\n", " v1.2.3", "v1.2.3 ", "v1.2.3-dev.1\n"] {
+            let args = Fixture::try_parse_from(["labby", "--version", tag, "--dry-run"])
+                .unwrap()
+                .options;
+            assert!(run(args, format).await.is_err(), "{tag:?}");
+        }
+    }
 
     fn sync_error(kind: &str) -> ToolError {
         ToolError::Sdk {

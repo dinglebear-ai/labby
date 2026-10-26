@@ -7,6 +7,10 @@ Legacy manifests include an Incus asset; current Labby releases do not.
 from __future__ import annotations
 import argparse, hashlib, json, os, subprocess, urllib.parse
 from pathlib import Path
+try:
+    from release_channel import identity
+except ModuleNotFoundError:
+    from scripts.ci.release_channel import identity
 from mcp_registry_canonical import manifest_sha256, matches_legacy_manifest
 
 def run(*command: str) -> str:
@@ -96,7 +100,12 @@ npm = os.environ.get("NPM_BIN", "npm")
 curl = os.environ.get("CURL_BIN", "curl")
 try:
     is_draft = run(gh, "release", "view", expected["tag"], "--repo", expected["repository"], "--json", "isDraft", "--jq", ".isDraft")
-    observed["github"] = dist["github"] if is_draft == "false" else {"isDraft": is_draft}
+    valid = is_draft == "false"
+    if identity(expected["tag"])["channel"] == "dev":
+        prerelease = run(gh, "release", "view", expected["tag"], "--repo", expected["repository"], "--json", "isPrerelease", "--jq", ".isPrerelease")
+        latest_tag = run(gh, "api", f'repos/{expected["repository"]}/releases/latest', "--jq", ".tag_name")
+        valid = valid and prerelease == "true" and latest_tag != expected["tag"]
+    observed["github"] = dist["github"] if valid else {"error": "release visibility/channel mismatch"}
 except Exception as error: observed["github"] = {"error": str(error)}
 try:
     npm_tag = dist["npm"].get("tag", "latest")
@@ -110,21 +119,22 @@ if "incus" in dist:
         found = hashlib.sha256(incus_path.read_bytes()).hexdigest()
         observed["incus"] = dist["incus"] if found == dist["incus"]["sha256"] else {"asset": incus_path.name, "sha256": found}
     else: observed["incus"] = {"error": "asset missing"}
-try:
-    name = urllib.parse.quote(dist["mcp"]["name"], safe="")
-    url = f'https://registry.modelcontextprotocol.io/v0.1/servers/{name}/versions/{dist["mcp"]["version"]}'
-    payload = json.loads(run(curl, "--fail", "--silent", "--show-error", url))
-    server = payload.get("server", payload)
-    observed["mcp"] = {
-        "name": server.get("name"),
-        "version": server.get("version"),
-        "manifest_sha256": manifest_sha256(server),
-    }
-    if (args.historical and args.mcp_source
-            and observed["mcp"]["manifest_sha256"] != dist["mcp"]["manifest_sha256"]):
-        source = json.loads(args.mcp_source.read_text())
-        if matches_legacy_manifest(source, server, dist["mcp"]["manifest_sha256"]):
-            raw_source = json.dumps(source, sort_keys=True, separators=(",", ":"))
-            observed["mcp"]["manifest_sha256"] = hashlib.sha256(raw_source.encode()).hexdigest()
-except Exception as error: observed["mcp"] = {"error": str(error)}
+if "mcp" in dist:
+    try:
+        name = urllib.parse.quote(dist["mcp"]["name"], safe="")
+        url = f'https://registry.modelcontextprotocol.io/v0.1/servers/{name}/versions/{dist["mcp"]["version"]}'
+        payload = json.loads(run(curl, "--fail", "--silent", "--show-error", url))
+        server = payload.get("server", payload)
+        observed["mcp"] = {
+            "name": server.get("name"),
+            "version": server.get("version"),
+            "manifest_sha256": manifest_sha256(server),
+        }
+        if (args.historical and args.mcp_source
+                and observed["mcp"]["manifest_sha256"] != dist["mcp"]["manifest_sha256"]):
+            source = json.loads(args.mcp_source.read_text())
+            if matches_legacy_manifest(source, server, dist["mcp"]["manifest_sha256"]):
+                raw_source = json.dumps(source, sort_keys=True, separators=(",", ":"))
+                observed["mcp"]["manifest_sha256"] = hashlib.sha256(raw_source.encode()).hexdigest()
+    except Exception as error: observed["mcp"] = {"error": str(error)}
 args.output.write_text(json.dumps({"subjects": subjects, "unexpected_assets": unexpected_assets, "attestations": attestations, "distributions": observed}, indent=2, sort_keys=True) + "\n")

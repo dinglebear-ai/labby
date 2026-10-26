@@ -51,7 +51,7 @@ async fn recovery_precedes_version_execution_and_no_newer_catalog_decision() {
             ],
         }])
     };
-    let result = automatic_with_catalog(&dir.path().join("labby"), false, catalog)
+    let result = automatic_with_catalog(&dir.path().join("labby"), false, None, catalog)
         .await
         .unwrap();
     assert_eq!(result["installed"], false);
@@ -72,7 +72,7 @@ async fn dry_run_preserves_interrupted_activation_without_polling_catalog() {
     let dir = tempfile::tempdir().unwrap();
     let (journal, _) = interrupted_install(dir.path());
     let binary = fs::read(dir.path().join("labby")).unwrap();
-    let result = automatic_with_catalog(&dir.path().join("labby"), true, async {
+    let result = automatic_with_catalog(&dir.path().join("labby"), true, None, async {
         panic!("dry run must report required recovery before catalog access")
     })
     .await
@@ -91,7 +91,7 @@ async fn failed_recovery_retains_journal_and_never_polls_catalog() {
     let dir = tempfile::tempdir().unwrap();
     let (journal, _) = interrupted_install(dir.path());
     fs::remove_file(journal.join("old-binary")).unwrap();
-    let result = automatic_with_catalog(&dir.path().join("labby"), false, async {
+    let result = automatic_with_catalog(&dir.path().join("labby"), false, None, async {
         panic!("failed recovery must prevent catalog access")
     })
     .await;
@@ -115,6 +115,7 @@ fn schedule_status_child() {
         false,
         Path::new(&home),
         Path::new("/opt/bin/labby"),
+        None,
     )
     .unwrap();
     assert_eq!(result["enabled"], true);
@@ -156,4 +157,40 @@ fn status_does_not_create_files_or_require_mutation_lock() {
     fs::set_permissions(plist.parent().unwrap(), fs::Permissions::from_mode(0o500)).unwrap();
     run_status();
     fs::set_permissions(plist.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+#[tokio::test]
+async fn automatic_reload_retains_dev_channel_and_dry_run_preserves_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("labby");
+    executable(&binary, "#!/bin/sh\necho 'labby 1.17.0-dev.2'\n");
+    persist_channel(dir.path(), UpdateChannel::Dev).unwrap();
+    let catalog = || async {
+        let mut dev = release("v1.17.0-dev.10");
+        dev.prerelease = true;
+        Ok(vec![release("v2.0.0"), dev])
+    };
+    let result = automatic_with_catalog(&binary, true, None, catalog())
+        .await
+        .unwrap();
+    assert_eq!(result["version"], "v1.17.0-dev.10");
+    assert_eq!(result["installed"], false);
+    let result = automatic_with_catalog(&binary, true, Some(UpdateChannel::Stable), catalog())
+        .await
+        .unwrap();
+    assert_eq!(result["version"], "v2.0.0");
+    assert_eq!(selected_channel(dir.path()).unwrap(), UpdateChannel::Dev);
+}
+
+#[tokio::test]
+async fn automatic_explicit_opt_in_is_retained_even_when_no_release_is_newer() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("labby");
+    executable(&binary, "#!/bin/sh\necho 'labby 1.17.0-dev.2'\n");
+    automatic_with_catalog(&binary, false, Some(UpdateChannel::Dev), async {
+        Ok(vec![])
+    })
+    .await
+    .unwrap();
+    assert_eq!(selected_channel(dir.path()).unwrap(), UpdateChannel::Dev);
 }

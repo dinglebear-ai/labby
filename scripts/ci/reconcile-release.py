@@ -3,6 +3,10 @@
 from __future__ import annotations
 import argparse, json
 from pathlib import Path
+try:
+    from release_channel import identity
+except ModuleNotFoundError:
+    from scripts.ci.release_channel import identity
 
 REQUIRED_SURFACES = ("github", "npm", "mcp")
 parser = argparse.ArgumentParser()
@@ -25,7 +29,18 @@ mismatched = sorted(name for name in want.keys() & got.keys() if want[name] != g
 expected_dist = expected.get("distributions", {})
 observed_dist = observed.get("distributions", {})
 distribution_errors = {}
-for surface in REQUIRED_SURFACES:
+release = identity(expected["tag"])
+if "package" in expected_dist.get("npm", {}) and expected_dist["npm"].get("tag", "latest") != release["npm_tag"]:
+    distribution_errors["npm_channel"] = "manifest npm pointer does not match release channel"
+if "package" in expected_dist.get("npm", {}) and expected_dist["npm"].get("version") != release["version"]:
+    distribution_errors["npm_version"] = "manifest npm version does not match release tag"
+if release["channel"] == "dev" and expected_dist.get("github", {}).get("prerelease") is not True:
+    distribution_errors["github_channel"] = "dev manifest must require a prerelease"
+
+required = REQUIRED_SURFACES if identity(expected["tag"])["channel"] == "stable" else ("github", "npm")
+if identity(expected["tag"])["channel"] == "dev" and "mcp" in expected_dist:
+    distribution_errors["mcp"] = "dev releases must not publish the registry distribution"
+for surface in required:
     if surface not in expected_dist:
         distribution_errors[surface] = "missing expectation"
     elif surface not in observed_dist:

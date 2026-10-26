@@ -1,10 +1,13 @@
 //! Automatic update and schedule regression tests.
 use super::*;
 
+mod catalog;
 #[cfg(unix)]
 mod feature;
 #[cfg(unix)]
 mod recovery;
+#[cfg(unix)]
+mod transaction;
 
 #[test]
 fn schedule_lock_child() {
@@ -68,7 +71,9 @@ wait
     .unwrap();
     let lock = acquire_update_lock(dir.path()).unwrap();
     let path = dir.path().to_owned();
-    let task = tokio::spawn(async move { install_release(&script, "v1.17.0", &path, lock).await });
+    let task = tokio::spawn(async move {
+        install_release(&script, "v1.17.0", &path, lock, UpdateChannel::Stable).await
+    });
     let pid_file = dir.path().join("installer.pid");
     let pid = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -142,16 +147,27 @@ async fn installer_owner_child() {
         // the lock while an ordinary subprocess performs installation.
         let _lock = lock;
         assert!(
-            installer_command(&path.join("install.sh"), "v1.17.0", path)
-                .output()
-                .unwrap()
-                .status
-                .success()
+            installer_command(
+                &path.join("install.sh"),
+                "v1.17.0",
+                path,
+                UpdateChannel::Stable
+            )
+            .output()
+            .unwrap()
+            .status
+            .success()
         );
     } else {
-        install_release(&path.join("install.sh"), "v1.17.0", path, lock)
-            .await
-            .unwrap();
+        install_release(
+            &path.join("install.sh"),
+            "v1.17.0",
+            path,
+            lock,
+            UpdateChannel::Stable,
+        )
+        .await
+        .unwrap();
     }
 }
 
@@ -371,9 +387,18 @@ fn selects_newest_stable_binary_without_downgrading() {
         release("v1.9.0"),
         release("v1.10.0"),
     ];
-    assert_eq!(select_release(&releases, [1, 8, 0]), Some("v1.10.0"));
-    assert_eq!(select_release(&releases, [1, 10, 0]), None);
-    assert_eq!(select_release(&releases, [1, 16, 1]), None);
+    assert_eq!(
+        select_release(&releases, version("1.8.0").unwrap(), UpdateChannel::Stable),
+        Some("v1.10.0")
+    );
+    assert_eq!(
+        select_release(&releases, version("1.10.0").unwrap(), UpdateChannel::Stable),
+        None
+    );
+    assert_eq!(
+        select_release(&releases, version("1.16.1").unwrap(), UpdateChannel::Stable),
+        None
+    );
 }
 
 #[test]
@@ -381,7 +406,7 @@ fn unknown_versions_fail_closed() {
     for invalid in ["labby dev", "1.2", "1.2.3-rc.1", "1.2.+3", "1.2.3.4"] {
         assert!(version(invalid).is_err());
     }
-    assert_eq!(version("labby 1.16.1\n").unwrap(), [1, 16, 1]);
+    assert_eq!(version("labby 1.16.1\n").unwrap().base, [1, 16, 1]);
 }
 
 #[test]
@@ -409,7 +434,7 @@ async fn installer_failure_propagates_without_reporting_success() {
     let script = temp.path().join("install.sh");
     fs::write(&script, "echo 'attestation rejected' >&2; exit 7\n").unwrap();
     let lock = acquire_update_lock(temp.path()).unwrap();
-    let error = install_release(&script, "v1.17.0", temp.path(), lock)
+    let error = install_release(&script, "v1.17.0", temp.path(), lock, UpdateChannel::Stable)
         .await
         .unwrap_err();
     assert!(error.to_string().contains("attestation rejected"));
@@ -417,7 +442,12 @@ async fn installer_failure_propagates_without_reporting_success() {
 
 #[test]
 fn every_host_update_entry_point_pins_and_sanitizes_installer_control() {
-    let command = installer_command(Path::new("/installer"), "v1.17.0", Path::new("/bin"));
+    let command = installer_command(
+        Path::new("/installer"),
+        "v1.17.0",
+        Path::new("/bin"),
+        UpdateChannel::Stable,
+    );
     let env: std::collections::HashMap<_, _> = command.get_envs().collect();
     assert_eq!(
         env[std::ffi::OsStr::new("LABBY_INSTALL_VERSION")],
@@ -442,7 +472,12 @@ fn installer_environment_drops_gh_host_overrides() {
     // store, and GH_ENTERPRISE_TOKEN authenticates there; any of them in the
     // service environment would let the installer verify provenance against
     // a trust root other than github.com.
-    let command = installer_command(Path::new("/installer"), "v1.17.0", Path::new("/bin"));
+    let command = installer_command(
+        Path::new("/installer"),
+        "v1.17.0",
+        Path::new("/bin"),
+        UpdateChannel::Stable,
+    );
     let env: std::collections::HashMap<_, _> = command.get_envs().collect();
     for key in ["GH_HOST", "GH_ENTERPRISE_TOKEN", "GH_CONFIG_DIR"] {
         assert_eq!(
@@ -463,7 +498,7 @@ fn updates_explicitly_skip_first_run_configuration() {
         "test \"$LABBY_INSTALL_NO_SETUP\" = 1 || { echo 'update attempted onboarding' >&2; exit 1; }\n",
     )
     .unwrap();
-    let output = installer_command(&script, "v1.17.0", temp.path())
+    let output = installer_command(&script, "v1.17.0", temp.path(), UpdateChannel::Stable)
         .output()
         .unwrap();
     assert!(
@@ -471,4 +506,190 @@ fn updates_explicitly_skip_first_run_configuration() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn dev_selection_is_explicit_numeric_and_never_falls_back() {
+    let dev = |tag: &str| {
+        let mut r = release(tag);
+        r.prerelease = true;
+        r
+    };
+    let mut draft = dev("v1.17.0-dev.99");
+    draft.draft = true;
+    let releases = vec![
+        dev("v1.17.0-dev.9"),
+        dev("v1.17.0-dev.10"),
+        dev("v1.17.0-dev.01"),
+        dev("v1.17.0-dev.0"),
+        draft,
+        release("v2.0.0"),
+        release("99.0.0"),
+        dev("99.0.0-dev.1"),
+        dev("v99.0.0-dev.1\n"),
+        release("v99.0.0\n"),
+        release("v1.18.0-dev.1"),
+    ];
+    let current = version("labby 1.17.0-dev.2").unwrap();
+    assert_eq!(
+        select_release(&releases, current, UpdateChannel::Dev),
+        Some("v1.17.0-dev.10")
+    );
+    assert_eq!(
+        select_release(&releases, current, UpdateChannel::Stable),
+        Some("v2.0.0")
+    );
+    assert_eq!(
+        select_release(&[release("v2.0.0")], current, UpdateChannel::Dev),
+        None
+    );
+    assert_eq!(
+        select_release(
+            &[dev("v1.17.0-dev.99")],
+            version("1.17.0").unwrap(),
+            UpdateChannel::Dev
+        ),
+        None
+    );
+    assert!(newer(version("1.17.0").unwrap(), current));
+}
+
+#[test]
+fn explicit_tags_match_channels_and_versions_are_canonical() {
+    for invalid in [
+        "1.2.3-dev.0",
+        "1.2.3-dev.01",
+        "01.2.3",
+        "1.2.3-dev.-1",
+        "1.2.3-dev.1+build",
+    ] {
+        assert!(version(invalid).is_err(), "{invalid}");
+    }
+    assert!(validate_requested_release("v1.2.3-dev.1", UpdateChannel::Stable).is_err());
+    assert!(validate_requested_release("v1.2.3", UpdateChannel::Dev).is_err());
+    assert!(validate_requested_release("v1.2.3-dev.1", UpdateChannel::Dev).is_ok());
+}
+
+#[test]
+fn saved_channel_is_validated_and_survives_reload() {
+    let directory = tempfile::tempdir().unwrap();
+    assert_eq!(
+        selected_channel(directory.path()).unwrap(),
+        UpdateChannel::Stable
+    );
+    persist_channel(directory.path(), UpdateChannel::Dev).unwrap();
+    assert_eq!(
+        selected_channel(directory.path()).unwrap(),
+        UpdateChannel::Dev
+    );
+    persist_channel(directory.path(), UpdateChannel::Stable).unwrap();
+    assert_eq!(
+        selected_channel(directory.path()).unwrap(),
+        UpdateChannel::Stable
+    );
+    fs::write(directory.path().join(".labby-update-channel"), "preview").unwrap();
+    assert!(selected_channel(directory.path()).is_err());
+}
+
+#[test]
+fn schedule_uses_persisted_channel_and_installer_pins_it() {
+    let plist = launch_agent(Path::new("/bin/labby"), Path::new("/log"), "/bin").unwrap();
+    assert!(!plist.contains("--channel"));
+    let command = installer_command(
+        Path::new("/script"),
+        "v1.2.3-dev.1",
+        Path::new("/bin"),
+        UpdateChannel::Dev,
+    );
+    assert!(
+        command
+            .get_envs()
+            .any(|(key, value)| key == "LABBY_INSTALL_CHANNEL"
+                && value == Some(std::ffi::OsStr::new("dev")))
+    );
+}
+
+#[test]
+fn canonical_schedule_cli_retains_explicit_channel() {
+    use clap::Parser;
+    for argv in [
+        vec![
+            "labby",
+            "host",
+            "update",
+            "auto",
+            "--channel",
+            "dev",
+            "enable",
+        ],
+        vec![
+            "labby",
+            "host",
+            "update",
+            "auto",
+            "enable",
+            "--channel",
+            "dev",
+        ],
+    ] {
+        let cli = crate::cli::Cli::try_parse_from(argv).unwrap();
+        let crate::cli::Command::Update(args) = cli.command.into_operation() else {
+            panic!("wrong operation")
+        };
+        assert_eq!(args.channel, Some(UpdateChannel::Dev));
+        assert_eq!(args.auto_update.as_deref(), Some("enable"));
+    }
+}
+
+#[test]
+fn schedule_selection_tracks_later_manual_channel_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("labby");
+    let plist = dir.path().join("schedule.plist");
+    let content = launch_agent(&binary, &dir.path().join("log"), "/bin").unwrap();
+    replace_schedule_channel(
+        &binary,
+        &plist,
+        content.as_bytes(),
+        Some(UpdateChannel::Dev),
+        false,
+        |_| Ok(()),
+    )
+    .unwrap();
+    assert_eq!(selected_channel(dir.path()).unwrap(), UpdateChannel::Dev);
+    // A later verified manual installation replaces the same persisted marker.
+    persist_channel(dir.path(), UpdateChannel::Stable).unwrap();
+    assert!(!fs::read_to_string(&plist).unwrap().contains("--channel"));
+    assert_eq!(selected_channel(dir.path()).unwrap(), UpdateChannel::Stable);
+    // Re-enabling without an explicit channel preserves the current selection.
+    assert_eq!(
+        replace_schedule_channel(&binary, &plist, content.as_bytes(), None, true, |_| Ok(()))
+            .unwrap(),
+        UpdateChannel::Stable
+    );
+}
+
+#[test]
+fn schedule_channel_changes_hold_installer_lock_and_restore_absent_marker_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("labby");
+    let plist = dir.path().join("schedule.plist");
+    assert!(
+        replace_schedule_channel(
+            &binary,
+            &plist,
+            b"schedule",
+            Some(UpdateChannel::Dev),
+            false,
+            |_| {
+                assert!(acquire_update_lock(dir.path()).is_err());
+                assert_eq!(selected_channel(dir.path()).unwrap(), UpdateChannel::Dev);
+                bail!("simulated launchd failure")
+            }
+        )
+        .is_err()
+    );
+    assert!(!dir.path().join(".labby-update-channel").exists());
+    assert!(!plist.exists());
+    assert!(acquire_update_lock(dir.path()).is_ok());
 }

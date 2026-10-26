@@ -3,9 +3,28 @@ set -euo pipefail
 
 mode=${1:?promote or rollback required}
 release_tag=${RELEASE_TAG:?RELEASE_TAG is required}
-rolling_tag=${INCUS_ROLLING_TAG:-labby-incus-latest}
+channel=${RELEASE_CHANNEL:-stable}
+case "$channel" in
+  stable) expected_pointer=labby-incus-latest; image_prefix=incus ;;
+  dev) expected_pointer=labby-incus-dev; image_prefix=incus-dev ;;
+  *) echo 'invalid release channel' >&2; exit 64 ;;
+esac
+rolling_tag=${INCUS_ROLLING_TAG:-$expected_pointer}
+[[ "$rolling_tag" == "$expected_pointer" ]] || { echo 'Incus pointer/channel mismatch' >&2; exit 64; }
+[[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || { echo 'image source must be a full Git SHA' >&2; exit 64; }
+if [[ "$release_tag" == incus-* || "$channel" == dev ]]; then
+  [[ "$release_tag" == "$image_prefix-$GITHUB_SHA" ]] || { echo 'image release tag/channel/source mismatch' >&2; exit 64; }
+fi
 receipt=${INCUS_POINTER_RECEIPT:?INCUS_POINTER_RECEIPT is required}
 gh_bin=${GH_BIN:-gh}
+export RELEASE_CHANNEL="$channel"
+if [[ "$mode" == rollback ]]; then
+  if [[ -f "$receipt/channel" ]]; then
+    [[ $(<"$receipt/channel") == "$channel" && $(<"$receipt/rolling-tag") == "$rolling_tag" && $(<"$receipt/release-tag") == "$release_tag" && $(<"$receipt/candidate-sha") == "$GITHUB_SHA" ]] || { echo 'Incus rollback receipt channel/candidate mismatch' >&2; exit 75; }
+  elif [[ "$channel" != stable || "$rolling_tag" != labby-incus-latest ]]; then
+    echo 'legacy receipt cannot roll back a dev pointer' >&2; exit 75
+  fi
+fi
 remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
 write_state() {
@@ -22,9 +41,16 @@ push_with_lease() {
 }
 verify_generation() {
   if [[ -f "$1/incus-image-manifest.json" ]]; then
+    python3 - "$1/incus-image-manifest.json" "$release_tag" "$GITHUB_SHA" <<'PYIDENTITY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+if (manifest.get("tag"), manifest.get("commit")) != tuple(sys.argv[2:]):
+    raise SystemExit("image manifest does not match promotion candidate")
+PYIDENTITY
     python3 scripts/ci/verify-incus-image-manifest.py "$1"
     return
   fi
+  [[ "$channel" == stable ]] || { echo 'dev image requires its immutable image manifest' >&2; return 1; }
   python3 - "$1" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -43,7 +69,7 @@ PY
 
 case "$mode" in
   promote)
-    if [[ "$release_tag" == incus-* && "$release_tag" != "incus-$GITHUB_SHA" ]]; then
+    if [[ "$release_tag" == incus-* && "$release_tag" != "$image_prefix-$GITHUB_SHA" ]]; then
       echo "image release tag does not match source commit" >&2
       exit 1
     fi
@@ -89,6 +115,10 @@ if version(sys.argv[1]) < version(sys.argv[2]):
 PYVERSION
       fi
     fi
+    printf '%s\n' "$channel" >"$receipt/channel"
+    printf '%s\n' "$rolling_tag" >"$receipt/rolling-tag"
+    printf '%s\n' "$release_tag" >"$receipt/release-tag"
+    printf '%s\n' "$GITHUB_SHA" >"$receipt/candidate-sha"
     write_state "prepared"
     "$gh_bin" release download "$release_tag" --dir "$receipt/candidate"
     verify_generation "$receipt/candidate"
