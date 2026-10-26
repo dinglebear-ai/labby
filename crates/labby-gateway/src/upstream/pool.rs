@@ -144,6 +144,7 @@ mod tools_call_exact;
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
 mod tools_exposure_tests;
+mod transport_config;
 mod usage_record;
 mod validate;
 
@@ -352,6 +353,10 @@ pub struct UpstreamPool {
     /// Shared with `OauthClientCache`: readers cover the entire authenticated
     /// connect-and-publish path; credential mutation takes the sole writer.
     oauth_invalidation_barrier: Arc<RwLock<()>>,
+    /// One cancellation-independent capacity/rejection drain shared by callers.
+    oauth_invalidation_drain: Arc<Mutex<Option<oauth_invalidation::OAuthInvalidationDrain>>>,
+    #[cfg(test)]
+    oauth_invalidation_drain_probe: Option<Arc<oauth_invalidation::rejection_tests::DrainProbe>>,
     /// Stable config fingerprint for each upstream name. Selective reconcile
     /// replaces changed fingerprints before publishing the new revision so a
     /// request carrying stale config cannot publish or reuse a connection.
@@ -646,8 +651,9 @@ impl UpstreamPool {
                 // body deadline here would terminate long-lived SSE responses
                 // before the caller's configured budget expires.
                 .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
+                .redirect(super::http_client::same_origin_redirect_policy())
                 .build()
-                .unwrap_or_default(),
+                .expect("upstream HTTP client must build with redirect policy"),
         );
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
@@ -667,6 +673,9 @@ impl UpstreamPool {
             subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
+            oauth_invalidation_drain: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            oauth_invalidation_drain_probe: None,
             upstream_config_fingerprints: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(

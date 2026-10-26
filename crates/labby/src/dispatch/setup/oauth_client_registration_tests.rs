@@ -102,7 +102,7 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     use axum::{Json, Router, routing::get};
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities,
-        ServerInfo,
+        ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::transport::streamable_http_server::{
@@ -180,8 +180,8 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     #[derive(Clone)]
     struct Fixture(Arc<crate::access::AccessRuntime>);
     impl ServerHandler for Fixture {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
         async fn list_tools(
             &self,

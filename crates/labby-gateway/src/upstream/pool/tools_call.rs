@@ -525,7 +525,7 @@ mod tests {
 
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
-        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -625,8 +625,8 @@ mod tests {
         }
 
         impl ServerHandler for HeaderMismatchServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -752,8 +752,8 @@ mod tests {
     async fn call_tool_mcp_error_keeps_connection_healthy() {
         struct RejectingServer;
         impl ServerHandler for RejectingServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -838,8 +838,8 @@ mod tests {
     async fn call_tool_huge_mcp_error_payload_is_bounded() {
         struct HugeErrorServer;
         impl ServerHandler for HugeErrorServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -938,8 +938,8 @@ mod tests {
     async fn call_tool_oversized_response_returns_cap_error() {
         struct OversizedServer;
         impl ServerHandler for OversizedServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,
@@ -1034,9 +1034,9 @@ mod tests {
         }
 
         impl ServerHandler for CountingServer {
-            fn get_info(&self) -> ServerInfo {
+            fn get_info(&self) -> ServerConfig {
                 self.init_count.fetch_add(1, Ordering::SeqCst);
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,
@@ -1153,8 +1153,8 @@ mod tests {
 
         struct EchoServer;
         impl ServerHandler for EchoServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,
@@ -1240,8 +1240,8 @@ mod tests {
 
         struct EchoServer;
         impl ServerHandler for EchoServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,

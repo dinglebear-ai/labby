@@ -505,3 +505,75 @@ async fn opportunistic_code_mode_failure_never_replays_locally() {
     );
     assert_no_local_gateway_state(home.path());
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn stdio_server_uses_nonblocking_private_pipes_and_keeps_inherited_flags() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.toml"),
+        "[code_mode]\nenabled = false\n",
+    )
+    .unwrap();
+    let mut child = local_command(home.path())
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id().unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    input.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"pipe-check\",\"version\":\"1\"}}}\n").await.unwrap();
+    let mut line = String::new();
+    tokio::time::timeout(Duration::from_secs(30), output.read_line(&mut line))
+        .await
+        .unwrap()
+        .unwrap();
+    let response: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert!(
+        response.get("result").is_some(),
+        "initialize failed: {response}"
+    );
+    let fd_root = std::path::PathBuf::from(format!("/proc/{pid}/fd"));
+    let fdinfo_root = std::path::PathBuf::from(format!("/proc/{pid}/fdinfo"));
+    let mut private_nonblocking = 0;
+    for fd in ["0", "1"] {
+        let target = std::fs::read_link(fd_root.join(fd)).unwrap();
+        let flags = |name: &std::ffi::OsStr| -> Option<u32> {
+            let info = std::fs::read_to_string(fdinfo_root.join(name)).ok()?;
+            let raw = info
+                .lines()
+                .find_map(|line| line.strip_prefix("flags:\t"))?;
+            u32::from_str_radix(raw.trim(), 8).ok()
+        };
+        assert_eq!(
+            flags(std::ffi::OsStr::new(fd)).unwrap() & 0o4000,
+            0,
+            "inherited stdio must stay blocking"
+        );
+        for entry in std::fs::read_dir(&fd_root).unwrap().flatten() {
+            if std::fs::read_link(entry.path()).ok().as_ref() == Some(&target)
+                && flags(&entry.file_name()).is_some_and(|value| value & 0o4000 != 0)
+            {
+                private_nonblocking += 1;
+            }
+        }
+    }
+    drop(input);
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        status.success(),
+        "stdio EOF must terminate the server cleanly"
+    );
+    assert!(
+        private_nonblocking >= 2,
+        "expected private nonblocking stdin/stdout pipes, found {private_nonblocking}"
+    );
+}

@@ -2110,6 +2110,7 @@ impl LabMcpServer {
 
         // Try built-in dispatch first.
         if let Some(entry) = svc {
+            let mut native_task = None;
             tracing::info!(
                 surface = "mcp",
                 service,
@@ -2287,14 +2288,30 @@ impl LabMcpServer {
             } else if self.registry.dispatch_capability(&service)
                 == Some(crate::registry::DispatchCapability::CallerBound)
             {
-                self.dispatch_caller_bound_service(
-                    &service,
-                    &action,
-                    params,
-                    &context,
-                    request.meta.as_ref(),
-                )
-                .await
+                let seed = if service == "tasks"
+                    && action == "tasks.queue"
+                    && crate::mcp::native_tasks::native_tasks_negotiated(&context)
+                {
+                    Box::pin(self.native_task_seed(&params, &context))
+                        .await
+                        .map(Some)
+                } else {
+                    Ok(None)
+                };
+                match seed {
+                    Ok(seed) => {
+                        native_task = seed;
+                        self.dispatch_caller_bound_service(
+                            &service,
+                            &action,
+                            params,
+                            &context,
+                            request.meta.as_ref(),
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                }
             } else if service == "gateway" {
                 #[cfg(feature = "gateway")]
                 {
@@ -2555,6 +2572,13 @@ impl LabMcpServer {
             }
             self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)
                 .await;
+            if result.is_error != Some(true)
+                && let Some(task) = native_task
+            {
+                return Ok(CallToolResponse::Task(rmcp::model::CreateTaskResult::new(
+                    task,
+                )));
+            }
             return Ok(result.into());
         }
 

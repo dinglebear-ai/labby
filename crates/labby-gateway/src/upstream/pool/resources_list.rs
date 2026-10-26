@@ -1165,7 +1165,7 @@ mod tests {
     use rmcp::model::{
         ErrorData, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
         PaginatedRequestParams, ReadResourceResult, ResourceContents, ResourceTemplate,
-        ServerCapabilities, ServerInfo, Tool,
+        ServerCapabilities, ServerConfig, Tool,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -1262,8 +1262,8 @@ mod tests {
     struct ManyResourcesServer;
 
     impl ServerHandler for ManyResourcesServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1318,8 +1318,8 @@ mod tests {
     }
 
     impl ServerHandler for ToolsOnlyResourceProbeServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn list_tools(
@@ -1364,8 +1364,8 @@ mod tests {
     struct SlowResourceListServer;
 
     impl ServerHandler for SlowResourceListServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1384,8 +1384,8 @@ mod tests {
     }
 
     impl ServerHandler for SchemaToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn list_tools(
@@ -1457,8 +1457,8 @@ mod tests {
     }
 
     impl ServerHandler for PaginatedResourceTemplateServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resource_templates(
@@ -1562,8 +1562,8 @@ mod tests {
     }
 
     impl ServerHandler for PaginatedResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1714,8 +1714,8 @@ mod tests {
     }
 
     impl ServerHandler for DelayedResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1786,8 +1786,8 @@ mod tests {
     }
 
     impl ServerHandler for DelayedResourceTemplateServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resource_templates(
@@ -2152,8 +2152,8 @@ mod tests {
         release: Arc<tokio::sync::Notify>,
     }
     impl ServerHandler for HeldResourceList {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
         async fn list_resources(
             &self,
@@ -2492,8 +2492,8 @@ mod tests {
         struct DuplicateResourcesValidTemplatesServer;
 
         impl ServerHandler for DuplicateResourcesValidTemplatesServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
 
             async fn list_resources(
@@ -2603,8 +2603,8 @@ mod tests {
     }
 
     impl ServerHandler for RejectedCatalogServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -2624,8 +2624,8 @@ mod tests {
     struct OversizedUiCatalogServer;
 
     impl ServerHandler for OversizedUiCatalogServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -2680,8 +2680,8 @@ mod tests {
     struct UiCatalogServer;
 
     impl ServerHandler for UiCatalogServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(

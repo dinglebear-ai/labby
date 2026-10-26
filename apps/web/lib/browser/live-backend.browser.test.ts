@@ -309,7 +309,7 @@ test('embedded Gateway Admin completes a real backend journey', {
   progress('test-start')
   const descriptor = await readLiveDescriptor()
   assert.ok(descriptor)
-  const csrfToken = await readPrivateCsrf(descriptor)
+  let csrfToken = await readPrivateCsrf(descriptor)
   progress('descriptor-read')
   await withAbsoluteDeadline(async (signal) => {
     progress('chromium-launch-start')
@@ -327,11 +327,20 @@ test('embedded Gateway Admin completes a real backend journey', {
     // CSRF material. Attach that material at the transport boundary so UI
     // controls exercise their real action mapping without an out-of-band
     // /auth/session probe rotating the fixture token.
+    let denyPaletteMutationCsrf = false
+    let deniedPaletteAttempts = 0
     await page.route('**/v1/**', async (route) => {
       if (route.request().method() !== 'POST') return route.continue()
-      return route.continue({
-        headers: { ...route.request().headers(), 'x-csrf-token': csrfToken },
-      })
+      const headers: Record<string, string> = { ...route.request().headers(), 'x-csrf-token': csrfToken }
+      if (denyPaletteMutationCsrf
+        && new URL(route.request().url()).pathname === '/v1/gateway'
+        && route.request().postDataJSON()?.action === 'gateway.mcp.disable'
+        && route.request().postDataJSON()?.params?.name === ownedName) {
+        deniedPaletteAttempts += 1
+        assert.ok(deniedPaletteAttempts <= 2, 'CSRF failure must not cause unbounded mutation retries')
+        delete headers['x-csrf-token']
+      }
+      return route.continue({ headers })
     })
     const evidence = observeLivePage(page, descriptor.base_url)
     let failure: unknown
@@ -376,6 +385,108 @@ test('embedded Gateway Admin completes a real backend journey', {
       progress(`gateway-get:${persisted.status}`)
       assert.equal(persisted.status, 200)
       await assert.doesNotReject(page.locator('a:visible').filter({ hasText: ownedName }).first().waitFor({ state: 'visible', timeout: 10_000 }))
+
+      // Exercise the real catalog wire `name` through the lazy schema, action
+      // drill-down, parameter form, and adapter. The existing continuation
+      // supplies CSRF; every response still comes from the owned Labby daemon.
+      for (const width of [1360, 390]) {
+        await page.setViewportSize({ width, height: 900 })
+        await page.getByRole('button', { name: 'Search and filter', exact: true }).click()
+        const palette = page.getByRole('dialog', { name: 'Command Palette', exact: true })
+        await palette.getByRole('textbox', { name: 'Search command palette' }).fill('> gateway')
+        await palette.getByRole('option').filter({ has: page.getByText('gateway', { exact: true }) }).click({ timeout: 10_000 })
+        await palette.getByRole('textbox', { name: 'Search command palette' }).fill('gateway.server.get')
+        await palette.getByRole('option').filter({ has: page.getByText('gateway.server.get', { exact: true }) }).click({ timeout: 10_000 })
+        const serverId = palette.locator('#param-id')
+        assert.equal(await serverId.getAttribute('required'), '', 'catalog must project the required server id')
+        await serverId.fill(ownedGatewayId)
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+        const [paletteResponse] = await Promise.all([
+          page.waitForResponse(response => response.request().method() === 'POST'
+            && new URL(response.url()).pathname === '/v1/gateway'
+            && response.request().postDataJSON()?.action === 'gateway.server.get', { timeout: 10_000 }),
+          palette.getByRole('button', { name: 'Run', exact: true }).click(),
+        ])
+        assert.deepEqual(paletteResponse.request().postDataJSON(), {
+          action: 'gateway.server.get', params: { id: ownedGatewayId },
+        })
+        assert.equal(paletteResponse.status(), 200, 'palette lookup must succeed against the real gateway')
+        const paletteServer = await paletteResponse.json()
+        assert.equal(paletteServer.id, ownedGatewayId)
+        assert.equal(paletteServer.name, ownedName)
+        assert.equal(paletteServer.source, 'custom_gateway')
+        assert.equal(paletteServer.configured, true)
+        await palette.waitFor({ state: 'hidden', timeout: 10_000 })
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
+        progress(`catalog-palette-owned-server-get-through-ui:${width}`)
+      }
+      await page.setViewportSize({ width: 1360, height: 900 })
+
+      // Reject an authenticated palette mutation at the real daemon's CSRF
+      // boundary. Target only the owned gateway and explicitly disable both
+      // optional process-cleanup paths for this reversible operation.
+      const gatewayBefore = await action(page, csrfToken, 'gateway', 'gateway.get', { name: ownedName })
+      assert.equal(gatewayBefore.status, 200)
+      assert.equal(gatewayBefore.body.config.name, ownedName)
+      assert.equal(gatewayBefore.body.config.enabled, true, 'owned gateway starts enabled')
+      await page.getByRole('button', { name: 'Search and filter', exact: true }).click()
+      const deniedPalette = page.getByRole('dialog', { name: 'Command Palette', exact: true })
+      await deniedPalette.getByRole('textbox', { name: 'Search command palette' }).fill('> gateway')
+      await deniedPalette.getByRole('option').filter({ has: page.getByText('gateway', { exact: true }) }).click({ timeout: 10_000 })
+      await deniedPalette.getByRole('textbox', { name: 'Search command palette' }).fill('gateway.mcp.disable')
+      await deniedPalette.getByRole('option').filter({ has: page.getByText('gateway.mcp.disable', { exact: true }) }).click({ timeout: 10_000 })
+      await deniedPalette.locator('#param-name').fill(ownedName)
+      await deniedPalette.locator('#param-cleanup').fill('false')
+      await deniedPalette.locator('#param-aggressive').fill('false')
+      const deniedResponses: import('playwright').Response[] = []
+      let refreshedSessionResponse: import('playwright').Response | undefined
+      const observeDeniedResponse = (response: import('playwright').Response) => {
+        if (new URL(response.url()).pathname === '/auth/session') refreshedSessionResponse = response
+        if (response.request().method() === 'POST'
+          && new URL(response.url()).pathname === '/v1/gateway'
+          && response.request().postDataJSON()?.action === 'gateway.mcp.disable') deniedResponses.push(response)
+      }
+      page.on('response', observeDeniedResponse)
+      denyPaletteMutationCsrf = true
+      try {
+        await deniedPalette.getByRole('button', { name: 'Run', exact: true }).click()
+        // validation_failed CSRF errors get one session refresh and one retry.
+        // Strip the header on both attempts, and wait for the final UI failure.
+        await page.getByText('gateway gateway.mcp.disable failed', { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
+        assert.equal(deniedPaletteAttempts, 2)
+        assert.equal(deniedResponses.length, 2)
+        for (const response of deniedResponses) {
+          assert.deepEqual(response.request().postDataJSON(), {
+            action: 'gateway.mcp.disable', params: { name: ownedName, cleanup: false, aggressive: false },
+          })
+          assert.equal(response.status(), 422)
+          const body = await response.json()
+          assert.equal(body.kind, 'validation_failed')
+          assert.match(body.message, /missing or invalid csrf token/i)
+          await page.getByText(body.message, { exact: true }).waitFor({ state: 'visible', timeout: 10_000 })
+        }
+        assert.equal(await deniedPalette.isVisible(), true, 'denied action must keep its parameter form open')
+      } finally {
+        denyPaletteMutationCsrf = false
+        page.off('response', observeDeniedResponse)
+        if (refreshedSessionResponse?.ok()) {
+          const refreshedSession = await refreshedSessionResponse.json()
+          if (refreshedSession.authenticated && typeof refreshedSession.csrf_token === 'string' && refreshedSession.csrf_token.length > 0) {
+            csrfToken = refreshedSession.csrf_token
+          }
+        }
+      }
+      // Reuse the client's real refresh response; another session probe would
+      // rotate transport state again. Never log the private token.
+      assert.ok(refreshedSessionResponse, 'CSRF retry must refresh the browser session')
+      assert.equal(refreshedSessionResponse.status(), 200)
+      await page.keyboard.press('Escape')
+      await deniedPalette.waitFor({ state: 'hidden', timeout: 10_000 })
+      const gatewayAfter = await action(page, csrfToken, 'gateway', 'gateway.get', { name: ownedName })
+      assert.equal(gatewayAfter.status, 200)
+      assert.equal(gatewayAfter.body.config.enabled, true, 'denied disable must leave the owned gateway enabled')
+      assert.deepEqual(gatewayAfter.body.config, gatewayBefore.body.config, 'denied palette mutation must leave the complete owned gateway configuration unchanged')
+      progress('catalog-palette-authenticated-csrf-denial-through-ui:422:unchanged')
 
       // Gateway policy belongs to an explicit Team. Use the authority projected
       // for this authenticated fixture, rather than the installation loadout.

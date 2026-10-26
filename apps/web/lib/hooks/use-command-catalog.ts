@@ -12,7 +12,7 @@
 
 import useSWR from 'swr'
 
-import { fetchCatalog } from '@/lib/command-actions/catalog'
+import { fetchCatalog } from '@/lib/command-actions/catalog-fetch'
 import type { CatalogService } from '@/lib/types/command-catalog'
 
 /** SWR cache key for /v1/catalog. Single constant prevents cache-slot divergence. */

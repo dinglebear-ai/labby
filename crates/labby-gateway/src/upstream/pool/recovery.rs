@@ -171,7 +171,7 @@ mod catalog_isolation_tests {
     use super::UpstreamPool;
     use rmcp::model::{
         ErrorData, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
-        Resource, ServerCapabilities, ServerInfo,
+        Resource, ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -179,8 +179,8 @@ mod catalog_isolation_tests {
 
     struct ManyCatalogs;
     impl ServerHandler for ManyCatalogs {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_resources()
                     .enable_prompts()

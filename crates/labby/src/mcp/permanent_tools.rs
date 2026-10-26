@@ -407,6 +407,10 @@ impl ToolProjectionMode {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PermanentToolRegistry;
 
+fn native_tool_with_security(tool: Tool) -> Tool {
+    with_labby_security(super::native_metadata::native_tool(tool))
+}
+
 // The one legitimate `Tool::new` site: this registry IS the sole construction
 // point the clippy.toml `disallowed-methods` entry directs everyone to.
 #[allow(clippy::disallowed_methods)]
@@ -454,7 +458,7 @@ impl PermanentToolRegistry {
         } else {
             tool
         };
-        with_labby_security(tool)
+        native_tool_with_security(tool)
     }
 
     /// Canonical descriptor for the `artifacts` service with its Artifact
@@ -475,7 +479,7 @@ impl PermanentToolRegistry {
             .destructive(action.destructive)
             .idempotent(false)
             .open_world(true);
-        Some(with_labby_security(
+        Some(native_tool_with_security(
             Tool::new(
                 atomic_action_tool_name(service, action),
                 action.description,
@@ -528,14 +532,14 @@ impl PermanentToolRegistry {
                 app_visible: false, ..
             } => tool,
         };
-        with_labby_security(tool)
+        native_tool_with_security(tool)
     }
 
     /// Descriptor for the optional Code Mode MCP App twin of `codemode`.
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn code_mode_ui_tool(&self, upstreams: &[CodeModeUpstreamDescription]) -> Tool {
-        with_labby_security(
+        native_tool_with_security(
             Tool::new(
                 CODE_MODE_UI_TOOL_NAME,
                 code_mode_ui_description(upstreams),
@@ -567,7 +571,7 @@ impl PermanentToolRegistry {
         } else {
             tool.with_meta(mcp_app_callback_meta(model_visible))
         };
-        with_labby_security(tool)
+        native_tool_with_security(tool)
     }
 
     /// Descriptor for the Add Server admin app tool.
@@ -577,7 +581,7 @@ impl PermanentToolRegistry {
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn add_server_tool(&self) -> Tool {
-        with_labby_security(Tool::new(
+        native_tool_with_security(Tool::new(
             ADD_SERVER_TOOL_NAME,
             "Open a responsive form to test and add a remote or local MCP server to the Labby gateway catalog.",
             add_server_tool_schema(),
@@ -594,7 +598,7 @@ impl PermanentToolRegistry {
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn gateway_status_tool(&self) -> Tool {
-        with_labby_security(Tool::new(
+        native_tool_with_security(Tool::new(
             GATEWAY_STATUS_TOOL_NAME,
             "Display live connection status, capabilities, and warnings for gateway upstream MCP servers.",
             gateway_status_tool_schema(),
@@ -607,7 +611,7 @@ impl PermanentToolRegistry {
     #[cfg(feature = "gateway")]
     #[must_use]
     pub(crate) fn settings_tool(&self) -> Tool {
-        with_labby_security(Tool::new(
+        native_tool_with_security(Tool::new(
             SETTINGS_TOOL_NAME,
             "Open and manage schema-backed Labby settings, including Code Mode, proxy, surface, and feature controls.",
             settings_tool_schema(),
@@ -630,7 +634,7 @@ impl PermanentToolRegistry {
         // `codemode` is permanently text-only: the MCP App metadata belongs to
         // the optional `codemode_ui` twin so disabling the app surface can never
         // remove the execution entry point. See mcp/CLAUDE.md.
-        with_labby_security(
+        native_tool_with_security(
             Tool::new(
                 CODE_MODE_TOOL_NAME,
                 code_mode_tool_description(
@@ -651,7 +655,7 @@ impl PermanentToolRegistry {
         &self,
         upstreams: &[CodeModeUpstreamDescription],
     ) -> Tool {
-        with_labby_security(
+        native_tool_with_security(
             Tool::new(
                 CODE_MODE_READ_TOOL_NAME,
                 code_mode_tool_description(CodeModeDescriptionVariant::Read, upstreams, ""),
@@ -745,6 +749,27 @@ mod tests {
                 "`{key}` core type must match"
             );
         }
+    }
+
+    #[test]
+    fn native_tools_publish_stable_display_metadata() {
+        let registry = PermanentToolRegistry::new();
+        let descriptor = || {
+            registry.builtin_service_tool(
+                &service("gateway-alpha"),
+                true,
+                SkillLibraryDescriptorMode::Hidden,
+            )
+        };
+        let tool = descriptor();
+        assert_eq!(tool.title.as_deref(), Some("Gateway Alpha"));
+        let icon = &tool.icons.as_ref().expect("native icon")[0];
+        assert!(icon.src.starts_with("data:image/png;base64,"));
+        assert_eq!(icon.mime_type.as_deref(), Some("image/png"));
+        assert_eq!(
+            serde_json::to_value(&tool).unwrap(),
+            serde_json::to_value(descriptor()).unwrap()
+        );
     }
 
     #[test]
@@ -842,6 +867,14 @@ mod tests {
         let serialized = serde_json::to_value(with_labby_security(upstream)).unwrap();
         let expected = serde_json::json!([{"type": "oauth2", "scopes": ["lab:read"]}]);
         assert_eq!(serialized["_meta"]["securitySchemes"], expected);
+        assert!(
+            serialized.get("title").is_none(),
+            "do not invent provider titles"
+        );
+        assert!(
+            serialized.get("icons").is_none(),
+            "do not add Labby branding to provider tools"
+        );
     }
 
     #[test]

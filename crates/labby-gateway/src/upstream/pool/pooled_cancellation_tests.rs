@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerInfo,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -38,8 +38,14 @@ struct CancelObservingServer {
 }
 
 impl ServerHandler for CancelObservingServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_prompts()
+                .enable_resources()
+                .build(),
+        )
     }
 
     async fn list_tools(
@@ -48,6 +54,28 @@ impl ServerHandler for CancelObservingServer {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
         Ok(ListToolsResult::with_all_items(Vec::new()))
+    }
+
+    async fn get_prompt(
+        &self,
+        _request: rmcp::model::GetPromptRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::GetPromptResponse, ErrorData> {
+        self.started.store(true, Ordering::SeqCst);
+        context.ct.cancelled().await;
+        self.observed_cancel.store(true, Ordering::SeqCst);
+        Err(ErrorData::internal_error("cancelled prompt", None))
+    }
+
+    async fn read_resource(
+        &self,
+        _request: rmcp::model::ReadResourceRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ReadResourceResponse, ErrorData> {
+        self.started.store(true, Ordering::SeqCst);
+        context.ct.cancelled().await;
+        self.observed_cancel.store(true, Ordering::SeqCst);
+        Err(ErrorData::internal_error("cancelled resource read", None))
     }
 
     async fn call_tool(
@@ -330,4 +358,143 @@ async fn a_timed_out_pooled_tool_call_also_notifies_the_upstream() {
         !ran_to_completion.load(Ordering::SeqCst),
         "a timed-out call must not leave the upstream running to completion"
     );
+}
+
+/// The SDK guard must cross the MCP boundary when the pool's prompt future
+/// disappears. Tool-call-only coverage would miss this newly adopted behavior.
+#[tokio::test]
+async fn dropping_a_pooled_prompt_get_notifies_the_upstream() {
+    let started = Arc::new(AtomicBool::new(false));
+    let observed_cancel = Arc::new(AtomicBool::new(false));
+    let pool = catalog_pool_with_server(
+        "prompt-drop",
+        CancelObservingServer {
+            started: Arc::clone(&started),
+            observed_cancel: Arc::clone(&observed_cancel),
+            ran_to_completion: Arc::new(AtomicBool::new(false)),
+        },
+    )
+    .await;
+    let call = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move {
+            pool.get_prompt_typed(
+                "prompt-drop",
+                rmcp::model::GetPromptRequestParams::new("slow"),
+            )
+            .await
+        }
+    });
+    wait_for("prompt request to start", || started.load(Ordering::SeqCst)).await;
+    call.abort();
+    assert!(
+        call.await
+            .expect_err("prompt task was aborted")
+            .is_cancelled()
+    );
+    wait_for("upstream prompt cancellation", || {
+        observed_cancel.load(Ordering::SeqCst)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn dropping_a_pooled_resource_read_notifies_the_upstream() {
+    let started = Arc::new(AtomicBool::new(false));
+    let observed_cancel = Arc::new(AtomicBool::new(false));
+    let pool = catalog_pool_with_server(
+        "resource-drop",
+        CancelObservingServer {
+            started: Arc::clone(&started),
+            observed_cancel: Arc::clone(&observed_cancel),
+            ran_to_completion: Arc::new(AtomicBool::new(false)),
+        },
+    )
+    .await;
+    let call = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move {
+            pool.read_upstream_resource("lab://upstream/resource-drop/test://slow")
+                .await
+        }
+    });
+    wait_for("resource request to start", || {
+        started.load(Ordering::SeqCst)
+    })
+    .await;
+    call.abort();
+    assert!(
+        call.await
+            .expect_err("resource task was aborted")
+            .is_cancelled()
+    );
+    wait_for("upstream resource cancellation", || {
+        observed_cancel.load(Ordering::SeqCst)
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn cancelling_one_pooled_call_leaves_another_request_running() {
+    #[derive(Clone)]
+    struct IsolatedServer(tokio::sync::mpsc::UnboundedSender<(String, CancellationToken)>);
+    impl ServerHandler for IsolatedServer {
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        }
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, ErrorData> {
+            self.0
+                .send((request.name.to_string(), context.ct.clone()))
+                .expect("test is waiting for request context");
+            context.ct.cancelled().await;
+            Err(ErrorData::internal_error("cancelled", None))
+        }
+    }
+    let (started, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let pool = catalog_pool_with_server("isolated", IsolatedServer(started)).await;
+    let first = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move {
+            pool.call_tool_classified("isolated", CallToolRequestParams::new("first"))
+                .await
+        }
+    });
+    let (name, first_cancel) = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await
+        .expect("first request starts")
+        .expect("request channel open");
+    assert_eq!(name, "first");
+    let second = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        async move {
+            pool.call_tool_classified("isolated", CallToolRequestParams::new("second"))
+                .await
+        }
+    });
+    let (name, second_cancel) = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+        .await
+        .expect("second request starts")
+        .expect("request channel open");
+    assert_eq!(name, "second");
+    first.abort();
+    assert!(first.await.expect_err("first task aborted").is_cancelled());
+    tokio::time::timeout(Duration::from_secs(5), first_cancel.cancelled())
+        .await
+        .expect("first upstream request is cancelled");
+    assert!(!second_cancel.is_cancelled(), "another request stays live");
+    assert!(!second.is_finished(), "another caller keeps waiting");
+    second.abort();
+    assert!(
+        second
+            .await
+            .expect_err("second task aborted")
+            .is_cancelled()
+    );
+    tokio::time::timeout(Duration::from_secs(5), second_cancel.cancelled())
+        .await
+        .expect("second request cancels only after its own caller leaves");
 }

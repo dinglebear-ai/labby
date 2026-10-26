@@ -142,6 +142,7 @@ impl UpstreamPool {
         ),
         String,
     > {
+        self.drain_oauth_client_capacity_evictions().await;
         let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
         let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
             tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
@@ -354,9 +355,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use rmcp::model::{
-        CallToolResponse, CancelTaskParams, ClientCapabilities, ClientInfo, CreateTaskResult,
+        CallToolResponse, CancelTaskParams, ClientCapabilities, ClientConfig, CreateTaskResult,
         DetailedTask, GetTaskParams, GetTaskResult, InputResponses, ProtocolVersion,
-        ServerCapabilities, ServerInfo, Task, TaskPayload, TaskStatus, UpdateTaskParams,
+        ServerCapabilities, ServerConfig, Task, TaskPayload, TaskStatus, UpdateTaskParams,
     };
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService};
     use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -376,8 +377,8 @@ mod tests {
     }
 
     impl ServerHandler for TaskServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tasks()
@@ -429,8 +430,8 @@ mod tests {
     pub(super) struct DownstreamServer;
 
     impl ServerHandler for DownstreamServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
     }
 
@@ -455,7 +456,7 @@ mod tests {
 
         let (downstream_server_transport, downstream_client_transport) =
             tokio::io::duplex(64 * 1024);
-        let mut downstream_client_info = ClientInfo::default();
+        let mut downstream_client_info = ClientConfig::default();
         downstream_client_info.capabilities = capabilities.clone();
         tokio::spawn(async move {
             if let Ok(running) = downstream_client_info
@@ -467,6 +468,19 @@ mod tests {
                 )
                 .await
             {
+                // Discovery does not finish server startup until the first
+                // application request reaches the downstream peer.
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    running
+                        .peer()
+                        .send_request(rmcp::model::ClientRequest::ListToolsRequest(
+                            rmcp::model::ListToolsRequest::default(),
+                        )),
+                )
+                .await
+                .expect("downstream activation finishes within its deadline")
+                .expect("downstream client activates the server");
                 running.waiting().await.ok();
             }
         });

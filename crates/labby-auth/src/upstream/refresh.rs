@@ -38,36 +38,55 @@ pub struct RefreshLocks {
 
 #[derive(Default)]
 struct RefreshFlight {
-    running: std::sync::Mutex<bool>,
     completed: std::sync::Mutex<Option<Result<(), CachedRefreshFailure>>>,
     notify: tokio::sync::Notify,
 }
 
 impl RefreshFlight {
-    fn try_start(&self) -> bool {
-        let mut running = self
-            .running
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if *running {
-            false
-        } else {
-            *running = true;
-            true
-        }
-    }
-
     fn complete(&self, result: Result<(), CachedRefreshFailure>) {
         *self
             .completed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(result);
-        *self
-            .running
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
         self.notify.notify_waiters();
     }
+
+    fn is_running(&self) -> bool {
+        self.completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none()
+    }
+
+    async fn result(&self) -> Result<(), OauthError> {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let result = self
+            .completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(result) = result {
+            return result.map_err(|error| error.to_error());
+        }
+        notified.await;
+        self.completed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .expect("completed flight publishes its result before notification")
+            .map_err(|error| error.to_error())
+    }
+}
+
+fn cached_result(result: &Result<(), OauthError>) -> Result<(), CachedRefreshFailure> {
+    result.as_ref().map(|_| ()).map_err(|error| {
+        CachedRefreshFailure::from_error(error).unwrap_or_else(|| CachedRefreshFailure::Egress {
+            kind: OAuthEgressKind::UpstreamError,
+            message: error.to_string(),
+        })
+    })
 }
 
 struct RefreshFlightOwner {
@@ -148,66 +167,87 @@ impl RefreshLocks {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(), OauthError>>,
     {
-        let key = (upstream_name.to_string(), subject.to_string());
-        let flight = {
-            let _maintenance = self
-                .maintenance
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(existing) = self.flights.get(&key) {
-                existing.value().clone()
-            } else {
-                if self.flights.len() >= MAX_COORDINATION_ENTRIES {
-                    let idle = self
-                        .flights
-                        .iter()
-                        .find(|entry| Arc::strong_count(entry.value()) == 1)
-                        .map(|entry| entry.key().clone());
-                    if let Some(idle) = idle {
-                        self.flights.remove(&idle);
-                    } else {
-                        return (
-                            false,
-                            Err(OauthError::Internal(
-                                "OAuth refresh coordination capacity exhausted".to_string(),
-                            )),
-                        );
-                    }
-                }
-                self.flights
-                    .entry(key)
-                    .or_insert_with(|| Arc::new(RefreshFlight::default()))
-                    .clone()
-            }
+        let (owner, flight) = match self.admit(upstream_name, subject) {
+            Ok(admission) => admission,
+            Err(error) => return (false, Err(error)),
         };
-        let notified = flight.notify.notified();
-        tokio::pin!(notified);
-        // Register before observing `running`; otherwise the owner can finish
-        // between that observation and the first poll, losing `notify_waiters`.
-        notified.as_mut().enable();
-        if flight.try_start() {
-            let owner = RefreshFlightOwner::new(Arc::clone(&flight));
+        if owner {
+            let owner = RefreshFlightOwner::new(flight);
             let result = operation().await;
-            let cached = result.as_ref().map(|_| ()).map_err(|error| {
-                CachedRefreshFailure::from_error(error).unwrap_or_else(|| {
-                    CachedRefreshFailure::Egress {
-                        kind: OAuthEgressKind::UpstreamError,
-                        message: error.to_string(),
-                    }
-                })
-            });
-            owner.finish(cached);
-            return (true, result);
+            owner.finish(cached_result(&result));
+            (true, result)
+        } else {
+            (false, flight.result().await)
         }
-        notified.await;
-        let result = flight
-            .completed
+    }
+
+    /// Retain one bounded operation independently of its requesting callers.
+    /// Election happens before spawning; cancelled waiters never detach tasks.
+    pub(super) async fn run_shared_owned<F, Fut>(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+        operation: F,
+    ) -> (bool, Result<(), OauthError>)
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), OauthError>> + Send + 'static,
+    {
+        let (elected, flight) = match self.admit(upstream_name, subject) {
+            Ok(admission) => admission,
+            Err(error) => return (false, Err(error)),
+        };
+        if elected {
+            let owner = RefreshFlightOwner::new(Arc::clone(&flight));
+            tokio::spawn(async move {
+                let result = operation().await;
+                owner.finish(cached_result(&result));
+            });
+        }
+        (elected, flight.result().await)
+    }
+
+    fn admit(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+    ) -> Result<(bool, Arc<RefreshFlight>), OauthError> {
+        let key = (upstream_name.to_owned(), subject.to_owned());
+        let _maintenance = self
+            .maintenance
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .unwrap_or(Ok(()))
-            .map_err(|error| error.to_error());
-        (false, result)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = self.flights.get(&key)
+            && existing.is_running()
+        {
+            return Ok((false, Arc::clone(existing.value())));
+        }
+        if !self.flights.contains_key(&key) && self.flights.len() >= MAX_COORDINATION_ENTRIES {
+            let idle = self
+                .flights
+                .iter()
+                .find(|entry| !entry.is_running() && Arc::strong_count(entry.value()) == 1)
+                .map(|entry| entry.key().clone());
+            if let Some(idle) = idle {
+                self.flights.remove(&idle);
+            } else {
+                return Err(OauthError::Internal(
+                    "OAuth refresh coordination capacity exhausted".to_string(),
+                ));
+            }
+        }
+        // Each generation owns an immutable completion slot. A later refresh
+        // cannot replace the result that an earlier waiter has yet to consume.
+        let flight = Arc::new(RefreshFlight::default());
+        self.flights.insert(key, Arc::clone(&flight));
+        Ok((true, flight))
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_running(&self, upstream: &str, subject: &str) -> bool {
+        self.flights
+            .get(&(upstream.to_owned(), subject.to_owned()))
+            .is_some_and(|flight| flight.is_running())
     }
 
     #[cfg(test)]
@@ -331,7 +371,10 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{MAX_COORDINATION_ENTRIES, RefreshFailureCache, RefreshFlight, RefreshLocks};
+    use super::{
+        CachedRefreshFailure, MAX_COORDINATION_ENTRIES, RefreshFailureCache, RefreshFlight,
+        RefreshLocks,
+    };
     use crate::upstream::types::{OAuthEgressKind, OauthError};
 
     #[test]
@@ -513,5 +556,87 @@ mod tests {
         assert!(executed);
         result.expect("a later caller may retry");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+    #[tokio::test]
+    async fn completion_results_are_bound_to_the_admitted_generation() {
+        let locks = RefreshLocks::new();
+        let (first_owner, first) = locks.admit("upstream", "subject").unwrap();
+        assert!(first_owner);
+        let (joined_owner, joined) = locks.admit("upstream", "subject").unwrap();
+        assert!(!joined_owner);
+        first.complete(Err(CachedRefreshFailure::NeedsReauth(
+            "first generation".into(),
+        )));
+        let (next_owner, next) = locks.admit("upstream", "subject").unwrap();
+        assert!(next_owner);
+        next.complete(Ok(()));
+        assert!(
+            joined
+                .result()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("first generation")
+        );
+        assert!(next.result().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn owned_refresh_survives_cancelled_callers_and_finishes_once() {
+        let locks = Arc::new(RefreshLocks::new());
+        let starts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let caller = {
+            let locks = Arc::clone(&locks);
+            let starts = Arc::clone(&starts);
+            let entered = Arc::clone(&entered);
+            let release = Arc::clone(&release);
+            tokio::spawn(async move {
+                locks
+                    .run_shared_owned("upstream", "subject", move || async move {
+                        starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        entered.notify_one();
+                        release.notified().await;
+                        Err(OauthError::NeedsReauth("retained failure".into()))
+                    })
+                    .await
+            })
+        };
+        entered.notified().await;
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+        for _ in 0..3 {
+            let locks = Arc::clone(&locks);
+            let starts = Arc::clone(&starts);
+            let mut waiter =
+                Box::pin(
+                    locks.run_shared_owned("upstream", "subject", move || async move {
+                        starts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    }),
+                );
+            assert!(
+                std::future::poll_fn(|cx| std::task::Poll::Ready(
+                    waiter.as_mut().poll(cx).is_pending()
+                ))
+                .await
+            );
+        }
+        assert_eq!(starts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (_, flight) = locks.admit("upstream", "subject").unwrap();
+        release.notify_one();
+        let result = tokio::time::timeout(Duration::from_secs(1), flight.result())
+            .await
+            .unwrap();
+        assert!(result.unwrap_err().to_string().contains("retained failure"));
+        assert!(!flight.is_running());
+        assert!(
+            locks
+                .run_shared_owned("upstream", "subject", || async { Ok(()) })
+                .await
+                .1
+                .is_ok()
+        );
     }
 }

@@ -289,6 +289,10 @@ impl UpstreamPool {
                     self.runtime_origin.as_deref(),
                     runtime_owner,
                     Some(&self.shared_http_client),
+                    super::transport_config::HttpTransportBudgets {
+                        concurrency: self.call_concurrency,
+                        request_timeout: self.request_timeout,
+                    },
                 ),
             )
             .await;
@@ -1006,8 +1010,8 @@ mod tests {
         }
 
         impl rmcp::ServerHandler for GrowingToolCatalogServer {
-            fn get_info(&self) -> rmcp::model::ServerInfo {
-                rmcp::model::ServerInfo::new(
+            fn get_info(&self) -> rmcp::model::ServerConfig {
+                rmcp::model::ServerConfig::new(
                     rmcp::model::ServerCapabilities::builder()
                         .enable_tools()
                         .build(),
@@ -1094,8 +1098,8 @@ mod tests {
         }
 
         impl rmcp::ServerHandler for BlockingToolCatalogServer {
-            fn get_info(&self) -> rmcp::model::ServerInfo {
-                rmcp::model::ServerInfo::new(
+            fn get_info(&self) -> rmcp::model::ServerConfig {
+                rmcp::model::ServerConfig::new(
                     rmcp::model::ServerCapabilities::builder()
                         .enable_tools()
                         .build(),

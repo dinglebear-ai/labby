@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use rmcp::model::{
     ErrorData, ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
-    Resource, ServerCapabilities, ServerInfo, SubscriptionFilter,
+    Resource, ServerCapabilities, ServerConfig, SubscriptionFilter,
 };
 use rmcp::service::{RequestContext, SubscriptionContext};
 use rmcp::{
@@ -137,8 +137,8 @@ impl SubscriptionServer {
 }
 
 impl ServerHandler for SubscriptionServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()

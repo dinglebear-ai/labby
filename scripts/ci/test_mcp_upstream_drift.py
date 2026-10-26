@@ -60,7 +60,7 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertIn("Accepted SEP-2640 server, client, and intermediary behavior", workflow)
         self.assertIn("--no-default-features --features skills", workflow)
         self.assertIn(
-            "cargo test -p labby --no-default-features --features skills --locked\n          skills::",
+            "cargo test -p labby --all-features --locked mcp::skills",
             workflow,
         )
 

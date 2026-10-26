@@ -29,7 +29,7 @@ use rmcp::transport::streamable_http_client::StreamableHttpClient;
 use rmcp_client as rmcp;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::upstream::manager::UpstreamOauthManager;
+use crate::upstream::manager::{OauthRefreshRejectionHandler, UpstreamOauthManager};
 use crate::upstream::types::OauthError;
 
 /// Callback used by a host surface that can drive an interactive OAuth flow.
@@ -67,6 +67,22 @@ impl OAuthLifecycleEpoch {
     }
 }
 
+/// A cache eviction or rejected credential awaiting the gateway's lifecycle writer.
+pub struct PendingOAuthInvalidation {
+    pub upstream: String,
+    pub subject: Option<String>,
+    epoch: Option<OAuthLifecycleEpoch>,
+}
+
+impl PendingOAuthInvalidation {
+    /// A newer authorization makes an older rejection inapplicable.
+    pub fn is_current(&self) -> bool {
+        self.epoch
+            .as_ref()
+            .is_none_or(OAuthLifecycleEpoch::is_current)
+    }
+}
+
 /// Per-`(upstream, subject)` `AuthClient` cache.
 ///
 /// Cheap to clone (all state is behind `Arc`). Safe to share between the
@@ -84,7 +100,7 @@ pub struct OauthClientCache {
     build_lock_overflow: Arc<Mutex<()>>,
     build_lock_maintenance: Arc<std::sync::Mutex<()>>,
     client_maintenance: Arc<std::sync::Mutex<()>>,
-    evicted_clients: Arc<std::sync::Mutex<VecDeque<(String, String)>>>,
+    evicted_clients: Arc<std::sync::Mutex<VecDeque<PendingOAuthInvalidation>>>,
     client_capacity: usize,
     /// Process-wide credential lifecycle barrier shared with every upstream
     /// pool built from this cache. Builders take a short read guard only when
@@ -182,6 +198,20 @@ impl OauthClientCache {
     }
 
     pub fn lifecycle_epoch_for(&self, upstream: &str, subject: &str) -> OAuthLifecycleEpoch {
+        self.lifecycle_epoch_for_scope(upstream, Some(subject))
+    }
+
+    /// Snapshot shared upstream authority independently of one caller's sessions.
+    #[must_use]
+    pub fn lifecycle_epoch_for_upstream(&self, upstream: &str) -> OAuthLifecycleEpoch {
+        self.lifecycle_epoch_for_scope(upstream, None)
+    }
+
+    fn lifecycle_epoch_for_scope(
+        &self,
+        upstream: &str,
+        subject: Option<&str>,
+    ) -> OAuthLifecycleEpoch {
         let mut scopes = self
             .scoped_epochs
             .lock()
@@ -196,11 +226,15 @@ impl OauthClientCache {
             let expected = epoch.load(Ordering::Acquire);
             (epoch, expected)
         };
+        let upstream_epoch = get((upstream.to_string(), None));
+        let subject_epoch = subject
+            .map(|subject| get((upstream.to_string(), Some(subject.to_string()))))
+            .unwrap_or_else(|| upstream_epoch.clone());
         OAuthLifecycleEpoch {
             epochs: [
                 (Arc::clone(&self.lifecycle_epoch), self.lifecycle_epoch()),
-                get((upstream.to_string(), None)),
-                get((upstream.to_string(), Some(subject.to_string()))),
+                upstream_epoch,
+                subject_epoch,
             ],
         }
     }
@@ -294,6 +328,7 @@ impl OauthClientCache {
         let reauth_handler = self.reauth_handler.clone();
         let upstream_name = config.name.clone();
         let subject_owned = subject.to_string();
+        let publication_epoch = lifecycle_epoch.clone();
         let client = self
             .get_or_insert_with(
                 config,
@@ -310,8 +345,20 @@ impl OauthClientCache {
                                 upstream_name
                             ))
                         })?;
+                    let manager = manager
+                        .with_grant_publication_policy(
+                            self.invalidation_barrier(),
+                            publication_epoch,
+                        )
+                        .with_refresh_rejection_handler(
+                            self.refresh_rejection_handler(config, &subject_owned)
+                                .await?,
+                        );
                     let auth_client = match manager.build_auth_client(&subject_owned).await {
                         Err(OauthError::NeedsReauth(reason)) => {
+                            if manager.is_unattended() {
+                                return Err(OauthError::NeedsReauth(reason));
+                            }
                             let Some(handler) = reauth_handler else {
                                 return Err(OauthError::NeedsReauth(reason));
                             };
@@ -368,6 +415,9 @@ impl OauthClientCache {
                     config.name
                 ))
             })?;
+        let manager = manager
+            .with_grant_publication_policy(self.invalidation_barrier(), lifecycle_epoch.clone())
+            .with_refresh_rejection_handler(self.refresh_rejection_handler(config, subject).await?);
         let Some(handler) = self.reauth_handler.clone() else {
             let client = manager.build_auth_client_with(subject, http_client).await?;
             self.ensure_epoch_current(&lifecycle_epoch).await?;
@@ -376,7 +426,7 @@ impl OauthClientCache {
 
         let retry_client = http_client.clone();
         let client = match manager.build_auth_client_with(subject, http_client).await {
-            Err(OauthError::NeedsReauth(_)) => {
+            Err(OauthError::NeedsReauth(_)) if !manager.is_unattended() => {
                 handler(config.name.clone(), subject.to_string()).await?;
                 manager.build_auth_client_with(subject, retry_client).await
             }
@@ -453,20 +503,202 @@ impl OauthClientCache {
                     .evicted_clients
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending.push_back(evicted);
+                pending.push_back(PendingOAuthInvalidation {
+                    upstream: evicted.0,
+                    subject: Some(evicted.1),
+                    epoch: None,
+                });
             }
         }
         self.clients.insert(key, client);
     }
 
-    /// Drain cache-capacity victims so the gateway can evict the matching live
-    /// subject connection from its separately-owned transport registry.
-    pub fn take_capacity_evictions(&self) -> Vec<(String, String)> {
+    /// Check for queued lifecycle work without removing it.
+    /// The gateway uses this before waiting for its credential lifecycle writer.
+    #[must_use]
+    pub fn has_pending_invalidations(&self) -> bool {
+        !self
+            .evicted_clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+
+    /// Drain invalidations at an operation boundary, outside publication readers.
+    pub fn take_pending_invalidations(&self) -> Vec<PendingOAuthInvalidation> {
         self.evicted_clients
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .collect()
+    }
+
+    /// Drain subject-scoped cache victims for hosts without a transport registry.
+    pub fn take_capacity_evictions(&self) -> Vec<(String, String)> {
+        let mut pending = self
+            .evicted_clients
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut victims = Vec::new();
+        pending.retain(|event| {
+            if event.epoch.is_none() {
+                if let Some(subject) = &event.subject {
+                    victims.push((event.upstream.clone(), subject.clone()));
+                }
+                false
+            } else {
+                true
+            }
+        });
+        victims
+    }
+
+    /// Record a real upstream scope challenge for this exact OAuth authority.
+    /// A replaced configuration uses a different manager registry; a credential
+    /// change invalidates the retained epoch before another consent can start.
+    pub fn scope_challenge_handler(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> Result<crate::upstream::manager::OauthScopeChallengeHandler, OauthError> {
+        let manager = self
+            .managers
+            .get(&config.name)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| {
+                OauthError::Internal(format!(
+                    "no oauth manager registered for upstream '{}'",
+                    config.name
+                ))
+            })?;
+        let current_config = serde_json::to_value(manager.upstream_config()).map_err(|error| {
+            OauthError::Internal(format!("scope authority configuration: {error}"))
+        })?;
+        let requested_config = serde_json::to_value(config).map_err(|error| {
+            OauthError::Internal(format!("scope authority configuration: {error}"))
+        })?;
+        if current_config != requested_config {
+            return Err(OauthError::NeedsReauth(
+                "upstream configuration changed before scope challenge observation".into(),
+            ));
+        }
+        let managers = Arc::clone(&self.managers);
+        let upstream = config.name.clone();
+        let epoch = self.lifecycle_epoch_for(&config.name, subject);
+        let subject = subject.to_string();
+        Ok(Arc::new(move |scope| {
+            if epoch.is_current()
+                && managers
+                    .get(&upstream)
+                    .is_some_and(|current| current.same_scope_challenge_authority(&manager))
+            {
+                manager.record_scope_challenge_with_epoch(&subject, &scope, Some(epoch.clone()));
+            }
+        }))
+    }
+
+    /// Bind a rejection callback before credentials are loaded. The callback only
+    /// queues work because a refresh can run while a publication reader is held.
+    /// The gateway uses its existing writer coordinator to detach live sessions.
+    pub async fn refresh_rejection_handler(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> Result<OauthRefreshRejectionHandler, OauthError> {
+        use labby_runtime::gateway_config::UpstreamOauthCredentialSource;
+        let shared = config.oauth.as_ref().is_some_and(|oauth| {
+            matches!(
+                oauth.credential,
+                UpstreamOauthCredentialSource::GoogleProvider { .. }
+            )
+        });
+        let managers = self
+            .managers
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect::<Vec<_>>();
+        let mut expected_provider = None;
+        let mut affected = Vec::new();
+        if shared {
+            let manager = managers
+                .iter()
+                .find(|manager| manager.upstream_config().name == config.name)
+                .ok_or_else(|| {
+                    OauthError::Internal(format!(
+                        "no oauth manager registered for upstream '{}'",
+                        config.name
+                    ))
+                })?;
+            expected_provider = manager.google_provider_subject().await?;
+            if let Some(provider) = expected_provider.as_ref() {
+                let memberships = manager.google_provider_subjects_for(&managers).await?;
+                for (manager, membership) in managers.iter().zip(memberships) {
+                    if !manager
+                        .upstream_config()
+                        .oauth
+                        .as_ref()
+                        .is_some_and(|oauth| {
+                            matches!(
+                                oauth.credential,
+                                UpstreamOauthCredentialSource::GoogleProvider { .. }
+                            )
+                        })
+                    {
+                        continue;
+                    }
+                    let candidate_subject = match membership {
+                        Ok(subject) => subject,
+                        // An unselected account cannot share authority with this
+                        // provider. Its configuration error belongs to that upstream.
+                        Err(OauthError::AccountAmbiguous(_)) => continue,
+                        Err(error) => return Err(error),
+                    };
+                    if candidate_subject.as_ref() == Some(provider) {
+                        let name = manager.upstream_config().name.clone();
+                        affected.push((
+                            name.clone(),
+                            None,
+                            self.lifecycle_epoch_for_upstream(&name),
+                        ));
+                    }
+                }
+            }
+        } else {
+            affected.push((
+                config.name.clone(),
+                Some(subject.to_string()),
+                self.lifecycle_epoch_for(&config.name, subject),
+            ));
+        }
+        let pending = Arc::clone(&self.evicted_clients);
+        Ok(Arc::new(move |provider| {
+            if provider != expected_provider {
+                return;
+            }
+            let mut pending = pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending.retain(PendingOAuthInvalidation::is_current);
+            for (upstream, subject, epoch) in &affected {
+                // Coalesce repeated reports for one authority while it is waiting
+                // for the current operation to release its publication reader.
+                if !epoch.is_current()
+                    || pending.iter().any(|event| {
+                        event.upstream == *upstream
+                            && event.subject == *subject
+                            && event.epoch.is_some()
+                            && event.is_current()
+                    })
+                {
+                    continue;
+                }
+                pending.push_back(PendingOAuthInvalidation {
+                    upstream: upstream.clone(),
+                    subject: subject.clone(),
+                    epoch: Some(epoch.clone()),
+                });
+            }
+        }))
     }
 
     /// Evict the entry for a single `(upstream, subject)` pair.
@@ -571,7 +803,7 @@ fn registration_fingerprint(
         .as_ref()
         .ok_or_else(|| OauthError::Internal("upstream has no oauth config".to_string()))?;
 
-    Ok(match &oauth.registration {
+    let registration = match &oauth.registration {
         UpstreamOauthRegistration::Preregistered { client_id, .. } => {
             format!("preregistered:{client_id}")
         }
@@ -585,7 +817,13 @@ fn registration_fingerprint(
             // in-flight) so the initial build is not blocked.
             format!("dynamic:{}", dynamic_client_id.unwrap_or("none"))
         }
-    })
+    };
+    let policy = serde_json::to_string(&(&config.url, oauth))
+        .map_err(|_| OauthError::Internal("serialize OAuth client policy".into()))?;
+    Ok(format!(
+        "{registration}:{}",
+        crate::util::fingerprint(&policy)
+    ))
 }
 
 #[cfg(test)]
@@ -994,6 +1232,90 @@ mod tests {
         assert!(other.is_current());
         cache.advance_lifecycle_epoch();
         assert!(!other.is_current());
+    }
+
+    #[tokio::test]
+    async fn unrelated_ambiguous_google_account_does_not_block_selected_provider() {
+        use labby_runtime::gateway_config::UpstreamOauthCredentialSource;
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::sqlite::SqliteStore::open_with_key(
+            directory.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "account-isolation",
+            )),
+        )
+        .await
+        .unwrap();
+        for account in ["account-a", "account-b"] {
+            store
+                .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+                    subject: account.into(),
+                    email: Some(format!("{account}@example.com")),
+                    client_id: "client".into(),
+                    granted_scopes: vec!["openid".into()],
+                    access_token: "test-access".into(),
+                    refresh_token: "test-refresh".into(),
+                    token_received_at: 1,
+                    access_token_expires_at: 3601,
+                    issuer: Some("https://accounts.google.com".into()),
+                    refreshed: false,
+                    scope_upgraded: true,
+                })
+                .await
+                .unwrap();
+        }
+        let mut selected = cfg("selected", "client");
+        selected.oauth.as_mut().unwrap().credential =
+            UpstreamOauthCredentialSource::GoogleProvider {
+                account: Some("account-a".into()),
+            };
+        let mut ambiguous = cfg("ambiguous", "client");
+        ambiguous.oauth.as_mut().unwrap().credential =
+            UpstreamOauthCredentialSource::GoogleProvider { account: None };
+        let managers = Arc::new(DashMap::new());
+        for config in [&selected, &ambiguous] {
+            managers.insert(
+                config.name.clone(),
+                UpstreamOauthManager::new(
+                    store.clone(),
+                    crate::upstream::encryption::load_key(
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    )
+                    .unwrap(),
+                    config.clone(),
+                    "http://127.0.0.1/callback".into(),
+                ),
+            );
+        }
+        let cache = OauthClientCache::new(managers);
+        assert!(
+            matches!(
+                cache
+                    .refresh_rejection_handler(&ambiguous, "operator")
+                    .await,
+                Err(OauthError::AccountAmbiguous(_))
+            ),
+            "the selected source must fail closed"
+        );
+        let callback = cache
+            .refresh_rejection_handler(&selected, "operator")
+            .await
+            .expect("unrelated ambiguity must not block the selected provider");
+        callback(Some("account-a".into()));
+        let events = cache.take_pending_invalidations();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].upstream, "selected");
+        assert!(events[0].subject.is_none());
+        cache.advance_subject_epoch("selected", "operator");
+        assert!(
+            events[0].is_current(),
+            "one caller's restart must not discard shared provider cleanup"
+        );
+        cache.advance_upstream_epoch("selected");
+        assert!(
+            !events[0].is_current(),
+            "replacement shared authority must supersede old cleanup"
+        );
     }
 
     // Cache lifecycle behavior is covered here; matching a capacity victim to

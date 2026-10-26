@@ -12,6 +12,10 @@ pub struct UpstreamOauthStatusView {
     pub authenticated: bool,
     pub upstream: String,
     pub credential_source: String,
+    #[serde(default)]
+    pub authorization_mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub google_credential_broker: Option<GoogleCredentialBrokerStatus>,
     pub expires_within_5m: bool,

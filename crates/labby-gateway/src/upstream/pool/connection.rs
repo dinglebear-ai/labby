@@ -260,6 +260,7 @@ impl UpstreamPool {
         capability: UpstreamCapability,
         requested_operation: &'static str,
     ) -> Option<rmcp::service::Peer<rmcp::RoleClient>> {
+        self.drain_oauth_client_capacity_evictions().await;
         let acquire_started = Instant::now();
         tracing::debug!(
             surface = "dispatch",
@@ -458,6 +459,10 @@ impl UpstreamPool {
                 self.runtime_origin.as_deref(),
                 self.runtime_owner.as_ref(),
                 Some(&self.shared_http_client),
+                super::transport_config::HttpTransportBudgets {
+                    concurrency: self.call_concurrency,
+                    request_timeout: self.request_timeout,
+                },
             )
             .await?;
 

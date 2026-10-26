@@ -9,7 +9,7 @@ use rmcp::service::{ClientInitializeError, ClientLifecycleMode};
 const DISCOVERY_SERVER_INFO_META_KEY: &str = "io.modelcontextprotocol/serverInfo";
 
 pub(super) fn legacy_protocol_version() -> ProtocolVersion {
-    ProtocolVersion::V_2025_11_25
+    ProtocolVersion::LATEST_WITH_INITIALIZE
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

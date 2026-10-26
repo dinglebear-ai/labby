@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { zodResolver } from '@hookform/resolvers/zod'
 
 import {
   DEFAULT_UI,
@@ -177,4 +178,20 @@ test('stripBlankSecrets keeps non-blank secrets', () => {
   const fields = [field({ name: 'FOO_API_KEY', secret: true, hasStoredSecret: true })]
   const out = stripBlankSecrets({ FOO_API_KEY: 'real-secret' }, fields)
   assert.deepEqual(out, { FOO_API_KEY: 'real-secret' })
+})
+
+
+test('ServiceForm resolver returns field errors and preserves string values with Zod 4', async () => {
+  const resolver = zodResolver(buildSchema([
+    field({ name: 'ENDPOINT', required: true, ui: { ...DEFAULT_UI, kind: 'url' } }),
+    field({ name: 'SECRET', secret: true, hasStoredSecret: true }),
+    field({ name: 'ENABLED', ui: { ...DEFAULT_UI, kind: 'bool' } }),
+  ]))
+  const options = { fields: {}, shouldUseNativeValidation: false }
+  const invalid = await resolver({ ENDPOINT: 'javascript:alert(1)', SECRET: '', ENABLED: 'false' }, undefined, options)
+  assert.deepEqual(invalid.values, {})
+  assert.equal(invalid.errors.ENDPOINT?.message, 'Must be an http or https URL')
+  const valid = await resolver({ ENDPOINT: 'https://example.com/mcp', SECRET: '', ENABLED: 'false' }, undefined, options)
+  assert.deepEqual(valid.errors, {})
+  assert.deepEqual(valid.values, { ENDPOINT: 'https://example.com/mcp', SECRET: '', ENABLED: 'false' })
 })

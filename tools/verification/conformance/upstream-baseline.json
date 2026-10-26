@@ -7,14 +7,14 @@
   },
   "rmcp": {
     "repository": "modelcontextprotocol/rust-sdk",
-    "release_tag": "rmcp-v3.3.0",
-    "commit": "3e636cab26c013eca5131103c03d20237f12c4df",
-    "crate_version": "3.3.0"
+    "release_tag": "rmcp-v3.7.0",
+    "commit": "5d6a11f2ae022f513aec0f6e0f10f89a57891a7f",
+    "crate_version": "3.7.0"
   },
   "conformance": {
     "npm_package": "@modelcontextprotocol/conformance",
     "npm_dist_tag": "alpha",
-    "version": "0.2.0-alpha.10"
+    "version": "0.2.0-alpha.12"
   },
   "skills_extension": {
     "repository": "modelcontextprotocol/modelcontextprotocol",
