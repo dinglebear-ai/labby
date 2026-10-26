@@ -286,6 +286,11 @@ opt-level = 3
 debug = false
 incremental = false
 
+[patch.crates-io]
+# Preserve the microsandbox VMM API while applying the fixed zstd stack.
+# Remove when a compatible upstream release includes the security fix.
+msb_krun_vmm = { git = "https://github.com/dinglebear-ai/libkrun.git", rev = "a83227d5b0804cc2e714f9c6cfd5939408d1abd4" }
+
 [profile.release-fast]
 inherits = "release"
 lto = false
