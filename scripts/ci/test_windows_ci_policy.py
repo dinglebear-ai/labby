@@ -7,6 +7,8 @@ import unittest
 
 import yaml
 
+from scripts.ci import check_workflow_policy as workflow_policy
+
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
@@ -96,6 +98,13 @@ class WindowsCiPolicyTests(unittest.TestCase):
                 runner = job.get("runs-on")
                 labels = runner if isinstance(runner, list) else [runner]
                 if not any(str(label).startswith("ci-pool-") or label == "self-hosted" for label in labels):
+                    continue
+                if (path.name, name) == ("farm-runner-smoke.yml", "smoke"):
+                    # This manual-only probe has no checkout, credentials or
+                    # merge-gate role. Reuse its exact bounded acceptance policy;
+                    # do not grant the exception to other jobs or workflows.
+                    acceptance = yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+                    self.assertEqual(workflow_policy.farm_acceptance_errors(path, acceptance), [])
                     continue
                 self.assertIn((path.name, name), allowed, f"{path.name}:{name} may not use the self-hosted fleet")
                 self.assertIs(True, job.get("continue-on-error"), f"{path.name}:{name} must be non-blocking")
