@@ -9,6 +9,10 @@ on:
       source_ref:
         required: true
         type: string
+      channel:
+        required: false
+        default: stable
+        type: string
       publish:
         required: false
         default: false
@@ -149,6 +153,7 @@ jobs:
           # checkout is ever removed or reconfigured again.
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
         run: |
           set -euo pipefail
           (cd dist && sha256sum --check --strict SHA256SUMS)
@@ -160,7 +165,7 @@ jobs:
           echo "asset_sha256=$asset_sha256" >> "$GITHUB_OUTPUT"
           python3 scripts/ci/create-incus-image-manifest.py \
             --tag "$RELEASE_TAG" --repository "$GITHUB_REPOSITORY" \
-            --commit "$GITHUB_SHA" --directory dist
+            --commit "$GITHUB_SHA" --channel "$RELEASE_CHANNEL" --directory dist
           if ! gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" \
               --title "Labby Incus image ${GITHUB_SHA::12}" --draft \
@@ -194,20 +199,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
           INCUS_POINTER_RECEIPT: /tmp/labby-incus-pointer-receipt
         run: scripts/ci/promote-incus-pointer.sh promote
       - name: Publish image release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
         run: |
-          gh release edit "$RELEASE_TAG" --draft=false
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == dev ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false
+          else
+            [[ "$RELEASE_CHANNEL" == stable ]]
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest=false
+          fi
           [[ $(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft) == false ]]
+          expected=false; [[ "$RELEASE_CHANNEL" != dev ]] || expected=true
+          [[ $(gh release view "$RELEASE_TAG" --json isPrerelease --jq .isPrerelease) == "$expected" ]]
       - name: Roll back failed image promotion
         if: ${{ failure() }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
           INCUS_POINTER_RECEIPT: /tmp/labby-incus-pointer-receipt
         run: |
           set -u

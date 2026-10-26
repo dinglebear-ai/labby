@@ -69,6 +69,7 @@ test("npm installation repairs an interrupted companion extraction and validates
     assert.equal(installationValid(destination, target, "v2.5.1"), false);
     installArchive(archive, destination, target, "v2.5.1");
     assert.equal(installationValid(destination, target, "v2.5.1"), true);
+    assert.equal(fs.readFileSync(path.join(destination, ".labby-update-channel"), "utf8"), "stable\n");
     fs.renameSync(destination, destination + ".previous");
     recoverInstallation(destination);
     assert.equal(installationValid(destination, target, "v2.5.1"), true);
@@ -83,5 +84,9 @@ test("npm installation repairs an interrupted companion extraction and validates
     assert.equal(installationValid(older, target, "v2.4.0"), true);
     assert.equal(installationValid(older, target, "v2.5.0"), true);
     assert.equal(installationValid(older, target, "v2.5.1"), false);
+    installArchive(legacy, older, target, "v2.4.0-dev.10");
+    assert.equal(fs.readFileSync(path.join(older, ".labby-update-channel"), "utf8"), "dev\n");
+    assert.throws(() => installArchive(archive, older, target, "v2.5.1"), /checksum/);
+    assert.equal(fs.readFileSync(path.join(older, ".labby-update-channel"), "utf8"), "dev\n");
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });

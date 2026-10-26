@@ -13,6 +13,7 @@ STORAGE_POOL_NAME="${LABBY_INCUS_STORAGE_POOL:-}"
 STORAGE_POOL_SOURCE="${LABBY_INCUS_STORAGE_SOURCE:-${LABBY_INCUS_ZFS_SOURCE:-}}"
 RUNTIME_PROFILE_NAME=""
 VERSION="${LABBY_INSTALL_VERSION:-}"
+CHANNEL="${LABBY_INSTALL_CHANNEL:-stable}"
 LOCAL_BINARY=""
 SKIP_INSTALL=0
 DRY_RUN=0
@@ -100,7 +101,8 @@ Options:
   --storage-pool NAME          Incus storage pool used by the profile root disk
   --storage-source SOURCE      Incus storage source path/dataset for the pool
   --zfs-source DATASET         Back-compat alias for --storage-source with zfs
-  --version TAG               Labby release tag to install, e.g. v0.22.2
+  --version TAG               Labby release tag to install, e.g. v2.7.0-dev.1
+  --channel stable|dev        Binary release channel (default: stable)
   --local-binary PATH          Push a locally built labby binary instead of downloading a release
   --skip-install              Use the labby binary already baked into the selected image
   --dry-run                   Print commands only
@@ -646,6 +648,7 @@ while [ "$#" -gt 0 ]; do
         --storage-source) STORAGE_POOL_SOURCE="${2:?missing --storage-source value}"; shift 2 ;;
         --zfs-source) STORAGE_POOL_SOURCE="${2:?missing --zfs-source value}"; shift 2 ;;
         --version) VERSION="${2:?missing --version value}"; shift 2 ;;
+        --channel) CHANNEL="${2:?missing --channel value}"; shift 2 ;;
         --local-binary) LOCAL_BINARY="${2:?missing --local-binary value}"; shift 2 ;;
         --skip-install) SKIP_INSTALL=1; shift ;;
         --dry-run|--print-only) DRY_RUN=1; shift ;;
@@ -656,6 +659,21 @@ while [ "$#" -gt 0 ]; do
         *) fail "unknown argument: $1" ;;
     esac
 done
+case "$CHANNEL" in stable|dev) ;; *) fail "--channel must be stable or dev" ;; esac
+# Only downloads interpret VERSION as a release identity. Local artifacts and
+# skip-install provisioning do not need a release tag.
+if [ -z "$LOCAL_BINARY" ] && [ "$SKIP_INSTALL" -eq 0 ] && [ -n "$VERSION" ] && [ "$VERSION" != latest ]; then
+    case "$CHANNEL" in
+        stable) version_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ;;
+        dev) version_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.[1-9][0-9]*$' ;;
+    esac
+    case "$VERSION" in
+        *[!a-zA-Z0-9.-]*) fail "release tag $VERSION does not match --channel $CHANNEL" ;;
+    esac
+    printf '%s\n' "$VERSION" | LC_ALL=C grep -Eq "$version_pattern" ||
+        fail "release tag $VERSION does not match --channel $CHANNEL"
+fi
+
 
 case "$STORAGE_POOL_DRIVER" in
     zfs | btrfs | dir) ;;
@@ -791,6 +809,7 @@ else
         LABBY_INSTALL_DIR=/usr/local/bin \
         LABBY_INSTALL_REPO=dinglebear-ai/labby \
         LABBY_INSTALL_VERSION="$VERSION" \
+        LABBY_INSTALL_CHANNEL="$CHANNEL" \
         LABBY_REQUIRE_CHECKSUM=1 \
         LABBY_ALLOW_SOURCE_FALLBACK="$fallback" \
         sh /tmp/labby-install.sh

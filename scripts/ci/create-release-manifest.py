@@ -3,6 +3,10 @@
 from __future__ import annotations
 import argparse, hashlib, json, re
 from pathlib import Path
+try:
+    from release_channel import identity
+except ModuleNotFoundError:
+    from scripts.ci.release_channel import identity
 
 def digest(path: Path) -> dict[str, object]:
     return {"name": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "size": path.stat().st_size}
@@ -19,6 +23,8 @@ parser.add_argument("--mcp-manifest-sha256", default="pending")
 parser.add_argument("subjects", nargs="+")
 args = parser.parse_args()
 for label, value in (("Incus", args.incus_sha256), ("MCP manifest", args.mcp_manifest_sha256)):
+    if label == "MCP manifest" and identity(args.tag)["channel"] == "dev":
+        continue
     if value is None and label == "Incus":
         continue
     if not re.fullmatch(r"[0-9a-f]{64}", value):
@@ -54,12 +60,17 @@ for name, path in sorted(paths.items()):
     row["sbom"] = digest(sbom_path)
     subjects.append(row)
 
-version = args.tag.removeprefix("v")
+release = identity(args.tag)
+version = release["version"]
 distributions: dict[str, object] = {
     "github": {"repository": args.repository, "tag": args.tag},
-    "npm": {"package": args.npm_package, "version": version, "tag": "latest"},
-    "mcp": {"name": args.mcp_name, "version": version, "manifest_sha256": args.mcp_manifest_sha256},
+    "npm": {"package": args.npm_package, "version": version, "tag": release["npm_tag"]},
+
 }
+if release["channel"] == "stable":
+    distributions["mcp"] = {"name": args.mcp_name, "version": version, "manifest_sha256": args.mcp_manifest_sha256}
+else:
+    distributions["github"]["prerelease"] = True
 if args.incus_sha256:
     distributions["incus"] = {"asset": args.incus_asset, "sha256": args.incus_sha256}
 attested_names = sorted(

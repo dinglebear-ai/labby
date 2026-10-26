@@ -38,7 +38,16 @@ function targetFor(platform = process.platform, arch = process.arch) {
 
 function releaseVersion(env = process.env) {
   const raw = env.LABBY_VERSION || env.LABBY_BINARY_VERSION || packageVersion();
-  return raw.startsWith("v") ? raw : `v${raw}`;
+  const tag = raw.startsWith("v") ? raw : `v${raw}`;
+  const match = /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-dev\.[1-9][0-9]*)?$/.exec(tag);
+  if (!match || match[0] !== tag) throw new Error(`Invalid immutable Labby release tag: ${tag}`);
+  const channel = match[4] ? "dev" : "stable";
+  // The package version is itself an explicit exact-version choice. Ambient
+  // channel settings cannot turn a stable npm package into a dev downloader.
+  if (env.LABBY_INSTALL_CHANNEL && env.LABBY_INSTALL_CHANNEL !== channel) {
+    throw new Error(`Release tag ${tag} does not match LABBY_INSTALL_CHANNEL=${env.LABBY_INSTALL_CHANNEL}`);
+  }
+  return tag;
 }
 
 function releaseBaseUrl(env = process.env) {

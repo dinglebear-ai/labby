@@ -3,7 +3,47 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
-trap 'rc=$?; if [ "$rc" -ne 0 ]; then tail -n 20 "$test_root"/verifier-*/err 2>/dev/null || true; fi; rm -rf "$test_root"' EXIT
+# Exercise the real gh embedded jq evaluator against a task-local HTTP fixture.
+LABBY_TEST_REAL_GH=$(command -v gh)
+export LABBY_TEST_REAL_GH
+LABBY_TEST_PYTHON=$(command -v python3)
+export LABBY_TEST_PYTHON
+export LABBY_TEST_ROOT=$test_root
+cat >"$test_root/fixture-server.py" <<'PYTHON'
+import http.server, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        name = self.path.split("?", 1)[0].lstrip("/")
+        path = root / name
+        if not path.is_file():
+            self.send_error(404); return
+        self.send_response(200); self.end_headers(); self.wfile.write(path.read_bytes())
+    def log_message(self, *args): pass
+server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+(root / "port").write_text(str(server.server_port))
+server.serve_forever()
+PYTHON
+"$LABBY_TEST_PYTHON" "$test_root/fixture-server.py" "$test_root" >"$test_root/fixture-server.log" 2>&1 &
+fixture_server=$!
+trap 'rc=$?; kill "$fixture_server" 2>/dev/null || true; wait "$fixture_server" 2>/dev/null || true; if [ "$rc" -ne 0 ]; then cat "$test_root/fixture-server.log" >&2; tail -n 20 "$test_root"/verifier-*/err 2>/dev/null || true; fi; rm -rf "$test_root"' EXIT
+# A cold Python on hosted macOS can take longer than two seconds to import the
+# HTTP server. Fail at readiness, rather than exporting an empty port and masking
+# the error until release discovery. Keep startup bounded and detect early exit.
+for _ in $(seq 1 400); do
+    [ ! -s "$test_root/port" ] || break
+    if ! kill -0 "$fixture_server" 2>/dev/null; then
+        echo "FAIL: installer HTTP fixture exited before readiness" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [ ! -s "$test_root/port" ]; then
+    echo "FAIL: installer HTTP fixture did not become ready within 20 seconds" >&2
+    exit 1
+fi
+LABBY_TEST_HTTP_PORT=$(cat "$test_root/port")
+export LABBY_TEST_HTTP_PORT
 
 fail() {
     echo "FAIL: $*" >&2
@@ -89,6 +129,26 @@ case "$*" in
   "--version") echo "gh version 2.102.0"; exit 0 ;;
   "attestation verify "*) exit 0 ;;
   "auth status --hostname github.com") exit 0 ;;
+  "api "*)
+    if [ -n "${LABBY_TEST_API_HANG:-}" ]; then
+      printf '%s\n' "$$" >"$LABBY_TEST_API_HANG"
+      exec "$LABBY_TEST_PYTHON" -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'
+    fi
+    query=
+    page=1
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --jq) query=$2; shift 2 ;;
+        *page=*) page=${1##*page=}; shift ;;
+        *) shift ;;
+      esac
+    done
+    fixture="$LABBY_TEST_FIXTURES/releases.json"
+    if [ "$page" != 1 ]; then fixture="$LABBY_TEST_FIXTURES/releases-$page.json"; fi
+    relative=${fixture#"$LABBY_TEST_ROOT/"}
+    GH_TOKEN=fixture GH_CONFIG_DIR="$LABBY_TEST_ROOT/gh-config" "$LABBY_TEST_REAL_GH" api \
+      "http://127.0.0.1:$LABBY_TEST_HTTP_PORT/$relative" --jq "$query"
+    exit $? ;;
   *) exit 64 ;;
 esac
 EOF
@@ -365,7 +425,7 @@ test_latest_api_failure_never_uses_mutable_latest_download() {
         >"$case_root/out" 2>"$case_root/err"; then
         fail "latest resolution unexpectedly succeeded without an immutable tag"
     fi
-    if grep -Fq '/releases/latest/download' "$case_root/curl.log"; then
+    if [ -f "$case_root/curl.log" ] && grep -Fq '/releases/latest/download' "$case_root/curl.log"; then
         fail "installer used mutable releases/latest after API failure"
     fi
 }
@@ -471,15 +531,17 @@ EOF
 }
 
 test_crash_recovery_restores_every_activation_boundary() {
-    local boundary
-    for boundary in binary previous receipt; do
-        local case_root="$test_root/crash-$boundary"
+    local boundary marker
+    for marker in present absent; do
+    for boundary in binary previous channel receipt; do
+        local case_root="$test_root/crash-$marker-$boundary"
         local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
         mkdir -p "$fixtures" "$home"
         make_release "$fixtures" v1.0.0 release-v1
-        make_release "$fixtures" v2.0.0 release-v2
+        make_release "$fixtures" v2.0.0-dev.1 release-v2
         make_fake_tools "$fake_bin" "$fixtures"
         run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >/dev/null 2>&1
+        [ "$marker" != absent ] || rm "$home/bin/.labby-update-channel"
         cp "$home/bin/.labby-install/receipt" "$case_root/receipt.before"
         cat >"$fake_bin/mv" <<'EOF'
 #!/bin/sh
@@ -487,7 +549,7 @@ destination=
 for argument do destination=$argument; done
 /bin/mv "$@" || exit
 case "$destination:$LABBY_TEST_CRASH_BOUNDARY" in
-  */bin/labby:binary|*/previous-receipt:previous|*/.labby-install/receipt:receipt)
+  */bin/labby:binary|*/previous-receipt:previous|*/.labby-update-channel:channel|*/.labby-install/receipt:receipt)
     # This shim is invoked directly by the installer shell, so PPID is the
     # exact process whose abrupt death models the activation crash boundary.
     # Walking to its parent makes the fixture depend on wrapper/process timing.
@@ -496,18 +558,24 @@ case "$destination:$LABBY_TEST_CRASH_BOUNDARY" in
 esac
 EOF
         chmod 755 "$fake_bin/mv"
-        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0 \
+        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0-dev.1 LABBY_INSTALL_CHANNEL=dev \
             LABBY_TEST_CRASH_BOUNDARY="$boundary" >"$case_root/out" 2>"$case_root/err"; then
             fail "crash injection at $boundary unexpectedly succeeded"
         fi
-        /bin/rm -f "$fake_bin/mv" "$fixtures/releases/v2.0.0/lab-x86_64-unknown-linux-gnu.tar.gz"
+        /bin/rm -f "$fake_bin/mv" "$fixtures/releases/v2.0.0-dev.1/lab-x86_64-unknown-linux-gnu.tar.gz"
         run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_RECOVER_ONLY=1 \
             LABBY_TEST_CURL_LOG="$case_root/recovery-downloads" \
             >"$case_root/recovery.out" 2>"$case_root/recovery.err"
         [ ! -e "$case_root/recovery-downloads" ] || fail "recovery-only attempted network access"
         [ "$("$home/bin/labby")" = release-v1 ] || fail "recovery at $boundary did not restore binary"
         cmp "$case_root/receipt.before" "$home/bin/.labby-install/receipt" || fail "recovery at $boundary did not restore receipt"
+        if [ "$marker" = present ]; then
+            [ "$(cat "$home/bin/.labby-update-channel")" = stable ] || fail "recovery changed prior channel"
+        else
+            [ ! -e "$home/bin/.labby-update-channel" ] || fail "recovery invented prior channel marker"
+        fi
         [ ! -e "$home/bin/.labby-install/activation-journal" ] || fail "recovery at $boundary retained completed journal"
+    done
     done
 }
 
@@ -586,7 +654,7 @@ test_recovery_failure_is_reported_and_journal_is_retained() {
     printf 'prepared\n' >"$journal/state"
     : >"$journal/old-binary.present"
     make_fake_tools "$fake_bin" "$fixtures"
-    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v9 \
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v9.0.0 \
         >"$case_root/out" 2>"$case_root/err"; then
         fail "unrestorable activation journal unexpectedly succeeded"
     fi
@@ -603,7 +671,7 @@ test_unprepared_journal_never_changes_live_installation() {
     printf 'known-good-receipt\n' >"$home/bin/.labby-install/receipt"
     printf 'partial staging' >"$journal/new-binary"
     make_fake_tools "$fake_bin" "$fixtures"
-    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v9 >"$case_root/out" 2>"$case_root/err" || true
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v9.0.0 >"$case_root/out" 2>"$case_root/err" || true
     [ "$("$home/bin/labby")" = known-good ] || fail "unprepared journal changed the live binary"
     assert_contains "$home/bin/.labby-install/receipt" "known-good-receipt"
     [ ! -d "$journal" ] || fail "unprepared journal was not discarded"
@@ -645,6 +713,10 @@ run_installer() {
     shift 3
     env -i \
         HOME="$home" \
+        LABBY_TEST_REAL_GH="$LABBY_TEST_REAL_GH" \
+        LABBY_TEST_PYTHON="$LABBY_TEST_PYTHON" \
+        LABBY_TEST_ROOT="$LABBY_TEST_ROOT" \
+        LABBY_TEST_HTTP_PORT="$LABBY_TEST_HTTP_PORT" \
         PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
         LABBY_TEST_FIXTURES="$fixtures" \
         LABBY_INSTALL_DIR="$home/bin" \
@@ -683,11 +755,11 @@ test_latest_selects_newest_release_with_platform_asset() {
 [
   {
     "tag_name": "incus-v9",
-    "name": "labby-incus.tar.gz"
+    "draft": false, "prerelease": false, "assets": [{"name": "labby-incus.tar.gz"}]
   },
   {
     "tag_name": "v1.0.0",
-    "name": "lab-x86_64-unknown-linux-gnu.tar.gz"
+    "draft": false, "prerelease": false, "assets": [{"name": "lab-x86_64-unknown-linux-gnu.tar.gz"}]
   }
 ]
 EOF
@@ -697,6 +769,128 @@ EOF
 
     [ "$("$home/bin/labby")" = release-v1 ] || fail "latest selected the wrong release"
     assert_contains "$case_root/err" "resolved latest binary release to v1.0.0"
+}
+
+test_release_channels() {
+    local case_root="$test_root/channels"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/fake-bin" home="$case_root/home"
+    mkdir -p "$fixtures" "$home"
+    make_release "$fixtures" v1.0.0 stable
+    make_release "$fixtures" v2.0.0-dev.2 dev2
+    make_release "$fixtures" v2.0.0-dev.10 dev10
+    make_fake_tools "$fake_bin" "$fixtures"
+    cat >"$fixtures/releases.json" <<'JSON'
+[{"tag_name":"v2.0.0-dev.2","draft":false,"prerelease":true,"assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz","uploader":{"name":"nested"}}]},
+{"tag_name":"v2.0.0-dev.10","draft":false,"prerelease":true,"assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz"}]},
+{"tag_name":"v99.0.0","draft":true,"prerelease":false,"assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz"}]},
+{"tag_name":"v98.0.0","draft":false,"prerelease":true,"assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz"}]},
+{"tag_name":"v99.0.0-dev.01","draft":false,"prerelease":true,"assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz"}]},
+{"tag_name":"v1.0.0","draft":false,"prerelease":false,"assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz"}]}]
+JSON
+    run_installer "$home" "$fixtures" "$fake_bin" >"$case_root/out" 2>"$case_root/err"
+    [ "$("$home/bin/labby")" = stable ] || fail "stable default selected prerelease"
+    [ "$(cat "$home/bin/.labby-update-channel")" = stable ] || fail "stable marker missing"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_CHANNEL=dev >"$case_root/out" 2>"$case_root/err"
+    [ "$("$home/bin/labby")" = dev10 ] || fail "dev ordering was not numeric"
+    [ "$(cat "$home/bin/.labby-update-channel")" = dev ] || fail "dev marker missing"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_ROLLBACK=1 >"$case_root/out" 2>"$case_root/err"
+    [ "$("$home/bin/labby")" = stable ] || fail "rollback did not restore stable binary"
+    [ "$(cat "$home/bin/.labby-update-channel")" = stable ] || fail "rollback did not restore stable marker"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_CHANNEL=dev >"$case_root/out" 2>"$case_root/err"
+    for pair in stable:v2.0.0-dev.2 dev:v1.0.0 dev:v2.0.0-dev.0 stable:v01.0.0 bogus:v1.0.0 "stable:$(printf 'v1.0.0\nforged=value')" "dev:$(printf 'v2.0.0-dev.1\r')"; do
+        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_CHANNEL="${pair%%:*}" LABBY_INSTALL_VERSION="${pair#*:}" >"$case_root/out" 2>"$case_root/err"; then
+            fail "accepted channel/tag mismatch $pair"
+        fi
+        [ "$("$home/bin/labby")" = dev10 ] || fail "mismatch mutated installation"
+    done
+    python3 - "$fixtures" <<'PYTHON'
+import json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+(root / "releases.json").write_text(json.dumps([{"tag_name":"incus", "draft":False, "prerelease":False, "assets":[]}] * 100))
+(root / "releases-2.json").write_text(json.dumps([{"tag_name":"v1.0.0", "draft":False, "prerelease":False, "assets":[{"name":"lab-x86_64-unknown-linux-gnu.tar.gz"}]}]))
+PYTHON
+    run_installer "$home" "$fixtures" "$fake_bin" >"$case_root/out" 2>"$case_root/err"
+    [ "$("$home/bin/labby")" = stable ] || fail "discovery did not paginate"
+    printf '[]' >"$fixtures/releases.json"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_CHANNEL=dev >"$case_root/out" 2>"$case_root/err"; then fail "empty dev channel fell back"; fi
+}
+
+test_expected_installation_guard() {
+    local case_root="$test_root/expected-state"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/bin" home="$case_root/home"
+    mkdir -p "$fixtures" "$home"
+    make_fake_tools "$fake_bin" "$fixtures"
+    make_release "$fixtures" v1.0.0 release-v1
+    make_release "$fixtures" v2.0.0-dev.1 release-dev
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v1.0.0 >/dev/null 2>&1
+    cp "$home/bin/.labby-install/receipt" "$case_root/receipt.before"
+    for condition in version channel empty partial; do
+        local expected_version=release-v1 expected_channel=stable
+        case "$condition" in version) expected_version=stale ;; channel) expected_channel=dev ;; empty) expected_version= ;; partial) expected_channel= ;; esac
+        if run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0-dev.1 LABBY_INSTALL_CHANNEL=dev \
+            LABBY_INSTALL_EXPECTED_VERSION="$expected_version" LABBY_INSTALL_EXPECTED_CHANNEL="$expected_channel" >"$case_root/out" 2>"$case_root/err"; then fail "accepted stale/invalid expected state: $condition"; fi
+        [ "$("$home/bin/labby")" = release-v1 ] || fail "guard changed binary"
+        cmp "$case_root/receipt.before" "$home/bin/.labby-install/receipt" || fail "guard changed receipt"
+        [ "$(cat "$home/bin/.labby-update-channel")" = stable ] || fail "guard changed marker"
+    done
+    rm "$home/bin/.labby-update-channel"
+    run_installer "$home" "$fixtures" "$fake_bin" LABBY_INSTALL_VERSION=v2.0.0-dev.1 LABBY_INSTALL_CHANNEL=dev \
+        LABBY_INSTALL_EXPECTED_VERSION=release-v1 LABBY_INSTALL_EXPECTED_CHANNEL=stable >"$case_root/out" 2>"$case_root/err"
+    [ "$("$home/bin/labby")" = release-dev ] || fail "matching guard blocked installation"
+    [ "$(cat "$home/bin/.labby-update-channel")" = dev ] || fail "matching guard failed to publish new marker"
+}
+
+test_release_discovery_timeout() {
+    local case_root="$test_root/api-timeout"
+    local fixtures="$case_root/fixtures" fake_bin="$case_root/bin" home="$case_root/home"
+    mkdir -p "$fixtures" "$home"
+    make_fake_tools "$fake_bin" "$fixtures"
+    # Shorten only the fixture's deadline; exercise the production watchdog and
+    # verify its API child was reaped, rather than waiting thirty seconds in CI.
+    local fixture_installer="$case_root/install.sh"
+    sed 's/release_seconds" -lt 30/release_seconds" -lt 1/' "$repo_root/scripts/install.sh" >"$fixture_installer"
+    if run_installer "$home" "$fixtures" "$fake_bin" LABBY_TEST_API_HANG="$case_root/api.pid" >"$case_root/out" 2>"$case_root/err"; then
+        fail "hung release API unexpectedly succeeded"
+    fi
+    [ -s "$case_root/api.pid" ] || fail "timeout fixture never started API child"
+    if kill -0 "$(cat "$case_root/api.pid")" 2>/dev/null; then fail "timed-out API child survived installer"; fi
+    [ ! -e "$home/bin/labby" ] || fail "API timeout mutated binary"
+    [ ! -e "$home/bin/.labby-update-channel" ] || fail "API timeout mutated channel"
+}
+
+test_release_discovery_cancellation() {
+    # Run the real request function in its own process group. A TERM-resistant
+    # API cancels its waiting parent; cleanup must finish without its watchdog.
+    python3 - "$repo_root/scripts/install.sh" "$test_root" <<'PYTHON'
+import os, pathlib, signal, subprocess, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+root = pathlib.Path(sys.argv[2]) / "api-cancellation"
+root.mkdir()
+api = root / "gh"
+api.write_text("#!/usr/bin/env python3\nimport os, pathlib, signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\npathlib.Path(__file__).with_suffix('.pid').write_text(str(os.getpid()))\nos.kill(os.getppid(), signal.SIGTERM)\ntime.sleep(30)\n")
+api.chmod(0o755)
+function = source[source.index("fetch_release_page() ("):source.index("\nlatest_release_with_asset()")]
+script = root / "request.sh"
+script.write_text(function + '\nGH_VERIFIER="$1"\ndiscovery_dir="$2"\nREPO=fixture/labby\ndiscovery_page=1\ndiscovery_query=.\nfetch_release_page\n')
+process = subprocess.Popen(["/bin/sh", str(script), str(api), str(root)], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+try:
+    try:
+        _, stderr = process.communicate(timeout=3)
+    except subprocess.TimeoutExpired:
+        raise AssertionError("cancelled release discovery did not terminate within 3 seconds")
+    assert process.returncode != 0, "cancelled release discovery succeeded"
+    pid = int(api.with_suffix('.pid').read_text())
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise AssertionError("cancelled API child survived request cleanup")
+finally:
+    try: os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    process.wait()
+PYTHON
 }
 
 test_receipt_and_offline_rollback_restore_exact_prior_binary() {
@@ -1153,6 +1347,10 @@ test_launchd_plist_escapes_all_configured_xml_values
 test_launchd_propagates_launchctl_failures
 test_checksum_mismatch_fails_closed_and_preserves_prior_binary
 test_latest_selects_newest_release_with_platform_asset
+test_release_channels
+test_expected_installation_guard
+test_release_discovery_timeout
+test_release_discovery_cancellation
 test_receipt_and_offline_rollback_restore_exact_prior_binary
 test_pinned_source_fallback_preserves_requested_tag
 test_latest_source_fallback_records_and_builds_resolved_revision

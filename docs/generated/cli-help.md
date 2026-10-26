@@ -6888,16 +6888,16 @@ Commands:
   auto  Manage the daily native macOS update schedule
 
 Options:
-      --automatic
-          Install a newer stable release on this host only (macOS Apple Silicon)
+      --channel <CHANNEL>
+          Release channel; stable by default. Automatic checks retain the saved selection
+
+          [possible values: stable, dev]
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
 
-      --auto-update <AUTO_UPDATE>
-          Enable, disable, or inspect daily native macOS updates
-
-          [possible values: enable, disable, status]
+      --automatic
+          Install a newer selected-channel release on this host only (macOS Apple Silicon)
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -6905,22 +6905,24 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
+      --auto-update <AUTO_UPDATE>
+          Enable, disable, or inspect daily native macOS updates
+
+          [possible values: enable, disable, status]
+
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
       --version <VERSION>
-          Release tag to install. Defaults to the latest GitHub release with a Labby binary asset
+          Release tag to install. Defaults to the latest selected-channel release with a Labby binary asset
 
           [default: latest]
 
       --install-dir <INSTALL_DIR>
           Install directory for the host binary
-
-  -q, --quiet
-          Suppress console logs, but always report command errors
-
-      --no-incus-sync
-          Do not sync the updated binary into an Incus container
 
       --no-input
           Never prompt for missing input or confirmation
@@ -6928,20 +6930,23 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --no-incus-sync
+          Do not sync the updated binary into an Incus container
+
       --no-web-assets
           Do not update or clear the Incus filesystem web asset directory
-
-      --container <CONTAINER>
-          Incus container name for the post-update sync
 
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
 
-      --check-url <CHECK_URL>
-          Optional public or host-bound URL to verify after the Incus sync
+      --container <CONTAINER>
+          Incus container name for the post-update sync
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --check-url <CHECK_URL>
+          Optional public or host-bound URL to verify after the Incus sync
 
       --force-fallback
           Fall back to `incus stop --force && incus start` if the service restart path fails
@@ -6969,6 +6974,11 @@ Commands:
   status   Report the native update schedule
 
 Options:
+      --channel <CHANNEL>
+          Release stream to retain for scheduled and service updates
+
+          [possible values: stable, dev]
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
 
@@ -6981,11 +6991,11 @@ Options:
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
-      --dry-run
-          Preview the schedule change without installing or changing it
-
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --dry-run
+          Preview the schedule change without installing or changing it
 
       --no-input
           Never prompt for missing input or confirmation
@@ -7011,6 +7021,11 @@ Enable daily native updates
 Usage: labby host update auto enable [OPTIONS]
 
 Options:
+      --channel <CHANNEL>
+          Release stream to retain for scheduled and service updates
+
+          [possible values: stable, dev]
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
 
@@ -7050,6 +7065,11 @@ Disable daily native updates
 Usage: labby host update auto disable [OPTIONS]
 
 Options:
+      --channel <CHANNEL>
+          Release stream to retain for scheduled and service updates
+
+          [possible values: stable, dev]
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
 
@@ -7089,6 +7109,11 @@ Report the native update schedule
 Usage: labby host update auto status [OPTIONS]
 
 Options:
+      --channel <CHANNEL>
+          Release stream to retain for scheduled and service updates
+
+          [possible values: stable, dev]
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
 

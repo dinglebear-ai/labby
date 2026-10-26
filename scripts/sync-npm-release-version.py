@@ -7,7 +7,7 @@ import sys
 
 
 def sync(root: Path, version: str) -> None:
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-dev\.[1-9][0-9]*)?", version):
         raise ValueError("invalid release version")
     for name in ("labby-mcp", "labby-microsandbox", "labby-tailcat-browser"):
         directory = root / "packages" / name

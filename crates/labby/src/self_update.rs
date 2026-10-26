@@ -34,24 +34,114 @@ struct Release {
     assets: Vec<Asset>,
 }
 
-fn version(text: &str) -> Result<[u64; 3]> {
-    let text = text.trim().strip_prefix("labby ").unwrap_or(text.trim());
-    let text = text.strip_prefix('v').unwrap_or(text);
-    let parts: Vec<_> = text.split('.').collect();
-    if parts.len() != 3
-        || parts
-            .iter()
-            .any(|p| p.is_empty() || !p.bytes().all(|b| b.is_ascii_digit()))
-    {
-        bail!("Expected a stable Labby version, got {text:?}");
-    }
-    Ok([parts[0].parse()?, parts[1].parse()?, parts[2].parse()?])
+/// Release stream explicitly selected by an operator; never read from installer env.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateChannel {
+    #[default]
+    Stable,
+    Dev,
 }
 
-fn select_release(releases: &[Release], current: [u64; 3]) -> Option<&str> {
+impl UpdateChannel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Dev => "dev",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Version {
+    base: [u64; 3],
+    // Stable sorts after every dev revision at the same base.
+    revision: Option<u64>,
+}
+
+fn version(text: &str) -> Result<Version> {
+    let text = text.trim().strip_prefix("labby ").unwrap_or(text.trim());
+    let text = text.strip_prefix('v').unwrap_or(text);
+    let (base, dev) = match text.split_once("-dev.") {
+        Some((base, revision)) => (base, Some(revision)),
+        None => (text, None),
+    };
+    let number = |part: &str| -> Result<u64> {
+        if part.is_empty()
+            || !part.bytes().all(|b| b.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            bail!("Expected a canonical Labby version, got {text:?}");
+        }
+        Ok(part.parse()?)
+    };
+    let parts = base.split('.').map(number).collect::<Result<Vec<_>>>()?;
+    if parts.len() != 3 {
+        bail!("Expected a Labby version, got {text:?}");
+    }
+    let dev = dev.map(number).transpose()?;
+    if dev == Some(0) {
+        bail!("Dev revision must be positive");
+    }
+    Ok(Version {
+        base: [parts[0], parts[1], parts[2]],
+        revision: dev,
+    })
+}
+
+fn newer(candidate: Version, current: Version) -> bool {
+    candidate.base > current.base
+        || (candidate.base == current.base
+            && match (candidate.revision, current.revision) {
+                (None, Some(_)) => true,
+                (Some(a), Some(b)) => a > b,
+                _ => false,
+            })
+}
+
+pub(crate) fn validate_requested_release(tag: &str, channel: UpdateChannel) -> Result<()> {
+    if tag == "latest" {
+        return Ok(());
+    }
+    if !tag.starts_with('v') || tag.trim() != tag {
+        bail!("Release tag must be canonical vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-dev.N");
+    }
+    let parsed = version(tag)?;
+    if parsed.revision.is_some() != (channel == UpdateChannel::Dev) {
+        bail!(
+            "Release {tag:?} does not belong to the {} channel",
+            channel.as_str()
+        );
+    }
+    Ok(())
+}
+
+fn selected_channel(directory: &Path) -> Result<UpdateChannel> {
+    match fs::read_to_string(directory.join(".labby-update-channel")) {
+        Ok(value) => match value.trim() {
+            "stable" => Ok(UpdateChannel::Stable),
+            "dev" => Ok(UpdateChannel::Dev),
+            _ => bail!("Invalid persisted Labby update channel"),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(UpdateChannel::Stable),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn persist_channel(directory: &Path, channel: UpdateChannel) -> Result<()> {
+    use std::io::Write;
+    let mut stage = tempfile::NamedTempFile::new_in(directory)?;
+    stage.write_all(channel.as_str().as_bytes())?;
+    stage.as_file().sync_all()?;
+    stage.persist(directory.join(".labby-update-channel"))?;
+    Ok(())
+}
+
+fn select_release(releases: &[Release], current: Version, channel: UpdateChannel) -> Option<&str> {
     releases
         .iter()
-        .filter(|r| !r.draft && !r.prerelease)
+        .filter(|r| !r.draft && r.prerelease == (channel == UpdateChannel::Dev))
+        .filter(|r| validate_requested_release(&r.tag_name, channel).is_ok())
         .filter(|r| {
             [ASSET.to_string(), format!("{ASSET}.sha256")]
                 .iter()
@@ -60,10 +150,20 @@ fn select_release(releases: &[Release], current: [u64; 3]) -> Option<&str> {
         .filter_map(|r| {
             version(&r.tag_name)
                 .ok()
-                .filter(|v| *v > current)
+                .filter(|v| {
+                    v.revision.is_some() == (channel == UpdateChannel::Dev) && newer(*v, current)
+                })
                 .map(|v| (v, r.tag_name.as_str()))
         })
-        .max_by_key(|(v, _)| *v)
+        .max_by(|(a, _), (b, _)| {
+            if newer(*a, *b) {
+                std::cmp::Ordering::Greater
+            } else if newer(*b, *a) {
+                std::cmp::Ordering::Less
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
         .map(|(_, tag)| tag)
 }
 
@@ -74,7 +174,12 @@ pub(crate) fn require_macos() -> Result<()> {
     Ok(())
 }
 
-fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
+fn installer_command(
+    script: &Path,
+    tag: &str,
+    directory: &Path,
+    channel: UpdateChannel,
+) -> Command {
     let mut command = Command::new("sh");
     command.arg(script);
     for (key, _) in std::env::vars_os() {
@@ -89,6 +194,7 @@ fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
         command.env_remove(key);
     }
     command
+        .env("LABBY_INSTALL_CHANNEL", channel.as_str())
         .env("LABBY_INSTALL_VERSION", tag)
         .env("LABBY_INSTALL_DIR", directory)
         .env("LABBY_INSTALL_REPO", REPO)
@@ -99,13 +205,19 @@ fn installer_command(script: &Path, tag: &str, directory: &Path) -> Command {
 
 /// Run the same pinned, sanitized and mutually-exclusive installer used by
 /// automatic updates for an operator-requested release.
-pub(crate) async fn install_requested_release(tag: &str, directory: &Path) -> Result<()> {
+pub(crate) async fn install_requested_release(
+    tag: &str,
+    directory: &Path,
+    channel: UpdateChannel,
+) -> Result<()> {
+    validate_requested_release(tag, channel)?;
     fs::create_dir_all(directory)?;
     let lock = acquire_update_lock(directory)?;
     let temp = tempfile::tempdir()?;
     let script = temp.path().join("install.sh");
     fs::write(&script, INSTALL_SCRIPT)?;
-    install_release(&script, tag, directory, lock).await
+    install_release(&script, tag, directory, lock.try_clone()?, channel).await?;
+    Ok(())
 }
 
 // Keep exclusion ownership until cancellation has killed and reaped the
@@ -229,8 +341,14 @@ fn spawn_installer(
         .spawn()?)
 }
 
-async fn install_release(script: &Path, tag: &str, directory: &Path, lock: fs::File) -> Result<()> {
-    run_installer(installer_command(script, tag, directory), lock).await
+async fn install_release(
+    script: &Path,
+    tag: &str,
+    directory: &Path,
+    lock: fs::File,
+    channel: UpdateChannel,
+) -> Result<()> {
+    run_installer(installer_command(script, tag, directory, channel), lock).await
 }
 
 async fn run_installer(mut command: Command, lock: fs::File) -> Result<()> {
@@ -275,6 +393,61 @@ fn acquire_update_lock(directory: &Path) -> Result<fs::File> {
     Ok(lock)
 }
 
+/// Uses the installer's existing mkdir/pid contract for standalone shell installs.
+/// Never steal an existing lock: the installer owns stale
+/// lock recovery, and an in-progress owner may not have published its PID yet.
+struct InstallerTransaction {
+    path: std::path::PathBuf,
+}
+
+impl Drop for InstallerTransaction {
+    fn drop(&mut self) {
+        if fs::read_to_string(self.path.join("pid")).ok().as_deref()
+            == Some(&format!("{}\n", std::process::id()))
+        {
+            drop(fs::remove_file(self.path.join("pid")));
+            drop(fs::remove_dir(&self.path));
+        }
+    }
+}
+
+fn acquire_installer_transaction(directory: &Path) -> Result<InstallerTransaction> {
+    acquire_installer_transaction_with(directory, |path| {
+        fs::write(path, format!("{}\n", std::process::id()))
+    })
+}
+
+fn acquire_installer_transaction_with(
+    directory: &Path,
+    write_pid: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<InstallerTransaction> {
+    let metadata = directory.join(".labby-install");
+    fs::create_dir_all(&metadata)?;
+    let path = metadata.join("transaction-lock");
+    fs::create_dir(&path).context("Installer transaction is locked; finish the other installation or run installer recovery before retrying")?;
+    let pid = path.join("pid");
+    if let Err(error) = write_pid(&pid) {
+        // Even a failed write may have created an empty or partial PID file.
+        // Both paths are owned by this acquisition; preserve the original I/O
+        // error while making a cleanup failure actionable.
+        let cleanup = (|| -> std::io::Result<()> {
+            match fs::remove_file(&pid) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            fs::remove_dir(&path)
+        })();
+        if let Err(cleanup_error) = cleanup {
+            return Err(error).with_context(|| {
+                format!("Cannot publish installer lock PID; cleanup also failed: {cleanup_error}")
+            });
+        }
+        return Err(error).context("Cannot publish installer lock PID; owned partial lock removed");
+    }
+    Ok(InstallerTransaction { path })
+}
+
 fn install_directory(binary: &Path) -> Result<&Path> {
     // The verified installer publishes a fixed `labby` basename. A renamed
     // executable would otherwise report success while leaving itself stale.
@@ -287,41 +460,95 @@ fn install_directory(binary: &Path) -> Result<&Path> {
 }
 
 /// Check published releases and atomically install a newer verified host binary.
-pub(crate) async fn automatic(binary: &Path, dry_run: bool) -> Result<Value> {
+pub(crate) async fn automatic(
+    binary: &Path,
+    dry_run: bool,
+    channel: Option<UpdateChannel>,
+) -> Result<Value> {
     require_macos()?;
-    automatic_with_catalog(binary, dry_run, fetch_releases()).await
+    automatic_with_catalog(binary, dry_run, channel, fetch_releases()).await
 }
 
 async fn fetch_releases() -> Result<Vec<Release>> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
+        .redirect(reqwest::redirect::Policy::none())
         .user_agent("labby-auto-update")
         .build()?;
-    let mut response = client
-        .get(format!(
-            "https://api.github.com/repos/{REPO}/releases?per_page=100"
-        ))
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await?
-        .error_for_status()?;
-    let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        if body.len() + chunk.len() > 4 * 1024 * 1024 {
-            bail!("Release catalog exceeds 4 MiB");
+    fetch_release_catalog(
+        &client,
+        &format!("https://api.github.com/repos/{REPO}/releases"),
+        10,
+    )
+    .await
+}
+
+async fn fetch_release_catalog(
+    client: &reqwest::Client,
+    endpoint: &str,
+    max_pages: usize,
+) -> Result<Vec<Release>> {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let mut releases = Vec::new();
+        let mut total_bytes = 0;
+        for page in 1..=max_pages {
+            // Construct pages against the owned endpoint, never a URL supplied
+            // by the Link header (which is only a continuation signal).
+            let mut response = client
+                .get(endpoint)
+                .query(&[("per_page", 100), ("page", page)])
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await?
+                .error_for_status()?;
+            if !response.status().is_success() {
+                bail!(
+                    "Release catalog returned unexpected status {}",
+                    response.status()
+                );
+            }
+            let more = response
+                .headers()
+                .get_all(reqwest::header::LINK)
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .flat_map(|value| value.split(','))
+                .any(|link| {
+                    link.split(';')
+                        .skip(1)
+                        .any(|part| part.trim() == "rel=\"next\"")
+                });
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await? {
+                total_bytes += chunk.len();
+                if total_bytes > 4 * 1024 * 1024 {
+                    bail!("Incomplete release discovery: catalog exceeds aggregate 4 MiB budget");
+                }
+                body.extend_from_slice(&chunk);
+            }
+            releases.extend(serde_json::from_slice::<Vec<Release>>(&body)?);
+            if !more {
+                return Ok(releases);
+            }
         }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(serde_json::from_slice(&body)?)
+        bail!("Incomplete release discovery: more pages remain after the {max_pages}-page budget")
+    })
+    .await
+    .context("Incomplete release discovery: catalog exceeded its 90-second deadline")?
 }
 
 async fn automatic_with_catalog(
     binary: &Path,
     dry_run: bool,
+    channel: Option<UpdateChannel>,
     catalog: impl Future<Output = Result<Vec<Release>>>,
 ) -> Result<Value> {
     let directory = install_directory(binary)?;
     let lock = acquire_update_lock(directory)?;
+    let requested_channel = channel;
+    let channel = channel
+        .map(Ok)
+        .unwrap_or_else(|| selected_channel(directory))?;
     let journal = directory.join(".labby-install/activation-journal");
     if journal.try_exists()? {
         if dry_run {
@@ -335,26 +562,51 @@ async fn automatic_with_catalog(
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("install.sh");
         fs::write(&script, INSTALL_SCRIPT)?;
-        let mut command = installer_command(&script, "latest", directory);
+        let mut command = installer_command(&script, "latest", directory, channel);
         command.env("LABBY_INSTALL_RECOVER_ONLY", "1");
         run_installer(command, lock.try_clone()?).await?;
     }
+    let releases = catalog.await?;
+    // A direct installer can run while the catalog is fetched. Observe its
+    // resulting binary and marker together under the same transaction lock.
+    let transaction = acquire_installer_transaction(directory)?;
+    if journal.try_exists()? {
+        bail!(
+            "An installation was interrupted during release discovery; recover it before retrying"
+        );
+    }
+    let observed_channel = selected_channel(directory)?;
+    let channel = requested_channel.unwrap_or(observed_channel);
     let output = Command::new(binary).arg("--version").output()?;
     if !output.status.success() {
         bail!("Cannot read installed Labby version");
     }
-    let current = version(std::str::from_utf8(&output.stdout)?)?;
-    let releases = catalog.await?;
-    let Some(tag) = select_release(&releases, current) else {
-        return Ok(json!({"installed": false, "reason": "No newer stable Labby binary release"}));
+    let current_text = std::str::from_utf8(&output.stdout)?.trim();
+    let current = version(current_text)?;
+    let Some(tag) = select_release(&releases, current, channel) else {
+        if !dry_run && requested_channel.is_some() {
+            persist_channel(directory, channel)?;
+        }
+        return Ok(
+            json!({"installed": false, "channel": channel, "reason": format!("No newer {} Labby binary release", channel.as_str())}),
+        );
     };
+    // The child acquires this same lock itself. Its preconditions close the
+    // release-before-spawn gap without inheriting or bypassing that lock.
+    drop(transaction);
     if !dry_run {
         let temp = tempfile::tempdir()?;
         let script = temp.path().join("install.sh");
         fs::write(&script, INSTALL_SCRIPT)?;
-        install_release(&script, tag, directory, lock).await?;
+        let mut command = installer_command(&script, tag, directory, channel);
+        command
+            .env("LABBY_INSTALL_EXPECTED_VERSION", current_text)
+            .env("LABBY_INSTALL_EXPECTED_CHANNEL", observed_channel.as_str());
+        run_installer(command, lock.try_clone()?).await?;
     }
-    Ok(json!({"installed": !dry_run, "version": tag, "binary": binary, "dry_run": dry_run}))
+    Ok(
+        json!({"installed": !dry_run, "channel": channel, "version": tag, "binary": binary, "dry_run": dry_run}),
+    )
 }
 
 /// Wait until the server has installed an update and needs a supervised restart.
@@ -369,7 +621,7 @@ pub(crate) async fn server_update_loop() {
         }
     };
     wait_for_installed_update(
-        || automatic(&binary, false),
+        || automatic(&binary, false, None),
         Duration::from_mins(1),
         Duration::from_hours(24),
     )
@@ -392,7 +644,7 @@ pub(crate) async fn wait_for_installed_update<F, Fut>(
                 tracing::info!(version = ?outcome.get("version"), "verified update installed; restarting Labby server");
                 return;
             }
-            Ok(_) => tracing::info!("automatic update check: no newer stable release"),
+            Ok(_) => tracing::info!("automatic update check: no newer release"),
             Err(error) => {
                 tracing::warn!(%error, "automatic update failed; server stays running; retry in 24 hours")
             }
@@ -440,18 +692,40 @@ fn acquire_schedule_lock(plist: &Path) -> Result<fs::File> {
 }
 
 /// Configure or inspect the per-user launchd job, which invokes this executable.
-pub(crate) fn schedule(action: &str, dry_run: bool) -> Result<Value> {
+pub(crate) fn schedule(
+    action: &str,
+    dry_run: bool,
+    channel: Option<UpdateChannel>,
+) -> Result<Value> {
     require_macos()?;
     let home = std::env::var_os("HOME").context("HOME is not set")?;
-    schedule_for_paths(action, dry_run, Path::new(&home), &std::env::current_exe()?)
+    schedule_for_paths(
+        action,
+        dry_run,
+        Path::new(&home),
+        &std::env::current_exe()?,
+        channel,
+    )
 }
 
-fn schedule_for_paths(action: &str, dry_run: bool, home: &Path, binary: &Path) -> Result<Value> {
+fn schedule_for_paths(
+    action: &str,
+    dry_run: bool,
+    home: &Path,
+    binary: &Path,
+    channel: Option<UpdateChannel>,
+) -> Result<Value> {
+    let requested_channel = channel;
+    let channel = channel
+        .map(Ok)
+        .unwrap_or_else(|| selected_channel(install_directory(binary)?))?;
     let plist = home
         .join("Library/LaunchAgents")
         .join(format!("{LABEL}.plist"));
     if dry_run {
-        return Ok(json!({"action": action, "binary": binary, "plist": plist, "dry_run": true}));
+        return Ok(
+            json!({"action": action, "channel": channel, "binary": binary, "plist": plist, "dry_run": true}),
+        );
     }
     let _schedule_lock = if action == "status" {
         None
@@ -509,8 +783,58 @@ fn schedule_for_paths(action: &str, dry_run: bool, home: &Path, binary: &Path) -
     // scheduled update runs, so enabling updates needs no developer CLI.
     fs::create_dir_all(plist.parent().context("Missing LaunchAgents directory")?)?;
     fs::create_dir_all(log_dir)?;
-    replace_schedule(&plist, content.as_bytes(), loaded, control)?;
-    Ok(json!({"enabled": true, "binary": binary, "interval_seconds": 86400, "plist": plist}))
+    let channel = replace_schedule_channel(
+        binary,
+        &plist,
+        content.as_bytes(),
+        requested_channel,
+        loaded,
+        control,
+    )?;
+    Ok(
+        json!({"enabled": true, "channel": channel, "binary": binary, "interval_seconds": 86400, "plist": plist}),
+    )
+}
+
+/// The installer, service, and native schedule share one persisted selection.
+/// Resolve it under the installer lock so enabling a schedule cannot overwrite
+/// a concurrent manual installation's selection with an earlier observation.
+fn replace_schedule_channel(
+    binary: &Path,
+    plist: &Path,
+    content: &[u8],
+    requested_channel: Option<UpdateChannel>,
+    loaded: bool,
+    control: impl FnMut(&str) -> Result<()>,
+) -> Result<UpdateChannel> {
+    let directory = install_directory(binary)?;
+    let _update_lock = acquire_update_lock(directory)?;
+    let _transaction = acquire_installer_transaction(directory)?;
+    if directory
+        .join(".labby-install/activation-journal")
+        .try_exists()?
+    {
+        bail!("Recover the interrupted installation before changing the update schedule");
+    }
+    let marker = directory.join(".labby-update-channel");
+    let previous_present = marker.try_exists()?;
+    let previous_channel = selected_channel(directory)?;
+    let channel = requested_channel.unwrap_or(previous_channel);
+    persist_channel(directory, channel)?;
+    if let Err(error) = replace_schedule(plist, content, loaded, control) {
+        let restore = if previous_present {
+            persist_channel(directory, previous_channel)
+        } else {
+            fs::remove_file(&marker).map_err(Into::into)
+        };
+        if let Err(restore_error) = restore {
+            bail!(
+                "Schedule activation failed: {error:#}; previous channel restoration failed: {restore_error:#}"
+            );
+        }
+        return Err(error);
+    }
+    Ok(channel)
 }
 
 /// Restore the previous on-disk and loaded schedule if activation fails.
