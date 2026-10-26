@@ -4,7 +4,10 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 test_root=$(mktemp -d)
 # Exercise the real gh embedded jq evaluator against a task-local HTTP fixture.
-export LABBY_TEST_REAL_GH=$(command -v gh)
+LABBY_TEST_REAL_GH=$(command -v gh)
+export LABBY_TEST_REAL_GH
+LABBY_TEST_PYTHON=$(command -v python3)
+export LABBY_TEST_PYTHON
 export LABBY_TEST_ROOT=$test_root
 cat >"$test_root/fixture-server.py" <<'PYTHON'
 import http.server, pathlib, sys
@@ -21,11 +24,26 @@ server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
 (root / "port").write_text(str(server.server_port))
 server.serve_forever()
 PYTHON
-python3 "$test_root/fixture-server.py" "$test_root" &
+"$LABBY_TEST_PYTHON" "$test_root/fixture-server.py" "$test_root" >"$test_root/fixture-server.log" 2>&1 &
 fixture_server=$!
-for _ in $(seq 1 100); do [ -f "$test_root/port" ] && break; sleep 0.02; done
-export LABBY_TEST_HTTP_PORT=$(cat "$test_root/port")
-trap 'rc=$?; kill "$fixture_server" 2>/dev/null || true; wait "$fixture_server" 2>/dev/null || true; if [ "$rc" -ne 0 ]; then tail -n 20 "$test_root"/verifier-*/err 2>/dev/null || true; fi; rm -rf "$test_root"' EXIT
+trap 'rc=$?; kill "$fixture_server" 2>/dev/null || true; wait "$fixture_server" 2>/dev/null || true; if [ "$rc" -ne 0 ]; then cat "$test_root/fixture-server.log" >&2; tail -n 20 "$test_root"/verifier-*/err 2>/dev/null || true; fi; rm -rf "$test_root"' EXIT
+# A cold Python on hosted macOS can take longer than two seconds to import the
+# HTTP server. Fail at readiness, rather than exporting an empty port and masking
+# the error until release discovery. Keep startup bounded and detect early exit.
+for _ in $(seq 1 400); do
+    [ ! -s "$test_root/port" ] || break
+    if ! kill -0 "$fixture_server" 2>/dev/null; then
+        echo "FAIL: installer HTTP fixture exited before readiness" >&2
+        exit 1
+    fi
+    sleep 0.05
+done
+if [ ! -s "$test_root/port" ]; then
+    echo "FAIL: installer HTTP fixture did not become ready within 20 seconds" >&2
+    exit 1
+fi
+LABBY_TEST_HTTP_PORT=$(cat "$test_root/port")
+export LABBY_TEST_HTTP_PORT
 
 fail() {
     echo "FAIL: $*" >&2
@@ -114,7 +132,7 @@ case "$*" in
   "api "*)
     if [ -n "${LABBY_TEST_API_HANG:-}" ]; then
       printf '%s\n' "$$" >"$LABBY_TEST_API_HANG"
-      exec python3 -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'
+      exec "$LABBY_TEST_PYTHON" -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'
     fi
     query=
     page=1
@@ -696,6 +714,7 @@ run_installer() {
     env -i \
         HOME="$home" \
         LABBY_TEST_REAL_GH="$LABBY_TEST_REAL_GH" \
+        LABBY_TEST_PYTHON="$LABBY_TEST_PYTHON" \
         LABBY_TEST_ROOT="$LABBY_TEST_ROOT" \
         LABBY_TEST_HTTP_PORT="$LABBY_TEST_HTTP_PORT" \
         PATH="$fake_bin:/usr/bin:/bin:/usr/sbin:/sbin" \
