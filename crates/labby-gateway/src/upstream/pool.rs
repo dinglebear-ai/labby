@@ -355,6 +355,8 @@ pub struct UpstreamPool {
     oauth_invalidation_barrier: Arc<RwLock<()>>,
     /// One cancellation-independent capacity/rejection drain shared by callers.
     oauth_invalidation_drain: Arc<Mutex<Option<oauth_invalidation::OAuthInvalidationDrain>>>,
+    #[cfg(test)]
+    oauth_invalidation_drain_probe: Option<Arc<oauth_invalidation::rejection_tests::DrainProbe>>,
     /// Stable config fingerprint for each upstream name. Selective reconcile
     /// replaces changed fingerprints before publishing the new revision so a
     /// request carrying stale config cannot publish or reuse a connection.
@@ -672,6 +674,8 @@ impl UpstreamPool {
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
             oauth_invalidation_drain: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            oauth_invalidation_drain_probe: None,
             upstream_config_fingerprints: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(

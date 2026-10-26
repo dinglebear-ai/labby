@@ -826,6 +826,144 @@ mod membership_scaling_tests {
     }
 
     #[tokio::test]
+    async fn rejection_membership_resolves_aliases_in_each_independent_store() {
+        // Keep both directories alive until every store and callback is dropped.
+        let directory_a = tempfile::tempdir().unwrap();
+        let directory_b = tempfile::tempdir().unwrap();
+        let mut stores = Vec::new();
+        for directory in [&directory_a, &directory_b] {
+            stores.push(
+                SqliteStore::open_with_key(
+                    directory.path().join("auth.db"),
+                    Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                        "membership",
+                    )),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        assert!(!stores[0].shares_google_provider_store(&stores[1]));
+        for (store, subject) in stores.iter().zip(["account-a", "account-b"]) {
+            for (subject, email) in [
+                (subject, "alias@example.com"),
+                ("unrelated", "unrelated@example.com"),
+            ] {
+                store
+                    .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                        subject: subject.into(),
+                        email: Some(email.into()),
+                        client_id: "client".into(),
+                        granted_scopes: vec!["openid".into()],
+                        access_token: "test-access".into(),
+                        refresh_token: "test-refresh".into(),
+                        token_received_at: 1,
+                        access_token_expires_at: 3601,
+                        issuer: Some("https://accounts.google.com".into()),
+                        refreshed: false,
+                        scope_upgraded: true,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        let config = |name: &str, account: &str| {
+            serde_json::from_value::<labby_runtime::gateway_config::UpstreamConfig>(serde_json::json!({
+                "name": name, "url": "https://example.com/mcp",
+                "oauth": {"mode": "authorization_code_pkce", "registration": {"strategy": "preregistered", "client_id": "client"},
+                          "credential": {"source": "google_provider", "account": account}}
+            })).unwrap()
+        };
+        let configs = [
+            config("selected-a", "alias@example.com"),
+            config("sibling-a", "account-a"),
+            config("unrelated-a", "unrelated@example.com"),
+            config("selected-b", "alias@example.com"),
+            config("sibling-b", "account-b"),
+            config("unrelated-b", "unrelated@example.com"),
+        ];
+        let managers = Arc::new(DashMap::new());
+        for (index, config) in configs.iter().enumerate() {
+            managers.insert(
+                config.name.clone(),
+                UpstreamOauthManager::new(
+                    stores[index / 3].clone(),
+                    crate::upstream::encryption::load_key(
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    )
+                    .unwrap(),
+                    config.clone(),
+                    "http://127.0.0.1/callback".into(),
+                ),
+            );
+        }
+        let cache = OauthClientCache::new(managers);
+        let epochs = configs
+            .iter()
+            .map(|config| cache.lifecycle_epoch_for_upstream(&config.name))
+            .collect::<Vec<_>>();
+        let handler_a = cache
+            .refresh_rejection_handler(&configs[0], "operator")
+            .await
+            .unwrap();
+        let handler_b = cache
+            .refresh_rejection_handler(&configs[3], "operator")
+            .await
+            .unwrap();
+
+        handler_a(Some("account-b".into()));
+        handler_b(Some("account-a".into()));
+        assert!(cache.take_pending_invalidations().is_empty());
+        for (handler, provider, expected) in [
+            (&handler_a, "account-a", ["selected-a", "sibling-a"]),
+            (&handler_b, "account-b", ["selected-b", "sibling-b"]),
+        ] {
+            handler(Some(provider.into()));
+            let events = cache.take_pending_invalidations();
+            let mut upstreams = events
+                .iter()
+                .map(|event| {
+                    assert!(event.subject.is_none());
+                    assert!(event.is_current());
+                    event.upstream.as_str()
+                })
+                .collect::<Vec<_>>();
+            upstreams.sort_unstable();
+            assert_eq!(upstreams, expected);
+            assert!(epochs.iter().all(|epoch| epoch.is_current()));
+        }
+
+        // Fencing one selected upstream must leave its sibling and the other
+        // store's authority usable, without touching unrelated accounts.
+        cache.advance_upstream_epoch("selected-a");
+        assert!(!epochs[0].is_current());
+        assert!(epochs[1..].iter().all(|epoch| epoch.is_current()));
+        handler_a(Some("account-a".into()));
+        let events = cache.take_pending_invalidations();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].upstream, "sibling-a");
+        handler_b(Some("account-b".into()));
+        let mut upstreams = cache
+            .take_pending_invalidations()
+            .into_iter()
+            .map(|event| event.upstream)
+            .collect::<Vec<_>>();
+        upstreams.sort_unstable();
+        assert_eq!(upstreams, ["selected-b", "sibling-b"]);
+        assert!(epochs[1..].iter().all(|epoch| epoch.is_current()));
+        for store in &stores {
+            let membership = store
+                .google_provider_subject_memberships(vec![Some("unrelated@example.com".into())])
+                .await
+                .unwrap();
+            assert_eq!(
+                membership.into_iter().next().unwrap().unwrap().as_deref(),
+                Some("unrelated")
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn google_handler_setup_uses_constant_store_operations_per_upstream() {
         let directory = tempfile::tempdir().unwrap();
         let store = SqliteStore::open_with_key(
