@@ -1203,27 +1203,32 @@ exit 0
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
             .expect("make executable");
         let config = config(executable);
-        let (_command, guard) = runner_command(&spawn(), Some(&config), None)
+        let admission = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = admission
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("test permit");
+        let (_command, guard) = runner_command(&spawn(), Some(&config), Some(permit))
             .await
             .expect("initial create succeeds");
         let mut guard = guard.expect("guard");
         guard.remove().await;
         drop(guard);
 
-        let deadline = Instant::now() + Duration::from_secs(1);
-        loop {
-            let removes = std::fs::read_to_string(&calls)
-                .expect("recorded calls")
-                .lines()
-                .filter(|line| line.starts_with("remove "))
-                .count();
-            if removes >= 2 {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                break;
-            }
-            assert!(Instant::now() < deadline, "fallback remove did not run");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // The fallback logs removal before its helper exits. Its admission
+        // permit is released only after the worker records the failed cleanup,
+        // so wait for that lifecycle boundary before creating a replacement.
+        let _completed = tokio::time::timeout(Duration::from_secs(3), admission.acquire_owned())
+            .await
+            .expect("fallback cleanup worker must finish")
+            .expect("test admission semaphore remains open");
+        let removes = std::fs::read_to_string(&calls)
+            .expect("recorded calls")
+            .lines()
+            .filter(|line| line.starts_with("remove "))
+            .count();
+        assert_eq!(removes, 2, "explicit and fallback removals must finish");
         assert_eq!(
             ACTIVE_SANDBOXES.load(std::sync::atomic::Ordering::Relaxed),
             before + 1,
