@@ -93,6 +93,8 @@ struct FixtureCounters {
     task_cancellations: AtomicUsize,
     progress_cancellations: AtomicUsize,
     progress_tokens: tokio::sync::Mutex<Vec<rmcp::model::ProgressToken>>,
+    task_input_required: AtomicBool,
+    task_input_responses: tokio::sync::Mutex<Vec<rmcp::model::InputResponses>>,
 }
 
 #[derive(Clone)]
@@ -335,22 +337,47 @@ impl ServerHandler for FixtureServer {
             return Err(ErrorData::invalid_params("task not found", None));
         }
         let cancelled = self.counters.task_cancellations.load(Ordering::SeqCst) > 0;
-        let status = if cancelled {
-            TaskStatus::Cancelled
+        let requires_input = self.counters.task_input_required.load(Ordering::SeqCst);
+        let responded = self.counters.task_updates.load(Ordering::SeqCst) > 0;
+        let (status, payload) = if cancelled {
+            (TaskStatus::Cancelled, TaskPayload::Cancelled)
+        } else if requires_input && !responded {
+            let request: rmcp::model::InputRequest = serde_json::from_value(serde_json::json!({
+                "method":"roots/list", "params":{}}))
+            .expect("input request");
+            (
+                TaskStatus::InputRequired,
+                TaskPayload::InputRequired {
+                    input_requests: std::collections::BTreeMap::from([(
+                        "roots-needed".to_string(),
+                        request,
+                    )]),
+                },
+            )
+        } else if requires_input {
+            (
+                TaskStatus::Completed,
+                TaskPayload::Completed {
+                    result: serde_json::json!({
+                "content":[{"type":"text","text":"input accepted"}]})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                },
+            )
         } else {
-            TaskStatus::Working
-        };
-        let payload = if cancelled {
-            TaskPayload::Cancelled
-        } else {
-            TaskPayload::Working
+            (TaskStatus::Working, TaskPayload::Working)
         };
         Ok(GetTaskResult::new(DetailedTask::new(
             Task::new(
                 request.task_id,
                 status,
                 "2026-09-13T00:00:00Z",
-                "2026-09-13T00:00:02Z",
+                if cancelled {
+                    "2026-09-13T00:00:03Z"
+                } else {
+                    "2026-09-13T00:00:02Z"
+                },
             )
             .with_status_message(if cancelled {
                 "native-q1-cancelled"
@@ -369,6 +396,11 @@ impl ServerHandler for FixtureServer {
         if request.task_id != "native-q1-task" {
             return Err(ErrorData::invalid_params("task not found", None));
         }
+        self.counters
+            .task_input_responses
+            .lock()
+            .await
+            .push(request.input_responses);
         self.counters.task_updates.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -676,6 +708,15 @@ impl PrimitiveFixture {
         self.counters.tool_calls.load(Ordering::SeqCst)
     }
 
+    pub(crate) fn require_task_input(&self) {
+        self.counters
+            .task_input_required
+            .store(true, Ordering::SeqCst);
+    }
+    pub(crate) async fn task_input_responses(&self) -> Vec<rmcp::model::InputResponses> {
+        self.counters.task_input_responses.lock().await.clone()
+    }
+
     pub(crate) fn task_updates(&self) -> usize {
         self.counters.task_updates.load(Ordering::SeqCst)
     }
@@ -783,6 +824,41 @@ impl PrimitiveQualification {
             service: Some(service),
             client,
         })
+    }
+
+    pub(crate) async fn restart(&mut self) -> Result<(), String> {
+        if let Some(service) = self.service.take() {
+            tokio::time::timeout(REQUEST_TIMEOUT, service.cancel())
+                .await
+                .map_err(|_| "client shutdown timed out".to_string())?
+                .map_err(|error| error.to_string())?;
+        }
+        let guard = self.guard.as_mut().expect("active Q1 guard");
+        guard.restart().await?;
+        let mut transport = StreamableHttpClientTransportConfig::with_uri(format!(
+            "{}/mcp",
+            guard.connection().base_url
+        ));
+        transport.auth_header = Some(TOKEN.to_string());
+        let worker = StreamableHttpClientWorker::new(
+            BodyCappedHttpClient::new(reqwest::Client::new(), CLIENT_RESPONSE_CAP),
+            transport,
+        );
+        self.service = Some(
+            tokio::time::timeout(
+                REQUEST_TIMEOUT,
+                self.client.clone().serve_with_lifecycle(
+                    worker,
+                    ClientLifecycleMode::Discover {
+                        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                    },
+                ),
+            )
+            .await
+            .map_err(|_| "restart discovery timed out".to_string())?
+            .map_err(|error| error.to_string())?,
+        );
+        Ok(())
     }
 
     pub(crate) fn service(&self) -> &RunningService<RoleClient, PrimitiveClient> {

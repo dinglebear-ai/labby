@@ -199,3 +199,51 @@ test('the command palette resets when a project-only session refresh switches pr
     await unmount?.()
   }
 })
+
+async function focusFixture(initialOpen: boolean) {
+  document.body.replaceChildren()
+  __setBrowserSessionStateForTests({ status: 'authenticated', user: { sub: 'operator' }, expiresAt: Date.now() + 60_000, csrfToken: 'csrf', isAdmin: true, authority })
+  globalThis.fetch = (async () => new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+  const [{ AppCommandPalette }, { renderClient }] = await Promise.all([import('./app-command-palette'), import('../lib/testing/dom-test-utils.tsx')])
+  const opener = document.createElement('button')
+  opener.textContent = 'Open palette'
+  document.body.append(opener)
+  opener.focus()
+  const element = (pathname: string) => <AppRouterContext.Provider value={router as never}><PathnameContext.Provider value={pathname}><AppCommandPalette initialOpen={initialOpen} /></PathnameContext.Provider></AppRouterContext.Provider>
+  const view = await renderClient(element('/gateways/'))
+  if (!initialOpen) await act(async () => { window.dispatchEvent(new window.Event(OPEN_COMMAND_PALETTE_EVENT)) })
+  await waitFor(() => assert.ok(document.querySelector('[data-palette="1"]')))
+  return { view, opener, element }
+}
+
+for (const initialOpen of [false, true]) {
+  test(`user close restores the external opener (initialOpen=${initialOpen})`, async () => {
+    const fixture = await focusFixture(initialOpen)
+    try {
+      await act(async () => { window.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'k', ctrlKey: true, cancelable: true })) })
+      await waitFor(() => assert.equal(document.querySelector('[data-palette="1"]') === null, true))
+      await waitFor(() => assert.equal(document.activeElement === fixture.opener, true))
+    } finally { await fixture.view.unmount(); fixture.opener.remove() }
+  })
+}
+
+for (const cause of ['route', 'authority'] as const) {
+  test(`${cause} closure does not restore an obsolete palette opener`, async () => {
+    const fixture = await focusFixture(true)
+    let restores = 0
+    const focus = fixture.opener.focus.bind(fixture.opener)
+    fixture.opener.focus = () => { restores++; focus() }
+    try {
+      if (cause === 'route') await fixture.view.rerender(fixture.element('/settings/'))
+      else {
+        globalThis.fetch = (async (input: RequestInfo | URL) => String(input) === '/auth/session'
+          ? Response.json({ ...sessionPayload, authority_generation: 8 })
+          : Response.json([])) as typeof fetch
+        await act(async () => { await loadBrowserSession() })
+      }
+      await waitFor(() => assert.equal(document.querySelector('[data-palette="1"]') === null, true))
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      assert.equal(restores, 0)
+    } finally { await fixture.view.unmount(); fixture.opener.remove() }
+  })
+}

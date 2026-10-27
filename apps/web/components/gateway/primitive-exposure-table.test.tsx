@@ -51,3 +51,40 @@ for (const primitive of ['resources', 'prompts']) test(`${primitive}: typing int
     await view.unmount()
   }
 })
+
+test('resource URI identities keep duplicate display names independently selectable', async () => {
+  installTestDom()
+  const React = await import('react')
+  const { act } = React
+  const { renderClient } = await import('../../lib/testing/dom-test-utils.tsx')
+  const { File } = await import('lucide-react')
+  const { PrimitiveExposureTable } = await import('./primitive-exposure-table')
+  const saves: Array<string[] | null> = []
+  const view = await renderClient(React.createElement(PrimitiveExposureTable, {
+    title: 'Resources', description: 'Resources', icon: File,
+    searchPlaceholder: 'Search resources', manageLabel: 'Manage resources', emptyLabel: 'None',
+    exposureEnabled: true,
+    items: ['file:///first', 'file:///second'].map((uri) => ({
+      name: 'README', selectionId: uri, secondary: uri, exposed: true,
+    })),
+    onSaveSelection: async (ids) => { saves.push(ids) },
+  }))
+  const click = async (label: string) => {
+    const button = [...view.container.querySelectorAll('button')].find((item) => item.textContent?.trim() === label)
+    assert.ok(button, `missing ${label}`)
+    await act(async () => button.click())
+  }
+  try {
+    await click('Manage resources')
+    await click('Hide')
+    const rows = [...view.container.querySelectorAll('tbody tr')]
+    assert.equal(rows.length, 2)
+    assert.ok(rows.every((row) => row.textContent?.includes('README')))
+    assert.ok(rows[0].textContent?.includes('Hidden'))
+    assert.ok(rows[1].textContent?.includes('Exposed'))
+    await click('Save changes')
+    assert.deepEqual(saves, [['file:///second']])
+  } finally {
+    await view.unmount()
+  }
+})

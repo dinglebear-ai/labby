@@ -80,15 +80,27 @@ pub(crate) fn sanitize(value: &str) -> String {
             while sanitized[value_start..]
                 .chars()
                 .next()
-                .is_some_and(char::is_whitespace)
+                .is_some_and(|character| {
+                    character.is_whitespace()
+                        && (prefix != "authorization:" || !matches!(character, '\r' | '\n'))
+                })
             {
                 value_start += sanitized[value_start..]
                     .chars()
                     .next()
                     .map_or(0, char::len_utf8);
             }
+            // Authorization values contain a scheme and credential separated
+            // by whitespace. Redact the entire header value, including Digest
+            // fields, without consuming the next diagnostic line.
             let end = sanitized[value_start..]
-                .find(char::is_whitespace)
+                .find(|character: char| {
+                    if prefix == "authorization:" {
+                        matches!(character, '\r' | '\n')
+                    } else {
+                        character.is_whitespace()
+                    }
+                })
                 .map_or(sanitized.len(), |offset| value_start + offset);
             sanitized.replace_range(value_start..end, "[REDACTED]");
             cursor = value_start + "[REDACTED]".len();
@@ -107,5 +119,25 @@ mod tests {
         assert!(!rendered.contains("canary"));
         assert!(!rendered.contains("another"));
         assert!(!rendered.contains("Bearer-value"));
+    }
+
+    #[test]
+    fn sanitizer_redacts_complete_authorization_headers() {
+        for header in [
+            "Authorization: Bearer synthetic-credential",
+            "authorization:\tBasic synthetic-credential",
+            "AuThOrIzAtIoN:  Bearer\tsynthetic-credential",
+            "Authorization: Digest username=synthetic-credential, response=another-canary",
+        ] {
+            let rendered = sanitize(&format!("before\n{header}\r\nafter"));
+            assert!(!rendered.contains("synthetic-credential"));
+            assert!(!rendered.contains("another-canary"));
+            assert!(rendered.starts_with("before\n"));
+            assert!(rendered.ends_with("\r\nafter"));
+        }
+        assert_eq!(
+            sanitize("Authorization:\r\nordinary diagnostic"),
+            "Authorization:[REDACTED]\r\nordinary diagnostic"
+        );
     }
 }

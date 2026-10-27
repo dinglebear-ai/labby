@@ -4,3 +4,7 @@
  * without importing the palette's module graph.
  */
 export const OPEN_COMMAND_PALETTE_EVENT = 'labby:open-command-palette'
+
+export function isCommandK(event: KeyboardEvent): boolean {
+  return (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
+}

@@ -96,7 +96,7 @@ import {
   type ServiceActionError,
 } from '@/lib/api/service-action-client'
 import type { CreateGatewayInput, Gateway } from '@/lib/types/gateway'
-import { OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
+import { isCommandK, OPEN_COMMAND_PALETTE_EVENT } from '@/lib/command-palette-events'
 import { capabilityForPath } from '@/components/console/nav-model'
 import { getBrowserSessionContextIdentity, useBrowserSession } from '@/lib/auth/session'
 
@@ -159,10 +159,6 @@ function paletteReducer(state: PaletteMode, action: PaletteAction): PaletteMode 
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function isCommandK(event: KeyboardEvent): boolean {
-  return (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k'
-}
 
 function isMacOS(): boolean {
   return typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.platform)
@@ -256,10 +252,17 @@ export function AppCommandPaletteTrigger() {
   )
 }
 
-export function AppCommandPalette() {
+export interface AppCommandPaletteProps { initialOpen?: boolean }
+
+export function AppCommandPalette({ initialOpen = false }: AppCommandPaletteProps = {}) {
   const router = useRouter()
   const pathname = usePathname()
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(initialOpen)
+  const openRef = useRef(open)
+  openRef.current = open
+  const openerRef = useRef<HTMLElement | null>(
+    initialOpen && typeof document !== 'undefined' && document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  )
   const [query, setQuery] = useState('')
   const [pages, setPages] = useState<string[]>([])
   const [mode, dispatch] = useReducer(paletteReducer, { kind: 'browse' })
@@ -295,6 +298,7 @@ export function AppCommandPalette() {
     lastWorkspaceIdentity.current = workspaceIdentity
     abortRef.current?.abort()
     abortRef.current = null
+    openerRef.current = null
     setOpen(false)
     setQuery('')
     setPages([])
@@ -413,6 +417,7 @@ export function AppCommandPalette() {
   // ── Open/close ─────────────────────────────────────────────────────────────
 
   const openPalette = useCallback(() => {
+    if (!openRef.current && document.activeElement instanceof HTMLElement && !document.activeElement.closest('[data-palette="1"]')) openerRef.current = document.activeElement
     abortPending()
     setPages([])
     setQuery('')
@@ -425,7 +430,8 @@ export function AppCommandPalette() {
     setOpen(true)
   }, [abortPending])
 
-  const closePalette = useCallback(() => {
+  const closePalette = useCallback((restoreFocus = true) => {
+    if (!restoreFocus) openerRef.current = null
     abortPending()
     setOpen(false)
     setQuery('')
@@ -465,10 +471,13 @@ export function AppCommandPalette() {
   // Close on pathname change. Use a ref so `open` is not a dep (avoids a
   // re-run every time closePalette flips open→false, which would re-trigger
   // this effect and create an infinite loop).
-  const openRef = useRef(open)
-  openRef.current = open
+  const previousPathname = useRef(pathname)
   useEffect(() => {
-    if (openRef.current) closePalette()
+    if (previousPathname.current !== pathname) {
+      openerRef.current = null
+      if (openRef.current) closePalette(false)
+    }
+    previousPathname.current = pathname
   }, [pathname, closePalette])
 
   // Sync active item when state changes
@@ -556,7 +565,7 @@ export function AppCommandPalette() {
 
   function executeDestination(item: AppCommandItem | null) {
     if (!item) return
-    closePalette()
+    closePalette(false)
     router.push(item.href)
     if (item.kind === 'action') {
       toast.message(item.title, { description: item.description })
@@ -564,7 +573,7 @@ export function AppCommandPalette() {
   }
 
   function executeGatewayDestination(gatewayId: string) {
-    closePalette()
+    closePalette(false)
     router.push(gatewayDetailHref(gatewayId))
   }
 
@@ -623,7 +632,7 @@ export function AppCommandPalette() {
       try {
         const gateway = await createGateway(input)
         toast.success(`${gateway.name} added`, { description: 'Probing the upstream…' })
-        closePalette()
+        closePalette(false)
         router.push(gatewayDetailHref(gateway.id))
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error'
@@ -723,6 +732,13 @@ export function AppCommandPalette() {
         <DialogPrimitive.Content
           data-slot="dialog-content"
           data-palette="1"
+          onCloseAutoFocus={(event) => {
+            event.preventDefault()
+            const opener = openerRef.current
+            openerRef.current = null
+            const active = document.activeElement
+            if (opener?.isConnected && (!active || active === document.body || active.closest('[data-palette="1"]'))) opener.focus()
+          }}
           aria-label="Search and filter servers"
           className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 text-aurora-text-primary duration-200"
         >

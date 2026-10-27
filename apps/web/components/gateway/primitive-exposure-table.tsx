@@ -28,6 +28,8 @@ const FILTER_OPTIONS = [
 
 export interface PrimitiveExposureItem {
   name: string
+  /** Native policy identity; names remain presentation labels. */
+  selectionId?: string
   description?: string
   secondary?: string
   exposed: boolean
@@ -45,6 +47,10 @@ interface PrimitiveExposureTableProps {
   searchValue?: string
   onSearchValueChange?: (value: string) => void
   onSaveSelection: (selectedNames: string[] | null) => Promise<void>
+}
+
+function selectionId(item: PrimitiveExposureItem): string {
+  return item.selectionId ?? item.name
 }
 
 function sortUnique(values: string[]): string[] {
@@ -76,11 +82,11 @@ export function PrimitiveExposureTable({
   const deferredSearch = useDeferredValue(effectiveSearch)
   const setEffectiveSearch = onSearchValueChange ?? setSearch
   const exposureSignature = JSON.stringify(
-    items.map(({ name, exposed }) => [name, exposed] as const).sort(([left], [right]) => left.localeCompare(right)),
+    items.map((item) => [selectionId(item), item.exposed] as const).sort(([left], [right]) => left.localeCompare(right)),
   )
   const baselineNames = useMemo(
-    () => sortUnique(items.filter((item) => item.exposed).map((item) => item.name)),
-    // Only names and exposure affect the selection baseline.
+    () => sortUnique(items.filter((item) => item.exposed).map(selectionId)),
+    // Only policy identities and exposure affect the selection baseline.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [exposureSignature],
   )
@@ -123,15 +129,15 @@ export function PrimitiveExposureTable({
     })
   }, [deferredSearch, filter, items])
 
-  const filteredNames = filteredItems.map((item) => item.name)
+  const filteredNames = filteredItems.map(selectionId)
   const selectedRowSet = useMemo(() => new Set(selectedRows), [selectedRows])
   const draftSet = useMemo(() => new Set(selectedNames), [selectedNames])
   const hasDraftChanges = useMemo(() => {
-    const current = sortUnique(items.filter((item) => item.exposed).map((item) => item.name))
+    const current = sortUnique(items.filter((item) => item.exposed).map(selectionId))
     const draft = sortUnique(selectedNames)
     return current.length !== draft.length || current.some((name, index) => name !== draft[index])
   }, [items, selectedNames])
-  const allExposed = items.length > 0 && items.every((item) => draftSet.has(item.name))
+  const allExposed = items.length > 0 && items.every((item) => draftSet.has(selectionId(item)))
   const allVisibleSelected =
     filteredNames.length > 0 && filteredNames.every((name) => selectedRowSet.has(name))
 
@@ -167,7 +173,7 @@ export function PrimitiveExposureTable({
     setIsSaving(true)
     try {
       const nextSelection =
-        items.length > 0 && items.every((item) => selectedNames.includes(item.name))
+        items.length > 0 && items.every((item) => selectedNames.includes(selectionId(item)))
           ? null
           : selectedNames
       try {
@@ -182,7 +188,7 @@ export function PrimitiveExposureTable({
   }
 
   const resetDraft = () => {
-    setSelectedNames(sortUnique(items.filter((item) => item.exposed).map((item) => item.name)))
+    setSelectedNames(sortUnique(items.filter((item) => item.exposed).map(selectionId)))
     setSelectedRows([])
     setManageMode(false)
   }
@@ -214,7 +220,7 @@ export function PrimitiveExposureTable({
                   <Switch
                     checked={allExposed}
                     onCheckedChange={(checked) => {
-                      setSelectedNames(checked ? sortUnique(items.map((item) => item.name)) : [])
+                      setSelectedNames(checked ? sortUnique(items.map(selectionId)) : [])
                     }}
                   />
                 </div>
@@ -355,14 +361,14 @@ export function PrimitiveExposureTable({
             </TableHeader>
             <TableBody>
               {filteredItems.map((item) => {
-                const draftVisible = draftSet.has(item.name)
+                const draftVisible = draftSet.has(selectionId(item))
                 return (
-                  <TableRow key={item.name}>
+                  <TableRow key={selectionId(item)}>
                     {manageMode ? (
                       <TableCell className="align-top">
                         <Checkbox
-                          checked={selectedRowSet.has(item.name)}
-                          onCheckedChange={(value) => updateRowSelected(item.name, value === true)}
+                          checked={selectedRowSet.has(selectionId(item))}
+                          onCheckedChange={(value) => updateRowSelected(selectionId(item), value === true)}
                         />
                       </TableCell>
                     ) : null}
@@ -393,10 +399,10 @@ export function PrimitiveExposureTable({
                           onClick={() => {
                             setSelectedNames((current) => {
                               const next = new Set(current)
-                              if (next.has(item.name)) {
-                                next.delete(item.name)
+                              if (next.has(selectionId(item))) {
+                                next.delete(selectionId(item))
                               } else {
-                                next.add(item.name)
+                                next.add(selectionId(item))
                               }
                               return sortUnique([...next])
                             })

@@ -52,7 +52,9 @@ use crate::upstream::http_client::{
 };
 use crate::upstream::refresh::{RefreshFailureCache, RefreshLocks};
 use crate::upstream::store::{SqliteCredentialStore, SqliteStateStore};
+mod callback_store;
 mod discovery;
+pub use callback_store::{CredentialSaveFence, CredentialSaveValidation};
 #[path = "machine_grants.rs"]
 mod machine_grants;
 
@@ -476,9 +478,22 @@ impl UpstreamOauthManager {
         csrf_token: &str,
         issuer: Option<&str>,
     ) -> Result<(), OauthError> {
+        self.complete_authorization_callback_with_fence(subject, code, csrf_token, issuer, None)
+            .await
+    }
+
+    /// Fence replacement after state/code and store-specific identity validation.
+    pub async fn complete_authorization_callback_with_fence(
+        &self,
+        subject: &str,
+        code: &str,
+        csrf_token: &str,
+        issuer: Option<&str>,
+        fence: Option<CredentialSaveFence>,
+    ) -> Result<(), OauthError> {
         let started = std::time::Instant::now();
 
-        let (auth_manager, _) = self
+        let (mut auth_manager, google_store) = self
             .configured_authorization_manager(
                 subject,
                 DynamicClientRegistrationUse::CompleteAuthorization,
@@ -495,6 +510,20 @@ impl UpstreamOauthManager {
                 e
             })?;
 
+        if let Some(fence) = fence {
+            match google_store {
+                Some(inner) => auth_manager.set_credential_store(inner.with_callback_fence(fence)),
+                None => auth_manager.set_credential_store(callback_store::FencedCredentialStore {
+                    inner: SqliteCredentialStore::new(
+                        self.sqlite.clone(),
+                        self.key.clone(),
+                        &self.upstream.name,
+                        subject,
+                    ),
+                    fence,
+                }),
+            }
+        }
         auth_manager
             .exchange_code_for_token_with_issuer(code, csrf_token, issuer)
             .await
@@ -1255,7 +1284,7 @@ impl UpstreamOauthManager {
     async fn map_refresh_error_and_maybe_invalidate(
         &self,
         error: rmcp::transport::AuthError,
-        attempted_google_generation: Option<(String, i64)>,
+        attempted_google_generation: Option<(String, i64, i64)>,
     ) -> OauthError {
         let (terminal, mapped) = map_refresh_error(error);
         if terminal
@@ -1264,12 +1293,13 @@ impl UpstreamOauthManager {
                 .is_ok_and(|oauth| oauth.credential.is_google_provider())
         {
             match attempted_google_generation {
-                Some((attempted_subject, attempted_generation)) => {
+                Some((attempted_subject, attempted_generation, attempted_epoch)) => {
                     match self
                         .sqlite
                         .invalidate_google_provider_credential(
                             &attempted_subject,
                             attempted_generation,
+                            attempted_epoch,
                         )
                         .await
                     {
@@ -2311,6 +2341,7 @@ mod url_tests {
                         scope_upgraded: false,
                     },
                     current.generation,
+                    sqlite.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()
@@ -2360,6 +2391,7 @@ mod url_tests {
                         scope_upgraded: false,
                     },
                     attempted.generation,
+                    sqlite.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()

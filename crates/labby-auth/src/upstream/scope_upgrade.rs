@@ -419,7 +419,9 @@ impl UpstreamOauthManager {
                     .is_some_and(|state| *state == transfer.state)
         }) {
             entry.epoch = Some(epoch);
-            entry.consent = None;
+            // The credential-save fence can hand off before the SDK returns
+            // the grant. Keep this exact callback identity so completion can
+            // remove granted scopes; SDK authorization state remains single-use.
             return;
         }
         // Status reads can prune the previous epoch while the credential writer
@@ -435,7 +437,6 @@ impl UpstreamOauthManager {
         }
         let mut challenge = transfer.challenge;
         challenge.epoch = Some(epoch);
-        challenge.consent = None;
         entries.insert(transfer.subject, challenge);
     }
 }

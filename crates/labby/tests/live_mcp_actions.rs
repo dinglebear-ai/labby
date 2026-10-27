@@ -15,6 +15,7 @@ mod live_labby;
 mod mcp_action_runner;
 
 mod support {
+    pub(crate) use crate::evidence;
     pub(crate) use crate::live_labby::{
         CleanupResult, LiveLabbyBuilder, LiveLabbyGuard, isolated_command,
     };
@@ -69,10 +70,170 @@ fn result_error_kind(text: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+fn mcp_action_data(text: &str, service: &str, action: &str) -> serde_json::Value {
+    let envelope: serde_json::Value = serde_json::from_str(text).expect("MCP command JSON");
+    assert_eq!(envelope["ok"], true, "{service}:{action}: {envelope}");
+    assert_eq!(envelope["service"], service);
+    assert_eq!(envelope["action"], action);
+    envelope.get("data").expect("MCP command payload").clone()
+}
+
+fn mcp_transition_params(intent: &action_matrix::CaseIntent) -> serde_json::Value {
+    let mut params = action_scenarios::fixture_params(intent);
+    match intent.key().as_str() {
+        "gateway:gateway.code_mode.set" => params = serde_json::json!({"timeout_ms": 6000}),
+        "gateway:gateway.loadout.update" => {
+            params["loadout"]["expose_tools"] = serde_json::json!(false)
+        }
+        "gateway:gateway.mcp.restart" => {
+            params = serde_json::json!({"name":"matrix-restart-owned", "wait_ms":5000})
+        }
+        "setup:draft.commit" | "setup:finalize" => params = serde_json::json!({"force":true}),
+        "projects:projects.update" => params["name"] = serde_json::json!("matrix-project-updated"),
+        _ => {}
+    }
+    params
+}
+
+#[test]
+fn replacement_cases_request_values_distinct_from_their_owned_baselines() {
+    for (key, field, baseline, expected) in [
+        (
+            "gateway:gateway.code_mode.set",
+            "timeout_ms",
+            serde_json::json!(5000),
+            serde_json::json!(6000),
+        ),
+        (
+            "gateway:gateway.loadout.update",
+            "expose_tools",
+            serde_json::json!(true),
+            serde_json::json!(false),
+        ),
+    ] {
+        let intent = mcp_intents()
+            .into_iter()
+            .find(|intent| intent.key() == key)
+            .expect("required replacement case");
+        let params = mcp_transition_params(intent);
+        let payload = if key.ends_with("loadout.update") {
+            &params["loadout"]
+        } else {
+            &params
+        };
+        assert_eq!(payload[field], expected, "{key} requests its exact target");
+        assert_ne!(
+            payload[field], baseline,
+            "{key} cannot be an idempotent write"
+        );
+    }
+}
+
+#[test]
+fn both_commit_entry_points_request_owned_value_replacement() {
+    for key in ["setup:draft.commit", "setup:finalize"] {
+        let intent = mcp_intents()
+            .into_iter()
+            .find(|intent| intent.key() == key)
+            .expect("required commit case");
+        assert_eq!(
+            mcp_transition_params(intent)["force"],
+            true,
+            "{key} must replace the prior owned log value"
+        );
+    }
+}
+
+struct OwnedEnvRepair {
+    env: std::path::PathBuf,
+    backup: std::path::PathBuf,
+}
+
+impl OwnedEnvRepair {
+    fn begin(runner: &BuiltinMcpRunner) -> Self {
+        Self::begin_owned(&runner.owned_labby_home())
+    }
+
+    fn begin_owned(home: &std::path::Path) -> Self {
+        let env = home.join(".env");
+        let backup = home.join(".env.matrix-repair-backup");
+        assert!(
+            !backup.exists(),
+            "repair backup must not replace another file"
+        );
+        std::fs::rename(&env, &backup).expect("move only the owned environment aside");
+        Self { env, backup }
+    }
+}
+
+impl Drop for OwnedEnvRepair {
+    fn drop(&mut self) {
+        // Even assertion unwinding restores only this runner's environment.
+        // Authentication databases and other durable files are never rewound.
+        if self.backup.exists() {
+            if self.env.exists() {
+                std::fs::remove_file(&self.env).expect("remove owned repair output");
+            }
+            std::fs::rename(&self.backup, &self.env).expect("restore owned environment");
+        }
+    }
+}
+
+#[test]
+fn repair_fixture_restores_owned_environment_after_assertion_unwind() {
+    let home = tempfile::tempdir().expect("isolated repair fixture");
+    let env = home.path().join(".env");
+    std::fs::write(&env, "LABBY_LOG=labby=debug\n").expect("owned original environment");
+    let failure = std::panic::catch_unwind(|| {
+        let _backup = OwnedEnvRepair::begin_owned(home.path());
+        assert!(!env.exists());
+        std::fs::write(&env, "").expect("simulated actual repair output");
+        panic!("simulated subsequent oracle failure");
+    });
+    assert!(failure.is_err());
+    assert_eq!(
+        std::fs::read_to_string(&env).expect("restored owned environment"),
+        "LABBY_LOG=labby=debug\n"
+    );
+    assert!(!home.path().join(".env.matrix-repair-backup").exists());
+}
+
+async fn owned_restart_pid(runner: &BuiltinMcpRunner) -> u64 {
+    let result = runner
+        .call(
+            "gateway",
+            "gateway.mcp.list",
+            serde_json::Map::from_iter([(
+                "name".into(),
+                serde_json::json!("matrix-restart-owned"),
+            )]),
+        )
+        .await
+        .expect("owned runtime readback");
+    assert_ne!(result.is_error, Some(true));
+    let rows = mcp_action_data(&result_text(&result), "gateway", "gateway.mcp.list");
+    let row = rows
+        .as_array()
+        .expect("runtime rows")
+        .iter()
+        .find(|row| row["name"] == "matrix-restart-owned")
+        .expect("exact owned runtime");
+    assert_eq!(row["connected"], true, "owned fixture must be connected");
+    assert!(
+        row["discovered_tool_count"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "owned fixture must advertise tools"
+    );
+    row["pid"].as_u64().expect("owned live child PID")
+}
+
 async fn assert_mcp_transition_readback(
     runner: &BuiltinMcpRunner,
     intent: &action_matrix::CaseIntent,
     mutation_text: &str,
+    restart_before: Option<u64>,
+    env_before: Option<&[u8]>,
 ) -> bool {
     let key = intent.key();
     let key_for_read = key.as_str();
@@ -116,6 +277,8 @@ async fn assert_mcp_transition_readback(
                 None,
                 "{key} returned an error-shaped success"
             );
+            let config = mcp_action_data(&text, "gateway", "gateway.code_mode.get");
+            assert_eq!(config["timeout_ms"], 6000, "{key} persisted timeout");
             true
         }
         "gateway:gateway.loadout.add"
@@ -131,6 +294,14 @@ async fn assert_mcp_transition_readback(
                 ok && text.contains("matrix-owned"),
                 "{key} readback: {text}"
             );
+            if key.ends_with("patch") {
+                let loadout = mcp_action_data(&text, "gateway", "gateway.loadout.get");
+                assert_eq!(loadout["expose_tools"], false, "{key} patch readback");
+            }
+            if key.ends_with("update") {
+                let loadout = mcp_action_data(&text, "gateway", "gateway.loadout.get");
+                assert_eq!(loadout["expose_tools"], false, "{key} replacement readback");
+            }
             true
         }
         "gateway:gateway.loadout.remove" => {
@@ -159,18 +330,70 @@ async fn assert_mcp_transition_readback(
             );
             true
         }
-        "gateway:gateway.mcp.disable"
-        | "gateway:gateway.mcp.enable"
-        | "gateway:gateway.mcp.restart" => {
+        "gateway:gateway.mcp.disable" | "gateway:gateway.mcp.enable" => {
             let (ok, text) = read(
                 "gateway",
                 "gateway.get",
                 serde_json::json!({"name":"matrix-owned"}),
             )
             .await;
+            assert!(ok, "{key} readback: {text}");
+            let gateway = mcp_action_data(&text, "gateway", "gateway.get");
+            assert_eq!(gateway["config"]["name"], "matrix-owned");
+            assert_eq!(
+                gateway["config"]["enabled"],
+                key.ends_with("enable"),
+                "{key} must change the persisted enabled state: {text}"
+            );
+            true
+        }
+        "gateway:gateway.mcp.restart" => {
+            let mutation = mcp_action_data(mutation_text, "gateway", "gateway.mcp.restart");
+            assert_eq!(mutation["completed"], true, "owned restart must settle");
+            let before = restart_before.expect("owned restart baseline PID");
+            let after = owned_restart_pid(runner).await;
+            assert_ne!(before, after, "restart must replace the owned child");
+            #[cfg(target_os = "linux")]
             assert!(
-                ok && text.contains("matrix-owned"),
-                "{key} readback: {text}"
+                !std::path::Path::new(&format!("/proc/{before}")).exists(),
+                "old owned child must be reaped"
+            );
+            assert!(
+                runner
+                    .list_tool_names()
+                    .await
+                    .expect("replacement published tools")
+                    .contains("fixture.echo"),
+                "replacement fixture tool must be published"
+            );
+            let echo = runner
+                .call(
+                    "matrix-restart-owned::fixture.echo",
+                    "restart-readback",
+                    serde_json::Map::from_iter([(
+                        "marker".into(),
+                        serde_json::json!("owned-restart-live"),
+                    )]),
+                )
+                .await
+                .expect("replacement tool call");
+            assert_ne!(
+                echo.is_error,
+                Some(true),
+                "{}",
+                runner.wire_failure(
+                    "gateway:gateway.mcp.restart",
+                    "replacement_echo_readback",
+                    "matrix-restart-owned::fixture.echo",
+                    &result_text(&echo),
+                    &[],
+                )
+            );
+            let echo: serde_json::Value =
+                serde_json::from_str(&result_text(&echo)).expect("fixture echo JSON");
+            assert_eq!(
+                echo["arguments"]["params"]["marker"], "owned-restart-live",
+                "replacement must execute the actual fixture tool"
             );
             true
         }
@@ -185,6 +408,13 @@ async fn assert_mcp_transition_readback(
                 ok && text.contains("matrix-owned"),
                 "{key} readback: {text}"
             );
+            if key.ends_with("update") {
+                let route = mcp_action_data(&text, "gateway", "gateway.protected_route.get");
+                assert_eq!(
+                    route["public_path"], "/matrix-owned",
+                    "{key} replacement readback"
+                );
+            }
             true
         }
         "gateway:gateway.protected_route.remove" => {
@@ -269,9 +499,122 @@ async fn assert_mcp_transition_readback(
             );
             true
         }
-        "setup:draft.commit" | "setup:finalize" | "setup:repair" | "setup:settings.update" => {
-            let (ok, text) = read("setup", "state", serde_json::json!({})).await;
-            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+        "setup:settings.update" => {
+            let mutation = mcp_action_data(mutation_text, "setup", "settings.update");
+            assert_eq!(
+                mutation["changed"], true,
+                "settings mutation must change the policy"
+            );
+            assert_eq!(
+                mutation["previous"]["services"]["built_in_upstream_apis_enabled"],
+                true
+            );
+            let (ok, text) = read(
+                "setup",
+                "settings.state",
+                serde_json::json!({"section":"features"}),
+            )
+            .await;
+            assert!(ok, "{key} readback: {text}");
+            let settings = mcp_action_data(&text, "setup", "settings.state");
+            assert_eq!(
+                settings["values"]["services.built_in_upstream_apis_enabled"], false,
+                "persisted settings must match the requested disabled policy"
+            );
+            true
+        }
+        "setup:draft.commit" | "setup:finalize" => {
+            let mutation = mcp_action_data(mutation_text, "setup", &intent.action);
+            let audit_failures = mutation["audit"]["findings"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|finding| finding["severity"] == "fail")
+                .take(8)
+                .map(|finding| serde_json::json!({
+                    "service": finding["service"],
+                    "check": finding["check"],
+                    "severity": finding["severity"],
+                    "message": finding["message"].as_str().unwrap_or("[missing]").chars().take(128).collect::<String>(),
+                }))
+                .collect::<Vec<_>>();
+            assert_ne!(
+                mutation["ok"],
+                false,
+                "{}",
+                runner.wire_failure(
+                    &key,
+                    "commit_audit_rejection",
+                    &intent.action,
+                    &serde_json::json!({"audit_failures": audit_failures}).to_string(),
+                    &[],
+                )
+            );
+            assert!(
+                mutation["written"]
+                    .as_u64()
+                    .is_some_and(|written| written > 0),
+                "{key} must write the staged owned key"
+            );
+            assert_eq!(
+                mutation["audit_pass_count"], mutation["audit_total_count"],
+                "commit requires a complete passing audit"
+            );
+            let env = std::fs::read(runner.owned_labby_home().join(".env"))
+                .expect("committed owned environment");
+            assert!(
+                env.as_slice() != env_before.expect("owned environment baseline"),
+                "commit must change durable environment bytes"
+            );
+            let expected = if intent.action == "finalize" {
+                "LABBY_LOG=labby=trace"
+            } else {
+                "LABBY_LOG=labby=debug"
+            };
+            assert!(
+                std::str::from_utf8(&env)
+                    .expect("owned environment UTF-8")
+                    .lines()
+                    .any(|line| line == expected),
+                "commit must persist the exact staged nonsecret log value"
+            );
+            assert!(
+                !runner.owned_labby_home().join(".env.draft").exists(),
+                "successful commit must clear its durable draft"
+            );
+            let (ok, text) = read("setup", "draft.get", serde_json::json!({})).await;
+            assert!(
+                ok && !text.contains("LABBY_LOG"),
+                "committed draft must also be absent through dispatch"
+            );
+            true
+        }
+        "setup:repair" => {
+            let mutation = mcp_action_data(mutation_text, "setup", "repair");
+            assert_eq!(
+                mutation["changed"], true,
+                "repair must fix an induced owned defect"
+            );
+            assert_eq!(mutation["ran_repair"], true);
+            assert_eq!(
+                std::fs::read(runner.owned_labby_home().join(".env"))
+                    .expect("repaired owned environment"),
+                Vec::<u8>::new(),
+                "repair creates the missing environment without invented values"
+            );
+            let (ok, text) = read("setup", "check", serde_json::json!({})).await;
+            assert!(ok, "repair independent check failed");
+            let check = mcp_action_data(&text, "setup", "check");
+            let env_check = check["checks"]
+                .as_array()
+                .expect("setup checks")
+                .iter()
+                .find(|check| check["name"] == "env_file")
+                .expect("environment file check");
+            assert_eq!(
+                env_check["ok"], true,
+                "independent check must observe the repaired file"
+            );
             true
         }
         // A multi-user mutation is only proven when the owning surface can
@@ -305,17 +648,49 @@ async fn assert_mcp_transition_readback(
         }
         "access:access.team.create" | "access:access.team.suspend" => {
             let (ok, text) = read("access", "access.team.list", serde_json::json!({})).await;
-            assert!(ok && text.contains("matrix-team"), "{key} readback: {text}");
+            assert!(ok, "{key} readback: {text}");
+            let listed = mcp_action_data(&text, "access", "access.team.list");
+            let params = action_scenarios::fixture_params(intent);
+            let team = listed["teams"]
+                .as_array()
+                .expect("Team collection")
+                .iter()
+                .find(|team| team["team_id"] == params["team_id"])
+                .expect("mutated Team remains listed");
+            assert_eq!(
+                team["status"],
+                if key.ends_with("suspend") {
+                    "suspended"
+                } else {
+                    "active"
+                },
+                "{key} must persist the requested Team status"
+            );
             true
         }
         "access:access.team_project.assign" => {
-            let (ok, text) = read(
-                "access",
-                "access.project.effective.list",
-                serde_json::json!({}),
-            )
-            .await;
-            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            let params = mcp_transition_params(intent);
+            let mutation = mcp_action_data(mutation_text, "access", "access.team_project.assign");
+            for key in ["team_id", "project_id", "role"] {
+                assert_eq!(
+                    mutation[key], params[key],
+                    "assignment must target the exact owned pair"
+                );
+            }
+            assert!(
+                mutation["assignment_epoch"]
+                    .as_u64()
+                    .is_some_and(|epoch| epoch > 0)
+            );
+            let (ok, text) = read("projects", "projects.get", params.clone()).await;
+            assert!(ok, "{key} exact assignment readback: {text}");
+            let project = mcp_action_data(&text, "projects", "projects.get");
+            for key in ["team_id", "project_id", "role"] {
+                assert_eq!(
+                    project[key], params[key],
+                    "persisted assignment must match the requested owned role"
+                );
+            }
             true
         }
         "agents:agents.create" | "agents:agents.delete" => {
@@ -333,8 +708,26 @@ async fn assert_mcp_transition_readback(
         | "projects:projects.update"
         | "projects:projects.archive"
         | "projects:projects.activate" => {
-            let (ok, text) = read("projects", "projects.list", serde_json::json!({})).await;
-            assert!(ok && !text.trim().is_empty(), "{key} readback: {text}");
+            // Archived Projects intentionally leave projects.list. Read the
+            // exact owned Project so unrelated visible rows cannot prove it.
+            let params = mcp_transition_params(intent);
+            let (ok, text) = read("projects", "projects.get", params.clone()).await;
+            assert!(ok, "{key} readback: {text}");
+            let project = mcp_action_data(&text, "projects", "projects.get");
+            assert_eq!(project["project_id"], params["project_id"]);
+            assert_eq!(project["team_id"], params["team_id"]);
+            assert_eq!(
+                project["status"],
+                if key.ends_with("archive") {
+                    "disabled"
+                } else {
+                    "active"
+                },
+                "{key} must persist the requested Project status"
+            );
+            if key.ends_with("create") || key.ends_with("update") {
+                assert_eq!(project["name"], params["name"]);
+            }
             true
         }
         _ => false,
@@ -368,6 +761,94 @@ async fn bind_harness_team_upstream(runner: &BuiltinMcpRunner, upstream: &str, i
 }
 
 async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matrix::CaseIntent) {
+    if intent.key() == "access:access.team_project.assign" {
+        let mut params = mcp_transition_params(intent);
+        assert_eq!(params["role"], "member");
+        params["role"] = serde_json::json!("viewer");
+        let baseline = runner
+            .call(
+                "access",
+                "access.team_project.assign",
+                params.as_object().unwrap().clone(),
+            )
+            .await
+            .expect("owned viewer assignment prerequisite");
+        assert_ne!(baseline.is_error, Some(true));
+        let baseline = mcp_action_data(
+            &result_text(&baseline),
+            "access",
+            "access.team_project.assign",
+        );
+        for key in ["team_id", "project_id", "role"] {
+            assert_eq!(baseline[key], params[key]);
+        }
+        assert!(
+            baseline["assignment_epoch"]
+                .as_u64()
+                .is_some_and(|epoch| epoch > 0)
+        );
+        // This projection joins the exact Team assignment; effective membership
+        // can mask its role with a higher direct Project membership.
+        let before = runner
+            .call(
+                "projects",
+                "projects.get",
+                params.as_object().unwrap().clone(),
+            )
+            .await
+            .expect("owned assignment baseline readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "projects", "projects.get");
+        for key in ["team_id", "project_id", "role"] {
+            assert_eq!(before[key], params[key]);
+        }
+    }
+
+    if matches!(
+        intent.key().as_str(),
+        "setup:draft.commit" | "setup:finalize"
+    ) {
+        // Earlier gateway cases deliberately use an unreachable HTTP target.
+        // Disable only that owned target before the real setup audit; the
+        // reachable restart fixture remains enabled and is still audited.
+        let result = runner
+            .call(
+                "gateway",
+                "gateway.update",
+                serde_json::json!({"name":"matrix-owned", "patch":{"enabled":false}})
+                    .as_object()
+                    .cloned()
+                    .expect("owned audit prerequisite"),
+            )
+            .await
+            .expect("disable unreachable owned upstream before audit");
+        assert_ne!(result.is_error, Some(true));
+    }
+    if intent.key() == "projects:projects.update" {
+        let params = action_scenarios::fixture_params(intent);
+        let before = runner
+            .call(
+                "projects",
+                "projects.get",
+                params
+                    .as_object()
+                    .cloned()
+                    .expect("Project baseline params"),
+            )
+            .await
+            .expect("Project baseline readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "projects", "projects.get");
+        assert_eq!(
+            before["name"], params["name"],
+            "owned Project starts with create name"
+        );
+        assert_ne!(
+            before["name"],
+            mcp_transition_params(intent)["name"],
+            "Project update must change the persisted name"
+        );
+    }
     // Team-scoped Gateway policy may reference only upstreams carrying an
     // active Team credential binding, so bind the harness Team before any
     // loadout or protected-route action, not just its transition prerequisite.
@@ -377,11 +858,28 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
         bind_harness_team_upstream(runner, "matrix-owned", &intent.key()).await;
     }
     let prerequisite = match intent.key().as_str() {
-        "setup:draft.commit" => Some((
+        // Start on the opposite side so a successful no-op cannot satisfy the
+        // enabled-state readback and be recorded as a live state transition.
+        "gateway:gateway.mcp.disable" | "gateway:gateway.mcp.enable" => Some((
+            "gateway.update",
+            serde_json::json!({
+                "name": "matrix-owned",
+                "patch": {"enabled": intent.action.ends_with("disable")}
+            }),
+        )),
+        "gateway:gateway.code_mode.set" => Some((
+            "gateway.code_mode.set",
+            serde_json::json!({"timeout_ms": 5000}),
+        )),
+        "setup:settings.update" => Some((
+            "settings.update",
+            serde_json::json!({"services.built_in_upstream_apis_enabled": true}),
+        )),
+        "setup:draft.commit" | "setup:finalize" | "setup:draft.discard" => Some((
             "draft.set",
-            serde_json::json!({"entries": [{
+            serde_json::json!({"force": true, "entries": [{
                 "key": "LABBY_LOG",
-                "value": "labby=debug"
+                "value": if intent.action == "finalize" { "labby=trace" } else { "labby=debug" }
             }]}),
         )),
         "gateway:gateway.remove" => Some((
@@ -396,7 +894,8 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
             serde_json::json!({"loadout": {
                 "name": "matrix-owned",
                 "upstreams": ["matrix-owned"],
-                "services": []
+                "services": [],
+                "expose_tools": true
             }}),
         )),
         "gateway:gateway.protected_route.update" => Some((
@@ -405,7 +904,7 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
                 "name": "matrix-owned",
                 "enabled": true,
                 "public_host": "matrix.invalid",
-                "public_path": "/matrix-owned",
+                "public_path": "/matrix-before",
                 "upstream": "matrix-owned",
                 "backend_url": "",
                 "scopes": []
@@ -436,6 +935,106 @@ async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matri
         intent.key(),
         result_text(&result)
     );
+    if matches!(
+        intent.key().as_str(),
+        "setup:draft.commit" | "setup:finalize" | "setup:draft.discard"
+    ) {
+        let expected_log = if intent.action == "finalize" {
+            "labby=trace"
+        } else {
+            "labby=debug"
+        };
+        let before = runner
+            .call("setup", "draft.get", serde_json::Map::new())
+            .await
+            .expect("staged draft baseline readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "setup", "draft.get");
+        assert_eq!(
+            before["entries"],
+            serde_json::json!([{"key":"LABBY_LOG", "value":expected_log}]),
+            "{} must start with the exact owned staged entry",
+            intent.key()
+        );
+    }
+    if intent.key() == "setup:settings.update" {
+        let before = runner
+            .call(
+                "setup",
+                "settings.state",
+                serde_json::json!({"section":"features"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .await
+            .expect("settings baseline readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "setup", "settings.state");
+        assert_eq!(
+            before["values"]["services.built_in_upstream_apis_enabled"], true,
+            "settings policy must begin enabled"
+        );
+    }
+    let baseline = match intent.key().as_str() {
+        "gateway:gateway.code_mode.set" => Some((
+            "gateway.code_mode.get",
+            serde_json::json!({}),
+            "timeout_ms",
+            serde_json::json!(5000),
+        )),
+        "gateway:gateway.loadout.update" => Some((
+            "gateway.loadout.get",
+            serde_json::json!({"name":"matrix-owned"}),
+            "expose_tools",
+            serde_json::json!(true),
+        )),
+        "gateway:gateway.protected_route.update" => Some((
+            "gateway.protected_route.get",
+            serde_json::json!({"name":"matrix-owned"}),
+            "public_path",
+            serde_json::json!("/matrix-before"),
+        )),
+        _ => None,
+    };
+    if let Some((action, params, field, expected)) = baseline {
+        let before = runner
+            .call(
+                "gateway",
+                action,
+                params.as_object().cloned().expect("baseline params"),
+            )
+            .await
+            .expect("transition baseline readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "gateway", action);
+        assert_eq!(
+            before[field],
+            expected,
+            "{} must start with a different persisted value",
+            intent.key()
+        );
+    }
+    if matches!(
+        intent.action.as_str(),
+        "gateway.mcp.disable" | "gateway.mcp.enable"
+    ) {
+        let before = runner
+            .call(
+                "gateway",
+                "gateway.get",
+                serde_json::Map::from_iter([("name".into(), serde_json::json!("matrix-owned"))]),
+            )
+            .await
+            .expect("toggle prerequisite readback");
+        assert_ne!(before.is_error, Some(true));
+        let before = mcp_action_data(&result_text(&before), "gateway", "gateway.get");
+        assert_eq!(
+            before["config"]["enabled"],
+            intent.action.ends_with("disable"),
+            "toggle must start with the opposite persisted state"
+        );
+    }
 }
 
 #[test]
@@ -616,7 +1215,17 @@ async fn live_errors_are_structured_redacted_and_terminal() {
 
 #[tokio::test]
 async fn every_http_feasible_surface_action_reaches_live_dispatch() {
-    let runner = BuiltinMcpRunner::start().await.expect("live MCP runner");
+    let owned_restart = tempfile::tempdir().expect("owned restart ledger directory");
+    let fixture = serde_json::to_string(env!("CARGO_BIN_EXE_stdio-mcp-fixture"))
+        .expect("fixture path TOML string");
+    let pid_file =
+        serde_json::to_string(&owned_restart.path().join("restart.pid")).expect("owned PID path");
+    let config = format!(
+        "[code_mode]\nenabled = false\n[gateway]\nextra_stdio_commands = [{fixture}]\n[[upstream]]\nname = \"matrix-restart-owned\"\ntransport = \"stdio\"\ncommand = {fixture}\nargs = [\"--pid-file\", {pid_file}]\n"
+    );
+    let runner = BuiltinMcpRunner::start_with_config(Some(&config))
+        .await
+        .expect("live MCP runner with owned restart fixture");
     action_scenarios::initialize_browser_fixture(runner.http_base_url()).await;
     let expected = mcp_intents()
         .into_iter()
@@ -643,6 +1252,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     )
     .await
     .expect("raw scoped snippet receipt MCP route");
+    let snippet_canaries = snippet_identity.exact_secret_canaries();
     assert_eq!(
         snippet_runner
             .list_tool_names()
@@ -666,7 +1276,31 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         } else {
             &runner
         };
+        let restart_before = if intent.key() == "gateway:gateway.mcp.restart" {
+            Some(owned_restart_pid(action_runner).await)
+        } else {
+            None
+        };
+        let env_before = matches!(
+            intent.key().as_str(),
+            "setup:draft.commit" | "setup:finalize"
+        )
+        .then(|| {
+            std::fs::read(action_runner.owned_labby_home().join(".env")).unwrap_or_else(|error| {
+                assert_eq!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound,
+                    "owned environment baseline read"
+                );
+                Vec::new()
+            })
+        });
+        let repair_backup =
+            (intent.key() == "setup:repair").then(|| OwnedEnvRepair::begin(action_runner));
         let fixture_runner = action_runner;
+        let matrix_action = intent.key();
+        let fixture_matrix_action = matrix_action.as_str();
+        let fixture_canaries = &snippet_canaries;
         let prepared = action_scenarios::prepare_snippet_receipt_case(
             &intent.action,
             |action, params| async move {
@@ -677,7 +1311,18 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
                         params.as_object().cloned().expect("snippet fixture params"),
                     )
                     .await
-                    .expect("snippet fixture transport");
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "{}",
+                            fixture_runner.wire_failure(
+                                fixture_matrix_action,
+                                "snippet_receipt_fixture",
+                                action,
+                                &error,
+                                fixture_canaries,
+                            )
+                        )
+                    });
                 let text = result_text(&result);
                 assert_ne!(
                     result.is_error,
@@ -693,14 +1338,25 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         .await;
         let prepared_case = prepared.is_some();
         let params = prepared
-            .unwrap_or_else(|| action_scenarios::fixture_params(intent))
+            .unwrap_or_else(|| mcp_transition_params(intent))
             .as_object()
             .cloned()
             .expect("fixture params are an object");
         let result = action_runner
             .call(&intent.service, &intent.action, params)
             .await
-            .unwrap_or_else(|error| panic!("{} wire failure: {error}", intent.key()));
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{}",
+                    action_runner.wire_failure(
+                        &intent.key(),
+                        "matrix_action",
+                        &intent.action,
+                        &error,
+                        &snippet_canaries,
+                    )
+                )
+            });
         let text = result_text(&result);
         assert!(
             result.is_error != Some(true) || !text.trim().is_empty(),
@@ -725,7 +1381,15 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
                 intent.scenario_kind,
                 ScenarioKind::StatefulScenario | ScenarioKind::DestructiveIsolated
             )
-            && assert_mcp_transition_readback(action_runner, intent, &text).await;
+            && assert_mcp_transition_readback(
+                action_runner,
+                intent,
+                &text,
+                restart_before,
+                env_before.as_deref(),
+            )
+            .await;
+        drop(repair_backup);
         let evidence = if succeeded {
             match intent.scenario_kind {
                 ScenarioKind::ContractProbe => EvidenceLevel::MetadataOnly,

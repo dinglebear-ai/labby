@@ -1,6 +1,7 @@
 //! Owner-bound retrieval of persisted Code Mode outputs. Legacy files are not enrolled.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -12,6 +13,9 @@ use crate::artifacts::CodeModeArtifactReceipt;
 use crate::error::ToolError;
 use crate::{CodeModeCaller, ToolScope};
 use labby_runtime::path_safety::reject_existing_symlink_ancestors;
+
+#[path = "artifact_access_cache.rs"]
+mod cache;
 
 pub(crate) const METADATA_DIR: &str = ".labby-artifact-metadata";
 
@@ -92,6 +96,9 @@ pub(crate) async fn enroll(
         .map_err(|_| unavailable())?;
     file.write_all(&bytes).await.map_err(|_| unavailable())?;
     file.flush().await.map_err(|_| unavailable())?;
+    if let Some(store) = root.parent() {
+        cache::invalidate_listing(store);
+    }
     Ok(())
 }
 
@@ -118,6 +125,14 @@ async fn record(
     id: &str,
     expected_owner: &str,
 ) -> Result<(PathBuf, Record), ToolError> {
+    let (root, record) = read_record(store, id).await?;
+    if record.owner != expected_owner {
+        return Err(unavailable());
+    }
+    Ok((root, record))
+}
+
+async fn read_record(store: &Path, id: &str) -> Result<(PathBuf, Record), ToolError> {
     let (root, metadata) = location(store, id)?;
     let size = tokio::fs::metadata(&metadata)
         .await
@@ -138,7 +153,7 @@ async fn record(
         return Err(unavailable());
     }
     let record: Record = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
-    if record.owner != expected_owner || record.receipt.artifact_id.as_deref() != Some(id) {
+    if record.receipt.artifact_id.as_deref() != Some(id) {
         return Err(unavailable());
     }
     Ok((root, record))
@@ -193,29 +208,57 @@ async fn dispatch_at(
     let file = root.join(&record.receipt.path);
     reject_existing_symlink_ancestors(store, &file)?;
     let max = crate::artifacts::artifact_max_bytes();
-    if record.receipt.bytes > max
-        || tokio::fs::metadata(&file)
-            .await
-            .map_err(|_| unavailable())?
-            .len()
-            > max as u64
-    {
-        return Err(unavailable());
-    }
-    let mut bytes = Vec::new();
-    tokio::fs::File::open(file)
-        .await
-        .map_err(|_| unavailable())?
-        .take(max as u64 + 1)
-        .read_to_end(&mut bytes)
+    let mut opened = tokio::fs::File::open(&file)
         .await
         .map_err(|_| unavailable())?;
-    if bytes.len() != record.receipt.bytes
-        || hex::encode(Sha256::digest(&bytes)) != record.receipt.sha256
-    {
+    let before = opened.metadata().await.map_err(|_| unavailable())?;
+    if record.receipt.bytes > max || before.len() != record.receipt.bytes as u64 {
         return Err(unavailable());
     }
-    let content = String::from_utf8(bytes).map_err(|_| unavailable())?;
+    let identity = cache::FileIdentity::from_metadata(&before);
+    let cached = identity
+        .as_ref()
+        .and_then(|identity| cache::content(&file, &record.receipt.sha256, identity));
+    let content = if let Some(content) = cached {
+        content
+    } else {
+        #[cfg(test)]
+        cache::record_verification(&file);
+        let mut bytes = Vec::new();
+        (&mut opened)
+            .take(max as u64 + 1)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|_| unavailable())?;
+        if bytes.len() != record.receipt.bytes
+            || hex::encode(Sha256::digest(&bytes)) != record.receipt.sha256
+        {
+            return Err(unavailable());
+        }
+        let after = opened.metadata().await.map_err(|_| unavailable())?;
+        if identity != cache::FileIdentity::from_metadata(&after) || before.len() != after.len() {
+            return Err(unavailable());
+        }
+        let content: Arc<str> = String::from_utf8(bytes).map_err(|_| unavailable())?.into();
+        if let Some(identity) = identity.clone() {
+            cache::remember_content(
+                file.clone(),
+                record.receipt.sha256.clone(),
+                identity,
+                Arc::clone(&content),
+            );
+        }
+        content
+    };
+    // Recheck the path as well as the open handle so cached bytes cannot conceal
+    // replacement, truncation, or a symlink introduced during this request.
+    reject_existing_symlink_ancestors(store, &file)?;
+    let current = tokio::fs::metadata(&file)
+        .await
+        .map_err(|_| unavailable())?;
+    if current.len() != before.len() || identity != cache::FileIdentity::from_metadata(&current) {
+        return Err(unavailable());
+    }
     let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
     let length = params
         .get("length")
@@ -244,19 +287,16 @@ async fn dispatch_at(
     )
 }
 
-async fn list(store: &Path, owner: &str, params: &Value) -> Result<Value, ToolError> {
-    let limit = params
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(25)
-        .clamp(1, 100) as usize;
-    let cursor = params.get("cursor").and_then(Value::as_str).unwrap_or("");
+async fn scan_listing(store: &Path) -> Result<cache::Listing, ToolError> {
     let mut ids = Vec::new();
     let mut incomplete = false;
     let mut dirs = match tokio::fs::read_dir(store).await {
         Ok(dirs) => dirs,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(json!({"artifacts":[],"next_cursor":null,"incomplete":false}));
+            return Ok(cache::Listing {
+                owners: Default::default(),
+                incomplete: false,
+            });
         }
         Err(_) => return Err(unavailable()),
     };
@@ -298,8 +338,38 @@ async fn list(store: &Path, owner: &str, params: &Value) -> Result<Value, ToolEr
         }
     }
     ids.sort();
+    let mut owners = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for id in ids {
+        if let Ok((_, record)) = read_record(store, &id).await {
+            owners.entry(record.owner).or_default().push(id);
+        }
+    }
+    Ok(cache::Listing { owners, incomplete })
+}
+
+async fn list(store: &Path, owner: &str, params: &Value) -> Result<Value, ToolError> {
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(25)
+        .clamp(1, 100) as usize;
+    let cursor = params.get("cursor").and_then(Value::as_str).unwrap_or("");
+    let listing = match cache::listing(store) {
+        Some(listing) => listing,
+        None => {
+            let generation = cache::listing_generation();
+            cache::remember_listing(store, scan_listing(store).await?, generation)
+        }
+    };
+    let ids = listing
+        .owners
+        .get(owner)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let incomplete = listing.incomplete;
     let mut rows = Vec::new();
-    for id in ids.iter().filter(|id| id.as_str() > cursor) {
+    let start = ids.partition_point(|id| id.as_str() <= cursor);
+    for id in &ids[start..] {
         if let Ok((_, record)) = record(store, id, owner).await {
             let mut row = serde_json::to_value(record.receipt).map_err(|_| unavailable())?;
             row.as_object_mut()

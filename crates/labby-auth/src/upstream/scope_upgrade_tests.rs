@@ -470,3 +470,44 @@ async fn omitted_token_scope_uses_the_requested_grant_for_scope_completion() {
         "RFC 6749 scope omission preserves requested permissions"
     );
 }
+
+#[tokio::test]
+async fn fenced_callback_handoff_clears_granted_scopes_and_keeps_only_remaining_permissions() {
+    for granted in [
+        vec!["read".to_string()],
+        vec!["read".to_string(), "files:write".to_string()],
+    ] {
+        let (_directory, manager, _server, _) = fixture_with_token_scope(Some("read")).await;
+        let cache =
+            crate::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
+        manager.record_scope_challenge_with_epoch(
+            "alice",
+            "read files:write",
+            Some(cache.lifecycle_epoch_for("scoped", "alice")),
+        );
+        let begin = manager.begin_authorization("alice").await.unwrap();
+        let csrf = query(&begin.authorization_url, "state");
+        let _writer = cache.invalidation_barrier().write_owned().await;
+        let transfer = manager
+            .scope_challenge_transfer_for_callback("alice", &csrf)
+            .unwrap();
+        cache.advance_subject_epoch("scoped", "alice");
+        manager.rebind_scope_challenge_after_callback(
+            transfer,
+            cache.lifecycle_epoch_for("scoped", "alice"),
+        );
+        manager.clear_completed_scope_challenge("alice", &csrf, &granted);
+        let entries = manager.scope_challenges.0.lock().unwrap();
+        if granted.len() == 2 {
+            assert!(
+                !entries.contains_key("alice"),
+                "full consent must clear the challenge"
+            );
+        } else {
+            let remaining = entries.get("alice").expect("ungranted permission survives");
+            assert_eq!(remaining.scopes, vec!["files:write".to_string()]);
+            assert_eq!(remaining.consent.as_deref(), Some(csrf.as_str()));
+            assert!(remaining.live());
+        }
+    }
+}

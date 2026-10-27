@@ -11,12 +11,14 @@ import { fileURLToPath } from 'node:url'
 import type { Browser, BrowserContext, Page } from 'playwright'
 
 import {
+  assertCanaryFree,
   captureFailureEvidence,
   launchBrowserWithAbort,
   observeLivePage,
   MAX_EVIDENCE_TEXT_BYTES,
   MAX_ARTIFACT_BYTES,
   readLiveDescriptorAt,
+  readScanSecrets,
   runBrowserCleanupIfActive,
   scanArtifact,
   useBrowserWithAbort,
@@ -402,7 +404,7 @@ async function descriptorFixture() {
   const runRoot = path.join(parent, 'owned-run')
   const evidenceDir = path.join(runRoot, 'evidence')
   await mkdir(evidenceDir, { recursive: true, mode: 0o700 })
-  const storageState = await privateFile(path.join(runRoot, 'storage.json'), '{}')
+  const storageState = await privateFile(path.join(runRoot, 'storage.json'), '{"cookies":[],"origins":[]}')
   const csrfState = await privateFile(path.join(runRoot, 'csrf.json'), '{"csrf_token":"0123456789abcdef"}')
   const scanSecrets = await privateFile(path.join(runRoot, 'scan-secrets'), 'secret-canary\n')
   const descriptorPath = path.join(runRoot, 'descriptor.json')
@@ -485,6 +487,116 @@ test('failed secret scan deletes only invocation-created evidence and preserves 
     /contained scan-only secret material/,
   )
   assert.equal(await readFile(decoy, 'utf8'), 'must survive')
+})
+
+for (const secretKind of ['cookie', 'csrf'] as const) {
+  for (const artifactKind of ['report', 'screenshot'] as const) {
+    test(`failure evidence rejects raw ${secretKind} values in ${artifactKind} from private session fixtures`, async () => {
+      const fixture = await descriptorFixture()
+      const cookieValue = 'raw-session-cookie-value=synthetic'
+      const csrfValue = 'raw-session-csrf-value-synthetic'
+      const secret = secretKind === 'cookie' ? cookieValue : csrfValue
+      try {
+        await privateFile(fixture.descriptor.storage_state_path, JSON.stringify({
+          cookies: [{ name: 'custom_session', value: cookieValue }],
+          origins: [],
+        }))
+        await privateFile(fixture.descriptor.csrf_state_path, JSON.stringify({ csrf_token: csrfValue }))
+        // A full Cookie pair does not match evidence containing only its value.
+        // Actual session fixtures must remain authoritative when the scan-only
+        // inventory omits raw cookie or CSRF values.
+        await privateFile(fixture.descriptor.scan_secrets_path, `custom_session=${cookieValue}\nowner-bearer-canary\n`)
+        const decoy = path.join(fixture.evidenceDir, 'preexisting-decoy.txt')
+        await privateFile(decoy, 'must survive')
+        await assert.rejects(captureFailureEvidence({
+          browser: {} as Browser,
+          context: { tracing: { stop: async () => undefined } } as unknown as BrowserContext,
+          page: {
+            screenshot: async () => Buffer.from(artifactKind === 'screenshot' ? secret : 'clean screenshot'),
+          } as unknown as Page,
+          descriptor: fixture.descriptor,
+          evidence: {
+            requests: [],
+            console: artifactKind === 'report' ? [secret] : [],
+            pageErrors: [],
+            failedRequests: [],
+            cspViolations: [],
+          },
+          error: new Error('expected failure'),
+        }), /contained scan-only secret material/)
+        assert.deepEqual(await readdir(fixture.evidenceDir), ['preexisting-decoy.txt'])
+        assert.equal(await readFile(decoy, 'utf8'), 'must survive')
+        assert.ok((await readFile(fixture.descriptor.storage_state_path, 'utf8')).includes(cookieValue))
+        assert.ok((await readFile(fixture.descriptor.csrf_state_path, 'utf8')).includes(csrfValue))
+      } finally {
+        await rm(fixture.parent, { recursive: true, force: true })
+      }
+    })
+  }
+}
+
+test('DOM and browser evidence audit raw session values from private fixtures', async () => {
+  const fixture = await descriptorFixture()
+  const cookieValue = 'synthetic-cookie-value=padding'
+  const csrfValue = 'synthetic-session-csrf-value'
+  try {
+    await privateFile(fixture.descriptor.storage_state_path, JSON.stringify({
+      cookies: [{ name: 'custom_session', value: cookieValue }],
+    }))
+    await privateFile(fixture.descriptor.csrf_state_path, JSON.stringify({ csrf_token: csrfValue }))
+    const canaries = await readScanSecrets(fixture.descriptor)
+    assertCanaryFree('safe DOM text', canaries, 'DOM')
+    assertCanaryFree({ console: ['safe console text'] }, canaries, 'browser evidence')
+    for (const secret of [cookieValue, csrfValue]) {
+      assert.throws(() => assertCanaryFree(secret, canaries, 'DOM'), /DOM leaked a secret canary/)
+      assert.throws(
+        () => assertCanaryFree({ console: [secret] }, canaries, 'browser evidence'),
+        /browser evidence leaked a secret canary/,
+      )
+    }
+  } finally {
+    await rm(fixture.parent, { recursive: true, force: true })
+  }
+})
+
+test('private session scan input caps fail before publishing failure artifacts', async () => {
+  for (const inputPath of ['scan_secrets_path', 'storage_state_path', 'csrf_state_path'] as const) {
+    const fixture = await descriptorFixture()
+    let screenshots = 0
+    try {
+      await privateFile(fixture.descriptor[inputPath], 's'.repeat(MAX_EVIDENCE_TEXT_BYTES + 1))
+      await assert.rejects(captureFailureEvidence({
+        browser: {} as Browser,
+        context: { tracing: { stop: async () => undefined } } as unknown as BrowserContext,
+        page: { screenshot: async () => { screenshots += 1; return Buffer.from('clean') } } as unknown as Page,
+        descriptor: fixture.descriptor,
+        evidence: { requests: [], console: [], pageErrors: [], failedRequests: [], cspViolations: [] },
+        error: new Error('expected failure'),
+      }), /private scan input exceeded byte cap/)
+      assert.equal(screenshots, 0)
+      assert.deepEqual(await readdir(fixture.evidenceDir), [])
+    } finally {
+      await rm(fixture.parent, { recursive: true, force: true })
+    }
+  }
+})
+
+test('malformed private session fixtures never appear in scan diagnostics', async () => {
+  for (const inputPath of ['storage_state_path', 'csrf_state_path'] as const) {
+    const fixture = await descriptorFixture()
+    const secret = 'synthetic-private-session-canary'
+    try {
+      await privateFile(fixture.descriptor[inputPath], `${secret} malformed JSON`)
+      await assert.rejects(readScanSecrets(fixture.descriptor), (error: unknown) => {
+        assert.ok(error instanceof Error)
+        assert.equal(error.message, 'private session fixture must contain valid JSON')
+        assert.ok(!error.stack?.includes(secret))
+        return true
+      })
+    } finally {
+      await rm(fixture.parent, { recursive: true, force: true })
+    }
+  }
 })
 
 test('aborted non-cooperative capture has no path it can mutate later', async () => {

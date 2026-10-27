@@ -1453,24 +1453,40 @@ pub fn run_auth_checks_with_config(
         Severity::Ok,
         format!("issued access tokens can retain authority for at most {access_ttl} seconds after policy or provider changes"),
     ));
-    let config_fingerprint = config.and_then(|config| {
-        config.inbound_provider_fingerprint().map_or_else(
-            |error| {
-                let error =
-                    labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 1024);
-                tracing::warn!(
-                    surface = "doctor",
-                    phase = "auth.config.fingerprint",
-                    kind = "config_error",
-                    error = %error,
-                    "auth provider configuration fingerprint failed"
-                );
-                None
-            },
-            Some,
-        )
+    // Bearer-only installations have no inbound OAuth provider to fingerprint.
+    // Explicit or inferred provider settings still require full validation.
+    let bearer_without_provider = config.is_some_and(|config| {
+        matches!(config.mode, labby_auth::config::AuthMode::Bearer)
+            && config.inbound_provider.is_none()
+            && config.google.client_id.is_empty()
+            && config.google.client_secret.is_empty()
+            && config.authelia.is_none()
     });
+    let config_fingerprint = config
+        .filter(|_| !bearer_without_provider)
+        .and_then(|config| {
+            config.inbound_provider_fingerprint().map_or_else(
+                |error| {
+                    let error =
+                        labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 1024);
+                    tracing::warn!(
+                        surface = "doctor",
+                        phase = "auth.config.fingerprint",
+                        kind = "config_error",
+                        error = %error,
+                        "auth provider configuration fingerprint failed"
+                    );
+                    None
+                },
+                Some,
+            )
+        });
     findings.push(match config {
+        Some(_) if bearer_without_provider => auth_finding(
+            "auth:provider-config-fingerprint",
+            Severity::Ok,
+            "bearer-only authentication has no inbound provider configuration to fingerprint",
+        ),
         Some(_) => match config_fingerprint.as_deref() {
             Some(fingerprint) => auth_finding(
                 "auth:provider-config-fingerprint",
@@ -1985,6 +2001,74 @@ mod auth_tests {
                 ),
             ])
             .unwrap()
+    }
+
+    #[test]
+    fn provider_fingerprint_distinguishes_bearer_only_from_configured_providers() {
+        use labby_auth::config::{AuthConfigBuilder, AuthMode, InboundProviderKind};
+        let dir = tempfile::tempdir().unwrap();
+        let bearer = AuthConfigBuilder::new()
+            .env_prefix("LABBY")
+            .default_data_dir(dir.path())
+            .build_from_sources([("LABBY_AUTH_MODE".into(), "bearer".into())])
+            .unwrap();
+        assert!(bearer.inbound_provider.is_none());
+        assert!(bearer.google.client_id.is_empty());
+        assert!(bearer.google.client_secret.is_empty());
+        assert!(bearer.authelia.is_none());
+        let finding = |config: &labby_auth::config::AuthConfig| {
+            run_auth_checks_with_config(Some(config))
+                .into_iter()
+                .find(|finding| finding.check == "auth:provider-config-fingerprint")
+                .unwrap()
+        };
+        let mut cases = vec![("bearer only", bearer.clone(), true)];
+        let mut oauth_missing = bearer.clone();
+        oauth_missing.mode = AuthMode::OAuth;
+        cases.push(("OAuth missing provider", oauth_missing, false));
+        for provider in [InboundProviderKind::Google, InboundProviderKind::Authelia] {
+            let mut explicit = bearer.clone();
+            explicit.inbound_provider = Some(provider);
+            cases.push(("explicit missing provider", explicit, false));
+        }
+        for secret_only in [false, true] {
+            let mut partial = bearer.clone();
+            if secret_only {
+                partial.google.client_secret = "synthetic-secret".into();
+            } else {
+                partial.google.client_id = "synthetic-id".into();
+            }
+            cases.push(("partial inferred Google", partial, false));
+        }
+        let mut google = bearer.clone();
+        google.google.client_id = "synthetic-id".into();
+        google.google.client_secret = "synthetic-secret".into();
+        cases.push(("valid inferred Google", google.clone(), true));
+        google.inbound_provider = Some(InboundProviderKind::Google);
+        cases.push(("valid explicit Google", google.clone(), true));
+        let mut authelia = authelia_test_config(dir.path());
+        authelia.mode = AuthMode::Bearer;
+        cases.push(("valid explicit Authelia", authelia.clone(), true));
+        authelia.inbound_provider = None;
+        cases.push(("valid inferred Authelia", authelia.clone(), true));
+        google.authelia = authelia.authelia.clone();
+        cases.push(("ambiguous providers", google, false));
+        authelia.authelia.as_mut().unwrap().client_secret.clear();
+        cases.push(("invalid inferred Authelia", authelia, false));
+        for (name, config, expected_ok) in cases {
+            let result = finding(&config);
+            assert_eq!(
+                matches!(result.severity, Severity::Ok),
+                expected_ok,
+                "{name}: {result:?}"
+            );
+            if !expected_ok {
+                assert!(
+                    matches!(result.severity, Severity::Fail),
+                    "{name}: {result:?}"
+                );
+            }
+        }
     }
 
     #[test]

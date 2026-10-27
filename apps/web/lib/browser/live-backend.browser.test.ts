@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import { access, readFile, writeFile } from 'node:fs/promises'
 import test from 'node:test'
@@ -11,6 +12,7 @@ import {
   observeLivePage,
   ownedBrowserLaunchOptions,
   readPrivateCsrf,
+  readScanSecrets,
   readLiveDescriptor,
   runBrowserCleanupIfActive,
   useBrowserWithAbort,
@@ -50,6 +52,70 @@ async function action(page: Page, csrfToken: string, service: string, name: stri
       sessionTeams: Array.isArray(sessionBody.teams) ? sessionBody.teams : [],
     }
   }, { csrfToken, service, name, params, teamId })
+}
+
+async function exerciseSnippetReplayThroughUi(page: Page, csrfToken: string, name: string) {
+  const contents = 'owned browser replay artifact\n'
+  const digest = createHash('sha256').update(contents).digest('hex')
+  const body = `---\nname: ${name}\ndescription: Owned live browser replay regression\ntools: []\n---\n\`\`\`js\nasync () => { await writeArtifact('report.txt', ${JSON.stringify(contents)}, {contentType:'text/plain'}); return {ok:true}; }\n\`\`\`\n`
+  const created = await action(page, csrfToken, 'snippets', 'snippets.create', { name, body })
+  assert.equal(created.status, 200, 'owned live snippet must be created')
+  try {
+    const seed = await action(page, csrfToken, 'snippets', 'snippets.exec', { name, params: {} })
+    assert.equal(seed.status, 200, 'seed must execute through the native runtime')
+    assert.equal(seed.body.receipt_status, 'persisted')
+    const seedId = seed.body.execution_id
+    assert.equal(typeof seedId, 'string')
+    await page.goto('/snippets/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
+    await page.getByLabel('Search snippets', { exact: true }).fill(name)
+    await page.getByText(name, { exact: true }).first().click()
+    const history = page.getByRole('region', { name: `Run history for ${name}`, exact: true })
+    await history.getByRole('button').filter({ hasText: seedId }).click()
+    await history.getByRole('button', { name: 'Preview replay', exact: true }).click()
+    const preview = page.getByRole('dialog', { name: `Replay preview · ${name}`, exact: true })
+    const run = preview.getByRole('button', { name: 'Run now', exact: true })
+    await run.waitFor({ state: 'visible', timeout: 10_000 })
+    // Only acknowledge drift actually reported by this native preview.
+    const acknowledgment = preview.getByRole('checkbox')
+    if (await acknowledgment.count()) await acknowledgment.check()
+    const replayResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/v1/snippets'
+      && response.request().postDataJSON()?.action === 'snippets.replay', { timeout: 15_000 })
+    await run.click({ timeout: 10_000 })
+    const response = await replayResponse
+    assert.equal(response.status(), 200, 'UI replay must complete against the real native backend')
+    const replay = await response.json()
+    assert.equal(replay.receipt_status, 'persisted')
+    assert.equal(typeof replay.execution_id, 'string')
+    assert.notEqual(replay.execution_id, seedId, 'replay creates a new retained execution')
+    const request = response.request().postDataJSON()
+    assert.equal(request.params.execution_id, seedId)
+    assert.ok(request.params.expected_preview_fingerprint)
+    await history.getByRole('button').filter({ hasText: replay.execution_id }).click({ timeout: 10_000 })
+    const receipt = await action(page, csrfToken, 'snippets', 'snippets.receipt', { execution_id: replay.execution_id })
+    assert.equal(receipt.status, 200)
+    assert.equal(receipt.body.status, 'succeeded')
+    assert.equal(receipt.body.artifacts.length, 1)
+    assert.equal(receipt.body.artifacts[0].sha256, digest)
+    assert.equal(receipt.body.artifacts[0].bytes, Buffer.byteLength(contents))
+    const downloading = page.waitForEvent('download', { timeout: 10_000 })
+    await history.getByRole('button', { name: 'Download artifact', exact: true }).click()
+    const download = await downloading
+    assert.equal(download.suggestedFilename(), 'report.txt')
+    const downloadedPath = await download.path()
+    assert.ok(downloadedPath)
+    const bytes = await readFile(downloadedPath)
+    assert.equal(bytes.toString('utf8'), contents)
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), digest)
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 })
+    await page.getByLabel('Search snippets', { exact: true }).fill(name)
+    await page.getByText(name, { exact: true }).first().click()
+    await history.getByRole('button').filter({ hasText: replay.execution_id }).waitFor({ state: 'visible', timeout: 10_000 })
+    progress('snippet-native-replay-history-download-reload')
+  } finally {
+    const removed = await action(page, csrfToken, 'snippets', 'snippets.remove', { name })
+    assert.equal(removed.status, 200, 'owned browser snippet cleanup must succeed')
+  }
 }
 
 async function addGatewayThroughUi(page: Page, name: string) {
@@ -102,7 +168,11 @@ async function stageProtectedRouteThroughUi(page: Page, name: string, loadout: s
   await panel.getByLabel('Public path').fill('/mcp')
   await panel.getByLabel('Loadout').click()
   await page.getByRole('option', { name: loadout, exact: true }).click()
+  const mutation = page.waitForResponse(response => response.request().method() === 'POST'
+    && response.request().postData()?.includes('gateway.protected_route.stage_add') === true)
   await panel.getByRole('button', { name: 'Add route', exact: true }).last().click()
+  const response = await mutation
+  assert.equal(response.status(), 200, `Protected route staging returned ${response.status()}: ${await response.text()}`)
   await assert.doesNotReject(panel.getByText(name, { exact: true }).first().waitFor({ state: 'visible', timeout: 10_000 }))
   await assert.doesNotReject(panel.getByText(/saved for restart/i).waitFor({ state: 'visible', timeout: 10_000 }))
 }
@@ -372,6 +442,26 @@ test('embedded Gateway Admin completes a real backend journey', {
 
       await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
       progress('embedded-ui-loaded')
+      // The palette loads its catalog only after an actual user opens it.
+      // APIRequestContext probes above are not browser page-request evidence.
+      const paletteTrigger = page.getByRole('button', { name: 'Search and filter', exact: true })
+      const [paletteCatalog] = await Promise.all([
+        page.waitForResponse(response => new URL(response.url()).origin === new URL(descriptor.base_url).origin
+          && new URL(response.url()).pathname === '/v1/catalog'
+          && response.request().method() === 'GET', { timeout: 15_000 }),
+        paletteTrigger.click(),
+      ])
+      assert.equal(paletteCatalog.status(), 200)
+      const paletteDialog = page.getByRole('dialog', { name: 'Command Palette', exact: true })
+      await paletteDialog.waitFor({ state: 'visible' })
+      const paletteSearch = paletteDialog.getByRole('textbox', { name: 'Search command palette', exact: true })
+      await paletteSearch.waitFor({ state: 'visible' })
+      assert.equal(await paletteSearch.evaluate(element => element === document.activeElement), true)
+      await page.keyboard.press('Escape')
+      await paletteDialog.waitFor({ state: 'hidden' })
+      assert.equal(await paletteTrigger.evaluate(element => element === document.activeElement), true)
+      progress('palette-catalog-through-ui')
+
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth), false)
       progress(`page-errors:${evidence.pageErrors.length}:csp:${evidence.cspViolations.length}`)
       assert.equal(evidence.pageErrors.length, 0)
@@ -516,6 +606,7 @@ test('embedded Gateway Admin completes a real backend journey', {
       progress('artifact-lifecycle-through-ui')
       await exerciseActionableImportFailure(page)
       progress('artifact-import-failure-through-ui')
+      await exerciseSnippetReplayThroughUi(page, csrfToken, `${ownedName}-replay`)
 
       if (descriptor.stash_supported) {
         await exerciseStashThroughUi(page, descriptor)
@@ -536,10 +627,9 @@ test('embedded Gateway Admin completes a real backend journey', {
       assert.ok(evidence.requests.some((request) => request.path === '/auth/session'))
       assert.ok(evidence.requests.some((request) => request.path === '/v1/catalog'))
       assert.ok(evidence.requests.some((request) => request.path === '/v1/gateway' && request.method === 'POST'))
-      const scanSecrets = (await import('node:fs/promises')).readFile(descriptor.scan_secrets_path, 'utf8')
-        .then((value) => value.split('\n').filter(Boolean))
-      assertCanaryFree(await page.locator('body').innerText(), await scanSecrets, 'DOM')
-      assertCanaryFree(evidence, await scanSecrets, 'browser evidence')
+      const scanSecrets = await readScanSecrets(descriptor, signal)
+      assertCanaryFree(await page.locator('body').innerText(), scanSecrets, 'DOM')
+      assertCanaryFree(evidence, scanSecrets, 'browser evidence')
       progress('evidence-asserted')
       await context.tracing.stop()
       progress('trace-stopped')
@@ -555,7 +645,7 @@ test('embedded Gateway Admin completes a real backend journey', {
         [ownedGatewayId, 'gateway.remove'],
       ] as const) {
         if (!mayContinue()) break
-        const result = await action(page, csrfToken, 'gateway', operation, { name }, operation === 'gateway.protected_route.stage_remove' ? routeTeamId : undefined).catch((error) => ({ status: 0, body: String(error) }))
+        const result = await action(page, csrfToken, 'gateway', operation, { name, confirm: true }, operation === 'gateway.protected_route.stage_remove' ? routeTeamId : undefined).catch((error) => ({ status: 0, body: String(error) }))
         progress(`cleanup:${operation}:${result.status}`)
         if (![200, 404].includes(result.status) && operation === 'gateway.remove') {
           if (!mayContinue()) break

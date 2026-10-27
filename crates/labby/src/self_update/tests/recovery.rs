@@ -64,7 +64,7 @@ async fn recovery_precedes_version_execution_and_no_newer_catalog_decision() {
             .stdout,
         b"labby 1.16.0\n"
     );
-    assert!(acquire_update_lock(dir.path()).is_ok());
+    assert_lock_released(|| acquire_update_lock(dir.path()));
 }
 
 #[tokio::test]
@@ -102,7 +102,7 @@ async fn failed_recovery_retains_journal_and_never_polls_catalog() {
             .contains("activation recovery FAILED")
     );
     assert!(journal.join("state").exists());
-    assert!(acquire_update_lock(dir.path()).is_ok());
+    assert_lock_released(|| acquire_update_lock(dir.path()));
 }
 
 #[test]
@@ -175,6 +175,7 @@ async fn automatic_reload_retains_dev_channel_and_dry_run_preserves_it() {
         .unwrap();
     assert_eq!(result["version"], "v1.17.0-dev.10");
     assert_eq!(result["installed"], false);
+    assert_lock_released(|| acquire_update_lock(dir.path()));
     let result = automatic_with_catalog(&binary, true, Some(UpdateChannel::Stable), catalog())
         .await
         .unwrap();

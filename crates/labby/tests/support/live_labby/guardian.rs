@@ -745,10 +745,18 @@ exit "$cleanup"
             std::fs::set_permissions(registry.path(), std::fs::Permissions::from_mode(0o700))
                 .unwrap();
             let marker = registry.path().join("late-mutation");
+            let ready = registry.path().join("descendant-ready");
+            let release = registry.path().join("post-settlement-release");
             let mut command = Command::new("/bin/sh");
             command
-                .args(["-c", "(sleep 0.3; touch -- \"$1\") & exit 0", "fixture"])
-                .arg(&marker);
+                .args([
+                    "-c",
+                    "(touch \"$2\"; while [ ! -e \"$3\" ]; do sleep 0.02; done; touch \"$1\") & while [ ! -e \"$2\" ]; do sleep 0.02; done; exit 0",
+                    "fixture",
+                ])
+                .arg(&marker)
+                .arg(&ready)
+                .arg(&release);
             let mut wrapper = if mode == "browser" {
                 let mut wrapper = Command::new("/bin/sh");
                 wrapper
@@ -783,6 +791,10 @@ exit "$cleanup"
                 "{mode}: {result:?}"
             );
             assert!(process_group_members_checked(group).unwrap().is_empty());
+            assert!(ready.exists(), "{mode}: descendant never became ready");
+            // Only a descendant surviving settlement can observe this release
+            // and create the marker; pre-cleanup scheduling cannot fail the test.
+            std::fs::write(&release, b"release").unwrap();
             std::thread::sleep(Duration::from_millis(400));
             assert!(
                 !marker.exists(),

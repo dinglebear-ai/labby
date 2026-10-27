@@ -1,7 +1,7 @@
 ---
 title: "Setup Service"
 created: "2026-08-18"
-updated: "2026-09-29"
+updated: "2026-10-04"
 ---
 
 # Setup Service
@@ -38,7 +38,7 @@ Finally, accept **Start the proxy now**, or run:
 npx -y @dinglebear/labby proxy
 ```
 
-Keep the terminal open. In ChatGPT Developer mode, add an OAuth app using the printed MCP URL, sign in with Google, and ask it to run `runtime_check` before creating a sandbox. The Microsandbox server is an upstream of Labby; ChatGPT connects to Labby's protected public endpoint. A dry run does not install dependencies, open a browser, save configuration, or publish Funnel; Tailscale must already be installed and signed in to derive the callback.
+Keep the terminal open. In ChatGPT Developer mode, add an OAuth app using the printed MCP URL, sign in with Google, and ask it to run `runtime_check` before creating a sandbox. The Microsandbox server is an upstream of Labby; ChatGPT connects to Labby's protected public endpoint. A dry run does not install dependencies, open a browser, save configuration, or publish Funnel; Tailscale must already be installed and signed in to derive the callback. Run `labby setup --chatgpt --dry-run` before registering a Google client. The preview reports missing credential environment names without requesting or displaying secrets; it does not claim authentication or runtime readiness. Actual setup still requires the provider credentials and admin identity.
 
 ## Google OAuth and ChatGPT web
 
@@ -59,8 +59,8 @@ entry with a separate application-owned OAuth grant instead. See
 Direct `labby setup --role server` prepares authentication in `LABBY_HOME` by
 default, without installing or starting a daemon. Use `--deployment native` or
 `--deployment incus` to install a managed server. Bare interactive `labby setup`
-offers sandbox setup, an existing gateway connection, or a managed native
-gateway. The one-line installer explicitly selects native deployment when
+offers ChatGPT sandbox setup, a Tailcat dashboard connection, an existing
+gateway connection, or a managed native gateway. The one-line installer explicitly selects native deployment when
 server installation is requested.
 
 Labby's supported ChatGPT web connection requires the server to run in OAuth mode and to have a publicly reachable HTTPS origin. A bearer-only Labby server is appropriate for local or explicitly token-configured CLI clients, but it is not the supported ChatGPT web connection path.
@@ -85,7 +85,7 @@ Interactive setup:
 
 ```bash
 labby setup
-# role: Server
+# workflow: Install a managed Labby gateway
 # authentication: OAuth + bearer break-glass
 # OAuth provider: Google
 # public URL: https://labby.example.com
@@ -236,9 +236,17 @@ The recent inbox is a separate admin-only HTTP feed. See
 
 `labby setup` is the supported operator entrypoint. Use `labby setup --help` and the generated [CLI help](../generated/cli-help.md) for the exact current command grammar.
 
-Bare `labby setup` prompts for a server or client role. Server setup uses a native
-service by default; Linux x86_64 hosts with a reachable Incus daemon can select
-`--deployment incus`. A server binds to `127.0.0.1:8765` unless explicitly changed.
+Bare interactive `labby setup` offers four workflows: connect ChatGPT to local
+sandboxes, connect a dashboard through Tailcat, connect to an existing Labby
+gateway, or install a managed Labby gateway. The managed choice selects native
+deployment. Explicit `--role server` without `--deployment` saves authentication
+and configuration only; it does not install or start a service. Select
+`--deployment native` for managed native installation, or `--deployment incus`
+on Linux x86_64 hosts with a reachable Incus daemon. Native loopback setup
+prefers `127.0.0.1:8765`; a fresh configuration automatically selects an
+OS-assigned port if that port is occupied. Setup persists and reports the
+selected port. Existing configuration keeps its recorded port, and explicit
+port choices remain authoritative.
 Server authentication topology is selected independently from the OAuth provider: `--auth bearer` uses only the generated static credential, `--auth oauth` uses OAuth without a static bearer, and `--auth both` uses OAuth plus a generated static bearer break-glass credential. OAuth then selects exactly one inbound provider with `--oauth google|authelia`; Google and Authelia are alternatives, not simultaneous providers. Provider configuration requires credentials, a bootstrap admin email, and a public URL. Existing invocations that pass `--oauth google|authelia` without `--auth` retain the historical OAuth + bearer behavior for compatibility. Switching a server back to bearer-only setup clears the inactive OAuth provider, bootstrap-admin, and provider client credential entries from the protected `.env`.
 Client setup saves the selected gateway URL and uses browser OAuth or a bearer
 token. The optional desktop app is off by default in the interactive prompt;
@@ -270,7 +278,7 @@ before changing configuration. A bearer client can be configured without a brows
 
 ```bash
 # Inspect a native bearer-only server setup without changing host state.
-labby setup --role server --auth bearer --oauth none --no-desktop --yes --dry-run
+labby setup --role server --deployment native --auth bearer --oauth none --no-desktop --yes --dry-run
 
 # Inspect OAuth-only Google setup. Provider credentials remain in protected env vars.
 labby setup --role server --auth oauth --oauth google --public-url https://labby.example.com --no-desktop --yes --dry-run

@@ -10,13 +10,18 @@ use rmcp::{RoleClient, RoleServer};
 
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
-use super::capability_call::timed_capability_call_str;
+use super::capability_call::timed_task_call;
 use super::helpers::estimate_task_response_size;
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
-use super::relay_cache::RelayCachedConnection;
-use super::task_route::TaskRouteAuthorization;
+use super::task_route::{TaskCallContext, TaskRouteAuthorization};
 use super::task_route_store::TaskRouteRecord;
 
+#[cfg(test)]
+#[path = "task_generation_tests.rs"]
+mod generation_tests;
+#[cfg(test)]
+#[path = "task_reconnect_regressions.rs"]
+mod reconnect_regressions;
 #[cfg(test)]
 #[path = "task_registration_tests.rs"]
 mod registration_tests;
@@ -24,13 +29,17 @@ mod registration_tests;
 #[path = "tasks_review_tests.rs"]
 mod review_tests;
 
+#[path = "task_companion.rs"]
+mod companion;
+#[path = "task_reconnect.rs"]
+mod reconnect;
 #[path = "task_registration.rs"]
 mod registration;
 const TASK_NOTIFICATION_DELIVERY_GRACE: Duration = Duration::from_millis(500);
 
 pub(super) struct TaskRoute {
-    record: TaskRouteRecord,
-    connection: RelayCachedConnection,
+    pub(super) record: TaskRouteRecord,
+    pub(super) companions: Vec<companion::TaskCompanion>,
 }
 
 fn mint_task_handle() -> String {
@@ -52,7 +61,12 @@ fn task_not_found() -> String {
 fn prune_task_routes(routes: &mut std::collections::HashMap<String, TaskRoute>) {
     let now = jiff::Timestamp::now().as_millisecond();
     routes.retain(|_, route| {
-        !route.record.expired(now) && !route.connection.peer.is_transport_closed()
+        let expired = route.record.expired(now);
+        route.companions.retain(|companion| {
+            Arc::strong_count(&companion.invocations) > 1
+                || (!expired && !companion.connection.peer.is_transport_closed())
+        });
+        !route.companions.is_empty()
     });
 }
 
@@ -62,15 +76,32 @@ impl UpstreamPool {
         upstream: &str,
         subject: &str,
         reason: &'static str,
-    ) -> usize {
-        self.invalidate_oauth_task_routes(reason, |route| {
-            route.record.upstream_name == upstream
-                && route.record.oauth_subject.as_deref() == Some(subject)
-        })
-        .await
+    ) -> Result<usize, String> {
+        let persisted = if reconnect::preserves_task_ownership(reason) {
+            0
+        } else {
+            match &self.task_route_store {
+                Some(store) => store.remove_oauth_subject(upstream, subject).await?,
+                None => 0,
+            }
+        };
+        let live = self
+            .invalidate_oauth_task_routes(reason, |route| {
+                route.record.upstream_name == upstream
+                    && route.record.oauth_subject.as_deref() == Some(subject)
+            })
+            .await;
+        Ok(persisted.max(live))
     }
 
+    #[cfg(test)]
     pub(super) async fn invalidate_all_oauth_task_routes(&self, reason: &'static str) -> usize {
+        if let Some(store) = &self.task_route_store {
+            store
+                .remove_all_oauth()
+                .await
+                .expect("durable test revocation");
+        }
         self.invalidate_oauth_task_routes(reason, |route| route.record.oauth_subject.is_some())
             .await
     }
@@ -79,15 +110,31 @@ impl UpstreamPool {
         &self,
         upstreams: &HashSet<&str>,
         reason: &'static str,
-    ) -> usize {
-        self.invalidate_oauth_task_routes(reason, |route| {
-            route.record.oauth_subject.is_some()
-                && upstreams.contains(route.record.upstream_name.as_str())
-        })
-        .await
+    ) -> Result<usize, String> {
+        let persisted = if reconnect::preserves_task_ownership(reason) {
+            0
+        } else {
+            match &self.task_route_store {
+                Some(store) => {
+                    store
+                        .remove_oauth_upstreams(
+                            upstreams.iter().map(|name| (*name).to_owned()).collect(),
+                        )
+                        .await?
+                }
+                None => 0,
+            }
+        };
+        let live = self
+            .invalidate_oauth_task_routes(reason, |route| {
+                route.record.oauth_subject.is_some()
+                    && upstreams.contains(route.record.upstream_name.as_str())
+            })
+            .await;
+        Ok(persisted.max(live))
     }
 
-    async fn invalidate_oauth_task_routes(
+    pub(in crate::upstream::pool) async fn invalidate_oauth_task_routes(
         &self,
         reason: &'static str,
         should_remove: impl Fn(&TaskRoute) -> bool,
@@ -106,11 +153,13 @@ impl UpstreamPool {
         let count = removed.len();
         futures::future::join_all(removed.into_iter().map(|route| async move {
             let upstream_name = route.record.upstream_name;
-            route
-                .connection
-                ._connection
-                .shutdown(&upstream_name, reason)
-                .await
+            for companion in route.companions {
+                companion
+                    .connection
+                    ._connection
+                    .shutdown(&upstream_name, reason)
+                    .await;
+            }
         }))
         .await;
         tracing::debug!(
@@ -134,129 +183,188 @@ impl UpstreamPool {
         caller: Option<&str>,
         authorization: &TaskRouteAuthorization,
         downstream: Peer<RoleServer>,
+        context: &TaskCallContext,
+        start: Instant,
     ) -> Result<
         (
             Peer<RoleClient>,
             TaskRouteRecord,
             Arc<super::relay::RelayRouteState>,
+            Arc<()>,
         ),
         String,
     > {
         self.drain_oauth_client_capacity_evictions().await;
-        let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
-        let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
-            tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
-            "task routing unavailable".to_string()
-        })?.ok_or_else(task_not_found)?;
-        if !record.authorized(caller, authorization)
-            || record.expired(unix_millis_now()?)
-            || !self.task_config_matches(&record.upstream_name, &record.config_fingerprint)
-        {
-            return Err(task_not_found());
-        }
-        let (peer, relay_routes, handler) = {
-            let routes = self.task_routes.read().await;
-            let live = routes
-                .get(id)
-                .ok_or_else(|| "upstream task connection unavailable".to_string())?;
-            if !live.record.same_binding(&record) {
+        reconnect::finish_task_request(self.request_timeout, start, context, async {
+            let store = self.task_route_store.as_ref().ok_or_else(task_not_found)?;
+            let record = store.get_for_caller(id, caller, authorization).await.map_err(|error| {
+                tracing::error!(action = "task.route.resolve", error = %error, "durable task route lookup failed");
+                "task routing unavailable".to_string()
+            })?.ok_or_else(task_not_found)?;
+            if !record.authorized(caller, authorization)
+                || record.expired(unix_millis_now()?)
+                || !self.task_config_matches(&record.upstream_name, &record.config_fingerprint)
+            {
                 return Err(task_not_found());
             }
-            if live.connection.peer.is_transport_closed() {
-                return Err("upstream task connection unavailable".to_string());
-            }
-            (
-                live.connection.peer.clone(),
-                Arc::clone(&live.connection.routes),
-                live.connection
-                    ._connection
-                    ._client_service
-                    .service()
-                    .clone(),
-            )
-        };
-        // Downstream rebinding does not hold a fleet-wide task map write lock.
-        handler.rebind_downstream(downstream).await;
-        if !self.task_config_matches(&record.upstream_name, &record.config_fingerprint) {
-            return Err(task_not_found());
-        }
-        Ok((peer, record, relay_routes))
+            let (peer, relay_routes, handler, invocation) = self
+                .acquire_task_companion(&record, downstream.clone(), context, start)
+                .await?;
+            // Downstream rebinding does not hold a fleet-wide task map write lock.
+            handler.rebind_downstream(downstream).await;
+            self.check_task_binding(&record).await?;
+            Ok((peer, record, relay_routes, invocation))
+        })
+        .await
     }
 
     pub async fn get_task_routed(
+        &self,
+        params: GetTaskParams,
+        caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
+        downstream: Peer<RoleServer>,
+    ) -> Result<GetTaskResult, String> {
+        self.get_task_routed_with_context(
+            params,
+            caller_subject,
+            authorization,
+            downstream,
+            TaskCallContext::default(),
+        )
+        .await
+    }
+
+    pub async fn get_task_routed_with_context(
         &self,
         mut params: GetTaskParams,
         caller_subject: Option<&str>,
         authorization: &TaskRouteAuthorization,
         downstream: Peer<RoleServer>,
+        context: TaskCallContext,
     ) -> Result<GetTaskResult, String> {
         let start = Instant::now();
         let gateway_task_id = params.task_id.clone();
-        let (peer, mut durable_route, _) = self
-            .resolve_task_route(&gateway_task_id, caller_subject, authorization, downstream)
+        let (peer, mut durable_route, relay_routes, _invocation) = self
+            .resolve_task_route(
+                &gateway_task_id,
+                caller_subject,
+                authorization,
+                downstream,
+                &context,
+                start,
+            )
             .await?;
         let upstream_name = durable_route.upstream_name.clone();
         params.task_id = durable_route.native_task_id.clone();
-        // Task RPCs ride the retained relay connection captured at task
-        // creation, but they share the pooled path's per-upstream bulkhead,
-        // timeout, telemetry, and circuit-breaker contract: the concurrency
-        // permit is keyed by upstream name, not by connection, so a wedged
-        // upstream cannot absorb unbounded task polls either. `subject: None`
-        // because caller authorization is enforced above against the
-        // subject-bound `task_routes` entry — there is no `subject_connections`
-        // entry to evict for this dedicated connection.
+        // Retained and reacquired task peers share the upstream's existing
+        // bulkhead, timeout, telemetry, and circuit-breaker budget.
         let event = UpstreamRequestLog::task(&upstream_name, &gateway_task_id, "task.get");
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        let mut result = timed_capability_call_str(
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        let mut result = timed_task_call(
             self,
+            self.request_timeout,
             &upstream_name,
             UpstreamCapability::Tools,
             event,
             start,
-            peer.get_task(params),
+            async {
+                match self
+                    .send_task_request(
+                        &peer,
+                        &durable_route,
+                        &relay_routes,
+                        rmcp::model::ClientRequest::GetTaskRequest(
+                            rmcp::model::GetTaskRequest::new(params),
+                        ),
+                        &dispatched,
+                    )
+                    .await?
+                {
+                    rmcp::model::ServerResult::GetTaskResult(result) => Ok(result),
+                    _ => Err(rmcp::ServiceError::UnexpectedResponse),
+                }
+            },
             estimate_task_response_size,
             None,
-            |error| format!("upstream `{upstream_name}` tasks/get failed: {error}"),
+            |error| reconnect::task_error(error, &upstream_name, "get"),
             format!("upstream `{upstream_name}` tasks/get timed out after {timeout_ms}ms"),
+            Some(&context.cancellation),
+            &dispatched,
         )
-        .await?;
-        let previous = durable_route.clone();
-        durable_route.observe(&result.task.task)?;
-        // Stable polls need only a durable read, not a redundant FULL-sync write.
-        if durable_route != previous {
-            self.task_route_store.as_ref().ok_or_else(task_not_found)?
-                .update_hints(durable_route.clone()).await.map_err(|error| {
-                    tracing::error!(action = "task.route.update", error = %error, "task retention update was not durable");
-                    "task routing unavailable".to_string()
-                })?;
-        }
-        if let Some(live) = self.task_routes.write().await.get_mut(&gateway_task_id)
-            && live.record.updated_at_unix_ms <= durable_route.updated_at_unix_ms
-        {
-            live.record = durable_route;
-        }
-        result.task.task.task_id = gateway_task_id;
-        Ok(result)
+        .await
+        .map_err(|error| error.to_string())?;
+        reconnect::finish_task_request(self.request_timeout, start, &context, async {
+            let _publication = self.task_publication_guard(&durable_route).await?;
+            self.check_task_companion(&durable_route, &relay_routes)
+                .await?;
+            let previous = durable_route.clone();
+            durable_route.observe(&result.task.task)?;
+            // Stable polls need only a durable read, not a redundant FULL-sync write.
+            if durable_route != previous {
+                self.task_route_store.as_ref().ok_or_else(task_not_found)?
+                    .update_hints(durable_route.clone()).await.map_err(|error| {
+                        tracing::error!(action = "task.route.update", error = %error, "task retention update was not durable");
+                        "task routing unavailable".to_string()
+                    })?;
+            }
+            if let Some(live) = self.task_routes.write().await.get_mut(&gateway_task_id)
+                && live.record.updated_at_unix_ms <= durable_route.updated_at_unix_ms
+            {
+                live.record = durable_route;
+            }
+            result.task.task.task_id = gateway_task_id;
+            Ok(result)
+        })
+        .await
     }
 
     pub async fn update_task_routed(
+        &self,
+        params: UpdateTaskParams,
+        caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
+        gateway_task_id: &str,
+        downstream: Peer<RoleServer>,
+    ) -> Result<(), String> {
+        self.update_task_routed_with_context(
+            params,
+            caller_subject,
+            authorization,
+            gateway_task_id,
+            downstream,
+            TaskCallContext::default(),
+        )
+        .await
+    }
+
+    pub async fn update_task_routed_with_context(
         &self,
         mut params: UpdateTaskParams,
         caller_subject: Option<&str>,
         authorization: &TaskRouteAuthorization,
         gateway_task_id: &str,
         downstream: Peer<RoleServer>,
+        context: TaskCallContext,
     ) -> Result<(), String> {
         let start = Instant::now();
         if params.task_id != gateway_task_id {
             return Err(task_not_found());
         }
-        let (peer, durable_route, relay_routes) = self
-            .resolve_task_route(gateway_task_id, caller_subject, authorization, downstream)
+        let (peer, durable_route, relay_routes, _invocation) = self
+            .resolve_task_route(
+                gateway_task_id,
+                caller_subject,
+                authorization,
+                downstream,
+                &context,
+                start,
+            )
             .await?;
-        let native_task_id = durable_route.native_task_id;
-        let upstream_name = durable_route.upstream_name;
+        let native_task_id = durable_route.native_task_id.clone();
+        let upstream_name = durable_route.upstream_name.clone();
         let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
         // Bulkhead + telemetry parity with `get_task_routed` — see the comment
@@ -266,51 +374,107 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::task(&upstream_name, gateway_task_id, "task.update");
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_str(
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        timed_task_call(
             self,
+            self.request_timeout,
             &upstream_name,
             UpstreamCapability::Tools,
             event,
             start,
-            peer.update_task(params),
+            async {
+                match self
+                    .send_task_request(
+                        &peer,
+                        &durable_route,
+                        &relay_routes,
+                        rmcp::model::ClientRequest::UpdateTaskRequest(
+                            rmcp::model::UpdateTaskRequest::new(params),
+                        ),
+                        &dispatched,
+                    )
+                    .await?
+                {
+                    rmcp::model::ServerResult::TaskAckResult(_)
+                    | rmcp::model::ServerResult::EmptyResult(_) => Ok(()),
+                    _ => Err(rmcp::ServiceError::UnexpectedResponse),
+                }
+            },
             |_: &()| 0,
             None,
-            |error| format!("upstream `{upstream_name}` tasks/update failed: {error}"),
+            |error| reconnect::task_error(error, &upstream_name, "update"),
             format!("upstream `{upstream_name}` tasks/update timed out after {timeout_ms}ms"),
+            Some(&context.cancellation),
+            &dispatched,
         )
-        .await?;
-        let delivered = relay_routes
-            .wait_for_task_notification_after(
-                notification_sequence,
-                TASK_NOTIFICATION_DELIVERY_GRACE,
-            )
-            .await;
-        tracing::debug!(
-            upstream = %upstream_name,
-            gateway_task_id,
-            delivered,
-            "task update notification delivery barrier finished"
-        );
-        Ok(())
+        .await
+        .map_err(|error| error.to_string())?;
+        reconnect::finish_task_request(self.request_timeout, start, &context, async {
+            let _publication = self.task_publication_guard(&durable_route).await?;
+            self.check_task_companion(&durable_route, &relay_routes)
+                .await?;
+            drop(_publication);
+            let delivered = relay_routes
+                .wait_for_task_notification_after(
+                    notification_sequence,
+                    TASK_NOTIFICATION_DELIVERY_GRACE,
+                )
+                .await;
+            tracing::debug!(
+                upstream = %upstream_name,
+                gateway_task_id,
+                delivered,
+                "task update notification delivery barrier finished"
+            );
+            Ok(())
+        })
+        .await
     }
 
     pub async fn cancel_task_routed(
+        &self,
+        params: CancelTaskParams,
+        caller_subject: Option<&str>,
+        authorization: &TaskRouteAuthorization,
+        gateway_task_id: &str,
+        downstream: Peer<RoleServer>,
+    ) -> Result<(), String> {
+        self.cancel_task_routed_with_context(
+            params,
+            caller_subject,
+            authorization,
+            gateway_task_id,
+            downstream,
+            TaskCallContext::default(),
+        )
+        .await
+    }
+
+    pub async fn cancel_task_routed_with_context(
         &self,
         mut params: CancelTaskParams,
         caller_subject: Option<&str>,
         authorization: &TaskRouteAuthorization,
         gateway_task_id: &str,
         downstream: Peer<RoleServer>,
+        context: TaskCallContext,
     ) -> Result<(), String> {
         let start = Instant::now();
         if params.task_id != gateway_task_id {
             return Err(task_not_found());
         }
-        let (peer, durable_route, relay_routes) = self
-            .resolve_task_route(gateway_task_id, caller_subject, authorization, downstream)
+        let (peer, durable_route, relay_routes, _invocation) = self
+            .resolve_task_route(
+                gateway_task_id,
+                caller_subject,
+                authorization,
+                downstream,
+                &context,
+                start,
+            )
             .await?;
-        let native_task_id = durable_route.native_task_id;
-        let upstream_name = durable_route.upstream_name;
+        let native_task_id = durable_route.native_task_id.clone();
+        let upstream_name = durable_route.upstream_name.clone();
         let notification_sequence = relay_routes.task_notification_sequence();
         params.task_id = native_task_id;
         // Bulkhead + telemetry parity with `get_task_routed` — see the comment
@@ -318,39 +482,68 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::task(&upstream_name, gateway_task_id, "task.cancel");
         log_upstream_request_start(event);
         let timeout_ms = self.request_timeout.as_millis();
-        timed_capability_call_str(
+        let dispatched = std::sync::atomic::AtomicBool::new(false);
+        timed_task_call(
             self,
+            self.request_timeout,
             &upstream_name,
             UpstreamCapability::Tools,
             event,
             start,
-            peer.cancel_task(params),
+            async {
+                match self
+                    .send_task_request(
+                        &peer,
+                        &durable_route,
+                        &relay_routes,
+                        rmcp::model::ClientRequest::CancelTaskRequest(
+                            rmcp::model::CancelTaskRequest::new(params),
+                        ),
+                        &dispatched,
+                    )
+                    .await?
+                {
+                    rmcp::model::ServerResult::TaskAckResult(_)
+                    | rmcp::model::ServerResult::EmptyResult(_) => Ok(()),
+                    _ => Err(rmcp::ServiceError::UnexpectedResponse),
+                }
+            },
             |_: &()| 0,
             None,
-            |error| format!("upstream `{upstream_name}` tasks/cancel failed: {error}"),
+            |error| reconnect::task_error(error, &upstream_name, "cancel"),
             format!("upstream `{upstream_name}` tasks/cancel timed out after {timeout_ms}ms"),
+            Some(&context.cancellation),
+            &dispatched,
         )
-        .await?;
-        let delivered = relay_routes
-            .wait_for_task_notification_after(
-                notification_sequence,
-                TASK_NOTIFICATION_DELIVERY_GRACE,
-            )
-            .await;
-        tracing::debug!(
-            upstream = %upstream_name,
-            gateway_task_id,
-            delivered,
-            "task cancel notification delivery barrier finished"
-        );
-        Ok(())
+        .await
+        .map_err(|error| error.to_string())?;
+        reconnect::finish_task_request(self.request_timeout, start, &context, async {
+            let _publication = self.task_publication_guard(&durable_route).await?;
+            self.check_task_companion(&durable_route, &relay_routes)
+                .await?;
+            drop(_publication);
+            let delivered = relay_routes
+                .wait_for_task_notification_after(
+                    notification_sequence,
+                    TASK_NOTIFICATION_DELIVERY_GRACE,
+                )
+                .await;
+            tracing::debug!(
+                upstream = %upstream_name,
+                gateway_task_id,
+                delivered,
+                "task cancel notification delivery barrier finished"
+            );
+            Ok(())
+        })
+        .await
     }
 }
 
 #[cfg(test)]
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
-mod tests {
+pub(in crate::upstream::pool) mod tests {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -370,10 +563,26 @@ mod tests {
     const NATIVE_TASK_ID: &str = "native-task-1";
 
     #[derive(Clone, Default)]
-    pub(super) struct TaskServer {
-        pub(super) updates: Arc<Mutex<Vec<String>>>,
-        pub(super) cancellations: Arc<Mutex<Vec<String>>>,
+    pub(in crate::upstream::pool) struct TaskServer {
+        pub(in crate::upstream::pool) get_calls: Arc<std::sync::atomic::AtomicUsize>,
+        pub(in crate::upstream::pool) updates: Arc<Mutex<Vec<String>>>,
+        pub(in crate::upstream::pool) cancellations: Arc<Mutex<Vec<String>>>,
         fail_get_task: Arc<std::sync::atomic::AtomicBool>,
+        publication_gate: Arc<Mutex<Option<Arc<Mutex<()>>>>>,
+        publication_holder: Arc<Mutex<Option<tokio::sync::OwnedMutexGuard<()>>>>,
+        response_ready: Arc<tokio::sync::Notify>,
+        pub(in crate::upstream::pool) hold_mutations: Arc<std::sync::atomic::AtomicBool>,
+        pub(in crate::upstream::pool) mutation_entered: Arc<tokio::sync::Notify>,
+        pub(in crate::upstream::pool) mutation_release: Arc<tokio::sync::Notify>,
+    }
+
+    impl TaskServer {
+        async fn hold_publication_before_response(&self) {
+            if let Some(gate) = self.publication_gate.lock().await.clone() {
+                *self.publication_holder.lock().await = Some(gate.lock_owned().await);
+                self.response_ready.notify_one();
+            }
+        }
     }
 
     impl ServerHandler for TaskServer {
@@ -391,6 +600,9 @@ mod tests {
             request: GetTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<GetTaskResult, ErrorData> {
+            self.get_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.hold_publication_before_response().await;
             if self.fail_get_task.load(std::sync::atomic::Ordering::SeqCst) {
                 return Err(ErrorData::internal_error("task backend unavailable", None));
             }
@@ -412,7 +624,15 @@ mod tests {
             request: UpdateTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<(), ErrorData> {
+            self.hold_publication_before_response().await;
             self.updates.lock().await.push(request.task_id);
+            if self
+                .hold_mutations
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.mutation_entered.notify_one();
+                self.mutation_release.notified().await;
+            }
             Ok(())
         }
 
@@ -421,13 +641,21 @@ mod tests {
             request: CancelTaskParams,
             _context: RequestContext<RoleServer>,
         ) -> Result<(), ErrorData> {
+            self.hold_publication_before_response().await;
             self.cancellations.lock().await.push(request.task_id);
+            if self
+                .hold_mutations
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                self.mutation_entered.notify_one();
+                self.mutation_release.notified().await;
+            }
             Ok(())
         }
     }
 
     #[derive(Clone)]
-    pub(super) struct DownstreamServer;
+    pub(in crate::upstream::pool) struct DownstreamServer;
 
     impl ServerHandler for DownstreamServer {
         fn get_info(&self) -> ServerConfig {
@@ -435,13 +663,24 @@ mod tests {
         }
     }
 
-    pub(super) async fn task_pool() -> (
+    pub(in crate::upstream::pool) async fn task_pool() -> (
         UpstreamPool,
         TaskServer,
         RunningService<RoleServer, DownstreamServer>,
         super::super::relay_cache::RelayCacheKey,
     ) {
         task_pool_with_store(None).await
+    }
+
+    pub(in crate::upstream::pool) async fn task_pool_with_capabilities(
+        capabilities: ClientCapabilities,
+    ) -> (
+        UpstreamPool,
+        TaskServer,
+        RunningService<RoleServer, DownstreamServer>,
+        super::super::relay_cache::RelayCacheKey,
+    ) {
+        task_pool_fixture(None, capabilities).await
     }
 
     async fn task_pool_with_store(
@@ -453,7 +692,18 @@ mod tests {
         super::super::relay_cache::RelayCacheKey,
     ) {
         let capabilities = ClientCapabilities::builder().enable_tasks().build();
+        task_pool_fixture(usage_store, capabilities).await
+    }
 
+    async fn task_pool_fixture(
+        usage_store: Option<Arc<crate::usage::UsageStore>>,
+        capabilities: ClientCapabilities,
+    ) -> (
+        UpstreamPool,
+        TaskServer,
+        RunningService<RoleServer, DownstreamServer>,
+        super::super::relay_cache::RelayCacheKey,
+    ) {
         let (downstream_server_transport, downstream_client_transport) =
             tokio::io::duplex(64 * 1024);
         let mut downstream_client_info = ClientConfig::default();
@@ -559,7 +809,7 @@ mod tests {
         (pool, server, downstream_server, key)
     }
 
-    pub(super) fn create_task_response() -> CallToolResponse {
+    pub(in crate::upstream::pool) fn create_task_response() -> CallToolResponse {
         CallToolResponse::Task(CreateTaskResult::new(Task::new(
             NATIVE_TASK_ID,
             TaskStatus::Working,
@@ -821,7 +1071,8 @@ mod tests {
 
         assert_eq!(
             pool.invalidate_task_routes_for_oauth_subject("task-upstream", "shared-admin", "test")
-                .await,
+                .await
+                .expect("durable revocation"),
             1
         );
     }
@@ -975,5 +1226,80 @@ mod tests {
             ],
             "task RPCs must record usage telemetry through the bulkhead path"
         );
+    }
+    #[tokio::test]
+    async fn routed_task_completion_cancels_while_post_rpc_publication_is_blocked() {
+        for operation in ["get", "update", "cancel"] {
+            let (pool, server, downstream, key) = task_pool().await;
+            let authorization = super::TaskRouteAuthorization::root();
+            let response = pool
+                .register_task_response(
+                    &key,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    Some("alice"),
+                    authorization.clone(),
+                    create_task_response(),
+                )
+                .await
+                .unwrap();
+            let CallToolResponse::Task(created) = response else {
+                unreachable!()
+            };
+            let id = created.task.task_id;
+            *server.publication_gate.lock().await = Some(pool.lazy_connect_lock(&key.0).await);
+            let context = super::TaskCallContext::default();
+            let call = async {
+                match operation {
+                    "get" => pool
+                        .get_task_routed_with_context(
+                            GetTaskParams::new(&id),
+                            Some("alice"),
+                            &authorization,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                        .map(|_| ()),
+                    "update" => {
+                        pool.update_task_routed_with_context(
+                            UpdateTaskParams::new(&id, InputResponses::default()),
+                            Some("alice"),
+                            &authorization,
+                            &id,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                    }
+                    _ => {
+                        pool.cancel_task_routed_with_context(
+                            CancelTaskParams::new(&id),
+                            Some("alice"),
+                            &authorization,
+                            &id,
+                            downstream.peer().clone(),
+                            context.clone(),
+                        )
+                        .await
+                    }
+                }
+            };
+            let cancel = async {
+                server.response_ready.notified().await;
+                // The upstream response is ready while the real pool gate is held.
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                context.cancellation.cancel();
+            };
+            let (result, ()) =
+                tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(call, cancel) })
+                    .await
+                    .expect("post-RPC cancellation must not wait for publication gate release");
+            assert_eq!(result.unwrap_err(), "task request cancelled", "{operation}");
+            server.publication_holder.lock().await.take();
+            assert!(server.updates.lock().await.len() <= 1);
+            assert!(server.cancellations.lock().await.len() <= 1);
+            pool.close_task_companions("test.complete").await;
+            downstream.cancel().await.unwrap();
+        }
     }
 }

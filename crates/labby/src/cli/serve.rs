@@ -3135,7 +3135,7 @@ fn build_protected_mcp_routers(
     Ok(Some(routers))
 }
 
-#[cfg(all(test, feature = "gateway"))]
+#[cfg(all(test, feature = "gateway", unix))]
 pub(crate) fn tailcat_test_projection(
     state: &AppState,
 ) -> Result<std::collections::HashMap<String, axum::Router>> {

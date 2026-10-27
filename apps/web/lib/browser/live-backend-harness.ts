@@ -156,11 +156,53 @@ export async function readLiveDescriptorAt(descriptorPath: string): Promise<Live
   }
 }
 
-export async function readPrivateCsrf(descriptor: LiveBackendDescriptor) {
-  const value = JSON.parse(await readFile(descriptor.csrf_state_path, 'utf8')) as { csrf_token?: unknown }
+async function readPrivateScanInput(filePath: string, signal?: AbortSignal) {
+  const chunks: Buffer[] = []
+  let bytes = 0
+  for await (const chunk of createReadStream(filePath, { highWaterMark: 64 * 1024, signal })) {
+    signal?.throwIfAborted()
+    bytes += chunk.length
+    assert.ok(bytes <= MAX_EVIDENCE_TEXT_BYTES, 'private scan input exceeded byte cap')
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks, bytes).toString('utf8')
+}
+
+function parsePrivateSessionFixture(contents: string): unknown {
+  try {
+    return JSON.parse(contents)
+  } catch {
+    // JSON parser diagnostics can quote the credential-valued input itself.
+    throw new Error('private session fixture must contain valid JSON')
+  }
+}
+
+export async function readPrivateCsrf(descriptor: LiveBackendDescriptor, signal?: AbortSignal) {
+  const value = parsePrivateSessionFixture(await readPrivateScanInput(descriptor.csrf_state_path, signal)) as { csrf_token?: unknown }
   if (typeof value.csrf_token !== 'string') throw new TypeError('csrf_token must be a string')
   assert.ok(value.csrf_token.length >= 16)
   return value.csrf_token
+}
+
+export async function readScanSecrets(descriptor: LiveBackendDescriptor, signal?: AbortSignal): Promise<string[]> {
+  const canaries = (await readPrivateScanInput(descriptor.scan_secrets_path, signal)).split('\n').filter(Boolean)
+  assert.ok(canaries.length > 0, 'scan-only secret set must not be empty')
+  // The browser consumes raw Cookie values, while the supervisor also retains
+  // name=value forms. Use the actual private session fixtures as authority for
+  // both forms and CSRF instead of relying on a duplicated scan-only inventory.
+  const storage = parsePrivateSessionFixture(await readPrivateScanInput(descriptor.storage_state_path, signal)) as {
+    cookies?: Array<{ name?: unknown; value?: unknown }>
+  }
+  assert.ok(Array.isArray(storage.cookies), 'private cookies must be an array')
+  for (const cookie of storage.cookies) {
+    assert.ok(typeof cookie.name === 'string' && cookie.name.length > 0, 'private cookie name must be nonempty')
+    assert.ok(typeof cookie.value === 'string' && cookie.value.length > 0, 'private cookie value must be nonempty')
+    canaries.push(`${cookie.name}=${cookie.value}`, cookie.value)
+  }
+  canaries.push(await readPrivateCsrf(descriptor, signal))
+  assert.ok(canaries.length <= MAX_EVIDENCE_EVENTS, 'scan-only secret set exceeded entry cap')
+  signal?.throwIfAborted()
+  return [...new Set(canaries)]
 }
 
 function safePathname(raw: string, baseUrl: string) {
@@ -385,6 +427,8 @@ export async function captureFailureEvidence(options: {
       'directory',
     )
     signal.throwIfAborted()
+    const secrets = (await readScanSecrets(descriptor, signal)).map((value) => Buffer.from(value))
+    signal.throwIfAborted()
     const invocationDir = await mkdtemp(path.join(evidenceDir, `browser-${descriptor.run_id}-`))
     // The invocation directory is beneath the run-owned root. If abort wins
     // here, leave it untouched for the outer supervisor rather than starting a
@@ -431,12 +475,6 @@ export async function captureFailureEvidence(options: {
       signal,
     })
     signal.throwIfAborted()
-    const secrets = (await readFile(descriptor.scan_secrets_path, { encoding: 'utf8', signal }))
-      .split('\n')
-      .filter(Boolean)
-      .map((value) => Buffer.from(value))
-    signal.throwIfAborted()
-    assert.ok(secrets.length > 0, 'scan-only secret set must not be empty')
     const artifacts = [reportPath, ...(screenshotOutcome.status === 'captured' ? [screenshotOutcome.path] : [])]
     try {
       for (const artifact of artifacts) {

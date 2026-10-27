@@ -27,6 +27,12 @@ receipt tests and its path-routing regression. Every file under
 scripts, tests, locks, and descriptors. These checks do not launch a microVM
 on CI.
 
+The required docs-check job directly executes
+`python3 docs/snippets/worktree-identity.test.py`. Its disposable Git/SQLite
+fixtures exercise the real Python readers independently of the snippet's mocked
+Bash responses. Changes to either reader or the test file route to this job;
+a suite failure fails docs-check and the required aggregate.
+
 The incubating verification toolkit has a separate path-triggered advisory
 workflow, `.github/workflows/verification.yml`. It runs isolated compilation,
 workspace boundary tests, core tests (including generated-schema freshness),
@@ -93,12 +99,12 @@ all-feature CLI can load the capability library during image smoke and normal
 provisioning.
 
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
-It deliberately skips that job for fork pull requests. Consequently the
-path-gated compile/test jobs, including the declared `test-fork` fallback,
-do not run on forks in the current graph. `ci-gate` explicitly accepts this
-fork-only `changes=skipped` case. Independent policy, repository-contract,
-protected-docs, and unconditional verification workflows still run; this is
-not full product test coverage for a fork PR.
+The classifier runs on every event, including fork pull requests, on
+credentialless hosted workers. Category routing controls compile/test jobs;
+fork Rust changes use the required hosted `test-fork` fallback. `ci-gate`
+requires the classifier to succeed and the routed fork product lane to pass.
+Independent policy, repository-contract, protected-docs and unconditional
+verification workflows also run.
 That classifier maps the changed file list into stable routing categories:
 `all`, `docs`, `docs_check`, `workflow`, `rust_compile`, `rust_test`, `web`,
 `browser_extension`, `desktop`, `npm`, `incus`, `security`,
@@ -184,7 +190,7 @@ Three rules keep this contract honest:
   fail the build on that mistake.
 - Every declared `changes` output must be emitted by `changed_paths.py`, except
   the runtime-only `gate_key_drift`.
-- Except for the explicit fork-PR skip above, `ci-gate` requires `changes` to conclude `success`. A skipped or cancelled
+- `ci-gate` requires `changes` to conclude `success` on every event. A skipped or cancelled
   `changes` job leaves every gate expression empty, which would skip every
   gated job and turn the whole run vacuously green.
 
@@ -244,7 +250,7 @@ jobs when their changed-path category is enabled:
 | Unraid plugin checksums | `unraid` | `scripts/ci/unraid-plugin-checksums.sh` — fails if `unraid/labby.plg`'s companion-file `<MD5>` entities drift from `unraid/source/`. The `--tag`/`--tarball` form (checking `labbyVersion` and the release-tarball `<MD5>`) is a manual tool run when deliberately re-pointing `labbyVersion` at a new release — not a CI gate, since a freshly-built tarball's MD5 isn't reproducible run-to-run |
 | Protected docs guard | separate required `pull_request_target` workflow | blocks `docs/sessions/**` and `docs/superpowers/**` changes unless a maintainer applies `protected-docs-approved` |
 | Workflow lint | `workflow` | `actionlint` over `.github/workflows/` |
-| Frontend build | `rust_compile`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/web`) |
+| Frontend build | `rust_compile`, `rust_test`, `docs_check`, `web`, or `release` | `./.github/actions/build-gateway-admin` (`pnpm install --frozen-lockfile && pnpm build` in `apps/web`); the aggregate requires this prerequisite on every routed path |
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
@@ -258,7 +264,7 @@ jobs when their changed-path category is enabled:
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
-| Labby desktop Tauri | `desktop` | independent lockfile audit plus required Linux tests |
+| Labby desktop Tauri | `desktop` | required Linux tests and independent lockfile audit |
 | Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
 | Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
 | Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
@@ -436,7 +442,7 @@ verification in either mode. Shell and npm installers select the matching
 ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
-runner. Windows is neither a CI runner nor a release target. Cross-compilation may be useful experimentally, but it is not the
+runner. Windows is not a release target and has no CI runner lanes. Cross-compilation may be useful experimentally, but it is not the
 release support contract.
 
 ## Integration Tests

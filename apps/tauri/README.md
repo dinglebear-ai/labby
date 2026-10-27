@@ -72,7 +72,7 @@ pnpm vite:build
 pnpm verify
 pnpm dev
 pnpm build
-cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 `pnpm vite:build` produces only the static local loader/fallback assets.
@@ -86,9 +86,9 @@ executes the generated WebView status and redemption scripts in a local Node
 harness with mocked DOM and fetch behavior; these tests make no network calls.
 
 ```bash
-cargo fmt --manifest-path apps/tauri/src-tauri/Cargo.toml --check
-cargo clippy --manifest-path apps/tauri/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
-cargo test --manifest-path apps/tauri/src-tauri/Cargo.toml --locked
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
 ## Security and failure behavior

@@ -50,6 +50,8 @@ const KINDS: &[&str] = &[
     "quota_exceeded",
     "budget_exceeded",
     "call_budget_exceeded",
+    "internal_call_budget_exceeded",
+    "trace_budget_exceeded",
     "result_too_large",
     "artifact_too_large",
     "response_too_large",

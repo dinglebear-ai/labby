@@ -11,9 +11,11 @@
 //! gate decision over the full audit, so streaming is reserved for a
 //! future `setup.audit.preview` action that wraps `stream_audit_full`.
 
+use crate::dispatch::doctor::{Report, Severity};
 use crate::dispatch::setup::{CommitOutcome, DraftEntry, SetupClient};
 use labby_primitives::action::ActionSpec;
 use labby_primitives::plugin::PluginMeta;
+use serde::Deserialize as _;
 use serde_json::{Value, json};
 
 use std::time::Duration;
@@ -712,6 +714,21 @@ fn validate_against_registry(entries: &[DraftEntry]) -> Result<(), ToolError> {
 }
 
 async fn draft_commit_action(caller: SetupCaller, params: &Value) -> Result<Value, ToolError> {
+    // The full Doctor audit is a large future; keep it and the commit helper
+    // off callers' async frames, including the interactive setup command.
+    Box::pin(draft_commit_with_audit(
+        caller,
+        params,
+        Box::pin(crate::dispatch::doctor::dispatch("audit.full", json!({}))),
+    ))
+    .await
+}
+
+async fn draft_commit_with_audit(
+    caller: SetupCaller,
+    params: &Value,
+    audit_call: impl Future<Output = Result<Value, ToolError>>,
+) -> Result<Value, ToolError> {
     let force = parse_force(params);
     let env = env_path();
     let draft = draft_path();
@@ -765,7 +782,6 @@ async fn draft_commit_action(caller: SetupCaller, params: &Value) -> Result<Valu
     // Bounded by AUDIT_TIMEOUT so a hung service probe cannot stall the
     // wizard indefinitely (doctor's Semaphore(5) bounds concurrency, not
     // total elapsed time).
-    let audit_call = crate::dispatch::doctor::dispatch("audit.full", json!({}));
     let audit = match tokio::time::timeout(AUDIT_TIMEOUT, audit_call).await {
         Ok(result) => result?,
         Err(_) => {
@@ -778,7 +794,7 @@ async fn draft_commit_action(caller: SetupCaller, params: &Value) -> Result<Valu
             });
         }
     };
-    let (audit_pass_count, audit_total_count, all_pass) = audit_summary(&audit);
+    let (audit_pass_count, audit_total_count, all_pass) = audit_summary(&audit)?;
     if !all_pass {
         // Return the structured audit response inline (no preflight_failed wrap).
         return Ok(json!({
@@ -865,19 +881,25 @@ where
     Ok(())
 }
 
-fn audit_summary(audit: &Value) -> (usize, usize, bool) {
-    // Single-pass count without cloning the findings array.
-    let (pass, total) = audit
-        .get("findings")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter().fold((0usize, 0usize), |(pass, total), f| {
-                let is_err = f.get("severity").and_then(Value::as_str) == Some("error");
-                (pass + usize::from(!is_err), total + 1)
-            })
-        })
-        .unwrap_or((0, 0));
-    (pass, total, pass == total)
+fn audit_summary(audit: &Value) -> Result<(usize, usize, bool), ToolError> {
+    // A full audit always emits local findings. Missing, malformed, or empty
+    // reports cannot establish the prerequisite for a durable commit.
+    let report = match Report::deserialize(audit) {
+        Ok(report) if !report.findings.is_empty() => report,
+        _ => {
+            return Err(ToolError::Sdk {
+                sdk_kind: "internal_error".into(),
+                message: "doctor.audit.full returned an invalid or empty report".into(),
+            });
+        }
+    };
+    let total = report.findings.len();
+    let pass = report
+        .findings
+        .iter()
+        .filter(|finding| matches!(finding.severity, Severity::Ok | Severity::Warn))
+        .count();
+    Ok((pass, total, pass == total))
 }
 
 pub(super) fn map_merge_err(err: env_merge::MergeError) -> ToolError {
@@ -941,6 +963,183 @@ mod tests {
     use std::sync::Mutex;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn audit_report(severities: &[Severity]) -> Value {
+        serde_json::to_value(Report {
+            findings: severities
+                .iter()
+                .map(|&severity| crate::dispatch::doctor::Finding {
+                    service: "access".into(),
+                    check: "store".into(),
+                    severity,
+                    message: "fixture audit finding".into(),
+                })
+                .collect(),
+        })
+        .expect("serialize the owning Doctor report")
+    }
+
+    #[test]
+    fn audit_summary_uses_typed_severity_and_allows_warnings() {
+        assert_eq!(
+            audit_summary(&audit_report(&[Severity::Ok, Severity::Warn])).unwrap(),
+            (2, 2, true)
+        );
+        assert_eq!(
+            audit_summary(&audit_report(&[
+                Severity::Ok,
+                Severity::Fail,
+                Severity::Warn
+            ]))
+            .unwrap(),
+            (2, 3, false)
+        );
+        assert_eq!(
+            audit_summary(&audit_report(&[Severity::Fail])).unwrap(),
+            (0, 1, false)
+        );
+    }
+
+    #[test]
+    fn audit_summary_rejects_invalid_or_empty_reports() {
+        for audit in [
+            Value::Null,
+            json!({}),
+            json!({"findings": null}),
+            json!({"findings": {}}),
+            audit_report(&[]),
+            json!({"findings": [{"severity": "ok"}]}),
+            json!({"findings": [{"service": "access", "check": "store", "severity": "error", "message": "failure"}]}),
+            json!({"findings": [{"service": "access", "check": "store", "severity": null, "message": "failure"}]}),
+        ] {
+            let error = audit_summary(&audit).expect_err("an invalid audit must fail closed");
+            assert_eq!(error.kind(), "internal_error", "{audit}");
+        }
+    }
+
+    #[tokio::test]
+    async fn draft_commit_failed_or_invalid_audit_preserves_draft_and_env() {
+        let home = crate::access::test_support::secure_tempdir();
+        let _home_guard =
+            crate::dispatch::helpers::TestLabHomeGuard::set(home.path().to_path_buf());
+        let env = home.path().join(".env");
+        let draft = home.path().join(".env.draft");
+        let env_before = b"LABBY_LOG=labby=info\n";
+        let draft_before = b"LABBY_LOG=labby=debug\n";
+        super::super::secure_file::publish_new(&env, env_before).expect("private env");
+        super::super::secure_file::publish_new(&draft, draft_before).expect("private draft");
+
+        let failed_audit = audit_report(&[Severity::Ok, Severity::Fail, Severity::Warn]);
+        let result = draft_commit_with_audit(
+            SetupCaller::Delegated,
+            &json!({"force": true}),
+            std::future::ready(Ok(failed_audit.clone())),
+        )
+        .await
+        .expect("a failed audit is returned inline");
+        assert_eq!(result["ok"], false);
+        assert_eq!(result["audit"], failed_audit);
+        assert_eq!(result["audit_pass_count"], 2);
+        assert_eq!(result["audit_total_count"], 3);
+
+        for invalid_audit in [json!({}), audit_report(&[])] {
+            let error = draft_commit_with_audit(
+                SetupCaller::Delegated,
+                &json!({"force": true}),
+                std::future::ready(Ok(invalid_audit)),
+            )
+            .await
+            .expect_err("an invalid audit cannot authorize a commit");
+            assert_eq!(error.kind(), "internal_error");
+        }
+
+        assert_eq!(std::fs::read(&env).unwrap(), env_before);
+        assert_eq!(std::fs::read(&draft).unwrap(), draft_before);
+        let names: std::collections::BTreeSet<_> = std::fs::read_dir(home.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                std::ffi::OsString::from(".env"),
+                std::ffi::OsString::from(".env.draft")
+            ]
+            .into_iter()
+            .collect(),
+            "rejected audits must not create locks, backups, or claimed drafts"
+        );
+    }
+
+    #[tokio::test]
+    async fn draft_commit_warning_audit_commits_and_clears_draft() {
+        let home = crate::access::test_support::secure_tempdir();
+        let _home_guard =
+            crate::dispatch::helpers::TestLabHomeGuard::set(home.path().to_path_buf());
+        let env = home.path().join(".env");
+        let draft = home.path().join(".env.draft");
+        let env_before = b"LABBY_LOG=labby=info\n";
+        let draft_before = b"LABBY_LOG=labby=debug\n";
+        super::super::secure_file::publish_new(&env, env_before).expect("private env");
+        super::super::secure_file::publish_new(&draft, draft_before).expect("private draft");
+
+        let result = draft_commit_with_audit(
+            SetupCaller::Delegated,
+            &json!({"force": true}),
+            std::future::ready(Ok(audit_report(&[Severity::Ok, Severity::Warn]))),
+        )
+        .await
+        .expect("warnings allow a durable commit");
+        assert_eq!(result["written"], 1);
+        assert_eq!(result["audit_pass_count"], 2);
+        assert_eq!(result["audit_total_count"], 2);
+        assert_eq!(std::fs::read(&env).unwrap(), draft_before);
+        assert!(!draft.exists(), "a successful commit clears its draft");
+        let backup = result["backup_path"].as_str().expect("existing env backup");
+        assert_eq!(std::fs::read(backup).unwrap(), env_before);
+    }
+
+    #[tokio::test]
+    async fn draft_commit_rejects_env_deleted_during_audit_and_restores_draft() {
+        let home = crate::access::test_support::secure_tempdir();
+        let _home_guard =
+            crate::dispatch::helpers::TestLabHomeGuard::set(home.path().to_path_buf());
+        let env = home.path().join(".env");
+        let draft = home.path().join(".env.draft");
+        let draft_before = b"# staged configuration\nLABBY_LOG=labby=debug\n";
+        super::super::secure_file::publish_new(&env, b"LABBY_LOG=labby=info\n")
+            .expect("private env");
+        super::super::secure_file::publish_new(&draft, draft_before).expect("private draft");
+        assert!(
+            snapshot_mtime(&env).is_some(),
+            "existing env has a snapshot"
+        );
+
+        let error =
+            draft_commit_with_audit(SetupCaller::Delegated, &json!({"force": true}), async {
+                std::fs::remove_file(&env).expect("interleaved env deletion during audit");
+                Ok(audit_report(&[Severity::Ok, Severity::Warn]))
+            })
+            .await
+            .expect_err("force cannot overwrite an environment deleted during the audit");
+        assert_eq!(error.kind(), "merge_write_conflict");
+        assert!(!env.exists(), "a conflicting commit cannot recreate .env");
+        assert_eq!(std::fs::read(&draft).unwrap(), draft_before);
+        let names: std::collections::BTreeSet<_> = std::fs::read_dir(home.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                std::ffi::OsString::from(".env.draft"),
+                std::ffi::OsString::from(".env.lock")
+            ]
+            .into_iter()
+            .collect(),
+            "a conflict leaves no published replacement, backup, or claimed draft"
+        );
+    }
 
     #[tokio::test]
     async fn blocking_setup_preserves_and_releases_test_home() {

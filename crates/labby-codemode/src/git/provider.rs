@@ -186,7 +186,7 @@ async fn ensure_remote_urls_allowed(
 }
 
 pub(crate) async fn run_git(workspace_root: &Path, args: &[String]) -> Result<String, ToolError> {
-    let git = git_binary();
+    let git = super::executable::git_binary()?;
     let mut command = Command::new(git);
     command
         .args(args)
@@ -366,17 +366,6 @@ fn map_capped_pipe(result: Result<CappedPipe, std::io::Error>) -> Result<CappedP
         sdk_kind: "internal_error".to_string(),
         message: format!("failed to read git output: {err}"),
     })
-}
-
-fn git_binary() -> PathBuf {
-    #[cfg(windows)]
-    {
-        PathBuf::from("git.exe")
-    }
-    #[cfg(not(windows))]
-    {
-        PathBuf::from("/usr/bin/git")
-    }
 }
 
 fn git_search_path() -> &'static str {

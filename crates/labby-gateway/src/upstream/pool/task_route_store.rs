@@ -16,10 +16,44 @@ const MAX_PENDING_OPERATIONS: usize = 32;
 const MAX_ROUTES: i64 = 4096;
 const MAX_OWNER_ROUTES: i64 = 256;
 
+/// A failed or panicking SQLite worker quarantines before releasing its owned
+/// connection guard. Successful intent uses SQL row fences, not fleet denial.
+struct RevocationAttempt {
+    quarantine: Arc<std::sync::atomic::AtomicBool>,
+    complete: bool,
+}
+
+impl RevocationAttempt {
+    fn new(quarantine: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self {
+            quarantine,
+            complete: false,
+        }
+    }
+    fn succeed(mut self) {
+        self.complete = true;
+    }
+    fn reconciled(mut self) {
+        self.complete = true;
+        self.quarantine
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for RevocationAttempt {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.quarantine
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TaskRouteStore {
     connection: Arc<Mutex<Connection>>,
     admission: Arc<Semaphore>,
+    revocation_failed: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(test)]
     fail_writes: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -42,6 +76,7 @@ impl TaskRouteStore {
         Self {
             connection: Arc::new(Mutex::new(connection)),
             admission: Arc::new(Semaphore::new(MAX_PENDING_OPERATIONS)),
+            revocation_failed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             #[cfg(test)]
             fail_writes: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -78,6 +113,9 @@ impl TaskRouteStore {
         }
         self.with_connection(move |connection| {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+            if route_has_pending_revocation(&tx, &route)? {
+                return Err("task route registration fenced by revocation".to_string());
+            }
             // Bounded cleanup of expired routes only. Unlimited TTL is never
             // converted into an idle timeout or discarded to make room.
             tx.execute("DELETE FROM task_routes WHERE public_task_id IN (
@@ -143,7 +181,11 @@ impl TaskRouteStore {
                 caller_subject, oauth_subject, route_key, allowed_upstreams_json, config_fingerprint,
                 created_at_unix_ms, updated_at_unix_ms, ttl_ms, poll_interval_ms
                 FROM task_routes WHERE public_task_id = ?1 AND (?2 = 0 OR
-                    (caller_subject IS ?3 AND route_key = ?4 AND allowed_upstreams_json IS ?5))",
+                    (caller_subject IS ?3 AND route_key = ?4 AND allowed_upstreams_json IS ?5))
+                AND NOT EXISTS (SELECT 1 FROM task_route_revocations r
+                    WHERE r.upstream_name = task_routes.upstream_name
+                    AND (r.oauth_subject IS NULL OR r.oauth_subject IS task_routes.oauth_subject)
+                    AND (r.oauth_only = 0 OR task_routes.oauth_subject IS NOT NULL))",
                 params![id, scoped, caller, authorization.route_key, allowed], read_record)
                 .optional().map_err(sqlite_error)?;
             if let Some(record) = &record { record.validate()?; }
@@ -159,7 +201,11 @@ impl TaskRouteStore {
             let changed = connection.execute(
                 "UPDATE task_routes SET updated_at_unix_ms = ?2, ttl_ms = ?3, poll_interval_ms = ?4
                  WHERE public_task_id = ?1 AND native_task_id = ?5 AND created_at_unix_ms = ?6
-                   AND updated_at_unix_ms <= ?2 AND config_fingerprint = ?7",
+                   AND updated_at_unix_ms <= ?2 AND config_fingerprint = ?7
+                   AND NOT EXISTS (SELECT 1 FROM task_route_revocations r
+                       WHERE r.upstream_name = task_routes.upstream_name
+                       AND (r.oauth_subject IS NULL OR r.oauth_subject IS task_routes.oauth_subject)
+                       AND (r.oauth_only = 0 OR task_routes.oauth_subject IS NOT NULL))",
                 params![record.public_task_id, record.updated_at_unix_ms,
                     record.ttl_ms.map(|value| value as i64), record.poll_interval_ms.map(|value| value as i64),
                     record.native_task_id, record.created_at_unix_ms, record.config_fingerprint],
@@ -180,7 +226,122 @@ impl TaskRouteStore {
         .await
     }
 
+    /// Revocation is a durable delete: public UUIDs are never reused, so stale
+    /// observations can neither recreate nor update a removed route.
+    pub(super) async fn remove_oauth_subject(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> Result<usize, String> {
+        self.revoke(vec![upstream.to_owned()], Some(subject.to_owned()), true)
+            .await
+    }
+
+    pub(super) async fn remove_upstreams(&self, upstreams: Vec<String>) -> Result<usize, String> {
+        self.revoke(upstreams, None, false).await
+    }
+
+    pub(super) async fn remove_oauth_upstreams(
+        &self,
+        upstreams: Vec<String>,
+    ) -> Result<usize, String> {
+        self.revoke(upstreams, None, true).await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn remove_all_oauth(&self) -> Result<usize, String> {
+        let names = self.with_connection(|connection| {
+            let mut query = connection.prepare("SELECT DISTINCT upstream_name FROM task_routes WHERE oauth_subject IS NOT NULL").map_err(sqlite_error)?;
+            query.query_map([], |row| row.get(0)).map_err(sqlite_error)?
+                .collect::<Result<Vec<String>, _>>().map_err(sqlite_error)
+        }).await?;
+        self.revoke(names, None, true).await
+    }
+
+    /// Fence new task registrations before a configuration file can change.
+    pub(crate) async fn prepare_upstream_revocation(
+        &self,
+        upstreams: Vec<String>,
+    ) -> Result<(), String> {
+        let quarantine = Arc::clone(&self.revocation_failed);
+        self.with_connection(move |connection| {
+            let attempt = RevocationAttempt::new(quarantine);
+            let intent = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+            for upstream in upstreams {
+                intent.execute("INSERT INTO task_route_revocations(upstream_name, oauth_subject, oauth_only, prepared) VALUES (?1, NULL, 0, 1)", [upstream]).map_err(sqlite_error)?;
+            }
+            intent.commit().map_err(sqlite_error)?;
+            // The committed, upstream-scoped intent is now the fence. Global
+            // quarantine is reserved for a failed durable operation.
+            attempt.succeed();
+            Ok(())
+        }).await
+    }
+
+    pub(crate) async fn complete_prepared_revocations(&self) -> Result<(), String> {
+        let quarantine = Arc::clone(&self.revocation_failed);
+        self.with_connection_unchecked(move |connection| {
+            let attempt = RevocationAttempt::new(quarantine);
+            task_route_schema::replay_revocations(connection, true)?;
+            // Only full replay establishes that every failed intent has been
+            // reconciled. Unrelated scoped success cannot clear prior failure.
+            attempt.reconciled();
+            Ok(())
+        })
+        .await
+    }
+
+    async fn revoke(
+        &self,
+        upstreams: Vec<String>,
+        subject: Option<String>,
+        oauth_only: bool,
+    ) -> Result<usize, String> {
+        let quarantine = Arc::clone(&self.revocation_failed);
+        // Both intent and cleanup belong to the SQLite worker, which survives
+        // cancellation of its async caller. No cancellation gap can forget intent.
+        self.with_connection_unchecked(move |connection| {
+            let attempt = RevocationAttempt::new(quarantine);
+            let intent = connection.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_error)?;
+            for upstream in upstreams {
+                intent.execute("INSERT INTO task_route_revocations(upstream_name, oauth_subject, oauth_only) VALUES (?1, ?2, ?3)",
+                    params![upstream, subject, oauth_only]).map_err(sqlite_error)?;
+            }
+            intent.commit().map_err(sqlite_error)?;
+            let removed = task_route_schema::replay_revocations(connection, false)?;
+            // Prepared configuration intents remain scoped fences until their
+            // transaction completes; they are not evidence of a store failure.
+            attempt.succeed();
+            Ok(removed)
+        }).await
+    }
+
     async fn with_connection<T, F>(&self, operation: F) -> Result<T, String>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
+    {
+        if self
+            .revocation_failed
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(
+                "task routing quarantined after revocation persistence failure".to_string(),
+            );
+        }
+        let quarantine = Arc::clone(&self.revocation_failed);
+        self.with_connection_unchecked(move |connection| {
+            if quarantine.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(
+                    "task routing quarantined after revocation persistence failure".to_string(),
+                );
+            }
+            operation(connection)
+        })
+        .await
+    }
+
+    async fn with_connection_unchecked<T, F>(&self, operation: F) -> Result<T, String>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, String> + Send + 'static,
@@ -206,6 +367,21 @@ impl TaskRouteStore {
         self.fail_writes
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+fn route_has_pending_revocation(
+    connection: &Connection,
+    route: &TaskRouteRecord,
+) -> Result<bool, String> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_route_revocations
+        WHERE upstream_name = ?1 AND (oauth_subject IS NULL OR oauth_subject IS ?2)
+        AND (oauth_only = 0 OR ?2 IS NOT NULL))",
+            params![route.upstream_name, route.oauth_subject],
+            |row| row.get(0),
+        )
+        .map_err(sqlite_error)
 }
 
 fn read_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRouteRecord> {

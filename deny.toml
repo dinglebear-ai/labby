@@ -9,11 +9,13 @@ ignore = [
     # re-review: 2026-11-02; remove when upstream replaces bincode or the SDK is removed.
     { id = "RUSTSEC-2025-0141", reason = "Approved optional Microsandbox filesystem snapshot dependency on bincode 2.0.1; upstream 0.7.6 retains it; re-review 2026-11-02 and remove with upstream migration or SDK removal" },
     # owner: jmagar
-    # reason: RSA remains transitively required to verify Google OIDC RS256 ID tokens. Lab's own
-    #         access-token signing uses Ed25519 and performs no production RSA private-key operation;
-    #         the affected RSA decryption/signing path is therefore not reachable in production.
-    # re-review: 2026-09 — drop once rsa upstream ships a fix or the dep is removed
-    { id = "RUSTSEC-2023-0071", reason = "RSA is verification-only for Google OIDC; Lab access tokens use Ed25519 and no production private-key RSA operation" },
+    # verified: 2026-10-23 with cargo tree --workspace --all-features --edges normal -i rsa
+    # reason: rsa is a dev-dependency for synthetic OAuth signing fixtures only.
+    #         Production jsonwebtoken uses AWS-LC for RS256 verification, and Labby
+    #         signs its own access tokens with Ed25519. No normal dependency edge
+    #         reaches this crate; the advisory still applies to test-only signing.
+    # re-review: remove when rsa ships a fix or the test fixtures migrate.
+    { id = "RUSTSEC-2023-0071", reason = "Dev-only synthetic OAuth signing fixtures; no normal dependency path. Production JWT crypto uses AWS-LC, and access tokens use Ed25519. Test-only signing remains affected until upstream fixes RSA or fixtures migrate." },
 ]
 
 [licenses]

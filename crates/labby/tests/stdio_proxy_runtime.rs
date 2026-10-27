@@ -993,6 +993,7 @@ async fn cli_aggregates_stdio_and_http_with_configured_authorization_header() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
         .args(["--json", "proxy", "--local", "--auth", "none"])
         .env_clear()
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", temp.path())
         .env("LABBY_HOME", temp.path())

@@ -269,6 +269,105 @@ async fn google_refresh_operation_guard_is_distinct_from_persistence_lock() {
     server.abort();
 }
 
+#[tokio::test]
+async fn google_successor_refresh_rejects_late_save_after_reauthorization() {
+    let root = tempfile::tempdir().unwrap();
+    let db = SqliteStore::open_with_key(
+        root.path().join("auth.db"),
+        Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+            "google-successor-refresh-test-key",
+        )),
+    )
+    .await
+    .unwrap();
+    let update = |access: &str, refresh: &str| crate::types::GoogleProviderCredentialUpdate {
+        subject: "google-successor-refresh".into(),
+        email: Some("operator@example.com".into()),
+        client_id: "client".into(),
+        granted_scopes: vec!["openid".into()],
+        access_token: access.into(),
+        refresh_token: refresh.into(),
+        token_received_at: 1,
+        access_token_expires_at: 2,
+        issuer: Some("https://accounts.google.com".into()),
+        refreshed: false,
+        scope_upgraded: true,
+    };
+    let observed_epoch = db.google_provider_fence_epoch().await.unwrap();
+    assert!(
+        db.insert_google_provider_token_bundle_if_absent(
+            update("initial-access", "old-refresh"),
+            observed_epoch,
+        )
+        .await
+        .unwrap()
+    );
+    let provider = crate::google::GoogleProvider::new(
+        "client".into(),
+        "secret".into(),
+        url::Url::parse("http://127.0.0.1/callback").unwrap(),
+    )
+    .unwrap();
+    let adapter = GoogleProviderCredentialStore::new(
+        db.clone(),
+        Arc::new(provider),
+        Some("google-successor-refresh".into()),
+        "client".into(),
+        vec!["openid".into()],
+    );
+    let (uri, started, release, server) = fixture().await;
+    let manager = manager(&uri, adapter).await;
+    let refresh = tokio::spawn(async move { manager.refresh_token().await });
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .expect("old refresh must reach the token exchange barrier");
+
+    // Explicit revoke uses the short persistence lock while the old exchange waits.
+    let guard = crate::google_refresh::lock("google-successor-refresh")
+        .try_lock_owned()
+        .expect("the in-flight exchange must leave persistence admission available");
+    assert!(
+        db.revoke_google_provider_credential(Some("google-successor-refresh"))
+            .await
+            .unwrap()
+            .invalidated
+    );
+    let fresh_epoch = db.google_provider_fence_epoch().await.unwrap();
+    assert!(fresh_epoch > observed_epoch);
+    assert!(
+        db.insert_google_provider_token_bundle_if_absent(
+            update("fresh-access", "fresh-refresh"),
+            fresh_epoch,
+        )
+        .await
+        .unwrap()
+    );
+    let fresh = db
+        .find_google_provider_credential("google-successor-refresh")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(fresh.generation, 1, "fresh grant reuses the old generation");
+    drop(guard);
+
+    release.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(5), refresh)
+        .await
+        .expect("late refresh must settle")
+        .unwrap();
+    server.abort();
+    let current = db
+        .find_google_provider_credential("google-successor-refresh")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        current, fresh,
+        "late refresh must preserve the complete fresh bundle"
+    );
+    assert!(matches!(result, Err(AuthError::AuthorizationRequired)));
+}
+
 async fn rejected_refresh(replace: bool) {
     let (_directory, db) = database().await;
     ordinary(&db)

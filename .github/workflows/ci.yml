@@ -382,6 +382,7 @@ jobs:
     if: >-
       ${{
         needs.changes.outputs.rust_compile == 'true' ||
+        needs.changes.outputs.rust_test == 'true' ||
         needs.changes.outputs.docs_check == 'true' ||
         needs.changes.outputs.web == 'true' ||
         needs.changes.outputs.release == 'true'
@@ -901,6 +902,8 @@ jobs:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
           persist-credentials: false
+      - name: Test the exact worktree identity reader
+        run: python3 docs/snippets/worktree-identity.test.py
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: gateway-admin-out
@@ -1548,8 +1551,11 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPOSITORY: ${{ github.repository }}
           RUST_TEST_ROUTED: ${{ needs.changes.outputs.rust_test }}
+          RUST_COMPILE_ROUTED: ${{ needs.changes.outputs.rust_compile }}
+          DOCS_CHECK_ROUTED: ${{ needs.changes.outputs.docs_check }}
           WEB_ROUTED: ${{ needs.changes.outputs.web }}
           TAILCAT_ROUTED: ${{ needs.changes.outputs.tailcat }}
+          RELEASE_ROUTED: ${{ needs.changes.outputs.release }}
         run: |
           set -euo pipefail
           require_success_or_skipped() {
@@ -1579,7 +1585,11 @@ jobs:
           require_success_or_skipped actionlint "${{ needs.actionlint.result }}"
           require_success_or_skipped lifecycle-static-analysis "${{ needs.lifecycle-static-analysis.result }}"
           require_success_or_skipped macos-installer "${{ needs.macos-installer.result }}"
-          require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
+          if [[ "$RUST_COMPILE_ROUTED" == true || "$RUST_TEST_ROUTED" == true || "$DOCS_CHECK_ROUTED" == true || "$WEB_ROUTED" == true || "$RELEASE_ROUTED" == true ]]; then
+            require_success frontend-assets "${{ needs.frontend-assets.result }}"
+          else
+            require_success_or_skipped frontend-assets "${{ needs.frontend-assets.result }}"
+          fi
           if [[ "$WEB_ROUTED" == true ]]; then
             require_success gateway-admin-browser "${{ needs.gateway-admin-browser.result }}"
           else

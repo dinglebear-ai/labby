@@ -439,15 +439,18 @@ impl SqliteStore {
     }
 
     /// Replace an existing provider token bundle only when the caller observed
-    /// the current generation.
+    /// the current generation and revocation epoch.
     ///
     /// This is the persistence boundary for read-modify-write provider flows.
     /// A `false` result means another callback or refresh installed a newer
-    /// bundle and the caller must not publish its stale exchange.
+    /// bundle or revocation fenced the observed authority. The epoch comparison
+    /// is part of the same SQL write: deletion and reinsertion may reuse generation 1,
+    /// including when another process bypasses the local persistence mutex.
     pub async fn replace_google_provider_token_bundle_if_generation(
         &self,
         update: GoogleProviderCredentialUpdate,
         expected_generation: i64,
+        expected_revocation_epoch: i64,
     ) -> Result<bool, AuthError> {
         let GoogleProviderCredentialUpdate {
             subject,
@@ -502,7 +505,9 @@ impl SqliteStore {
                             ELSE last_scope_upgrade_at END,
                         generation = generation + 1,
                         updated_at = ?12
-                     WHERE subject = ?1 AND generation = ?13",
+                     WHERE subject = ?1 AND generation = ?13
+                       AND COALESCE((SELECT epoch FROM google_provider_revocations
+                                     WHERE subject = '*'), 0) = ?14",
                     params![
                         subject,
                         email,
@@ -517,6 +522,7 @@ impl SqliteStore {
                         scope_upgraded,
                         now,
                         expected_generation,
+                        expected_revocation_epoch,
                     ],
                 )
                 .map_err(sqlite_error)?;
@@ -613,6 +619,7 @@ impl SqliteStore {
         selector: Option<&str>,
     ) -> Result<crate::types::GoogleProviderInvalidation, AuthError> {
         for _ in 0..4 {
+            let observed_epoch = self.google_provider_fence_epoch().await?;
             let Some(row) = self
                 .find_google_provider_credential_by_selector(selector)
                 .await?
@@ -620,7 +627,7 @@ impl SqliteStore {
                 return Ok(crate::types::GoogleProviderInvalidation::default());
             };
             let invalidation = self
-                .invalidate_google_provider_credential(&row.subject, row.generation)
+                .invalidate_google_provider_credential(&row.subject, row.generation, observed_epoch)
                 .await?;
             if invalidation.invalidated {
                 return Ok(invalidation);

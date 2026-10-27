@@ -316,7 +316,7 @@ CI has distinct jobs because their claims differ:
   model, real-process, or tool-specific evidence;
 - the MCP authorization lane currently has a separate 132-row normative matrix,
   coverage manifest, and runner;
-- the OpenAI authorization lane has a separate 21-clause captured matrix and
+- the OpenAI authorization lane has a separate 34-clause captured matrix and
   execution script; these older auth systems store reviewed outcomes in their
   committed matrices, unlike the newer receipt-derived full-spec pipeline; and
 - OpenAI tools/connectors/MCP host behavior needs its own pinned or dated
@@ -409,7 +409,7 @@ semantics:
 | `bash scripts/ci/openai-auth-conformance.sh` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
 | `bash scripts/ci/openai-auth-conformance.sh OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
 
-The 24 `OAI-CLAUSE-*` entries in
+The 34 `OAI-CLAUSE-*` entries in
 `tools/verification/conformance/openai-auth-normative.json` record reviewed source clauses and applicability. Applicable clauses map to
 the 11 executable `OAI-AUTH-*` groups, so a clause ID is not accepted by the
 OpenAI execution script. These auth runners have no Just wrappers. The OpenAI shell runner supports listing and exact or

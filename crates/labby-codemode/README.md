@@ -107,10 +107,11 @@ resets sequence state. Never retain a JS runtime between callers. The runner
 also attempts to replace its working directory with a fresh jail subdirectory.
 That reset is best-effort: filesystem failures are non-fatal and can leave state
 in the isolated runner directory. It is defense-in-depth, not a hard containment
-boundary. Clean completion and ordinary execution errors return the process to
-the pool. Timeouts and protocol faults evict it. A pooled process that exits
-before any valid protocol activity gets one attempt on a fresh runner; activity
-followed by a crash does not trigger automatic replay.
+boundary. Only successful completion with native `reuse_ready` consumption proof
+returns the process to the pool. Success without that proof, every execution
+error, timeouts, and protocol faults evict the process without replay. A pooled
+process that exits before any valid protocol activity gets one attempt on a
+fresh runner; activity followed by a crash does not trigger automatic replay.
 
 Pool defaults are two slots, recycle after 100 executions, and eight overflow
 runners. `LABBY_CODE_MODE_POOL_SIZE` (maximum 16),
@@ -209,6 +210,12 @@ before host tool dispatch. Their methods cannot route to a same-named upstream.
 | `openapi` | Uses `labby-openapi` registry and hardened HTTPS client outside that lock. Static/no-auth operations require unscoped admin/trusted authority. Subject-scoped OAuth operations can admit authenticated, unscoped execution callers with a verified subject; the host resolves credentials after the sandbox boundary. |
 | `sandbox` | Unscoped admin/trusted authority plus the optional `microsandbox-sdk` feature and operator-owned `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON`. Runs disposable workloads through the local SDK, outside the state/Git lock. Without the feature, dispatch reports `not_available`. |
 
+Git uses `/usr/bin/git` on Unix by default. For systems such as Nix where Git
+lives elsewhere, set operator-owned `LABBY_CODE_MODE_GIT_EXE` to an absolute
+executable path. Labby resolves symlinks and, on Unix, requires a root- or
+service-user-owned executable that is not group/world writable. The override
+does not inherit the caller environment or extend the sanitized child `PATH`.
+
 Any namespace, tool, or read-only scope excludes these local providers, including
 the OpenAPI OAuth exception. Workload requests cannot grant mounts, networking,
 or credentials. They must match the pinned profile image; their command and
@@ -272,3 +279,26 @@ and [Snippets](../../docs/services/SNIPPETS.md). Read
 [architecture](../../docs/ARCH.md) for the host boundary and
 [documentation maintenance](../../docs/dev/DOCUMENTATION.md) before changing
 generated catalogs or other documentation owners.
+
+## Discovery implementation history
+
+A prior investigation (bead `lab-5cgrz`) evaluated converting `search`/`describe`
+to host-RPC via the `local_provider.rs` pattern specifically and rejected it: the
+claimed injection cost was negligible at then-current scale, that approach would
+have serialized repeated calls behind the global local-provider lock, and reusing
+`local_providers_allowed()` verbatim would have wrongly restricted them to
+admin-only. `describe()` alone was later revisited once catalog sizes grew large
+enough for the injection cost to matter (informally benchmarked with an ad-hoc
+`#[ignore]`d probe against a real `javy::Runtime`, not a checked-in regression
+test: roughly 3x smaller injected payload, roughly 1.8x faster parse at 4,000
+tools — re-measure before treating these numbers as current) — solving the
+concerns the bead flagged as prerequisites: the
+`__lab_internal::*` mechanism sidesteps both the lock-serialization and
+admin-only-gating objections by construction (it's a different mechanism, not a
+fix to the rejected one), and `ToolsRender`/`CatalogRenderCache`
+(`labby-codemode`/`labby-gateway`) Arc-wrap `entries`/`catalog_json`. The
+broker now retains that render for the execution, removing the old second
+`list_tools()` call from the normal `describe()` path entirely. `search()` was
+left alone — its injection cost (index metadata only, never full types) is a
+fixed, small fraction of what `describe()` used to embed, so the bead's original
+"negligible at scale" conclusion still holds for it.

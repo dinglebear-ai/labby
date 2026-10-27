@@ -15,6 +15,9 @@ mod assertions;
 #[path = "sqlite/tests.rs"]
 mod extracted_tests;
 mod google_credentials;
+#[cfg(test)]
+#[path = "sqlite/google_successor_tests.rs"]
+mod google_successor_tests;
 mod identity_provider;
 mod migrations;
 mod oauth;
@@ -1841,6 +1844,7 @@ mod tests {
                 .replace_google_provider_token_bundle_if_generation(
                     update("access-v2", "refresh-v2"),
                     original.generation,
+                    store.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap()
@@ -1850,6 +1854,7 @@ mod tests {
                 .replace_google_provider_token_bundle_if_generation(
                     update("stale-access", "stale-refresh"),
                     original.generation,
+                    store.google_provider_fence_epoch().await.unwrap(),
                 )
                 .await
                 .unwrap(),
@@ -1905,7 +1910,11 @@ mod tests {
 
         assert!(
             revoker
-                .invalidate_google_provider_credential("google-subject-revoked", generation)
+                .invalidate_google_provider_credential(
+                    "google-subject-revoked",
+                    generation,
+                    observed_epoch
+                )
                 .await
                 .unwrap()
                 .invalidated
@@ -2298,7 +2307,11 @@ mod tests {
         assert!(current.generation > first_generation);
 
         let stale = store
-            .invalidate_google_provider_credential("google-subject-123", first_generation)
+            .invalidate_google_provider_credential(
+                "google-subject-123",
+                first_generation,
+                store.google_provider_fence_epoch().await.unwrap(),
+            )
             .await
             .unwrap();
         assert!(!stale.invalidated);
@@ -2312,7 +2325,11 @@ mod tests {
         );
 
         let invalidation = store
-            .invalidate_google_provider_credential("google-subject-123", current.generation)
+            .invalidate_google_provider_credential(
+                "google-subject-123",
+                current.generation,
+                store.google_provider_fence_epoch().await.unwrap(),
+            )
             .await
             .unwrap();
         assert!(invalidation.invalidated);

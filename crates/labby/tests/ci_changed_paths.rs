@@ -205,7 +205,10 @@ fn linux_build_preflight_installs_nothing_when_prerequisites_are_present() {
         write_executable(&fake_bin.join(command), "#!/bin/sh\nexit 0\n");
     }
     // Every `pkg-config --exists` the preflight asks about is satisfied.
-    write_executable(&fake_bin.join("pkg-config"), "#!/bin/sh\nexit 0\n");
+    write_executable(
+        &fake_bin.join("pkg-config"),
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PROBE_MARKER\"\nexit 0\n",
+    );
     write_executable(&fake_bin.join("id"), "#!/bin/sh\nprintf '0\\n'\n");
     write_executable(
         &fake_bin.join("apt-get"),
@@ -213,13 +216,39 @@ fn linux_build_preflight_installs_nothing_when_prerequisites_are_present() {
     );
 
     let apt_marker = temp.path().join("apt-ran");
-    let status = Command::new("bash")
-        .arg("-c")
+    let probe_marker = temp.path().join("pkg-config-ran");
+    // A hostile startup file makes inherited shell startup observable. The
+    // command sanitizer must remove it, along with SSH-triggered rc loading.
+    let startup_marker = temp.path().join("startup-ran");
+    let startup = temp.path().join("startup.sh");
+    fs::write(&startup, ": > \"$STARTUP_MARKER\"\nPATH=/usr/bin:/bin\n")
+        .expect("write hostile startup fixture");
+    let mut command = Command::new("bash");
+    command
+        .env("BASH_ENV", &startup)
+        .env("ENV", &startup)
+        .env("SSH_CLIENT", "fixture")
+        .env("SSH_CONNECTION", "fixture")
+        .env("SHLVL", "0");
+    let status = command
+        .env_clear()
+        .args(["--noprofile", "--norc", "-c"])
         .arg(preflight)
         .env("PATH", format!("{}:/usr/bin:/bin", fake_bin.display()))
         .env("APT_MARKER", &apt_marker)
+        .env("PROBE_MARKER", &probe_marker)
+        .env("STARTUP_MARKER", &startup_marker)
         .status()
         .expect("run Linux prerequisite preflight");
+    assert!(
+        !startup_marker.exists(),
+        "shell startup must not escape fixture isolation"
+    );
+    assert_eq!(
+        fs::read_to_string(&probe_marker).expect("fake pkg-config probes"),
+        "--exists openssl\n--exists dbus-1\n--exists libcap-ng\n",
+        "the preflight must run each real probe through the fixture executable"
+    );
 
     assert!(status.success(), "prerequisite preflight must succeed");
     assert!(
@@ -334,6 +363,21 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
     // Canonical prose participates in docs-check because the recipe also
     // validates repository-local Markdown links.
     assert_eq!(out["docs_check"], "true");
+}
+
+#[test]
+fn worktree_identity_readers_collect_their_hermetic_suite() {
+    for path in [
+        "docs/snippets/worktree-identity.py",
+        "docs/snippets/worktree-identity-reader.py",
+        "docs/snippets/worktree-identity.test.py",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
+    let workflow = include_str!("../../../.github/workflows/ci.yml");
+    assert!(workflow.contains("run: python3 docs/snippets/worktree-identity.test.py"));
 }
 
 #[test]

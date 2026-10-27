@@ -1013,11 +1013,10 @@ shape: `authenticated: true`, `login_available: false`, `is_admin: true`,
 `is_configured_admin: true`, `dev_authority_bypass: true`, a synthetic `labby-dev` user, and an empty
 `csrf_token`, with no `authority_state` or `owner_bootstrap_available`.
 
-Follow-up: `/auth/session` (and `/v1/access/owner-link/consume`) are listed in
-the [generated route catalog](../generated/api-routes.md) but are not yet
-registered in `crates/labby/src/api/openapi.rs`, so they are absent from the
-generated OpenAPI document. Fix the registration and regenerate; do not
-hand-edit generated files.
+`/auth/session` and `/v1/access/owner-link/consume` are registered in
+`crates/labby/src/api/openapi.rs` and appear in the generated OpenAPI document
+and [route catalog](../generated/api-routes.md). Update their authored schemas
+and regenerate when those contracts change; do not hand-edit generated files.
 
 ### OAuth Error Kinds
 
