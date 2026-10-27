@@ -17,6 +17,8 @@ class DevReleasePR(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.home = Path(self.temp.name); self.repo = self.home/'repo'; self.repo.mkdir()
         self.git('init', '-q', '-b', 'main'); self.git('config','user.name','Fixture'); self.git('config','user.email','fixture@example.invalid')
+        self.git('config', 'core.excludesFile', '/dev/null')
+        (self.repo/'.gitignore').write_text('__pycache__/\n')
         (self.repo/'Cargo.toml').write_text('[workspace.package]\nversion="2.6.2"\n')
         helpers=self.repo/'scripts/ci';helpers.mkdir(parents=True)
         for helper in ['prepare-dev-release.py','release_source.py','release_channel.py']:
