@@ -105,11 +105,52 @@ impl Store {
         self.recover_locked(&config, &environment)
     }
 
+    /// Inspect a completed receipt without replaying configuration writes.
+    pub fn receipt(&self) -> Result<Option<Outcome>, StoreError> {
+        let _config = HostConfigLock::acquire(&self.config).map_err(map_host)?;
+        let _environment = HostConfigLock::acquire(&self.environment).map_err(map_host)?;
+        let Some(intent) = self.read_intent()? else {
+            return Ok(None);
+        };
+        if intent.phase != Phase::Committed {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.completed_receipt(&intent).map(Some)
+    }
+
+    fn completed_receipt(&self, intent: &Intent) -> Result<Outcome, StoreError> {
+        validate_operation(&intent.operation_id)?;
+        let pair = Pair {
+            config: self.read_state(&intent.new_config)?,
+            environment: self.read_state(&intent.new_environment)?,
+        };
+        if digest(&self.key()?, &pair)? != intent.new_integrity {
+            return Err(StoreError::RecoveryRequired);
+        }
+        Ok(Outcome {
+            operation_id: intent.operation_id.clone(),
+            version: intent.new_integrity.clone(),
+            committed: true,
+        })
+    }
+
     pub fn commit(
         &self,
         operation: &str,
         expected_version: &str,
         pair: &Pair,
+    ) -> Result<Outcome, StoreError> {
+        self.commit_with_publication(operation, expected_version, pair, || Ok(()))
+    }
+
+    /// Publish only a newly committed or still-current replay while holding
+    /// both host-file locks. Historical receipts never reactivate older state.
+    pub(super) fn commit_with_publication(
+        &self,
+        operation: &str,
+        expected_version: &str,
+        pair: &Pair,
+        publish: impl FnOnce() -> Result<(), StoreError>,
     ) -> Result<Outcome, StoreError> {
         validate_operation(operation)?;
         if pair.config.len() > 8 * 1024 * 1024 || pair.environment.len() > 8 * 1024 * 1024 {
@@ -123,6 +164,13 @@ impl Store {
             && outcome.operation_id == operation
         {
             if outcome.version == digest(&key, pair)? {
+                let live = Pair {
+                    config: config.read_raw().map_err(map_host)?,
+                    environment: environment.read_raw().map_err(map_host)?,
+                };
+                if digest(&key, &live)? == outcome.version {
+                    publish()?;
+                }
                 return Ok(outcome);
             }
             return Err(StoreError::Invalid);
@@ -154,6 +202,9 @@ impl Store {
         environment.write(&pair.environment).map_err(map_host)?;
         intent.phase = Phase::Committed;
         self.write_intent(&intent)?;
+        // The receipt is already durable if publication fails. A current replay
+        // can retry publication without replaying file writes.
+        publish()?;
         Ok(Outcome {
             operation_id: operation.into(),
             version: intent.new_integrity,
@@ -169,32 +220,49 @@ impl Store {
         let Some(intent) = self.read_intent()? else {
             return Ok(None);
         };
+        // A committed marker follows both durable writes. Its snapshots are
+        // receipt evidence, never authority to overwrite later host changes.
+        if intent.phase == Phase::Committed {
+            return self.completed_receipt(&intent).map(Some);
+        }
         validate_operation(&intent.operation_id)?;
+        let old = Pair {
+            config: self.read_state(&intent.old_config)?,
+            environment: self.read_state(&intent.old_environment)?,
+        };
+        let new = Pair {
+            config: self.read_state(&intent.new_config)?,
+            environment: self.read_state(&intent.new_environment)?,
+        };
         let key = self.key()?;
-        let pair = match intent.phase {
-            Phase::Prepared => Pair {
-                config: self.read_state(&intent.old_config)?,
-                environment: self.read_state(&intent.old_environment)?,
-            },
-            Phase::Committed => Pair {
-                config: self.read_state(&intent.new_config)?,
-                environment: self.read_state(&intent.new_environment)?,
-            },
-        };
-        let expected = match intent.phase {
-            Phase::Prepared => &intent.old_integrity,
-            Phase::Committed => &intent.new_integrity,
-        };
-        if digest(&key, &pair)?.as_str() != expected {
+        if digest(&key, &old)? != intent.old_integrity
+            || digest(&key, &new)? != intent.new_integrity
+        {
             return Err(StoreError::RecoveryRequired);
         }
-        config.write(&pair.config).map_err(map_host)?;
-        environment.write(&pair.environment).map_err(map_host)?;
-        Ok((intent.phase == Phase::Committed).then_some(Outcome {
-            operation_id: intent.operation_id,
-            version: intent.new_integrity,
-            committed: true,
-        }))
+        let live = Pair {
+            config: config.read_raw().map_err(map_host)?,
+            environment: environment.read_raw().map_err(map_host)?,
+        };
+        // Only known pre/post transaction components can be rolled back. Any
+        // unrelated edit requires operator reconciliation, with neither file touched.
+        if (live.config != old.config && live.config != new.config)
+            || (live.environment != old.environment && live.environment != new.environment)
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        if live.config != old.config {
+            config.write(&old.config).map_err(map_host)?;
+        }
+        if live.environment != old.environment {
+            environment.write(&old.environment).map_err(map_host)?;
+        }
+        // Retire the recovered intent durably so a later read cannot replay it.
+        HostConfigLock::acquire(&self.intent_path())
+            .map_err(map_host)?
+            .write("")
+            .map_err(map_host)?;
+        Ok(None)
     }
 
     fn key(&self) -> Result<[u8; 32], StoreError> {

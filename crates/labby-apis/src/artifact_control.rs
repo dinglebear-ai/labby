@@ -12,8 +12,8 @@ use crate::core::{ApiError, HttpClient};
 const MAX_CONTROL_PLANE_RESPONSE_BYTES: usize = 1024 * 1024;
 // Depot's Tool/Snippet discovery expansion adds only two kind enum values to
 // depot.artifacts.list. Keep accepting the previous schema during rollout.
-const ARTIFACTS_LIST_EXPANDED_FINGERPRINT: &str =
-    "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895";
+const ARTIFACTS_LIST_ORIGINAL_FINGERPRINT: &str =
+    "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a";
 
 /// Depot's frozen public operation catalog, captured from the paired Depot
 /// worktree. Tests pin every curated operation's schema and fingerprint to it.
@@ -192,7 +192,7 @@ impl Operation {
                 "fdd4be598017b2dc7dacdb50121c680bf187d74c4aa1da9d98232c300b793909"
             }
             Self::ArtifactsList => {
-                "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a"
+                "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895"
             }
             Self::CandidatesList => {
                 "43dcf18f5fd2e277fe21f98cde881f4125e315636ef241ac6b03526aad1d4142"
@@ -231,8 +231,8 @@ impl Operation {
             }
             Self::SkillsList => "0db47745ef0e81cfef00f22118d4780c67bcf64111a20671366227f96125d178",
             Self::SkillsGet => "8c4fc62b36049b9ffa64dae2eea3c4fae05926ba0ee84c11568bd9e48c0087f4",
-            Self::SkillsLoad => "aec0c16df499c0594ea578400ac77a1f341ceb10d1a3ae7bd33d0d62a00fa00c",
-            Self::SkillsRead => "04a1903f5d932feb184d1a689cd0a29c08358f2e7c45b2f7b9d80bc5d16bf755",
+            Self::SkillsLoad => "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
+            Self::SkillsRead => "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
             Self::SearchArd => "f02862af885d5d524a3eb6fbf6c8b0e80a951d0c80e5a43a4b92d4a326770478",
             Self::SearchMarketplace => {
                 "230081d99596c5eb013874d30d54846c44a48a1131463ebc66f72d0bd2a372d7"
@@ -241,7 +241,7 @@ impl Operation {
                 "cfb8b3b48d34ff9dbdd5f871c924a2d8de67aa4a352e5e43a3839b5cd39a554c"
             }
             Self::SourcesConfigure => {
-                "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4"
+                "d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738"
             }
             Self::SourcesDelete | Self::SourcesRefresh => {
                 "da509757177840226aa748312fb2b571c7ac35a1636be268f3cc94eeed419724"
@@ -256,6 +256,9 @@ impl Operation {
     }
 
     fn contract_is_compatible(self, definition: &Value) -> bool {
+        if self == Self::SourcesConfigure {
+            return sources_configure_contract_is_supported(definition);
+        }
         operation_contract_is_compatible(
             definition,
             self.provider_name(),
@@ -264,7 +267,7 @@ impl Operation {
             && operation_contract_is_compatible(
                 definition,
                 self.provider_name(),
-                ARTIFACTS_LIST_EXPANDED_FINGERPRINT,
+                ARTIFACTS_LIST_ORIGINAL_FINGERPRINT,
             ))
     }
 }
@@ -315,14 +318,32 @@ impl ArtifactControlClient {
             .http
             .get_json_bounded("/api/operations", MAX_CONTROL_PLANE_RESPONSE_BYTES)
             .await?;
-        let compatible = catalog
-            .operations
-            .iter()
-            .any(|definition| operation.contract_is_compatible(definition));
-        if !compatible {
+        let mut definitions = catalog.operations.iter().filter(|definition| {
+            definition.get("name").and_then(Value::as_str) == Some(operation.provider_name())
+        });
+        let definition = definitions.next();
+        let Some(definition) = definition.filter(|value| operation.contract_is_compatible(value))
+        else {
             return Err(ApiError::Internal(
                 "remote operation is unavailable or schema-incompatible".to_owned(),
             ));
+        };
+        if definitions.next().is_some() {
+            return Err(ApiError::Internal(
+                "remote operation is unavailable or schema-incompatible".to_owned(),
+            ));
+        }
+        if operation == Operation::SourcesConfigure
+            && !sources_configure_params_are_supported(
+                sources_configure_contract(definition).expect("configure contract was admitted"),
+                params,
+            )
+        {
+            return Err(ApiError::Validation {
+                field: "params".to_owned(),
+                message: "sources.configure parameters are unsupported by the served contract"
+                    .to_owned(),
+            });
         }
         let path = format!(
             "/api/operations/{}",
@@ -389,6 +410,80 @@ pub fn schema_fingerprint(schema: &Value) -> Option<String> {
     labby_primitives::canonical_json::fingerprint_hex(schema).ok()
 }
 
+/// Exact historical configure contract supported during mixed-version rollout.
+pub const SOURCES_CONFIGURE_LEGACY_FINGERPRINT: &str =
+    "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4";
+const SOURCES_CONFIGURE_LEGACY: &str = include_str!(
+    "../../../docs/contracts/fixtures/depot-control-plane/sources-configure-legacy-v1.json"
+);
+
+/// Compact admitted configure version retained in actor-bound catalogs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SourcesConfigureContract {
+    Current,
+    Legacy,
+}
+
+/// Identify only the reviewed current or historical configure input contract.
+#[must_use]
+pub fn sources_configure_contract(definition: &Value) -> Option<SourcesConfigureContract> {
+    let legacy: Value = serde_json::from_str(SOURCES_CONFIGURE_LEGACY)
+        .expect("embedded legacy configure fixture must be valid");
+    if ![
+        "/requiredScope",
+        "/transportAvailable",
+        "/annotations/readOnlyHint",
+        "/annotations/destructiveHint",
+    ]
+    .iter()
+    .all(|pointer| definition.pointer(pointer) == legacy.pointer(pointer))
+    {
+        return None;
+    }
+    [
+        (
+            Operation::SourcesConfigure.expected_schema_fingerprint(),
+            SourcesConfigureContract::Current,
+        ),
+        (
+            SOURCES_CONFIGURE_LEGACY_FINGERPRINT,
+            SourcesConfigureContract::Legacy,
+        ),
+    ]
+    .into_iter()
+    .find_map(|(fingerprint, version)| {
+        operation_contract_is_compatible(definition, "depot.sources.configure", fingerprint)
+            .then_some(version)
+    })
+}
+
+/// Whether this configure definition is one of the two pinned contracts.
+#[must_use]
+pub fn sources_configure_contract_is_supported(definition: &Value) -> bool {
+    sources_configure_contract(definition).is_some()
+}
+
+/// The legacy provider must never receive fields it cannot interpret.
+/// Existing provider validation continues to own types and bounds.
+#[must_use]
+pub fn sources_configure_params_are_supported(
+    version: SourcesConfigureContract,
+    params: &Value,
+) -> bool {
+    if version != SourcesConfigureContract::Legacy {
+        return true;
+    }
+    let legacy: Value = serde_json::from_str(SOURCES_CONFIGURE_LEGACY)
+        .expect("embedded legacy configure fixture must be valid");
+    let Some(params) = params.as_object() else {
+        return false;
+    };
+    let properties = legacy["inputSchema"]["properties"]
+        .as_object()
+        .expect("legacy configure schema has properties");
+    params.keys().all(|key| properties.contains_key(key))
+}
+
 /// Verify that a served operation definition agrees with a locally pinned
 /// operation contract.
 ///
@@ -428,6 +523,16 @@ mod tests {
     use crate::core::Auth;
 
     fn operation_definition(operation: Operation) -> Value {
+        if operation == Operation::SourcesConfigure {
+            let fixture: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+            return fixture["operations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|value| value["name"] == operation.provider_name())
+                .unwrap()
+                .clone();
+        }
         let input_schema = operation.expected_input_schema();
         json!({
             "name": operation.provider_name(),
@@ -436,6 +541,146 @@ mod tests {
             "inputSchema": input_schema,
             "outputSchema": {"type":"object"}
         })
+    }
+
+    #[tokio::test]
+    async fn sources_configure_rejects_forged_contracts_without_posting() {
+        let legacy: Value = serde_json::from_str(SOURCES_CONFIGURE_LEGACY).unwrap();
+        let mut cases = Vec::new();
+        for (pointer, value) in [
+            (
+                "/schemaFingerprint",
+                json!(Operation::SourcesConfigure.expected_schema_fingerprint()),
+            ),
+            ("/contractVersion", json!(2)),
+            ("/requiredScope", json!("read")),
+            ("/transportAvailable", json!(false)),
+            ("/annotations/readOnlyHint", json!(true)),
+            ("/annotations/destructiveHint", json!(false)),
+            ("/inputSchema/properties/sourceId/minLength", json!(2)),
+        ] {
+            let mut changed = legacy.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            cases.push(vec![changed]);
+        }
+        cases.push(vec![legacy.clone(), legacy]);
+        let current = operation_definition(Operation::SourcesConfigure);
+        for (pointer, value) in [
+            ("/requiredScope", json!("read")),
+            ("/transportAvailable", json!(false)),
+            ("/annotations/readOnlyHint", json!(true)),
+            ("/annotations/destructiveHint", json!(false)),
+            ("/schemaFingerprint", json!("unknown-contract")),
+        ] {
+            let mut changed = current.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            cases.push(vec![changed]);
+        }
+        for definitions in cases {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/operations"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({"operations":definitions})),
+                )
+                .mount(&server)
+                .await;
+            let client =
+                ArtifactControlClient::new(HttpClient::new(server.uri(), Auth::None).unwrap());
+            assert!(
+                client
+                    .execute(Operation::SourcesConfigure, &json!({"sourceId":"s"}))
+                    .await
+                    .is_err()
+            );
+            assert!(
+                server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .all(|r| r.method != "POST")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn sources_configure_current_sends_new_options_unchanged() {
+        let server = MockServer::start().await;
+        let params = json!({"sourceId":"s","scanSubdir":null,"preserveMissing":false});
+        Mock::given(method("GET"))
+            .and(path("/api/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"operations":[operation_definition(Operation::SourcesConfigure)]}),
+            ))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(body_json(params.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{}})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        ArtifactControlClient::new(HttpClient::new(server.uri(), Auth::None).unwrap())
+            .execute(Operation::SourcesConfigure, &params)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sources_configure_legacy_allows_common_fields_but_never_sends_new_options() {
+        let definition: Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/fixtures/depot-control-plane/sources-configure-legacy-v1.json"
+        ))
+        .unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/operations"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"operations":[definition]})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.sources.configure"))
+            .and(body_json(json!({"sourceId":"source-1","enabled":false})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"result":{"enabled":false}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = ArtifactControlClient::new(HttpClient::new(server.uri(), Auth::None).unwrap());
+        let result = client
+            .execute(
+                Operation::SourcesConfigure,
+                &json!({"sourceId":"source-1","enabled":false}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["enabled"], false);
+        for params in [
+            json!({"sourceId":"source-1","scanSubdir":null}),
+            json!({"sourceId":"source-1","preserveMissing":false}),
+            json!({"sourceId":"source-1","unknown":true}),
+        ] {
+            assert!(
+                client
+                    .execute(Operation::SourcesConfigure, &params)
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.method == "POST")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -660,12 +905,12 @@ mod tests {
         let kinds = definition["inputSchema"]["properties"]["kind"]["enum"]
             .as_array_mut()
             .unwrap();
-        kinds.extend([json!("tool"), json!("snippet")]);
+        kinds.retain(|kind| kind != "tool" && kind != "snippet");
         assert_eq!(
             schema_fingerprint(&definition["inputSchema"]).as_deref(),
-            Some(ARTIFACTS_LIST_EXPANDED_FINGERPRINT)
+            Some(ARTIFACTS_LIST_ORIGINAL_FINGERPRINT)
         );
-        definition["schemaFingerprint"] = json!(ARTIFACTS_LIST_EXPANDED_FINGERPRINT);
+        definition["schemaFingerprint"] = json!(ARTIFACTS_LIST_ORIGINAL_FINGERPRINT);
         assert!(Operation::ArtifactsList.contract_is_compatible(&definition));
 
         definition["inputSchema"]["properties"]["kind"]["enum"] = json!(["tool"]);

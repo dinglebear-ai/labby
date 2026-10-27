@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    io::{Read, Seek, SeekFrom},
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -75,6 +76,7 @@ pub(crate) struct CodeModeQualification {
 
 impl CodeModeQualification {
     pub(crate) async fn start(limits: Limits) -> Result<Self, String> {
+        let startup_started = Instant::now();
         drop(rustls::crypto::ring::default_provider().install_default());
         let fixture = env!("CARGO_BIN_EXE_stdio-mcp-fixture");
         let owned_parent = std::env::temp_dir().join("labby-live-e2e");
@@ -108,6 +110,12 @@ impl CodeModeQualification {
             .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
             .config(config)
             .existing_root(owned_root.path());
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            builder = builder.env(
+                "LABBY_LOG",
+                "warn,labby_gateway::gateway::code_mode::search=debug,labby_codemode::execute=debug",
+            ).env("LABBY_LOG_FORMAT", "json");
+        }
         if let Some(max_calls) = limits.max_calls_per_run {
             builder = builder.env("LABBY_CODE_MODE_MAX_CALLS_PER_RUN", max_calls.to_string());
         }
@@ -134,6 +142,15 @@ impl CodeModeQualification {
         .await
         .map_err(|_| "Code Mode MCP initialize timed out".to_string())?
         .map_err(|error| error.to_string())?;
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            eprintln!(
+                "q3_diagnostic {}",
+                json!({
+                    "stage": "startup_ready",
+                    "elapsed_ms": startup_started.elapsed().as_millis(),
+                })
+            );
+        }
         Ok(Self {
             guard: Some(guard),
             service: Some(service),
@@ -193,12 +210,107 @@ impl CodeModeQualification {
         let structured = result.structured_content.clone().unwrap_or_else(|| {
             serde_json::from_str(&text).unwrap_or_else(|_| json!({"text": text}))
         });
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            let message = structured["error"]["message"].as_str().map(|message| {
+                crate::evidence::sanitize(message)
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
+            });
+            eprintln!(
+                "q3_diagnostic {}",
+                json!({
+                    "stage": "execute_response",
+                    "rpc_elapsed_ms": started.elapsed().as_millis(),
+                    "trace_elapsed_ms": structured["elapsed_ms"],
+                    "is_error": is_error,
+                    "error_kind": structured["error_kind"],
+                    "message": message,
+                    "origin": structured["error"]["origin"],
+                    "call_count": structured["call_count"],
+                    "wire_bytes": wire_bytes,
+                })
+            );
+        }
+        let elapsed = started.elapsed();
+        if std::env::var_os("LABBY_Q3_EVIDENCE_DIR").is_some() {
+            self.project_catalog_diagnostics();
+        }
         Ok(Execution {
             structured,
-            elapsed: started.elapsed(),
+            elapsed,
             wire_bytes,
             is_error,
         })
+    }
+
+    /// Project only fixed catalog stages and numeric fields; never print raw logs.
+    fn project_catalog_diagnostics(&self) {
+        const MAX_BYTES: u64 = 64 * 1024;
+        const MAX_EVENTS: usize = 16;
+        let Some(guard) = self.guard.as_ref() else {
+            return;
+        };
+        let Ok(mut file) = std::fs::File::open(guard.root().join("stderr.log")) else {
+            return;
+        };
+        let Ok(length) = file.metadata().map(|metadata| metadata.len()) else {
+            return;
+        };
+        if file
+            .seek(SeekFrom::Start(length.saturating_sub(MAX_BYTES)))
+            .is_err()
+        {
+            return;
+        }
+        let mut bytes = Vec::new();
+        if file.take(MAX_BYTES).read_to_end(&mut bytes).is_err() {
+            return;
+        }
+        let tail = String::from_utf8_lossy(&bytes);
+        let mut events = Vec::new();
+        for line in tail.lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let Some(fields) = record.get("fields").and_then(Value::as_object) else {
+                continue;
+            };
+            let stage = match fields.get("action").and_then(Value::as_str) {
+                Some("catalog.enumerate") => "catalog.enumerate",
+                Some("catalog.snapshot") => "catalog.snapshot",
+                _ if fields.get("message").and_then(Value::as_str)
+                    == Some("code_mode.proxy_generation_timed_out") =>
+                {
+                    "proxy.timeout"
+                }
+                _ => continue,
+            };
+            let mut event = Map::new();
+            event.insert("stage".into(), json!(stage));
+            for key in ["elapsed_ms", "tool_count", "entry_count", "timeout_ms"] {
+                let value = fields.get(key).and_then(|value| {
+                    value.as_u64().or_else(|| {
+                        let digits = value.as_str()?;
+                        (!digits.is_empty()
+                            && digits.len() <= 20
+                            && digits.bytes().all(|byte| byte.is_ascii_digit()))
+                        .then(|| digits.parse::<u64>().ok())
+                        .flatten()
+                    })
+                });
+                if let Some(value) = value {
+                    event.insert(key.into(), json!(value));
+                }
+            }
+            events.push(Value::Object(event));
+            if events.len() > MAX_EVENTS {
+                events.remove(0);
+            }
+        }
+        for event in events {
+            eprintln!("q3_diagnostic {event}");
+        }
     }
 
     fn execution_error(&self, error: &str) -> String {

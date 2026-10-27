@@ -137,6 +137,7 @@ impl OperationPolicy {
 struct OperationCatalogSnapshot {
     observed_at: tokio::time::Instant,
     policies: HashMap<String, OperationPolicy>,
+    source_configure_contract: Option<labby_apis::artifact_control::SourcesConfigureContract>,
 }
 
 #[derive(Debug)]
@@ -343,12 +344,19 @@ impl DepotClient {
             Err(error) => return Err(error),
         };
         let policies = parse_operation_catalog(&value)?;
+        let source_configure_contract = value["operations"].as_array().and_then(|operations| {
+            operations
+                .iter()
+                .find(|definition| definition["name"] == "depot.sources.configure")
+                .and_then(labby_apis::artifact_control::sources_configure_contract)
+        });
         project_operation_groups(&mut value)?;
         self.operation_catalogs.lock().await.insert(
             actor.to_owned(),
             OperationCatalogSnapshot {
                 observed_at: tokio::time::Instant::now(),
                 policies,
+                source_configure_contract,
             },
         );
         Ok(value)
@@ -438,6 +446,23 @@ impl DepotClient {
     ) -> Result<Value, DepotError> {
         if !policy.transport_available {
             return Err(DepotError::UnsupportedOperation);
+        }
+        if operation == "depot.sources.configure" {
+            let catalogs = self.operation_catalogs.lock().await;
+            let snapshot = catalogs.get(actor).ok_or(DepotError::InvalidCatalog)?;
+            if snapshot.observed_at.elapsed() > Duration::from_mins(5)
+                || snapshot.policies.get(operation) != Some(&policy)
+            {
+                return Err(DepotError::InvalidCatalog);
+            }
+            let definition = snapshot
+                .source_configure_contract
+                .ok_or(DepotError::InvalidCatalog)?;
+            if !labby_apis::artifact_control::sources_configure_params_are_supported(
+                definition, &params,
+            ) {
+                return Err(DepotError::UnsupportedOperation);
+            }
         }
         if policy.destructive {
             let key = idempotency_key
@@ -946,7 +971,9 @@ fn parse_operation_catalog(
             &definition,
             &item.name,
             &expected.schema_fingerprint,
-        ) {
+        ) && !(item.name == "depot.sources.configure"
+            && labby_apis::artifact_control::sources_configure_contract_is_supported(&definition))
+        {
             return Err(DepotError::InvalidCatalog);
         }
         if item.required_scope.as_deref() != Some(expected.required_scope.as_str())
@@ -1108,6 +1135,181 @@ mod tests {
 
     const DEPOT_OPERATIONS_GOLDEN: &str =
         include_str!("../../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json");
+
+    #[test]
+    fn legacy_configure_catalog_rejects_forged_schema_policy_and_duplicates() {
+        let legacy: Value=serde_json::from_str(include_str!("../../../../docs/contracts/fixtures/depot-control-plane/sources-configure-legacy-v1.json")).unwrap();
+        assert!(parse_operation_catalog(&json!({"operations":[legacy.clone()]})).is_ok());
+        for (pointer, value) in [
+            (
+                "/schemaFingerprint",
+                json!("d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738"),
+            ),
+            ("/contractVersion", json!(2)),
+            ("/requiredScope", json!("read")),
+            ("/transportAvailable", json!(false)),
+            ("/annotations/readOnlyHint", json!(true)),
+            ("/annotations/destructiveHint", json!(false)),
+            ("/inputSchema/properties/sourceId/minLength", json!(2)),
+        ] {
+            let mut changed = legacy.clone();
+            *changed.pointer_mut(pointer).unwrap() = value;
+            assert!(
+                matches!(
+                    parse_operation_catalog(&json!({"operations":[changed]})),
+                    Err(DepotError::InvalidCatalog)
+                ),
+                "{pointer}"
+            );
+        }
+        assert!(matches!(
+            parse_operation_catalog(&json!({"operations":[legacy.clone(),legacy]})),
+            Err(DepotError::InvalidCatalog)
+        ));
+    }
+
+    #[tokio::test]
+    async fn legacy_configure_catalog_keeps_reads_available_and_rejects_new_fields_before_effects()
+    {
+        let legacy: Value = serde_json::from_str(include_str!(
+            "../../../../docs/contracts/fixtures/depot-control-plane/sources-configure-legacy-v1.json"
+        )).unwrap();
+        let server = MockServer::start().await;
+        let fixture: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let read = fixture["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "depot.sources.list")
+            .unwrap()
+            .clone();
+        Mock::given(method("GET"))
+            .and(path("/api/operations/catalog"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"operations":[legacy,read]})),
+            )
+            .mount(&server)
+            .await;
+        let client = DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "unused");
+        client.operations("actor").await.unwrap();
+        let policy = client
+            .operation_policy("depot.sources.configure", "actor")
+            .await
+            .unwrap();
+        assert!(policy.destructive && policy.requires_write);
+        assert!(matches!(
+            client
+                .call(
+                    "depot.sources.configure",
+                    json!({"sourceId":"s","enabled":false}),
+                    "actor",
+                    policy,
+                    None
+                )
+                .await,
+            Err(DepotError::DestructiveIntentRequired)
+        ));
+        assert!(
+            client
+                .operation_policy("depot.sources.list", "actor")
+                .await
+                .unwrap()
+                .read_only
+        );
+        assert!(matches!(
+            client
+                .operation_policy("depot.sources.configure", "other")
+                .await,
+            Err(DepotError::InvalidCatalog)
+        ));
+        for params in [
+            json!({"sourceId":"source-1","scanSubdir":null}),
+            json!({"sourceId":"source-1","preserveMissing":false}),
+            json!({"sourceId":"source-1","unknown":true}),
+        ] {
+            assert!(matches!(
+                client
+                    .call(
+                        "depot.sources.configure",
+                        params,
+                        "actor",
+                        policy,
+                        Some("intent-1")
+                    )
+                    .await,
+                Err(DepotError::UnsupportedOperation)
+            ));
+        }
+        assert!(client.destructive_requests.lock().await.is_empty());
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .all(|r| r.method != "POST")
+        );
+        for (actor, supplied) in [
+            ("other", policy),
+            (
+                "actor",
+                OperationPolicy {
+                    destructive: false,
+                    ..policy
+                },
+            ),
+        ] {
+            assert!(matches!(
+                client
+                    .call(
+                        "depot.sources.configure",
+                        json!({"sourceId":"s"}),
+                        actor,
+                        supplied,
+                        Some("intent-2")
+                    )
+                    .await,
+                Err(DepotError::InvalidCatalog)
+            ));
+        }
+        assert!(client.destructive_requests.lock().await.is_empty());
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.sources.list"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"result":{"sources":[]}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let read_policy = client
+            .operation_policy("depot.sources.list", "actor")
+            .await
+            .unwrap();
+        let listed = client
+            .call("depot.sources.list", json!({}), "actor", read_policy, None)
+            .await
+            .unwrap();
+        assert_eq!(listed["result"]["sources"], json!([]));
+        client
+            .operation_catalogs
+            .lock()
+            .await
+            .get_mut("actor")
+            .unwrap()
+            .observed_at = tokio::time::Instant::now() - Duration::from_secs(301);
+        assert!(matches!(
+            client
+                .call(
+                    "depot.sources.configure",
+                    json!({"sourceId":"source-1"}),
+                    "actor",
+                    policy,
+                    None
+                )
+                .await,
+            Err(DepotError::InvalidCatalog)
+        ));
+    }
 
     #[derive(Clone, Copy)]
     struct CatalogPolicy {
@@ -1886,6 +2088,65 @@ mod tests {
             ),
             Err(DepotError::InvalidCatalog)
         ));
+    }
+
+    #[test]
+    fn operation_catalog_accepts_reviewed_depot_schema_updates() {
+        // These exact input schemas were checked against Depot's registry and
+        // its observed MCP catalog. Authority and safety pins stay unchanged.
+        let mut catalog: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let mut updated = 0;
+        for definition in catalog["operations"].as_array_mut().unwrap() {
+            let fingerprint = match definition["name"].as_str().unwrap() {
+                "depot.artifacts.list" => {
+                    definition["inputSchema"]["properties"]["kind"]["enum"] = json!([
+                        "skill",
+                        "prompt",
+                        "agent-definition",
+                        "agent-runtime",
+                        "mcp-server",
+                        "mcp-config",
+                        "agent-plugin",
+                        "apm-package",
+                        "package",
+                        "agent",
+                        "mcp",
+                        "repository",
+                        "command",
+                        "hook",
+                        "tool",
+                        "snippet"
+                    ]);
+                    "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895"
+                }
+                "depot.skills.load" => {
+                    definition["inputSchema"]["properties"]["offset"]["maximum"] =
+                        json!(16_777_216);
+                    "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08"
+                }
+                "depot.skills.read" => {
+                    definition["inputSchema"]["properties"]["offset"]["maximum"] =
+                        json!(16_777_216);
+                    "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8"
+                }
+                "depot.sources.configure" => {
+                    definition["inputSchema"]["properties"]["scanSubdir"] = json!({
+                        "description": "Repository-root-relative scan directory within the enrolled scope; null restores the enrolled scope.",
+                        "minLength": 1, "type": ["string", "null"]
+                    });
+                    definition["inputSchema"]["properties"]["preserveMissing"] = json!({
+                        "description": "Retain repository skills absent from a complete scan.",
+                        "type": "boolean"
+                    });
+                    "d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738"
+                }
+                _ => continue,
+            };
+            definition["schemaFingerprint"] = json!(fingerprint);
+            updated += 1;
+        }
+        assert_eq!(updated, 4);
+        assert!(parse_operation_catalog(&catalog).is_ok());
     }
 
     #[test]

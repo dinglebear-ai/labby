@@ -12,6 +12,7 @@ pub enum Failure {
     Incompatible,
     Configuration,
     Transient,
+    Timeout,
     NotFound,
     SnapshotChanged,
 }
@@ -100,9 +101,9 @@ impl Health {
             Err(Failure::Unauthorized) => (HealthState::Unauthorized, Some(Failure::Unauthorized)),
             Err(Failure::Incompatible) => (HealthState::Incompatible, Some(Failure::Incompatible)),
             Err(Failure::Configuration) => (HealthState::Unavailable, Some(Failure::Configuration)),
-            Err(Failure::Transient) => (HealthState::Unavailable, None),
+            Err(Failure::Transient | Failure::Timeout) => (HealthState::Unavailable, None),
         };
-        let cooldown = matches!(result, Err(Failure::Transient))
+        let cooldown = matches!(result, Err(Failure::Transient | Failure::Timeout))
             .then(|| 1 + u64::from(uuid::Uuid::new_v4().as_bytes()[0] % 30));
         *observation = Observation {
             view: HealthView {

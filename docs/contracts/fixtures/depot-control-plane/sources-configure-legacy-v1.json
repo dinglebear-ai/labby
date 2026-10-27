@@ -1,0 +1,125 @@
+{
+  "annotations": {
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false,
+    "readOnlyHint": false
+  },
+  "contractVersion": 1,
+  "description": "Enable/pause a persisted source and/or change its refresh interval.",
+  "inputSchema": {
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "description": "Whether scheduled refresh is enabled.",
+        "type": "boolean"
+      },
+      "intervalSeconds": {
+        "description": "Refresh interval in seconds.",
+        "maximum": 31536000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "sourceId": {
+        "description": "Persisted source id.",
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "sourceId"
+    ],
+    "type": "object"
+  },
+  "name": "depot.sources.configure",
+  "outputSchema": {
+    "additionalProperties": true,
+    "properties": {
+      "args": {
+        "additionalProperties": true,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "consecutiveFailures": {
+        "description": "Consecutive refresh failure count.",
+        "maximum": 1000000,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "enabled": {
+        "description": "Whether scheduled refresh is enabled.",
+        "type": "boolean"
+      },
+      "id": {
+        "description": "Stable source id.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "insertedAt": {
+        "description": "Source creation timestamp.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "intervalSeconds": {
+        "description": "Configured refresh interval in seconds.",
+        "maximum": 31536000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "kind": {
+        "description": "Source kind.",
+        "enum": [
+          "repo",
+          "well_known",
+          "ard_catalog",
+          "marketplace",
+          "mcp",
+          "mcp_registry",
+          "acp_registry"
+        ],
+        "minLength": 1,
+        "type": "string"
+      },
+      "nextAttemptAt": {
+        "description": "Next scheduled refresh timestamp.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "updatedAt": {
+        "description": "Last configuration timestamp.",
+        "minLength": 1,
+        "type": "string"
+      },
+      "version": {
+        "description": "Persisted source record version.",
+        "maximum": 1,
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "id",
+      "kind",
+      "args",
+      "enabled",
+      "intervalSeconds",
+      "insertedAt",
+      "updatedAt",
+      "nextAttemptAt",
+      "consecutiveFailures"
+    ],
+    "type": "object"
+  },
+  "requiredScope": "write",
+  "schemaFingerprint": "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4",
+  "title": "Configure source",
+  "transportAvailable": true,
+  "transports": [
+    "api",
+    "cli",
+    "mcp",
+    "ui"
+  ]
+}

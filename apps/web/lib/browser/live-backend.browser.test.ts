@@ -316,7 +316,8 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
     page.waitForEvent('download'),
     stashFileActionThroughUi(page, emptyName, 'Download'),
   ])
-  assert.equal((await readFile(await emptyDownload.path()!)).length, 0)
+  assert.equal(emptyDownload.suggestedFilename(), emptyName)
+  assert.deepEqual(await readFile((await emptyDownload.path())!), Buffer.alloc(0), 'zero-byte upload must persist exactly')
   await stashFileActionThroughUi(page, emptyName, 'Delete')
   await page.getByRole('alertdialog', { name: 'Delete this file?' }).getByRole('button', { name: 'Delete file' }).click()
   await emptyRow.waitFor({ state: 'detached', timeout: 10_000 })
@@ -325,7 +326,7 @@ async function exerciseStashThroughUi(page: Page, descriptor: Awaited<ReturnType
     page.waitForEvent('download'),
     stashFileActionThroughUi(page, name, 'Download'),
   ])
-  assert.equal(await readFile(await download.path()!, 'utf8'), contents)
+  assert.deepEqual(await readFile((await download.path())!), Buffer.from(contents), 'uploaded bytes must persist exactly')
 
   await stashFileActionThroughUi(page, name, 'Manage file')
   const dialog = page.getByRole('dialog', { name: `Manage ${name}` })

@@ -14,7 +14,7 @@ const katex = mermaidRequire('katex') as {
 }
 
 test('Mermaid resolves fixed KaTeX and ordinary mathematical labels remain valid', async () => {
-  assert.equal(katex.version, '0.18.2')
+  assert.equal(katex.version, '0.18.10')
   const html = katex.renderToString(String.raw`x^2 + \frac{1}{2}`)
   assert.match(html, /class="katex"/)
   assert.doesNotMatch(html, /katex-error/)

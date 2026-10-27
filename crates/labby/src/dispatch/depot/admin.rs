@@ -360,7 +360,7 @@ impl Admin {
     pub async fn operation(&self, operation_id: &str) -> Result<StoreOutcome, AdminError> {
         let store = self.store.clone();
         let operation_id = operation_id.to_owned();
-        tokio::task::spawn_blocking(move || store.recover())
+        tokio::task::spawn_blocking(move || store.receipt())
             .await
             .map_err(|_| AdminError::Recovery)?
             .map_err(map_store)?
@@ -507,14 +507,15 @@ impl Admin {
         let store = self.store.clone();
         let expected = expected_version.to_owned();
         let operation = operation_id.to_owned();
-        let outcome =
-            tokio::task::spawn_blocking(move || store.commit(&operation, &expected, &pair))
-                .await
-                .map_err(|_| AdminError::Recovery)?
-                .map_err(map_store)?;
-        self.manager
-            .publish(candidate)
-            .map_err(|_| AdminError::Stale)?;
+        let manager = Arc::clone(&self.manager);
+        let outcome = tokio::task::spawn_blocking(move || {
+            store.commit_with_publication(&operation, &expected, &pair, || {
+                manager.publish(candidate).map_err(|_| StoreError::Stale)
+            })
+        })
+        .await
+        .map_err(|_| AdminError::Recovery)?
+        .map_err(map_store)?;
         if let Some(reservation) = reservation {
             self.proofs
                 .finalize(&reservation, ProofOutcome::Committed)

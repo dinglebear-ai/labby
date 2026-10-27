@@ -523,13 +523,25 @@ pub(crate) async fn search_visible_skills_bounded(
     context: &SkillRegistryContext,
     query: &str,
     limit: usize,
+    mut on_progress: impl FnMut(SkillsListResult) + Send,
 ) -> SkillsListResult {
     let limit = limit.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
-    let mut listing = search_first_party_skills(context, query, limit);
+    let first_party = search_first_party_skills(context, query, limit);
+    let proxied = proxied_skill_search(context, query, limit, |proxied| {
+        on_progress(merge_skill_search(first_party.clone(), proxied, limit));
+    })
+    .await;
+    merge_skill_search(first_party, &proxied, limit)
+}
 
-    let proxied = proxied_skill_search(context, query, limit).await;
+#[cfg(feature = "gateway")]
+fn merge_skill_search(
+    mut listing: SkillsListResult,
+    proxied: &ProxiedSkills,
+    limit: usize,
+) -> SkillsListResult {
     let mut first_party = std::mem::take(&mut listing.skills).into_iter();
-    let mut upstream = proxied.entries.into_iter();
+    let mut upstream = proxied.entries.iter().cloned();
     // Keep both halves of the personal library searchable when either one can
     // fill the entire caller limit. Minted upstream URIs are distinct from
     // first-party URIs, so deterministic round-robin is sufficient here.
@@ -1395,6 +1407,7 @@ async fn proxied_skill_search(
     context: &SkillRegistryContext,
     query: &str,
     limit: usize,
+    mut on_progress: impl FnMut(&ProxiedSkills) + Send,
 ) -> ProxiedSkills {
     let Some(manager) = context.manager.as_deref() else {
         return ProxiedSkills::default();
@@ -1411,6 +1424,7 @@ async fn proxied_skill_search(
         return unavailable_proxied_skills(configs.len());
     };
     let subject = context.scope.subject().map(str::to_string);
+    let has_upstreams = !configs.is_empty();
     let mut results = stream::iter(configs)
         .map(|config| {
             let pool = Arc::clone(&pool);
@@ -1420,16 +1434,14 @@ async fn proxied_skill_search(
                 (config, provider.search(query, limit).await)
             }
         })
-        .buffer_unordered(8)
-        .collect::<Vec<_>>()
-        .await;
-    results.sort_by(|(left, _), (right, _)| left.name.cmp(&right.name));
+        .buffer_unordered(8);
 
     let mut aggregated = ProxiedSkills::default();
-    if !results.is_empty() {
+    if has_upstreams {
         aggregated.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_string());
     }
-    for (config, result) in results {
+    let mut completed = BTreeMap::new();
+    while let Some((config, result)) = results.next().await {
         match result {
             Ok(entries) => {
                 aggregated.incomplete_search_upstreams += usize::from(entries.incomplete);
@@ -1442,7 +1454,7 @@ async fn proxied_skill_search(
                 let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
                 aggregated.excluded_count += minted.excluded_count;
                 aggregated.excluded_uris.extend(minted.excluded_uris);
-                aggregated.entries.extend(minted.entries);
+                completed.insert(config.name.clone(), minted.entries);
             }
             Err(error) => {
                 aggregated.unreachable_upstreams += 1;
@@ -1453,6 +1465,10 @@ async fn proxied_skill_search(
                 );
             }
         }
+        // Publish bounded, deterministic progress before waiting on siblings.
+        // The caller owns this snapshot and may retain it when cancelling us.
+        aggregated.entries = completed.values().flatten().take(limit).cloned().collect();
+        on_progress(&aggregated);
     }
     aggregated
 }

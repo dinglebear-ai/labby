@@ -501,7 +501,9 @@
               "mcp",
               "repository",
               "command",
-              "hook"
+              "hook",
+              "tool",
+              "snippet"
             ],
             "minLength": 1,
             "type": "string"
@@ -545,7 +547,7 @@
         ],
         "type": "object"
       },
-      "schemaFingerprint": "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a",
+      "schemaFingerprint": "d41ad7ea98b56f7739e0a0b7e3dc44745753e9be502d1ee093551f84d692e895",
       "title": "List Bazaar artifacts",
       "requiredScope": "read",
       "transportAvailable": true
@@ -3137,7 +3139,7 @@
           },
           "offset": {
             "description": "Optional continuation byte offset.",
-            "maximum": 524288,
+            "maximum": 16777216,
             "minimum": 0,
             "type": "integer"
           },
@@ -3172,7 +3174,7 @@
         "required": [],
         "type": "object"
       },
-      "schemaFingerprint": "aec0c16df499c0594ea578400ac77a1f341ceb10d1a3ae7bd33d0d62a00fa00c",
+      "schemaFingerprint": "1e57d017464bf0caa2324d532f45f01f8f5c45c814a0a01a6f1baa25d35b0b08",
       "title": "Load Depot skill",
       "requiredScope": "read",
       "transportAvailable": true
@@ -3208,7 +3210,7 @@
           },
           "offset": {
             "description": "Optional file continuation byte offset.",
-            "maximum": 524288,
+            "maximum": 16777216,
             "minimum": 0,
             "type": "integer"
           },
@@ -3243,7 +3245,7 @@
         "required": [],
         "type": "object"
       },
-      "schemaFingerprint": "04a1903f5d932feb184d1a689cd0a29c08358f2e7c45b2f7b9d80bc5d16bf755",
+      "schemaFingerprint": "f114bde7d077cb6e8991ab9552b0a8f766791d8f1f54f71c9ef97a11c04c17e8",
       "title": "Read Depot skill resource",
       "requiredScope": "read",
       "transportAvailable": true
@@ -3793,6 +3795,18 @@
             "minimum": 1,
             "type": "integer"
           },
+          "preserveMissing": {
+            "description": "Retain repository skills absent from a complete scan.",
+            "type": "boolean"
+          },
+          "scanSubdir": {
+            "description": "Repository-root-relative scan directory within the enrolled scope; null restores the enrolled scope.",
+            "minLength": 1,
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "sourceId": {
             "description": "Persisted source id.",
             "minLength": 1,
@@ -3885,7 +3899,7 @@
         ],
         "type": "object"
       },
-      "schemaFingerprint": "36e5d7687b4405ece34e578bfbfdbef0cf6a98cfe11d794caf7ed28243d396a4",
+      "schemaFingerprint": "d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738",
       "title": "Configure source",
       "requiredScope": "write",
       "transportAvailable": true
@@ -4353,5 +4367,27 @@
     }
   ],
   "schemaVersion": "labby.depot-operations-golden/v1",
-  "source": "Depot lib/depot/operations/registry.ex public catalog (GET /api/operations), captured from the codex/multi-user-access worktree"
+  "source": "Composite fixture: original public operation catalog captured from Depot codex/multi-user-access at d11a63b; selected input schemas refreshed from the source revisions recorded in inputSchemaSources. Unlisted operation schemas retain the original capture.",
+  "inputSchemaSources": {
+    "depot.artifacts.list": {
+      "depotCommit": "4932f3630dbe51644951bac43223bb967c0e7237",
+      "source": "lib/depot/operations/registry.ex",
+      "verification": "Input schema compared with source; not a complete public catalog recapture."
+    },
+    "depot.skills.load": {
+      "depotCommit": "4932f3630dbe51644951bac43223bb967c0e7237",
+      "source": "lib/depot/operations/registry.ex",
+      "verification": "Input schema compared with source; not a complete public catalog recapture."
+    },
+    "depot.skills.read": {
+      "depotCommit": "4932f3630dbe51644951bac43223bb967c0e7237",
+      "source": "lib/depot/operations/registry.ex",
+      "verification": "Input schema compared with source; not a complete public catalog recapture."
+    },
+    "depot.sources.configure": {
+      "depotCommit": "4932f3630dbe51644951bac43223bb967c0e7237",
+      "source": "lib/depot/operations/registry.ex",
+      "verification": "Input schema compared with source; not a complete public catalog recapture."
+    }
+  }
 }
