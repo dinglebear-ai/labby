@@ -734,6 +734,11 @@ fn skills_contract_docs_route_to_rust_conformance_tests() {
 #[test]
 fn release_workflow_changes_enable_the_release_contract() {
     for path in [
+        ".github/workflows/release-please.yml",
+        ".release-please-dev.json",
+        "scripts/ci/dev_release_pr.py",
+        "scripts/ci/test_dev_release_pr.py",
+        "scripts/ci/test_dev_release_workflow.py",
         ".github/workflows/release.yml",
         ".github/workflows/build-incus-image.yml",
         "scripts/ci/resolve-n-minus-one-baseline.py",

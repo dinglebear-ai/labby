@@ -463,7 +463,40 @@ The channel controls each consumer pointer:
 | MCP Registry | Published after qualification | Not published |
 | Installer and updater | Default selection | Explicit opt-in |
 
-### Prepare a dev release
+### Automatic dev release PR
+
+After green main CI, the release-please workflow first refreshes the stable
+release PR, then maintains a separate **dev release PR**. The stable PR remains
+the control for publishing a default release. Neither PR is automatically merged
+by the dev coordinator.
+
+The dev PR changes only `.release-please-dev.json`, recording its dev version
+and the exact green main source commit. It does not stamp prerelease versions
+into main or change the stable changelog. Its version core follows the pending
+stable release PR, with `dev.N` advancing past every reserved dev tag, including
+draft and failed candidates. Without a pending stable PR, the next patch core is
+used. Refreshing an unmerged dev PR preserves its version unless the version
+core changes or that tag has already been reserved.
+
+Merge the dev PR to approve that source snapshot. After the merged request passes
+main CI, the coordinator invokes the same immutable preparation described below.
+The approved source remains frozen even if main advances while CI runs. The tag
+triggers the existing **Release** workflow and all normal qualification gates.
+Merging the request alone does not produce another dev PR; a subsequent product
+change is needed. Stable Release Please continues to manage its own manifest,
+version updates, and changelog independently.
+
+For example, merge a feature, then merge the generated dev PR to release
+`v2.7.0-dev.1`. Merge another feature, then the next dev PR to release
+`v2.7.0-dev.2`. Merge the stable release PR when `v2.7.0` is ready to become the
+default. Both channels contain complete source snapshots, not individual PRs.
+
+Do not hand-edit the generated dev request or its branch. If qualification fails
+after tag creation, inspect and recover that existing release; rerunning the
+coordinator must not replace its immutable tag. Manual preparation and the dev
+coordinator share the same concurrency group to serialize tag reservation.
+
+### Prepare a dev release manually
 
 1. Merge the reviewed feature changes through the normal human merge process.
 2. Wait for the selected main commit's latest main CI attempt to succeed.
