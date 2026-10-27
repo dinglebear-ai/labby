@@ -22,7 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 // gateway lifecycle cases while leaving the support-unit tests parallel.
 static PUBLIC_GATEWAY_LIFECYCLE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn cli(server: &live_labby::LiveLabbyGuard, args: &[&str]) -> Value {
+async fn cli(server: &mut live_labby::LiveLabbyGuard, args: &[&str]) -> Value {
     let home = server.root().join("client-home");
     std::fs::create_dir_all(home.join("tmp")).expect("isolated client home");
     let mut command = tokio::process::Command::from(live_labby::isolated_command(&home));
@@ -38,8 +38,9 @@ async fn cli(server: &live_labby::LiveLabbyGuard, args: &[&str]) -> Value {
         .expect("CLI starts");
     assert!(
         output.status.success(),
-        "{args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "{args:?}: {}\n{}",
+        evidence::sanitize(&String::from_utf8_lossy(&output.stderr)),
+        failure_diagnostics(server, "public-cli")
     );
     serde_json::from_slice(&output.stdout).expect("public CLI JSON")
 }
@@ -98,7 +99,7 @@ fn assert_recovered(state: &Value, name: &str, tool_count: usize) {
 }
 
 async fn published_recovery(
-    server: &live_labby::LiveLabbyGuard,
+    server: &mut live_labby::LiveLabbyGuard,
     name: &str,
     tool_count: usize,
 ) -> Value {
@@ -127,7 +128,7 @@ async fn published_recovery(
 }
 
 async fn call_recovered_tool(
-    server: &live_labby::LiveLabbyGuard,
+    server: &mut live_labby::LiveLabbyGuard,
     calls: &AtomicUsize,
     phase: &str,
 ) {
@@ -189,7 +190,7 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
     // Startup seeds the catalog lazily; observe background discovery before
     // inducing a failure so this starts from a confirmed healthy transport.
     advances(&mut server, &catalogs, 0, "initial background catalog").await;
-    published_recovery(&server, "owned-recovery", 1).await;
+    published_recovery(&mut server, "owned-recovery", 1).await;
     let before_failure = failed_requests.load(Ordering::SeqCst);
     online.store(false, Ordering::SeqCst);
     // Only fixture counters are inspected here: no request to Labby can trigger recovery.
@@ -203,15 +204,15 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
     let before_recovery = catalogs.load(Ordering::SeqCst);
     online.store(true, Ordering::SeqCst);
     advances(&mut server, &catalogs, before_recovery, "recovered catalog").await;
-    published_recovery(&server, "owned-recovery", 1).await;
-    call_recovered_tool(&server, &calls, "after-offline-recovery").await;
+    published_recovery(&mut server, "owned-recovery", 1).await;
+    call_recovered_tool(&mut server, &calls, "after-offline-recovery").await;
     // Linux cleanup intentionally scans host-wide local MCP processes, which
     // may belong to concurrent tests. Exercise that transition in the isolated
     // pool tests there; macOS/Windows have no host process scan and can safely
     // exercise the complete public cleanup request in this server fixture.
     #[cfg(not(target_os = "linux"))]
     {
-        cli(&server, &["server", "cleanup", "owned-recovery"]).await;
+        cli(&mut server, &["server", "cleanup", "owned-recovery"]).await;
         let after_cleanup = catalogs.load(Ordering::SeqCst);
         advances(
             &mut server,
@@ -220,8 +221,8 @@ async fn public_gateway_recovers_without_requests_and_after_cleanup() {
             "catalog after cleanup",
         )
         .await;
-        published_recovery(&server, "owned-recovery", 1).await;
-        call_recovered_tool(&server, &calls, "after-cleanup-recovery").await;
+        published_recovery(&mut server, "owned-recovery", 1).await;
+        call_recovered_tool(&mut server, &calls, "after-cleanup-recovery").await;
     }
     let cleanup = server.finish().await;
     assert!(cleanup.is_clean(), "owned server cleanup: {cleanup:?}");
@@ -271,7 +272,7 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
             failure_diagnostics(&mut server, "initial stdio discovery")
         )
     });
-    let initial = published_recovery(&server, "owned-stdio", 10).await;
+    let initial = published_recovery(&mut server, "owned-stdio", 10).await;
     let row = initial
         .as_array()
         .unwrap()
@@ -308,7 +309,7 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
             failure_diagnostics(&mut server, "stdio replacement")
         )
     });
-    let recovered = published_recovery(&server, "owned-stdio", 10).await;
+    let recovered = published_recovery(&mut server, "owned-stdio", 10).await;
     let row = recovered
         .as_array()
         .unwrap()
@@ -317,7 +318,7 @@ async fn public_gateway_replaces_dead_stdio_process_without_requests() {
         .unwrap();
     assert_eq!(row["pid"], replacement);
     let response = cli(
-        &server,
+        &mut server,
         &[
             "code",
             "run",

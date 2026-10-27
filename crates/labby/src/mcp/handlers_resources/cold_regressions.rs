@@ -3,7 +3,9 @@
 use super::tests::code_mode_server;
 use super::*;
 use crate::dispatch::upstream::pool::UpstreamPool;
-use rmcp::model::{ClientInfo, ProtocolVersion, ResourceTemplate, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    ClientConfig, ProtocolVersion, ResourceTemplate, ServerCapabilities, ServerConfig,
+};
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RunningService};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
@@ -48,8 +50,8 @@ struct QaUpstream {
 }
 
 impl ServerHandler for QaUpstream {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
@@ -226,8 +228,8 @@ fn upstream(name: &str, http: &HttpFixture) -> crate::config::UpstreamConfig {
 #[derive(Clone)]
 struct ResourceClient(ProtocolVersion);
 impl rmcp::ClientHandler for ResourceClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default().with_protocol_version(self.0.clone())
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::default().with_protocol_version(self.0.clone())
     }
 }
 

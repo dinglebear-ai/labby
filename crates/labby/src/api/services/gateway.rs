@@ -1616,17 +1616,69 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
+    #[derive(Clone, Default)]
+    struct StdioProbeEvents {
+        spawned: Arc<std::sync::atomic::AtomicBool>,
+        negotiation_failed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for StdioProbeEvents {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Actions<'a>(&'a StdioProbeEvents);
+            impl tracing::field::Visit for Actions<'_> {
+                fn record_debug(
+                    &mut self,
+                    _field: &tracing::field::Field,
+                    _value: &dyn std::fmt::Debug,
+                ) {
+                }
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    if field.name() == "action" {
+                        let flag = match value {
+                            "upstream.spawn.started" => &self.0.spawned,
+                            "upstream.protocol.discovery_failed" => &self.0.negotiation_failed,
+                            _ => return,
+                        };
+                        flag.store(true, Ordering::SeqCst);
+                    }
+                }
+            }
+            event.record(&mut Actions(self));
+        }
+    }
+
     #[tokio::test]
     async fn gateway_test_accepts_proposed_spec() {
+        use tracing::instrument::WithSubscriber as _;
+        use tracing_subscriber::prelude::*;
+
+        // The test executable is always available; its help text deliberately
+        // fails MCP negotiation without depending on PATH's echo or a shell.
+        let command = std::env::current_exe().expect("test executable");
+        let events = StdioProbeEvents::default();
+        let subscriber = tracing_subscriber::registry().with(events.clone());
         let response = post_gateway_as_admin(
             test_manager(),
             json!({
                 "action":"gateway.test",
-                "params":{"confirm":true,"spec":{"name":"fixture-stdio","command":"echo","args":["hello"]}}
+                "params":{"confirm":true,"spec":{"name":"fixture-stdio","command":command,"args":["--help"]}}
             }),
         )
+        .with_subscriber(subscriber)
         .await;
         assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            events.spawned.load(Ordering::SeqCst),
+            "probe must spawn its child"
+        );
+        assert!(
+            events.negotiation_failed.load(Ordering::SeqCst),
+            "probe must exercise SDK negotiation, not an earlier configuration failure"
+        );
     }
 
     #[test]

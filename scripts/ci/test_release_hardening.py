@@ -263,11 +263,21 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("LABBY_N_MINUS_ONE_CANDIDATE_ARCHIVE_SHA256", workflow)
 
     def test_unix_bootstrap_installs_only_the_bound_local_baseline(self) -> None:
-        tag = "HEAD"
-        source_sha = subprocess.check_output(
-            ["git", "rev-parse", f"{tag}^{{commit}}"], cwd=ROOT, text=True,
-        ).strip()
+        tag = "v2.3.2"
         with tempfile.TemporaryDirectory() as tmp:
+            fixture = Path(tmp) / "source"
+            fixture.mkdir()
+            for relative in ("scripts/ci/n-minus-one/unix", "scripts/install.sh"):
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(self.text(relative))
+                target.chmod(0o755)
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=fixture, text=True, stderr=subprocess.DEVNULL).strip()
+            git("init", "-b", "main")
+            git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-m", "bound baseline")
+            git("tag", tag)
+            source_sha = git("rev-parse", f"{tag}^{{commit}}")
             binary = Path(tmp) / "baseline-labby"
             binary.write_text("#!/bin/sh\necho 'labby 2.3.2'\n")
             binary.chmod(0o755)
@@ -280,7 +290,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
                 "LABBY_N_MINUS_ONE_BASELINE_SHA256": digest,
                 "LABBY_N_MINUS_ONE_BASELINE_SOURCE_SHA": source_sha,
             }
-            adapter = ROOT / "scripts/ci/n-minus-one/unix"
+            adapter = fixture / "scripts/ci/n-minus-one/unix"
             installed = subprocess.run([str(adapter), "install-previous"], env=env, text=True,
                                        capture_output=True, check=False)
             self.assertEqual(0, installed.returncode, installed.stderr)
@@ -716,6 +726,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             result = subprocess.run(["awk", program.group(1), str(sums)], text=True, capture_output=True, check=True)
         self.assertEqual("c" * 64, result.stdout.strip())
 
+    def test_dev_preflight_needs_npm_but_only_stable_requires_registry_key(self) -> None:
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        step = next(step for step in release["jobs"]["preflight"]["steps"]
+                    if step.get("name") == "Validate publication credentials before building")
+        for tag, npm, mcp, expected in (("v2.7.0-dev.1", "true", "false", 0),
+                                         ("v2.7.0", "true", "false", 1),
+                                         ("v2.7.0", "true", "true", 0),
+                                         ("v2.7.0-dev.1", "false", "false", 1),
+                                         ("HEAD", "true", "true", 1)):
+            with self.subTest(tag=tag, npm=npm, mcp=mcp):
+                result = subprocess.run(["bash", "-c", step["run"]], cwd=ROOT,
+                                        env=os.environ | {"RELEASE_TAG": tag,
+                                             "NPM_TOKEN_PRESENT": npm, "MCP_PRIVATE_KEY_PRESENT": mcp},
+                                        capture_output=True, text=True)
+                self.assertEqual(expected, int(result.returncode != 0), result.stderr)
+
     def test_release_consumer_provenance_check_has_a_token(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         steps = {step.get("name"): step for step in release["jobs"]["release"]["steps"]}
@@ -727,7 +753,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/create-release-manifest.py", workflow)
         self.assertIn("release-manifest.json", workflow)
         self.assertIn("scripts/ci/reconcile-release.py", reminder)
-        self.assertIn('[[ "$tag" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+$ ]] || continue', reminder)
+        self.assertIn('python3 scripts/ci/release_channel.py "$tag" >/dev/null 2>&1 || continue', reminder)
         self.assertIn("manage-release-incident.sh", reminder)
         self.assertIn("Release publication is incomplete", self.text("scripts/ci/manage-release-incident.sh"))
         for surface in ("github", "npm", "mcp"):
@@ -1074,7 +1100,7 @@ class ReleaseHelperTests(unittest.TestCase):
                 stub.write_text("#!/bin/sh\nexit 88\n")
                 stub.chmod(0o755)
             result = subprocess.run(
-                ["bash", "-c", rollback.replace("/tmp/", "${TEST_RECEIPT_ROOT}/")],
+                ["bash", "-c", rollback.replace("/tmp/", "${TEST_RECEIPT_ROOT}/").replace("${{ needs.mcp-candidate.result == 'success' }}", "true")],
                 cwd=ROOT, capture_output=True, text=True,
                 env={**os.environ, "PATH": f"{work}:{os.environ['PATH']}",
                      "TEST_RECEIPT_ROOT": str(work), "ROLLBACK_STATUS_FILE": str(output)},
@@ -1860,7 +1886,8 @@ if authenticated_action; then exit 93; fi
         workflow = yaml.safe_load(self.text(".github/workflows/release-please.yml"))
         steps = workflow["jobs"]["sync-release-version"]["steps"]
         patch = next(step["run"] for step in steps if step.get("name", "").startswith("Patch release metadata"))
-        code = patch.split("<< 'PY'\n", 1)[1].split("\nPY", 1)[0]
+        self.assertIn('python3 scripts/ci/sync-release-version.py . "$new_version"', patch)
+        helper = ROOT / "scripts/ci/sync-release-version.py"
         paths = ["Cargo.toml", "packages/labby-mcp/package.json", "server.json",
                  "apps/tauri/package.json", "apps/tauri/src-tauri/Cargo.toml",
                  "apps/tauri/src-tauri/tauri.conf.json",
@@ -1873,7 +1900,10 @@ if authenticated_action; then exit 93; fi
         pinned = "tools/verification/hosts/labby/Cargo.toml"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for path in paths + [pinned, "scripts/sync-npm-release-version.py"]:
+            supporting = ["Cargo.lock", "apps/tauri/src-tauri/Cargo.lock", "tools/verification/Cargo.lock",
+                          ".release-please-manifest.json", "apm.yml", "plugins/labby/apm.yml"]
+            supporting += [str(path.relative_to(ROOT)) for path in (ROOT / "crates").glob("*/Cargo.toml")]
+            for path in paths + supporting + [pinned, "scripts/sync-npm-release-version.py"]:
                 target = root / path
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(self.text(path))
@@ -1883,7 +1913,7 @@ if authenticated_action; then exit 93; fi
                 for path in locks
             }
             for version in ["1.19.0", "1.20.0"]:
-                subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
+                subprocess.run([sys.executable, str(helper), str(root), version], text=True, cwd=root, check=True)
                 for path in paths:
                     text = (root / path).read_text()
                     if path.endswith(".json"):
@@ -1897,9 +1927,9 @@ if authenticated_action; then exit 93; fi
                         self.assertIn(f'version = "{version}"', text, path)
                 self.assertIn(f'labby-model = {{ version = "={version}"', (root / pinned).read_text(), pinned)
                 first = {path: (root / path).read_bytes() for path in paths}
-                subprocess.run([sys.executable, "-", version], input=code, text=True, cwd=root, check=True)
+                subprocess.run([sys.executable, str(helper), str(root), version], text=True, cwd=root, check=True)
                 self.assertEqual(first, {path: (root / path).read_bytes() for path in paths})
-        self.assertIn("cargo update --manifest-path apps/tauri/src-tauri/Cargo.toml --workspace", patch)
+        self.assertNotIn("cargo update", patch)
         commit = next(step["run"] for step in steps if step.get("name") == "Commit and push if changed")
         staged = commit.split("paths=(", 1)[1].split(")", 1)[0].split()
         self.assertIn("apps/tauri/src-tauri/Cargo.lock", staged)

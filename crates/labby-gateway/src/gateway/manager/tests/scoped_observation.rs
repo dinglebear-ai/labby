@@ -4,7 +4,7 @@ use crate::gateway::params::GatewayEnrichmentScope;
 use crate::gateway::view_models::CapabilityObservationState as State;
 use rmcp::{
     ErrorData, RoleServer, ServerHandler,
-    model::{ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo, Tool},
+    model::{ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool},
     service::RequestContext,
 };
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -18,8 +18,8 @@ struct ObservedCatalog {
     blocked: Arc<AtomicBool>,
 }
 impl ServerHandler for ObservedCatalog {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
     async fn list_tools(
         &self,

@@ -91,7 +91,7 @@ impl UpstreamPool {
                 id.clone(),
                 TaskRoute {
                     record: record.clone(),
-                    connection,
+                    companions: vec![super::companion::TaskCompanion::new(connection)],
                 },
             );
         }

@@ -301,9 +301,8 @@ impl UpstreamPool {
             }
             self.ensure_lazy_upstream_entry(config).await;
             return self
-                .acquire_or_connect_subject(config, subject)
+                .acquire_subject_peer(config, subject)
                 .await
-                .map(|(peer, _)| peer)
                 .map_err(|_| UpstreamSkillsError::Unavailable);
         }
         self.ensure_connection_for_upstream(config, subject, None)

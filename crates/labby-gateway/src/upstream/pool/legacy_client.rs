@@ -1,7 +1,7 @@
 //! Client-handler wrapper used for legacy MCP initialization.
 //!
 //! The modern 2026-07-28 lifecycle carries the selected protocol version in
-//! per-request metadata. Legacy `initialize` carries it in `ClientInfo`, so a
+//! per-request metadata. Legacy `initialize` carries it in `ClientConfig`, so a
 //! fallback connection must override only that field while preserving every
 //! server-to-client callback implemented by the original handler.
 
@@ -132,7 +132,7 @@ impl<H: ClientHandler> ClientHandler for VersionedClientHandler<H> {
     ) -> impl Future<Output = ()> + MaybeSendFuture + '_ {
         self.inner.on_custom_notification(notification, context)
     }
-    fn get_info(&self) -> ClientInfo {
+    fn get_info(&self) -> ClientConfig {
         let mut info = self.inner.get_info();
         info.protocol_version = self.protocol_version.clone();
         info
@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn overrides_only_the_protocol_version() {
-        let mut original = ClientInfo::default();
+        let mut original = ClientConfig::default();
         original.client_info.name = "compat-client".to_string();
         original.client_info.version = "9.1.0".to_string();
         let original_capabilities = original.capabilities.clone();

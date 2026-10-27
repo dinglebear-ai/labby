@@ -591,6 +591,7 @@ impl GatewayManager {
                 total.subject_connections += invalidated.subject_connections;
                 total.relay_connections += invalidated.relay_connections;
                 total.task_routes += invalidated.task_routes;
+                total.task_route_storage_failed |= invalidated.task_route_storage_failed;
             }
         } else if let Some(cache) = &self.oauth_client_cache {
             for upstream in &shared_upstreams {
@@ -712,8 +713,64 @@ impl GatewayManager {
             });
         }
 
+        let lifecycle = self.clone();
+        let target = upstream.to_owned();
+        let owner = subject.to_owned();
+        let shared = manager.credential_source_label() == "google_provider";
+        let callback_manager = manager.clone();
+        let callback_state = state.to_owned();
+        let fence: labby_auth::upstream::manager::CredentialSaveFence = Arc::new(move |validate| {
+            let lifecycle = lifecycle.clone();
+            let target = target.clone();
+            let owner = owner.clone();
+            let callback_manager = callback_manager.clone();
+            let callback_state = callback_state.clone();
+            Box::pin(async move {
+                let guard = match &lifecycle.oauth_client_cache {
+                    Some(cache) => Some(cache.invalidation_barrier().write_owned().await),
+                    None => None,
+                };
+                // Identity is already validated. Recheck credential epoch and
+                // generation under the lifecycle writer before retiring routes,
+                // retaining its provider lock through credential publication.
+                let credential_guard = validate.await?;
+                let remaining =
+                    callback_manager.scope_challenge_transfer_for_callback(&owner, &callback_state);
+                let sessions = if shared {
+                    lifecycle
+                        .invalidate_shared_oauth_runtime(
+                            &target,
+                            "oauth.google_provider.replace",
+                            true,
+                        )
+                        .await
+                } else {
+                    lifecycle
+                        .invalidate_subject_oauth_runtime(
+                            &target,
+                            &owner,
+                            "oauth.credentials.replace",
+                            true,
+                        )
+                        .await
+                };
+                sessions.ensure_task_routes_durable().map_err(|_| {
+                    rmcp::transport::auth::AuthError::InternalError(
+                        "task route revocation persistence failed".into(),
+                    )
+                })?;
+                if let (Some(remaining), Some(cache)) = (remaining, &lifecycle.oauth_client_cache) {
+                    callback_manager.rebind_scope_challenge_after_callback(
+                        remaining,
+                        cache.lifecycle_epoch_for(&target, &owner),
+                    );
+                }
+                let held: Box<dyn Send> = Box::new((guard, credential_guard));
+                Ok(held)
+            })
+        });
         manager
-            .complete_authorization_callback_with_issuer(subject, code, state, issuer)
+            .complete_authorization_callback_with_fence(subject, code, state, issuer, Some(fence))
             .await
             .map_err(|e| {
                 tracing::warn!(
@@ -739,19 +796,6 @@ impl GatewayManager {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth callback: tokens stored"
         );
-
-        if manager.credential_source_label() == "google_provider" {
-            self.invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.replace", false)
-                .await;
-        } else {
-            self.invalidate_subject_oauth_runtime(
-                upstream,
-                subject,
-                "oauth.credentials.replace",
-                false,
-            )
-            .await;
-        }
 
         if let Some(oauth_config) = manager.upstream_config().oauth.clone() {
             let _mutation_guard = self.acquire_config_mutation().await?;
@@ -785,6 +829,16 @@ impl GatewayManager {
         upstream: &str,
         subject: &str,
     ) -> Result<UpstreamOauthStatusView, ToolError> {
+        // Snapshot authority before manager lookup or any asynchronous status
+        // work. A later configuration reload cannot lend its epoch to an old
+        // manager that was already retained by this request.
+        let refresh_policy = self.oauth_client_cache.as_ref().map(|cache| {
+            (
+                cache.clone(),
+                cache.invalidation_barrier(),
+                cache.lifecycle_epoch_for(upstream, subject),
+            )
+        });
         let started = std::time::Instant::now();
         let manager = self.require_oauth_manager(upstream, "status")?;
         let credential_source = manager.credential_source_label().to_string();
@@ -803,9 +857,10 @@ impl GatewayManager {
                     );
                     tool_error_from_oauth(error)
                 })?;
-        let scope_upgrade_required = google_credential_broker
-            .as_ref()
-            .is_some_and(|status| !status.missing_scopes.is_empty());
+        let scope_upgrade_required = !manager.required_scope_upgrade(subject).is_empty()
+            || google_credential_broker
+                .as_ref()
+                .is_some_and(|status| !status.missing_scopes.is_empty());
 
         let mut row = manager.credential_row(subject).await.map_err(|e| {
             tracing::warn!(
@@ -828,7 +883,7 @@ impl GatewayManager {
         let mut refresh_error_kind =
             scope_upgrade_required.then(|| "oauth_scope_upgrade_required".to_string());
         let mut refresh_error = scope_upgrade_required.then(|| {
-            "the shared Google credential lacks one or more scopes required by this MCP server"
+            "the upstream requires additional permissions; start authorization to review and approve them"
                 .to_string()
         });
 
@@ -838,7 +893,19 @@ impl GatewayManager {
                 .is_some_and(|row| row.access_token_expires_at - now <= 300)
         {
             refresh_attempted = true;
-            match manager.refresh_auth_client_if_due(subject).await {
+            let refresh_manager = match &refresh_policy {
+                Some((cache, barrier, epoch)) => manager
+                    .clone()
+                    .with_grant_publication_policy(Arc::clone(barrier), epoch.clone())
+                    .with_refresh_rejection_handler(
+                        cache
+                            .refresh_rejection_handler(manager.upstream_config(), subject)
+                            .await
+                            .map_err(tool_error_from_oauth)?,
+                    ),
+                None => manager.clone(),
+            };
+            match refresh_manager.refresh_auth_client_if_due(subject).await {
                 Ok(did_refresh) => {
                     refreshed = did_refresh;
                     if did_refresh {
@@ -897,8 +964,25 @@ impl GatewayManager {
                         elapsed_ms = started.elapsed().as_millis(),
                         "upstream oauth status: proactive refresh failed"
                     );
+                    row = manager.credential_row(subject).await.map_err(|error| {
+                        tracing::warn!(
+                            service = "upstream_oauth",
+                            action = "status",
+                            upstream,
+                            kind = error.kind(),
+                            elapsed_ms = started.elapsed().as_millis(),
+                            "upstream oauth status: credential lookup after refresh rejection failed"
+                        );
+                        tool_error_from_oauth(error)
+                    })?;
                 }
             }
+        }
+
+        // The refresh callback only queues successful credential invalidations.
+        // Drain outside all publication readers before returning status.
+        if let Some(pool) = self.current_pool_sync() {
+            pool.drain_oauth_client_capacity_evictions().await;
         }
 
         let (access_token_expires_at, seconds_until_expiry, refresh_token_present) = row
@@ -931,7 +1015,7 @@ impl GatewayManager {
                 (true, false, _) => UpstreamOauthConnectionState::Connected,
             }
         };
-        let authenticated = matches!(
+        let mut authenticated = matches!(
             state,
             UpstreamOauthConnectionState::Connected | UpstreamOauthConnectionState::Expiring
         );
@@ -987,11 +1071,25 @@ impl GatewayManager {
             elapsed_ms = started.elapsed().as_millis(),
             "upstream oauth status: checked"
         );
+        let mut required_scopes = manager.required_scope_upgrade(subject);
+        if let Some(broker) = &google_credential_broker {
+            required_scopes.extend(broker.missing_scopes.iter().cloned());
+        }
+        required_scopes.sort();
+        required_scopes.dedup();
+        if !required_scopes.is_empty() {
+            state = UpstreamOauthConnectionState::ScopeUpgradeRequired;
+            authenticated = false;
+            refresh_error_kind = Some("oauth_scope_upgrade_required".to_string());
+            refresh_error = Some("The upstream requires additional permissions. Start authorization to review and approve them; the original request was not replayed.".to_string());
+        }
         Ok(UpstreamOauthStatusView {
             capability_observation: Some(capability_observation),
             authenticated,
             upstream: upstream.to_string(),
             credential_source,
+            authorization_mode: manager.authorization_mode_label().to_string(),
+            required_scopes,
             google_credential_broker,
             expires_within_5m,
             state,
@@ -1051,6 +1149,12 @@ impl GatewayManager {
             }
             None => None,
         };
+        let sessions = self
+            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
+            .await;
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let revoke_result = manager
             .revoke_shared_google_credential()
             .await
@@ -1075,10 +1179,10 @@ impl GatewayManager {
                     .await;
             }
         }
-        let sessions = self
-            .invalidate_shared_oauth_runtime(upstream, "oauth.google_provider.revoke", true)
-            .await;
         drop(lifecycle_guard);
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let invalidation = revoke_result?;
         tracing::info!(
             service = "upstream_oauth",
@@ -1136,6 +1240,12 @@ impl GatewayManager {
             None => None,
         };
 
+        let sessions = self
+            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
+            .await;
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         let clear_result = manager.clear_credentials(subject).await;
         // Invalidation is deliberately unconditional once a clear attempt has
         // crossed the lifecycle barrier. Even if persistence reports a partial
@@ -1144,10 +1254,10 @@ impl GatewayManager {
         self.invalidate_oauth_status_discovery(upstream, Some(subject))
             .await;
 
-        let sessions = self
-            .invalidate_subject_oauth_runtime(upstream, subject, "oauth.credentials.clear", true)
-            .await;
         drop(lifecycle_guard);
+        sessions
+            .ensure_task_routes_durable()
+            .map_err(ToolError::internal_message)?;
         if let Err(error) = clear_result {
             tracing::warn!(
                 service = "upstream_oauth",

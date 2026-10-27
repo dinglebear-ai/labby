@@ -74,21 +74,26 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         "prebuilt index.html missing"
     );
 
-    let mut identity = LiveIdentity::bootstrap_with_scopes(
+    let config = format!(
+        "{}\n[[loadouts]]\nname = \"team:{}:production\"\nupstreams = []\nservices = [\"gateway\"]\n\n[web]\nassets_dir = {}\n",
+        policy(&["lab:read", "lab", "lab:admin"]).replacen(
+            "services = [\"gateway\"]",
+            "services = [\"gateway\", \"snippets\"]\nexpose_code_mode = false",
+            1,
+        ) + "\n[code_mode]\nenabled = true\n",
+        support::LiveLabbyGuard::HARNESS_TEAM_ID,
+        serde_json::to_string(&assets.display().to_string()).unwrap()
+    );
+    // Credential verification fences the Loadout policy fingerprint. Install
+    // Snippets before issuing the browser credential, rather than expanding
+    // its bound policy after bootstrap and invalidating the credential.
+    let mut identity = LiveIdentity::bootstrap_with_policy_and_scopes(
         "live-browser@labby.invalid",
+        &config,
         &["lab:read", "lab", "lab:admin"],
     )
     .await
-    .expect("public identity bootstrap");
-    let config = format!(
-        "{}\n[web]\nassets_dir = {}\n",
-        policy(&["lab:read", "lab", "lab:admin"]),
-        serde_json::to_string(&assets.display().to_string()).unwrap()
-    );
-    identity
-        .replace_policy_and_restart(&config)
-        .await
-        .expect("restart with prebuilt assets");
+    .expect("public identity bootstrap with final browser policy");
     identity
         .create_session()
         .await
@@ -136,11 +141,7 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .mode(0o600)
         .open(&scan_secrets)
         .expect("scan-only secrets");
-    for secret in [
-        &session.cookie,
-        &session.csrf,
-        identity.credential_for_request(),
-    ] {
+    for secret in identity.exact_secret_canaries() {
         writeln!(scan_file, "{secret}").expect("write scan-only secret");
     }
     let descriptor = fixture_root.join("descriptor.json");

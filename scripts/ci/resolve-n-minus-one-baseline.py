@@ -15,6 +15,10 @@ import json
 import re
 import sys
 from pathlib import Path
+try:
+    from release_channel import order
+except ModuleNotFoundError:
+    from scripts.ci.release_channel import order
 
 TAG = re.compile(r"v(\d+)\.(\d+)\.(\d+)")
 
@@ -52,12 +56,15 @@ def main() -> int:
     parser.add_argument("--asset", action="append", required=True, help="asset the baseline must carry (repeatable)")
     args = parser.parse_args()
 
-    candidate = version(args.candidate)
+    try:
+        candidate = order(args.candidate)
+    except ValueError:
+        candidate = None
     if candidate is None:
         raise SystemExit(f"candidate {args.candidate!r} is not a vX.Y.Z tag")
     merged = {line.strip() for line in args.merged_tags.read_text().splitlines()}
     older = sorted(
-        (tag for tag in merged if (parsed := version(tag)) is not None and parsed < candidate),
+        (tag for tag in merged if (parsed := version(tag)) is not None and order(tag) < candidate),
         key=version,
         reverse=True,
     )

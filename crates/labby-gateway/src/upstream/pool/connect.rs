@@ -18,15 +18,13 @@ use std::time::Instant;
 use reqwest::header::{AUTHORIZATION, HeaderName, HeaderValue};
 
 use rmcp::model::{
-    JsonRpcMessage, ProgressNotificationParam, ServerNotification, ServerRequest,
+    GetMeta, JsonRpcMessage, ProgressNotificationParam, ServerNotification, ServerRequest,
     TaskStatusNotificationParams,
 };
 use rmcp::service::{ClientServiceExt, RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
 #[cfg(unix)]
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
-use rmcp::transport::streamable_http_client::{
-    StreamableHttpClientTransportConfig, StreamableHttpClientWorker,
-};
+use rmcp::transport::streamable_http_client::StreamableHttpClientWorker;
 use rmcp::transport::{Transport, TransportAdapterIdentity, WorkerTransport};
 use rmcp::{ClientHandler, RoleClient};
 
@@ -53,6 +51,7 @@ use super::lifecycle_compat::{
     log_fallback,
 };
 use super::tools::MAX_UPSTREAM_TOOLS;
+use super::transport_config::HttpTransportBudgets;
 use super::{UpstreamClientService, UpstreamConnection};
 
 #[derive(Clone)]
@@ -144,6 +143,17 @@ impl<T> OrderedRelayNotificationTransport<T> {
         let JsonRpcMessage::Notification(notification) = message else {
             return None;
         };
+        // Subscription notifications belong to RMCP's ID-scoped receiver. The
+        // legacy ordered relay forwards only params and would discard this
+        // metadata, stealing the event from the acknowledged subscription.
+        if notification
+            .notification
+            .get_meta()
+            .subscription_id()
+            .is_some()
+        {
+            return None;
+        }
         match &notification.notification {
             ServerNotification::ProgressNotification(progress) => {
                 Some(OrderedRelayNotification::Progress(progress.params.clone()))
@@ -313,6 +323,7 @@ pub(super) async fn connect_upstream_with_client(
     runtime_origin: Option<&str>,
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     shared_client: Option<&reqwest::Client>,
+    budgets: HttpTransportBudgets,
 ) -> anyhow::Result<(UpstreamConnection, Vec<rmcp::model::Tool>)> {
     connect_upstream_with_handler(
         config,
@@ -322,6 +333,7 @@ pub(super) async fn connect_upstream_with_client(
         runtime_owner,
         shared_client,
         (),
+        budgets,
     )
     .await
 }
@@ -340,6 +352,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
     runtime_owner: Option<&UpstreamRuntimeOwner>,
     shared_client: Option<&reqwest::Client>,
     handler: H,
+    budgets: HttpTransportBudgets,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     connect_upstream_with_handler_and_notifications(
         config,
@@ -350,6 +363,7 @@ pub(super) async fn connect_upstream_with_handler<H: ClientHandler + Clone>(
         shared_client,
         handler,
         None,
+        budgets,
     )
     .await
 }
@@ -363,6 +377,7 @@ pub(super) fn connect_upstream_with_handler_and_notifications<'a, H: ClientHandl
     shared_client: Option<&'a reqwest::Client>,
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
+    budgets: HttpTransportBudgets,
 ) -> impl Future<Output = anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)>> + Send + 'a
 {
     // Heap-own all transport state machines once, keeping the generic relay
@@ -394,6 +409,7 @@ pub(super) fn connect_upstream_with_handler_and_notifications<'a, H: ClientHandl
                     shared_client,
                     handler,
                     notification_interceptor.clone(),
+                    budgets,
                 )
                 .await
             }
@@ -430,6 +446,7 @@ pub(super) fn connect_upstream_with_handler_and_notifications<'a, H: ClientHandl
                     oauth_client_cache,
                     handler,
                     notification_interceptor.clone(),
+                    budgets,
                 )
                 .await
             }
@@ -487,6 +504,7 @@ pub(super) async fn connect_upstream(
         runtime_origin,
         runtime_owner,
         None,
+        HttpTransportBudgets::default(),
     )
     .await
 }
@@ -499,6 +517,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
     oauth_client_cache: Option<&OauthClientCache>,
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
+    budgets: HttpTransportBudgets,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     let socket_path = config.socket_path.as_deref().ok_or_else(|| {
         anyhow::anyhow!(
@@ -517,6 +536,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
             handler,
             LifecycleAttempt::LegacyInitialize,
             notification_interceptor,
+            budgets,
         )
         .await;
     }
@@ -530,6 +550,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
         handler.clone(),
         LifecycleAttempt::Modern,
         notification_interceptor.clone(),
+        budgets,
     )
     .await
     {
@@ -548,6 +569,7 @@ async fn connect_unix_socket_upstream<H: ClientHandler + Clone>(
                 handler,
                 attempt,
                 notification_interceptor,
+                budgets,
             )
             .await
         }
@@ -564,6 +586,7 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
     handler: H,
     lifecycle: LifecycleAttempt,
     notification_interceptor: Option<RelayNotificationInterceptor>,
+    budgets: HttpTransportBudgets,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -578,7 +601,7 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
             config.name
         )
     })?;
-    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(request_uri);
+    let mut transport_config = budgets.config(&request_uri, max_transport_response_bytes());
     transport_config.custom_headers = configured_custom_headers(config)?;
     let socket_client =
         LabbyUnixSocketHttpClient::new(socket_path, url, max_transport_response_bytes());
@@ -596,6 +619,11 @@ async fn connect_unix_socket_upstream_once<H: ClientHandler>(
                 config.name
             )
         })?;
+        let socket_client = socket_client.with_scope_challenge_handler(
+            cache
+                .scope_challenge_handler(config, subject)
+                .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?,
+        );
         let auth_client = cache
             .get_or_build_capped(config, subject, socket_client)
             .await
@@ -815,6 +843,7 @@ pub(super) async fn connect_http_upstream<H: ClientHandler + Clone>(
         shared_client,
         handler,
         None,
+        HttpTransportBudgets::default(),
     )
     .await
 }
@@ -827,6 +856,7 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
     shared_client: Option<&reqwest::Client>,
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
+    budgets: HttpTransportBudgets,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     if config.lifecycle == Some(UpstreamLifecycle::Initialize) {
         return connect_http_upstream_once(
@@ -838,6 +868,7 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
             handler,
             LifecycleAttempt::LegacyInitialize,
             notification_interceptor,
+            budgets,
         )
         .await;
     }
@@ -850,6 +881,7 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
         handler.clone(),
         LifecycleAttempt::Modern,
         notification_interceptor.clone(),
+        budgets,
     )
     .await
     {
@@ -868,6 +900,7 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
                 handler,
                 attempt,
                 notification_interceptor,
+                budgets,
             )
             .await
         }
@@ -913,6 +946,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
     handler: H,
     lifecycle: LifecycleAttempt,
     notification_interceptor: Option<RelayNotificationInterceptor>,
+    budgets: HttpTransportBudgets,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
     tracing::info!(
         surface = "dispatch", service = "upstream.pool",
@@ -920,7 +954,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         action = "upstream.connect.start", target = %upstream_target_redacted(config),
         "upstream connect start",
     );
-    let mut transport_config = StreamableHttpClientTransportConfig::with_uri(url);
+    let mut transport_config = budgets.config(url, max_transport_response_bytes());
     transport_config.custom_headers = configured_custom_headers(config)?;
 
     // Resolve base HTTP client: reuse the pool-level shared client when
@@ -933,6 +967,7 @@ async fn connect_http_upstream_once<H: ClientHandler>(
         drop(rustls::crypto::ring::default_provider().install_default());
         reqwest::Client::builder()
             .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
+            .redirect(http_client::same_origin_redirect_policy())
             .build()?
     };
 
@@ -959,6 +994,11 @@ async fn connect_http_upstream_once<H: ClientHandler>(
             )
         })?;
 
+        let capped = capped.with_scope_challenge_handler(
+            cache
+                .scope_challenge_handler(config, subject)
+                .map_err(|error| anyhow::anyhow!("oauth_required: {error}"))?,
+        );
         let auth_client = cache
             .get_or_build_capped(config, subject, capped)
             .await
@@ -1116,6 +1156,7 @@ mod conformance_tests {
             None,
             (),
             None,
+            super::HttpTransportBudgets::default(),
         );
         let caller = super::connect_upstream(&config, None, None, None, None);
         eprintln!(

@@ -102,7 +102,7 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     use axum::{Json, Router, routing::get};
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities,
-        ServerInfo,
+        ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::transport::streamable_http_server::{
@@ -180,8 +180,8 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
     #[derive(Clone)]
     struct Fixture(Arc<crate::access::AccessRuntime>);
     impl ServerHandler for Fixture {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
         async fn list_tools(
             &self,
@@ -393,7 +393,11 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
         &serde_json::to_vec(&row).unwrap(),
     )
     .unwrap();
-    let before =
+    let observed_from = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut before =
         crate::dispatch::setup::readiness::state_for_identity(store.clone(), identity.clone())
             .await
             .unwrap();
@@ -407,12 +411,35 @@ async fn signed_oauth_descriptor_calls_are_observed_per_client_and_principal() {
         .await
         .unwrap();
     drop(expired.cancel().await);
-    assert_eq!(
-        before,
+    let mut after =
         crate::dispatch::setup::readiness::state_for_identity(store.clone(), identity.clone())
             .await
-            .unwrap()
-    );
+            .unwrap();
+    let observed_until = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // Each readiness read freshly verifies this authenticated request. Only
+    // that timestamp may advance; expired client evidence must stay unchanged.
+    let mut authenticated_at = Vec::new();
+    for readiness in [&mut before, &mut after] {
+        let checks = readiness["checks"].as_array_mut().unwrap();
+        let authenticated: Vec<_> = checks
+            .iter_mut()
+            .filter(|check| check["check"] == "gateway_authenticated")
+            .collect();
+        assert_eq!(authenticated.len(), 1);
+        for check in authenticated {
+            assert_eq!(check["status"], "verified");
+            assert_eq!(check["resource_id"], "authenticated-request");
+            let timestamp = check["verified_at"].as_u64().unwrap();
+            assert!((observed_from..=observed_until).contains(&timestamp));
+            authenticated_at.push(timestamp);
+            check["verified_at"] = serde_json::Value::Null;
+        }
+    }
+    assert!(authenticated_at[1] >= authenticated_at[0]);
+    assert_eq!(before, after);
     // Reconnecting rotates both private descriptors and the server selection.
     register_authenticated(
         home.path().into(),

@@ -1,15 +1,14 @@
 //! `tools/call` that tells the upstream to stop when the caller withdraws.
 //!
-//! rmcp has no drop-based cancellation for ordinary requests — only the
-//! explicit `RequestHandle::cancel`. Dropping the response future therefore
-//! abandons the *local* await while the upstream keeps executing, and the
-//! gateway's own `tools/call` is exactly the request most likely to be running
-//! real side effects (shell, PowerShell, writes) on the far side. A client that
-//! sees a cancelled call and retries would otherwise run the same tool twice.
+//! rmcp 3.7's `Peer::call_tool` convenience methods cancel abandoned requests
+//! with a best-effort `try_send`. A full peer queue can discard that notification.
+//! Low-level `RequestHandle` and typed raw-response calls have no drop guard.
+//! Labby retains this guard because tool calls can run remote side effects:
+//! delivery waits for a transport flush, has a fixed deadline, and logs failure.
 //!
-//! Sending `notifications/cancelled` is the MCP-defined way to say so, and is
-//! what the relay path already does via `relay_cancellation.rs`. This is the
-//! pooled-path equivalent, scoped to tool calls.
+//! Resource reads and prompt gets already use rmcp's guarded convenience
+//! methods. The relay path retains separate cancellation because it must also
+//! correlate request IDs and obtain Labby's cancellation-token acknowledgement.
 //!
 //! The guard fires on *any* early drop, not just caller cancellation: a local
 //! deadline elapsing, or the surrounding task being dropped, both leave the
@@ -32,7 +31,7 @@ const CANCEL_REASON: &str = "downstream caller cancelled the request";
 ///
 /// Armed for exactly the window between the request reaching the wire and its
 /// response arriving, so a completed call never emits a spurious cancellation.
-struct CancelUpstreamOnDrop {
+pub(super) struct CancelUpstreamOnDrop {
     /// `None` once disarmed — the response arrived and nothing needs cancelling.
     peer: Option<Peer<RoleClient>>,
     upstream: String,
@@ -40,7 +39,7 @@ struct CancelUpstreamOnDrop {
 }
 
 impl CancelUpstreamOnDrop {
-    fn armed(peer: Peer<RoleClient>, upstream: &str, id: RequestId) -> Self {
+    pub(super) fn armed(peer: Peer<RoleClient>, upstream: &str, id: RequestId) -> Self {
         Self {
             peer: Some(peer),
             upstream: upstream.to_string(),
@@ -48,7 +47,7 @@ impl CancelUpstreamOnDrop {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(super) fn disarm(&mut self) {
         self.peer = None;
     }
 }

@@ -757,16 +757,20 @@ impl SqliteStore {
         .await
     }
 
-    /// Delete a provider credential only if it is still the generation that failed.
+    /// Delete a provider credential only if its generation and revocation epoch
+    /// still match the authority observed before the failed exchange.
     ///
     /// When the compare-and-delete succeeds, every dependent Labby refresh token
     /// and pending authorization code for that Google subject is revoked in the
     /// same transaction. A concurrent request that already installed a newer
-    /// provider credential wins and leaves its sessions untouched.
+    /// provider credential wins and leaves its sessions untouched. The epoch is
+    /// checked by the transactional DELETE so revoke/reinsert generation reuse
+    /// cannot turn a late failure into deletion of a fresh grant.
     pub async fn invalidate_google_provider_credential(
         &self,
         subject: &str,
         generation: i64,
+        expected_revocation_epoch: i64,
     ) -> Result<GoogleProviderInvalidation, AuthError> {
         let subject = subject.to_string();
         self.with_conn(move |conn| {
@@ -774,8 +778,10 @@ impl SqliteStore {
             let invalidated = transaction
                 .execute(
                     "DELETE FROM google_provider_credentials
-                     WHERE subject = ?1 AND generation = ?2",
-                    params![subject, generation],
+                     WHERE subject = ?1 AND generation = ?2
+                       AND COALESCE((SELECT epoch FROM google_provider_revocations
+                                     WHERE subject = '*'), 0) = ?3",
+                    params![subject, generation, expected_revocation_epoch],
                 )
                 .map_err(sqlite_error)?;
             if invalidated == 0 {

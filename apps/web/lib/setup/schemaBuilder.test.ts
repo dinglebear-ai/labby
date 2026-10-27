@@ -194,3 +194,18 @@ test('form resolver returns field errors and preserves stored secrets on valid i
   assert.deepEqual(valid.errors, {})
   assert.deepEqual(stripBlankSecrets(valid.values, [field({ name: 'URL' }), field({ name: 'SECRET', secret: true, hasStoredSecret: true })]), { URL: 'configured' })
 })
+
+test('ServiceForm resolver returns field errors and preserves string values with Zod 4', async () => {
+  const resolver = zodResolver(buildSchema([
+    field({ name: 'ENDPOINT', required: true, ui: { ...DEFAULT_UI, kind: 'url' } }),
+    field({ name: 'SECRET', secret: true, hasStoredSecret: true }),
+    field({ name: 'ENABLED', ui: { ...DEFAULT_UI, kind: 'bool' } }),
+  ]))
+  const options = { fields: {}, shouldUseNativeValidation: false }
+  const invalid = await resolver({ ENDPOINT: 'javascript:alert(1)', SECRET: '', ENABLED: 'false' }, undefined, options)
+  assert.deepEqual(invalid.values, {})
+  assert.equal(invalid.errors.ENDPOINT?.message, 'Must be an http or https URL')
+  const valid = await resolver({ ENDPOINT: 'https://example.com/mcp', SECRET: '', ENABLED: 'false' }, undefined, options)
+  assert.deepEqual(valid.errors, {})
+  assert.deepEqual(valid.values, { ENDPOINT: 'https://example.com/mcp', SECRET: '', ENABLED: 'false' })
+})

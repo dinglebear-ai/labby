@@ -631,21 +631,25 @@ fn resource_for_file(file: FileView) -> Resource {
     } else {
         format!("{}/{}", file.folder, file.display_name)
     };
-    Resource::new(file.uri, name)
-        .with_description(if file.owned {
-            "File Stash file owned by the caller"
-        } else {
-            "File Stash file shared with the caller"
-        })
-        .with_mime_type(file.content_type)
-        .with_size(file.size_bytes)
+    super::native_metadata::native_resource(
+        Resource::new(file.uri, name)
+            .with_description(if file.owned {
+                "File Stash file owned by the caller"
+            } else {
+                "File Stash file shared with the caller"
+            })
+            .with_mime_type(file.content_type)
+            .with_size(file.size_bytes),
+    )
 }
 
 pub(crate) fn template() -> ResourceTemplate {
     // The template covers both saved text and binary uploads. Each concrete
     // resource and read response supplies its own MIME type.
-    ResourceTemplate::new(TEMPLATE_URI, "stash/file")
-        .with_description("Caller-authorized File Stash object by opaque ULID")
+    super::native_metadata::native_resource_template(
+        ResourceTemplate::new(TEMPLATE_URI, "stash/file")
+            .with_description("Caller-authorized File Stash object by opaque ULID"),
+    )
 }
 
 fn forbidden() -> ToolError {

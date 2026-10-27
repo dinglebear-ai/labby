@@ -57,7 +57,7 @@ async fn oauth_http_skills_discovery_and_read_use_only_the_subject_peer() {
             optional_catalogs: Default::default(),
             _connection: connection,
             peer,
-            tools,
+            tools: tools.into(),
             last_used: std::time::Instant::now(),
         },
     );

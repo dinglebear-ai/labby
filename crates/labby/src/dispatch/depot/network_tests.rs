@@ -440,3 +440,5 @@ async fn cold_tls_setup_does_not_block_runtime_and_reuses_lease() {
     client.test_client_setup().await.unwrap();
     assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+mod cancellation;

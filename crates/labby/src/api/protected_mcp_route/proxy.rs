@@ -394,7 +394,11 @@ pub(super) async fn protected_route_upstream_target(
     })?;
 
     let token = if upstream_config.oauth.is_some() {
-        let Some(oauth_manager) = manager.upstream_oauth_manager(&upstream_name) else {
+        let Some(oauth_manager) = manager
+            .upstream_oauth_manager_for_subject(&upstream_name, SHARED_GATEWAY_OAUTH_SUBJECT)
+            .await
+            .map_err(|error| ApiError::new(error).into_response())?
+        else {
             tracing::warn!(
                 route = %route.name,
                 resource = %route.public_resource(),

@@ -36,7 +36,11 @@ def matches_auth_pin(manifest: dict, repository: str, revision: str, version: st
         and dependency.get("optional") is True
         and isinstance(dependency.get("features"), list)
         and all(isinstance(feature, str) for feature in dependency["features"])
-        and set(dependency["features"]) == {"client", "auth", "transport-streamable-http-client-reqwest"}
+        and {"client", "auth", "transport-streamable-http-client-reqwest"}.issubset(dependency["features"])
+        and set(dependency["features"]).issubset({
+            "client", "auth", "transport-streamable-http-client-reqwest",
+            "auth-client-credentials-jwt", "auth-enterprise-managed",
+        })
     )
 
 

@@ -28,6 +28,7 @@ pub(crate) struct CleanupPermit<'a> {
 }
 
 impl CleanupSession {
+    #[cfg(any(unix, test))]
     pub(crate) fn new(upstream: &str) -> Self {
         Self {
             upstream: upstream.into(),

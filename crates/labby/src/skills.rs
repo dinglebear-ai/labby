@@ -12,6 +12,8 @@ pub(crate) mod admission;
 pub(crate) mod aggregate;
 #[cfg(all(feature = "skills", feature = "gateway"))]
 pub(crate) mod code_mode;
+#[cfg(feature = "skills")]
+pub(crate) mod directory;
 pub(crate) mod facade;
 pub(crate) mod local;
 pub(crate) mod providers;

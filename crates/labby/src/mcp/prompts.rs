@@ -14,7 +14,26 @@ use crate::registry::{RegisteredService, ToolRegistry};
 
 /// Return all registered prompt templates.
 pub fn list_all() -> ListPromptsResult {
-    ListPromptsResult::with_all_items(vec![run_action_prompt(), service_discover_prompt()])
+    ListPromptsResult::with_all_items(
+        vec![run_action_prompt(), service_discover_prompt()]
+            .into_iter()
+            .map(super::native_metadata::native_prompt)
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+#[test]
+fn native_prompts_publish_display_metadata() {
+    for prompt in list_all().prompts {
+        assert!(
+            prompt
+                .title
+                .as_deref()
+                .is_some_and(|title| !title.is_empty())
+        );
+        assert!(prompt.icons.is_some_and(|icons| !icons.is_empty()));
+    }
 }
 
 /// Validate advertised required arguments before values can be string-coerced.

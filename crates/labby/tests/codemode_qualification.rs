@@ -18,7 +18,12 @@ use serde_json::json;
 
 #[tokio::test]
 async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
-    let limits = Limits::default();
+    // Discovery is a functional qualification that includes cold preparation.
+    // Dedicated deadline tests separately exercise the default timeout boundary.
+    let limits = Limits {
+        timeout_ms: 5_000,
+        ..Limits::default()
+    };
     let runner = CodeModeQualification::start(limits)
         .await
         .expect("Q3 runner");
@@ -29,7 +34,7 @@ async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
     let execution = runner
         .execute(
             r#"async () => {
-      const hits = await codemode.search({query:"safe", limit:5});
+      const hits = await codemode.search({query:"safe", limit:5, kinds:["tool"]});
       const hit = hits.results.find((row) => row.path === "forge.forge_safe");
       if (!hit) throw new Error("literal forge.forge_safe discovery result missing");
       const docs = await codemode.describe(hit.path);
@@ -42,13 +47,13 @@ async fn q3_discovers_and_describes_the_live_fixture_before_execution() {
     assert!(
         !execution.is_error,
         "qualification result: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"]["hit"],
         json!("forge.forge_safe"),
         "search result: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"]["described"],
@@ -113,7 +118,7 @@ async fn q3_fanout_preserves_partial_error_and_exact_effect_count() {
     assert!(
         !execution.is_error,
         "fanout top-level result must succeed: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"][0]["status"],
@@ -176,7 +181,7 @@ async fn q3_dependent_call_consumes_actual_first_result() {
     assert!(
         !execution.is_error,
         "dependent top-level result must succeed: {}",
-        execution.structured
+        execution.diagnostic()
     );
     let actual = execution.structured["result"]["actual"]
         .as_str()
@@ -261,7 +266,7 @@ async fn q3_seeded_bounded_stress_has_literal_counts_and_no_duplicate_effects() 
         execution.structured["result"]["fulfilled"],
         json!(9),
         "stress result: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(
         execution.structured["result"]["rejected"],
@@ -383,7 +388,7 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
     assert!(
         !execution.is_error,
         "output fixture failed: {}",
-        execution.structured
+        execution.diagnostic()
     );
     assert_eq!(execution.structured["result"]["truncated"], json!(true));
     assert!(
@@ -414,7 +419,9 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
 
 #[tokio::test]
 async fn q3_call_budget_rejects_before_the_third_effect() {
+    // Allow cold-start preparation before checking the two-call budget.
     let limits = Limits {
+        timeout_ms: 5_000,
         max_calls_per_run: Some(2),
         ..Limits::default()
     };
@@ -441,7 +448,11 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
         )
         .await
         .expect("call budget response");
-    assert!(!execution.is_error);
+    assert!(
+        !execution.is_error,
+        "qualification result: {}",
+        execution.structured
+    );
     assert_eq!(execution.structured["result"][0]["ok"], json!(true));
     assert_eq!(execution.structured["result"][1]["ok"], json!(true));
     assert_eq!(execution.structured["result"][2]["ok"], json!(false));
@@ -472,9 +483,9 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
 #[tokio::test]
 async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let limits = Limits {
-        // Match the normal Code Mode budget so the 500ms response reserve
-        // cannot exhaust a cold proxy before the queue oracle begins.
-        timeout_ms: 2_000,
+        // Allow cold proxy preparation without changing the queue oracle's
+        // 150ms transport limit below or its deterministic 250ms delayed call.
+        timeout_ms: 5_000,
         // The safe prewarm crosses a real stdio process and can take more
         // than 50ms on a busy CI runner. Keep this below forge.delay's
         // deterministic 250ms so the queue oracle still proves timeout.
@@ -510,7 +521,7 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     assert!(
         !execution.is_error,
         "queue response: {}",
-        execution.structured
+        execution.diagnostic()
     );
     let mut kinds = execution.structured["result"]
         .as_array()
@@ -523,7 +534,7 @@ async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
         kinds,
         vec!["queue_saturated", "timeout"],
         "queue trace: {}",
-        execution.structured
+        execution.diagnostic()
     );
     runner
         .fixture_settlement_barrier()

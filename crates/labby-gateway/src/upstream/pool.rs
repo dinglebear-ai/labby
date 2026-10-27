@@ -122,6 +122,7 @@ mod skills_provider;
 #[cfg(feature = "skills")]
 mod skills_targeted;
 mod subject_tool_observation;
+mod task_authority;
 #[cfg(feature = "skills")]
 pub use skills_provider::{SepSkillProvider, SkillSearchResult};
 mod skills_tests;
@@ -144,6 +145,7 @@ mod tools_call_exact;
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
 mod tools_exposure_tests;
+mod transport_config;
 mod usage_record;
 mod validate;
 
@@ -181,7 +183,7 @@ pub use prompts_list::ListedUpstreamPrompt;
 pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
-pub use task_route::TaskRouteAuthorization;
+pub use task_route::{TaskCallContext, TaskRouteAuthorization};
 pub use task_route_store::TaskRouteStore;
 #[cfg(test)]
 pub(crate) use tools::MAX_UPSTREAM_RESOURCES;
@@ -209,7 +211,7 @@ pub(super) struct SubjectScopedConnection {
     pub(super) peer: rmcp::service::Peer<RoleClient>,
     /// Tool list discovered at connect time (avoids a round-trip on
     /// every owner-lookup call).
-    pub(super) tools: Vec<rmcp::model::Tool>,
+    pub(super) tools: Arc<[rmcp::model::Tool]>,
     /// Wall-clock instant when this entry was last used.
     pub(super) last_used: Instant,
 }
@@ -352,10 +354,19 @@ pub struct UpstreamPool {
     /// Shared with `OauthClientCache`: readers cover the entire authenticated
     /// connect-and-publish path; credential mutation takes the sole writer.
     oauth_invalidation_barrier: Arc<RwLock<()>>,
+    /// One cancellation-independent capacity/rejection drain shared by callers.
+    oauth_invalidation_drain: Arc<Mutex<Option<oauth_invalidation::OAuthInvalidationDrain>>>,
+    #[cfg(test)]
+    oauth_invalidation_drain_probe: Option<Arc<oauth_invalidation::rejection_tests::DrainProbe>>,
     /// Stable config fingerprint for each upstream name. Selective reconcile
     /// replaces changed fingerprints before publishing the new revision so a
     /// request carrying stale config cannot publish or reuse a connection.
     upstream_config_fingerprints: Arc<DashMap<String, String>>,
+    /// Ephemeral digests of normalized winning bearer authority. Never logged
+    /// or persisted; reconnect intent alone does not invalidate durable tasks.
+    upstream_bearer_authorities: Arc<DashMap<String, Option<[u8; 32]>>>,
+    /// Trusted definitions for reacquiring durable task routes; never persisted.
+    configured_upstreams: Arc<DashMap<String, UpstreamConfig>>,
     /// Background reprobe task cancellation tokens, keyed by upstream name.
     probe_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
     /// Shared fleet-wide gate for periodic reprobes. Per-upstream tasks retain
@@ -427,6 +438,9 @@ pub struct UpstreamPool {
     /// Ephemeral live relay companions for tasks created by this pool generation.
     /// Durable routing/authorization metadata lives in task_route_store.
     task_routes: Arc<RwLock<HashMap<String, tasks::TaskRoute>>>,
+    /// Fixed stripes single-flight cold task acquisition without holding the
+    /// upstream-wide definition gate across remote I/O. Warm sends bypass them.
+    task_connect_locks: [Arc<Mutex<()>>; 64],
     /// Durable public-to-native task routing metadata. This store never owns
     /// live peers, relay connections, access tokens, or secrets.
     task_route_store: Option<Arc<TaskRouteStore>>,
@@ -646,8 +660,9 @@ impl UpstreamPool {
                 // body deadline here would terminate long-lived SSE responses
                 // before the caller's configured budget expires.
                 .connect_timeout(DEFAULT_REQUEST_TIMEOUT)
+                .redirect(super::http_client::same_origin_redirect_policy())
                 .build()
-                .unwrap_or_default(),
+                .expect("upstream HTTP client must build with redirect policy"),
         );
         let (notification_tx, _notification_rx) = Self::notification_channel();
         Self {
@@ -667,7 +682,12 @@ impl UpstreamPool {
             subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
+            oauth_invalidation_drain: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            oauth_invalidation_drain_probe: None,
             upstream_config_fingerprints: Arc::new(DashMap::new()),
+            upstream_bearer_authorities: Arc::new(DashMap::new()),
+            configured_upstreams: Arc::new(DashMap::new()),
             probe_tasks: Arc::new(RwLock::new(HashMap::new())),
             reprobe_semaphore: Arc::new(tokio::sync::Semaphore::new(
                 upstream_discovery_concurrency(None),
@@ -690,6 +710,7 @@ impl UpstreamPool {
             relay_connections: Arc::new(RwLock::new(HashMap::new())),
             relay_connect_locks: Arc::new(RwLock::new(HashMap::new())),
             task_routes: Arc::new(RwLock::new(HashMap::new())),
+            task_connect_locks: std::array::from_fn(|_| Arc::new(Mutex::new(()))),
             task_route_store: None,
             subject_sweep_task: Arc::new(RwLock::new(None)),
             runtime_origin: None,

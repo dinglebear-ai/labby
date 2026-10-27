@@ -19,8 +19,12 @@ impl fmt::Debug for BridgeConfig {
 }
 
 /// Verified bytes, copied into private executable custody before spawning.
+/// Only Unix supervisors retain custody; other platforms can validate artifacts
+/// but expose no native bridge lifecycle.
 pub struct ValidatedBridgeConfig {
+    #[cfg(unix)]
     pub(crate) config: BridgeConfig,
+    #[cfg(unix)]
     pub(crate) bytes: Vec<u8>,
 }
 
@@ -88,7 +92,9 @@ impl BridgeConfig {
             return Err(BridgeError::ChecksumMismatch);
         }
         Ok(ValidatedBridgeConfig {
+            #[cfg(unix)]
             config: self,
+            #[cfg(unix)]
             bytes,
         })
     }

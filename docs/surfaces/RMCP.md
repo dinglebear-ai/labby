@@ -1,7 +1,7 @@
 ---
 title: "RMCP"
 created: "2026-07-30"
-updated: "2026-09-16"
+updated: "2026-10-24"
 ---
 
 # RMCP
@@ -18,9 +18,117 @@ It is the source of truth for:
 
 This document is normative for future work even where the codebase is still converging.
 
-The reproducible production rmcp Git revision, pinned upstream rmcp `3.3.0`
+The reproducible production rmcp Git revision, pinned upstream rmcp `3.7.0`
 conformance fixture, and MCP `2026-07-28` validation matrix are
 documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
+
+## Fork compatibility
+
+Labby uses `dinglebear-ai/rust-sdk`, based on upstream `rmcp-v3.7.0`
+(`5d6a11f2ae022f513aec0f6e0f10f89a57891a7f`). Both the workspace and
+`labby-auth` pin the same fork revision. The auth dependency retains its
+client-only feature set.
+
+The 3.7.0 source comparison retains these fork changes:
+
+| Behavior | Upstream 3.7.0 | Fork policy |
+|---|---|---|
+| Typed extension results | No `Peer::send_request_as` API; core result decoding can discard extension fields | Preserve raw results until the requested type decodes them, across HTTP, SSE, stdio, and Unix sockets |
+| Signed client-credentials grants | JWT form serializer makes the exchange future non-Send | Finish form encoding in a lexical scope before HTTP I/O; retain a Send regression test |
+| Unix-socket response bodies | JSON and error bodies are collected without a configurable byte limit | Retain `with_max_response_bytes` and enforce it before buffering beyond the limit |
+| SSE retry policy | Graceful EOF and initial stream errors bypass the retry policy; server hints can exceed the configured delay | Consult the policy on every reconnect path; reject hints above the configured cap |
+| Origin validation | Malformed-header status and explicit default-port matching are fixed; duplicate headers and portless wildcard matching still need changes | Reject duplicate headers and non-origin URL components; portless entries match the scheme default, while explicit `:*` entries allow any port |
+
+Upstream's Origin fixes are [PR #1192](https://github.com/modelcontextprotocol/rust-sdk/pull/1192)
+and [PR #1270](https://github.com/modelcontextprotocol/rust-sdk/pull/1270).
+The fork keeps upstream's newer lifecycle, cancellation, header, redirect, and
+OAuth changes when applying the remaining compatibility patches. Handler
+configuration uses `ServerConfig` and `ClientConfig`, replacing the deprecated
+`ServerInfo` and `ClientInfo` aliases.
+
+Discovery remains bootstrap-neutral after [upstream PR #1248](https://github.com/modelcontextprotocol/rust-sdk/pull/1248).
+A modern client can finish `server/discover` before the server's `serve()`
+returns. In-process fixtures must retain the server task independently and let
+the client send its first application request before waiting for server startup.
+The bridge harness owns that task and aborts it when the fixture is dropped.
+
+The release tag establishes the SDK version; test results must come from the
+current candidate. Updating these pins does not certify full MCP compliance.
+
+## SDK 3.7 integration policies
+
+Initial OAuth sign-in uses explicit configured scopes when they are nonempty.
+Otherwise, Labby selects scopes from the resource challenge, then protected
+resource metadata. It does not use authorization-server-wide scopes as a
+fallback. Automatic selection rechecks resource metadata for each interactive
+sign-in, including when authorization-server metadata is cached. Shared Google
+credentials retain their required scope policy.
+
+A rejected refresh token removes only the credential generation used by that
+refresh. The callback queues runtime invalidation without waiting for the OAuth
+writer lock. At the next connection boundary, the existing invalidation
+coordinator removes the affected cached clients, peers, and task routes. A
+newer authorization makes an older queued rejection inapplicable. Shared Google
+credentials invalidate upstreams that use the same resolved provider account.
+
+Labby's tool cancellation guards remain necessary. The SDK convenience methods
+use best-effort cancellation delivery; Labby also requires bounded delivery,
+request isolation, and typed extension responses. Prompt and resource operations
+use the SDK cancellation behavior. Legacy handshake negotiation uses
+`ProtocolVersion::LATEST_WITH_INITIALIZE`; modern discovery selects its protocol
+version explicitly.
+
+The local stdio server and daemon bridge use `stdio_pipes`. On Linux, pipe-based
+clients use private non-blocking descriptors. Inherited standard-stream flags
+remain unchanged. Other supported stream types and platforms use the SDK fallback.
+Upstream stdio framing sets the SDK line limit to Labby's configured payload
+budget plus its framing newline, rather than the SDK's smaller default limit.
+
+Upstream HTTP clients follow only same-origin 307 and 308 redirects, with a
+maximum of ten redirects. A different scheme, host, or port, URL credentials,
+and redirect statuses that can rewrite POST requests are rejected. Request
+headers, POST bodies, and response-size enforcement remain in effect across
+accepted redirects. This policy preserves the configured upstream network
+boundary; it does not add DNS pinning or prohibit administrator-configured local
+network servers.
+
+### Additional SDK auth and HTTP policies
+
+- HTTP and Unix-socket workers derive ordinary POST concurrency from the pool's
+  configured call limit. Control requests retain the SDK's separate reserved
+  slot; their timeout is bounded by the request and cancellation-delivery budgets.
+  Session recovery uses the request and discovery budgets, and SSE events use the
+  configured transport response cap. Session-expired recovery remains single-shot;
+  unfinished requests with uncertain effects are not replayed.
+- Unattended grants use SDK client-credentials or enterprise exchange APIs through
+  the existing bounded OAuth HTTP adapter and encrypted credential lifecycle.
+  Secret references stay in configuration; secret values stay out of responses.
+- Interactive scope upgrades require an observed, caller-bound insufficient-scope
+  challenge and explicit consent through the existing PKCE state/callback path.
+  No failed operation is replayed automatically.
+
+### Native protocol adoption
+
+- SSE subscriptions allow three consecutive failed reconnect GETs. Successful
+  GET establishment resets that budget. Retry delays use endpoint jitter and
+  stay within 15 seconds and one third of the request timeout. A server retry
+  hint above that cap stops reconnection; Labby never reconnects earlier than
+  a server hint or replays an uncertain POST.
+- Modern clients declaring the Tasks extension receive a standard MCP Task
+  from native `tasks.queue`. `tasks.create` and ordinary non-Tasks calls retain
+  their existing responses. Task get/cancel reuse the durable Agent Task runtime,
+  current route and owner checks, and creator-only result authorization. Handles
+  expire 24 hours after job creation and recommend polling no faster than once
+  per second. Native tasks have no interactive input requests, so update rejects.
+- Immutable embedded contract resources carry a 60-second private cache lifetime.
+  Dynamic catalogs, application resources, and authorization-dependent state keep
+  their existing cache policy.
+- Native tool, resource, and prompt descriptors have stable display titles and
+  an embedded Labby icon. Upstream titles and icons pass through unchanged.
+- Destructive confirmation uses the SDK signed request-state format alongside
+  the existing bounded, expiring single-use store and caller/request binding.
+  Signing keys are process-local; restarting the process invalidates pending
+  confirmations. State contains only an opaque nonce, not credentials.
 
 ## Scope
 
@@ -66,6 +174,7 @@ The baseline posture is:
 | `transport-io` | required | stdio transport |
 | `transport-streamable-http-server` | required | HTTP MCP transport |
 | `elicitation` | required | destructive confirmation and future interactive flows |
+| `request-state` | required | signed, caller-bound destructive continuation state |
 | `schemars` | required in practice | all RMCP-facing input types should have schema support |
 | `client` | required in practice | Labby must be able to act as an outbound MCP client and gateway |
 | `auth` | required | needed for outbound OAuth MCP clients and protected HTTP MCP deployments |

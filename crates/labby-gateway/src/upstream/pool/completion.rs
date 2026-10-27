@@ -153,8 +153,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::completion(&config.name, &reference, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
-            Ok(pair) => pair,
+        let peer = match self.acquire_subject_peer(config, subject).await {
+            Ok(peer) => peer,
             Err(error) => {
                 log_upstream_request_error(
                     event,
@@ -245,5 +245,20 @@ mod tests {
         assert_eq!(request.r#ref.as_resource_uri(), Some("file:///{path}"));
         assert_eq!(request.meta, original_meta);
         assert_eq!(request.context, original_context);
+    }
+    #[tokio::test]
+    async fn subject_prompt_completion_rejects_hidden_reference_before_connecting() {
+        let pool = super::UpstreamPool::new();
+        let mut config = super::super::testsupport::named_test_upstream_config("alpha");
+        config.expose_prompts = Some(vec!["allowed".to_string()]);
+        let error = pool
+            .subject_scoped_complete_reference(
+                &config,
+                "alice",
+                completion_request(Reference::for_prompt("alpha/hidden")),
+            )
+            .await
+            .expect_err("hidden prompt must fail before any connection is acquired");
+        assert!(error.contains("not exposed"), "{error}");
     }
 }

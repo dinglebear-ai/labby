@@ -584,7 +584,7 @@ impl UpstreamPool {
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
         // P-C1: reuse cached per-(upstream,subject) connection instead of opening fresh.
-        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
+        let peer = match self.acquire_subject_peer(config, subject).await {
             Ok(pair) => pair,
             Err(error) => {
                 log_upstream_request_error(
@@ -658,8 +658,8 @@ mod tests {
         #[derive(Clone)]
         struct CountingRead(Arc<AtomicUsize>);
         impl ServerHandler for CountingRead {
-            fn get_info(&self) -> rmcp::model::ServerInfo {
-                rmcp::model::ServerInfo::new(
+            fn get_info(&self) -> rmcp::model::ServerConfig {
+                rmcp::model::ServerConfig::new(
                     rmcp::model::ServerCapabilities::builder()
                         .enable_resources()
                         .build(),
@@ -687,7 +687,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: vec![],
+                tools: vec![].into(),
                 last_used: std::time::Instant::now(),
             },
         );
@@ -1703,7 +1703,7 @@ mod tests {
 
         use rmcp::model::{
             ErrorData, ListResourcesResult, PaginatedRequestParams, ReadResourceResult, Resource,
-            ResourceContents, ServerCapabilities, ServerInfo,
+            ResourceContents, ServerCapabilities, ServerConfig,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -1714,8 +1714,8 @@ mod tests {
 
         struct OversizedResourceServer;
         impl ServerHandler for OversizedResourceServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
             async fn list_resources(
                 &self,
@@ -1806,7 +1806,7 @@ mod tests {
         use std::collections::HashMap;
 
         use rmcp::model::{
-            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -1820,8 +1820,8 @@ mod tests {
 
         struct UiResourceServer;
         impl ServerHandler for UiResourceServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
             async fn read_resource(
                 &self,
@@ -1902,7 +1902,7 @@ mod tests {
         use std::collections::HashMap;
 
         use rmcp::model::{
-            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -1916,8 +1916,8 @@ mod tests {
 
         struct UiResourceServer;
         impl ServerHandler for UiResourceServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
             async fn read_resource(
                 &self,
@@ -1988,7 +1988,7 @@ mod tests {
 
         use rmcp::model::{
             ErrorData, MetaObject, ReadResourceResult, ResourceContents, ServerCapabilities,
-            ServerInfo,
+            ServerConfig,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -2003,8 +2003,8 @@ mod tests {
 
         struct UiResourceServer;
         impl ServerHandler for UiResourceServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
             async fn read_resource(
                 &self,
@@ -2084,7 +2084,7 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         use rmcp::model::{
-            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+            ErrorData, ReadResourceResult, ResourceContents, ServerCapabilities, ServerConfig,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -2103,8 +2103,8 @@ mod tests {
         }
 
         impl ServerHandler for CountingUiResourceServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
 
             async fn read_resource(

@@ -744,6 +744,17 @@ The last two settings accept `[code_mode]` fallbacks, overridden by
 have a separate 32-call ceiling; snippet resolution is limited to 32 resolutions
 and 1 MiB total resolved source per execution.
 
+Tool IDs are limited to 1,024 UTF-8 bytes at both runner and host boundaries.
+Oversized IDs reject before dispatch without retaining the supplied ID. The host
+trace is bounded to 4,096 rows and 4 MiB of serialized call records, including
+artifact writes and rejected calls. Exhaustion returns `trace_budget_exceeded`
+with the retained partial trace and cancels pending work. This host allocation
+limit is separate from best-effort final envelope shaping.
+
+After the internal-call ceiling, search and describe retain their documented
+fallbacks. Resource, Artifact, Prompt and Skill operations return typed budget
+errors instead of a successful search-shaped value.
+
 ### Final Result Shaping
 
 Code Mode can optionally shape the final model-facing `result` of a successful
@@ -903,6 +914,8 @@ Canonical error kinds:
 | `forbidden` / `permission_denied` | Terminal | Caller lacks permission, including destructive tool execution permission. |
 | `path_traversal` | Terminal | Path-safety checks rejected a workspace or artifact path. |
 | `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, or call fan-out budget was exceeded. |
+| `trace_budget_exceeded` | Reduce work and verify outcomes | Host call-record count or serialized byte capacity was exhausted; the execution stops with its retained partial trace. Pending work is canceled and prior mutations may have completed. |
+| `internal_call_budget_exceeded` | Retry with fewer internal operations | The internal Resource, Artifact, Prompt or Skill operation ceiling was exhausted before that operation dispatched. |
 | `result_too_large` / `artifact_too_large` | Retry with smaller output | Returned value or artifact exceeded configured caps. |
 | `timeout` | Retry with smaller work | The live QuickJS/Javy runner wall-clock backstop interrupted execution. |
 | `rate_limited` | Retry later | Upstream or host-side rate limit was hit. |
@@ -971,7 +984,10 @@ and its operator-repair guidance. An omitted credential reference remains
 explicit anonymous configuration. See [Upstream bearer tokens](../services/UPSTREAM.md#bearer-token).
 
 MCP Code Mode executions carry host-owned trace context through the broker;
-outbound tool requests include the execution ID and zero-based call ordinal. This does not grant authority or expose trace baggage in results. See
+outbound tool requests include the execution ID and zero-based trace-row ordinal.
+Artifact and rejected-call rows occupy their own positions; the separate
+upstream admission counter enforces the call ceiling. This does not grant
+authority or expose trace baggage in results. See
 [MCP request trace propagation](OBSERVABILITY.md#mcp-request-trace-propagation).
 
 ## Runner Architecture
@@ -984,20 +1000,31 @@ The stdio parent-broker protocol is:
 3. Child emits `tool_call` lines for `callTool` requests.
 4. Parent dispatches through the gateway broker and replies with `tool_result` or
    `tool_error`.
-5. Child settles pending promises and emits `done`.
-6. The child then resets and parks for the next `start` (warm-runner pool).
+5. Child settles the main promise and emits `done` or a structured `error`.
+6. A `done` with native `reuse_ready: true` proof and no pending host calls
+   permits process reuse. Missing/false proof preserves the successful result
+   and completed trace but evicts without replay after host work has settled.
+   `done` with pending host calls remains a protocol error. An `error`
+   cancels remaining host work and evicts the process without replay.
 
 ### Warm-runner pool
 
 The runner **process** is pooled and long-lived; the **JS runtime is rebuilt for
 every execution**. Pooling amortizes the dominant fixed cost (process fork +
-startup) without ever sharing JS state across callers — a brand-new runtime has
-no globals, no leftover pending tool calls, and no captured data from a prior
-run, so isolation holds by construction.
+startup). A brand-new runtime removes globals, pending JS promises and captured
+heap data from a prior run. The parent separately preserves protocol ownership:
+only native-qualified `done` permits reuse; `error` and unqualified `done`
+require eviction because old pipe frames can survive a dropped runtime. A
+bounded native ledger checks consumption of every request's reply, including
+both step acknowledgments on the reused sequence. Caller JavaScript cannot
+qualify reuse by modifying its pending-operation map. Duplicate/unexpected
+replies or tracking-capacity exhaustion disqualify reuse, preserving dispatch
+budgets and response semantics; older/missing proof defaults to false.
 
 - **Process reuse, fresh runtime.** A pooled runner loops: read `start` → build a
   fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
-  `start`. It exits only when the parent closes stdin.
+  `start`. The parent retains it only after native-qualified `done` and
+  terminates it after unqualified `done`, `error`, timeout or protocol failure.
 - **Per-execution isolation.** Each run resets the `callTool` sequence counter and
   creates a fresh, empty per-execution QuickJS working-directory jail (removing
   the prior one), so a long-lived process never accumulates JS runtime state
@@ -1012,8 +1039,12 @@ run, so isolation holds by construction.
 - **Robustness.** If a pooled runner exits before emitting any valid protocol
   event, it is killed and the execution is replayed once on a guaranteed-fresh
   ephemeral runner; at that boundary no host-visible side effect can have run.
-  A crash after protocol activity, timeout, or protocol violation is killed and
-  surfaces a clean error without replay (`timeout` on wall-clock expiry). A
+  A runner-reported `error` cancels/drops pending host work, preserves the
+  structured error and completed partial trace, and kills the runner without
+  replay. Even an empty pending set cannot prove that old replies or terminal
+  frames have left the pipes. Caught tool errors that settle successfully with
+  clean `done` still permit reuse. A crash after protocol activity, timeout, or
+  protocol violation also kills without replay (`timeout` on wall-clock expiry). A
   pooled runner is also recycled after a fixed number of executions as cheap
   insurance against native-side leaks. External `callTool` operations reserve a
   result-ack window inside the same per-execution wall-clock budget when more
@@ -1137,6 +1168,38 @@ Loose JavaScript snippets are normalized before execution. Already-formed
 function expressions pass through, while statement blocks such as
 `const x = await callTool(...); x.items` are wrapped as `async () => { ... }` and
 the trailing expression is returned.
+
+### Artifact admission and publication
+
+Explicit `writeArtifact` calls and automatically preserved responses share a
+hard per-run payload budget of 64 MiB and 256 files, in addition to the
+configured per-artifact cap. Empty files consume the file-count budget.
+Explicit writes exceeding an aggregate limit return `budget_exceeded`.
+Automatic preservation is best effort and may be unavailable when that same
+execution budget is exhausted; final-result shaping still completes. Earlier artifacts remain
+available and must not be recreated by replaying completed mutations.
+
+Within a gateway process, artifact admission, publication, and retention are
+serialized. Each write reserves space against the configured store byte budget
+before publishing, including payloads from active runs. Inactive runs may be
+pruned to make room; active runs are retained and the new write is rejected when
+space is unavailable. Setting the store byte budget to zero disables that store
+limit, but preserves the per-run limits. Retrieval metadata is excluded from
+payload accounting only at the run's top-level reserved metadata directory;
+nested directories with the same name count as payload. Admission and retention
+use the same accounting. Artifact paths are normalized before reserved-name
+checks, publication and receipt creation, so dot and separator aliases cannot
+write retrieval metadata or bypass quotas. Routine retention is coalesced per
+run; byte pressure triggers an additional bounded inventory and final accounting
+pass. The artifact store belongs to one gateway process; this
+lock does not coordinate independent gateways sharing the same directory.
+
+Artifact content is written to a temporary file in the destination directory,
+then published without replacing an existing file. Failed or canceled writes
+remove the temporary file and leave the final path available for retry. This
+publication guarantee does not cover later retrieval-enrollment failures, which
+retain the completed output and report possible side effects. Publication is
+not a promise of durability across host power loss.
 
 ### Automatic response artifacts
 

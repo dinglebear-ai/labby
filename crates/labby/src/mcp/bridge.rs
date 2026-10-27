@@ -28,7 +28,7 @@
 //! daemon.
 //!
 //! Daemon -> downstream: `get_info()` mirrors the real daemon's actual
-//! `ServerInfo` (fetched from the connection's own `peer_info()`, populated
+//! `ServerConfig` (fetched from the connection's own `peer_info()`, populated
 //! by protocol discovery) instead of hand-declaring a capability
 //! subset -- otherwise a downstream client could see a capability set (e.g.
 //! `extensions` for mcp-ui) that doesn't match what the daemon it's
@@ -40,14 +40,14 @@ use std::borrow::Cow;
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelTaskRequest,
-    CancelledNotificationParam, ClientInfo, ClientNotification, ClientRequest, CompleteRequest,
+    CancelledNotificationParam, ClientConfig, ClientNotification, ClientRequest, CompleteRequest,
     CompleteRequestParams, CompleteResult, CustomNotification, CustomRequest, CustomResult,
     DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetTaskParams,
     GetTaskRequest, GetTaskResult, Implementation, InitializeRequestParams, InitializeResult,
     ListPromptsRequest, ListPromptsResult, ListResourceTemplatesRequest,
     ListResourceTemplatesResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest,
     ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
-    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, ServerInfo,
+    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, ServerConfig,
     ServerNotification, ServerResult, SubscriptionFilter, UpdateTaskParams, UpdateTaskRequest,
 };
 use rmcp::service::{
@@ -85,8 +85,8 @@ impl ClientHandler for BridgeClientHandler {
     /// request carries the current downstream request metadata explicitly, so
     /// task and MRTR support are negotiated per request rather than frozen at
     /// bridge startup.
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.client_info = Implementation::new("labby-bridge", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -335,16 +335,16 @@ impl ServerHandler for BridgeServerHandler {
         }
     }
 
-    /// Mirror the real daemon's actual advertised `ServerInfo` -- fetched
+    /// Mirror the real daemon's actual advertised `ServerConfig` -- fetched
     /// from the connection's `peer_info()`, populated by the initialize
     /// handshake when the bridge connected -- rather than hand-declaring a
     /// capability subset that could drift from what the daemon truly
     /// supports (e.g. the `extensions` capability mcp-ui widgets need).
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         self.peer
             .peer_info()
             .map(|info| {
-                let mut server_info = ServerInfo::new(info.capabilities.clone())
+                let mut server_info = ServerConfig::new(info.capabilities.clone())
                     .with_protocol_version(info.protocol_version.clone())
                     .with_server_info(
                         info.server_info
@@ -357,7 +357,7 @@ impl ServerHandler for BridgeServerHandler {
                 server_info.meta = info.meta.clone();
                 server_info
             })
-            .unwrap_or_else(|| ServerInfo::new(Default::default()))
+            .unwrap_or_else(|| ServerConfig::new(Default::default()))
     }
 
     async fn list_tools(
@@ -696,8 +696,8 @@ mod tests {
     //! second connection to exercise every forwarded request/response path.
     use rmcp::model::{
         CancelTaskParams, CancelTaskRequest, ClientCapabilities, CustomRequest, DetailedTask,
-        ErrorData as McpError, GetTaskParams, GetTaskRequest, ServerCapabilities, ServerInfo, Task,
-        TaskPayload, TaskStatus,
+        ErrorData as McpError, GetTaskParams, GetTaskRequest, ServerCapabilities, ServerConfig,
+        Task, TaskPayload, TaskStatus,
     };
     use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RequestContext, RunningService};
     use rmcp::{ClientHandler, RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -760,8 +760,8 @@ mod tests {
     struct FakeDaemonHandler;
 
     impl ServerHandler for FakeDaemonHandler {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tasks()
@@ -820,8 +820,8 @@ mod tests {
     struct TestDownstreamClient;
 
     impl ClientHandler for TestDownstreamClient {
-        fn get_info(&self) -> ClientInfo {
-            let mut info = ClientInfo::default();
+        fn get_info(&self) -> ClientConfig {
+            let mut info = ClientConfig::default();
             info.client_info = Implementation::new("legacy-operator", "1.2.3");
             info.capabilities = ClientCapabilities::builder().enable_tasks().build();
             info
@@ -829,7 +829,7 @@ mod tests {
     }
 
     /// A live bridge topology: the test client's peer for driving requests,
-    /// plus the two `RunningService`s that must stay alive for the duration
+    /// plus the client service and server task retained for the duration
     /// of the test. Dropping either tears down its transport (the bridge's
     /// connection to the fake daemon is kept alive internally by
     /// `BridgeServerHandler::_service`, so it doesn't need a separate
@@ -837,7 +837,7 @@ mod tests {
     struct BridgeHarness {
         peer: Peer<RoleClient>,
         _client_service: RunningService<RoleClient, TestDownstreamClient>,
-        _bridge_service: RunningService<RoleServer, BridgeServerHandler>,
+        _bridge_task: tokio_util::task::AbortOnDropHandle<()>,
     }
 
     /// Wires up the full two-hop bridge topology:
@@ -869,26 +869,32 @@ mod tests {
 
         // Hop 2: test client -> bridge, served with the bridge's own
         // `ServerHandler` impl over its own independent in-memory transport.
-        // Both `serve()` calls perform the `initialize` handshake with each
-        // other over the same duplex pair, so they must run concurrently --
-        // awaiting one before starting the other deadlocks forever waiting
-        // for a response nobody has sent yet.
+        // Discovery does not complete server startup until the first application
+        // request. Retain the server task independently so the client can send
+        // that request after discovery, for either lifecycle.
         let (bridge_inbound_transport, client_transport) =
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
-        let (bridge_service, client_service) = tokio::join!(
-            bridge_handler.serve(bridge_inbound_transport),
-            TestDownstreamClient.serve_with_lifecycle(client_transport, mode,),
-        );
-        let bridge_service: RunningService<RoleServer, BridgeServerHandler> =
-            bridge_service.expect("test client connects to bridge");
+        let bridge_task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+            let service = bridge_handler
+                .serve(bridge_inbound_transport)
+                .await
+                .expect("test client connects to bridge");
+            service.waiting().await.expect("bridge service runs");
+        }));
         let client_service: RunningService<RoleClient, TestDownstreamClient> =
-            client_service.expect("test client transport connects");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                TestDownstreamClient.serve_with_lifecycle(client_transport, mode),
+            )
+            .await
+            .expect("test client handshake finishes within its deadline")
+            .expect("test client transport connects");
         let peer = client_service.peer().clone();
 
         BridgeHarness {
             peer,
             _client_service: client_service,
-            _bridge_service: bridge_service,
+            _bridge_task: bridge_task,
         }
     }
 

@@ -192,6 +192,56 @@ impl SqliteStore {
         .await
     }
 
+    /// Whether two handles share the same live connection pool.
+    #[cfg(feature = "upstream-oauth-rmcp")]
+    pub(crate) fn shares_google_provider_store(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.conns, &other.conns)
+    }
+
+    /// Resolve membership from one metadata snapshot, without loading token material.
+    /// Exact subjects take precedence over case-insensitive verified email selectors.
+    #[cfg(feature = "upstream-oauth-rmcp")]
+    pub(crate) async fn google_provider_subject_memberships(
+        &self,
+        selectors: Vec<Option<String>>,
+    ) -> Result<Vec<Result<Option<String>, AuthError>>, AuthError> {
+        self.with_conn(move |conn| {
+            let mut statement = conn.prepare(
+                "SELECT subject, email FROM google_provider_credentials",
+            ).map_err(sqlite_error)?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            }).map_err(sqlite_error)?;
+            let mut subjects = std::collections::HashSet::new();
+            let mut emails = std::collections::HashMap::<String, Option<String>>::new();
+            for row in rows {
+                let (subject, email) = row.map_err(sqlite_error)?;
+                subjects.insert(subject.clone());
+                if let Some(email) = email {
+                    emails.entry(email.to_ascii_lowercase())
+                        .and_modify(|value| *value = None)
+                        .or_insert(Some(subject));
+                }
+            }
+            Ok(selectors.into_iter().map(|selector| {
+                let selector = selector.as_deref().map(str::trim).filter(|value| !value.is_empty());
+                let ambiguous = || AuthError::Config(
+                    "multiple Google provider credentials exist; configure an account selector".into(),
+                );
+                match selector {
+                    Some(selector) if subjects.contains(selector) => Ok(Some(selector.to_owned())),
+                    Some(selector) => match emails.get(&selector.to_ascii_lowercase()) {
+                        Some(Some(subject)) => Ok(Some(subject.clone())),
+                        Some(None) => Err(ambiguous()),
+                        None => Ok(None),
+                    },
+                    None if subjects.len() > 1 => Err(ambiguous()),
+                    None => Ok(subjects.iter().next().cloned()),
+                }
+            }).collect())
+        }).await
+    }
+
     /// Resolve a central Google credential by subject or verified email.
     ///
     /// When `selector` is absent, resolution succeeds only when exactly one
@@ -389,15 +439,18 @@ impl SqliteStore {
     }
 
     /// Replace an existing provider token bundle only when the caller observed
-    /// the current generation.
+    /// the current generation and revocation epoch.
     ///
     /// This is the persistence boundary for read-modify-write provider flows.
     /// A `false` result means another callback or refresh installed a newer
-    /// bundle and the caller must not publish its stale exchange.
+    /// bundle or revocation fenced the observed authority. The epoch comparison
+    /// is part of the same SQL write: deletion and reinsertion may reuse generation 1,
+    /// including when another process bypasses the local persistence mutex.
     pub async fn replace_google_provider_token_bundle_if_generation(
         &self,
         update: GoogleProviderCredentialUpdate,
         expected_generation: i64,
+        expected_revocation_epoch: i64,
     ) -> Result<bool, AuthError> {
         let GoogleProviderCredentialUpdate {
             subject,
@@ -452,7 +505,9 @@ impl SqliteStore {
                             ELSE last_scope_upgrade_at END,
                         generation = generation + 1,
                         updated_at = ?12
-                     WHERE subject = ?1 AND generation = ?13",
+                     WHERE subject = ?1 AND generation = ?13
+                       AND COALESCE((SELECT epoch FROM google_provider_revocations
+                                     WHERE subject = '*'), 0) = ?14",
                     params![
                         subject,
                         email,
@@ -467,6 +522,7 @@ impl SqliteStore {
                         scope_upgraded,
                         now,
                         expected_generation,
+                        expected_revocation_epoch,
                     ],
                 )
                 .map_err(sqlite_error)?;
@@ -563,6 +619,7 @@ impl SqliteStore {
         selector: Option<&str>,
     ) -> Result<crate::types::GoogleProviderInvalidation, AuthError> {
         for _ in 0..4 {
+            let observed_epoch = self.google_provider_fence_epoch().await?;
             let Some(row) = self
                 .find_google_provider_credential_by_selector(selector)
                 .await?
@@ -570,7 +627,7 @@ impl SqliteStore {
                 return Ok(crate::types::GoogleProviderInvalidation::default());
             };
             let invalidation = self
-                .invalidate_google_provider_credential(&row.subject, row.generation)
+                .invalidate_google_provider_credential(&row.subject, row.generation, observed_epoch)
                 .await?;
             if invalidation.invalidated {
                 return Ok(invalidation);
@@ -603,4 +660,382 @@ fn row_from_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<GoogleProviderCrede
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
     })
+}
+
+#[cfg(all(test, feature = "upstream-oauth-rmcp"))]
+mod membership_scaling_tests {
+    use super::*;
+    use crate::upstream::{cache::OauthClientCache, manager::UpstreamOauthManager};
+    use dashmap::DashMap;
+    use std::sync::{Arc, atomic::Ordering};
+
+    #[tokio::test]
+    async fn membership_snapshot_is_fresh_and_preserves_selector_authority() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_with_key(
+            directory.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "membership",
+            )),
+        )
+        .await
+        .unwrap();
+        for subject in ["account-a", "account-b", "shared@example.com"] {
+            store
+                .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                    subject: subject.into(),
+                    email: Some("shared@example.com".into()),
+                    client_id: "client".into(),
+                    granted_scopes: vec!["openid".into()],
+                    access_token: "test-access".into(),
+                    refresh_token: "test-refresh".into(),
+                    token_received_at: 1,
+                    access_token_expires_at: 3601,
+                    issuer: Some("https://accounts.google.com".into()),
+                    refreshed: false,
+                    scope_upgraded: true,
+                })
+                .await
+                .unwrap();
+        }
+        let mut memberships = store
+            .google_provider_subject_memberships(vec![
+                None,
+                Some(" SHARED@example.com ".into()),
+                Some("shared@example.com".into()),
+                Some("account-b".into()),
+                Some("missing".into()),
+            ])
+            .await
+            .unwrap()
+            .into_iter();
+        assert!(matches!(
+            memberships.next().unwrap(),
+            Err(AuthError::Config(_))
+        ));
+        assert!(matches!(
+            memberships.next().unwrap(),
+            Err(AuthError::Config(_))
+        ));
+        assert_eq!(
+            memberships.next().unwrap().unwrap().as_deref(),
+            Some("shared@example.com")
+        );
+        assert_eq!(
+            memberships.next().unwrap().unwrap().as_deref(),
+            Some("account-b")
+        );
+        assert_eq!(memberships.next().unwrap().unwrap(), None);
+
+        store.with_conn(|conn| {
+            conn.execute("UPDATE google_provider_credentials SET email = 'other@example.com' WHERE subject <> 'account-a'", []).map_err(sqlite_error)?;
+            Ok(())
+        }).await.unwrap();
+        let memberships = store
+            .google_provider_subject_memberships(vec![Some(" SHARED@example.com ".into())])
+            .await
+            .unwrap();
+        assert_eq!(
+            memberships.into_iter().next().unwrap().unwrap().as_deref(),
+            Some("account-a"),
+            "a new snapshot must observe account replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn handlers_rebind_replaced_accounts_and_fence_old_membership_on_reload() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_with_key(
+            directory.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "membership",
+            )),
+        )
+        .await
+        .unwrap();
+        let bundle = |subject: &str| GoogleProviderCredentialUpdate {
+            subject: subject.into(),
+            email: Some("alias@example.com".into()),
+            client_id: "client".into(),
+            granted_scopes: vec!["openid".into()],
+            access_token: "test-access".into(),
+            refresh_token: "test-refresh".into(),
+            token_received_at: 1,
+            access_token_expires_at: 3601,
+            issuer: Some("https://accounts.google.com".into()),
+            refreshed: false,
+            scope_upgraded: true,
+        };
+        store
+            .upsert_google_provider_token_bundle(bundle("account-a"))
+            .await
+            .unwrap();
+        let config = |name: &str, account: &str| {
+            serde_json::from_value::<labby_runtime::gateway_config::UpstreamConfig>(serde_json::json!({
+            "name": name, "url": "https://example.com/mcp",
+            "oauth": {"mode": "authorization_code_pkce", "registration": {"strategy": "preregistered", "client_id": "client"},
+                      "credential": {"source": "google_provider", "account": account}}
+        })).unwrap()
+        };
+        let selected = config("selected", "alias@example.com");
+        let sibling = config("sibling", "account-a");
+        let managers = Arc::new(DashMap::new());
+        for config in [&selected, &sibling] {
+            managers.insert(
+                config.name.clone(),
+                UpstreamOauthManager::new(
+                    store.clone(),
+                    crate::upstream::encryption::load_key(
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    )
+                    .unwrap(),
+                    config.clone(),
+                    "http://127.0.0.1/callback".into(),
+                ),
+            );
+        }
+        let cache = OauthClientCache::new(managers);
+        let old = cache
+            .refresh_rejection_handler(&selected, "operator")
+            .await
+            .unwrap();
+        store.with_conn(|conn| {
+            conn.execute("UPDATE google_provider_credentials SET email = 'old@example.com' WHERE subject = 'account-a'", []).map_err(sqlite_error)?;
+            Ok(())
+        }).await.unwrap();
+        store
+            .upsert_google_provider_token_bundle(bundle("account-b"))
+            .await
+            .unwrap();
+        // The reload/authorization coordinator fences the replaced upstream.
+        cache.advance_upstream_epoch("selected");
+        old(Some("account-a".into()));
+        let events = cache.take_pending_invalidations();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].upstream, "sibling",
+            "old cleanup must not detach the replacement account"
+        );
+        let replacement = cache
+            .refresh_rejection_handler(&selected, "operator")
+            .await
+            .unwrap();
+        replacement(Some("account-a".into()));
+        assert!(cache.take_pending_invalidations().is_empty());
+        replacement(Some("account-b".into()));
+        let events = cache.take_pending_invalidations();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].upstream, "selected",
+            "new membership must exclude the previous subject's upstream"
+        );
+        assert!(events[0].subject.is_none());
+    }
+
+    #[tokio::test]
+    async fn rejection_membership_resolves_aliases_in_each_independent_store() {
+        // Keep both directories alive until every store and callback is dropped.
+        let directory_a = tempfile::tempdir().unwrap();
+        let directory_b = tempfile::tempdir().unwrap();
+        let mut stores = Vec::new();
+        for directory in [&directory_a, &directory_b] {
+            stores.push(
+                SqliteStore::open_with_key(
+                    directory.path().join("auth.db"),
+                    Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                        "membership",
+                    )),
+                )
+                .await
+                .unwrap(),
+            );
+        }
+        assert!(!stores[0].shares_google_provider_store(&stores[1]));
+        for (store, subject) in stores.iter().zip(["account-a", "account-b"]) {
+            for (subject, email) in [
+                (subject, "alias@example.com"),
+                ("unrelated", "unrelated@example.com"),
+            ] {
+                store
+                    .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                        subject: subject.into(),
+                        email: Some(email.into()),
+                        client_id: "client".into(),
+                        granted_scopes: vec!["openid".into()],
+                        access_token: "test-access".into(),
+                        refresh_token: "test-refresh".into(),
+                        token_received_at: 1,
+                        access_token_expires_at: 3601,
+                        issuer: Some("https://accounts.google.com".into()),
+                        refreshed: false,
+                        scope_upgraded: true,
+                    })
+                    .await
+                    .unwrap();
+            }
+        }
+        let config = |name: &str, account: &str| {
+            serde_json::from_value::<labby_runtime::gateway_config::UpstreamConfig>(serde_json::json!({
+                "name": name, "url": "https://example.com/mcp",
+                "oauth": {"mode": "authorization_code_pkce", "registration": {"strategy": "preregistered", "client_id": "client"},
+                          "credential": {"source": "google_provider", "account": account}}
+            })).unwrap()
+        };
+        let configs = [
+            config("selected-a", "alias@example.com"),
+            config("sibling-a", "account-a"),
+            config("unrelated-a", "unrelated@example.com"),
+            config("selected-b", "alias@example.com"),
+            config("sibling-b", "account-b"),
+            config("unrelated-b", "unrelated@example.com"),
+        ];
+        let managers = Arc::new(DashMap::new());
+        for (index, config) in configs.iter().enumerate() {
+            managers.insert(
+                config.name.clone(),
+                UpstreamOauthManager::new(
+                    stores[index / 3].clone(),
+                    crate::upstream::encryption::load_key(
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    )
+                    .unwrap(),
+                    config.clone(),
+                    "http://127.0.0.1/callback".into(),
+                ),
+            );
+        }
+        let cache = OauthClientCache::new(managers);
+        let epochs = configs
+            .iter()
+            .map(|config| cache.lifecycle_epoch_for_upstream(&config.name))
+            .collect::<Vec<_>>();
+        let handler_a = cache
+            .refresh_rejection_handler(&configs[0], "operator")
+            .await
+            .unwrap();
+        let handler_b = cache
+            .refresh_rejection_handler(&configs[3], "operator")
+            .await
+            .unwrap();
+
+        handler_a(Some("account-b".into()));
+        handler_b(Some("account-a".into()));
+        assert!(cache.take_pending_invalidations().is_empty());
+        for (handler, provider, expected) in [
+            (&handler_a, "account-a", ["selected-a", "sibling-a"]),
+            (&handler_b, "account-b", ["selected-b", "sibling-b"]),
+        ] {
+            handler(Some(provider.into()));
+            let events = cache.take_pending_invalidations();
+            let mut upstreams = events
+                .iter()
+                .map(|event| {
+                    assert!(event.subject.is_none());
+                    assert!(event.is_current());
+                    event.upstream.as_str()
+                })
+                .collect::<Vec<_>>();
+            upstreams.sort_unstable();
+            assert_eq!(upstreams, expected);
+            assert!(epochs.iter().all(|epoch| epoch.is_current()));
+        }
+
+        // Fencing one selected upstream must leave its sibling and the other
+        // store's authority usable, without touching unrelated accounts.
+        cache.advance_upstream_epoch("selected-a");
+        assert!(!epochs[0].is_current());
+        assert!(epochs[1..].iter().all(|epoch| epoch.is_current()));
+        handler_a(Some("account-a".into()));
+        let events = cache.take_pending_invalidations();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].upstream, "sibling-a");
+        handler_b(Some("account-b".into()));
+        let mut upstreams = cache
+            .take_pending_invalidations()
+            .into_iter()
+            .map(|event| event.upstream)
+            .collect::<Vec<_>>();
+        upstreams.sort_unstable();
+        assert_eq!(upstreams, ["selected-b", "sibling-b"]);
+        assert!(epochs[1..].iter().all(|epoch| epoch.is_current()));
+        for store in &stores {
+            let membership = store
+                .google_provider_subject_memberships(vec![Some("unrelated@example.com".into())])
+                .await
+                .unwrap();
+            assert_eq!(
+                membership.into_iter().next().unwrap().unwrap().as_deref(),
+                Some("unrelated")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn google_handler_setup_uses_constant_store_operations_per_upstream() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_with_key(
+            directory.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "membership",
+            )),
+        )
+        .await
+        .unwrap();
+        store
+            .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
+                subject: "account-a".into(),
+                email: Some("a@example.com".into()),
+                client_id: "client".into(),
+                granted_scopes: vec!["openid".into()],
+                access_token: "test-access".into(),
+                refresh_token: "test-refresh".into(),
+                token_received_at: 1,
+                access_token_expires_at: 3601,
+                issuer: Some("https://accounts.google.com".into()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .unwrap();
+        let configs = (0..16).map(|index| serde_json::from_value::<labby_runtime::gateway_config::UpstreamConfig>(serde_json::json!({
+            "name": format!("google-{index}"), "url": "https://example.com/mcp",
+            "oauth": {"mode": "authorization_code_pkce", "registration": {"strategy": "preregistered", "client_id": "client"},
+                      "credential": {"source": "google_provider", "account": "a@example.com"}}
+        })).unwrap()).collect::<Vec<_>>();
+        let managers = Arc::new(DashMap::new());
+        for config in &configs {
+            managers.insert(
+                config.name.clone(),
+                UpstreamOauthManager::new(
+                    store.clone(),
+                    crate::upstream::encryption::load_key(
+                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                    )
+                    .unwrap(),
+                    config.clone(),
+                    "http://127.0.0.1/callback".into(),
+                ),
+            );
+        }
+        let cache = OauthClientCache::new(managers);
+        let before = store.next_conn.load(Ordering::Relaxed);
+        for config in &configs {
+            let handler = cache
+                .refresh_rejection_handler(config, "operator")
+                .await
+                .unwrap();
+            handler(Some("account-a".into()));
+        }
+        let operations = store.next_conn.load(Ordering::Relaxed) - before;
+        eprintln!(
+            "Google handler setup: {operations} store operations for {} upstreams",
+            configs.len()
+        );
+        assert!(
+            operations <= 3 * configs.len(),
+            "fleet setup used {operations} store operations for {} upstreams",
+            configs.len()
+        );
+        assert_eq!(cache.take_pending_invalidations().len(), 16);
+    }
 }

@@ -294,20 +294,18 @@ impl UpstreamPool {
     ) -> Result<Value, ToolError> {
         let started = Instant::now();
         let connect_timeout = upstream_discovery_timeout(config, self.request_timeout);
-        let (peer, _) = tokio::time::timeout(
-            connect_timeout,
-            self.acquire_or_connect_subject(config, subject),
-        )
-        .await
-        .map_err(|_| ToolError::Sdk {
-            sdk_kind: "timeout".to_string(),
-            message: format!(
-                "subject-scoped discovery for upstream `{}` timed out after {}s",
-                config.name,
-                connect_timeout.as_secs()
-            ),
-        })?
-        .map_err(|error| classified_schema_error(&config.name, &error.to_string()))?;
+        let peer =
+            tokio::time::timeout(connect_timeout, self.acquire_subject_peer(config, subject))
+                .await
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "timeout".to_string(),
+                    message: format!(
+                        "subject-scoped discovery for upstream `{}` timed out after {}s",
+                        config.name,
+                        connect_timeout.as_secs()
+                    ),
+                })?
+                .map_err(|error| classified_schema_error(&config.name, &error.to_string()))?;
 
         let event = UpstreamRequestLog::tools_list(&config.name, true)
             .with_transport(upstream_transport(config));
@@ -921,11 +919,11 @@ impl UpstreamPool {
                 };
                 let peer = match tokio::time::timeout(
                     request_timeout,
-                    pool.acquire_or_connect_subject(&config, &subject),
+                    pool.acquire_subject_peer(&config, &subject),
                 )
                 .await
                 {
-                    Ok(Ok((peer, _tools))) => peer,
+                    Ok(Ok(peer)) => peer,
                     Ok(Err(error)) => {
                         log_upstream_request_error(
                             event,
@@ -1165,7 +1163,7 @@ mod tests {
     use rmcp::model::{
         ErrorData, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
         PaginatedRequestParams, ReadResourceResult, ResourceContents, ResourceTemplate,
-        ServerCapabilities, ServerInfo, Tool,
+        ServerCapabilities, ServerConfig, Tool,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -1262,8 +1260,8 @@ mod tests {
     struct ManyResourcesServer;
 
     impl ServerHandler for ManyResourcesServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1318,8 +1316,8 @@ mod tests {
     }
 
     impl ServerHandler for ToolsOnlyResourceProbeServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn list_tools(
@@ -1364,8 +1362,8 @@ mod tests {
     struct SlowResourceListServer;
 
     impl ServerHandler for SlowResourceListServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1384,8 +1382,8 @@ mod tests {
     }
 
     impl ServerHandler for SchemaToolServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn list_tools(
@@ -1457,8 +1455,8 @@ mod tests {
     }
 
     impl ServerHandler for PaginatedResourceTemplateServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resource_templates(
@@ -1562,8 +1560,8 @@ mod tests {
     }
 
     impl ServerHandler for PaginatedResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1714,8 +1712,8 @@ mod tests {
     }
 
     impl ServerHandler for DelayedResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -1786,8 +1784,8 @@ mod tests {
     }
 
     impl ServerHandler for DelayedResourceTemplateServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resource_templates(
@@ -2123,7 +2121,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 last_used: Instant::now(),
             },
         );
@@ -2152,8 +2150,8 @@ mod tests {
         release: Arc<tokio::sync::Notify>,
     }
     impl ServerHandler for HeldResourceList {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
         async fn list_resources(
             &self,
@@ -2492,8 +2490,8 @@ mod tests {
         struct DuplicateResourcesValidTemplatesServer;
 
         impl ServerHandler for DuplicateResourcesValidTemplatesServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
             }
 
             async fn list_resources(
@@ -2603,8 +2601,8 @@ mod tests {
     }
 
     impl ServerHandler for RejectedCatalogServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -2624,8 +2622,8 @@ mod tests {
     struct OversizedUiCatalogServer;
 
     impl ServerHandler for OversizedUiCatalogServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -2680,8 +2678,8 @@ mod tests {
     struct UiCatalogServer;
 
     impl ServerHandler for UiCatalogServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_resources().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
         }
 
         async fn list_resources(
@@ -2721,7 +2719,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 last_used: Instant::now(),
             },
         );
@@ -2837,7 +2835,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 last_used: Instant::now(),
             },
         );
@@ -2915,7 +2913,7 @@ mod tests {
                 optional_catalogs: Default::default(),
                 _connection: connection,
                 peer,
-                tools: Vec::new(),
+                tools: Vec::new().into(),
                 last_used: Instant::now(),
             },
         );

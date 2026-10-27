@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use rmcp::model::{
     GetPromptRequestParams, ListPromptsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerInfo,
+    ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleServer, ServerHandler};
@@ -37,8 +37,8 @@ struct ToolsOnlyPromptProbeServer {
 }
 
 impl ServerHandler for ToolsOnlyPromptProbeServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 
     async fn list_prompts(
@@ -133,7 +133,7 @@ async fn seed_subject_connection(pool: &UpstreamPool, upstream: &str, subject: &
             optional_catalogs: Default::default(),
             _connection: connection,
             peer,
-            tools: Vec::new(),
+            tools: Vec::new().into(),
             last_used: Instant::now(),
         },
     );

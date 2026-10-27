@@ -1,5 +1,20 @@
 use super::host_write::{HostConfigLock, HostWriteError};
 
+#[cfg(windows)]
+#[test]
+fn host_lock_replacements_support_protected_current_user_reads() {
+    let directory = crate::access::test_support::secure_tempdir();
+    let path = directory.path().join("config.toml");
+    let lock = HostConfigLock::acquire(&path).unwrap();
+    for raw in ["[mcp]\nport=8765\n", "[mcp]\nport=8766\n"] {
+        lock.write(raw).unwrap();
+        assert_eq!(
+            crate::installation::secure_file::read_private(&path).unwrap(),
+            raw.as_bytes()
+        );
+    }
+}
+
 #[test]
 fn separate_process_writer_preserves_update_made_while_waiting() {
     const KEY: &str = "LABBY_TEST_HOST_LOCK_PATH";

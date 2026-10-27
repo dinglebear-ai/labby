@@ -26,6 +26,12 @@ on:
       - 'scripts/ci/verify-incus-image-manifest.py'
       - 'scripts/ci/promote-incus-pointer.sh'
   workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Image channel; stable requires an explicit selection'
+        type: choice
+        default: dev
+        options: [dev, stable]
 
 concurrency:
   group: incus-image-${{ github.ref }}
@@ -45,5 +51,6 @@ jobs:
     uses: ./.github/workflows/build-incus-image.yml
     with:
       source_ref: ${{ github.sha }}
-      release_tag: ${{ format('incus-{0}', github.sha) }}
+      release_tag: ${{ inputs.channel == 'stable' && format('incus-{0}', github.sha) || format('incus-dev-{0}', github.sha) }}
+      channel: ${{ inputs.channel || 'dev' }}
       publish: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}

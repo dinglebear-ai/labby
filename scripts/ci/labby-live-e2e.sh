@@ -249,8 +249,8 @@ if [ "$tier" = repeat10 ]; then
   exit 0
 fi
 
-shards=(contracts live-http-cli-api live-http-observability live-http-ipv6 live-mcp-parity live-identity-protected-restart mcp-app-host)
-if [ "$tier" = nightly ] || [ "$tier" = manual ] || [ "$tier" = release ]; then shards+=(browser-live fault-qualification); fi
+shards=(contracts live-http-cli-api live-http-observability live-http-ipv6 live-mcp-parity live-identity-protected-restart mcp-app-host browser-live)
+if [ "$tier" = nightly ] || [ "$tier" = manual ] || [ "$tier" = release ]; then shards+=(fault-qualification); fi
 if [ "$tier" = collision ]; then shards=(live-http-cli-api-a live-http-cli-api-b); fi
 complete() { shard="$1"; log="$2"; if [ "$(wc -c <"$log")" -gt 1048576 ]; then tail -c 1048576 "$log" >"$log.bounded"; mv "$log.bounded" "$log"; fi; hash="$(shasum -a 256 "$log" | awk '{print $1}')"; printf '{"schema_version":1,"run_id":"%s","seed":"%s","build_identity":"%s","shard":"%s","status":"passed","sha256":"%s"}\n' "$run_id" "$seed" "$build_id" "$shard" "$hash" >"$run_root/shards/$shard.json"; }
 run_shard() {

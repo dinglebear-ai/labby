@@ -242,7 +242,7 @@ mod tests {
     use rmcp::model::{
         ClientCapabilities, ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
         Implementation, ListPromptsResult, Prompt, PromptMessage, ProtocolVersion,
-        RequestMetaObject, Role, ServerCapabilities, ServerInfo,
+        RequestMetaObject, Role, ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -270,8 +270,8 @@ mod tests {
     }
 
     impl ServerHandler for EchoPromptServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_prompts().build())
         }
 
         async fn list_prompts(

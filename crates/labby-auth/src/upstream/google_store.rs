@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use oauth2::{AccessToken, RefreshToken, Scope, TokenResponse as _, basic::BasicTokenType};
@@ -12,40 +12,20 @@ use rmcp::transport::auth::{
     VendorExtraTokenFields,
 };
 use rmcp_client as rmcp;
-use sha2::{Digest, Sha256};
-use tokio::sync::Mutex;
 use tracing::warn;
 
 use crate::google::{GoogleProvider, merge_google_scopes};
 use crate::sqlite::SqliteStore;
 use crate::types::{GoogleProviderCredentialRow, GoogleProviderCredentialUpdate};
+use crate::upstream::manager::{CredentialSaveFence, CredentialSaveValidation};
 use crate::upstream::types::OauthError;
 use crate::util::fingerprint;
 
 const GOOGLE_ISSUER: &str = "https://accounts.google.com";
+#[cfg(test)]
 const REFRESH_OPERATION_LOCK_STRIPES: usize = 2_048;
 
-static REFRESH_OPERATION_LOCKS: OnceLock<[Arc<Mutex<()>>; REFRESH_OPERATION_LOCK_STRIPES]> =
-    OnceLock::new();
-
-/// Return the process-wide refresh-operation mutex for one stable credential.
-///
-/// This lock is deliberately distinct from `google_refresh::lock`. rmcp holds
-/// it across load, token exchange, and save, while `save` acquires the shorter
-/// persistence lock. Using the same mutex for both would deadlock during save.
-/// SQLite CAS and revocation fencing reject stale cross-process persistence,
-/// but do not serialize rotating-token exchanges across processes.
-/// Fixed stripes keep memory bounded without changing an active identity's
-/// mutex when capacity changes. Hash collisions serialize unrelated refreshes;
-/// they never share credential data or change store/provider/subject checks.
-pub(super) fn refresh_operation_lock(credential_identity: &str) -> Arc<Mutex<()>> {
-    let locks =
-        REFRESH_OPERATION_LOCKS.get_or_init(|| std::array::from_fn(|_| Arc::new(Mutex::new(()))));
-    let digest = Sha256::digest(credential_identity.as_bytes());
-    let stripe =
-        usize::from(u16::from_be_bytes([digest[0], digest[1]])) % REFRESH_OPERATION_LOCK_STRIPES;
-    Arc::clone(&locks[stripe])
-}
+pub(super) use crate::google_refresh::refresh_operation_lock;
 
 #[derive(Clone)]
 pub struct GoogleProviderCredentialStore {
@@ -55,7 +35,9 @@ pub struct GoogleProviderCredentialStore {
     expected_client_id: String,
     required_scopes: Vec<String>,
     authorization_fence_epoch: Arc<AtomicI64>,
-    refresh_attempt: Arc<std::sync::Mutex<Option<(String, i64)>>>,
+    refresh_attempt: Arc<std::sync::Mutex<Option<(String, i64, i64)>>>,
+    callback_save_fence: Option<CredentialSaveFence>,
+    refresh_rejection_handler: Option<super::manager::OauthRefreshRejectionHandler>,
 }
 
 impl std::fmt::Debug for GoogleProviderCredentialStore {
@@ -86,18 +68,35 @@ impl GoogleProviderCredentialStore {
             required_scopes: normalize_scopes(required_scopes),
             authorization_fence_epoch: Arc::new(AtomicI64::new(-1)),
             refresh_attempt: Arc::new(std::sync::Mutex::new(None)),
+            callback_save_fence: None,
+            refresh_rejection_handler: None,
         }
     }
 
+    pub(super) fn with_callback_fence(mut self, fence: CredentialSaveFence) -> Self {
+        self.callback_save_fence = Some(fence);
+        self
+    }
+
+    /// Notify the host only when the rejected provider generation is removed.
+    #[must_use]
+    pub fn with_refresh_rejection_handler(
+        mut self,
+        handler: super::manager::OauthRefreshRejectionHandler,
+    ) -> Self {
+        self.refresh_rejection_handler = Some(handler);
+        self
+    }
+
     #[cfg(test)]
-    fn refresh_attempt(&self) -> Option<(String, i64)> {
+    fn refresh_attempt(&self) -> Option<(String, i64, i64)> {
         self.refresh_attempt
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 
-    pub(super) fn take_refresh_attempt(&self) -> Option<(String, i64)> {
+    pub(super) fn take_refresh_attempt(&self) -> Option<(String, i64, i64)> {
         self.refresh_attempt
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -277,7 +276,7 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .refresh_attempt
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((row.subject.clone(), row.generation));
+                Some((row.subject.clone(), row.generation, fence_epoch));
             let token_received_at = row.token_received_at.unwrap_or(0).max(0) as u64;
             let expires_in = row
                 .access_token_expires_at
@@ -319,9 +318,9 @@ impl CredentialStore for GoogleProviderCredentialStore {
         Self: 'async_trait,
     {
         Box::pin(async move {
-            // Bind persistence to the generation that supplied the token used
+            // Bind persistence to the generation and epoch that supplied the token used
             // for this exchange. Reloading below is only for merge inputs; it
-            // must never advance the CAS generation past this attempt.
+            // must never advance either CAS precondition past this attempt.
             let attempted = self.take_refresh_attempt();
             if credentials.client_id != self.expected_client_id {
                 return Err(AuthError::AuthorizationRequired);
@@ -330,6 +329,15 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .token_response
                 .as_ref()
                 .ok_or(AuthError::AuthorizationRequired)?;
+            // Refresh responses may omit ID tokens; a fresh callback must prove
+            // the returned account before any destructive replacement fence.
+            if self.callback_save_fence.is_some()
+                && !token.extra_fields().0.get("id_token").is_some_and(|value| {
+                    value.as_str().is_some_and(|id_token| !id_token.is_empty())
+                })
+            {
+                return Err(AuthError::AuthorizationRequired);
+            }
             let existing = self
                 .credential_row()
                 .await
@@ -342,15 +350,21 @@ impl CredentialStore for GoogleProviderCredentialStore {
             let (subject, email) = self.identity_for_save(token, existing.as_ref()).await?;
             if attempted
                 .as_ref()
-                .is_some_and(|(attempted_subject, _)| attempted_subject != &subject)
+                .is_some_and(|(attempted_subject, _, _)| attempted_subject != &subject)
             {
                 return Err(AuthError::AuthorizationRequired);
             }
-            let _provider_guard = crate::google_refresh::lock(&subject).lock_owned().await;
-            let observed_revocation_epoch = self.authorization_fence_epoch.load(Ordering::Acquire);
+            let observed_revocation_epoch = attempted.as_ref().map_or_else(
+                || self.authorization_fence_epoch.load(Ordering::Acquire),
+                |(_, _, epoch)| *epoch,
+            );
             if observed_revocation_epoch < 0 {
                 return Err(AuthError::AuthorizationRequired);
             }
+            let observed_generation = attempted
+                .as_ref()
+                .map(|(_, generation, _)| *generation)
+                .or_else(|| existing.as_ref().map(|row| row.generation));
             let existing = self
                 .store
                 .find_google_provider_credential(&subject)
@@ -399,13 +413,45 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 scope_upgraded,
             };
             let update_subject = update.subject.clone();
-            let observed_generation = attempted
-                .as_ref()
-                .map(|(_, generation)| *generation)
-                .or_else(|| existing.as_ref().map(|row| row.generation));
+            let database = self.store.clone();
+            let subject = update.subject.clone();
+            let client_id = self.expected_client_id.clone();
+            let validate: CredentialSaveValidation = Box::pin(async move {
+                let guard = crate::google_refresh::lock(&subject).lock_owned().await;
+                let current = database
+                    .find_google_provider_credential(&subject)
+                    .await
+                    .map_err(|error| AuthError::InternalError(error.to_string()))?;
+                if current.as_ref().map(|row| row.generation) != observed_generation
+                    || current
+                        .as_ref()
+                        .is_some_and(|row| !row.client_id.is_empty() && row.client_id != client_id)
+                    || database
+                        .google_provider_fence_epoch()
+                        .await
+                        .map_err(|error| AuthError::InternalError(error.to_string()))?
+                        != observed_revocation_epoch
+                {
+                    return Err(AuthError::AuthorizationRequired);
+                }
+                let held: Box<dyn Send> = Box::new(guard);
+                Ok(held)
+            });
+            // The lifecycle writer is acquired before the provider lock. All
+            // client/account/token validation and merge preparation precede the
+            // fence; its validation future rejects stale authority before routes
+            // are revoked, and both guards stay held through the CAS publication.
+            let _save_guard = match &self.callback_save_fence {
+                Some(fence) => fence(validate).await?,
+                None => validate.await?,
+            };
             let persisted = if let Some(generation) = observed_generation {
                 self.store
-                    .replace_google_provider_token_bundle_if_generation(update, generation)
+                    .replace_google_provider_token_bundle_if_generation(
+                        update,
+                        generation,
+                        observed_revocation_epoch,
+                    )
                     .await
             } else {
                 self.store
@@ -428,9 +474,43 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 subject_id = %fingerprint(&update_subject),
                 observed_provider_generation = ?observed_generation,
                 replacement_provider_credential_present = replacement_present,
-                "upstream google credential save discarded stale token bundle after generation changed"
+                "upstream google credential save discarded stale token bundle after generation or revocation epoch changed"
             );
             Err(AuthError::AuthorizationRequired)
+        })
+    }
+
+    fn on_refresh_token_rejected<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _credentials: &'life1 StoredCredentials,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let Some((subject, generation, epoch)) = self.take_refresh_attempt() else {
+                return Ok(());
+            };
+            let invalidation = self
+                .store
+                .invalidate_google_provider_credential(&subject, generation, epoch)
+                .await
+                .map_err(|_| {
+                    AuthError::CredentialStoreError("invalidate rejected Google credential".into())
+                })?;
+            warn!(subject_id = %fingerprint(&subject), provider_generation = generation,
+                invalidated = invalidation.invalidated,
+                revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+                revoked_authorization_codes = invalidation.revoked_authorization_codes,
+                "shared Google credential refresh rejected");
+            if invalidation.invalidated
+                && let Some(handler) = &self.refresh_rejection_handler
+            {
+                handler(Some(subject));
+            }
+            Ok(())
         })
     }
 
@@ -494,6 +574,9 @@ pub fn missing_scopes(required: &[String], granted: &[String]) -> Vec<String> {
 }
 
 #[cfg(test)]
+mod callback_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -546,7 +629,7 @@ mod tests {
         .unwrap()
     }
 
-    fn provider() -> Arc<GoogleProvider> {
+    pub(super) fn provider() -> Arc<GoogleProvider> {
         Arc::new(
             GoogleProvider::new(
                 "google-client".to_string(),
@@ -557,7 +640,7 @@ mod tests {
         )
     }
 
-    async fn insert_bundle(store: &SqliteStore, scopes: Vec<String>) {
+    pub(super) async fn insert_bundle(store: &SqliteStore, scopes: Vec<String>) {
         let now = crate::util::now_unix();
         store
             .upsert_google_provider_token_bundle(GoogleProviderCredentialUpdate {
@@ -597,7 +680,11 @@ mod tests {
             .generation;
         assert!(
             store
-                .invalidate_google_provider_credential("google-subject", generation)
+                .invalidate_google_provider_credential(
+                    "google-subject",
+                    generation,
+                    store.google_provider_fence_epoch().await.unwrap(),
+                )
                 .await
                 .unwrap()
                 .invalidated
@@ -626,18 +713,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_refresh_attempt_generation_cannot_invalidate_fresh_replacement() {
+    async fn rejected_refresh_callback_invalidates_exact_provider_generation() {
         let store = test_store().await;
         insert_bundle(&store, vec!["openid".to_string()]).await;
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = Arc::clone(&notifications);
         let adapter = GoogleProviderCredentialStore::new(
             store.clone(),
             provider(),
             Some("google-subject".to_string()),
             "google-client".to_string(),
             vec!["openid".to_string()],
+        )
+        .with_refresh_rejection_handler(Arc::new(move |subject| {
+            assert_eq!(subject.as_deref(), Some("google-subject"));
+            recorded.fetch_add(1, Ordering::SeqCst);
+        }));
+        let credentials = CredentialStore::load(&adapter).await.unwrap().unwrap();
+        let guard = CredentialStore::acquire_refresh_guard(&adapter)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            CredentialStore::on_refresh_token_rejected(&adapter, &credentials),
+        )
+        .await
+        .expect("callback must not reacquire the refresh-operation guard")
+        .unwrap();
+        drop(guard);
+        assert!(
+            store
+                .find_google_provider_credential("google-subject")
+                .await
+                .unwrap()
+                .is_none()
         );
-        assert!(CredentialStore::load(&adapter).await.unwrap().is_some());
-        let (attempted_subject, attempted_generation) =
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            1,
+            "notify only for successful provider generation deletion"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_attempt_generation_cannot_invalidate_fresh_replacement() {
+        let store = test_store().await;
+        insert_bundle(&store, vec!["openid".to_string()]).await;
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = Arc::clone(&notifications);
+        let adapter = GoogleProviderCredentialStore::new(
+            store.clone(),
+            provider(),
+            Some("google-subject".to_string()),
+            "google-client".to_string(),
+            vec!["openid".to_string()],
+        )
+        .with_refresh_rejection_handler(Arc::new(move |subject| {
+            assert_eq!(subject.as_deref(), Some("google-subject"));
+            recorded.fetch_add(1, Ordering::SeqCst);
+        }));
+        let credentials = CredentialStore::load(&adapter).await.unwrap().unwrap();
+        let (_, attempted_generation, attempted_epoch) =
             adapter.refresh_attempt().expect("attempt generation");
 
         let now = crate::util::now_unix();
@@ -658,22 +794,26 @@ mod tests {
                         scope_upgraded: false,
                     },
                     attempted_generation,
+                    attempted_epoch,
                 )
                 .await
                 .unwrap()
         );
 
-        let invalidation = store
-            .invalidate_google_provider_credential(&attempted_subject, attempted_generation)
+        CredentialStore::on_refresh_token_rejected(&adapter, &credentials)
             .await
             .unwrap();
-        assert!(!invalidation.invalidated);
         let credential = store
             .find_google_provider_credential("google-subject")
             .await
             .unwrap()
             .expect("fresh replacement survives");
         assert_eq!(credential.refresh_token, "replacement-refresh");
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            0,
+            "notify only for successful provider generation deletion"
+        );
     }
 
     #[tokio::test]

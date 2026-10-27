@@ -133,6 +133,9 @@ pub enum HostUpdateCommand {
 
 #[derive(Debug, Args)]
 pub struct AutoUpdateArgs {
+    /// Release stream to retain for scheduled and service updates.
+    #[arg(long, value_enum, global = true)]
+    pub channel: Option<crate::self_update::UpdateChannel>,
     #[command(subcommand)]
     pub command: AutoUpdateCommand,
     /// Preview the schedule change without installing or changing it.
@@ -184,6 +187,7 @@ impl HostArgs {
                         .to_string(),
                     );
                     args.options.dry_run = auto.dry_run;
+                    args.options.channel = auto.channel;
                 }
                 super::Command::Update(args.options)
             }

@@ -7,6 +7,21 @@ use std::io::{self, BufReader, BufWriter};
 
 use crate::CodeModeCallError;
 
+/// Checked by both the native JS bridge and the host before dispatch or tracing.
+/// This is a UTF-8 byte limit, independent of the framed protocol line cap.
+pub(crate) const MAX_TOOL_ID_BYTES: usize = 1024;
+
+pub(crate) fn check_tool_id_bytes(id: &str) -> Result<(), CodeModeCallError> {
+    if id.len() <= MAX_TOOL_ID_BYTES {
+        return Ok(());
+    }
+    // Never include an oversized caller-controlled ID in the error contract.
+    Err(CodeModeCallError::new(
+        "budget_exceeded",
+        format!("callTool id exceeds the {MAX_TOOL_ID_BYTES}-byte UTF-8 limit"),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum CodeModeRunnerInput {
@@ -114,6 +129,13 @@ pub(crate) enum CodeModeRunnerOutput {
         result: CodeModeRunnerResult,
         #[serde(default)]
         logs: Vec<String>,
+        /// Native proof that all emitted requests' replies were consumed. A
+        /// caught or unawaited operation can return successfully without this
+        /// proof; with no pending host calls the parent preserves its response
+        /// and evicts without replay. Pending host calls remain a protocol fault.
+        /// Missing proof defaults to no reuse for older runner compatibility.
+        #[serde(default)]
+        reuse_ready: bool,
     },
     Error {
         // As with `CodeModeRunnerInput::ToolError`, no `#[serde(default)]`:
@@ -155,6 +177,7 @@ pub(crate) struct CodeModeRunnerState {
     pub(crate) reader: BufReader<io::Stdin>,
     pub(crate) writer: BufWriter<io::Stdout>,
     pub(crate) next_seq: u64,
+    pub(crate) replies: crate::runner::reply_ownership::ReplyOwnership,
 }
 
 thread_local! {
@@ -166,3 +189,25 @@ thread_local! {
 // catalog) plus await/Promise machinery needs ample headroom; 256 KiB avoids
 // operand-stack overflow on a single callTool.
 pub(crate) const CODE_MODE_STACK_SIZE_LIMIT: usize = 256 * 1024;
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn tool_id_limit_counts_utf8_bytes_and_never_echoes_rejected_input() {
+        assert!(check_tool_id_bytes(&"x".repeat(MAX_TOOL_ID_BYTES)).is_ok());
+        assert!(check_tool_id_bytes(&"é".repeat(MAX_TOOL_ID_BYTES / 2)).is_ok());
+        for id in [
+            "x".repeat(MAX_TOOL_ID_BYTES + 1),
+            "é".repeat(MAX_TOOL_ID_BYTES / 2 + 1),
+        ] {
+            let error = check_tool_id_bytes(&id).expect_err("oversized ID");
+            let wire = serde_json::to_string(&error).expect("error JSON");
+            assert_eq!(error.kind(), "budget_exceeded");
+            assert_eq!(error.origin, crate::CodeModeErrorOrigin::Budget);
+            assert!(error.tool.is_none());
+            assert!(!wire.contains(&id));
+        }
+    }
+}

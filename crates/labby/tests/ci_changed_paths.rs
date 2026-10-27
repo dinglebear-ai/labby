@@ -366,6 +366,21 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
 }
 
 #[test]
+fn worktree_identity_readers_collect_their_hermetic_suite() {
+    for path in [
+        "docs/snippets/worktree-identity.py",
+        "docs/snippets/worktree-identity-reader.py",
+        "docs/snippets/worktree-identity.test.py",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["docs_check"], "true", "{path}");
+        assert_eq!(out["rust_test"], "false", "{path}");
+    }
+    let workflow = include_str!("../../../.github/workflows/ci.yml");
+    assert!(workflow.contains("run: python3 docs/snippets/worktree-identity.test.py"));
+}
+
+#[test]
 fn historical_doc_work_products_skip_docs_check() {
     for path in [
         "docs/archive/retired-labby/README.md",
@@ -763,6 +778,11 @@ fn skills_contract_docs_route_to_rust_conformance_tests() {
 #[test]
 fn release_workflow_changes_enable_the_release_contract() {
     for path in [
+        ".github/workflows/release-please.yml",
+        ".release-please-dev.json",
+        "scripts/ci/dev_release_pr.py",
+        "scripts/ci/test_dev_release_pr.py",
+        "scripts/ci/test_dev_release_workflow.py",
         ".github/workflows/release.yml",
         ".github/workflows/build-incus-image.yml",
         "scripts/ci/resolve-n-minus-one-baseline.py",

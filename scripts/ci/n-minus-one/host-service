@@ -71,7 +71,7 @@ case "${1:-}" in
   # The unit runs as User=labby, and no labby release creates that user.
   # Older units (v1.13.3) also list every ReadWritePaths entry without "-", so
   # systemd refuses to start unless each directory already exists.
-  install-previous) id labby >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir /home/labby --shell /usr/sbin/nologin labby; sudo install -d -m 0700 -o labby -g labby /home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}; sudo --preserve-env=GH_TOKEN env LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
+  install-previous) id labby >/dev/null 2>&1 || sudo useradd --system --create-home --home-dir /home/labby --shell /usr/sbin/nologin labby; sudo install -d -m 0700 -o labby -g labby /home/labby/{.labby,.local,.cache,.config,.npm,.codex,.claude,.gemini,downloads}; sudo --preserve-env=GH_TOKEN env LABBY_INSTALL_NO_SETUP=1 LABBY_INSTALL_DIR=/usr/local/bin LABBY_INSTALL_CHANNEL=stable LABBY_INSTALL_VERSION="$LABBY_PREVIOUS_VERSION" LABBY_ALLOW_SOURCE_FALLBACK=0 sh "$repo_root/scripts/install.sh"; service install ;;
   # v1.13.3's host-service install writes no config.toml, so seed a minimal one
   # to check config persistence the same way as the other legs.
   # Secure every seeded descendant before the candidate validates state ownership.

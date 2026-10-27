@@ -72,10 +72,7 @@ impl UpstreamPool {
             self.invalidate_oauth_subject_sessions(&config.name, subject, "upstream.restart")
                 .await;
             let between = between_stop_and_start().await;
-            let reconnect = self
-                .acquire_or_connect_subject(config, subject)
-                .await
-                .map(drop);
+            let reconnect = self.acquire_subject_peer(config, subject).await.map(drop);
             return Ok(UpstreamRestart { between, reconnect });
         }
         self.begin_subscription_generation(&config.name).await;
@@ -171,7 +168,7 @@ mod catalog_isolation_tests {
     use super::UpstreamPool;
     use rmcp::model::{
         ErrorData, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
-        Resource, ServerCapabilities, ServerInfo,
+        Resource, ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -179,8 +176,8 @@ mod catalog_isolation_tests {
 
     struct ManyCatalogs;
     impl ServerHandler for ManyCatalogs {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_resources()
                     .enable_prompts()

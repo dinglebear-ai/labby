@@ -369,10 +369,13 @@ fn configure_oauth_client_builder(
 }
 
 fn oauth_http_error_kind(error: &OAuthHttpClientError) -> &'static str {
+    oauth_http_error_class(error).as_str()
+}
+
+pub(crate) fn oauth_http_error_class(error: &OAuthHttpClientError) -> OAuthEgressKind {
     error
         .downcast_ref::<OAuthEgressError>()
         .map_or(OAuthEgressKind::NetworkError, OAuthEgressError::kind)
-        .as_str()
 }
 
 impl OAuthHttpClient for TrustedOriginOAuthHttpClient {

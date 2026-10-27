@@ -45,6 +45,9 @@ pub(crate) async fn terminate_code_mode_runner(child: &mut Child, _pid: Option<u
     // handle drops (on eviction, including after a timeout) lets the OS terminate
     // the whole descendant tree. This kill() call is therefore a
     // belt-and-suspenders direct kill of the immediate child process.
-    drop(child.kill().await);
-    drop(child.wait().await);
+    // Reaping is bounded too: a closed stdout must not leave either the exit
+    // wait or teardown holding an execution/pool slot indefinitely. The runner
+    // handle still owns kill-on-drop and the group/Job Object cleanup guard.
+    drop(child.start_kill());
+    drop(tokio::time::timeout(std::time::Duration::from_secs(1), child.wait()).await);
 }

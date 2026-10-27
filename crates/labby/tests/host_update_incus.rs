@@ -53,6 +53,7 @@ impl Fixture {
             "cp",
             "date",
             "find",
+            "grep",
             "gzip",
             "head",
             "install",

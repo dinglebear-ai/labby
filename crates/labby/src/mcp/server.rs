@@ -22,7 +22,7 @@ use rmcp::model::{
     InitializeRequestParams, InitializeResult, ListPromptsResult, ListResourceTemplatesResult,
     ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, RequestMetaObject, ServerCapabilities,
-    ServerInfo, SubscriptionFilter, UpdateTaskParams,
+    ServerConfig, SubscriptionFilter, UpdateTaskParams,
 };
 use rmcp::service::{NotificationContext, RequestContext, SubscriptionContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
@@ -444,17 +444,19 @@ fn mcp_apps_ui_extension() -> ExtensionCapabilities {
 /// previous whole-function gate meant a `--features skills` build without
 /// `gateway` advertised no extensions block at all, and so could never announce
 /// skills support.
-fn mcp_extensions() -> ExtensionCapabilities {
+fn mcp_extensions(directory_read: bool) -> ExtensionCapabilities {
+    let _ = directory_read;
     let mut extensions = ExtensionCapabilities::new();
     #[cfg(feature = "gateway")]
     extensions.extend(mcp_apps_ui_extension());
     #[cfg(feature = "skills")]
     extensions.insert(
         labby_runtime::skills::wire::SKILLS_EXTENSION_KEY.to_string(),
-        // Empty object: supported, with no optional features. Labby does not
-        // implement `resources/directory/read`, and a client must not call it
-        // against a server that has not declared `directoryRead`.
-        serde_json::Map::new(),
+        if directory_read {
+            serde_json::Map::from_iter([("directoryRead".into(), serde_json::Value::Bool(true))])
+        } else {
+            serde_json::Map::new()
+        },
     );
     extensions
 }
@@ -527,9 +529,9 @@ impl LabMcpServer {
 /// for legacy sessions only.
 ///
 /// Extracted from `initialize` so it can be unit tested against a fabricated
-/// `ServerInfo` without standing up a gateway manager (the flag is
+/// `ServerConfig` without standing up a gateway manager (the flag is
 /// gateway-conditional in `get_info`).
-fn withhold_legacy_unusable_capabilities(info: &mut ServerInfo) {
+fn withhold_legacy_unusable_capabilities(info: &mut ServerConfig) {
     if let Some(resources) = info.capabilities.resources.as_mut() {
         resources.subscribe = None;
     }
@@ -571,7 +573,7 @@ impl ServerHandler for LabMcpServer {
     }
 
     #[allow(deprecated)]
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         #[cfg(feature = "gateway")]
         let gateway_manager_configured = self.gateway_manager.is_some();
         #[cfg(not(feature = "gateway"))]
@@ -594,7 +596,20 @@ impl ServerHandler for LabMcpServer {
             .enable_prompts()
             .enable_prompts_list_changed()
             .enable_completions();
-        let builder = builder.enable_extensions_with(mcp_extensions());
+        let builder = builder
+            .enable_extensions_with(mcp_extensions({
+                #[cfg(feature = "gateway")]
+                {
+                    self.gateway_manager.is_none()
+                        && self.route_scope.exposes_skills()
+                        && self.route_scope.exposes_resources()
+                }
+                #[cfg(not(feature = "gateway"))]
+                {
+                    self.route_scope.exposes_skills() && self.route_scope.exposes_resources()
+                }
+            }))
+            .enable_tasks();
         #[cfg(feature = "gateway")]
         let builder = if gateway_manager_configured {
             builder.enable_resources_subscribe().enable_tasks()
@@ -605,7 +620,7 @@ impl ServerHandler for LabMcpServer {
         let capabilities = builder.build();
         #[cfg(not(feature = "gateway"))]
         let capabilities = builder.build();
-        let mut info = ServerInfo::new(capabilities);
+        let mut info = ServerConfig::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         // A pointer, not skill content. It reaches clients that never parse the
         // capability map, which is the population most likely to miss an
@@ -670,6 +685,13 @@ impl ServerHandler for LabMcpServer {
             return self.handle_skills_request(&request, &context).await;
         }
 
+        #[cfg(feature = "skills")]
+        if request.method == labby_runtime::skills::wire::RESOURCES_DIRECTORY_READ_METHOD {
+            return self
+                .handle_skill_directory_request(&request, &context)
+                .await;
+        }
+
         if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
             return Err(ErrorData::new(
                 rmcp::model::ErrorCode::METHOD_NOT_FOUND,
@@ -697,10 +719,23 @@ impl ServerHandler for LabMcpServer {
         #[cfg(feature = "gateway")]
         self.observe_client(&context).await;
 
-        Ok(DiscoverResult::from_server_info(
+        let mut result = DiscoverResult::from_server_info(
             self.supported_protocol_versions().into_owned(),
             self.get_info(),
-        ))
+        );
+        #[cfg(feature = "skills")]
+        {
+            result
+                .capabilities
+                .extensions
+                .get_or_insert_with(ExtensionCapabilities::new)
+                .extend(mcp_extensions(self.supports_skill_directories().await));
+            // Route and configuration can change; do not share or retain the
+            // optional namespace guarantee across authorization contexts.
+            result.ttl_ms = 0;
+            result.cache_scope = CacheScope::Private;
+        }
+        Ok(result)
     }
 
     fn accepted_subscription_filter(
@@ -976,14 +1011,31 @@ impl ServerHandler for LabMcpServer {
         request: GetTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<GetTaskResult, ErrorData> {
+        if request
+            .task_id
+            .starts_with(crate::mcp::native_tasks::NATIVE_TASK_PREFIX)
+        {
+            return Box::pin(self.get_native_task(&request.task_id, &context))
+                .await
+                .map(provenance::stamp_get_task_result);
+        }
+        #[cfg(feature = "gateway")]
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             let result = pool
-                .get_task_routed(
+                .get_task_routed_with_context(
                     request,
                     self.request_subject(&context),
                     &self.route_scope.task_authorization(),
                     context.peer.clone(),
+                    labby_gateway::upstream::pool::TaskCallContext {
+                        capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
+                            &context.meta,
+                        ))
+                        .unwrap_or_default(),
+                        cancellation: cancellation_guard.cancellation().token.clone(),
+                    },
                 )
                 .await
                 .map_err(|message| {
@@ -1003,16 +1055,31 @@ impl ServerHandler for LabMcpServer {
         request: UpdateTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        if request
+            .task_id
+            .starts_with(crate::mcp::native_tasks::NATIVE_TASK_PREFIX)
+        {
+            return Box::pin(self.update_native_task(&request.task_id, &context)).await;
+        }
         let gateway_task_id = request.task_id.clone();
+        #[cfg(feature = "gateway")]
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             return pool
-                .update_task_routed(
+                .update_task_routed_with_context(
                     request,
                     self.request_subject(&context),
                     &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
+                    labby_gateway::upstream::pool::TaskCallContext {
+                        capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
+                            &context.meta,
+                        ))
+                        .unwrap_or_default(),
+                        cancellation: cancellation_guard.cancellation().token.clone(),
+                    },
                 )
                 .await
                 .map_err(|message| {
@@ -1031,16 +1098,31 @@ impl ServerHandler for LabMcpServer {
         request: CancelTaskParams,
         context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
+        if request
+            .task_id
+            .starts_with(crate::mcp::native_tasks::NATIVE_TASK_PREFIX)
+        {
+            return Box::pin(self.cancel_native_task(&request.task_id, &context)).await;
+        }
         let gateway_task_id = request.task_id.clone();
+        #[cfg(feature = "gateway")]
+        let cancellation_guard = track_request_cancellation(&context, self.relay_session_id);
         #[cfg(feature = "gateway")]
         if let Some(pool) = self.current_upstream_pool().await {
             return pool
-                .cancel_task_routed(
+                .cancel_task_routed_with_context(
                     request,
                     self.request_subject(&context),
                     &self.route_scope.task_authorization(),
                     &gateway_task_id,
                     context.peer.clone(),
+                    labby_gateway::upstream::pool::TaskCallContext {
+                        capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
+                            &context.meta,
+                        ))
+                        .unwrap_or_default(),
+                        cancellation: cancellation_guard.cancellation().token.clone(),
+                    },
                 )
                 .await
                 .map_err(|message| {
@@ -1060,7 +1142,7 @@ use crate::mcp::catalog::CatalogChangeSet;
 /// Extension capability map, for tests that assert what `initialize` declares.
 #[cfg(test)]
 pub(crate) fn mcp_extensions_for_test() -> ExtensionCapabilities {
-    mcp_extensions()
+    mcp_extensions(true)
 }
 
 impl LabMcpServer {
@@ -1105,8 +1187,9 @@ mod tests {
     use super::verify_upstream_subject_resolution_support;
     use super::{
         LabMcpServer, MCP_RELAY_CANCELLATION_REQUEST_METHOD, MCP_RELAY_CANCELLATION_TOKEN_META_KEY,
-        ServerCapabilities, ServerInfo, cancel_tracked_request_by_token, request_cancellation_key,
-        restore_request_meta, track_request_cancellation, withhold_legacy_unusable_capabilities,
+        ServerCapabilities, ServerConfig, cancel_tracked_request_by_token,
+        request_cancellation_key, restore_request_meta, track_request_cancellation,
+        withhold_legacy_unusable_capabilities,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
     use crate::mcp::logging::logging_level_rank;
@@ -1143,6 +1226,109 @@ mod tests {
         }
     }
 
+    #[cfg(all(feature = "skills", feature = "gateway", feature = "proxy-testkit"))]
+    #[tokio::test]
+    async fn directory_request_rechecks_config_after_discovery_without_hiding_skills() {
+        use labby_gateway::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+        use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
+        use labby_runtime::skills::wire::{
+            RESOURCES_DIRECTORY_READ_METHOD, SKILLS_EXTENSION_KEY, SKILLS_LIST_METHOD,
+        };
+        use rmcp::model::CacheScope;
+        use rmcp::service::RequestContext;
+        use std::sync::Arc;
+
+        let directory = tempfile::tempdir().unwrap();
+        let manager = Arc::new(GatewayManager::new(
+            directory.path().join("gateway.toml"),
+            GatewayRuntimeHandle::default(),
+        ));
+        let mut server = stateless_test_server(Default::default());
+        server.gateway_manager = Some(Arc::clone(&manager));
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = || RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        let initial = running.service().discover(context()).await.unwrap();
+        assert_eq!(
+            initial.capabilities.extensions.as_ref().unwrap()[SKILLS_EXTENSION_KEY]
+                .get("directoryRead"),
+            Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(initial.ttl_ms, 0);
+        assert_eq!(initial.cache_scope, CacheScope::Private);
+        assert!(initial.capabilities.supports_tasks());
+        let directory_request = CustomRequest::new(
+            RESOURCES_DIRECTORY_READ_METHOD,
+            Some(serde_json::json!({"uri":"skill://labby/using-labby"})),
+        );
+        let result = running
+            .service()
+            .on_custom_request(directory_request.clone(), context())
+            .await
+            .unwrap();
+        assert!(!result.0["resources"].as_array().unwrap().is_empty());
+        let listed = running
+            .service()
+            .list_resources(None, context())
+            .await
+            .unwrap();
+        let manifest = listed
+            .resources
+            .iter()
+            .find(|resource| resource.uri == "skill://labby/using-labby/SKILL.md")
+            .unwrap();
+        let directory_manifest = result.0["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|resource| resource["uri"] == manifest.uri)
+            .unwrap();
+        assert_eq!(
+            *directory_manifest,
+            serde_json::to_value(manifest).unwrap(),
+            "directory and resource listings must expose identical canonical manifest metadata"
+        );
+        let remote: UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name":"remote", "url":"http://127.0.0.1:1/mcp", "enabled":true, "proxy_skills":true
+        }))
+        .unwrap();
+        manager
+            .seed_config_unchecked_for_tests(GatewayConfig {
+                upstream: vec![remote],
+                ..Default::default()
+            })
+            .await;
+        let denied = running
+            .service()
+            .on_custom_request(directory_request, context())
+            .await
+            .unwrap_err();
+        assert_eq!(denied.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        let changed = running.service().discover(context()).await.unwrap();
+        assert!(
+            !changed.capabilities.extensions.as_ref().unwrap()[SKILLS_EXTENSION_KEY]
+                .contains_key("directoryRead")
+        );
+        let skills = running
+            .service()
+            .on_custom_request(
+                CustomRequest::new(SKILLS_LIST_METHOD, Some(serde_json::json!({}))),
+                context(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            skills.0["skills"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|entry| entry["uri"] == "skill://labby/using-labby/SKILL.md")
+        );
+        running.cancel().await.unwrap();
+    }
+
     #[tokio::test]
     async fn usage_attribution_uses_current_client_metadata_without_changing_authority() {
         let server = stateless_test_server(Default::default());
@@ -1150,7 +1336,7 @@ mod tests {
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
         );
-        running.peer().set_peer_info(rmcp::model::ClientInfo::new(
+        running.peer().set_peer_info(rmcp::model::ClientConfig::new(
             rmcp::model::ClientCapabilities::default(),
             rmcp::model::Implementation::new("legacy-client", "1"),
         ));
@@ -1445,7 +1631,7 @@ mod tests {
             .enable_resources_list_changed()
             .enable_resources_subscribe()
             .build();
-        let mut info = ServerInfo::new(capabilities);
+        let mut info = ServerConfig::new(capabilities);
         assert_eq!(
             info.capabilities
                 .resources
@@ -1481,7 +1667,7 @@ mod tests {
     /// `--no-default-features` the gateway-conditional branch never runs.
     #[test]
     fn withholding_is_safe_when_no_resource_capability_is_advertised() {
-        let mut info = ServerInfo::new(ServerCapabilities::builder().enable_tools().build());
+        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
         withhold_legacy_unusable_capabilities(&mut info);
         assert!(info.capabilities.resources.is_none());
         assert!(

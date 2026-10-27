@@ -5,6 +5,7 @@ import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DashboardPanel } from '@/components/dashboard/panel'
 import type { FederatedArtifact } from '@/lib/api/depot-client'
+import { artifactKey } from '@/lib/depot/provider-model'
 import { artifactKind, artifactTitle, revisionAge } from './discover-model'
 import { DiscoverSourceBadge } from './discover-source-badge'
 import { discoverKindPresentation } from './discover-kind-presentation'
@@ -56,7 +57,7 @@ export function DiscoverRails({ artifacts, artifactHref, loading = false, incomp
   return <div data-discover-rails="1" aria-busy={loading} className="flex min-w-0 flex-col gap-4">
     <p className="px-0.5 text-xs text-aurora-text-muted">Collections use the currently loaded catalog results.</p>
     {notice}
-    {discoverReferenceRails(artifacts, now).map(rail => <section key={rail.label} aria-label={rail.label} className="flex min-w-0 flex-col gap-2">
+    {discoverReferenceRails(artifacts, now).filter(rail => rail.items.length > 0).map(rail => <section key={rail.label} aria-label={rail.label} className="flex min-w-0 flex-col gap-2">
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1 px-0.5">
         <h2 className="font-display text-base font-extrabold text-aurora-text-primary">{rail.label}</h2>
         <span className="text-xs text-aurora-text-muted">{rail.hint}</span>
@@ -72,7 +73,7 @@ function DiscoverCollectionCard({ artifact, href, now }: { artifact: FederatedAr
   const Icon = presentation.icon
   const authoredAt = artifact.currentRevision?.authoredAt
   const date = authoredAt && Number.isFinite(Date.parse(authoredAt)) ? authoredAt : undefined
-  return <Link href={href} data-discover-collection-artifact={`${artifact.providerId}:${artifact.artifactId}`} className="relative flex w-64 max-w-[calc(100vw-4rem)] shrink-0 flex-col gap-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-strong px-4 py-3 text-left shadow-[var(--aurora-shadow-medium)] transition-colors hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
+  return <Link href={href} data-discover-collection-artifact={`${artifact.providerId}:${artifact.artifactId}`} data-artifact-key={artifactKey(artifact.providerId, artifact.artifactId)} className="relative flex w-64 max-w-[calc(100vw-4rem)] shrink-0 flex-col gap-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-strong px-4 py-3 text-left shadow-[var(--aurora-shadow-medium)] transition-colors hover:bg-aurora-hover-bg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aurora-accent-primary">
     <span className="flex min-w-0 items-center gap-2">
       <span aria-hidden className="grid size-8 shrink-0 place-items-center rounded-aurora-1 border border-aurora-border-default" style={{ color: presentation.color }}><Icon className="size-4" /></span>
       <span className="min-w-0"><span className="block truncate font-display text-sm font-bold text-aurora-text-primary" title={artifactTitle(artifact)}>{artifactTitle(artifact)}</span><span className="text-xs text-aurora-text-muted">{kind}</span></span>

@@ -67,7 +67,7 @@ test('each completed streamed turn keeps its own copy and regenerate controls', 
   />)
   try {
     const copies = [...view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Copy answer"]')]
-    const retries = [...view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Regenerate"]')]
+    const retries = [...view.container.querySelectorAll<HTMLButtonElement>('button[aria-label="Copy preceding prompt to new conversation"]')]
     assert.equal(copies.length, 2)
     assert.equal(retries.length, 2)
     await act(async () => { copies.forEach(button => button.click()); retries.forEach(button => button.click()) })

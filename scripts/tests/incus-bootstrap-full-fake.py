@@ -36,6 +36,47 @@ class BootstrapFakeTest(unittest.TestCase):
         result = subprocess.run(args,cwd=ROOT,env=env,text=True,capture_output=True)
         return result, json.loads(state_path.read_text())
 
+    def test_download_identity_is_validated_before_first_incus_call(self):
+        invalid = [("stable", "v2.7.0-dev.1"), ("dev", "v2.7.0"),
+                   ("stable", "v02.7.0"), ("stable", "2.7.0"),
+                   ("dev", "v2.7.0-dev.0"), ("dev", "v2.7.0-dev.01"),
+                   ("dev", "v2.7.0-beta.1"), ("stable", "HEAD"),
+                   ("stable", "v2.7.0\nmalformed"), ("dev", "v2.7.0-dev.1\nmalformed")]
+        valid = [("stable", "v2.7.0"), ("dev", "v2.7.0-dev.1"),
+                 ("stable", "latest"), ("dev", "latest")]
+        for channel, version in invalid + valid:
+            with self.subTest(channel=channel, version=version), tempfile.TemporaryDirectory() as td:
+                work = pathlib.Path(td); calls = work / "calls"
+                incus = work / "incus"
+                incus.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >>"$INCUS_CALL_LOG"\nexit 37\n')
+                incus.chmod(0o755)
+                env = os.environ | {"PATH": f"{work}:/usr/bin:/bin", "INCUS_CALL_LOG": str(calls)}
+                result = subprocess.run([str(ROOT / "scripts/incus-bootstrap.sh"),
+                                         "--channel", channel, "--version", version],
+                                        cwd=ROOT, env=env, text=True, capture_output=True)
+                if (channel, version) in invalid:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertFalse(calls.exists(), result.stdout + result.stderr)
+                    self.assertIn("does not match", result.stderr)
+                else:
+                    self.assertTrue(calls.exists(), result.stdout + result.stderr)
+
+    def test_local_and_skip_modes_do_not_require_download_identity(self):
+        for mode in ("--local-binary", "--skip-install"):
+            for channel in ("stable", "dev"):
+                with self.subTest(mode=mode, channel=channel), tempfile.TemporaryDirectory() as td:
+                    work = pathlib.Path(td); calls = work / "calls"
+                    binary = work / "labby"; binary.write_text("local artifact")
+                    incus = work / "incus"
+                    incus.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >>"$INCUS_CALL_LOG"\nexit 37\n')
+                    incus.chmod(0o755)
+                    env = os.environ | {"PATH": f"{work}:/usr/bin:/bin", "INCUS_CALL_LOG": str(calls),
+                                         "LABBY_INSTALL_VERSION": ""}
+                    args = [str(ROOT / "scripts/incus-bootstrap.sh"), "--channel", channel, mode]
+                    if mode == "--local-binary": args.append(str(binary))
+                    result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True)
+                    self.assertTrue(calls.exists(), result.stdout + result.stderr)
+
     def test_inventory_probe_failure_stops_before_launch(self):
         with tempfile.TemporaryDirectory() as td:
             before = self.baseline(False)

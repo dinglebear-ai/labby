@@ -19,7 +19,7 @@ use rmcp::model::{
     CustomResult, ErrorCode, ErrorData, GetPromptRequestParams, GetPromptResponse, GetPromptResult,
     ListPromptsResult, ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt,
     PromptMessage, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
-    Role, ServerCapabilities, ServerInfo,
+    Role, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
@@ -113,8 +113,8 @@ pub(super) struct StaticCatalogServer {
 }
 
 impl ServerHandler for StaticCatalogServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_resources()
                 .enable_prompts()
@@ -264,8 +264,8 @@ where
 pub(super) struct SlowResponseServer;
 
 impl ServerHandler for SlowResponseServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
@@ -376,7 +376,7 @@ impl UpstreamPool {
         }
 
         impl ServerHandler for ScriptedSkillsServer {
-            fn get_info(&self) -> ServerInfo {
+            fn get_info(&self) -> ServerConfig {
                 let mut capabilities = ServerCapabilities::builder().enable_tools().build();
                 let mut extensions = rmcp::model::ExtensionCapabilities::new();
                 extensions.insert(
@@ -384,7 +384,7 @@ impl UpstreamPool {
                     serde_json::Map::new(),
                 );
                 capabilities.extensions = Some(extensions);
-                ServerInfo::new(capabilities)
+                ServerConfig::new(capabilities)
             }
 
             async fn read_resource(
@@ -515,8 +515,8 @@ impl UpstreamPool {
         }
 
         impl ServerHandler for ToolErrorServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn call_tool(
@@ -570,8 +570,8 @@ impl UpstreamPool {
         }
 
         impl ServerHandler for McpErrorServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn call_tool(
@@ -631,8 +631,8 @@ impl UpstreamPool {
         }
 
         impl ServerHandler for MutableToolCatalogServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -732,7 +732,7 @@ pub(super) async fn move_connection_to_subject_cache_with_tools(
             optional_catalogs: Default::default(),
             _connection: connection,
             peer,
-            tools,
+            tools: tools.into(),
             last_used: std::time::Instant::now(),
         },
     );
@@ -776,7 +776,7 @@ pub(crate) async fn retained_oauth_peers(
             optional_catalogs: Default::default(),
             _connection: connection,
             peer: subject_peer.clone(),
-            tools: vec![],
+            tools: vec![].into(),
             last_used: std::time::Instant::now(),
         },
     );

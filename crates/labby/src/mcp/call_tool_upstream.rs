@@ -1329,7 +1329,7 @@ mod tests {
         use futures::future::BoxFuture;
         use rmcp::model::{
             CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, NumberOrString,
-            RequestMetaObject, ServerCapabilities, ServerInfo, Tool,
+            RequestMetaObject, ServerCapabilities, ServerConfig, Tool,
         };
         use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
         use serde_json::{Value, json};
@@ -1352,8 +1352,8 @@ mod tests {
         /// a caller mistake carried over a healthy connection.
         struct McpRejectingServer;
         impl ServerHandler for McpRejectingServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn call_tool(
@@ -1375,8 +1375,8 @@ mod tests {
         }
 
         impl ServerHandler for TraceRecordingServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn call_tool(
@@ -1397,8 +1397,8 @@ mod tests {
         /// failure (timeout) that the pool records against the breaker.
         struct StallingServer;
         impl ServerHandler for StallingServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn call_tool(

@@ -1063,9 +1063,9 @@ dependencies = [
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.38"
+version = "0.4.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce2548391e9c1929c21bf6aa2680af86fe4c1b33e6cea9ac1cfeec0bd11218cf"
+checksum = "100590da849306918656ffbb22576bbdfc1382b50ad10d1d50ec177d3b205fb2"
 dependencies = [
  "compression-core",
  "flate2",
@@ -1076,9 +1076,9 @@ dependencies = [
 
 [[package]]
 name = "compression-core"
-version = "0.4.32"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
+checksum = "2ebdda89edc534bf8d5dd2857562633b6495557e5846552ade994b99ed13c36a"
 
 [[package]]
 name = "console"
@@ -1324,9 +1324,9 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crypto-bigint"
-version = "0.7.6"
+version = "0.7.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb08299a6046833a879ace115697f12fd2bd6c8d3e93c909ffc9e0738e7cae0"
+checksum = "d811ea23fdfbcce2e2d5132344d471abdb8f901ac496a0893a3df92e70525e52"
 dependencies = [
  "cpubits",
  "ctutils",
@@ -2738,7 +2738,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20fd6de4ccfcc187e38bc21cfa543cb5a302cb86a8b114eb7f0bf0dc9f8ac00f"
 dependencies = [
  "io-lifetimes 3.0.1",
- "windows-sys 0.59.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2979,6 +2979,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonwebtoken"
+version = "11.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "pem",
+ "serde",
+ "serde_json",
+ "signature 2.2.0",
+ "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
 name = "konst"
 version = "0.2.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3068,7 +3086,7 @@ dependencies = [
  "indicatif",
  "jiff",
  "jsonschema",
- "jsonwebtoken",
+ "jsonwebtoken 10.3.0",
  "labby-apis",
  "labby-auth",
  "labby-browser",
@@ -3165,7 +3183,7 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.4.2",
  "hmac",
- "jsonwebtoken",
+ "jsonwebtoken 10.3.0",
  "labby-primitives",
  "labby-runtime",
  "labby-winjob",
@@ -4165,8 +4183,7 @@ dependencies = [
 [[package]]
 name = "msb_krun_vmm"
 version = "0.1.39"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1e512641c4b2300886a0ee77d0d728a1080cf11a924a4c76b0c11f6817da014"
+source = "git+https://github.com/dinglebear-ai/libkrun.git?rev=a83227d5b0804cc2e714f9c6cfd5939408d1abd4#a83227d5b0804cc2e714f9c6cfd5939408d1abd4"
 dependencies = [
  "bincode",
  "bzip2",
@@ -5234,20 +5251,23 @@ dependencies = [
 
 [[package]]
 name = "rmcp"
-version = "3.3.0"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=b19cfc03025047153fa283c0064c651b6e2f623e#b19cfc03025047153fa283c0064c651b6e2f623e"
+version = "3.7.0"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2#c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2"
 dependencies = [
  "async-trait",
  "base64 0.23.0",
  "bytes",
  "chrono",
  "futures",
+ "hmac",
  "http",
  "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
  "indexmap",
+ "jsonwebtoken 11.1.0",
+ "libc",
  "oauth2",
  "pastey",
  "pin-project-lite",
@@ -5258,6 +5278,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "sse-stream",
  "thiserror 2.0.18",
  "tokio",
@@ -5267,12 +5288,13 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
 name = "rmcp-macros"
-version = "3.3.0"
-source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=b19cfc03025047153fa283c0064c651b6e2f623e#b19cfc03025047153fa283c0064c651b6e2f623e"
+version = "3.7.0"
+source = "git+https://github.com/dinglebear-ai/rust-sdk.git?rev=c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2#c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2"
 dependencies = [
  "darling 0.24.1",
  "proc-macro2",
@@ -8166,27 +8188,27 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 
 [[package]]
 name = "zstd"
-version = "0.13.3"
+version = "0.14.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+checksum = "db3ae9bf90af6e40197bef767eeefc46ad6397420fe873830bd85e5fbbfb3c70"
 dependencies = [
  "zstd-safe",
 ]
 
 [[package]]
 name = "zstd-safe"
-version = "7.3.0"
+version = "8.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64d80649ab6db9d9f6f9c80a40becd948eda4714a0a5ac8c4d157a32231c7882"
+checksum = "ded520f16b29e1a9b771c722221b2b0a0398c2316d9bb3c42b458a5414d7434b"
 dependencies = [
  "zstd-sys",
 ]
 
 [[package]]
 name = "zstd-sys"
-version = "2.1.0+zstd.1.5.7"
+version = "2.1.2+zstd.1.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ef0a8027ec3ee71300ab3bcbcd0393f434aa72b91ca6d635a39941deae8eea0"
+checksum = "481ada9c543b2323cbb7bbdbb5249177fbf0188ed959ed2c15e4b22421c84ed3"
 dependencies = [
  "cc",
  "pkg-config",

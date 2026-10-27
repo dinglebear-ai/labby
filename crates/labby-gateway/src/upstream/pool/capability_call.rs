@@ -92,8 +92,9 @@ where
         return Ok(RawCallOutcome::Timeout);
     }
 
-    // Dropping `rpc` on cancellation stops the local work. Capability futures
-    // that carry side effects upstream arm their own cancel-on-drop guard.
+    // Dropping `rpc` stops the local wait. Prompt/resource convenience methods
+    // use rmcp's best-effort drop guard; tool calls retain Labby's bounded
+    // cancellation delivery for remote side effects.
     // `biased` is load-bearing: `rpc` is lazy, so an already-cancelled caller
     // must win without the request ever reaching the wire.
     let rpc = tokio::time::timeout(rpc_remaining, rpc_future);
@@ -483,6 +484,48 @@ where
         timeout_message,
         cancel,
         max_response_bytes(),
+        None,
+    ))
+    .await
+}
+
+/// Task admission retains the usual budget and telemetry, while distinguishing
+/// a timeout before enqueue from a dispatched upstream request timing out.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn timed_task_call<R, Fut, SizeFn>(
+    pool: &UpstreamPool,
+    request_timeout: Duration,
+    upstream_name: &str,
+    capability: UpstreamCapability,
+    event: UpstreamRequestLog<'_>,
+    start: Instant,
+    rpc_future: Fut,
+    size_fn: SizeFn,
+    subject: Option<&str>,
+    error_message_fn: impl Fn(&rmcp::ServiceError) -> String,
+    timeout_message: String,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+    dispatched: &std::sync::atomic::AtomicBool,
+) -> Result<R, CapabilityCallError>
+where
+    Fut: Future<Output = Result<R, rmcp::ServiceError>>,
+    SizeFn: Fn(&R) -> usize,
+{
+    Box::pin(timed_capability_call_with_timeout_and_limit(
+        pool,
+        request_timeout,
+        upstream_name,
+        capability,
+        event,
+        start,
+        rpc_future,
+        size_fn,
+        subject,
+        error_message_fn,
+        timeout_message,
+        cancel,
+        max_response_bytes(),
+        Some(dispatched),
     ))
     .await
 }
@@ -524,6 +567,7 @@ where
         timeout_message,
         None,
         response_limit,
+        None,
     ))
     .await
 }
@@ -543,6 +587,7 @@ async fn timed_capability_call_with_timeout_and_limit<R, Fut, SizeFn>(
     timeout_message: String,
     cancel: Option<&tokio_util::sync::CancellationToken>,
     response_limit: usize,
+    dispatched: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
@@ -661,6 +706,13 @@ where
         cancel,
     )
     .await?;
+    if matches!(outcome, RawCallOutcome::Timeout)
+        && dispatched.is_some_and(|flag| !flag.load(std::sync::atomic::Ordering::SeqCst))
+    {
+        // Task definition/durable checks can wait after bulkhead admission.
+        // A deadline before RMCP enqueue is local pressure, not peer failure.
+        return Err(queued_permit_deadline_error(pool, event, start, upstream_name, subject).await);
+    }
     match outcome {
         RawCallOutcome::Ok(result) => {
             let response_size = size_fn(&result);

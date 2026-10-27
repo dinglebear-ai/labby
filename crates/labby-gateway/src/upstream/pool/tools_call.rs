@@ -198,64 +198,76 @@ pub(super) async fn refresh_tool_header_cache_raw(
     catalog_pagination::list_tools(peer, timeout, MAX_UPSTREAM_TOOLS).await
 }
 
-pub(super) async fn call_tool_once_with_header_recovery(
-    pool: &UpstreamPool,
-    peer: &Peer<RoleClient>,
-    upstream_name: &str,
+pub(super) fn call_tool_once_with_header_recovery<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    upstream_name: &'a str,
     params: CallToolRequestParams,
-) -> Result<CallToolResponse, ServiceError> {
-    match peer.call_tool_once(params.clone()).await {
-        Err(error) if is_tool_header_mismatch(&error) => {
-            record_header_mismatch(pool, upstream_name);
-            refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = peer.call_tool_once(params).await;
-            record_header_retry(pool, upstream_name, &result);
-            result
+) -> impl Future<Output = Result<CallToolResponse, ServiceError>> + Send + 'a {
+    // Keep RPC/recovery state off caller polling stacks while retaining lazy
+    // dispatch and the existing cancellation guard and single retry contract.
+    Box::pin(async move {
+        match peer.call_tool_once(params.clone()).await {
+            Err(error) if is_tool_header_mismatch(&error) => {
+                record_header_mismatch(pool, upstream_name);
+                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                let result = peer.call_tool_once(params).await;
+                record_header_retry(pool, upstream_name, &result);
+                result
+            }
+            result => result,
         }
-        result => result,
-    }
+    })
 }
 
 /// [`call_tool_once_with_header_recovery`] whose RPC cancels upstream if the
 /// returned future is dropped before the response arrives.
-async fn call_tool_once_with_header_recovery_cancel_aware(
-    pool: &UpstreamPool,
-    peer: &Peer<RoleClient>,
-    upstream_name: &str,
+fn call_tool_once_with_header_recovery_cancel_aware<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    upstream_name: &'a str,
     params: CallToolRequestParams,
-) -> Result<CallToolResponse, ServiceError> {
-    match call_tool_once_cancel_aware(peer, upstream_name, params.clone()).await {
-        Err(error) if is_tool_header_mismatch(&error) => {
-            record_header_mismatch(pool, upstream_name);
-            refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = call_tool_once_cancel_aware(peer, upstream_name, params).await;
-            record_header_retry(pool, upstream_name, &result);
-            result
+) -> impl Future<Output = Result<CallToolResponse, ServiceError>> + Send + 'a {
+    // Keep RPC/recovery state off caller polling stacks while retaining lazy
+    // dispatch and the existing cancellation guard and single retry contract.
+    Box::pin(async move {
+        match call_tool_once_cancel_aware(peer, upstream_name, params.clone()).await {
+            Err(error) if is_tool_header_mismatch(&error) => {
+                record_header_mismatch(pool, upstream_name);
+                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                let result = call_tool_once_cancel_aware(peer, upstream_name, params).await;
+                record_header_retry(pool, upstream_name, &result);
+                result
+            }
+            result => result,
         }
-        result => result,
-    }
+    })
 }
 
-pub(super) async fn call_tool_with_header_recovery(
-    pool: &UpstreamPool,
-    peer: &Peer<RoleClient>,
-    upstream_name: &str,
+pub(super) fn call_tool_with_header_recovery<'a>(
+    pool: &'a UpstreamPool,
+    peer: &'a Peer<RoleClient>,
+    upstream_name: &'a str,
     params: CallToolRequestParams,
-) -> Result<CallToolResult, ServiceError> {
-    // Cancel-aware unconditionally: Code Mode reaches the pool through this
-    // helper and abandons the call future on cancellation
-    // (`labby-codemode/src/execute.rs`), so the guard is what stops the
-    // upstream — no token needs threading across the crate boundary.
-    match call_tool_cancel_aware(peer, upstream_name, params.clone()).await {
-        Err(error) if is_tool_header_mismatch(&error) => {
-            record_header_mismatch(pool, upstream_name);
-            refresh_tool_header_cache(pool, peer, upstream_name).await?;
-            let result = call_tool_cancel_aware(peer, upstream_name, params).await;
-            record_header_retry(pool, upstream_name, &result);
-            result
+) -> impl Future<Output = Result<CallToolResult, ServiceError>> + Send + 'a {
+    // Keep RPC/recovery state off caller polling stacks while retaining lazy
+    // dispatch and the existing cancellation guard and single retry contract.
+    Box::pin(async move {
+        // Cancel-aware unconditionally: Code Mode reaches the pool through this
+        // helper and abandons the call future on cancellation
+        // (`labby-codemode/src/execute.rs`), so the guard is what stops the
+        // upstream — no token needs threading across the crate boundary.
+        match call_tool_cancel_aware(peer, upstream_name, params.clone()).await {
+            Err(error) if is_tool_header_mismatch(&error) => {
+                record_header_mismatch(pool, upstream_name);
+                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                let result = call_tool_cancel_aware(peer, upstream_name, params).await;
+                record_header_retry(pool, upstream_name, &result);
+                result
+            }
+            result => result,
         }
-        result => result,
-    }
+    })
 }
 
 impl UpstreamPool {
@@ -287,8 +299,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = self
-            .acquire_or_connect_subject(config, subject)
+        let peer = self
+            .acquire_subject_peer(config, subject)
             .await
             .map_err(|error| CapabilityCallError::Transport {
                 message: error.to_string(),
@@ -328,8 +340,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = self
-            .acquire_or_connect_subject(config, subject)
+        let peer = self
+            .acquire_subject_peer(config, subject)
             .await
             .map_err(|error| CapabilityCallError::Transport {
                 message: error.to_string(),
@@ -369,7 +381,7 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, true)
             .with_transport(upstream_transport(config));
         log_upstream_request_start(event);
-        let (peer, _tools) = match self.acquire_or_connect_subject(config, subject).await {
+        let peer = match self.acquire_subject_peer(config, subject).await {
             Ok(pair) => pair,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -525,7 +537,7 @@ mod tests {
 
     use rmcp::model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ErrorCode,
-        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
     };
     use rmcp::{RoleClient, RoleServer, ServerHandler, ServiceExt};
 
@@ -535,7 +547,45 @@ mod tests {
     use super::super::helpers::IN_PROCESS_PEER_BUFFER_BYTES;
     use super::super::testsupport::*;
     use super::super::{UpstreamConnection, UpstreamPool};
-    use super::CapabilityCallError;
+    use super::{
+        CapabilityCallError, UpstreamCapability, call_tool_once_with_header_recovery_cancel_aware,
+        call_tool_with_header_recovery,
+    };
+    use std::mem::size_of_val;
+
+    #[tokio::test]
+    async fn pooled_header_recovery_futures_are_heap_owned() {
+        let pool = slow_response_pool("bounded").await;
+        let peer = pool
+            .acquire_peer("bounded", UpstreamCapability::Tools, "test")
+            .await
+            .unwrap();
+        let complete = call_tool_with_header_recovery(
+            &pool,
+            &peer,
+            "bounded",
+            CallToolRequestParams::new("slow.tool"),
+        );
+        let once = call_tool_once_with_header_recovery_cancel_aware(
+            &pool,
+            &peer,
+            "bounded",
+            CallToolRequestParams::new("slow.tool"),
+        );
+        eprintln!(
+            "pooled RPC future bytes: complete={}, once={}",
+            size_of_val(&complete),
+            size_of_val(&once)
+        );
+        assert!(
+            size_of_val(&complete) < 4096,
+            "complete tool RPC state must stay heap-owned below admission"
+        );
+        assert!(
+            size_of_val(&once) < 4096,
+            "once tool RPC state must stay heap-owned below admission"
+        );
+    }
 
     #[tokio::test]
     async fn call_tool_times_out_slow_upstream_response() {
@@ -625,8 +675,8 @@ mod tests {
         }
 
         impl ServerHandler for HeaderMismatchServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -752,8 +802,8 @@ mod tests {
     async fn call_tool_mcp_error_keeps_connection_healthy() {
         struct RejectingServer;
         impl ServerHandler for RejectingServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -838,8 +888,8 @@ mod tests {
     async fn call_tool_huge_mcp_error_payload_is_bounded() {
         struct HugeErrorServer;
         impl ServerHandler for HugeErrorServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -938,8 +988,8 @@ mod tests {
     async fn call_tool_oversized_response_returns_cap_error() {
         struct OversizedServer;
         impl ServerHandler for OversizedServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,
@@ -1034,9 +1084,9 @@ mod tests {
         }
 
         impl ServerHandler for CountingServer {
-            fn get_info(&self) -> ServerInfo {
+            fn get_info(&self) -> ServerConfig {
                 self.init_count.fetch_add(1, Ordering::SeqCst);
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,
@@ -1112,7 +1162,7 @@ mod tests {
                     optional_catalogs: Default::default(),
                     _connection: conn,
                     peer: peer.clone(),
-                    tools: vec![],
+                    tools: vec![].into(),
                     last_used: Instant::now(),
                 },
             );
@@ -1153,8 +1203,8 @@ mod tests {
 
         struct EchoServer;
         impl ServerHandler for EchoServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,
@@ -1240,8 +1290,8 @@ mod tests {
 
         struct EchoServer;
         impl ServerHandler for EchoServer {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn list_tools(
                 &self,

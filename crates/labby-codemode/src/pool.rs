@@ -2,14 +2,16 @@
 //!
 //! Pools the **OS process** of the Code Mode runner, not the JS runtime. Each
 //! pooled runner builds a FRESH `javy::Runtime` per `Start` (runner-side), so JS
-//! state isolation is guaranteed by construction — a brand-new runtime has no
+//! heap-state isolation comes from a brand-new runtime with no
 //! globals, no `__labPendingToolCalls`, and no captured data from a prior
-//! caller. Pooling amortizes only the expensive `fork()` + process startup.
+//! caller. Done permits reuse only with native reply-consumption proof and no
+//! pending host calls. Unqualified Done preserves success but evicts, like Error,
+//! because old pipe frames can survive a dropped runtime.
 //!
 //! Concurrency model: a bounded set of long-lived runners, one execution per
 //! runner at a time. `size` permits gate access to pooled runners; when all are
 //! busy the caller spawns a bounded ephemeral (overflow) runner instead of
-//! queueing unboundedly. A runner that crashes, times out, or reaches the
+//! queueing unboundedly. A runner that reports Error/unqualified Done, crashes, times out, or reaches the
 //! recycle-after-K threshold is evicted and a fresh one is spawned.
 //!
 //! Kill switch: `LABBY_CODE_MODE_POOL_SIZE=0` disables pooling entirely and the
@@ -89,6 +91,8 @@ struct PoolState {
 pub(crate) mod config;
 mod microsandbox;
 pub(crate) mod runner_handle;
+#[cfg(test)]
+mod test_support;
 
 /// Host-configurable runner re-invocation: the program to exec and the args to
 /// pass it. The pool re-execs this per spawned runner.

@@ -57,26 +57,9 @@ on that fallback propagates so sandbox `describe()` can expose an explicit
 `schema_status: "unavailable"` plus `schema_error` instead of silently
 omitting the parameter declaration.
 
-A prior investigation (bead `lab-5cgrz`) evaluated converting `search`/`describe`
-to host-RPC via the `local_provider.rs` pattern specifically and rejected it: the
-claimed injection cost was negligible at then-current scale, that approach would
-have serialized repeated calls behind the global local-provider lock, and reusing
-`local_providers_allowed()` verbatim would have wrongly restricted them to
-admin-only. `describe()` alone was later revisited once catalog sizes grew large
-enough for the injection cost to matter (informally benchmarked with an ad-hoc
-`#[ignore]`d probe against a real `javy::Runtime`, not a checked-in regression
-test: roughly 3x smaller injected payload, roughly 1.8x faster parse at 4,000
-tools — re-measure before treating these numbers as current) — solving the
-concerns the bead flagged as prerequisites: the
-`__lab_internal::*` mechanism sidesteps both the lock-serialization and
-admin-only-gating objections by construction (it's a different mechanism, not a
-fix to the rejected one), and `ToolsRender`/`CatalogRenderCache`
-(`labby-codemode`/`labby-gateway`) Arc-wrap `entries`/`catalog_json`. The
-broker now retains that render for the execution, removing the old second
-`list_tools()` call from the normal `describe()` path entirely. `search()` was
-left alone — its injection cost (index metadata only, never full types) is a
-fixed, small fraction of what `describe()` used to embed, so the bead's original
-"negligible at scale" conclusion still holds for it.
+Historical search/describe tradeoffs and dated probe results live in the
+[crate reference](README.md#discovery-implementation-history). Preserve the
+host-side snapshot and authorization contracts above.
 
 `CatalogRenderCache` (`labby-gateway`) remains a single-slot cache with no scope
 component in its fingerprint, unchanged by the Arc-wrap — and **every** caller
@@ -122,16 +105,17 @@ The emitted `ToolError` kind when the wall-clock timer fires is `"timeout"`.
 
 The runner **process** is pooled and long-lived; the **JS runtime is rebuilt
 per execution**. This amortizes the dominant fixed cost (fork + process startup)
-while guaranteeing JS-state isolation by construction.
+while isolating the JS heap. The parent must also enforce ownership of the
+stdio frames: a fresh heap does not remove replies already in the pipes.
 
 - **Runner loop.** `runner.rs` reads a `Start` → builds a FRESH `javy::Runtime`
   + context → installs the bridge globals → runs to settle → emits `Done`/`Error`
   → resets per-execution state and **loops back to read the next `Start`**. The
-  process never exits except on stdin EOF (parent dropped the runner).
+  child loop exits on stdin EOF; the parent terminates failed/recycled runners.
 - **Fresh runtime per `Start` is the contract.** Never reuse a `javy::Runtime`
   across executions — a brand-new runtime has no globals, no
-  `__labPendingToolCalls`, and no captured data from a prior caller. This is
-  where cross-caller leakage would live.
+  `__labPendingToolCalls`, and no captured data from a prior caller. This
+  heap isolation is separate from the parent-enforced protocol boundary.
 - **Per-execution resets** (`runner.rs`): the `next_seq` counter resets to 0.
   `reset_execution_jail` attempts to remove the previous cwd jail and enter a
   fresh subdirectory. Filesystem failures are non-fatal; the runner keeps an
@@ -142,9 +126,17 @@ while guaranteeing JS-state isolation by construction.
   bounded set of long-lived runner handles, one execution per runner at a time
   (`size` runners ⇒ `size` concurrent executions). Slot ownership uses an explicit
   free-list so concurrent checkouts never collide.
-- **Disposition.** `drive_runner` classifies each run: clean `Done` or a
-  per-execution `Error` → the runner is parked and **released** back to the pool
-  (it stayed alive with a fresh runtime). If a pooled runner exits before emitting
+- **Disposition.** Only `Done` with native `reuse_ready: true` proof and no
+  pending host work is **released** back to the pool. A bounded native ledger
+  tracks emitted requests and consumed replies independently of caller-mutable
+  JS maps, including both step phases on the reused seq. Missing/false proof
+  preserves the successful response and completed trace but **evicts without
+  replay** when host work has settled. `Done` with pending host calls remains a
+  protocol error. A per-execution `Error` cancels/drops pending host work and
+  **evicts without replay**, preserving its structured error and partial trace.
+  Late replies or terminal frames can remain even when the pending set is empty;
+  never reuse an errored runner merely because its JS runtime was dropped.
+  If a pooled runner exits before emitting
   any valid protocol event, it is **evicted** and the execution is replayed once
   on a guaranteed-fresh ephemeral runner; no host-visible side effect could have
   crossed the protocol boundary yet. A crash after protocol activity, timeout, or
@@ -252,14 +244,17 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 { "type": "step_result", "seq": <u64>, "value": <json> }
 
 // Execution completed
-{ "type": "done", "result": { "state": "json"|"undefined", "value": <json> }, "logs": ["..."] }
+{ "type": "done", "result": { "state": "json"|"undefined", "value": <json> }, "logs": ["..."], "reuse_ready": <bool> }
 
 // Execution error (JS exception or internal runner error)
 { "type": "error", "kind": "<error kind>", "message": "<string>" }
 ```
 
-The runner parks for the next `start` after each `done`/`error` and exits only on
-stdin EOF (no explicit `shutdown`/`ready` messages on the wire). Do not add fields
+The child loops after `done`/`error`, but the parent reuses only native-qualified
+`done` with no pending host work and evicts after `error`. Missing `reuse_ready`
+defaults to false, preserving compatible results without assuming reuse proof.
+There is no `shutdown`/`ready` message or execution epoch on the wire.
+Do not add fields
 to the wire protocol without updating both sides and `protocol.rs`.
 
 `step_recorded` does not prove that persistent storage has flushed. The gateway's
@@ -286,7 +281,7 @@ items.
 | Per-run cwd isolation | A direct-process runner has a long-lived host `TempDir`; a Microsandbox runner creates its own guest-local `TempDir`. On each `Start`, `runner.rs::reset_execution_jail` attempts to remove the previous jail and enter a fresh subdirectory. Failures are non-fatal and can leave filesystem state behind in the isolated runner directory. This is defense-in-depth, not a hard containment boundary. |
 | Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run artifact store root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
 | Artifact size cap | Enforced: 8 MiB default (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB`) |
-| Tool call budget | Enforced in `runner_drive.rs`: 512 ordinary calls per run by default, configurable up to 2,048 via `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` or the host-installed `max_calls_per_run` fallback. Excess calls reject as `call_budget_exceeded`. Reserved internal calls have a separate ceiling of 32. |
+| Tool call budget | Enforced in `runner_drive.rs`: 512 ordinary calls per run by default, configurable up to 2,048 via `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` or the host-installed `max_calls_per_run` fallback. Excess calls reject as `call_budget_exceeded`. Reserved internal calls have a separate ceiling of 32. Explicit and automatic artifact writes share a hard 64 MiB / 256-file per-run payload budget and serialized store-byte admission. |
 
 **Writing tests that assert on env isolation:** `env_clear()` has landed, so a
 test asserting the runner child has a minimal/empty environment reflects real
@@ -301,14 +296,15 @@ env_clear lands" comment — that state is in the past.
 | File | Purpose |
 |------|---------|
 | `runner.rs` | Runner subprocess entry point: the warm-pool loop (read `Start` → fresh runtime → run → `Done`/`Error` → reset + park), per-execution sequence reset + best-effort cwd-jail reset, `PR_SET_DUMPABLE`. |
-| `runner_drive.rs` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
+| `runner/stdio.rs`, `runner/reply_ownership.rs` | Native framed IO and bounded consumed-reply proof; duplicate/unexpected replies or exhausted tracking capacity disqualify process reuse without changing dispatch budgets. |
+| `runner_drive.rs` + `runner_drive/` | Parent-side driver: acquires a runner (pool lease or standalone), drives the protocol loop, classifies the outcome (`Completed`/`ExecutionError`/`RunnerUnavailableBeforeActivity`/`RunnerUnhealthy`), retries a pre-protocol pooled-runner exit once on a guaranteed-fresh runner, enforces the wall-clock timeout, and finalizes leases (release vs evict). |
 | `pool.rs` | `RunnerPool` + `RunnerLease`: bounded warm pool, free-list slot ownership, recycle-after-K, bounded ephemeral overflow, kill switch. |
 | `pool/runner_handle.rs` | `PooledRunner`: one long-lived runner process + its stdin/lines/stderr-drain, process-group/Job-Object guard, spawn (`env_clear`, `process_group`, `kill_on_drop`). |
 | `pool/microsandbox.rs` | Opt-in microVM create, `exec --stream` attachment, bounded startup, and force-remove lifecycle guard. |
 | `runner_backend.rs` | Fail-closed selection and validation for the direct-process and opt-in Microsandbox runner transports. |
 | `pool/config.rs` | `PoolConfig`: env-driven pool size / recycle / overflow knobs and the kill switch. |
 | `runner_io.rs` | Framed stdio line protocol with the child process. |
-| `execute.rs` | `execute()` entry point: build context, inject preamble, call driver, return result. The host extracts widget metadata before unwrapping its tool result; the broker captures the returned `ToolCallOutcome.ui` (last-wins), and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
+| `execute.rs` + `execute/` | `execute()` entry point: build context, inject preamble, call driver, return result. The host extracts widget metadata before unwrapping its tool result; the broker captures the returned `ToolCallOutcome.ui` (last-wins), and `apply_ui_opt_in` surfaces it on the final response while preserving `{ __ui: <result> }` unwrapping compatibility. |
 | `host.rs` | Host trait and adapters that let gateway or tests provide tool/snippet/artifact behavior without coupling this crate back to gateway. |
 | `broker.rs` | Broker implementation for tool calls, snippet resolution, artifact writes, and per-run UI capture. |
 | `preamble.rs` | Injects the `callTool` bridge stub and catalog proxy into the JS environment. |
@@ -338,6 +334,10 @@ env_clear lands" comment — that state is in the past.
   detected on the runner's returned `result` — it adds **no** new parent↔runner
   wire fields.
 - Keep each file under 500 LOC; split following the existing pattern if a file grows.
+- Library driver fixtures use the private `RunnerConfig` test-owned TempDir;
+  keep that owner alive through runner cleanup and assert against the same root
+  used by `DriveState::for_config`. Never use ambient `LABBY_HOME`/`HOME` for a
+  writable or negative artifact fixture, or mutate those globals across tests.
 
 ---
 

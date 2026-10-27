@@ -52,6 +52,20 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertEqual(upload["if"], "${{ always() }}")
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
 
+    def test_pr_live_browser_lane_has_hosted_prerequisites_and_is_not_optional(self):
+        root = Path(__file__).resolve().parents[2]
+        harness = (root / "scripts/ci/labby-live-e2e.sh").read_text()
+        common_shards = re.search(r"^shards=\(([^\n]+)\)$", harness, re.MULTILINE)
+        self.assertIsNotNone(common_shards)
+        self.assertIn("browser-live", common_shards.group(1).split())
+        workflow = yaml.load((root / ".github/workflows/live-e2e.yml").read_text(), Loader=yaml.BaseLoader)
+        steps = workflow["jobs"]["live-e2e-core"]["steps"]
+        install = next(step for step in steps if "playwright install chromium" in step.get("run", ""))
+        build = next(step for step in steps if step.get("name") == "Precompile product and live E2E test targets")
+        self.assertLess(steps.index(install), steps.index(build))
+        self.assertIn("--test live_browser_supervisor", build["run"])
+        self.assertIn("LABBY_LIVE_BROWSER_RUN=1", harness)
+
     def test_policy_rejects_unreviewed_download_artifact_revisions(self):
         errors = policy.external_use_errors(
             Path("fixture.yml"), "actions/download-artifact@" + "0" * 40

@@ -154,7 +154,7 @@ jobs:
           mkdir -p release-observations
           observed_count=0
           while IFS=$'\t' read -r tag is_draft; do
-            [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+            python3 scripts/ci/release_channel.py "$tag" >/dev/null 2>&1 || continue
             directory="release-observations/$tag"
             mkdir -p "$directory/assets"
             # Published releases predating the versioned manifest contract are
