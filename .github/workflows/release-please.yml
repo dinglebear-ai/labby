@@ -246,3 +246,43 @@ jobs:
           if [[ -n "$AUTO_MERGE_PR" && "$RELEASE_PLEASE_RESULT" == success ]]; then
             gh pr merge "$AUTO_MERGE_PR" --repo "$GITHUB_REPOSITORY" --squash --auto --match-head-commit "$observed"
           fi
+
+  dev-release-pr:
+    name: Maintain the opt-in dev release PR
+    needs: [stabilize-release-pr, release-please, sync-release-version]
+    if: >-
+      ${{ always() && !cancelled() &&
+          github.ref == 'refs/heads/main' &&
+          needs.stabilize-release-pr.result == 'success' &&
+          (needs.release-please.result == 'success' || needs.release-please.result == 'skipped') &&
+          (needs.sync-release-version.result == 'success' || needs.sync-release-version.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: read
+    # Both entry points reserve immutable dev tags through the same lock.
+    concurrency:
+      group: labby-dev-release-preparation
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          persist-credentials: true
+      - name: Refresh or consume the dev release request
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo '::error::RELEASE_PLEASE_TOKEN is required'; exit 1; }
+          python3 scripts/ci/dev_release_pr.py \
+            --repository "$GITHUB_REPOSITORY" --source "$SOURCE_SHA"

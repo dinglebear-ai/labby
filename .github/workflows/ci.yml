@@ -1384,7 +1384,7 @@ jobs:
       - name: Exercise release qualification contracts before tagging
         run: |
           python3 -m pip install --disable-pip-version-check PyYAML==6.0.2
-          python3 -m unittest scripts.ci.test_release_hardening scripts.ci.test_release_channels scripts.ci.test_dev_release_source scripts.ci.test_incus_channels scripts.ci.test_release_observer scripts.ci.test_verifier_bootstrap scripts.ci.test_release_provenance_bundles scripts.ci.test_first_use_qualification scripts.ci.test_first_use_native_driver
+          python3 -m unittest scripts.ci.test_release_hardening scripts.ci.test_release_channels scripts.ci.test_dev_release_source scripts.ci.test_dev_release_pr scripts.ci.test_dev_release_workflow scripts.ci.test_incus_channels scripts.ci.test_release_observer scripts.ci.test_verifier_bootstrap scripts.ci.test_release_provenance_bundles scripts.ci.test_first_use_qualification scripts.ci.test_first_use_native_driver
 
   incus-contract:
     name: Incus source contract
