@@ -175,6 +175,7 @@ async fn automatic_reload_retains_dev_channel_and_dry_run_preserves_it() {
         .unwrap();
     assert_eq!(result["version"], "v1.17.0-dev.10");
     assert_eq!(result["installed"], false);
+    assert_lock_released(|| acquire_update_lock(dir.path()));
     let result = automatic_with_catalog(&binary, true, Some(UpdateChannel::Stable), catalog())
         .await
         .unwrap();
