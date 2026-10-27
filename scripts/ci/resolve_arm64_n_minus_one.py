@@ -7,6 +7,10 @@ import json
 from pathlib import Path
 import runpy
 import sys
+try:
+    from release_channel import order
+except ModuleNotFoundError:
+    from scripts.ci.release_channel import order
 
 _baseline = runpy.run_path(str(Path(__file__).with_name("resolve-n-minus-one-baseline.py")))
 releases_from = _baseline["releases_from"]
@@ -17,7 +21,7 @@ X86_ARCHIVE = "lab-x86_64-unknown-linux-gnu.tar.gz"
 
 
 def select(candidate: str, releases: object, merged_tags: set[str]) -> tuple[str, str]:
-    candidate_version = version(candidate)
+    candidate_version = order(candidate)
     if candidate_version is None:
         raise ValueError(f"candidate {candidate!r} is not a vX.Y.Z tag")
     by_tag: dict[str, list[set[str]]] = {}
@@ -27,7 +31,7 @@ def select(candidate: str, releases: object, merged_tags: set[str]) -> tuple[str
         assets = {row.get("name") for row in release.get("assets", []) if row.get("state") == "uploaded"}
         by_tag.setdefault(release.get("tag_name", ""), []).append(assets)
     older = sorted(
-        (tag for tag in merged_tags if (parsed := version(tag)) is not None and parsed < candidate_version),
+        (tag for tag in merged_tags if (parsed := version(tag)) is not None and order(tag) < candidate_version),
         key=version, reverse=True,
     )
     published = [(tag, assets) for tag in older for assets in by_tag.get(tag, [])]

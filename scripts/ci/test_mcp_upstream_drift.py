@@ -67,6 +67,10 @@ class OwnershipMappingTest(unittest.TestCase):
         self.assertIn("Accepted SEP-2640 server, client, and intermediary behavior", workflow)
         self.assertIn("--no-default-features --features skills", workflow)
         self.assertIsNotNone(SKILLS_REGRESSION_COMMAND.search(workflow))
+        self.assertIn(
+            "cargo test -p labby --all-features --locked mcp::skills",
+            workflow,
+        )
 
     def test_skills_regression_command_requires_exact_feature_lock_and_filter(self) -> None:
         command = "cargo test -p labby --no-default-features --features skills --locked skills::"

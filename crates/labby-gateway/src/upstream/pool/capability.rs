@@ -122,7 +122,7 @@ mod tests {
     use super::*;
     use rmcp::model::{
         ErrorData, ListPromptsResult, ListResourcesResult, PaginatedRequestParams, Prompt,
-        Resource, ServerCapabilities, ServerInfo,
+        Resource, ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -140,8 +140,8 @@ mod tests {
     }
 
     impl ServerHandler for PaginatedCapabilities {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_resources()
                     .enable_prompts()

@@ -1,7 +1,7 @@
 ---
 title: Skills extension contract
 created: 2026-08-12
-updated: 2026-09-04
+updated: 2026-10-24
 ---
 
 # Skills Extension Contract (SEP-2640)
@@ -338,15 +338,35 @@ Capability declaration (empty object = supported, no optional features):
 ```
 
 Clients MUST NOT call `resources/directory/read` against a server that has not
-declared `directoryRead: true`. Labby does not declare it.
+declared `directoryRead: true`. Modern Labby discovery declares it when the
+route exposes both Skills and Resources and has no enabled, route-visible
+proxied Skills namespace. Every directory request rechecks this condition;
+enabling a proxied Skills namespace revokes directory support without removing
+Skills from discovery. Legacy initialization declares it only for a native
+server without a gateway manager.
 
-`skills/get` returns its entry **nested under a `skill` key** — not flat. The
-following URI is the upstream-native SEP form; a Labby-aggregated copy is reminted
+Native directory pages come from the caller-visible captured manifest, not a
+filesystem scan. They contain direct children, use `inode/directory` for child
+directories, and return at most 128 children per page. Cursors bind the directory,
+current authorized visibility, and manifest contents. Unknown directories, file
+URIs, traversal, stale manifests, and stale authorization fail closed. Manifest
+children use the same descriptor as `resources/list`, including the authored
+name, description, and metadata.
+
+`skills/get` returns its entry **nested under a `skill` key** — not flat.
+The [published Skills specification](https://modelcontextprotocol.io/extensions/skills/overview)
+also requires `resultType: "complete"`, `ttlMs`, and `cacheScope` on list and get
+results. Labby's get responses use `ttlMs: 0` and `cacheScope: "private"` so
+callers revalidate entries and do not share them across authorization contexts.
+The following URI is the upstream-native SEP form; a Labby-aggregated copy is reminted
 under its configured gateway origin as described in [URI grammar](#uri-grammar).
 
 ```json
 {
   "result": {
+    "resultType": "complete",
+    "ttlMs": 0,
+    "cacheScope": "private",
     "skill": {
       "uri": "skill://pdf-processing/SKILL.md",
       "frontmatter": { "name": "pdf-processing", "description": "…" },

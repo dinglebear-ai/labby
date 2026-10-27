@@ -33,8 +33,8 @@ function fakePopup() {
   return { closed: false, opener: {}, location: { href: 'about:blank' }, close() { this.closed = true } }
 }
 
-async function renderCard() {
-  upstreamOauthApi.status = async () => ({ authenticated: false, state: 'disconnected' }) as Awaited<ReturnType<typeof upstreamOauthApi.status>>
+async function renderCard(status: Partial<Awaited<ReturnType<typeof upstreamOauthApi.status>>> = {}) {
+  upstreamOauthApi.status = async () => ({ authenticated: false, state: 'disconnected', ...status }) as Awaited<ReturnType<typeof upstreamOauthApi.status>>
   return renderClient(createElement(SWRConfig, {
     value: { provider: () => new Map(), dedupingInterval: 0, revalidateOnFocus: false },
   }, createElement(UpstreamOauthCard, { name: 'test-upstream' })))
@@ -103,3 +103,71 @@ test('unmount aborts pending start and a late response cannot navigate the tab',
   await act(async () => complete({ authorization_url: 'https://provider.example/late' } as Awaited<ReturnType<typeof upstreamOauthApi.start>>))
   assert.equal(popup.location.href, 'about:blank')
 })
+
+
+test('scope upgrades for a dedicated upstream use provider-neutral consent text', async () => {
+  const view = await renderCard({
+    authenticated: false,
+    state: 'scope_upgrade_required',
+    credential_source: 'dedicated',
+  })
+  try {
+    assert.match(view.container.textContent ?? '', /Grant the permissions required by this server/)
+    assert.doesNotMatch(view.container.textContent ?? '', /Google/)
+    assert.ok([...view.container.querySelectorAll('button')].some(node => node.textContent === 'Grant scopes'))
+  } finally { await view.unmount() }
+})
+
+
+const unattendedModes = ['client_credentials', 'enterprise_managed', 'workload_identity_federation'] as const
+
+for (const authorization_mode of unattendedModes) {
+  test(`${authorization_mode} does not offer browser sign-in when its grant fails`, async () => {
+    const view = await renderCard({
+      authenticated: false,
+      credential_source: 'dedicated',
+      state: 'refresh_failed',
+      refresh_error: 'Service credential is unavailable',
+      authorization_mode,
+    })
+    try {
+      assert.match(view.container.textContent ?? '', /Service credential is unavailable/)
+      assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === 'Connect'))
+    } finally { await view.unmount() }
+  })
+}
+
+test('upstream scope challenges remain visible when the Google grant has no missing scopes', async () => {
+  const view = await renderCard({
+    authenticated: false,
+    state: 'scope_upgrade_required',
+    credential_source: 'google_provider',
+    required_scopes: ['files:write'],
+    google_credential_broker: {
+      account_selector_configured: true,
+      client_bound: true,
+      required_scopes: [],
+      granted_scopes: [],
+      missing_scopes: [],
+    },
+  })
+  try {
+    assert.match(view.container.textContent ?? '', /files:write/)
+  } finally { await view.unmount() }
+})
+
+
+for (const authorization_mode of unattendedModes) {
+  test(`clearing ${authorization_mode} does not claim to disconnect its service identity`, async () => {
+    const view = await renderCard({
+      authenticated: true,
+      credential_source: 'dedicated',
+      state: 'connected',
+      authorization_mode,
+    })
+    try {
+      assert.ok([...view.container.querySelectorAll('button')].some(node => node.textContent === 'Clear cached token'))
+      assert.ok(![...view.container.querySelectorAll('button')].some(node => node.textContent === 'Disconnect'))
+    } finally { await view.unmount() }
+  })
+}

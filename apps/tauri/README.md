@@ -72,7 +72,6 @@ pnpm vite:build
 pnpm verify
 pnpm dev
 pnpm build
-pnpm prepare:glib
 cargo test --manifest-path src-tauri/Cargo.toml --locked
 ```
 
@@ -80,14 +79,13 @@ cargo test --manifest-path src-tauri/Cargo.toml --locked
 `pnpm build` creates the native release bundles. The Rust crate is isolated
 from the root Cargo workspace, so native checks use its explicit manifest path.
 
-Useful full native gates (run `pnpm prepare:glib` first):
+Useful full native gates:
 
 Keep Node.js available on `PATH` when running the Rust tests. The test suite
 executes the generated WebView status and redemption scripts in a local Node
 harness with mocked DOM and fetch behavior; these tests make no network calls.
 
 ```bash
-pnpm prepare:glib
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --locked -- -D warnings
 cargo test --manifest-path src-tauri/Cargo.toml --locked
@@ -105,9 +103,3 @@ stale load cannot replace a newer one.
 Do not add arbitrary HTTP IPC, bearer-token storage, a separate provider OAuth stack, filesystem
 access, or backend business logic to this package. Those belong to the web
 application or authoritative backend contracts.
-
-The GTK3 security backport is materialized from a checksum-pinned registry archive
-into ignored build storage by `pnpm prepare:glib`. No third-party Rust sources
-are committed. `pnpm dev` and `pnpm build` prepare it automatically; direct Cargo
-commands require preparation first and fail if it is absent. See
-[GLib correction provenance](GLIB_BACKPORT.md).

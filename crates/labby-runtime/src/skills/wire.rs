@@ -34,9 +34,9 @@ pub const SKILL_MD_MIME_TYPE: &str = "text/markdown";
 
 /// Capability payload for `io.modelcontextprotocol/skills`.
 ///
-/// An empty object means the extension is supported with no optional features;
-/// that is what Labby advertises, since it does not implement
-/// `resources/directory/read`.
+/// An empty object means the extension is supported with no optional features.
+/// Labby advertises directory reads only when the request's route serves native,
+/// manifest-backed Skills without enabled proxied Skills namespaces.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillsCapability {
     /// Whether the server implements `resources/directory/read`. Clients MUST
@@ -271,6 +271,16 @@ pub struct SkillsGetResult {
     pub result_type: CompleteResultType,
     /// Retrieved skill entry.
     pub skill: SkillEntry,
+    /// Freshness hint in milliseconds; absent on older peer responses.
+    #[serde(rename = "ttlMs", default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    /// Sharing hint; authorization is enforced independently.
+    #[serde(
+        rename = "cacheScope",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cache_scope: Option<String>,
 }
 
 #[cfg(test)]

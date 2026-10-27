@@ -21,6 +21,7 @@ use super::super::http_client;
 #[derive(Clone)]
 pub(crate) struct LabbyUnixSocketHttpClient {
     inner: UnixSocketHttpClient,
+    scope_challenge_handler: Option<labby_auth::upstream::manager::OauthScopeChallengeHandler>,
 }
 
 pub(crate) fn request_uri(authority_uri: &str) -> anyhow::Result<String> {
@@ -41,6 +42,33 @@ impl LabbyUnixSocketHttpClient {
         Self {
             inner: UnixSocketHttpClient::new(socket_path, authority_uri)
                 .with_max_response_bytes(max_response_bytes),
+            scope_challenge_handler: None,
+        }
+    }
+
+    pub(crate) fn with_scope_challenge_handler(
+        mut self,
+        handler: labby_auth::upstream::manager::OauthScopeChallengeHandler,
+    ) -> Self {
+        self.scope_challenge_handler = Some(handler);
+        self
+    }
+
+    fn observe_scope_challenge<T>(
+        &self,
+        result: &Result<
+            T,
+            StreamableHttpError<<UnixSocketHttpClient as StreamableHttpClient>::Error>,
+        >,
+    ) {
+        if let (Some(handler), Err(StreamableHttpError::InsufficientScope(error))) =
+            (&self.scope_challenge_handler, result)
+        {
+            if let Some(scope) = labby_auth::upstream::manager::required_scope_from_challenge(
+                &error.www_authenticate_header,
+            ) {
+                handler(scope);
+            }
         }
     }
 
@@ -78,9 +106,12 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
         let custom_headers = Self::enrich_headers(&message, custom_headers);
-        self.inner
+        let result = self
+            .inner
             .post_message(uri, message, session_id, auth_header, custom_headers)
-            .await
+            .await;
+        self.observe_scope_challenge(&result);
+        result
     }
 
     async fn post_message_with_max_sse_event_size(
@@ -93,7 +124,8 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
         max_sse_event_size: usize,
     ) -> Result<StreamableHttpPostResponse, StreamableHttpError<Self::Error>> {
         let custom_headers = Self::enrich_headers(&message, custom_headers);
-        self.inner
+        let result = self
+            .inner
             .post_message_with_max_sse_event_size(
                 uri,
                 message,
@@ -102,7 +134,9 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
                 custom_headers,
                 max_sse_event_size,
             )
-            .await
+            .await;
+        self.observe_scope_challenge(&result);
+        result
     }
 
     async fn delete_session(
@@ -112,9 +146,12 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
         auth_header: Option<String>,
         custom_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Result<(), StreamableHttpError<Self::Error>> {
-        self.inner
+        let result = self
+            .inner
             .delete_session(uri, session_id, auth_header, custom_headers)
-            .await
+            .await;
+        self.observe_scope_challenge(&result);
+        result
     }
 
     async fn get_stream(
@@ -128,9 +165,12 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
         futures::stream::BoxStream<'static, Result<sse_stream::Sse, sse_stream::Error>>,
         StreamableHttpError<Self::Error>,
     > {
-        self.inner
+        let result = self
+            .inner
             .get_stream(uri, session_id, last_event_id, auth_header, custom_headers)
-            .await
+            .await;
+        self.observe_scope_challenge(&result);
+        result
     }
 
     async fn get_stream_with_max_sse_event_size(
@@ -145,7 +185,8 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
         futures::stream::BoxStream<'static, Result<sse_stream::Sse, sse_stream::Error>>,
         StreamableHttpError<Self::Error>,
     > {
-        self.inner
+        let result = self
+            .inner
             .get_stream_with_max_sse_event_size(
                 uri,
                 session_id,
@@ -154,13 +195,90 @@ impl StreamableHttpClient for LabbyUnixSocketHttpClient {
                 custom_headers,
                 max_sse_event_size,
             )
-            .await
+            .await;
+        self.observe_scope_challenge(&result);
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unix_scope_challenge_is_observed_without_replaying_the_request() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for challenges in [
+            "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+            "WWW-Authenticate: Basic realm=\"local, proxy\"\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+            "WWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"\r\nWWW-Authenticate: Basic realm=\"proxy\"",
+            "WWW-Authenticate: Basic realm=\"local, proxy\", Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+            "WWW-Authenticate: Bearer realm=\"other\"\r\nWWW-Authenticate: Bearer error=\"insufficient_scope\", scope=\"files:write\"",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let socket = directory.path().join("scope.sock");
+            let listener = tokio::net::UnixListener::bind(&socket).unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                    assert!(request.len() < 16 * 1024);
+                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 403 Forbidden\r\n{challenges}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.flush().await.unwrap();
+            });
+            let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&observed);
+            let client = LabbyUnixSocketHttpClient::new(
+                socket.to_str().unwrap(),
+                "http://local.test/mcp",
+                1024,
+            )
+            .with_scope_challenge_handler(Arc::new(move |scope| {
+                recorded.lock().unwrap().push(scope)
+            }));
+            let request = serde_json::from_value(
+                serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+            )
+            .unwrap();
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.post_message("/mcp".into(), request, None, None, HashMap::new()),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                result,
+                Err(StreamableHttpError::InsufficientScope(_))
+            ));
+            assert_eq!(*observed.lock().unwrap(), vec!["files:write"]);
+            tokio::time::timeout(std::time::Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+    }
 
     #[test]
     fn request_uri_preserves_path_and_query_without_authority() {

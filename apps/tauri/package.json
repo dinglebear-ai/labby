@@ -7,13 +7,12 @@
   "packageManager": "pnpm@9.15.9",
   "private": true,
   "scripts": {
-    "build": "python3 ../../scripts/ci/verify_glib_backport.py --prepare && tauri build",
-    "dev": "python3 ../../scripts/ci/verify_glib_backport.py --prepare && tauri dev",
+    "build": "tauri build",
+    "dev": "tauri dev",
     "preview": "vite preview",
     "verify": "pnpm install --frozen-lockfile && pnpm vite:build",
     "vite:build": "vite build",
-    "vite:dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
-    "prepare:glib": "python3 ../../scripts/ci/verify_glib_backport.py --prepare"
+    "vite:dev": "vite --host 127.0.0.1 --port 1420 --strictPort"
   },
   "type": "module",
   "version": "2.6.2",

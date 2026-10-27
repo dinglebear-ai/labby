@@ -13,8 +13,7 @@ Last updated: 2026-09-29
 Repository-defined Linux jobs use GitHub-hosted `ubuntu-24.04` runners, with
 `ubuntu-24.04-arm` for native Linux ARM64 release builds, Unix N-1
 qualification, and the separate pull-request package smoke.
-Native Windows checks use `windows-latest` and require a manual dispatch with
-`run_windows=true`. Release jobs use the native hosted
+CI uses Linux and macOS runners only. Release jobs use the native hosted
 runner for each supported target.
 
 No repository-defined workflow uses a self-hosted runner or a custom runner
@@ -51,7 +50,7 @@ Run the same checks that CI runs before changing runner configuration:
 
 ```bash
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-python3 -m unittest scripts/ci/test_windows_ci_policy.py
+python3 -m unittest scripts/ci/test_ci_platform_policy.py
 cargo test -p labby --test ci_changed_paths --locked
 git diff --check
 ```

@@ -539,6 +539,7 @@ export const mcpConnectionSchema = z.object({
   transport: z.literal('http'),
   authentication: z.enum(['none', 'bearer']),
   url: bounded(2048).refine(value => {
+    // Validate original bytes before URL parsing can normalize tabs/newlines.
     if (/[\s\\]/.test(value) || Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return false
     try {
       const url = new URL(value)

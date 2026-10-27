@@ -6,7 +6,7 @@ use std::time::Duration;
 use labby_gateway::upstream::pool::{TaskRouteAuthorization, TaskRouteStore, UpstreamPool};
 use labby_runtime::gateway_config::UpstreamConfig;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo, CreateTaskResult,
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, CreateTaskResult,
     DetailedTask, DiscoverResult, GetTaskParams, GetTaskResult, ProtocolVersion, RequestId,
     ServerCapabilities, Task, TaskPayload, TaskStatus, TaskStatusNotificationParams,
 };
@@ -135,8 +135,8 @@ impl Respond for Backend {
 #[derive(Clone)]
 pub(crate) struct Inbox(mpsc::Sender<TaskStatusNotificationParams>);
 impl ClientHandler for Inbox {
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.capabilities = capabilities();
         info
     }
@@ -165,21 +165,37 @@ impl Downstream {
     pub(crate) async fn new() -> Self {
         let (tx, inbox) = mpsc::channel(32);
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
-        let (server, client) = tokio::join!(
-            DownstreamServer.serve(server_io),
-            Inbox(tx).serve_with_lifecycle(
-                client_io,
-                ClientLifecycleMode::Discover {
-                    preferred_versions: vec![ProtocolVersion::V_2026_07_28],
-                }
-            )
-        );
+        let (server, client) = tokio::time::timeout(BUDGET, async {
+            tokio::join!(DownstreamServer.serve(server_io), async {
+                let client = Inbox(tx)
+                    .serve_with_lifecycle(
+                        client_io,
+                        ClientLifecycleMode::Discover {
+                            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+                        },
+                    )
+                    .await
+                    .expect("downstream client discovery");
+                // Discovery only probes metadata. The first application request
+                // activates the server while its startup future is still polled.
+                client
+                    .peer()
+                    .send_request(rmcp::model::ClientRequest::ListToolsRequest(
+                        rmcp::model::ListToolsRequest::default(),
+                    ))
+                    .await
+                    .expect("downstream client activates the server");
+                client
+            })
+        })
+        .await
+        .expect("downstream startup finishes within its deadline");
         let server = server.expect("downstream server");
         Self {
             peer: server.peer().clone(),
             inbox,
             server: Some(server),
-            client: Some(client.expect("downstream client")),
+            client: Some(client),
         }
     }
     pub(crate) async fn disconnect(&mut self) {

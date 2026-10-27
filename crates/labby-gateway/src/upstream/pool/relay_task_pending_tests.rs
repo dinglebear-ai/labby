@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rmcp::model::{
-    ClientCapabilities, ClientInfo, DetailedTask, GetMeta, JsonRpcMessage, NumberOrString,
-    ServerInfo, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
+    ClientCapabilities, ClientConfig, DetailedTask, GetMeta, JsonRpcMessage, NumberOrString,
+    ServerConfig, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
     TaskStatusNotificationParams,
 };
 use rmcp::service::{NotificationContext, RxJsonRpcMessage, TxJsonRpcMessage};
@@ -316,8 +316,8 @@ struct RecordingAgent {
 }
 
 impl ClientHandler for RecordingAgent {
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.capabilities = ClientCapabilities::builder().enable_tasks().build();
         info
     }
@@ -336,8 +336,8 @@ impl ClientHandler for RecordingAgent {
 struct TrivialServer;
 
 impl ServerHandler for TrivialServer {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::default()
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::default()
     }
 }
 

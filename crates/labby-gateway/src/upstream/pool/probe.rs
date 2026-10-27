@@ -397,6 +397,10 @@ impl UpstreamPool {
             self.runtime_origin.as_deref(),
             runtime_owner,
             Some(&self.shared_http_client),
+            super::transport_config::HttpTransportBudgets {
+                concurrency: self.call_concurrency,
+                request_timeout: self.request_timeout,
+            },
         )
         .await?;
         anyhow::ensure!(
@@ -450,7 +454,7 @@ fn reprobe_sleep_for(upstream: &str, attempt: u32) -> std::time::Duration {
 #[cfg(test)]
 mod tests {
     use rmcp::model::{
-        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerInfo,
+        ErrorData, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler};
@@ -464,8 +468,8 @@ mod tests {
     struct SlowListToolsServer;
 
     impl ServerHandler for SlowListToolsServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn list_tools(

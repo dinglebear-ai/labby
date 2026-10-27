@@ -18,6 +18,7 @@
 # Environment overrides:
 #   LABBY_INSTALL_DIR     install directory       (default: ~/.local/bin)
 #   LABBY_INSTALL_REPO    owner/repo to fetch     (default: dinglebear-ai/labby)
+#   LABBY_INSTALL_CHANNEL stable|dev (default: stable; dev requires explicit opt-in)
 #   LABBY_INSTALL_VERSION release tag, e.g. v0.22.2 (default: latest)
 #   LABBY_ALLOW_SOURCE_FALLBACK allow cargo fallback after release failure (default: 0)
 #   LABBY_INSTALL_RECOVER_ONLY settle a pending activation offline without installing (default: 0)
@@ -41,9 +42,12 @@ set -eu
 REPO="${LABBY_INSTALL_REPO:-dinglebear-ai/labby}"
 INSTALL_DIR="${LABBY_INSTALL_DIR:-$HOME/.local/bin}"
 VERSION="${LABBY_INSTALL_VERSION:-latest}"
+CHANNEL="${LABBY_INSTALL_CHANNEL:-stable}"
 ALLOW_SOURCE_FALLBACK="${LABBY_ALLOW_SOURCE_FALLBACK:-0}"
 ROLLBACK="${LABBY_INSTALL_ROLLBACK:-0}"
 RECOVER_ONLY="${LABBY_INSTALL_RECOVER_ONLY:-0}"
+EXPECTED_VERSION="${LABBY_INSTALL_EXPECTED_VERSION:-}"
+EXPECTED_CHANNEL="${LABBY_INSTALL_EXPECTED_CHANNEL:-}"
 LOCAL_BINARY="${LABBY_INSTALL_LOCAL_BINARY:-}"
 LOCAL_SHA256="${LABBY_INSTALL_LOCAL_SHA256:-}"
 LOCAL_COMPANIONS="${LABBY_INSTALL_LOCAL_COMPANIONS:-}"
@@ -64,6 +68,7 @@ TRANSACTION_LOCK="$INSTALL_METADATA_DIR/transaction-lock"
 RECEIPT_PATH="$INSTALL_METADATA_DIR/receipt"
 PREVIOUS_RECEIPT_PATH="$INSTALL_METADATA_DIR/previous-receipt"
 ACTIVATION_JOURNAL="$INSTALL_METADATA_DIR/activation-journal"
+CHANNEL_PATH="$INSTALL_DIR/.labby-update-channel"
 TMP_DIRS=""
 CREATED_TMP_DIR=""
 
@@ -256,40 +261,91 @@ verify_release_provenance() {
     say "GitHub provenance verified"
 }
 
+validate_release_channel() {
+    case "$CHANNEL" in stable|dev) ;; *) fail "LABBY_INSTALL_CHANNEL must be stable or dev" ;; esac
+    [ "$VERSION" != latest ] || return 0
+    # grep anchors match individual lines; reject receipt/control separators first.
+    case "$VERSION" in *[!0-9vde.-]*) fail "invalid immutable release tag" ;; esac
+    case "$CHANNEL" in
+        stable) pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' ;;
+        dev) pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.[1-9][0-9]*$' ;;
+    esac
+    printf '%s\n' "$VERSION" | LC_ALL=C grep -Eq "$pattern" ||
+        fail "release tag $VERSION does not match LABBY_INSTALL_CHANNEL=$CHANNEL"
+}
+
+fetch_release_page() (
+    # gh api has no portable request-timeout flag. Bound each child request and
+    # reap both owned processes; no host-specific timeout executable is needed.
+    release_api_pid=
+    release_timer_pid=
+    stop_release_request() {
+        [ -z "$release_api_pid" ] || kill -KILL "$release_api_pid" 2>/dev/null || true
+        [ -z "$release_timer_pid" ] || kill "$release_timer_pid" 2>/dev/null || true
+        [ -z "$release_api_pid" ] || wait "$release_api_pid" 2>/dev/null || true
+        [ -z "$release_timer_pid" ] || wait "$release_timer_pid" 2>/dev/null || true
+    }
+    trap stop_release_request 0
+    trap 'exit 1' 1 2 15
+    GH_HOST=github.com GH_CONFIG_DIR="$discovery_dir/config" GH_TOKEN=public-api GITHUB_TOKEN='' GH_ENTERPRISE_TOKEN='' GITHUB_ENTERPRISE_TOKEN='' \
+        "$GH_VERIFIER" api --hostname github.com -H 'Authorization:' \
+        "repos/$REPO/releases?per_page=100&page=$discovery_page" --jq "$discovery_query" &
+    release_api_pid=$!
+    (
+        release_seconds=0
+        while [ "$release_seconds" -lt 30 ]; do
+            sleep 1
+            kill -0 "$release_api_pid" 2>/dev/null || exit 0
+            release_seconds=$((release_seconds + 1))
+        done
+        # Enforce the deadline even if a stuck request ignores SIGTERM.
+        kill -KILL "$release_api_pid" 2>/dev/null || true
+    ) &
+    release_timer_pid=$!
+    release_result=0
+    wait "$release_api_pid" || release_result=$?
+    release_api_pid=
+    exit "$release_result"
+)
+
 latest_release_with_asset() {
-    # GitHub's "latest" release may point at non-binary artifacts such as the
-    # Incus image release. Pick the newest release that actually contains the
-    # platform binary archive we are about to download.
-    # $1 = asset name
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 --max-redirs 5 -fsSL --connect-timeout 10 --max-time 300 --retry 3 "https://api.github.com/repos/${REPO}/releases?per_page=20" |
-        awk -v asset="$1" '
-            function capture_if_match() {
-                if (resolved == "" && tag != "" && found) {
-                    resolved = tag
-                }
-            }
-            /"tag_name":[[:space:]]*"/ {
-                capture_if_match()
-                tag = $0
-                sub(/^.*"tag_name":[[:space:]]*"/, "", tag)
-                sub(/".*$/, "", tag)
-                found = 0
-            }
-            /"name":[[:space:]]*"/ {
-                name = $0
-                sub(/^.*"name":[[:space:]]*"/, "", name)
-                sub(/".*$/, "", name)
-                if (name == asset) {
-                    found = 1
-                }
-            }
-            END {
-                capture_if_match()
-                if (resolved != "") {
-                    print resolved
-                }
-            }
-        '
+    # gh is already required for provenance. Its embedded jq parser handles JSON
+    # structure and formatting without requiring a separate jq/Python runtime.
+    # Search at most 500 releases; incomplete/failed pages never permit fallback.
+    discovery_asset=$1
+    discovery_dir=$2
+    : >"$discovery_dir/tags"
+    if [ "$CHANNEL" = dev ]; then discovery_prerelease=true; else discovery_prerelease=false; fi
+    discovery_query='if type != "array" then error("invalid release page") else length, (.[] | select(type == "object") | select(.draft == false and .prerelease == '"$discovery_prerelease"') | select(.tag_name | type == "string") | select(.assets | type == "array") | select(any(.assets[]; type == "object" and .name == "'"$discovery_asset"'")) | [.tag_name] | @tsv) end'
+    discovery_page=1
+    while [ "$discovery_page" -le 5 ]; do
+        fetch_release_page >"$discovery_dir/page" || return 1
+        discovery_count=$(sed -n '1p' "$discovery_dir/page")
+        case "$discovery_count" in ''|*[!0-9]*) return 1 ;; esac
+        sed '1d' "$discovery_dir/page" >>"$discovery_dir/tags"
+        [ "$discovery_count" -ge 100 ] || break
+        [ "$discovery_page" -lt 5 ] || return 1
+        discovery_page=$((discovery_page + 1))
+    done
+    # Compare decimal components as strings, avoiding awk floating-point loss
+    # and platform-specific sort -V. Only canonical channel tags are candidates.
+    LC_ALL=C awk -v channel="$CHANNEL" '
+      function greater(a,b, aa,bb,n,i) {
+        gsub(/^v/, "", a); gsub(/-dev\./, ".", a)
+        gsub(/^v/, "", b); gsub(/-dev\./, ".", b)
+        n=split(a,aa,"."); split(b,bb,".")
+        for(i=1;i<=n;i++) {
+          if(length(aa[i]) != length(bb[i])) return length(aa[i]) > length(bb[i])
+          if("x" aa[i] != "x" bb[i]) return "x" aa[i] > "x" bb[i]
+        }
+        return 0
+      }
+      {
+        valid = channel == "dev" ? /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-dev\.[1-9][0-9]*$/ : /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/
+        if(valid && (best == "" || greater($0,best))) best=$0
+      }
+      END { if(best != "") print best }
+    ' "$discovery_dir/tags"
 }
 
 binary_sha256() (
@@ -388,8 +444,10 @@ recover_activation() {
             cp -Rp "$ACTIVATION_JOURNAL/old-tailcat" "$INSTALL_DIR/tailcat" || recovery_failed=1
         fi
     fi
-    for recovery_name in binary receipt previous; do
+    for recovery_name in binary receipt previous channel; do
+        [ "$recovery_name" != channel ] || [ -f "$ACTIVATION_JOURNAL/channel-managed" ] || continue
         case "$recovery_name" in
+            channel) recovery_target="$CHANNEL_PATH"; recovery_mode=600 ;;
             binary) recovery_target="$INSTALL_DIR/labby"; recovery_mode=755 ;;
             receipt) recovery_target="$RECEIPT_PATH"; recovery_mode=600 ;;
             previous) recovery_target="$PREVIOUS_RECEIPT_PATH"; recovery_mode=600 ;;
@@ -516,6 +574,14 @@ install_binary_atomic() {
         : >"$activation_dir/old-tailcat.present"
     fi
     if [ -n "$source_companions" ]; then cp -Rp "$artifact_dir/tailcat" "$activation_dir/new-tailcat"; fi
+    : >"$activation_dir/channel-managed"
+    if [ -e "$CHANNEL_PATH" ] || [ -L "$CHANNEL_PATH" ]; then
+        [ -f "$CHANNEL_PATH" ] && [ ! -L "$CHANNEL_PATH" ] || fail "update channel marker must be a regular file"
+        cp "$CHANNEL_PATH" "$activation_dir/old-channel"
+        : >"$activation_dir/old-channel.present"
+    fi
+    printf '%s\n' "$CHANNEL" >"$activation_dir/new-channel"
+    chmod 600 "$activation_dir/new-channel"
     write_activation_state prepared
 
     if ! (
@@ -526,6 +592,8 @@ install_binary_atomic() {
         write_activation_state companions-activated &&
         { [ ! -f "$activation_dir/new-previous" ] || mv -f "$activation_dir/new-previous" "$PREVIOUS_RECEIPT_PATH"; } &&
         write_activation_state previous-receipt-activated &&
+        mv -f "$activation_dir/new-channel" "$CHANNEL_PATH" &&
+        write_activation_state channel-activated &&
         mv -f "$activation_dir/receipt" "$RECEIPT_PATH"
     ); then
         say "activation failed; restoring the complete prior installation transaction"
@@ -569,6 +637,7 @@ rollback_offline() {
     [ "$actual_digest" = "$prior_digest" ] || fail "previous artifact digest does not match its receipt"
 
     VERSION=$prior_requested
+    case "$prior_resolved" in *-dev.*) CHANNEL=dev ;; *) CHANNEL=stable ;; esac
     prior_companions=
     [ ! -d "$ARTIFACTS_DIR/$prior_identity/tailcat" ] || prior_companions="$ARTIFACTS_DIR/$prior_identity/tailcat"
     install_binary_atomic "$prior_artifact" "$prior_source" "$prior_resolved" "$prior_companions" "$prior_identity"
@@ -580,7 +649,8 @@ install_from_release() {
     triple="$(target_triple)" || return 1
     asset="lab-${triple}.tar.gz"
     if [ "$VERSION" = "latest" ]; then
-        resolved_version="$(latest_release_with_asset "$asset" || true)"
+        make_tmp_dir
+        resolved_version="$(latest_release_with_asset "$asset" "$CREATED_TMP_DIR" || true)"
         if [ -n "$resolved_version" ]; then
             say "resolved latest binary release to ${resolved_version}"
             base="https://github.com/${REPO}/releases/download/${resolved_version}"
@@ -680,6 +750,7 @@ run_first_run_setup() {
 }
 
 install_from_source() {
+    [ "$CHANNEL" != dev ] || [ "$VERSION" != latest ] || fail "dev source fallback requires an explicit immutable dev tag"
     command -v cargo >/dev/null 2>&1 || return 1
     say "no release asset available — building from source (this takes a while) ..."
     make_tmp_dir
@@ -703,13 +774,33 @@ install_from_source() {
     install_binary_atomic "$cargo_root/bin/labby" source "$source_identity"
 }
 
+check_expected_installation() {
+    [ "${LABBY_INSTALL_EXPECTED_VERSION+x}${LABBY_INSTALL_EXPECTED_CHANNEL+x}" != "" ] || return 0
+    [ -n "$EXPECTED_VERSION" ] && [ -n "$EXPECTED_CHANNEL" ] || fail "expected installation guard requires version and channel"
+    case "$EXPECTED_CHANNEL" in stable|dev) ;; *) fail "expected installation channel must be stable or dev" ;; esac
+    [ -f "$INSTALL_DIR/labby" ] || fail "installed binary changed before update; retry from current installation"
+    actual_version=$("$INSTALL_DIR/labby" --version) || fail "cannot read installed version before update"
+    actual_version=$(printf '%s' "$actual_version" | awk '{ lines = lines $0 "\n" } END { sub(/^[[:space:]]+/, "", lines); sub(/[[:space:]]+$/, "", lines); printf "%s", lines }')
+    actual_channel=stable
+    if [ -e "$CHANNEL_PATH" ] || [ -L "$CHANNEL_PATH" ]; then
+        [ -f "$CHANNEL_PATH" ] && [ ! -L "$CHANNEL_PATH" ] || fail "update channel marker must be a regular file"
+        actual_channel=$(cat "$CHANNEL_PATH") || fail "cannot read update channel marker"
+        actual_channel=$(printf '%s' "$actual_channel" | awk '{ lines = lines $0 "\n" } END { sub(/^[[:space:]]+/, "", lines); sub(/[[:space:]]+$/, "", lines); printf "%s", lines }')
+        case "$actual_channel" in stable|dev) ;; *) fail "invalid update channel marker" ;; esac
+    fi
+    [ "$actual_version" = "$EXPECTED_VERSION" ] && [ "$actual_channel" = "$EXPECTED_CHANNEL" ] ||
+        fail "installed version or channel changed before update; retry from current installation"
+}
+
 main() {
+    validate_release_channel
     print_banner
     say "[1/2] Install verified Labby binary"
     acquire_transaction_lock
     if [ -d "$ACTIVATION_JOURNAL" ]; then
         recover_activation || fail "activation recovery FAILED; journal retained at $ACTIVATION_JOURNAL"
     fi
+    check_expected_installation
     if [ "$RECOVER_ONLY" = "1" ]; then
         return 0
     fi

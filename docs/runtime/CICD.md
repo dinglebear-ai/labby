@@ -216,13 +216,10 @@ and `ci-gate`.
 The latter is the stable aggregate for branch-controlled CI jobs: heavy jobs
 may skip when their category is false, while failed or cancelled dependencies
 fail the aggregate. The classifier runs on every event, including fork PRs,
-without repository credentials. Windows workspace, installer, and desktop checks
-are optional: they run only on `workflow_dispatch` with `run_windows: true`,
-which defaults to false. Selected workspace tests follow `rust_test`; selected
-installer checks follow `workflow` or `release`; selected desktop checks follow
-`desktop`. These jobs retain their native assertions and visible failure results,
-but `ci-gate` neither waits for them nor aggregates their results. The gate still
-rejects a skipped required fork product lane when its category was routed.
+without repository credentials. CI runs on Linux and macOS only; there are no
+Windows lanes or manual Windows selection inputs.
+The gate still rejects a skipped required fork product lane when its category
+was routed.
 
 Protected historical work products are enforced separately by
 `.github/workflows/protected-docs.yml`. It runs on `pull_request_target`, checks
@@ -267,13 +264,13 @@ jobs when their changed-path category is enabled:
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
-| Labby desktop Tauri | `desktop` | verified GTK3-compatible GLib backport, optimized string-iterator qualification, required Linux tests and independent lockfile audit |
+| Labby desktop Tauri | `desktop` | required Linux tests and independent lockfile audit |
 | Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
 | Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
 | Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
 | Tests (Linux fork PR fallback) | fork PRs with `rust_test` | credentialless all-feature workspace nextest; `changes` runs on every event, and `ci-gate` requires this job when a fork PR routes Rust tests |
 | macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated smoke, dated `2026-07-28` suites, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
+| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated boundary, frozen `2026-07-28` requirements, expanded official suites, legacy transport checks, native Skills server/client scenarios, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` or `workflow` | required by `ci-gate`; version and Rust toolchain lockstep plus executable release hardening and seeded N-1 fixture permission tests before tagging; release builds do not run in PR CI |
 | Incus source contract | `incus` | runs ShellCheck and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract; image-changing PRs also run the separate image build and smoke workflow |
@@ -358,8 +355,8 @@ land the required code/tests and the baseline update together.
   - Every artifact download uses the single reviewed `actions/download-artifact` revision enforced by `scripts/ci/check_workflow_policy.py`
   - Gateway Admin declares Node `22.x` in its package manifest; the shared build action consumes Node 22 and `scripts/ci/check_node_toolchain_sync.py` rejects drift
   - Required fast jobs run only when their category is enabled on GitHub-hosted runners; `ci-gate` is the stable required check for branch protection
-  - CI uses hosted Linux and macOS runners; optional Windows workspace, installer, and desktop checks use hosted Windows runners when manually selected
-  - Heavy release work starts from an immutable stable-version tag while the
+  - CI uses Linux and macOS runners only, with no manual Windows lanes
+  - Heavy release work starts from an immutable stable or dev version tag while the
     matching GitHub release is still draft
   - Release Linux jobs use GitHub-hosted x86_64 and ARM64 runners; native macOS artifacts use GitHub-hosted Apple Silicon runners
 
@@ -445,7 +442,7 @@ verification in either mode. Shell and npm installers select the matching
 ARM64 archive.
 
 Official macOS artifacts are built on a native GitHub-hosted Apple Silicon
-runner. Windows has native CI qualification lanes but is not a release target. Cross-compilation may be useful experimentally, but it is not the
+runner. Windows is not a release target and has no CI runner lanes. Cross-compilation may be useful experimentally, but it is not the
 release support contract.
 
 ## Integration Tests
@@ -461,13 +458,100 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
 
 ## Release Process
 
+Stable is the default channel. Dev releases require explicit selection and use
+`vX.Y.Z-dev.N`, where `N` is a positive integer without leading zeros.
+The channel controls each consumer pointer:
+
+| Surface | Stable | Dev |
+| --- | --- | --- |
+| GitHub release | Normal release | Prerelease, excluded from Latest |
+| npm consumer tag | `latest` | `dev` |
+| MCP Registry | Published after qualification | Not published |
+| Installer and updater | Default selection | Explicit opt-in |
+
+### Automatic dev release PR
+
+After green main CI, the release-please workflow first refreshes the stable
+release PR, then maintains a separate **dev release PR**. The stable PR remains
+the control for publishing a default release. Neither PR is automatically merged
+by the dev coordinator.
+
+The dev PR changes only `.release-please-dev.json`, recording its dev version
+and the exact green main source commit. It does not stamp prerelease versions
+into main or change the stable changelog. Its version core follows the pending
+stable release PR, with `dev.N` advancing past every reserved dev tag, including
+draft and failed candidates. Without a pending stable PR, the next patch core is
+used. Refreshing an unmerged dev PR preserves its version unless the version
+core changes or that tag has already been reserved.
+
+Merge the dev PR to approve that source snapshot. After the merged request passes
+main CI, the coordinator invokes the same immutable preparation described below.
+The approved source remains frozen even if main advances while CI runs. The tag
+triggers the existing **Release** workflow and all normal qualification gates.
+Merging the request alone does not produce another dev PR; a subsequent product
+change is needed. Stable Release Please continues to manage its own manifest,
+version updates, and changelog independently.
+
+For example, merge a feature, then merge the generated dev PR to release
+`v2.7.0-dev.1`. Merge another feature, then the next dev PR to release
+`v2.7.0-dev.2`. Merge the stable release PR when `v2.7.0` is ready to become the
+default. Both channels contain complete source snapshots, not individual PRs.
+
+Do not hand-edit the generated dev request or its branch. If qualification fails
+after tag creation, inspect and recover that existing release; rerunning the
+coordinator must not replace its immutable tag. Manual preparation and the dev
+coordinator share the same concurrency group to serialize tag reservation.
+
+### Prepare a dev release manually
+
+1. Merge the reviewed feature changes through the normal human merge process.
+2. Wait for the selected main commit's latest main CI attempt to succeed.
+3. Run **Prepare dev release** from `main`. Set `tag` to a new version such as
+   `v2.7.0-dev.1`. Set `source` to `main` or a full commit SHA on main.
+4. Monitor the resulting **Release** workflow. It owns qualification and publication.
+
+The source must contain the channel helpers. Preparation creates a version-only
+child commit and pushes its immutable tag. It never updates a branch. The
+`RELEASE_PLEASE_TOKEN` must permit tag pushes and trigger the tag workflow.
+The default GitHub Actions token cannot trigger a second workflow through a tag push.
+
+Preflight regenerates the version-only tree from the parent and compares the
+complete tree. It also verifies the parent's latest main CI attempt. Changes to
+product code in a stamped child fail preflight. A dev draft is created only after
+source and metadata validation. Dev candidates pass the same native, integrity,
+provenance, and stateful upgrade gates as stable candidates. N-1 comes from an
+older published stable release. The candidate's npm version is published before
+promotion, but only the matching channel pointer can advance. Dev publication
+omits the MCP Registry so its default catalog entry remains stable.
+
+### Select the dev channel
+
+For the archive installer, set `LABBY_INSTALL_CHANNEL=dev`. A pinned dev version
+also requires this opt-in. The installer saves the channel beside the binary in
+`.labby-update-channel` as part of its rollback transaction.
+
+Use `labby host update --channel dev --version latest` for a manual dev update.
+For scheduled updates, use `labby host update auto enable --channel dev`. Automatic
+checks use the saved channel. Select `--channel stable` to return to stable.
+A dry run does not change the saved selection. The npm launcher uses its
+package version to select the matching channel and saves that selection with
+the installed binary.
+
+Incus substrate images contain no bundled product binary and have separate
+channel pointers. Automatic main builds use `incus-dev-SHA` and
+`labby-incus-dev`. Manual stable builds use `incus-SHA` and
+`labby-incus-latest`. Neither image channel becomes GitHub Latest.
+`scripts/incus-bootstrap.sh --channel dev --version latest` opts the installed CLI into dev.
+
+### Stable release qualification
+
 1. Release Please prepares the version/changelog PR after green main CI. If
    another trigger sees an open release PR built from the same main commit, it
    preserves that branch and its running checks instead of rewriting identical
    commits. Manual dispatch can still force a refresh.
 2. Merging that PR creates the stable `vX.Y.Z` tag plus a draft GitHub release.
 3. The immutable tag triggers candidate work; no maintainer manually publishes
-   the draft. Preflight requires stable SemVer, ancestry from `origin/main`, and
+   the draft. Preflight requires canonical stable or dev SemVer, verified source ancestry, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
    required npm/MCP publisher credentials, verifies npm authentication, and
    resolves the published x86_64/macOS N-1 baselines and the ARM64 published
@@ -527,7 +611,7 @@ Integration tests must be marked `#[ignore]` so `cargo nextest run` skips them w
    the exact repository, signer workflow, source ref, and hosted-runner policy.
    Offline consumers may pass a downloaded bundle and trusted root through the
    same GitHub CLI verification contract.
-7. If publication fails, the rollback transaction attempts npm stable-pointer
+7. If publication fails, the rollback transaction attempts npm channel-pointer
    restoration before returning a previously draft GitHub
    release to draft. Attempted npm writes are explicitly compensated even when
    registry reads still show the old tag. If either consumer pointer cannot be
@@ -581,16 +665,18 @@ replacement tag or bump the version merely to hide partial publication.
 `incus-image.yml` runs on pull requests and main pushes that change the image
 definition, pinned supply, bootstrap, or image build/smoke/promotion logic. A
 manual run on `main` can rebuild it when an external supply source needs
-requalification. PR runs build and smoke without publishing. A successful main
-run creates an immutable `incus-<full commit SHA>` GitHub release with a
+requalification. PR runs build and smoke without publishing. A successful automatic main
+run creates an immutable `incus-dev-<full commit SHA>` GitHub prerelease with a
 checksummed image manifest, attests and verifies the artifacts, and advances
-`labby-incus-latest` with a leased rollback-capable pointer update. The image
+`labby-incus-dev` with a leased rollback-capable pointer update. A manual main
+run with `channel: stable` uses `incus-<full commit SHA>` and
+`labby-incus-latest`. Neither image channel becomes GitHub Latest. The image
 contains the container substrate and toolchains; bootstrap installs the selected
 Labby release. Normal `vX.Y.Z` releases never wait for or publish an image.
 Older version releases with an Incus asset remain covered by the reconciler's
 legacy manifest check.
 
-**Binary release tag format:** `vX.Y.Z`. Independent Incus publication uses
+**Binary release tag formats:** stable `vX.Y.Z`, dev `vX.Y.Z-dev.N`. Independent Incus publication uses
 the distinct tags described above.
 
 **Version policy:** single version across the entire workspace. `labby` and

@@ -37,6 +37,7 @@ pub struct GoogleProviderCredentialStore {
     authorization_fence_epoch: Arc<AtomicI64>,
     refresh_attempt: Arc<std::sync::Mutex<Option<(String, i64, i64)>>>,
     callback_save_fence: Option<CredentialSaveFence>,
+    refresh_rejection_handler: Option<super::manager::OauthRefreshRejectionHandler>,
 }
 
 impl std::fmt::Debug for GoogleProviderCredentialStore {
@@ -68,11 +69,22 @@ impl GoogleProviderCredentialStore {
             authorization_fence_epoch: Arc::new(AtomicI64::new(-1)),
             refresh_attempt: Arc::new(std::sync::Mutex::new(None)),
             callback_save_fence: None,
+            refresh_rejection_handler: None,
         }
     }
 
     pub(super) fn with_callback_fence(mut self, fence: CredentialSaveFence) -> Self {
         self.callback_save_fence = Some(fence);
+        self
+    }
+
+    /// Notify the host only when the rejected provider generation is removed.
+    #[must_use]
+    pub fn with_refresh_rejection_handler(
+        mut self,
+        handler: super::manager::OauthRefreshRejectionHandler,
+    ) -> Self {
+        self.refresh_rejection_handler = Some(handler);
         self
     }
 
@@ -468,6 +480,40 @@ impl CredentialStore for GoogleProviderCredentialStore {
         })
     }
 
+    fn on_refresh_token_rejected<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        _credentials: &'life1 StoredCredentials,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'async_trait>>
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async move {
+            let Some((subject, generation, epoch)) = self.take_refresh_attempt() else {
+                return Ok(());
+            };
+            let invalidation = self
+                .store
+                .invalidate_google_provider_credential(&subject, generation, epoch)
+                .await
+                .map_err(|_| {
+                    AuthError::CredentialStoreError("invalidate rejected Google credential".into())
+                })?;
+            warn!(subject_id = %fingerprint(&subject), provider_generation = generation,
+                invalidated = invalidation.invalidated,
+                revoked_refresh_tokens = invalidation.revoked_refresh_tokens,
+                revoked_authorization_codes = invalidation.revoked_authorization_codes,
+                "shared Google credential refresh rejected");
+            if invalidation.invalidated
+                && let Some(handler) = &self.refresh_rejection_handler
+            {
+                handler(Some(subject));
+            }
+            Ok(())
+        })
+    }
+
     fn acquire_refresh_guard<'life0, 'async_trait>(
         &'life0 self,
     ) -> Pin<
@@ -667,18 +713,67 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_refresh_attempt_generation_cannot_invalidate_fresh_replacement() {
+    async fn rejected_refresh_callback_invalidates_exact_provider_generation() {
         let store = test_store().await;
         insert_bundle(&store, vec!["openid".to_string()]).await;
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = Arc::clone(&notifications);
         let adapter = GoogleProviderCredentialStore::new(
             store.clone(),
             provider(),
             Some("google-subject".to_string()),
             "google-client".to_string(),
             vec!["openid".to_string()],
+        )
+        .with_refresh_rejection_handler(Arc::new(move |subject| {
+            assert_eq!(subject.as_deref(), Some("google-subject"));
+            recorded.fetch_add(1, Ordering::SeqCst);
+        }));
+        let credentials = CredentialStore::load(&adapter).await.unwrap().unwrap();
+        let guard = CredentialStore::acquire_refresh_guard(&adapter)
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            CredentialStore::on_refresh_token_rejected(&adapter, &credentials),
+        )
+        .await
+        .expect("callback must not reacquire the refresh-operation guard")
+        .unwrap();
+        drop(guard);
+        assert!(
+            store
+                .find_google_provider_credential("google-subject")
+                .await
+                .unwrap()
+                .is_none()
         );
-        assert!(CredentialStore::load(&adapter).await.unwrap().is_some());
-        let (attempted_subject, attempted_generation, attempted_epoch) =
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            1,
+            "notify only for successful provider generation deletion"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_refresh_attempt_generation_cannot_invalidate_fresh_replacement() {
+        let store = test_store().await;
+        insert_bundle(&store, vec!["openid".to_string()]).await;
+        let notifications = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let recorded = Arc::clone(&notifications);
+        let adapter = GoogleProviderCredentialStore::new(
+            store.clone(),
+            provider(),
+            Some("google-subject".to_string()),
+            "google-client".to_string(),
+            vec!["openid".to_string()],
+        )
+        .with_refresh_rejection_handler(Arc::new(move |subject| {
+            assert_eq!(subject.as_deref(), Some("google-subject"));
+            recorded.fetch_add(1, Ordering::SeqCst);
+        }));
+        let credentials = CredentialStore::load(&adapter).await.unwrap().unwrap();
+        let (_, attempted_generation, attempted_epoch) =
             adapter.refresh_attempt().expect("attempt generation");
 
         let now = crate::util::now_unix();
@@ -705,21 +800,20 @@ mod tests {
                 .unwrap()
         );
 
-        let invalidation = store
-            .invalidate_google_provider_credential(
-                &attempted_subject,
-                attempted_generation,
-                attempted_epoch,
-            )
+        CredentialStore::on_refresh_token_rejected(&adapter, &credentials)
             .await
             .unwrap();
-        assert!(!invalidation.invalidated);
         let credential = store
             .find_google_provider_credential("google-subject")
             .await
             .unwrap()
             .expect("fresh replacement survives");
         assert_eq!(credential.refresh_token, "replacement-refresh");
+        assert_eq!(
+            notifications.load(Ordering::SeqCst),
+            0,
+            "notify only for successful provider generation deletion"
+        );
     }
 
     #[tokio::test]

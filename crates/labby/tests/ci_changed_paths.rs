@@ -778,6 +778,11 @@ fn skills_contract_docs_route_to_rust_conformance_tests() {
 #[test]
 fn release_workflow_changes_enable_the_release_contract() {
     for path in [
+        ".github/workflows/release-please.yml",
+        ".release-please-dev.json",
+        "scripts/ci/dev_release_pr.py",
+        "scripts/ci/test_dev_release_pr.py",
+        "scripts/ci/test_dev_release_workflow.py",
         ".github/workflows/release.yml",
         ".github/workflows/build-incus-image.yml",
         "scripts/ci/resolve-n-minus-one-baseline.py",
@@ -1130,12 +1135,7 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
 const RUNTIME_ONLY_CHANGE_OUTPUTS: &[&str] = &["gate_key_drift"];
 
 /// Advisory jobs excluded from `ci-gate`.
-const ADVISORY_JOBS: &[&str] = &[
-    "verification-t1",
-    "test-windows",
-    "windows-installer",
-    "desktop-windows",
-];
+const ADVISORY_JOBS: &[&str] = &["verification-t1"];
 
 fn gated_changed_path_keys(workflow: &str) -> BTreeSet<String> {
     workflow

@@ -157,6 +157,35 @@ impl GatewayManager {
             .and_then(|managers| managers.get(upstream).map(|entry| entry.clone()))
     }
 
+    /// Select a caller's OAuth manager with the same publication and rejection
+    /// policy used by pooled MCP connections. Capture authority before lookup.
+    pub async fn upstream_oauth_manager_for_subject(
+        &self,
+        upstream: &str,
+        subject: &str,
+    ) -> Result<Option<UpstreamOauthManager>, ToolError> {
+        let publication = self.oauth_client_cache.as_ref().map(|cache| {
+            (
+                cache.invalidation_barrier(),
+                cache.lifecycle_epoch_for(upstream, subject),
+            )
+        });
+        let Some(mut manager) = self.upstream_oauth_manager(upstream) else {
+            return Ok(None);
+        };
+        if let Some(cache) = &self.oauth_client_cache {
+            let rejection = cache
+                .refresh_rejection_handler(manager.upstream_config(), subject)
+                .await
+                .map_err(crate::gateway::oauth_lifecycle::tool_error_from_oauth)?;
+            manager = manager.with_refresh_rejection_handler(rejection);
+        }
+        if let Some((barrier, epoch)) = publication {
+            manager = manager.with_grant_publication_policy(barrier, epoch);
+        }
+        Ok(Some(manager))
+    }
+
     pub fn evict_upstream_clients(&self, upstream: &str) {
         if let Some(cache) = &self.oauth_client_cache {
             cache.evict_upstream(upstream);

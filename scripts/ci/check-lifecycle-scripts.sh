@@ -62,7 +62,7 @@ for path in "${test_files[@]}"; do
   case "$path" in
     *.sh) "$path" ;;
     *.py) python3 "$path" ;;
-    *.ps1) : ;; # Executed by the optional native Windows installer job.
+    *.ps1) : ;; # Retained PowerShell fixtures are not run in Linux/macOS-only CI.
     *) echo "unsupported lifecycle test type: $path" >&2; exit 1 ;;
   esac
 done

@@ -84,6 +84,29 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaises(qualification.QualificationError):
                 qualification.installed_release(binary, "v1.2.3")
 
+    def test_native_installer_channel_is_bound_to_release_not_ambient_env(self):
+        from argparse import Namespace
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            plan = {"conditions": dict.fromkeys(("fresh_machine", "cold_caches", "provider_access_ready", "native_service", "public_catalog", "provider_cost_accepted"), True),
+                    "selected_clients": [], "stages": {stage: ["true"] for stage in qualification.STAGES},
+                    "state_root": str(root / "server"), "invoking_state_root": str(root / "user"),
+                    "install_dir": str(root / "bin"), "token_file": str(root / "token"), "gateway_url": "http://127.0.0.1:8765"}
+            path = root / "plan.json"
+            path.write_text(json.dumps(plan))
+            for tag, ambient, expected in (("v2.7.0-dev.1", "stable", "dev"), ("v2.7.0", "dev", "stable")):
+                seen = []
+                def stop_before_network(argv, environment, deadline):
+                    seen.append(environment.copy())
+                    raise qualification.QualificationError("fixture stops before network or installation")
+                args = Namespace(plan=path, disposable_machine=True, repo="example/labby", tag=tag, timeout_seconds=10, budget_seconds=5)
+                with patch.dict(os.environ, {"LABBY_INSTALL_CHANNEL": ambient}), patch.object(qualification, "fresh_targets"), patch.object(qualification, "command", side_effect=stop_before_network):
+                    report, code = qualification.run(args)
+                self.assertEqual(1, code)
+                self.assertFalse(report["completion"])
+                self.assertEqual(expected, seen[0]["LABBY_INSTALL_CHANNEL"])
+                self.assertEqual(tag, seen[0]["LABBY_INSTALL_VERSION"])
+
     def test_mutating_run_requires_disposable_marker_and_reports_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)

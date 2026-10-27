@@ -1008,6 +1008,111 @@ impl UpstreamConfig {
                 name: self.name.clone(),
                 reason: reason.to_string(),
             };
+            if !matches!(oauth.mode, UpstreamOauthMode::AuthorizationCodePkce) {
+                if oauth.credential != UpstreamOauthCredentialSource::Dedicated {
+                    return Err(invalid_oauth(
+                        "unattended grants require dedicated subject-scoped credentials",
+                    ));
+                }
+                let UpstreamOauthRegistration::Preregistered {
+                    client_id,
+                    client_secret_env,
+                } = &oauth.registration
+                else {
+                    return Err(invalid_oauth(
+                        "unattended grants require preregistered client metadata",
+                    ));
+                };
+                if client_id.trim().is_empty() {
+                    return Err(invalid_oauth("unattended client_id must not be empty"));
+                }
+                let valid_env = |name: &str| {
+                    let mut chars = name.chars();
+                    chars
+                        .next()
+                        .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+                        && chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+                };
+                match &oauth.mode {
+                    UpstreamOauthMode::ClientCredentials {
+                        authentication:
+                            UpstreamMachineAuthentication::PrivateKeyJwt {
+                                signing_key_env,
+                                token_endpoint_audience,
+                                ..
+                            },
+                    } => {
+                        if !valid_env(signing_key_env) {
+                            return Err(invalid_oauth(
+                                "private_key_jwt requires a valid signing_key_env reference",
+                            ));
+                        }
+                        if token_endpoint_audience.as_ref().is_some_and(|audience| {
+                            audience.trim().is_empty()
+                                || audience.trim() != audience
+                                || audience.chars().any(char::is_control)
+                        }) {
+                            return Err(invalid_oauth(
+                                "private_key_jwt token_endpoint_audience must be nonempty, without surrounding whitespace or control characters",
+                            ));
+                        }
+                    }
+                    UpstreamOauthMode::ClientCredentials {
+                        authentication: UpstreamMachineAuthentication::ClientSecret,
+                    }
+                    | UpstreamOauthMode::EnterpriseManaged { .. } => {
+                        if !client_secret_env.as_deref().is_some_and(valid_env) {
+                            return Err(invalid_oauth(
+                                "unattended secret authentication requires client_secret_env",
+                            ));
+                        }
+                    }
+                    UpstreamOauthMode::WorkloadIdentityFederation { assertion_env } => {
+                        if !valid_env(assertion_env) || client_secret_env.is_some() {
+                            return Err(invalid_oauth(
+                                "workload identity requires a valid assertion_env and public registration without client_secret_env",
+                            ));
+                        }
+                    }
+                    UpstreamOauthMode::AuthorizationCodePkce => {}
+                }
+                if let UpstreamOauthMode::EnterpriseManaged {
+                    identity_provider,
+                    subject_token,
+                    ..
+                } = &oauth.mode
+                {
+                    if identity_provider.client_id.trim().is_empty()
+                        || !valid_env(&identity_provider.client_secret_env)
+                        || !valid_env(&subject_token.token_env)
+                    {
+                        return Err(invalid_oauth(
+                            "enterprise exchange requires a client identity and valid secret environment references",
+                        ));
+                    }
+                    for raw in [&identity_provider.issuer, &identity_provider.token_endpoint] {
+                        let parsed = url::Url::parse(raw).map_err(|_| {
+                            invalid_oauth(
+                                "enterprise issuer and token_endpoint must be absolute URLs",
+                            )
+                        })?;
+                        let local_http = parsed.scheme() == "http"
+                            && parsed.host_str().is_some_and(|host| {
+                                matches!(host, "localhost" | "127.0.0.1" | "::1")
+                            });
+                        if !(parsed.scheme() == "https" || local_http)
+                            || parsed.host_str().is_none()
+                            || !parsed.username().is_empty()
+                            || parsed.password().is_some()
+                            || parsed.fragment().is_some()
+                        {
+                            return Err(invalid_oauth(
+                                "enterprise endpoints require HTTPS or loopback HTTP without credentials or fragments",
+                            ));
+                        }
+                    }
+                }
+            }
             for raw_origin in &oauth.additional_endpoint_origins {
                 let parsed = url::Url::parse(raw_origin.trim()).map_err(|_| {
                     invalid_oauth(
@@ -1751,12 +1856,114 @@ pub struct UpstreamOauthConfig {
     pub prefer_client_metadata_document: Option<bool>,
 }
 
-/// Outbound OAuth mode. Currently only `authorization_code_pkce` is supported.
+/// Outbound OAuth flow for interactive or unattended authorization.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamOauthMode {
     /// OAuth authorization-code flow with PKCE.
     AuthorizationCodePkce,
+    /// Unattended grants using the configured preregistered client identity.
+    ClientCredentials {
+        /// Authentication for the preregistered client.
+        authentication: UpstreamMachineAuthentication,
+    },
+    /// Workload identity using an externally issued, operator-managed JWT assertion.
+    WorkloadIdentityFederation {
+        /// Environment variable containing the external assertion, never a signing key.
+        assertion_env: String,
+    },
+    /// Enterprise ID-JAG exchange using an operator-approved subject token.
+    EnterpriseManaged {
+        /// Approved identity provider and client registration.
+        identity_provider: UpstreamEnterpriseIdentityProvider,
+        /// Operator-managed subject token used for the ID-JAG exchange.
+        subject_token: UpstreamEnterpriseSubjectToken,
+        #[serde(default)]
+        /// Client authentication at the resource authorization server.
+        resource_authentication: UpstreamSecretAuthentication,
+    },
+}
+
+/// Client authentication for unattended client-credentials grants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum UpstreamMachineAuthentication {
+    /// Authenticate with the preregistered client secret.
+    ClientSecret,
+    /// Authenticate with a signed JWT assertion.
+    PrivateKeyJwt {
+        /// Environment variable containing the PEM signing key.
+        signing_key_env: String,
+        /// Signing algorithm registered for this client.
+        algorithm: UpstreamClientJwtAlgorithm,
+        /// Exact registered assertion audience; defaults to the discovered issuer.
+        /// This is an identifier, not a network destination, and may be opaque.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        token_endpoint_audience: Option<String>,
+    },
+}
+
+/// Registered asymmetric JWT signing algorithm. Private key material stays in an environment secret.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+pub enum UpstreamClientJwtAlgorithm {
+    /// RSA PKCS#1 with SHA-256.
+    RS256,
+    /// RSA PKCS#1 with SHA-384.
+    RS384,
+    /// RSA PKCS#1 with SHA-512.
+    RS512,
+    /// ECDSA P-256 with SHA-256.
+    ES256,
+    /// ECDSA P-384 with SHA-384.
+    ES384,
+}
+
+/// Approved secret authentication at one enterprise token endpoint.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamSecretAuthentication {
+    /// Send the client secret using HTTP Basic authentication.
+    #[default]
+    ClientSecretBasic,
+    /// Send the client secret in the token request body.
+    ClientSecretPost,
+}
+
+/// Approved identity-provider registration. All secrets are environment references.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamEnterpriseIdentityProvider {
+    /// Exact approved issuer used to validate discovered metadata.
+    pub issuer: String,
+    /// Exact approved token endpoint.
+    pub token_endpoint: String,
+    /// Preregistered identity-provider client identifier.
+    pub client_id: String,
+    /// Environment variable containing the identity-provider client secret.
+    pub client_secret_env: String,
+    /// Client authentication at the identity-provider token endpoint.
+    #[serde(default)]
+    pub authentication: UpstreamSecretAuthentication,
+}
+
+/// Type of the operator-provided enterprise subject token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamEnterpriseSubjectTokenKind {
+    /// An operator-managed refresh token.
+    RefreshToken,
+    /// An operator-managed ID token.
+    IdToken,
+}
+
+/// Trusted enterprise subject-token reference. It is never supplied by a downstream caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpstreamEnterpriseSubjectToken {
+    /// Environment variable containing the approved subject token.
+    pub token_env: String,
+    /// Token type expected by the identity provider.
+    pub kind: UpstreamEnterpriseSubjectTokenKind,
 }
 
 /// Persistence source for an upstream OAuth credential.
@@ -2135,6 +2342,37 @@ fn normalize_string_list(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn workload_identity_requires_public_registration_and_valid_assertion_env() {
+        let raw = serde_json::json!({"name":"workload", "url":"https://mcp.example/mcp", "oauth":{
+            "mode":{"workload_identity_federation":{"assertion_env":"LABBY_WORKLOAD_ASSERTION"}},
+            "registration":{"strategy":"preregistered","client_id":"workload-client"}, "scopes":["read"]
+        }});
+        let config: UpstreamConfig =
+            serde_json::from_value(raw.clone()).expect("workload mode must deserialize");
+        config
+            .validate()
+            .expect("public workload registration must validate");
+        for env in ["", "bad-name", "1ASSERTION", "ASSERTION VALUE"] {
+            let mut invalid = raw.clone();
+            invalid["oauth"]["mode"]["workload_identity_federation"]["assertion_env"] = env.into();
+            assert!(
+                serde_json::from_value::<UpstreamConfig>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err()
+            );
+        }
+        let mut confidential = raw;
+        confidential["oauth"]["registration"]["client_secret_env"] = "UNUSED_SECRET".into();
+        assert!(
+            serde_json::from_value::<UpstreamConfig>(confidential)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+
     #[test]
     fn code_mode_search_defaults_cover_all_sources_and_requested_kinds() {
         let search = CodeModeSearchConfig::default();
@@ -2792,7 +3030,10 @@ strategy = "dynamic"
             .validate()
             .expect_err("reserved prefix must be rejected");
         let rendered = error.to_string();
-        assert!(rendered.contains("__in_process__"), "{rendered}");
+        assert!(
+            rendered.contains("__in_process__"),
+            "reserved-prefix rejection must identify the reserved namespace"
+        );
 
         // Ordinary names that merely contain the token are fine — only the
         // prefix is reserved.

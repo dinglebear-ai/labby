@@ -55,3 +55,30 @@ test("companion root is anchored beside the npm installed binary", () => {
     path.join(path.dirname(binaryPath("linux", "x64")), "tailcat"),
   );
 });
+
+test("dev exact versions retain the matching immutable dev release tag", () => {
+  assert.equal(releaseVersion({ LABBY_VERSION: "2.6.3-dev.10" }), "v2.6.3-dev.10");
+  assert.equal(releaseVersion({ LABBY_VERSION: "v2.6.3-dev.2", LABBY_INSTALL_CHANNEL: "dev" }), "v2.6.3-dev.2");
+});
+
+test("rejects malformed versions and channel mismatches", () => {
+  for (const version of ["latest", "2.6.3-dev.0", "2.6.3-dev.01", "02.6.3", "2.6.3-rc.1", "2.6.3-dev.1+build", "2.6.3\n", "2.6.3-dev.1\r\n", "2.6.3\nforged=value"]) {
+    assert.throws(() => releaseVersion({ LABBY_VERSION: version }), /Invalid immutable/);
+  }
+  assert.throws(() => releaseVersion({ LABBY_VERSION: "2.6.3", LABBY_INSTALL_CHANNEL: "dev" }), /does not match/);
+  assert.throws(() => releaseVersion({ LABBY_VERSION: "2.6.3-dev.1", LABBY_INSTALL_CHANNEL: "stable" }), /does not match/);
+  const currentChannel = /-dev\./.test(packageVersion) ? "dev" : "stable";
+  const otherChannel = currentChannel === "dev" ? "stable" : "dev";
+  assert.equal(releaseVersion({ LABBY_INSTALL_CHANNEL: currentChannel }), `v${packageVersion}`);
+  assert.throws(() => releaseVersion({ LABBY_INSTALL_CHANNEL: otherChannel }), /does not match/);
+});
+
+test("an npm dev package defaults to its exact matching release", () => {
+  const entry = require.cache[require.resolve("../package.json")];
+  const previous = entry.exports;
+  try {
+    entry.exports = { ...previous, version: "2.6.3-dev.10" };
+    assert.equal(releaseVersion({}), "v2.6.3-dev.10");
+    assert.throws(() => releaseVersion({ LABBY_INSTALL_CHANNEL: "stable" }), /does not match/);
+  } finally { entry.exports = previous; }
+});

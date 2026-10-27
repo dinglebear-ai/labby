@@ -57,7 +57,7 @@ use futures::future::BoxFuture;
 use rmcp::model::LoggingMessageNotificationParam;
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelledNotificationParam,
-    ClientCapabilities, ClientInfo, ClientRequest, CustomNotification, GetPromptRequest,
+    ClientCapabilities, ClientConfig, ClientRequest, CustomNotification, GetPromptRequest,
     GetPromptRequestParams, GetPromptResponse, Implementation, ProgressNotificationParam,
     ProgressToken, ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, RequestId,
     RequestMetaObject, ResourceUpdatedNotificationParam, ServerNotification, ServerResult,
@@ -680,8 +680,8 @@ impl ClientHandler for RelayClientHandler {
     /// Advertise the exact capability snapshot from the current downstream
     /// request. Anything the caller did not declare for this request is not
     /// claimed on its behalf.
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::default();
+    fn get_info(&self) -> ClientConfig {
+        let mut info = ClientConfig::default();
         info.client_info = Implementation::new("labby-bridge", env!("CARGO_PKG_VERSION"));
         info.capabilities = self.capabilities.clone();
         info
@@ -2171,6 +2171,7 @@ impl UpstreamPool {
         Option<HttpCancellationSender>,
         Option<u64>,
     )> {
+        self.drain_oauth_client_capacity_evictions().await;
         self.acquire_or_connect_relay_guarded(config, subject, downstream, session_id, capabilities)
             .await
     }
@@ -2296,6 +2297,10 @@ impl UpstreamPool {
             Some(&self.shared_http_client),
             handler,
             Some(notification_interceptor),
+            super::transport_config::HttpTransportBudgets {
+                concurrency: self.call_concurrency,
+                request_timeout: self.request_timeout,
+            },
         )
         .await
         {
@@ -2513,7 +2518,7 @@ mod tests {
         GetPromptResponse, Implementation, InputRequest, InputRequests, InputRequiredResult,
         PaginatedRequestParams, PrimitiveSchemaDefinition, ProgressNotificationParam,
         ProtocolVersion, ReadResourceRequestParams, ReadResourceResponse, ServerCapabilities,
-        ServerInfo, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
+        ServerConfig, ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
         TaskStatusNotificationParams,
     };
     use rmcp::service::ClientLifecycleMode;
@@ -2904,8 +2909,8 @@ mod tests {
     struct CapableAgent;
 
     impl ClientHandler for CapableAgent {
-        fn get_info(&self) -> ClientInfo {
-            let mut info = ClientInfo::default();
+        fn get_info(&self) -> ClientConfig {
+            let mut info = ClientConfig::default();
             info.capabilities = relay_test_capabilities();
             info
         }
@@ -2917,8 +2922,8 @@ mod tests {
     struct TrivialServer;
 
     impl ServerHandler for TrivialServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::default()
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::default()
         }
     }
 
@@ -2930,8 +2935,8 @@ mod tests {
     }
 
     impl ClientHandler for RecordingAgent {
-        fn get_info(&self) -> ClientInfo {
-            let mut info = ClientInfo::default();
+        fn get_info(&self) -> ClientConfig {
+            let mut info = ClientConfig::default();
             info.capabilities = ClientCapabilities::builder()
                 .enable_elicitation()
                 .enable_tasks()
@@ -2995,6 +3000,17 @@ mod tests {
                 )
                 .await
                 .expect("recording agent connects");
+            // Discovery alone leaves the server in bootstrap. Send the first
+            // application request so this fixture can retain its server peer.
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                running.peer().send_request(ClientRequest::ListToolsRequest(
+                    rmcp::model::ListToolsRequest::default(),
+                )),
+            )
+            .await
+            .expect("recording agent activation finishes within its deadline")
+            .expect("recording agent activates the downstream server");
             running.waiting().await.expect("recording agent runs");
         });
         let downstream_server = TrivialServer
@@ -3162,8 +3178,8 @@ mod tests {
         }
 
         impl ServerHandler for HeaderMismatchUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -3244,8 +3260,8 @@ mod tests {
         }
 
         impl ServerHandler for SlowHeaderRefreshUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
 
             async fn list_tools(
@@ -3365,8 +3381,8 @@ mod tests {
     struct ProgressCancelUpstream;
 
     impl ServerHandler for ProgressCancelUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -3405,8 +3421,8 @@ mod tests {
     }
 
     impl ServerHandler for CancellationAwareUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
         }
 
         async fn call_tool(
@@ -3425,8 +3441,8 @@ mod tests {
     struct TaskNotificationUpstream;
 
     impl ServerHandler for TaskNotificationUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_tasks()
@@ -3470,7 +3486,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relay_translates_progress_and_cancelled_notification_ids() {
+    async fn relay_translates_progress_and_ignores_non_subscription_cancellation() {
         let agent = RecordingAgent::default();
         let capabilities = agent.get_info().capabilities;
         let (pool, config, downstream_server) =
@@ -3517,27 +3533,26 @@ mod tests {
             )
             .await
             .expect("cached relay exists");
+        // Modern servers can cancel listen subscriptions, not ordinary tool
+        // calls. rmcp ignores this unsolicited cancellation before dispatching
+        // notifications to the relay handler (upstream PR #1262).
         assert!(
-            matches!(result, Err(ref error) if error.to_string().contains("upstream cancelled")),
-            "upstream cancellation should terminate the relayed request: {result:?}"
+            matches!(result, Ok(CallToolResponse::Complete(_))),
+            "non-subscription cancellation must not terminate the tool call: {result:?}"
         );
         tokio::time::timeout(
             RELAY_ROUTE_CLEANUP_GRACE + Duration::from_secs(1),
             routes.wait_for_relay_watcher_finish_after(watcher_sequence),
         )
         .await
-        .expect("cancelled response retires its detached relay watcher after bounded grace");
+        .expect("completed response retires its detached relay watcher after bounded grace");
 
         wait_for_recorded_count(&agent.progress, 1).await;
-        wait_for_recorded_count(&agent.cancellations, 1).await;
         assert_eq!(
             agent.progress.lock().await[0].progress_token,
             downstream_progress_token
         );
-        assert_eq!(
-            agent.cancellations.lock().await[0].request_id,
-            Some(downstream_request_id)
-        );
+        assert!(agent.cancellations.lock().await.is_empty());
     }
 
     #[tokio::test]
@@ -3717,8 +3732,8 @@ mod tests {
     struct ElicitingUpstream;
 
     impl ServerHandler for ElicitingUpstream {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_prompts()
@@ -3782,6 +3797,17 @@ mod tests {
                 )
                 .await
                 .expect("agent connects");
+            // Discovery is bootstrap-neutral; activate the downstream server
+            // before the fixture waits for its running service.
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                running.peer().send_request(ClientRequest::ListToolsRequest(
+                    rmcp::model::ListToolsRequest::default(),
+                )),
+            )
+            .await
+            .expect("agent activation finishes within its deadline")
+            .expect("agent activates the downstream server");
             running.waiting().await.expect("agent runs");
         });
         let gw_server = TrivialServer
@@ -4545,6 +4571,33 @@ mod tests {
     /// This catches an invalidation path that only evicts `OauthClientCache` or
     /// the ordinary subject-connection cache.
     #[tokio::test]
+    async fn rejected_refresh_boundary_detaches_matching_relay_only() {
+        let clients =
+            labby_auth::upstream::cache::OauthClientCache::new(Arc::new(dashmap::DashMap::new()));
+        let pool = UpstreamPool::new().with_oauth_client_cache(clients.clone());
+        let (alice, _alice_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        let (bob, _bob_keepalive) = live_relay_cached_connection(Instant::now()).await;
+        pool.relay_connections
+            .write()
+            .await
+            .insert(relay_cache_key("up", 1, Some("alice")), alice);
+        pool.relay_connections
+            .write()
+            .await
+            .insert(relay_cache_key("up", 2, Some("bob")), bob);
+        let config = super::super::testsupport::named_test_upstream_config("up");
+        let rejected = clients
+            .refresh_rejection_handler(&config, "alice")
+            .await
+            .expect("rejection handler");
+        rejected(None);
+        pool.drain_oauth_client_capacity_evictions().await;
+        let peers = pool.relay_connections.read().await;
+        assert!(!peers.contains_key(&relay_cache_key("up", 1, Some("alice"))));
+        assert!(peers.contains_key(&relay_cache_key("up", 2, Some("bob"))));
+    }
+
+    #[tokio::test]
     async fn oauth_subject_invalidation_evicts_only_matching_relay_peers() {
         let pool = UpstreamPool::new();
         let (alice_a, _alice_a_keepalive) = live_relay_cached_connection(Instant::now()).await;
@@ -4707,8 +4760,8 @@ mod tests {
         #[derive(Clone)]
         struct FailingUpstream;
         impl ServerHandler for FailingUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn call_tool(
                 &self,
@@ -4850,8 +4903,8 @@ mod tests {
         #[derive(Clone)]
         struct OversizedUpstream;
         impl ServerHandler for OversizedUpstream {
-            fn get_info(&self) -> ServerInfo {
-                ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             }
             async fn call_tool(
                 &self,

@@ -203,6 +203,40 @@ impl ArtifactAccessSnapshot {
 }
 
 impl SkillRegistryContext {
+    /// Bind retained catalog pages to the current canonical authorization view.
+    /// Generation is intentionally excluded: retained pages own their generation.
+    pub(crate) fn catalog_visibility_key(&self) -> String {
+        use sha2::Digest as _;
+        let access = self.artifact_access.as_ref().map(|access| {
+            serde_json::json!({
+                "tenant": access.tenant_id,
+                "actor": access.actor_id,
+                "project": access.project_id,
+                "teams": access.team_ids,
+                "admin": access.is_admin,
+                "platformAdmin": access.is_platform_admin,
+            })
+        });
+        let mut visible_uris = self
+            .first_party
+            .providers
+            .discover()
+            .iter()
+            .filter(|entry| self.permits_first_party_entry(entry))
+            .map(|entry| entry.validated().entry.uri.clone())
+            .collect::<Vec<_>>();
+        visible_uris.sort_unstable();
+        visible_uris.dedup();
+        let view = serde_json::json!({
+            "visibleFirstPartyUris": visible_uris,
+            "allowedUpstreams": self.scope.allowed_upstreams,
+            "subject": self.scope.subject,
+            "toolAccess": format!("{:?}", self.scope.tool_access),
+            "artifactAccess": access,
+        });
+        hex::encode(sha2::Sha256::digest(view.to_string().as_bytes()))
+    }
+
     #[must_use]
     pub(crate) fn first_party_only() -> Self {
         Self {
@@ -1792,6 +1826,65 @@ mod tests {
     }
 
     use labby_runtime::skills::ResourceDigest;
+
+    #[tokio::test]
+    async fn skill_resource_cursor_rejects_changed_authorization_view() {
+        let context = artifact_context(SkillVisibility::Private)
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        let key = context.catalog_visibility_key();
+        let runtime = crate::mcp::runtime::McpRouteRuntime::default();
+        runtime
+            .store_resource_snapshot(
+                key.clone(),
+                "rev".to_owned(),
+                Arc::from(vec![rmcp::model::Resource::new(
+                    "skill://private/demo/SKILL.md",
+                    "demo",
+                )]),
+                Arc::from([]),
+                None,
+            )
+            .await;
+        assert!(runtime.resource_snapshot(&key, "rev").await.is_some());
+        let mut variants = Vec::new();
+        let mut project = context.clone();
+        project.artifact_access.as_mut().unwrap().project_id =
+            LibraryActorId::from_canonical_projection("other-project").unwrap();
+        variants.push(project);
+        let mut teams = context.clone();
+        teams
+            .artifact_access
+            .as_mut()
+            .unwrap()
+            .team_ids
+            .insert(LibraryActorId::from_canonical_projection("other-team").unwrap());
+        variants.push(teams);
+        let mut actor = context.clone();
+        actor.artifact_access.as_mut().unwrap().actor_id =
+            LibraryActorId::from_canonical_projection("other-actor").unwrap();
+        variants.push(actor);
+        let mut scope = context.clone();
+        scope.scope = SkillCallerScope::root(Some("subject".to_owned()), ToolAccess::Direct);
+        variants.push(scope);
+        let mut withdrawn = context.clone();
+        withdrawn.first_party = SkillRegistryContext::first_party_only().first_party;
+        assert!(
+            first_party_skill_listing(&withdrawn)
+                .skills
+                .iter()
+                .all(|skill| skill.uri != "skill://labby/artifact/SKILL.md")
+        );
+        variants.push(withdrawn);
+        for variant in variants {
+            assert_ne!(variant.catalog_visibility_key(), key);
+            assert!(
+                runtime
+                    .resource_snapshot(&variant.catalog_visibility_key(), "rev")
+                    .await
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn discovery_scope_intersects_without_broadening_request_authority() {

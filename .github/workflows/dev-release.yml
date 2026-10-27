@@ -1,0 +1,55 @@
+name: Prepare dev release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Immutable version, for example v2.7.0-dev.1'
+        required: true
+        type: string
+      source:
+        description: 'Green main commit: main or a full commit SHA'
+        required: true
+        default: main
+        type: string
+
+concurrency:
+  group: labby-dev-release-preparation
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.12'
+      - name: Prepare immutable dev candidate
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_REF: ${{ inputs.source }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_CONFIG_COUNT: '2'
+          GIT_CONFIG_KEY_0: credential.helper
+          GIT_CONFIG_VALUE_0: ''
+          GIT_CONFIG_KEY_1: credential.https://github.com.helper
+          GIT_CONFIG_VALUE_1: '!gh auth git-credential'
+        run: |
+          set -euo pipefail
+          test -n "$GH_TOKEN" || { echo '::error::RELEASE_PLEASE_TOKEN is required to trigger tag qualification'; exit 1; }
+          python3 scripts/ci/prepare-dev-release.py \
+            --tag "$RELEASE_TAG" --source "$SOURCE_REF" --repository "$GITHUB_REPOSITORY"

@@ -272,7 +272,7 @@ async fn credential_initialization_without_skills_is_known_empty() {
 async fn advertised_credential_skills_remain_unknown_before_listing() {
     struct AdvertisedSkills;
     impl rmcp::ServerHandler for AdvertisedSkills {
-        fn get_info(&self) -> rmcp::model::ServerInfo {
+        fn get_info(&self) -> rmcp::model::ServerConfig {
             let mut capabilities = rmcp::model::ServerCapabilities::builder()
                 .enable_tools()
                 .build();
@@ -282,7 +282,7 @@ async fn advertised_credential_skills_remain_unknown_before_listing() {
                 serde_json::Map::new(),
             );
             capabilities.extensions = Some(extensions);
-            rmcp::model::ServerInfo::new(capabilities)
+            rmcp::model::ServerConfig::new(capabilities)
         }
     }
     let pool = catalog_pool_with_server("alpha", AdvertisedSkills).await;

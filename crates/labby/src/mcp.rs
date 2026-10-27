@@ -31,6 +31,8 @@ pub mod handlers_tools;
 pub mod in_process_peer;
 pub mod logging;
 pub mod meta;
+pub(crate) mod native_metadata;
+pub(crate) mod native_tasks;
 pub(crate) mod pagination;
 pub(crate) mod peer_contract;
 pub mod peers;
@@ -53,6 +55,8 @@ pub mod server;
 pub mod services;
 #[cfg(feature = "skills")]
 pub mod skills;
+#[cfg(feature = "skills")]
+pub(crate) mod skills_directory;
 #[cfg(feature = "gateway")]
 pub(crate) mod tool_execution;
 #[cfg(feature = "gateway")]

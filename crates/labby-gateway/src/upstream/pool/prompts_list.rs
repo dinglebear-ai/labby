@@ -424,7 +424,7 @@ mod tests {
 
     use rmcp::model::{
         ErrorData, GetPromptRequestParams, ListPromptsResult, PaginatedRequestParams, Prompt,
-        ServerCapabilities, ServerInfo,
+        ServerCapabilities, ServerConfig,
     };
     use rmcp::service::RequestContext;
     use rmcp::{RoleServer, ServerHandler, ServiceExt};
@@ -448,8 +448,8 @@ mod tests {
     impl ServerHandler for UnsupportedPromptServer {}
 
     impl ServerHandler for StalledPromptServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_prompts().build())
         }
 
         async fn list_prompts(
@@ -504,8 +504,8 @@ mod tests {
     struct ManyPromptsServer;
 
     impl ServerHandler for ManyPromptsServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_prompts().build())
         }
 
         async fn list_prompts(
@@ -729,8 +729,8 @@ mod tests {
     }
 
     impl ServerHandler for PaginatedPromptServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_prompts().build())
         }
 
         async fn list_prompts(
@@ -773,8 +773,8 @@ mod tests {
     }
 
     impl ServerHandler for DelayedPromptServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(ServerCapabilities::builder().enable_prompts().build())
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(ServerCapabilities::builder().enable_prompts().build())
         }
 
         async fn list_prompts(

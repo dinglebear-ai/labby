@@ -1,6 +1,7 @@
 use rmcp::model::{
     CallToolRequestParams, ElicitRequest, ElicitRequestParams, ElicitResult, ElicitationAction,
     ElicitationSchema, InputRequest, InputRequests, InputRequiredResult, PrimitiveSchemaDefinition,
+    RequestStateCodec, SealOptions,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,6 +22,17 @@ struct PendingConfirmation {
 fn pending_confirmations() -> &'static Mutex<HashMap<String, PendingConfirmation>> {
     static PENDING: OnceLock<Mutex<HashMap<String, PendingConfirmation>>> = OnceLock::new();
     PENDING.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn confirmation_codec() -> Option<&'static RequestStateCodec> {
+    static CODEC: OnceLock<Option<RequestStateCodec>> = OnceLock::new();
+    CODEC
+        .get_or_init(|| {
+            let mut key = [0_u8; 32];
+            getrandom::fill(&mut key).ok()?;
+            RequestStateCodec::new_with_keyring("process", [("process", key)]).ok()
+        })
+        .as_ref()
 }
 
 pub(crate) enum DestructiveConfirmation {
@@ -53,6 +65,14 @@ pub(crate) fn destructive_confirmation(
         return DestructiveConfirmation::Refused;
     }
 
+    let Some(codec) = confirmation_codec() else {
+        return DestructiveConfirmation::Refused;
+    };
+    // Tuple encoding separates both fields without ambiguous delimiters.
+    let Ok(associated_data) = serde_json::to_vec(&(owner, binding)) else {
+        return DestructiveConfirmation::Refused;
+    };
+
     if let Some(responses) = request.input_responses.as_ref() {
         let Some(state) = request.request_state.as_deref() else {
             return DestructiveConfirmation::Refused;
@@ -64,7 +84,13 @@ pub(crate) fn destructive_confirmation(
         let Some(pending) = pending else {
             return DestructiveConfirmation::Refused;
         };
-        if pending.expires <= Instant::now() || pending.binding != binding {
+        if pending.expires <= Instant::now()
+            || pending.binding != binding
+            || pending.owner != owner
+            || !codec
+                .open_with(state, &associated_data)
+                .is_ok_and(|nonce| nonce.len() == 32)
+        {
             return DestructiveConfirmation::Refused;
         }
         let accepted = responses
@@ -107,7 +133,16 @@ pub(crate) fn destructive_confirmation(
         DESTRUCTIVE_CONFIRMATION_INPUT.to_string(),
         InputRequest::Elicitation(ElicitRequest::new(params)),
     )]);
-    let state = ulid::Ulid::new().to_string();
+    let mut nonce = [0_u8; 32];
+    if getrandom::fill(&mut nonce).is_err() {
+        return DestructiveConfirmation::Refused;
+    }
+    let state = codec.seal_with(
+        &nonce,
+        &SealOptions::new()
+            .associated_data(&associated_data)
+            .ttl(CONFIRMATION_TTL),
+    );
     let now = Instant::now();
     let mut pending = pending_confirmations()
         .lock()
@@ -162,6 +197,65 @@ mod tests {
             capabilities,
         ));
         request
+    }
+
+    #[test]
+    fn destructive_confirmation_state_uses_sdk_signed_format() {
+        let DestructiveConfirmation::InputRequired(challenge) = destructive_confirmation(
+            &elicitation_request(),
+            "danger",
+            "danger.delete",
+            "signed-binding",
+            "signed-owner",
+        ) else {
+            panic!("expected confirmation");
+        };
+        assert!(challenge.request_state.unwrap().starts_with("rs2."));
+    }
+
+    #[test]
+    fn destructive_confirmation_verifies_signature_even_with_matching_pending_entry() {
+        let mut request = elicitation_request();
+        let DestructiveConfirmation::InputRequired(challenge) = destructive_confirmation(
+            &request,
+            "danger",
+            "danger.delete",
+            "tamper-binding",
+            "tamper-owner",
+        ) else {
+            panic!("expected confirmation");
+        };
+        let original = challenge.request_state.unwrap();
+        let mut tampered = original.clone().into_bytes();
+        let index = tampered.iter().rposition(|byte| *byte == b'.').unwrap() + 1;
+        tampered[index] = if tampered[index] == b'A' { b'B' } else { b'A' };
+        let tampered = String::from_utf8(tampered).unwrap();
+        {
+            let mut pending = pending_confirmations().lock().unwrap();
+            let entry = pending.remove(&original).unwrap();
+            pending.insert(tampered.clone(), entry);
+        }
+        request.request_state = Some(tampered.clone());
+        request.input_responses = Some(BTreeMap::from([(
+            "destructive_confirmation".into(),
+            json!({"action":"accept", "content":{"confirm":true}}),
+        )]));
+        assert!(matches!(
+            destructive_confirmation(
+                &request,
+                "danger",
+                "danger.delete",
+                "tamper-binding",
+                "tamper-owner",
+            ),
+            DestructiveConfirmation::Refused
+        ));
+        assert!(
+            !pending_confirmations()
+                .lock()
+                .unwrap()
+                .contains_key(&tampered)
+        );
     }
 
     #[test]

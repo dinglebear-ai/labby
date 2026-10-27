@@ -3,7 +3,12 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use futures::FutureExt;
+
 use super::UpstreamPool;
+
+pub(super) type OAuthInvalidationDrain =
+    futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OAuthSessionInvalidation {
@@ -31,26 +36,75 @@ impl OAuthSessionInvalidation {
 }
 
 impl UpstreamPool {
-    pub(super) async fn drain_oauth_client_capacity_evictions(&self) {
+    pub(crate) async fn drain_oauth_client_capacity_evictions(&self) {
         let Some(cache) = &self.oauth_client_cache else {
             return;
         };
-        let victims = cache.take_capacity_evictions();
-        if victims.is_empty() {
-            return;
+        loop {
+            let drain = {
+                let mut owner = self.oauth_invalidation_drain.lock().await;
+                if owner.as_ref().is_some_and(|drain| drain.peek().is_some()) {
+                    *owner = None;
+                }
+                if let Some(drain) = owner.as_ref() {
+                    drain.clone()
+                } else {
+                    if !cache.has_pending_invalidations() {
+                        return;
+                    }
+                    // Claim ownership before spawning. Cancellation drops only
+                    // this caller's shared wait, never the owned lifecycle work.
+                    let pool = self.clone();
+                    let cache = cache.clone();
+                    let task = tokio::spawn(async move {
+                        #[cfg(test)]
+                        if let Some(probe) = &pool.oauth_invalidation_drain_probe {
+                            probe.started();
+                        }
+                        let _barrier = Arc::clone(&pool.oauth_invalidation_barrier)
+                            .write_owned()
+                            .await;
+                        while cache.has_pending_invalidations() {
+                            for event in cache.take_pending_invalidations() {
+                                if !event.is_current() {
+                                    continue;
+                                }
+                                if let Some(subject) = event.subject {
+                                    pool.invalidate_oauth_subject_sessions_guarded(
+                                        &event.upstream,
+                                        &subject,
+                                        "oauth.client_cache.invalidate",
+                                    )
+                                    .await;
+                                } else {
+                                    pool.invalidate_oauth_upstream_sessions_guarded(
+                                        &[event.upstream],
+                                        "oauth.refresh.rejected",
+                                    )
+                                    .await;
+                                }
+                            }
+                        }
+                        #[cfg(test)]
+                        if let Some(probe) = &pool.oauth_invalidation_drain_probe {
+                            probe.finishing().await;
+                        }
+                    });
+                    let drain = async move {
+                        if let Err(error) = task.await {
+                            tracing::warn!(error = %error, "OAuth lifecycle invalidation task failed");
+                        }
+                    }
+                    .boxed()
+                    .shared();
+                    *owner = Some(drain.clone());
+                    drain
+                }
+            };
+            drain.await;
+            // Recheck the queue after completion: an event may have arrived
+            // after the worker's final snapshot while this caller was waiting.
         }
-        let barrier = Arc::clone(&self.oauth_invalidation_barrier)
-            .write_owned()
-            .await;
-        for (upstream, subject) in victims {
-            self.invalidate_oauth_subject_sessions_guarded(
-                &upstream,
-                &subject,
-                "oauth.client_cache.capacity",
-            )
-            .await;
-        }
-        drop(barrier);
     }
 
     pub async fn invalidate_oauth_subject_sessions(
@@ -261,3 +315,7 @@ impl UpstreamPool {
         counts
     }
 }
+
+#[cfg(test)]
+#[path = "oauth_invalidation_tests.rs"]
+pub(super) mod rejection_tests;

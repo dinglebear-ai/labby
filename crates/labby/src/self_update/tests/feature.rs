@@ -230,7 +230,7 @@ async fn automatic_feature_child() {
     } else {
         "v1.17.0"
     })];
-    let result = automatic_with_catalog(&root.join("bin/labby"), case == "dry_run", async {
+    let result = automatic_with_catalog(&root.join("bin/labby"), case == "dry_run", None, async {
         Ok(catalog)
     })
     .await;

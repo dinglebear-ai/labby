@@ -86,6 +86,22 @@ impl<R: AsyncRead + Unpin> AsyncRead for CappedJsonLineReader<R> {
     }
 }
 
+fn bounded_stdio_transport<R, W>(
+    reader: R,
+    writer: W,
+    max_bytes: usize,
+) -> AsyncRwTransport<RoleClient, CappedJsonLineReader<R>, W>
+where
+    R: AsyncRead + Send + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    // Keep the SDK parser ceiling aligned with Labby's pre-read budget.
+    // Its smaller default would silently discard valid large Skills frames.
+    // The SDK counts the newline; the reader counts only the JSON payload.
+    AsyncRwTransport::new(CappedJsonLineReader::new(reader, max_bytes), writer)
+        .with_max_line_length(max_bytes.saturating_add(1))
+}
+
 type ChildProcessParts = (
     Box<dyn ChildWrapper>,
     ChildStdout,
@@ -355,10 +371,7 @@ impl DiagnosticChildTransport {
         Ok((
             Self {
                 child: Some(child),
-                transport: AsyncRwTransport::new(
-                    CappedJsonLineReader::new(stdout, max_transport_response_bytes()),
-                    stdin,
-                ),
+                transport: bounded_stdio_transport(stdout, stdin, max_transport_response_bytes()),
                 upstream,
                 generation,
                 pid,
@@ -485,6 +498,40 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn stdio_transport_accepts_a_frame_above_the_sdk_default() {
+        use super::super::helpers::DEFAULT_MAX_SKILL_RESPONSE_BYTES;
+        let value = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"content": [{"type": "text", "text": "x".repeat(17 * 1024 * 1024)}]}
+        });
+        let mut payload = serde_json::to_vec(&value).expect("fixture");
+        payload.push(b'\n');
+        let mut transport = bounded_stdio_transport(
+            std::io::Cursor::new(payload),
+            tokio::io::sink(),
+            DEFAULT_MAX_SKILL_RESPONSE_BYTES,
+        );
+        let received = tokio::time::timeout(Duration::from_secs(5), transport.receive_raw())
+            .await
+            .expect("bounded read")
+            .expect("valid frame must not be silently discarded");
+        assert!(matches!(received, rmcp::model::JsonRpcMessage::Response(_)));
+    }
+
+    #[tokio::test]
+    async fn stdio_transport_accepts_an_exact_budget_frame_with_its_newline() {
+        let payload = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n".to_vec();
+        let max_bytes = payload.len() - 1;
+        let mut transport =
+            bounded_stdio_transport(std::io::Cursor::new(payload), tokio::io::sink(), max_bytes);
+        let received = tokio::time::timeout(Duration::from_secs(5), transport.receive_raw())
+            .await
+            .expect("bounded read")
+            .expect("exact payload budget includes newline framing");
+        assert!(matches!(received, rmcp::model::JsonRpcMessage::Response(_)));
+    }
 
     #[test]
     fn termination_severity_distinguishes_expected_teardown_from_unexpected_exit() {

@@ -1066,7 +1066,8 @@ impl CodeModeHost for GatewayManager {
                 required_scopes: vec!["lab".into()],
             })?;
         let manager = self
-            .upstream_oauth_manager(upstream)
+            .upstream_oauth_manager_for_subject(upstream, subject)
+            .await?
             .ok_or_else(|| ToolError::Sdk {
                 sdk_kind: "not_found".into(),
                 message: format!("OAuth upstream '{upstream}' is not configured"),

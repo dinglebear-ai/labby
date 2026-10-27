@@ -27,6 +27,7 @@ use rmcp::model::{
 use rmcp::service::RequestContext;
 use serde_json::{Value, json};
 
+use crate::mcp::native_metadata::native_resource;
 #[cfg(feature = "gateway")]
 use crate::mcp::resource_errors::fetch_classified as resource_fetch_classified;
 use crate::mcp::resource_errors::{
@@ -73,6 +74,44 @@ use crate::mcp::runtime::{
     ResourceProvenance, ResourceTemplateProvenance, catalog_snapshot_audience,
 };
 use crate::mcp::server::LabMcpServer;
+
+/// Bind resource pages to the caller and current Skills catalog visibility.
+/// Templates and prompts keep their separate, caller-only snapshot audiences.
+pub(crate) fn resource_snapshot_audience(
+    auth: Option<&labby_auth::auth_context::AuthContext>,
+    _skill_visibility: Option<&str>,
+) -> String {
+    let audience = catalog_snapshot_audience(auth);
+    #[cfg(feature = "skills")]
+    let audience = format!(
+        "{audience}:skills:{}",
+        _skill_visibility.unwrap_or("hidden")
+    );
+    audience
+}
+
+/// Project validated canonical Skill metadata without rewriting its author or
+/// origin. Ordinary upstream Resource descriptors follow their existing path.
+#[cfg(feature = "skills")]
+pub(crate) fn skill_manifest_resource(skill: &labby_runtime::skills::wire::SkillEntry) -> Resource {
+    let mut resource = Resource::new(
+        &skill.uri,
+        skill.frontmatter_str("name").unwrap_or("SKILL.md"),
+    );
+    resource.description = skill.frontmatter_str("description").map(str::to_owned);
+    resource.mime_type = Some("text/markdown".to_owned());
+    resource.meta = skill.meta.clone().map(Into::into);
+    resource.size = skill.resources.as_ref().and_then(|files| {
+        files
+            .iter()
+            .find(|file| file.uri == skill.uri)
+            .map(|file| file.size)
+    });
+    if skill.origin().as_deref() == Some("labby") {
+        resource = native_resource(resource);
+    }
+    resource
+}
 
 #[cfg(feature = "skills")]
 fn skill_library_resource_error_correlation(context: &RequestContext<RoleServer>) -> String {
@@ -496,7 +535,7 @@ impl OwnedAppRegistration {
     /// Build the MCP resource metadata for one registered runtime variant.
     fn resource(self, descriptor: &AppResourceDescriptor) -> Resource {
         let uri = self.versioned_uri(descriptor.uri);
-        Resource::new(uri.clone(), descriptor.name.to_string())
+        native_resource(Resource::new(uri.clone(), descriptor.name.to_string()))
             .with_description(descriptor.resource_description)
             .with_mime_type(descriptor.runtime.mime())
             .with_meta(app_resource_meta_for_descriptor(&uri, descriptor))
@@ -687,7 +726,27 @@ impl LabMcpServer {
                 return Err(error);
             }
         };
-        let snapshot_audience = catalog_snapshot_audience(auth);
+        // Skill manifests may contain private Artifact Library metadata. Capture
+        // current authorization before both first-page discovery and cursor
+        // replay, including selected project/team membership and route scope.
+        #[cfg(feature = "skills")]
+        let skill_registry =
+            if self.route_scope.exposes_skills() && code_mode_read_scope_allowed(auth) {
+                Some(
+                    Box::pin(self.skill_registry_context(&context))
+                        .await
+                        .map_err(crate::mcp::skills::skill_read_error)?,
+                )
+            } else {
+                None
+            };
+        #[cfg(feature = "skills")]
+        let skill_visibility = skill_registry
+            .as_ref()
+            .map(crate::skills::facade::SkillRegistryContext::catalog_visibility_key);
+        #[cfg(not(feature = "skills"))]
+        let skill_visibility: Option<String> = None;
+        let snapshot_audience = resource_snapshot_audience(auth, skill_visibility.as_deref());
 
         // Cursor pages must resume the exact catalog captured by page one. In
         // particular, do not turn every offset into another catalog rebuild
@@ -832,7 +891,9 @@ impl LabMcpServer {
                 ("lab://gateway/limits", "Code Mode limits"),
                 ("lab://capabilities", "Capability overview"),
             ] {
-                resources.accept(Resource::new(uri, name).with_mime_type("application/json"));
+                resources.accept(
+                    native_resource(Resource::new(uri, name)).with_mime_type("application/json"),
+                );
                 if resources.finished() {
                     break;
                 }
@@ -848,7 +909,7 @@ impl LabMcpServer {
 
         if !resources.finished() {
             resources.accept(
-                Resource::new("lab://catalog", "catalog")
+                native_resource(Resource::new("lab://catalog", "catalog"))
                     .with_description("Full discovery document for all services")
                     .with_mime_type("application/json"),
             );
@@ -859,36 +920,50 @@ impl LabMcpServer {
         #[cfg(feature = "skills")]
         if !resources.finished() {
             resources.accept(
-                Resource::new(SKILLS_EXTENSION_CONTRACT_URI, "contracts/skills-extension")
-                    .with_description(
-                        "The MCP Skills extension (SEP-2640) contract this server implements: \
+                native_resource(Resource::new(
+                    SKILLS_EXTENSION_CONTRACT_URI,
+                    "contracts/skills-extension",
+                ))
+                .with_description(
+                    "The MCP Skills extension (SEP-2640) contract this server implements: \
                          pinned draft revision, URI grammar, and verification requirements",
-                    )
-                    .with_mime_type("text/markdown"),
+                )
+                .with_mime_type("text/markdown"),
             );
         }
         if !resources.finished() {
             resources.accept(
-                Resource::new(AGENT_ERROR_CONTRACT_URI, "contracts/agent-error")
-                    .with_description(
-                        "JSON Schema for the versioned agent-error contract carried by every \
+                native_resource(Resource::new(
+                    AGENT_ERROR_CONTRACT_URI,
+                    "contracts/agent-error",
+                ))
+                .with_description(
+                    "JSON Schema for the versioned agent-error contract carried by every \
                          Labby error envelope (kind, origin, recovery, side_effects)",
-                    )
-                    .with_mime_type(CONTRACT_SCHEMA_MIME),
+                )
+                .with_mime_type(CONTRACT_SCHEMA_MIME),
             );
         }
         if !resources.finished() {
             resources.accept(
-                Resource::new(
+                native_resource(Resource::new(
                     CODE_MODE_CALL_ERROR_CONTRACT_URI,
                     "contracts/code-mode-call-error",
-                )
+                ))
                 .with_description(
                     "JSON Schema for the structured error object a failed Code Mode \
                      callTool rejects with",
                 )
                 .with_mime_type(CONTRACT_SCHEMA_MIME),
             );
+        }
+
+        #[cfg(feature = "skills")]
+        if let Some(registry) = skill_registry.as_ref() {
+            let listing = crate::skills::facade::first_party_skill_listing(registry);
+            for skill in listing.skills {
+                resources.accept(skill_manifest_resource(&skill));
+            }
         }
 
         #[cfg(feature = "skills")]
@@ -1003,7 +1078,7 @@ impl LabMcpServer {
                     let uri = format!("lab://{}/actions", svc.name);
                     let name = format!("{}/actions", svc.name);
                     resources.accept(
-                        Resource::new(uri, name)
+                        native_resource(Resource::new(uri, name))
                             .with_description(format!("Action list for {}", svc.name))
                             .with_mime_type("application/json"),
                     );
@@ -1777,6 +1852,8 @@ impl LabMcpServer {
                 ResourceContents::text(SKILLS_EXTENSION_CONTRACT, uri.to_string())
                     .with_mime_type("text/markdown"),
             ])
+            .with_ttl_ms(60_000)
+            .with_cache_scope(rmcp::model::CacheScope::Private)
             .into());
         }
         if uri == AGENT_ERROR_CONTRACT_URI || uri == CODE_MODE_CALL_ERROR_CONTRACT_URI {
@@ -1924,7 +2001,9 @@ impl LabMcpServer {
         .await;
         Ok(ReadResourceResult::new(vec![
             ResourceContents::text(schema, uri.to_string()).with_mime_type(CONTRACT_SCHEMA_MIME),
-        ]))
+        ])
+        .with_ttl_ms(60_000)
+        .with_cache_scope(rmcp::model::CacheScope::Private))
     }
 
     async fn read_local_json_resource(
@@ -2982,7 +3061,7 @@ mod tests {
     use rmcp::model::{
         ArgumentInfo, CompleteRequestParams, CompleteResult, CompletionInfo,
         ListResourceTemplatesResult, ListResourcesResult, Reference, ResourceTemplate,
-        ServerCapabilities, ServerInfo, Tool,
+        ServerCapabilities, ServerConfig, Tool,
     };
     use rmcp::service::{Peer, RequestContext};
     use rmcp::{RoleClient, ServerHandler, ServiceExt};
@@ -3008,8 +3087,8 @@ mod tests {
     }
 
     impl ServerHandler for ColdResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
                     .enable_resources()
@@ -3111,6 +3190,55 @@ mod tests {
         let mut server = code_mode_server().await;
         server.gateway_manager = Some(manager);
         (server, pool, task)
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn native_manifest_listing_does_not_discover_slow_skills_only_upstream() {
+        let fixture = ColdResourceServer {
+            entered: Some(Arc::new(tokio::sync::Notify::new())),
+            release: Some(Arc::new(tokio::sync::Notify::new())),
+            ..Default::default()
+        };
+        let (server, pool, task) = cold_discovery_fixture(fixture.clone(), 5000).await;
+        let manager = server.gateway_manager.as_ref().unwrap();
+        let mut config = manager.current_config().await;
+        config.upstream[0].proxy_resources = false;
+        config.upstream[0].proxy_skills = true;
+        pool.seed_lazy_upstreams(&config.upstream).await;
+        manager.seed_config_unchecked_for_tests(config).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            running
+                .service()
+                .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"])),
+        )
+        .await;
+        task.abort();
+        drop(task.await);
+        let result = result
+            .expect("native listing must not await slow Skills discovery")
+            .unwrap();
+        assert!(
+            result
+                .resources
+                .iter()
+                .any(|resource| resource.uri.starts_with("skill://labby/"))
+        );
+        assert_eq!(
+            fixture.connects.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "Skills-only peers must not be cold discovered by resources/list"
+        );
+        assert!(
+            pool.cached_upstream_resources_allowed(None)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -3615,8 +3743,8 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
     struct UpstreamUiResourceServer;
 
     impl ServerHandler for UpstreamUiResourceServer {
-        fn get_info(&self) -> ServerInfo {
-            ServerInfo::new(
+        fn get_info(&self) -> ServerConfig {
+            ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_resources()
                     .enable_completions()
@@ -3999,7 +4127,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
     async fn contract_schema_resources_are_listed_and_readable() {
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
-            code_mode_server().await,
+            resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await,
             transport,
             None,
         );
@@ -4011,6 +4139,28 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
             .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
             .await
             .expect("list resources");
+        assert!(
+            listed.resources.iter().any(|resource| {
+                resource.uri.starts_with("lab://") && resource.uri.ends_with("/actions")
+            }),
+            "the fixture must exercise native action resource metadata"
+        );
+        for resource in listed.resources.iter().filter(|resource| {
+            resource.uri.starts_with("lab://") && resource.uri.ends_with("/actions")
+        }) {
+            assert!(
+                resource
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| !title.is_empty())
+            );
+            assert!(
+                resource
+                    .icons
+                    .as_ref()
+                    .is_some_and(|icons| !icons.is_empty())
+            );
+        }
         for uri in [AGENT_ERROR_CONTRACT_URI, CODE_MODE_CALL_ERROR_CONTRACT_URI] {
             let resource = listed
                 .resources
@@ -4018,6 +4168,18 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .find(|resource| resource.uri == uri)
                 .unwrap_or_else(|| panic!("contract resource {uri} must be listed"));
             assert_eq!(resource.mime_type.as_deref(), Some(CONTRACT_SCHEMA_MIME));
+            assert!(
+                resource
+                    .title
+                    .as_deref()
+                    .is_some_and(|title| !title.is_empty())
+            );
+            assert!(
+                resource
+                    .icons
+                    .as_ref()
+                    .is_some_and(|icons| !icons.is_empty())
+            );
         }
 
         // Each reads back as the embedded, parseable JSON Schema.
@@ -4037,6 +4199,12 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 .await
                 .unwrap_or_else(|e| panic!("read {uri}: {e:?}"));
             let result = complete_resource(response);
+            assert_eq!(
+                result.ttl_ms,
+                Some(60_000),
+                "embedded schemas have a short private cache lifetime"
+            );
+            assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Private));
             let ResourceContents::TextResourceContents { text, .. } = &result.contents[0] else {
                 panic!("contract schema must be text content");
             };
@@ -4049,6 +4217,28 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                 schema["$id"]
             );
         }
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn embedded_skills_contract_has_private_cache_lifetime() {
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            code_mode_server().await,
+            transport,
+            None,
+        );
+        let response = running
+            .service()
+            .read_resource_impl(
+                ReadResourceRequestParams::new(SKILLS_EXTENSION_CONTRACT_URI),
+                scoped_context(running.peer().clone(), &["lab:read"]),
+            )
+            .await
+            .expect("read embedded skills contract");
+        let result = complete_resource(response);
+        assert_eq!(result.ttl_ms, Some(60_000));
+        assert_eq!(result.cache_scope, Some(rmcp::model::CacheScope::Private));
     }
 
     #[tokio::test]
@@ -4273,6 +4463,124 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
         assert!(
             server_logs_uris.iter().all(|uri| uri.contains("?v=")),
             "advertised server logs URI must carry a cache-bust token: {server_logs_uris:?}"
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[test]
+    fn skill_manifest_projection_preserves_author_metadata_and_origin() {
+        let skill = labby_runtime::skills::wire::SkillEntry {
+            uri: "skill://remote/demo/SKILL.md".to_owned(),
+            frontmatter: serde_json::from_value(json!({"name":"demo", "description":"Original description\nwith spacing", "title":"authored"})).unwrap(),
+            resources: None,
+            meta: Some(serde_json::from_value(json!({"io.modelcontextprotocol.skills/origin":{"name":"remote"}})).unwrap()),
+        };
+        let resource = skill_manifest_resource(&skill);
+        assert_eq!(resource.uri, skill.uri);
+        assert_eq!(resource.name, "demo");
+        assert_eq!(
+            resource.description.as_deref(),
+            skill.frontmatter_str("description")
+        );
+        assert_eq!(resource.meta.map(|meta| meta.0), skill.meta);
+        assert!(
+            resource.icons.is_none(),
+            "upstream skill must not get Labby's icon"
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn disabled_skills_route_hides_manifest_resources() {
+        let loadout: crate::config::GatewayLoadoutConfig =
+            serde_json::from_value(serde_json::json!({"name": "hidden", "expose_skills": false}))
+                .unwrap();
+        let scope = crate::mcp::route_scope::McpRouteScope::protected_subset_with_capabilities(
+            "hidden",
+            std::iter::empty::<&str>(),
+            ["skills"],
+            crate::mcp::route_scope::McpRouteCapabilityGates::from_loadout(&loadout),
+        );
+        assert!(!scope.exposes_skills());
+        let server = resource_scope_server(scope).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let result = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+            .await
+            .unwrap();
+        assert!(
+            result
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with("skill://"))
+        );
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn skill_manifest_resources_match_authorized_frontmatter() {
+        let server = resource_scope_server(crate::mcp::route_scope::McpRouteScope::Root).await;
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = scoped_context(running.peer().clone(), &["lab:read"]);
+        let registry = running
+            .service()
+            .skill_registry_context(&context)
+            .await
+            .unwrap();
+        let expected = crate::skills::facade::list_visible_skills(&registry).await;
+        assert!(
+            !expected.skills.is_empty(),
+            "fixture must expose real skills"
+        );
+        let mut listed = Vec::new();
+        let mut request = None;
+        for _ in 0..100 {
+            let page = running
+                .service()
+                .list_resources_impl(request, context.clone())
+                .await
+                .unwrap();
+            listed.extend(page.resources);
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            request = Some(PaginatedRequestParams::default().with_cursor(Some(cursor)));
+        }
+        for skill in &expected.skills {
+            let resource = listed
+                .iter()
+                .find(|resource| resource.uri == skill.uri)
+                .unwrap_or_else(|| {
+                    panic!("skill manifest missing from resources/list: {}", skill.uri)
+                });
+            assert_eq!(Some(resource.name.as_str()), skill.frontmatter_str("name"));
+            assert_eq!(
+                resource.description.as_deref(),
+                skill.frontmatter_str("description")
+            );
+            assert_eq!(resource.mime_type.as_deref(), Some("text/markdown"));
+            assert_eq!(
+                serde_json::to_value(&resource.meta).unwrap(),
+                serde_json::to_value(&skill.meta).unwrap()
+            );
+        }
+        let denied = running
+            .service()
+            .list_resources_impl(None, scoped_context(running.peer().clone(), &["profile"]))
+            .await
+            .unwrap();
+        assert!(
+            denied
+                .resources
+                .iter()
+                .all(|resource| !resource.uri.starts_with("skill://"))
         );
     }
 

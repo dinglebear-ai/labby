@@ -419,7 +419,9 @@ async fn q3_output_limit_returns_literal_truncation_marker() {
 
 #[tokio::test]
 async fn q3_call_budget_rejects_before_the_third_effect() {
+    // Allow cold-start preparation before checking the two-call budget.
     let limits = Limits {
+        timeout_ms: 5_000,
         max_calls_per_run: Some(2),
         ..Limits::default()
     };
@@ -446,7 +448,11 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
         )
         .await
         .expect("call budget response");
-    assert!(!execution.is_error);
+    assert!(
+        !execution.is_error,
+        "qualification result: {}",
+        execution.structured
+    );
     assert_eq!(execution.structured["result"][0]["ok"], json!(true));
     assert_eq!(execution.structured["result"][1]["ok"], json!(true));
     assert_eq!(execution.structured["result"][2]["ok"], json!(false));
@@ -477,9 +483,9 @@ async fn q3_call_budget_rejects_before_the_third_effect() {
 #[tokio::test]
 async fn q3_queue_limit_rejects_before_dispatch_and_settles_started_effect() {
     let limits = Limits {
-        // Match the normal Code Mode budget so the 500ms response reserve
-        // cannot exhaust a cold proxy before the queue oracle begins.
-        timeout_ms: 2_000,
+        // Allow cold proxy preparation without changing the queue oracle's
+        // 150ms transport limit below or its deterministic 250ms delayed call.
+        timeout_ms: 5_000,
         // The safe prewarm crosses a real stdio process and can take more
         // than 50ms on a busy CI runner. Keep this below forge.delay's
         // deterministic 250ms so the queue oracle still proves timeout.

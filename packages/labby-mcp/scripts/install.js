@@ -157,10 +157,11 @@ async function main() {
 
   const target = targetFor();
   const destination = binaryPath();
+  const version = releaseVersion();
 
   recoverInstallation(installRoot());
-  if (installationValid(installRoot(), target, releaseVersion())) {
-    log(`${path.basename(destination)} already installed for ${releaseVersion()}`);
+  if (installationValid(installRoot(), target, version)) {
+    log(`${path.basename(destination)} already installed for ${version}`);
     return;
   }
 
@@ -172,7 +173,7 @@ async function main() {
     log(`downloading ${url}`);
     await download(url, archive);
     await verifyChecksum(url, archive);
-    installArchive(archive, installRoot(), target, releaseVersion());
+    installArchive(archive, installRoot(), target, version);
     log(`installed ${destination}`);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
@@ -180,8 +181,8 @@ async function main() {
 }
 
 function requiresCompanions(version) {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(version);
-  if (!match) throw new Error("invalid release version");
+  const match = /^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-dev\.[1-9][0-9]*)?$/.exec(version);
+  if (!match || match[0] !== version) throw new Error("invalid release version");
   // Published v2.5.0 archives contain only the binary. Later releases require the bundle.
   const [, major, minor, patch] = match.map(Number);
   return major > 2 || (major === 2 && (minor > 5 || (minor === 5 && patch > 0)));
@@ -247,6 +248,10 @@ function installArchive(archive, root, target, version) {
     extract(archive, stage, target.archiveType);
     validateInstallation(stage, target, version);
     fs.chmodSync(path.join(stage, target.binary), 0o755);
+    // Publish the selected channel with the verified binary directory, so a
+    // failed activation restores both through the existing directory backup.
+    const channel = /-dev\.[1-9][0-9]*$/.test(version) ? "dev" : "stable";
+    fs.writeFileSync(path.join(stage, ".labby-update-channel"), `${channel}\n`, { mode: 0o600 });
     // Preserve the prior complete directory until the new pair has been published.
     if (fs.existsSync(backup)) fs.rmSync(backup, { recursive: true, force: true });
     if (fs.existsSync(root)) fs.renameSync(root, backup);
