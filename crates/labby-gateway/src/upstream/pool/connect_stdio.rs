@@ -39,6 +39,7 @@ static LEGACY_STDIO_LIFECYCLE: OnceLock<RwLock<HashSet<String>>> = OnceLock::new
 static SANDBOX_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
 const STDIO_ENV_ALLOWLIST: &[&str] = &[
+    "LABBY_STDIO_SANDBOX_BACKEND",
     "PATH",
     "HOME",
     "USER",
@@ -341,7 +342,7 @@ fn sandboxed_stdio_command_against<P>(
 where
     P: AsRef<std::path::Path>,
 {
-    let mut args = Vec::new();
+    let mut args = vec![OsString::from("__stdio-sandbox")];
     for path in ["/bin", "/usr", "/lib", "/lib64", "/etc"] {
         if std::path::Path::new(path).exists() {
             args.extend([OsString::from("--read-only"), OsString::from(path)]);
@@ -951,6 +952,10 @@ mod conformance_tests {
             (OsString::from("PATH"), OsString::from("/usr/bin")),
             (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
             (
+                OsString::from("LABBY_STDIO_SANDBOX_BACKEND"),
+                OsString::from("bubblewrap"),
+            ),
+            (
                 OsString::from("LABBY_OAUTH_ENCRYPTION_KEY"),
                 OsString::from("must-not-leak"),
             ),
@@ -965,6 +970,10 @@ mod conformance_tests {
             vec![
                 (OsString::from("PATH"), OsString::from("/usr/bin")),
                 (OsString::from("LANG"), OsString::from("en_US.UTF-8")),
+                (
+                    OsString::from("LABBY_STDIO_SANDBOX_BACKEND"),
+                    OsString::from("bubblewrap"),
+                ),
             ]
         );
         assert!(
@@ -1006,6 +1015,11 @@ mod conformance_tests {
         )
         .unwrap();
         assert_eq!(wrapped.program, OsString::from("/opt/labby/bin/labby"));
+        assert_eq!(
+            wrapped.args.first(),
+            Some(&OsString::from("__stdio-sandbox")),
+            "the child must enter the sandbox dispatcher before parsing its flags"
+        );
         let canonical_state = std::fs::canonicalize(state.path()).unwrap();
         assert!(wrapped.args.windows(2).any(|pair| {
             pair == [

@@ -36,6 +36,17 @@ mod linux {
 
     pub(super) fn run(args: &[OsString]) -> anyhow::Result<ExitCode> {
         let (read_only, read_write, command) = parse(args)?;
+        match std::env::var("LABBY_STDIO_SANDBOX_BACKEND").as_deref() {
+            Ok("bubblewrap") => {
+                eprintln!("stdio sandbox backend: bubblewrap");
+                return Err(std::process::Command::new("/usr/bin/bwrap")
+                    .args(bubblewrap_args(&read_only, &read_write, command))
+                    .exec()
+                    .into());
+            }
+            Ok("landlock") | Err(std::env::VarError::NotPresent) => {}
+            _ => bail!("unsupported LABBY_STDIO_SANDBOX_BACKEND; choose landlock or bubblewrap"),
+        }
         let abi = ABI::V3;
         let mut ruleset = Ruleset::default()
             .handle_access(AccessFs::from_all(abi))?
@@ -87,5 +98,83 @@ mod linux {
             }
         }
         bail!("missing -- before sandboxed command")
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn bubblewrap_args(
+    read_only: &[OsString],
+    read_write: &[OsString],
+    command: &[OsString],
+) -> Vec<OsString> {
+    // Retain the gateway-owned process group. A new session lets descendants
+    // escape its cancellation guard; stdio uses pipes and exposes no terminal.
+    let mut args = [
+        "--die-with-parent",
+        "--unshare-all",
+        "--share-net",
+        "--cap-drop",
+        "ALL",
+        "--chdir",
+        "/",
+    ]
+    .map(OsString::from)
+    .to_vec();
+    for (flag, paths) in [("--ro-bind", read_only), ("--bind", read_write)] {
+        for path in paths {
+            args.extend([OsString::from(flag), path.clone(), path.clone()]);
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir()
+        && read_only
+            .iter()
+            .chain(read_write)
+            .any(|path| cwd.starts_with(std::path::Path::new(path)))
+    {
+        args.extend([OsString::from("--chdir"), cwd.into_os_string()]);
+    }
+    args.push(OsString::from("--"));
+    args.extend_from_slice(command);
+    args
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod bubblewrap_tests {
+    use super::*;
+
+    #[test]
+    fn bubblewrap_preserves_explicit_filesystem_grants_and_isolates_namespaces() {
+        let args = bubblewrap_args(
+            &[OsString::from("/usr")],
+            &[OsString::from("/var/lib/upstream")],
+            &[OsString::from("/usr/bin/ssh"), OsString::from("-T")],
+        );
+        assert!(
+            args.starts_with(
+                &[
+                    "--die-with-parent",
+                    "--unshare-all",
+                    "--share-net",
+                    "--cap-drop",
+                    "ALL",
+                    "--chdir",
+                    "/",
+                ]
+                .map(OsString::from)
+            )
+        );
+        assert!(
+            args.windows(3)
+                .any(|p| p == ["--ro-bind", "/usr", "/usr"].map(OsString::from))
+        );
+        assert!(
+            args.windows(3)
+                .any(|p| p
+                    == ["--bind", "/var/lib/upstream", "/var/lib/upstream"].map(OsString::from))
+        );
+        assert!(args.ends_with(&["--", "/usr/bin/ssh", "-T"].map(OsString::from)));
+        for forbidden in ["/home", "/proc", "/tmp", "/run/user"] {
+            assert!(!args.iter().any(|arg| arg == forbidden));
+        }
     }
 }
