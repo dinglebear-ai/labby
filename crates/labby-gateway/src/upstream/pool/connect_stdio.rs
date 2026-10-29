@@ -326,8 +326,8 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     }
 }
 
-// SSH interprets arguments after its destination remotely. Only its local
-// file options need filesystem grants; never stat a remote command locally.
+// Only SSH local file options need grants; never stat its remote command.
+// OpenSSH also accepts local options after the destination and bundled flags.
 fn sandbox_argument_paths(program: &std::ffi::OsStr, args: &[OsString]) -> Vec<PathBuf> {
     if std::path::Path::new(program).file_name() != Some(std::ffi::OsStr::new("ssh")) {
         return args
@@ -338,23 +338,35 @@ fn sandbox_argument_paths(program: &std::ffi::OsStr, args: &[OsString]) -> Vec<P
     }
     let mut paths = Vec::new();
     let mut index = 0;
+    let mut destination_seen = false;
     while let Some(argument) = args.get(index) {
         let Some(option) = argument.to_str() else {
             break;
         };
-        if !option.starts_with('-') || option == "--" {
+        if option == "--" {
             break;
         }
-        let Some(flag) = option.as_bytes().get(1).copied() else {
-            break;
-        };
-        if b"BbcDEeFIiJLlmOopPQRSWw".contains(&flag) {
-            let value = if option.len() == 2 {
+        if !option.starts_with('-') || option == "-" {
+            if destination_seen {
+                break;
+            }
+            destination_seen = true;
+            index += 1;
+            continue;
+        }
+        for (offset, flag) in option.bytes().enumerate().skip(1) {
+            if !b"BbcDEeFIiJLlmOopPQRSWw".contains(&flag) {
+                continue;
+            }
+            let value = if offset + 1 == option.len() {
                 index += 1;
                 let Some(value) = args.get(index) else { break };
                 value.clone()
             } else {
-                OsString::from(&option[2..])
+                let Some(value) = option.get(offset + 1..) else {
+                    break;
+                };
+                OsString::from(value)
             };
             if flag == b'o' {
                 let value = value.to_string_lossy();
@@ -376,6 +388,7 @@ fn sandbox_argument_paths(program: &std::ffi::OsStr, args: &[OsString]) -> Vec<P
             } else if b"FEIi".contains(&flag) {
                 paths.push(PathBuf::from(value));
             }
+            break;
         }
         index += 1;
     }
@@ -1150,6 +1163,25 @@ mod conformance_tests {
         if let Err(error) = result {
             assert!(error.to_string().contains("protected Labby/user home"));
         }
+    }
+
+    #[test]
+    fn ssh_file_grants_follow_local_option_boundaries() {
+        let args = [
+            "-vt",
+            "host",
+            "-vi/key",
+            "-oUserKnownHostsFile=/hosts",
+            "/remote",
+            "-i/remote-key",
+        ]
+        .map(OsString::from);
+        assert_eq!(
+            sandbox_argument_paths(std::ffi::OsStr::new("ssh"), &args),
+            vec![PathBuf::from("/key"), PathBuf::from("/hosts")]
+        );
+        let args = ["--", "host", "-i/remote-key"].map(OsString::from);
+        assert!(sandbox_argument_paths(std::ffi::OsStr::new("ssh"), &args).is_empty());
     }
 
     #[test]

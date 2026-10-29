@@ -952,6 +952,6 @@ disable sandboxing or change host-wide namespace policy to recover an upstream.
 
 The helper binds the explicitly granted `/dev/null` as a device, without
 exposing other host devices. SSH grants cover local option files, including
-identities and known-hosts files; the destination and following remote command
+identities and known-hosts files; the destination and remote command
 are not interpreted as local paths. Protected-path checks still apply to every
 local file grant, including SSH option values.
