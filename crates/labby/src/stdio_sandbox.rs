@@ -122,6 +122,13 @@ fn bubblewrap_args(
     .to_vec();
     for (flag, paths) in [("--ro-bind", read_only), ("--bind", read_write)] {
         for path in paths {
+            // Ordinary bind mounts retain nodev; SSH must be able to open its
+            // explicitly granted null device without exposing the /dev tree.
+            let flag = if flag == "--bind" && path == "/dev/null" {
+                "--dev-bind"
+            } else {
+                flag
+            };
             args.extend([OsString::from(flag), path.clone(), path.clone()]);
         }
     }
@@ -141,6 +148,20 @@ fn bubblewrap_args(
 #[cfg(all(test, target_os = "linux"))]
 mod bubblewrap_tests {
     use super::*;
+
+    #[test]
+    fn bubblewrap_grants_null_as_a_device_without_exposing_other_devices() {
+        let args = bubblewrap_args(
+            &[],
+            &[OsString::from("/dev/null")],
+            &[OsString::from("/usr/bin/true")],
+        );
+        assert!(
+            args.windows(3)
+                .any(|p| p == ["--dev-bind", "/dev/null", "/dev/null"].map(OsString::from))
+        );
+        assert!(!args.iter().any(|arg| arg == "/dev"));
+    }
 
     #[test]
     fn bubblewrap_preserves_explicit_filesystem_grants_and_isolates_namespaces() {
