@@ -326,6 +326,65 @@ async fn connect_stdio_command<H: ClientHandler + Clone>(
     }
 }
 
+// SSH interprets arguments after its destination remotely. Only its local
+// file options need filesystem grants; never stat a remote command locally.
+fn sandbox_argument_paths(program: &std::ffi::OsStr, args: &[OsString]) -> Vec<PathBuf> {
+    if std::path::Path::new(program).file_name() != Some(std::ffi::OsStr::new("ssh")) {
+        return args
+            .iter()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+            .collect();
+    }
+    let mut paths = Vec::new();
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        let Some(option) = argument.to_str() else {
+            break;
+        };
+        if !option.starts_with('-') || option == "--" {
+            break;
+        }
+        let Some(flag) = option.as_bytes().get(1).copied() else {
+            break;
+        };
+        if b"BbcDEeFIiJLlmOopPQRSWw".contains(&flag) {
+            let value = if option.len() == 2 {
+                index += 1;
+                let Some(value) = args.get(index) else { break };
+                value.clone()
+            } else {
+                OsString::from(&option[2..])
+            };
+            if flag == b'o' {
+                let value = value.to_string_lossy();
+                if let Some((key, value)) = value
+                    .split_once('=')
+                    .or_else(|| value.split_once(char::is_whitespace))
+                    && [
+                        "UserKnownHostsFile",
+                        "GlobalKnownHostsFile",
+                        "IdentityFile",
+                        "CertificateFile",
+                        "RevokedHostKeys",
+                    ]
+                    .iter()
+                    .any(|name| key.eq_ignore_ascii_case(name))
+                {
+                    paths.extend(value.split_whitespace().map(PathBuf::from));
+                }
+            } else if b"FEIi".contains(&flag) {
+                paths.push(PathBuf::from(value));
+            }
+        }
+        index += 1;
+    }
+    paths
+        .into_iter()
+        .filter(|path| path.is_absolute())
+        .collect()
+}
+
 fn sandboxed_stdio_command(
     command: StdioCommandSpec,
     sandbox_binary: PathBuf,
@@ -363,16 +422,15 @@ where
         OsString::from("--read-only"),
         resolved_program.as_os_str().to_owned(),
     ]);
-    for argument in &command.args {
-        let path = std::path::Path::new(argument);
+    for path in sandbox_argument_paths(&command.program, &command.args) {
         if path.is_absolute() {
-            ensure_not_protected_sandbox_path_against(path, protected_roots.clone())?;
+            ensure_not_protected_sandbox_path_against(&path, protected_roots.clone())?;
             anyhow::ensure!(
                 path.exists(),
                 "sandbox argument path {} does not exist",
                 path.display()
             );
-            let canonical = std::fs::canonicalize(path)?;
+            let canonical = std::fs::canonicalize(&path)?;
             ensure_not_protected_sandbox_path_against(&canonical, protected_roots.clone())?;
             args.extend([OsString::from("--read-only"), canonical.into_os_string()]);
         }
@@ -1090,6 +1148,74 @@ mod conformance_tests {
             "protected absolute arguments must be rejected"
         );
         if let Err(error) = result {
+            assert!(error.to_string().contains("protected Labby/user home"));
+        }
+    }
+
+    #[test]
+    fn required_sandbox_grants_ssh_local_files_without_treating_remote_commands_as_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = root.path().join("identity");
+        let hosts = root.path().join("known-hosts");
+        std::fs::write(&identity, "synthetic identity").unwrap();
+        std::fs::write(&hosts, "synthetic hosts").unwrap();
+        let command = StdioCommandSpec {
+            program: OsString::from("/usr/bin/ssh"),
+            args: vec![
+                OsString::from("-i"),
+                identity.clone().into_os_string(),
+                OsString::from("-o"),
+                OsString::from(format!("UserKnownHostsFile={}", hosts.display())),
+                OsString::from("root@example.invalid"),
+                OsString::from("/remote/provider mcp"),
+            ],
+            cwd: None,
+            env: Vec::new(),
+            inherit_env: Vec::new(),
+            display: "ssh".into(),
+            name: "ssh-path-grants".into(),
+            runtime_origin: None,
+            runtime_owner: None,
+            lifecycle: UpstreamLifecycle::Auto,
+        };
+        let wrapped = sandboxed_stdio_command_against(
+            command.clone(),
+            std::env::current_exe().unwrap(),
+            std::iter::empty::<&PathBuf>(),
+        )
+        .unwrap();
+        for path in [identity, hosts] {
+            let canonical = std::fs::canonicalize(path).unwrap();
+            assert!(wrapped.args.windows(2).any(|pair| pair
+                == [
+                    OsString::from("--read-only"),
+                    canonical.clone().into_os_string()
+                ]));
+        }
+        assert!(!wrapped.args.windows(2).any(|pair| pair
+            == [
+                OsString::from("--read-only"),
+                OsString::from("/remote/provider mcp")
+            ]));
+        for option in [
+            format!(
+                "UserKnownHostsFile={}",
+                root.path().join("known-hosts").display()
+            ),
+            format!("IdentityFile={}", root.path().join("identity").display()),
+        ] {
+            let mut protected = command.clone();
+            protected.args = vec![
+                OsString::from(format!("-o{option}")),
+                OsString::from("root@example.invalid"),
+            ];
+            let error = sandboxed_stdio_command_against(
+                protected,
+                std::env::current_exe().unwrap(),
+                [root.path()],
+            )
+            .err()
+            .expect("SSH option grants must retain protected-path checks");
             assert!(error.to_string().contains("protected Labby/user home"));
         }
     }

@@ -940,3 +940,18 @@ Tool collision warnings are logged at `WARN`.
 - [MCP.md](../surfaces/MCP.md) — upstream tool merging in MCP surface
 - [ERRORS.md](../dev/ERRORS.md) — `upstream_error` kind
 - [TRANSPORT.md](../surfaces/TRANSPORT.md) — HTTP transport setup
+
+### Bubblewrap service permissions
+
+When `LABBY_STDIO_SANDBOX_BACKEND=bubblewrap` is explicitly selected, the host
+service must permit the sandbox's user, mount, PID, IPC, UTS and cgroup
+namespaces and its mount syscalls. For the systemd unit, a scoped drop-in can
+extend the existing policy with `RestrictNamespaces=user mnt pid ipc uts cgroup`
+and `SystemCallFilter=@mount`. Keep `LABBY_STDIO_SANDBOX_REQUIRED=1`; do not
+disable sandboxing or change host-wide namespace policy to recover an upstream.
+
+The helper binds the explicitly granted `/dev/null` as a device, without
+exposing other host devices. SSH grants cover local option files, including
+identities and known-hosts files; the destination and following remote command
+are not interpreted as local paths. Protected-path checks still apply to every
+local file grant, including SSH option values.
