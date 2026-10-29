@@ -134,6 +134,14 @@ another upstream's temporary directory; only `/dev/null` is exposed from
 `/dev`. Other platforms fail closed when this required host-service sandbox is
 requested.
 
+The default Linux backend is Landlock. A host without Landlock can explicitly
+set `LABBY_STDIO_SANDBOX_BACKEND=bubblewrap` in its service environment. This
+requires `/usr/bin/bwrap` and unprivileged user namespaces. Bubblewrap mounts
+only the same explicit filesystem grants, isolates process and mount namespaces,
+and retains network access for upstream connections. It starts in a granted
+working directory or `/`. An unavailable or failed backend stops the connection;
+Labby never switches backends after a sandbox failure.
+
 Persistent or additional input paths are explicit, audited opt-ins in the
 upstream's `env` table:
 
