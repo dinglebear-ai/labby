@@ -223,3 +223,59 @@ fn descriptor_evidence_includes_safety_and_both_schemas_and_stops_at_byte_budget
         "oversized evidence cannot consume another descriptor's allowance"
     );
 }
+
+#[test]
+fn snippet_preview_replay_caller_futures_stay_bounded() {
+    // Measure the concrete types without constructing or polling their large
+    // pre-regression state machines on the test thread's own serving stack.
+    fn bytes<F: Future>(_: impl FnOnce() -> F) -> usize {
+        size_of::<F>()
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+    );
+    let context = SnippetDispatchContext::trusted_local();
+    let scope = ToolScope::default();
+    let entry = CatalogDescriptor::tool("alpha", "read", "fixture", None, None);
+    let prepared = descriptor_preparation(&entry);
+    let resolved = descriptor_preparation(&entry).snippet;
+    let dispatch_bytes = bytes(|| dispatch(Some(&manager), "snippets.replay", json!({}), None));
+    let shared_bytes = bytes(|| {
+        super::super::dispatch::dispatch_with_manager_and_context(
+            &manager,
+            "snippets.replay",
+            json!({}),
+            None,
+        )
+    });
+    let prepare_bytes = bytes(|| prepare_resolved(&manager, resolved, json!({}), &context, None));
+    let execution_bytes =
+        bytes(|| super::super::execution::execute_prepared_outcome(&manager, prepared, &context));
+    let catalog_bytes = bytes(|| {
+        CodeModeHost::list_tools(
+            &manager,
+            &context.execution_caller,
+            context.execution_surface,
+            &scope,
+            false,
+            true,
+        )
+    });
+    eprintln!(
+        "snippet future bytes: shared={shared_bytes}, dispatch={dispatch_bytes}, prepare={prepare_bytes}, execution={execution_bytes}, catalog={catalog_bytes}"
+    );
+    assert!(
+        shared_bytes < 4096,
+        "the shared contextual caller must not embed unrelated exec/test state machines ({shared_bytes} bytes)"
+    );
+    assert!(
+        prepare_bytes < 4096,
+        "metadata preparation must not embed the catalog future ({prepare_bytes} bytes)"
+    );
+    assert!(
+        dispatch_bytes < 4096,
+        "preview/replay caller must not embed metadata and runner futures ({dispatch_bytes} bytes)"
+    );
+}

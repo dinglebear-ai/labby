@@ -208,14 +208,16 @@ async fn prepare_resolved(
     )?;
     let render = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        CodeModeHost::list_tools(
-            manager,
-            &context.execution_caller,
-            context.execution_surface,
-            &scope,
-            false,
-            true,
-        ),
+        super::own_operation_future(|| {
+            CodeModeHost::list_tools(
+                manager,
+                &context.execution_caller,
+                context.execution_surface,
+                &scope,
+                false,
+                true,
+            )
+        }),
     )
     .await
     .map_err(|_| ToolError::Sdk {
@@ -439,7 +441,12 @@ pub(super) async fn guarded_exec(
     let context = context.unwrap_or_else(SnippetDispatchContext::trusted_local);
     let prepared = prepare(manager, name, input, &context, None).await?;
     check_guard(&prepared, expected)?;
-    outcome_json(super::execution::execute_prepared_outcome(manager, prepared, &context).await?)
+    outcome_json(
+        super::own_operation_future(|| {
+            super::execution::execute_prepared_outcome(manager, prepared, &context)
+        })
+        .await?,
+    )
 }
 
 pub(super) async fn dispatch(
@@ -500,12 +507,12 @@ pub(super) async fn dispatch(
         &params.expected_preview_fingerprint,
         &params.acknowledged_drift,
     )?;
-    // Keep the execution future on the heap: replay retains its receipt and
-    // preview state while awaiting the runner, which can exhaust worker stacks.
+    // Keep execution and its construction temporaries outside this poll frame:
+    // replay retains its receipt and preview while awaiting the runner.
     outcome_json(
-        Box::pin(super::execution::execute_prepared_outcome(
-            manager, prepared, &context,
-        ))
+        super::own_operation_future(|| {
+            super::execution::execute_prepared_outcome(manager, prepared, &context)
+        })
         .await?,
     )
 }
