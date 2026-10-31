@@ -68,6 +68,9 @@ fn find_command<'a>(root: &'a clap::Command, path: &[String]) -> &'a clap::Comma
 }
 
 fn representative_value(arg: &clap::Arg) -> String {
+    if arg.get_id() == "headers_env" {
+        return r#"{"CF-Access-Client-Secret":"CF_ACCESS_CLIENT_SECRET"}"#.to_owned();
+    }
     if let Some(value) = arg
         .get_value_parser()
         .possible_values()
