@@ -232,7 +232,7 @@ fn snippet_preview_replay_caller_futures_stay_bounded() {
         size_of::<F>()
     }
     let dir = tempfile::tempdir().unwrap();
-    let manager = GatewayManager::new(
+    let manager = crate::dispatch::gateway::config_store::test_gateway_manager(
         dir.path().join("config.toml"),
         crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
     );
