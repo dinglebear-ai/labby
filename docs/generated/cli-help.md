@@ -2187,15 +2187,18 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
+      --headers-env <HEADERS_ENV>
+          JSON object mapping custom HTTP header names to environment variable names
+
       --no-input
           Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --proxy-resources <PROXY_RESOURCES>
           [default: true]
           [possible values: true, false]
-
-      --context <CONTEXT>
-          Select a saved destination for a daemon-backed command. Never falls back locally
 
       --proxy-skills <PROXY_SKILLS>
           Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
@@ -2205,17 +2208,17 @@ Options:
           [default: false]
           [possible values: true, false]
 
-      --expose-skill <EXPOSE_SKILLS>
-          Initial skill-name exposure allowlist. Repeat for multiple patterns
-
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
 
-      --dry-run
-          Preview the proposed configuration without contacting or changing a gateway
+      --expose-skill <EXPOSE_SKILLS>
+          Initial skill-name exposure allowlist. Repeat for multiple patterns
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --dry-run
+          Preview the proposed configuration without contacting or changing a gateway
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2278,11 +2281,17 @@ Options:
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
 
-      --clear-bearer-token-env
-          Clear the upstream bearer token environment variable name
+      --headers-env <HEADERS_ENV>
+          JSON object mapping custom HTTP header names to environment variable names
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+      --clear-bearer-token-env
+          Clear the upstream bearer token environment variable name
+
+      --clear-headers-env
+          Clear all environment-backed custom HTTP headers
 
       --proxy-resources <PROXY_RESOURCES>
           [possible values: true, false]
