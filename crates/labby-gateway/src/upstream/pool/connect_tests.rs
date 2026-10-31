@@ -902,6 +902,7 @@ fn oauth_http_config() -> UpstreamConfig {
         transport: None,
         socket_path: None,
         headers: Default::default(),
+        headers_env: Default::default(),
         bearer_token_env: None,
         command: None,
         args: vec![],
@@ -1291,4 +1292,75 @@ async fn ordered_relay_preserves_subscription_task_metadata_for_sdk_routing() {
         Some(NumberOrString::Number(77))
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn environment_headers_and_bearer_coexist_on_http_wire() {
+    const CHILD: &str = "LABBY_TEST_ENV_HEADERS_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "upstream::pool::connect_tests::environment_headers_and_bearer_coexist_on_http_wire", "--nocapture"])
+            .env(CHILD, "1")
+            .env("LABBY_TEST_CF_ID", "fixture-client-id")
+            .env("LABBY_TEST_CF_SECRET", "fixture-client-secret")
+            .env("LABBY_TEST_ACCOUNT_TOKEN", "fixture-account-token")
+            .status().unwrap();
+        assert!(status.success());
+        return;
+    }
+    let server = MockServer::start().await;
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .and(wiremock::matchers::header(
+            "CF-Access-Client-Id",
+            "fixture-client-id",
+        ))
+        .and(wiremock::matchers::header(
+            "CF-Access-Client-Secret",
+            "fixture-client-secret",
+        ))
+        .and(wiremock::matchers::header(
+            "Authorization",
+            "Bearer fixture-account-token",
+        ))
+        .respond_with(LegacyLifecycleResponder::default())
+        .mount(&server)
+        .await;
+    let mut config = test_upstream_config();
+    config.url = Some(format!("{}/mcp", server.uri()));
+    config
+        .headers_env
+        .insert("CF-Access-Client-Id".into(), "LABBY_TEST_CF_ID".into());
+    config.headers_env.insert(
+        "CF-Access-Client-Secret".into(),
+        "LABBY_TEST_CF_SECRET".into(),
+    );
+    config.bearer_token_env = Some("LABBY_TEST_ACCOUNT_TOKEN".into());
+    config.validate().unwrap();
+    let (_connection, _tools) = connect_http_upstream(
+        config.url.as_deref().unwrap(),
+        &config,
+        None,
+        None,
+        None,
+        (),
+    )
+    .await
+    .unwrap();
+    let requests = server.received_requests().await.unwrap();
+    assert!(!requests.is_empty());
+    for request in requests {
+        assert_eq!(
+            request.headers.get("CF-Access-Client-Id").unwrap(),
+            "fixture-client-id"
+        );
+        assert_eq!(
+            request.headers.get("CF-Access-Client-Secret").unwrap(),
+            "fixture-client-secret"
+        );
+        assert_eq!(
+            request.headers.get("Authorization").unwrap(),
+            "Bearer fixture-account-token"
+        );
+    }
 }

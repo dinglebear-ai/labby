@@ -370,6 +370,7 @@ mod tests {
                     transport: None,
                     socket_path: None,
                     headers: Default::default(),
+                    headers_env: Default::default(),
                     bearer_token_env: None,
                     command: Some("node".into()),
                     args: Vec::new(),

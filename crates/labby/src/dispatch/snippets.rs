@@ -15,6 +15,13 @@ pub use catalog::ACTIONS;
 pub use dispatch::dispatch;
 pub(crate) use fixtures::{generate_remote as generate_remote_fixture, write_fixture_output};
 
+// Construct large metadata/runner children outside their parent's poll frame.
+// Owning the selected future through a constructor closure also releases debug
+// construction temporaries before that child is polled on a serving worker.
+fn own_operation_future<F: Future>(make: impl FnOnce() -> F) -> std::pin::Pin<Box<F>> {
+    Box::pin(make())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

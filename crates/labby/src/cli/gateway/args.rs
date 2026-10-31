@@ -542,6 +542,9 @@ pub struct GatewayAddArgs {
     /// Environment variable name whose value is used as the upstream bearer token.
     #[arg(long)]
     pub bearer_token_env: Option<String>,
+    /// JSON object mapping custom HTTP header names to environment variable names.
+    #[arg(long, value_parser = parse_headers_env)]
+    pub headers_env: Option<std::collections::BTreeMap<String, String>>,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub proxy_resources: bool,
     /// Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
@@ -585,9 +588,15 @@ pub struct GatewayUpdateArgs {
     /// Environment variable name whose value is used as the upstream bearer token.
     #[arg(long)]
     pub bearer_token_env: Option<String>,
+    /// JSON object mapping custom HTTP header names to environment variable names.
+    #[arg(long, value_parser = parse_headers_env)]
+    pub headers_env: Option<std::collections::BTreeMap<String, String>>,
     /// Clear the upstream bearer token environment variable name.
     #[arg(long, conflicts_with = "bearer_token_env")]
     pub clear_bearer_token_env: bool,
+    /// Clear all environment-backed custom HTTP headers.
+    #[arg(long, conflicts_with = "headers_env")]
+    pub clear_headers_env: bool,
     #[arg(long)]
     pub proxy_resources: Option<bool>,
     /// Turn Agent Skills aggregation on or off for this upstream.
@@ -851,4 +860,39 @@ pub struct GatewayMcpRestartArgs {
     /// Use broader host-wide process matching when cleaning up the old runtime.
     #[arg(long, default_value_t = false)]
     pub aggressive: bool,
+}
+
+fn parse_headers_env(value: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let invalid = || {
+        "expected a JSON object mapping valid custom HTTP header names to environment variable names; Authorization and duplicate names are forbidden".to_string()
+    };
+    let headers: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(value).map_err(|_| invalid())?;
+    // Validate references before guided creation can render a replay command.
+    let config: labby_runtime::gateway_config::UpstreamConfig =
+        serde_json::from_value(serde_json::json!({
+            "name":"header-validation", "url":"https://example.invalid/mcp", "headers_env":headers
+        }))
+        .map_err(|_| invalid())?;
+    config.validate().map_err(|_| invalid())?;
+    Ok(config.headers_env)
+}
+
+#[cfg(test)]
+mod header_env_tests {
+    use super::parse_headers_env;
+
+    #[test]
+    fn rejects_invalid_or_secret_values_before_guided_preview() {
+        for input in [
+            r#"{"CF-Access-Client-Secret":"fixture-secret.value"}"#,
+            r#"{"Authorization":"TOKEN"}"#,
+            r#"{"bad header":"TOKEN"}"#,
+            r#"{"X-Key":"TOKEN","x-key":"OTHER"}"#,
+        ] {
+            let error = parse_headers_env(input).unwrap_err();
+            assert!(!error.contains("fixture-secret.value"));
+        }
+        assert!(parse_headers_env(r#"{"CF-Access-Client-Secret":"CF_SECRET"}"#).is_ok());
+    }
 }

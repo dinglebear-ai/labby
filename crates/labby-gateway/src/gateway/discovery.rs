@@ -410,6 +410,7 @@ pub(crate) fn entry_to_upstream(
         transport: None,
         socket_path: None,
         headers: Default::default(),
+        headers_env: Default::default(),
         bearer_token_env: None,
         proxy_resources: true,
         proxy_prompts: true,

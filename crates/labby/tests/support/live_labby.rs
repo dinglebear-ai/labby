@@ -553,6 +553,22 @@ impl LiveLabbyGuard {
         )
     }
 
+    /// Use the harness sanitizer without depending on a caller's module layout.
+    pub(crate) fn sanitize_diagnostic(value: &str) -> String {
+        sanitize(value)
+    }
+
+    /// Observe the owned process without waiting, signalling, or consuming it.
+    /// On supervised Unix runs this is the guardian, not the daemon. Preserve
+    /// Unix's non-reaping observer so final cleanup retains PID/group authority.
+    pub(crate) fn diagnostic_exit_status(
+        &mut self,
+    ) -> Result<Option<std::process::ExitStatus>, std::io::ErrorKind> {
+        let child = self.child.as_mut().ok_or(std::io::ErrorKind::NotFound)?;
+        let pid = self.ledger.pid.ok_or(std::io::ErrorKind::NotFound)?;
+        observe_owned_child(child, pid).map_err(|error| error.kind())
+    }
+
     /// Team context selected by every harness CLI invocation.
     ///
     /// The static-owner bootstrap (`LABBY_E2E_BOOTSTRAP_STATIC_OWNER=1`) seeds
@@ -1510,7 +1526,17 @@ fn tail(path: &Path) -> String {
     {
         return String::new();
     }
-    sanitize(&String::from_utf8_lossy(&bytes))
+    // The bounded seek may land inside a credential. Do not publish that
+    // incomplete first line: exact-canary redaction cannot recognize a suffix.
+    let bytes = if start > 0 {
+        bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(&[][..], |newline| &bytes[newline + 1..])
+    } else {
+        &bytes
+    };
+    sanitize(&String::from_utf8_lossy(bytes))
 }
 
 fn cap_log_file(path: &Path) -> std::io::Result<()> {
@@ -3410,14 +3436,38 @@ mod tests {
         let mut file = std::fs::File::create(&artifact).unwrap();
         file.set_len((LOG_TAIL_BYTES * 64) as u64).unwrap();
         file.seek(SeekFrom::End(-(LOG_TAIL_BYTES as i64))).unwrap();
-        std::io::Write::write_all(&mut file, &vec![b'z'; LOG_TAIL_BYTES]).unwrap();
+        std::io::Write::write_all(&mut file, b"\n").unwrap();
+        std::io::Write::write_all(&mut file, &vec![b'z'; LOG_TAIL_BYTES - 1]).unwrap();
         drop(file);
-        assert_eq!(tail(&artifact).len(), LOG_TAIL_BYTES);
+        assert_eq!(tail(&artifact), "z".repeat(LOG_TAIL_BYTES - 1));
         cap_log_file(&artifact).unwrap();
         assert_eq!(
             std::fs::metadata(&artifact).unwrap().len(),
             LOG_TAIL_BYTES as u64
         );
+    }
+
+    #[test]
+    fn log_tail_discards_cross_boundary_secret_suffix_but_keeps_newest_line() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("cross-boundary.log");
+        let secret = "inert-boundary-secret-canary";
+        let newest = "\nnewest daemon panic detail\n";
+        let filler = "z".repeat(LOG_TAIL_BYTES - newest.len() - secret.len() / 2);
+        std::fs::write(&artifact, format!("{secret}{filler}{newest}")).unwrap();
+        // The 32 KiB start lies halfway through `secret`, whose unrecognizable
+        // suffix must be removed before any exact credential redaction.
+        let output = tail(&artifact);
+        assert_eq!(output, "newest daemon panic detail\n");
+        assert!(!output.contains("secret-canary"));
+    }
+
+    #[test]
+    fn log_tail_suppresses_an_entire_truncated_line_without_newline() {
+        let temp = tempfile::tempdir().unwrap();
+        let artifact = temp.path().join("single-line.log");
+        std::fs::write(&artifact, vec![b'x'; LOG_TAIL_BYTES + 1]).unwrap();
+        assert!(tail(&artifact).is_empty());
     }
 
     #[cfg(unix)]

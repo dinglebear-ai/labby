@@ -603,6 +603,10 @@ pub struct UpstreamConfig {
     /// credentials directly in this map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, String>,
+    /// Custom HTTP header names mapped to environment variable names. Values
+    /// resolve at connection time and are never persisted in configuration.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers_env: BTreeMap<String, String>,
     /// Name of an env var holding the bearer token (not the token itself).
     #[serde(default)]
     pub bearer_token_env: Option<String>,
@@ -1182,7 +1186,13 @@ impl UpstreamConfig {
             name: self.name.clone(),
             reason: reason.to_string(),
         };
-        for (name, value) in &self.headers {
+        let mut header_names = std::collections::BTreeSet::new();
+        for name in self.headers.keys().chain(self.headers_env.keys()) {
+            if !header_names.insert(name.to_ascii_lowercase()) {
+                return Err(invalid("custom header names must be unique ignoring case"));
+            }
+        }
+        for (name, value) in self.headers.iter().chain(self.headers_env.iter()) {
             if name.is_empty() || !name.bytes().all(is_http_token_byte) {
                 return Err(invalid(
                     "custom header names must be valid HTTP token values",
@@ -1202,6 +1212,16 @@ impl UpstreamConfig {
             }) {
                 return Err(invalid(
                     "custom header values contain invalid control bytes",
+                ));
+            }
+        }
+        for env_name in self.headers_env.values() {
+            if !env_name.bytes().enumerate().all(|(index, byte)| {
+                byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+            }) || env_name.is_empty()
+            {
+                return Err(invalid(
+                    "custom header environment variable names must match [A-Za-z_][A-Za-z0-9_]*",
                 ));
             }
         }
@@ -1258,7 +1278,7 @@ impl UpstreamConfig {
                 if self.socket_path.is_some() || self.command.is_some() {
                     return Err(invalid("websocket cannot configure socket_path or command"));
                 }
-                if !self.headers.is_empty() {
+                if !self.headers.is_empty() || !self.headers_env.is_empty() {
                     return Err(invalid("websocket custom headers are not supported"));
                 }
                 if !self
@@ -1284,7 +1304,9 @@ impl UpstreamConfig {
                 {
                     return Err(invalid("stdio requires a non-empty command"));
                 }
-                if self.oauth.is_some() || !self.headers.is_empty() {
+                if self.oauth.is_some()
+                    || (!self.headers.is_empty() || !self.headers_env.is_empty())
+                {
                     return Err(invalid(
                         "stdio cannot configure OAuth or custom HTTP headers",
                     ));
@@ -2651,6 +2673,44 @@ expose_code_mode = true
         ] {
             let cfg: UpstreamConfig = toml::from_str(invalid_toml).unwrap();
             assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn environment_header_config_roundtrips_and_validates() {
+        let source = r#"name="account"
+url="https://account.example/mcp"
+bearer_token_env="ACCOUNT_TOKEN"
+[headers_env]
+CF-Access-Client-Id="CF_CLIENT_ID"
+CF-Access-Client-Secret="CF_CLIENT_SECRET"
+"#;
+        let config: UpstreamConfig = toml::from_str(source).unwrap();
+        assert!(config.validate().is_ok());
+        let serialized = toml::to_string(&config).unwrap();
+        let restored: UpstreamConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(config.headers_env, restored.headers_env);
+        for suffix in [
+            "[headers_env]\nAuthorization='TOKEN'",
+            "[headers_env]\n'bad name'='TOKEN'",
+            "[headers_env]\nx=''",
+            "[headers_env]\nx='not an env name'",
+            "[headers_env]\nx='1TOKEN'",
+            "[headers_env]\nX='TOKEN'\nx='OTHER'",
+            "[headers]\nX='literal'\n[headers_env]\nx='TOKEN'",
+        ] {
+            let config: UpstreamConfig = toml::from_str(&format!(
+                "name='bad'\nurl='https://example.com/mcp'\n{suffix}"
+            ))
+            .unwrap();
+            assert!(config.validate().is_err(), "accepted {suffix}");
+        }
+        for transport in ["command='server'", "url='ws://example.com/mcp'"] {
+            let config: UpstreamConfig = toml::from_str(&format!(
+                "name='bad'\n{transport}\n[headers_env]\nx='TOKEN'"
+            ))
+            .unwrap();
+            assert!(config.validate().is_err());
         }
     }
 

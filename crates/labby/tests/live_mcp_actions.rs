@@ -1253,6 +1253,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
     .await
     .expect("raw scoped snippet receipt MCP route");
     let snippet_canaries = snippet_identity.exact_secret_canaries();
+    let snippet_identity = std::sync::Mutex::new(snippet_identity);
     assert_eq!(
         snippet_runner
             .list_tool_names()
@@ -1301,6 +1302,7 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         let matrix_action = intent.key();
         let fixture_matrix_action = matrix_action.as_str();
         let fixture_canaries = &snippet_canaries;
+        let fixture_identity = &snippet_identity;
         let prepared = action_scenarios::prepare_snippet_receipt_case(
             &intent.action,
             |action, params| async move {
@@ -1313,14 +1315,18 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
                     .await
                     .unwrap_or_else(|error| {
                         panic!(
-                            "{}",
+                            "{}\n{}",
                             fixture_runner.wire_failure(
                                 fixture_matrix_action,
                                 "snippet_receipt_fixture",
                                 action,
                                 &error,
                                 fixture_canaries,
-                            )
+                            ),
+                            fixture_identity
+                                .lock()
+                                .unwrap_or_else(|poison| poison.into_inner())
+                                .diagnostic_daemon_evidence(),
                         )
                     });
                 let text = result_text(&result);
@@ -1347,14 +1353,18 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             .await
             .unwrap_or_else(|error| {
                 panic!(
-                    "{}",
+                    "{}\n{}",
                     action_runner.wire_failure(
                         &intent.key(),
                         "matrix_action",
                         &intent.action,
                         &error,
                         &snippet_canaries,
-                    )
+                    ),
+                    snippet_identity
+                        .lock()
+                        .unwrap_or_else(|poison| poison.into_inner())
+                        .diagnostic_daemon_evidence(),
                 )
             });
         let text = result_text(&result);
@@ -1461,6 +1471,8 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
         cleanup.failures
     );
     let cleanup = snippet_identity
+        .into_inner()
+        .unwrap_or_else(|poison| poison.into_inner())
         .cleanup()
         .await
         .expect("snippet identity cleanup");

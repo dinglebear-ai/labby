@@ -260,6 +260,9 @@ pub(crate) fn update_upstream(
     if let Some(bearer_token_env) = patch.bearer_token_env {
         cfg.upstream[index].bearer_token_env = bearer_token_env;
     }
+    if let Some(headers_env) = patch.headers_env {
+        cfg.upstream[index].headers_env = headers_env;
+    }
     if let Some(proxy_resources) = patch.proxy_resources {
         cfg.upstream[index].proxy_resources = proxy_resources;
     }

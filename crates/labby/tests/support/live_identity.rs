@@ -365,6 +365,27 @@ impl LiveIdentity {
         self.owned.path()
     }
 
+    /// Read bounded owner diagnostics before teardown removes the fixture root.
+    /// Credentials are redacted before the final output cap is applied.
+    pub(crate) fn diagnostic_daemon_evidence(&mut self) -> String {
+        let canaries = self.exact_secret_canaries();
+        let Some(guard) = self.guard.as_mut() else {
+            return "owner_process_status=unavailable (fixture already finalized)".into();
+        };
+        let status = match guard.diagnostic_exit_status() {
+            Ok(Some(status)) => format!("exited ({status})"),
+            Ok(None) => "running".into(),
+            Err(kind) => format!("unavailable ({kind:?})"),
+        };
+        safe_daemon_evidence(
+            &format!(
+                "owner_process_status={status} (guardian on supervised Unix runs)\n{}",
+                guard.diagnostic_log_tail()
+            ),
+            &canaries,
+        )
+    }
+
     /// Provision an active same-organization Stash recipient through the
     /// shared live-identity fixture boundary. Tests should not duplicate the
     /// access-store schema or bootstrap-owner identifiers.
@@ -838,6 +859,37 @@ fn identity_failure_class(body: &[u8]) -> &'static str {
     } else {
         "unclassified JSON backend failure"
     }
+}
+
+const OWNER_DIAGNOSTIC_BYTES: usize = 8192;
+const OWNER_DIAGNOSTIC_OMITTED: &str = "\n[older daemon evidence omitted]\n";
+
+fn safe_daemon_evidence(value: &str, canaries: &[String]) -> String {
+    let mut value = LiveLabbyGuard::sanitize_diagnostic(value);
+    for canary in canaries.iter().filter(|canary| !canary.is_empty()) {
+        value = value.replace(canary, "[REDACTED]");
+    }
+    if value.len() > OWNER_DIAGNOSTIC_BYTES {
+        // Keep the status prefix and newest daemon stderr, cutting only after
+        // secret redaction and at UTF-8 boundaries.
+        let prefix_end = value.find('\n').unwrap_or(0).min(256);
+        let mut prefix_end = prefix_end;
+        while !value.is_char_boundary(prefix_end) {
+            prefix_end -= 1;
+        }
+        let mut start = value
+            .len()
+            .saturating_sub(OWNER_DIAGNOSTIC_BYTES - prefix_end - OWNER_DIAGNOSTIC_OMITTED.len());
+        while !value.is_char_boundary(start) {
+            start += 1;
+        }
+        value = format!(
+            "{}{OWNER_DIAGNOSTIC_OMITTED}{}",
+            &value[..prefix_end],
+            &value[start..]
+        );
+    }
+    value
 }
 
 impl Drop for LiveIdentity {
@@ -1368,5 +1420,36 @@ mod diagnostic_tests {
         ] {
             assert_eq!(identity_failure_class(body), expected);
         }
+    }
+}
+
+#[cfg(test)]
+mod owner_daemon_diagnostic_tests {
+    #[test]
+    fn oversized_ascii_owner_evidence_obeys_exact_byte_cap() {
+        let input = format!(
+            "owner_process_status=exited (exit status: 1)\n{}\nlatest panic detail",
+            "x".repeat(16_384)
+        );
+        let output = super::safe_daemon_evidence(&input, &[]);
+        assert_eq!(output.len(), super::OWNER_DIAGNOSTIC_BYTES);
+        assert!(output.starts_with("owner_process_status=exited (exit status: 1)"));
+        assert!(output.contains(super::OWNER_DIAGNOSTIC_OMITTED));
+        assert!(output.ends_with("latest panic detail"));
+    }
+
+    #[test]
+    fn owner_evidence_is_bounded_utf8_and_redacted_before_truncation() {
+        let secret = "inert-owner-secret-canary".to_owned();
+        let input = format!(
+            "owner_process_status=exited (signal: 6)\n{}\nAuthorization: Bearer fixture-auth\n{secret}\nlatest panic detail",
+            "é".repeat(9000)
+        );
+        let output = super::safe_daemon_evidence(&input, std::slice::from_ref(&secret));
+        assert!(output.len() <= super::OWNER_DIAGNOSTIC_BYTES);
+        assert!(output.starts_with("owner_process_status=exited (signal: 6)"));
+        assert!(output.ends_with("latest panic detail"));
+        assert!(!output.contains(&secret));
+        assert!(!output.contains("fixture-auth"));
     }
 }

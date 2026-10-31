@@ -748,6 +748,7 @@ mod tests {
                 transport: None,
                 socket_path: None,
                 headers: Default::default(),
+                headers_env: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: Vec::new(),

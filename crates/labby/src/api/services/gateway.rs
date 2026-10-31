@@ -1769,6 +1769,7 @@ mod tests {
                 transport: None,
                 socket_path: None,
                 headers: Default::default(),
+                headers_env: Default::default(),
                 bearer_token_env: Some("FIXTURE_HTTP_TOKEN".to_string()),
                 command: None,
                 args: Vec::new(),

@@ -163,7 +163,27 @@ pub async fn dispatch_with_manager_and_context(
     dispatch_inner(Some(manager), action, params, dispatch_context, None).await
 }
 
-async fn dispatch_inner(
+fn dispatch_inner(
+    manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
+    action: &str,
+    params: Value,
+    dispatch_context: Option<SnippetDispatchContext>,
+    source_limit_override: Option<usize>,
+) -> impl Future<Output = Result<Value, ToolError>> + Send {
+    // An unrelated exec/test arm must not embed its complete runner future in
+    // every MCP, HTTP, and CLI caller, including metadata preview and replay.
+    super::own_operation_future(|| {
+        dispatch_inner_owned(
+            manager,
+            action,
+            params,
+            dispatch_context,
+            source_limit_override,
+        )
+    })
+}
+
+async fn dispatch_inner_owned(
     manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
     action: &str,
     params: Value,
