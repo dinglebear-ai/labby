@@ -118,6 +118,31 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.7.0](https://github.com/dinglebear-ai/labby/compare/v2.6.2...v2.7.0) (2026-10-31)
+
+
+### Added
+
+* **mcp:** upgrade rmcp and expand OAuth, Tasks, and conformance support ([#888](https://github.com/dinglebear-ai/labby/issues/888)) ([96aba79](https://github.com/dinglebear-ai/labby/commit/96aba795fd398b928786be36fbf6610b64959e1a))
+* **release:** add an opt-in dev release channel ([#892](https://github.com/dinglebear-ai/labby/issues/892)) ([7de6c78](https://github.com/dinglebear-ai/labby/commit/7de6c782617cc3737187dca3fd165a753f77cc20))
+* **release:** maintain a separate dev release request PR ([#893](https://github.com/dinglebear-ai/labby/issues/893)) ([76110a2](https://github.com/dinglebear-ai/labby/commit/76110a2a404ef0bf4f95c51c04fb841ddf4cca29))
+* **upstream:** support environment-backed custom HTTP headers ([#897](https://github.com/dinglebear-ai/labby/issues/897)) ([c8d78e7](https://github.com/dinglebear-ai/labby/commit/c8d78e78343d7de41acf6b378b57e1d30b8e8e50))
+
+
+### Fixed
+
+* **auth:** share CLI sign-in across setup and MCP clients ([#884](https://github.com/dinglebear-ai/labby/issues/884)) ([8f3f27d](https://github.com/dinglebear-ai/labby/commit/8f3f27d2e8f962bfb847daa25862d75c30014195))
+* consolidate runtime repairs and durable task reconnect ([#879](https://github.com/dinglebear-ai/labby/issues/879)) ([c0776e9](https://github.com/dinglebear-ai/labby/commit/c0776e9a813ea10223f8fa4e0aa4b2813bd5ca9f))
+* **discovery:** preserve federated results and safe provider recovery ([#885](https://github.com/dinglebear-ai/labby/issues/885)) ([b26b752](https://github.com/dinglebear-ai/labby/commit/b26b752a4fb8cd70ac089752a4d34f8714e83dc0))
+* **gateway:** preserve active calls during heartbeat recovery ([#887](https://github.com/dinglebear-ai/labby/issues/887)) ([b4eabfb](https://github.com/dinglebear-ai/labby/commit/b4eabfb0ac7fec96062b03d5c1844e7e3dbfbb90))
+* **sandbox:** complete isolated SSH upstream support ([#896](https://github.com/dinglebear-ai/labby/issues/896)) ([4e2d9db](https://github.com/dinglebear-ai/labby/commit/4e2d9dbdce9e0f0ef0c56fbde9d019d755c1d9ba))
+* **sandbox:** support explicit bubblewrap isolation for stdio ([#895](https://github.com/dinglebear-ai/labby/issues/895)) ([5db1f4b](https://github.com/dinglebear-ai/labby/commit/5db1f4bf482b3f3980e547500d63549f588800f8))
+* **snippets:** align description edits with frontmatter parsing ([4fdcde6](https://github.com/dinglebear-ai/labby/commit/4fdcde6754bc4ef282a63fbe0b73823b5c91f64b))
+* **snippets:** bound description metadata normalization ([c13ae47](https://github.com/dinglebear-ai/labby/commit/c13ae4702d84b94a22ddf739bf5f4ba393e88396))
+* **snippets:** harden saved execution and workflow editing ([cf50b45](https://github.com/dinglebear-ai/labby/commit/cf50b450ecb7a77125525dc46b4d05ca2acef078))
+* **snippets:** preserve native MCP access in Code Mode ([1678281](https://github.com/dinglebear-ai/labby/commit/16782812bd6d03dcce6e8fe037948a300e423d58))
+* **snippets:** protect numeric input defaults and explain receipt upgrades ([80470bd](https://github.com/dinglebear-ai/labby/commit/80470bdb7f30e4b62bf9907b8fe8f72f1ffaf488))
+
 ## [2.6.2](https://github.com/dinglebear-ai/labby/compare/v2.6.1...v2.6.2) (2026-10-10)
 
 ### Fixed
