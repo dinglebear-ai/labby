@@ -380,6 +380,18 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn unix_socket_relay_cancellation_round_trips_over_rmcp_transport() {
+        // Isolate fixture environment variables from concurrently running tests.
+        if std::env::var_os("LABBY_TEST_CANCEL_HEADERS_CHILD").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "upstream::pool::http_cancellation::tests::unix_socket_relay_cancellation_round_trips_over_rmcp_transport", "--nocapture"])
+                .env("LABBY_TEST_CANCEL_HEADERS_CHILD", "1")
+                .env("LABBY_TEST_CANCEL_CF_ID", "fixture-client-id")
+                .env("LABBY_TEST_CANCEL_CF_SECRET", "fixture-client-secret")
+                .env("LABBY_TEST_CANCEL_ACCOUNT_TOKEN", "fixture-account-token")
+                .status().unwrap();
+            assert!(status.success());
+            return;
+        }
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         use tokio::net::UnixListener;
 
@@ -444,6 +456,18 @@ mod tests {
                 "protocol version header should be preserved"
             );
 
+            for (expected_name, expected_value) in [
+                ("CF-Access-Client-Id", "fixture-client-id"),
+                ("CF-Access-Client-Secret", "fixture-client-secret"),
+                ("Authorization", "Bearer fixture-account-token"),
+            ] {
+                assert!(headers.lines().any(|line| {
+                    line.split_once(':').is_some_and(|(name, value)| {
+                        name.eq_ignore_ascii_case(expected_name) && value.trim() == expected_value
+                    })
+                }));
+            }
+
             let request: serde_json::Value =
                 serde_json::from_slice(&buffer[body_start..body_start + content_length])
                     .expect("JSON request");
@@ -481,6 +505,15 @@ mod tests {
         config.transport = Some(UpstreamTransport::UnixSocket);
         config.socket_path = Some(socket_path.to_string_lossy().into_owned());
         config.url = Some("http://cancel.internal/mcp?tenant=infra".to_string());
+        config.headers_env.insert(
+            "CF-Access-Client-Id".into(),
+            "LABBY_TEST_CANCEL_CF_ID".into(),
+        );
+        config.headers_env.insert(
+            "CF-Access-Client-Secret".into(),
+            "LABBY_TEST_CANCEL_CF_SECRET".into(),
+        );
+        config.bearer_token_env = Some("LABBY_TEST_CANCEL_ACCOUNT_TOKEN".into());
         config.validate().expect("valid Unix cancellation config");
 
         let sender = build_http_cancellation_sender(&config, None, None, None)

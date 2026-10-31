@@ -352,6 +352,9 @@ pub(crate) struct GatewayUpdatePatch {
     pub args: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub bearer_token_env: Option<Option<String>>,
+    /// Replace environment-backed HTTP headers; an empty map clears them.
+    #[serde(default)]
+    pub headers_env: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub proxy_resources: Option<bool>,
     #[serde(default)]

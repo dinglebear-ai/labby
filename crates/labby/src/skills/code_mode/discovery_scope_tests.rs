@@ -24,6 +24,7 @@ async fn discovery_scope_does_not_contact_an_excluded_skill_upstream() {
         transport: None,
         socket_path: None,
         headers: Default::default(),
+        headers_env: Default::default(),
         bearer_token_env: None,
         command: None,
         args: Vec::new(),

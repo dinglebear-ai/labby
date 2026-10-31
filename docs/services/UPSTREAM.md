@@ -183,6 +183,7 @@ command changes.
 | `transport` | string | Unix socket only | Explicit `http`, `websocket`, `stdio`, or `unix_socket`. Legacy URL/command inference remains supported when omitted. |
 | `url` | string | HTTP/WebSocket/Unix | Network URL, or for `unix_socket`, the HTTP(S) request URI and `Host` authority. |
 | `socket_path` | string | Unix socket | Filesystem socket path, or Linux abstract `@name` notation. |
+| `headers_env` | table | no | HTTP/Unix-socket header names mapped to environment variable names. Missing, empty, non-Unicode, or invalid values fail connection setup. Authorization is forbidden. |
 | `headers` | table | no | Custom headers for HTTP and Unix-socket requests. Inline `Authorization` is forbidden; use `bearer_token_env` or OAuth. |
 | `command` | string | stdio | Command to run for stdio transport. |
 | `args` | string[] | no | Arguments to pass to a stdio command. |
@@ -955,3 +956,44 @@ exposing other host devices. SSH grants cover local option files, including
 identities and known-hosts files; the destination and remote command
 are not interpreted as local paths. Protected-path checks still apply to every
 local file grant, including SSH option values.
+
+### Environment-backed HTTP headers
+
+Use `headers_env` for secrets in custom headers, independently of the upstream
+bearer token. Values are environment variable **names**, not shell expressions.
+Literal `headers` values are unchanged and do not expand `${...}`. Names must
+be unique ignoring case across both maps; `Authorization` remains reserved for
+`bearer_token_env` or OAuth. WebSocket and stdio transports reject both maps.
+
+```toml
+[[upstream]]
+name = "account"
+url = "https://account.example.com/mcp"
+bearer_token_env = "ACCOUNT_API_TOKEN"
+
+[upstream.headers_env]
+CF-Access-Client-Id = "CF_ACCESS_CLIENT_ID"
+CF-Access-Client-Secret = "CF_ACCESS_CLIENT_SECRET"
+```
+
+Make these variables available to the gateway process using its normal environment
+configuration. Environment names use `[A-Za-z_][A-Za-z0-9_]*`. Resolution occurs
+when a connection is established (including reconnection), without persisting
+resolved values. Reconnect after changing credentials; an existing connection
+retains its headers. Missing, blank, non-Unicode, or invalid HTTP header values
+fail closed without reporting secret contents. Environment-backed header values
+are marked sensitive for transport debug output. Existing destination and redirect
+policies apply to these headers just as to literal custom headers.
+
+Management surfaces accept the same `headers_env` map in `gateway.add`'s `spec`
+and `gateway.update`'s `patch`. An omitted patch field preserves the map; `{}`
+clears it. CLI equivalents:
+
+```bash
+labby server set account --headers-env '{"CF-Access-Client-Id":"CF_ACCESS_CLIENT_ID","CF-Access-Client-Secret":"CF_ACCESS_CLIENT_SECRET"}'
+labby server set account --clear-headers-env
+```
+
+`labby server add` also accepts `--headers-env`. These commands carry only
+variable names; configure secret values through the selected installation's
+normal environment workflow.

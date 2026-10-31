@@ -60,6 +60,7 @@ fn lifecycle_test_upstream(name: &str, oauth: bool) -> UpstreamConfig {
         transport: None,
         socket_path: None,
         headers: Default::default(),
+        headers_env: Default::default(),
         bearer_token_env: None,
         command: None,
         args: vec![],

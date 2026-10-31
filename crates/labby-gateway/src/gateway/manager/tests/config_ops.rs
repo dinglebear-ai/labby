@@ -137,6 +137,7 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
                 transport: None,
                 socket_path: None,
                 headers: Default::default(),
+                headers_env: Default::default(),
                 bearer_token_env: None,
                 command: None,
                 args: Vec::new(),

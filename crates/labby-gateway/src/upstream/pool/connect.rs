@@ -910,8 +910,15 @@ async fn connect_http_upstream_with_notifications<H: ClientHandler + Clone>(
 pub(super) fn configured_custom_headers(
     config: &UpstreamConfig,
 ) -> anyhow::Result<HashMap<HeaderName, HeaderValue>> {
-    let mut headers = HashMap::with_capacity(config.headers.len());
-    for (raw_name, raw_value) in &config.headers {
+    configured_custom_headers_with_env(config, crate::upstream::auth::configured_header_value)
+}
+
+fn configured_custom_headers_with_env(
+    config: &UpstreamConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> anyhow::Result<HashMap<HeaderName, HeaderValue>> {
+    let mut headers = HashMap::with_capacity(config.headers.len() + config.headers_env.len());
+    for (raw_name, configured_value) in config.headers.iter().chain(config.headers_env.iter()) {
         let name = HeaderName::from_bytes(raw_name.trim().as_bytes()).map_err(|error| {
             anyhow::anyhow!(
                 "upstream {} has invalid custom header name {:?}: {error}",
@@ -925,13 +932,25 @@ pub(super) fn configured_custom_headers(
                 config.name
             );
         }
-        let value = HeaderValue::from_str(raw_value).map_err(|error| {
+        if headers.contains_key(&name) {
+            anyhow::bail!("upstream {} has duplicate custom header names", config.name);
+        }
+        let resolved;
+        let raw_value = if config.headers_env.contains_key(raw_name) {
+            resolved = env(configured_value).filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow::anyhow!("upstream {} has missing, empty, or non-Unicode environment value for custom header {}", config.name, name))?;
+            &resolved
+        } else {
+            configured_value
+        };
+        let mut value = HeaderValue::from_str(raw_value).map_err(|error| {
             anyhow::anyhow!(
                 "upstream {} has invalid value for custom header {}: {error}",
                 config.name,
                 name
             )
         })?;
+        value.set_sensitive(true);
         headers.insert(name, value);
     }
     Ok(headers)
@@ -1166,6 +1185,58 @@ mod conformance_tests {
         );
         assert!(size_of_val(&owner) < 4096);
         assert!(size_of_val(&caller) < 4096);
+    }
+
+    #[test]
+    fn environment_headers_resolve_without_expanding_literal_headers() {
+        let mut config = super::super::testsupport::test_upstream_config();
+        config
+            .headers
+            .insert("x-literal".into(), "${UNCHANGED}".into());
+        config
+            .headers_env
+            .insert("CF-Access-Client-Secret".into(), "CF_SECRET".into());
+        config.bearer_token_env = Some("ACCOUNT_TOKEN".into());
+        let headers =
+            super::configured_custom_headers_with_env(&config, |_| Some("dummy-secret".into()))
+                .unwrap();
+        assert_eq!(
+            headers[&super::HeaderName::from_static("x-literal")],
+            "${UNCHANGED}"
+        );
+        assert_eq!(
+            headers[&super::HeaderName::from_static("cf-access-client-secret")],
+            "dummy-secret"
+        );
+        assert!(headers[&super::HeaderName::from_static("cf-access-client-secret")].is_sensitive());
+        assert!(!format!("{headers:?}").contains("dummy-secret"));
+        assert!(!headers.contains_key(&super::AUTHORIZATION));
+        assert!(
+            !serde_json::to_string(&config)
+                .unwrap()
+                .contains("dummy-secret")
+        );
+    }
+
+    #[test]
+    fn environment_headers_fail_closed_without_disclosing_values() {
+        let mut config = super::super::testsupport::test_upstream_config();
+        config
+            .headers_env
+            .insert("x-secret".into(), "SECRET".into());
+        for value in [None, Some(""), Some("   "), Some("private\r\nvalue")] {
+            let error =
+                super::configured_custom_headers_with_env(&config, |_| value.map(str::to_owned))
+                    .unwrap_err();
+            assert!(!format!("{error:?}").contains("private"));
+        }
+        config.headers_env.clear();
+        config
+            .headers_env
+            .insert("Authorization".into(), "SECRET".into());
+        assert!(
+            super::configured_custom_headers_with_env(&config, |_| Some("dummy".into())).is_err()
+        );
     }
 
     #[test]

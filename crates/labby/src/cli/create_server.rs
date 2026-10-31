@@ -71,6 +71,13 @@ fn invocation(args: &GatewayAddArgs) -> String {
             words.extend([format!("--{}", key.replace('_', "-")), value.to_owned()]);
         }
     }
+    if let Some(headers_env) = &args.headers_env {
+        // This map contains variable names only, never resolved credential values.
+        words.extend([
+            "--headers-env".to_owned(),
+            serde_json::to_string(headers_env).expect("string map"),
+        ]);
+    }
     for (key, flag) in [("args", "--arg"), ("expose_skills", "--expose-skill")] {
         if let Some(values) = safe[key].as_array() {
             for value in values.iter().filter_map(serde_json::Value::as_str) {
@@ -190,6 +197,7 @@ mod tests {
             command: None,
             args: vec![],
             bearer_token_env: None,
+            headers_env: None,
             proxy_resources: true,
             proxy_skills: false,
             expose_skills: vec![],
@@ -216,6 +224,18 @@ mod tests {
                 .contains("labby server add docs --url https://example.com/mcp")
         );
     }
+    #[test]
+    fn guided_creation_preserves_environment_header_replay() {
+        let mut input = args();
+        input.name = "account".into();
+        input.headers_env = Some(std::collections::BTreeMap::from([(
+            "CF-Access-Client-Secret".into(),
+            "CF_SECRET".into(),
+        )]));
+        let command = invocation(&input);
+        assert!(command.contains("--headers-env '{\"CF-Access-Client-Secret\":\"CF_SECRET\"}'"));
+    }
+
     #[test]
     fn noninteractive_and_complete_calls_never_prompt() {
         let mut input = args();

@@ -1126,6 +1126,7 @@ mod tests {
             transport: None,
             socket_path: None,
             headers: Default::default(),
+            headers_env: Default::default(),
             bearer_token_env: None,
             command: command.map(str::to_string),
             args: args.iter().map(|a| a.to_string()).collect(),

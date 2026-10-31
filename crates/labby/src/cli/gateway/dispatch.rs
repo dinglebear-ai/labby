@@ -222,6 +222,11 @@ fn update_patch_from_args(args: GatewayUpdateArgs) -> Value {
         patch.insert("args".to_string(), json!(args.args));
     }
 
+    if args.clear_headers_env {
+        patch.insert("headers_env".to_string(), json!({}));
+    } else if let Some(headers_env) = args.headers_env {
+        patch.insert("headers_env".to_string(), json!(headers_env));
+    }
     if args.clear_bearer_token_env {
         patch.insert("bearer_token_env".to_string(), Value::Null);
     } else {
@@ -430,6 +435,7 @@ pub(super) async fn dispatch_command(
                                 "command": args.command,
                                 "args": args.args,
                                 "bearer_token_env": args.bearer_token_env,
+                                "headers_env": args.headers_env.unwrap_or_default(),
                                 "proxy_resources": args.proxy_resources,
                                 "proxy_skills": args.proxy_skills,
                                 "expose_skills": if args.expose_skills.is_empty() { None } else { Some(args.expose_skills) },
@@ -951,6 +957,24 @@ mod tests {
                 "args": [],
             })
         );
+    }
+
+    #[test]
+    fn gateway_update_environment_headers_set_and_clear() {
+        let update = parsed_update(&[
+            "lab",
+            "server",
+            "set",
+            "fixture",
+            "--headers-env",
+            r#"{"CF-Access-Client-Secret":"CF_SECRET"}"#,
+        ]);
+        assert_eq!(
+            update_patch_from_args(update),
+            json!({"headers_env":{"CF-Access-Client-Secret":"CF_SECRET"}})
+        );
+        let update = parsed_update(&["lab", "server", "set", "fixture", "--clear-headers-env"]);
+        assert_eq!(update_patch_from_args(update), json!({"headers_env":{}}));
     }
 
     #[test]

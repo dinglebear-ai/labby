@@ -477,7 +477,9 @@ pass through the spawn guard unless the operator explicitly extends or disables
 it. A Unix-socket upstream requires `transport = "unix_socket"`, a `socket_path`
 (absolute, or a Linux abstract `@name`), and an HTTP(S) `url` supplying the
 request path and `Host` authority; a custom `Authorization` header is rejected so
-credentials stay in `bearer_token_env` or `[upstream.oauth]`.
+credentials stay in `bearer_token_env` or `[upstream.oauth]`. For separate HTTP
+service credentials, `[upstream.headers_env]` maps header names to environment
+variable names; see [environment-backed headers](../services/UPSTREAM.md#environment-backed-http-headers).
 
 Use `labby server add`, `labby server set`, `labby server remove`, and
 `labby gateway reload` rather than editing active gateway state concurrently

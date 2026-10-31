@@ -26,16 +26,33 @@ fn credential_changed_upstreams(
         .iter()
         .chain(previous.upstream.iter())
         .filter(|upstream| {
-            upstream.bearer_token_env.as_deref().is_some_and(|name| {
-                labby_runtime::helpers::environment_names_equal_with_case(
-                    name,
-                    env_name,
-                    case_insensitive,
-                )
-            })
+            upstream
+                .bearer_token_env
+                .iter()
+                .chain(upstream.headers_env.values())
+                .any(|name| {
+                    labby_runtime::helpers::environment_names_equal_with_case(
+                        name,
+                        env_name,
+                        case_insensitive,
+                    )
+                })
         })
         .map(|upstream| upstream.name.clone())
         .collect()
+}
+
+/// Custom-header credentials can change the upstream identity independently of
+/// its bearer token. Until retained-task authority includes their value digest,
+/// conservatively revoke tasks on managed writes to any referenced header key.
+fn header_credential_requires_task_revocation(
+    upstream: &labby_runtime::gateway_config::UpstreamConfig,
+    env_name: &str,
+    case_insensitive: bool,
+) -> bool {
+    upstream.headers_env.values().any(|name| {
+        labby_runtime::helpers::environment_names_equal_with_case(name, env_name, case_insensitive)
+    })
 }
 
 /// Longest a caller waits for the gateway configuration-mutation lease before
@@ -365,13 +382,15 @@ impl GatewayManager {
             credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
         });
         // Persisted file bytes are not necessarily the winning authority:
-        // normalized-equivalent values and genuine process overrides preserve
-        // durable tasks while still forcing the touched transports to reconnect.
+        // normalized-equivalent bearer values and genuine process overrides
+        // preserve durable tasks while forcing touched transports to reconnect.
+        // Header references revoke conservatively: bearer equality alone cannot
+        // prove their authority is unchanged.
         let pool = self.current_pool_sync();
         let credential_authority_changed =
             credential
                 .as_ref()
-                .map_or_else(Vec::new, |(_, token_value)| {
+                .map_or_else(Vec::new, |(updated_env_name, token_value)| {
                     let file_value = super::persist::normalize_gateway_bearer_token(token_value);
                     let path = self.store.env_path();
                     previous
@@ -379,6 +398,13 @@ impl GatewayManager {
                         .iter()
                         .filter(|old| credentials_changed.contains(&old.name))
                         .filter(|old| {
+                            if header_credential_requires_task_revocation(
+                                old,
+                                updated_env_name,
+                                cfg!(windows),
+                            ) {
+                                return true;
+                            }
                             let token = old.bearer_token_env.as_deref().and_then(|env_name| {
                                 crate::upstream::auth::configured_bearer_token_after_file_update(
                                     env_name,
@@ -844,6 +870,75 @@ mod mutation_lock_tests {
 #[cfg(test)]
 mod credential_name_tests {
     use super::*;
+
+    #[test]
+    fn shared_header_credential_writes_require_task_revocation_without_bearer_changes() {
+        let header_only: labby_runtime::gateway_config::UpstreamConfig =
+            serde_json::from_value(serde_json::json!({
+                "name":"header-only", "url":"https://fixture.invalid/mcp",
+                "headers_env":{"x-secret":"CF_SECRET"}
+            }))
+            .unwrap();
+        assert!(header_only.bearer_token_env.is_none());
+        assert!(header_credential_requires_task_revocation(
+            &header_only,
+            "CF_SECRET",
+            false
+        ));
+        assert!(!header_credential_requires_task_revocation(
+            &header_only,
+            "cf_secret",
+            false
+        ));
+        assert!(header_credential_requires_task_revocation(
+            &header_only,
+            "cf_secret",
+            true
+        ));
+        assert!(!header_credential_requires_task_revocation(
+            &header_only,
+            "UNRELATED",
+            false
+        ));
+        let with_bearer: labby_runtime::gateway_config::UpstreamConfig =
+            serde_json::from_value(serde_json::json!({
+                "name":"separate-bearer", "url":"https://fixture.invalid/mcp",
+                "bearer_token_env":"UNCHANGED_BEARER",
+                "headers_env":{"x-secret":"CF_SECRET"}
+            }))
+            .unwrap();
+        assert!(header_credential_requires_task_revocation(
+            &with_bearer,
+            "CF_SECRET",
+            false
+        ));
+        assert!(!header_credential_requires_task_revocation(
+            &with_bearer,
+            "UNCHANGED_BEARER",
+            false
+        ));
+    }
+
+    #[test]
+    fn credential_reload_includes_header_references_in_prior_and_candidate_configs() {
+        let candidate: GatewayConfig = serde_json::from_value(serde_json::json!({"upstream":[
+            {"name":"bearer","url":"https://fixture.invalid/mcp","bearer_token_env":"CF_SECRET"},
+            {"name":"header","url":"https://fixture.invalid/mcp","headers_env":{"CF-Access-Client-Secret":"CF_SECRET"}},
+            {"name":"alias","url":"https://fixture.invalid/mcp","headers_env":{"x-secret":"cf_secret"}},
+            {"name":"other","url":"https://fixture.invalid/mcp","headers_env":{"x-secret":"OTHER_SECRET"}}
+        ]})).unwrap();
+        let previous: GatewayConfig = serde_json::from_value(serde_json::json!({"upstream":[
+            {"name":"removed","url":"https://fixture.invalid/mcp","headers_env":{"x-secret":"CF_SECRET"}}
+        ]})).unwrap();
+        assert_eq!(
+            credential_changed_upstreams(&previous, &candidate, "CF_SECRET", false),
+            vec!["bearer", "header", "removed"],
+        );
+        assert_eq!(
+            credential_changed_upstreams(&previous, &candidate, "CF_SECRET", true),
+            vec!["bearer", "header", "alias", "removed"],
+        );
+    }
 
     #[test]
     fn credential_reload_marks_all_windows_alias_upstreams_changed() {

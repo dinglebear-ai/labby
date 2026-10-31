@@ -3962,6 +3962,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                         transport: None,
                         socket_path: None,
                         headers: Default::default(),
+                        headers_env: Default::default(),
                         bearer_token_env: None,
                         command: Some("in-process".to_string()),
                         args: Vec::new(),
