@@ -863,7 +863,36 @@ pub struct GatewayMcpRestartArgs {
 }
 
 fn parse_headers_env(value: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
-    serde_json::from_str(value).map_err(|_| {
-        "expected a JSON object mapping HTTP header names to environment variable names".to_string()
-    })
+    let invalid = || {
+        "expected a JSON object mapping valid custom HTTP header names to environment variable names; Authorization and duplicate names are forbidden".to_string()
+    };
+    let headers: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(value).map_err(|_| invalid())?;
+    // Validate references before guided creation can render a replay command.
+    let config: labby_runtime::gateway_config::UpstreamConfig =
+        serde_json::from_value(serde_json::json!({
+            "name":"header-validation", "url":"https://example.invalid/mcp", "headers_env":headers
+        }))
+        .map_err(|_| invalid())?;
+    config.validate().map_err(|_| invalid())?;
+    Ok(config.headers_env)
+}
+
+#[cfg(test)]
+mod header_env_tests {
+    use super::parse_headers_env;
+
+    #[test]
+    fn rejects_invalid_or_secret_values_before_guided_preview() {
+        for input in [
+            r#"{"CF-Access-Client-Secret":"fixture-secret.value"}"#,
+            r#"{"Authorization":"TOKEN"}"#,
+            r#"{"bad header":"TOKEN"}"#,
+            r#"{"X-Key":"TOKEN","x-key":"OTHER"}"#,
+        ] {
+            let error = parse_headers_env(input).unwrap_err();
+            assert!(!error.contains("fixture-secret.value"));
+        }
+        assert!(parse_headers_env(r#"{"CF-Access-Client-Secret":"CF_SECRET"}"#).is_ok());
+    }
 }
