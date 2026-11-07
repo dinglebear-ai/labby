@@ -83,6 +83,9 @@ pub(crate) enum CodeModeRunnerOutput {
         seq: u64,
         id: String,
         params: Value,
+        /// Request the original successful MCP envelope, with identical dispatch.
+        #[serde(default)]
+        full_result: bool,
     },
     /// The sandbox called `writeArtifact(path, content, options?)`. The host
     /// validates `path`, writes `content` under the per-run artifact root, and
@@ -108,16 +111,10 @@ pub(crate) enum CodeModeRunnerOutput {
     /// current host always executes; the decision field is reserved for future
     /// replay work. This consumes a `seq` from the same monotonic spine as tool
     /// calls.
-    StepBegin {
-        seq: u64,
-        name: String,
-    },
+    StepBegin { seq: u64, name: String },
     /// The sandbox ran the step `fn` (decision was execute) and is journaling
     /// its result. The host records it and acks with `StepRecorded`.
-    StepResult {
-        seq: u64,
-        value: Value,
-    },
+    StepResult { seq: u64, value: Value },
     /// Runner completed successfully. `result` is the serialized return value of
     /// the async function (`Undefined` when the function returns undefined).
     /// `logs` carries captured console output or redirected runner stderr.

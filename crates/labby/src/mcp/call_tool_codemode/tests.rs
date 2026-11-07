@@ -4,14 +4,16 @@
 use super::{
     CODE_MODE_DESCRIPTION_MAX_BYTES, CodeModeDescriptionVariant, CodeModeExampleCall,
     CodeModeUpstreamDescription, InflightCodeModeRole, await_code_mode_execution,
-    begin_code_mode_execution, code_arg, code_mode_dedup_key, code_mode_execute_trace,
-    code_mode_result, code_mode_tool_description, route_scoped_capability_filter, string_array_arg,
+    begin_code_mode_execution, bound_upstream_content, code_arg, code_mode_dedup_key,
+    code_mode_execute_trace, code_mode_result, code_mode_tool_description,
+    route_scoped_capability_filter, string_array_arg,
 };
 use crate::config::CodeModeResultShapePolicy;
 use labby_codemode::{
     CodeModeExecutedCall, CodeModeExecutionResponse, CodeModeResultShapeMetadata, MAX_SOURCE_BYTES,
     UiLink,
 };
+use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Value, json};
 
 #[test]
@@ -446,6 +448,7 @@ fn code_mode_rules_example_and_first_upstream_fit_in_the_visible_prefix() {
             "async () => {",
             "codemode.search",
             "codemode.describe",
+            "codemode.callToolResult",
             "codemode.batch",
             "24 KB",
             "30 s",
@@ -663,6 +666,7 @@ fn execute_trace_embeds_result_and_redacts_call_params() {
         })),
         result_shaping: None,
         calls: vec![CodeModeExecutedCall {
+            upstream_content: None,
             id: "github::search_issues".to_string(),
             ok: true,
             elapsed_ms: 12,
@@ -972,5 +976,32 @@ fn empty_filter_entries_are_rejected_instead_of_widening_the_run() {
             .expect_err("an empty entry must not silently widen the run");
         assert_eq!(err.kind(), "invalid_param", "{key} {value}");
         assert!(err.to_string().contains("must not be empty"), "{err}");
+    }
+}
+
+#[test]
+fn upstream_content_budget_counts_both_mcp_channels_and_preserves_status() {
+    for failed in [false, true] {
+        let trace = json!({"calls":[{"id":"fixture::write","ok":true,"upstream_content":{"content":[{"type":"text","text":"x".repeat(4000)}],"omitted_blocks":0,"omitted_bytes":0}}],"result":{"selected":1}});
+        let mut result = CallToolResult::success(vec![ContentBlock::text(trace.to_string())]);
+        result.structured_content = Some(trace);
+        result.is_error = Some(failed);
+        bound_upstream_content(&mut result, 1000, 1000);
+        assert_eq!(result.is_error, Some(failed));
+        assert!(serde_json::to_vec(&result).unwrap().len() < 1000);
+        let structured = result.structured_content.as_ref().unwrap();
+        assert_eq!(structured["result"]["selected"], 1);
+        assert_eq!(structured["calls"][0]["ok"], true);
+        assert_eq!(
+            structured["calls"][0]["upstream_content"]["omitted_blocks"],
+            1
+        );
+        assert!(
+            structured["calls"][0]["upstream_content"]
+                .get("content")
+                .is_none()
+        );
+        let text: Value = serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(&text, structured);
     }
 }

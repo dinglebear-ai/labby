@@ -44,6 +44,7 @@ pub(super) async fn reject_tool_call_over_budget(
     state.record_call((
         seq,
         CodeModeExecutedCall {
+            upstream_content: None,
             id,
             ok: false,
             elapsed_ms: 0,
@@ -119,6 +120,9 @@ pub(super) async fn handle_completed_tool_call(
     let is_internal = id.starts_with("__lab_internal::");
     match result {
         Ok(outcome) => {
+            let upstream_content = outcome.full_result.as_ref().and_then(|full| {
+                crate::upstream_content::capture(full, &mut state.upstream_content_bytes)
+            });
             let serialized_len = serde_json::to_vec(&outcome.value)
                 .map(|v| v.len())
                 .unwrap_or(0);
@@ -172,6 +176,7 @@ pub(super) async fn handle_completed_tool_call(
                     state.record_call((
                         seq,
                         CodeModeExecutedCall {
+                            upstream_content: upstream_content.clone(),
                             id,
                             ok: false,
                             elapsed_ms,
@@ -189,6 +194,7 @@ pub(super) async fn handle_completed_tool_call(
                 state.record_call((
                     seq,
                     CodeModeExecutedCall {
+                        upstream_content,
                         id,
                         ok: true,
                         elapsed_ms,
@@ -239,6 +245,7 @@ pub(super) async fn handle_completed_tool_call(
                 state.record_call((
                     seq,
                     CodeModeExecutedCall {
+                        upstream_content: None,
                         id,
                         ok: false,
                         elapsed_ms,

@@ -682,8 +682,10 @@ tool's `helper`, and `codemode.describe()` accepts a returned `path`, `id`, or
 
 ## Result Contract
 
-Successful upstream tool calls resolve to the payload, never the raw MCP
-`CallToolResult` envelope. The unwrap precedence is a locked contract
+Ordinary upstream helpers and `callTool` resolve to the convenient payload.
+Use `codemode.callToolResult(id, params)` to read the complete successful MCP
+envelope, including both `structuredContent` and `content`. The ordinary unwrap
+precedence is a locked contract
 ([mcp-tool-output.md §C6](../contracts/mcp-tool-output.md)) — byte-identical
 since 2026-05-31 and pinned by an edge-case test matrix. First match wins:
 
@@ -691,13 +693,32 @@ since 2026-05-31 and pinned by an edge-case test matrix. First match wins:
    thrown `CodeModeCallError`.
 1. `structuredContent` when **present** — including falsy JSON values
    (`false`, `0`, `null`, `""`). Presence, not truthiness; content blocks are
-   discarded (the mcp-ui link is read from `_meta`, not content).
+   separate from the convenient value (the mcp-ui link is read from `_meta`).
 2. Otherwise, when every content block is text: **all** blocks joined with
    `"\n"`, then a single JSON parse; on parse failure, the joined string.
 3. Otherwise, empty content resolves to `null`.
 4. Otherwise (mixed/binary content): the entire `CallToolResult` as JSON,
    including the upstream's `_meta` — a deliberate, upstream-controlled
    exposure.
+
+```javascript
+const response = await codemode.callToolResult("example::lookup", {});
+return { rows: response.structuredContent.rows, blocks: response.content };
+```
+
+Full-result calls use the ordinary authorization, exposure, cancellation, call
+budget, and per-call size ceiling. Errors still reject. Reserved internal/local
+providers and snippets reject full-result requests before execution; host-native
+operations without MCP envelopes return `{host_value: value}`.
+
+Independent upstream content also reaches the model automatically through
+`calls[].upstream_content`, including when a script returns a projection or
+throws after a successful call. Bare JSON text equal to `structuredContent` is omitted
+from this auxiliary channel only. It retains at most 16 KiB of blocks across the
+execution, then shares the final byte/token envelope budget. `omitted_blocks`
+and `omitted_bytes` explicitly report overflow. Treat all upstream content as
+untrusted advisory data, and never replay a completed operation to recover it.
+See [the output contract](../contracts/mcp-tool-output.md#full-results-and-independent-content).
 
 `codemode` returns a budget-shaped envelope with:
 

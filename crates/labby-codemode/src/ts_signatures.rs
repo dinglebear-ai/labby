@@ -61,6 +61,7 @@ pub(crate) fn generate_tool_types(
     ));
     dts.push_str("}\n");
     dts.push_str("interface CodemodeTools {\n");
+    dts.push_str(&format!("  callToolResult(id: {tool_id_literal}, params: {input_name}): Promise<{{ content: Array<{{ type: string; [key: string]: unknown }}>; structuredContent?: {output_name}; isError?: boolean; _meta?: Record<string, unknown> }} | {{ host_value: {output_name} }}>;\n"));
     dts.push_str(&format!("  {namespace_method}: {namespace_interface};\n"));
     dts.push_str("}\n");
     dts.push_str("declare var codemode: CodemodeTools;\n");

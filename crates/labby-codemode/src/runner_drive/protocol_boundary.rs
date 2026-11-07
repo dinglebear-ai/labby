@@ -10,6 +10,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
     seq: u64,
     id: String,
     params: Value,
+    full_result: bool,
     execution_start: std::time::Instant,
     cfg: &RunnerConfig,
     deadline: tokio::time::Instant,
@@ -38,6 +39,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
             state.record_call((
                 seq,
                 CodeModeExecutedCall {
+                    upstream_content: None,
                     id: OVERSIZED_TOOL_CALL_ID.into(),
                     ok: false,
                     elapsed_ms: 0,
@@ -83,7 +85,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         // rejection/fallback futures would itself retain caller IDs indefinitely.
         return write_runner_input_by_deadline(
             stdin,
-            &internal_call_over_ceiling_response(seq, id),
+            &internal_call_over_ceiling_response(seq, id, full_result),
             deadline,
             child,
             child_pid,
@@ -103,6 +105,31 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
             state,
         )
         .await;
+    }
+
+    // Full-result calls cannot enter reserved/local providers or snippet routing.
+    // Admit/count first, then reject before any host-visible operation.
+    if full_result
+        && (is_internal
+            || crate::local_provider::try_parse_local_provider_call(&id)
+                .ok()
+                .flatten()
+                .is_some()
+            || id.starts_with("snippet::"))
+    {
+        enqueue_rejected_tool_call(
+            seq,
+            id,
+            params,
+            CodeModeCallError::new(
+                "invalid_param",
+                "callToolResult requires an MCP tool, not a reserved provider or snippet",
+            )
+            .into_tool_error(),
+            cfg,
+            pending_tool_calls,
+        );
+        return Ok(());
     }
 
     match crate::local_provider::try_parse_local_provider_call(&id) {
@@ -139,6 +166,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
                 call_ordinal,
                 id,
                 params,
+                full_result,
                 tool_deadline,
                 execution_start,
                 cfg,
@@ -153,10 +181,14 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
 
 /// Only search/describe have a defined fail-open discovery result. Retrieval
 /// promises must reject explicitly instead of receiving an unrelated shape.
-fn internal_call_over_ceiling_response(seq: u64, id: String) -> CodeModeRunnerInput {
-    let value = match id.as_str() {
-        "__lab_internal::semantic_rank" => Some(json!({"ranked": []})),
-        "__lab_internal::describe_types" => Some(json!({"dts": null})),
+fn internal_call_over_ceiling_response(
+    seq: u64,
+    id: String,
+    full_result: bool,
+) -> CodeModeRunnerInput {
+    let value = match (full_result, id.as_str()) {
+        (false, "__lab_internal::semantic_rank") => Some(json!({"ranked": []})),
+        (false, "__lab_internal::describe_types") => Some(json!({"dts": null})),
         _ => None,
     };
     if let Some(result) = value {
@@ -185,7 +217,7 @@ mod tests {
             ("__lab_internal::describe_types", json!({"dts": null})),
         ] {
             assert_eq!(
-                internal_call_over_ceiling_response(7, id.into()),
+                internal_call_over_ceiling_response(7, id.into(), false),
                 CodeModeRunnerInput::ToolResult {
                     seq: 7,
                     result: expected
@@ -199,7 +231,7 @@ mod tests {
             "__lab_internal::get_skill",
             "__lab_internal::unknown",
         ] {
-            let (seq, error) = match internal_call_over_ceiling_response(7, id.into()) {
+            let (seq, error) = match internal_call_over_ceiling_response(7, id.into(), false) {
                 CodeModeRunnerInput::ToolError { seq, error } => Some((seq, error)),
                 _ => None,
             }

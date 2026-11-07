@@ -32,6 +32,30 @@ pub(crate) fn truncate_execution_response(
         return response;
     }
 
+    // Auxiliary upstream content has its own capture ceiling AND shares the
+    // actual execution envelope budget. Omission is explicit, never an error
+    // or a reason to replay a completed tool operation.
+    for index in 0..response.calls.len() {
+        if !response.calls[index]
+            .upstream_content
+            .as_ref()
+            .is_some_and(|value| value.get("content").is_some())
+        {
+            continue;
+        }
+        if let Some(content) = response.calls[index].upstream_content.as_mut() {
+            crate::upstream_content::omit_code_mode_upstream_content(content);
+        }
+        if response_within_budget(
+            &response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        ) {
+            return response;
+        }
+    }
+
     // Preserve the model-requested final result before optional debug detail.
     // High-fan-out executions can make redacted call params dominate an otherwise
     // compact response (for example, dozens of SSH command strings). Params are

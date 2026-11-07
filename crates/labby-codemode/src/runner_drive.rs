@@ -253,6 +253,7 @@ impl RunnerConfig {
 
 struct DriveState {
     calls: HostTrace,
+    upstream_content_bytes: usize,
     artifacts: Vec<CodeModeArtifactReceipt>,
     artifact_max_bytes: usize,
     artifact_root: PathBuf,
@@ -314,6 +315,7 @@ impl DriveState {
         let artifact_max_bytes = super::artifacts::artifact_max_bytes();
         Self {
             calls: HostTrace::default(),
+            upstream_content_bytes: 0,
             artifacts: Vec::new(),
             artifact_max_bytes,
             artifact_root,

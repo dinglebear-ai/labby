@@ -116,6 +116,7 @@ fn expected_drop_count(
 #[test]
 fn over_budget_result_becomes_object_marker_and_calls_survive() {
     let calls = vec![CodeModeExecutedCall {
+        upstream_content: None,
         id: "demo::big_query".to_string(),
         ok: true,
         elapsed_ms: 42,
@@ -179,6 +180,7 @@ fn over_budget_result_becomes_object_marker_and_calls_survive() {
 fn high_fanout_trace_params_are_dropped_before_compact_result() {
     let calls = (0..76)
         .map(|i| CodeModeExecutedCall {
+            upstream_content: None,
             id: format!("ssh::{i}"),
             ok: true,
             elapsed_ms: 25,
@@ -219,6 +221,7 @@ fn high_fanout_trace_params_are_dropped_before_compact_result() {
 fn high_fanout_trace_params_stay_dropped_when_result_also_needs_truncation() {
     let calls = (0..24)
         .map(|i| CodeModeExecutedCall {
+            upstream_content: None,
             id: format!("ssh::{i}"),
             ok: true,
             elapsed_ms: 25,
@@ -371,6 +374,7 @@ fn complete_log_candidate_reserves_the_sentinel_at_the_boundary() {
 fn oversized_mandatory_metadata_keeps_best_effort_calls_and_sentinel() {
     let mut response = response_with_logs(json!({"ok": true}), vec!["log".into()]);
     response.calls.push(CodeModeExecutedCall {
+        upstream_content: None,
         id: "demo::mandatory".repeat(20),
         ok: true,
         elapsed_ms: 1,
@@ -425,6 +429,7 @@ fn preservation_probe_matches_truncation_and_restores_every_field() {
         for with_params in [false, true] {
             let mut response = response_with_logs(result.clone(), vec!["log".repeat(100); 10]);
             response.calls.push(CodeModeExecutedCall {
+                upstream_content: None,
                 id: "demo::query".into(),
                 ok: true,
                 elapsed_ms: 4,
@@ -490,4 +495,22 @@ fn within_budget_response_is_returned_unchanged() {
     let response = response_with_logs(json!({"ok": true}), logs.clone());
     let untouched = truncate_execution_response(response.clone(), 1024 * 1024, 100_000, 4);
     assert_eq!(untouched, response);
+}
+
+#[test]
+fn auxiliary_content_obeys_byte_token_and_tiny_execution_budgets() {
+    let mut response = response_with_logs(json!({"selected":1}), vec![]);
+    response.calls.push(CodeModeExecutedCall{ id:"demo::lookup".into(), ok:true, elapsed_ms:0,start_ms:None,params:None,params_digest:None,error_kind:None,ui:None,upstream_content:Some(json!({"content":[{"type":"text","text":"x".repeat(5000)}],"omitted_blocks":0,"omitted_bytes":0})) });
+    for (bytes, tokens) in [(1000, 1000), (10000, 250), (1, 1)] {
+        let output = truncate_execution_response(response.clone(), bytes, tokens, 4);
+        assert!(output.calls[0].ok);
+        assert_eq!(output.result, Some(json!({"selected":1})));
+        let auxiliary = output.calls[0].upstream_content.as_ref().unwrap();
+        assert_eq!(auxiliary["omitted_blocks"], 1);
+        assert!(auxiliary["omitted_bytes"].as_u64().unwrap() >= 5000);
+        assert!(auxiliary.get("content").is_none());
+        if bytes > 1 {
+            assert!(response_within_budget(&output, bytes, tokens, 4));
+        }
+    }
 }

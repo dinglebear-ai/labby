@@ -808,6 +808,7 @@ impl LabMcpServer {
                 });
                 let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
                 result.structured_content = Some(structured);
+                bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
                 notice_control
                     .attach(&mut result, notice_budget.0, notice_budget.1)
                     .await;
@@ -948,6 +949,7 @@ impl LabMcpServer {
             &response,
             self.route_scope.exposes_resources(),
         );
+        bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
         notice_control
             .attach(&mut result, notice_budget.0, notice_budget.1)
             .await;
@@ -1010,3 +1012,64 @@ pub(crate) use description::{
 
 #[cfg(test)]
 mod tests;
+
+/// Budget auxiliary content against the complete MCP response, including its
+/// duplicated text/structured channels and failure envelope. Mandatory trace
+/// metadata keeps the existing best-effort behavior when it alone is over budget.
+fn bound_upstream_content(result: &mut CallToolResult, max_bytes: usize, max_tokens: usize) {
+    let fits = |candidate: &CallToolResult| {
+        serde_json::to_string(candidate).is_ok_and(|encoded| {
+            encoded.len() <= max_bytes && estimate_tokens(&encoded) <= max_tokens
+        })
+    };
+    if fits(result) {
+        return;
+    }
+    let mut text = result
+        .content
+        .first()
+        .and_then(|block| block.as_text())
+        .and_then(|block| serde_json::from_str::<Value>(&block.text).ok());
+    let count = result
+        .structured_content
+        .as_ref()
+        .and_then(|v| v.get("calls"))
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    for index in 0..count {
+        if !result
+            .structured_content
+            .as_ref()
+            .and_then(|v| v.get("calls"))
+            .and_then(|v| v.get(index))
+            .and_then(|v| v.get("upstream_content"))
+            .is_some_and(|value| value.get("content").is_some())
+        {
+            continue;
+        }
+        if let Some(content) = result
+            .structured_content
+            .as_mut()
+            .and_then(|v| v.get_mut("calls"))
+            .and_then(|v| v.get_mut(index))
+            .and_then(|v| v.get_mut("upstream_content"))
+        {
+            labby_codemode::omit_code_mode_upstream_content(content);
+        }
+        if let Some(content) = text
+            .as_mut()
+            .and_then(|v| v.get_mut("calls"))
+            .and_then(|v| v.get_mut(index))
+            .and_then(|v| v.get_mut("upstream_content"))
+        {
+            labby_codemode::omit_code_mode_upstream_content(content);
+        }
+        if let (Some(value), Some(ContentBlock::Text(block))) = (&text, result.content.first_mut())
+        {
+            block.text = value.to_string();
+        }
+        if fits(result) {
+            break;
+        }
+    }
+}

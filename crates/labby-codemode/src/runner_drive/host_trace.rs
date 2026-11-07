@@ -39,6 +39,7 @@ impl HostTrace {
             return Err(trace_budget_error());
         }
         let minimum = CodeModeExecutedCall {
+            upstream_content: None,
             id: id.into(),
             ok: false,
             elapsed_ms: 0,
@@ -151,6 +152,7 @@ mod tests {
 
     fn rejected(id: String) -> CodeModeExecutedCall {
         CodeModeExecutedCall {
+            upstream_content: None,
             id,
             ok: false,
             elapsed_ms: 0,

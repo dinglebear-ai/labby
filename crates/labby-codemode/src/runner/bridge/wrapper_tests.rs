@@ -59,3 +59,41 @@ fn loose_nested_artifact_error_handling_is_valid_in_quickjs() {
         Some(serde_json::json!(["invalid_param", "invalid_param"]))
     );
 }
+
+#[test]
+fn full_result_helper_exposes_both_success_channels_in_quickjs() {
+    let runtime = javy::Runtime::new(javy::Config::default()).expect("QuickJS runtime");
+    let proxy = crate::preamble::generate_discovery_js(&[], 0.5, &[]).unwrap();
+    runtime.context().with(|cx| {
+        cx.eval::<(), _>("globalThis.__labEmitToolCall = (id, params, full) => { globalThis.requestFull = full; return 0; };").unwrap();
+        cx.eval::<(), _>(wrap_code_mode(
+            "async () => { const r = await codemode.callToolResult('demo::lookup', {}); return { data:r.structuredContent.rows, notice:r.content[1].text }; }",
+            &proxy,
+        )).unwrap();
+    });
+    runtime.resolve_pending_jobs().unwrap();
+    assert!(
+        matches!(
+            javy_main_promise_state(&runtime).unwrap(),
+            JavyMainPromiseState::Pending
+        ),
+        "full-result call must reach the bridge"
+    );
+    let full: bool = runtime
+        .context()
+        .with(|cx| cx.globals().get("requestFull"))
+        .unwrap();
+    assert!(full);
+    javy_settle_tool_promise(&runtime, &CodeModeRunnerInput::ToolResult {
+        seq:0,
+        result: serde_json::json!({"structuredContent":{"rows":[1]},"content":[{"type":"text","text":"{\"rows\":[1]}"},{"type":"text","text":"Independent advisory"}]}),
+    }).unwrap();
+    let result = match javy_main_promise_state(&runtime).unwrap() {
+        JavyMainPromiseState::Resolved(result) => result,
+        _ => None,
+    };
+    assert_eq!(
+        result,
+        Some(serde_json::json!({"data":[1],"notice":"Independent advisory"}))
+    );
+}
