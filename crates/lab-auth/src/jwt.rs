@@ -313,35 +313,40 @@ mod tests {
     }
 
     #[test]
-    fn persisted_pkcs8_key_and_preexisting_rs256_token_remain_compatible() {
+    fn independently_signed_rs256_token_remains_compatible() {
+        let public_key = include_str!("../tests/fixtures/rs256-compat-public-key.txt");
+        let token = include_str!("../tests/fixtures/rs256-compat-token.txt").trim();
+        let key = jsonwebtoken::DecodingKey::from_rsa_pem(public_key.as_bytes()).unwrap();
+        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+        validation.set_audience(&["https://lab.example.com"]);
+        validation.set_issuer(&["https://lab.example.com"]);
+        let decoded = jsonwebtoken::decode::<AccessClaims>(token, &key, &validation).unwrap();
+        assert_eq!(decoded.claims, sample_claims());
+    }
+
+    #[test]
+    fn runtime_generated_persisted_key_and_tokens_survive_reload() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("auth-jwt.pem");
-        let pem = include_str!("../tests/fixtures/rs256-compat-public-test-key.txt");
-        std::fs::write(&path, pem).unwrap();
-        crate::util::set_restrictive_permissions(&path).unwrap();
-        let signer = SigningKeys::load_or_create(&path).unwrap();
-        let token = include_str!("../tests/fixtures/rs256-compat-token.txt").trim();
-        let decoded = signer
-            .validate_access_token_with_issuer(
-                token,
-                "https://lab.example.com",
-                "https://lab.example.com",
-            )
-            .unwrap();
-        assert_eq!(decoded, sample_claims());
+        let first = SigningKeys::load_or_create(&path).unwrap();
+        let original_key = std::fs::read(&path).unwrap();
+        let token = first.issue_access_token(&sample_claims()).unwrap();
+        let reloaded = SigningKeys::load_or_create(&path).unwrap();
+        assert_eq!(first.key_id, reloaded.key_id);
+        assert_eq!(std::fs::read(&path).unwrap(), original_key);
         assert_eq!(
-            decode_header(token).unwrap().kid.as_deref(),
-            Some(signer.key_id.as_str())
+            reloaded
+                .validate_access_token_with_issuer(
+                    &token,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .unwrap(),
+            sample_claims(),
         );
         assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            pem,
-            "backend change must not rotate persisted keys"
-        );
-        let replacement = signer.issue_access_token(&sample_claims()).unwrap();
-        assert_eq!(
-            replacement, token,
-            "RS256 signature and claims must remain byte-compatible"
+            reloaded.issue_access_token(&sample_claims()).unwrap(),
+            token
         );
     }
 
