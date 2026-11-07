@@ -1,9 +1,9 @@
 use std::fmt;
 use std::path::Path;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
 use rsa::rand_core::{TryCryptoRng, TryRng, UnwrapErr};
 use rsa::traits::PublicKeyParts;
@@ -309,6 +309,97 @@ mod tests {
         assert!(
             result.is_err(),
             "token signed by us but with wrong expected issuer must be rejected"
+        );
+    }
+
+    #[test]
+    fn persisted_pkcs8_key_and_preexisting_rs256_token_remain_compatible() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("auth-jwt.pem");
+        let pem = include_str!("../tests/fixtures/rs256-compat-public-test-key.txt");
+        std::fs::write(&path, pem).unwrap();
+        crate::util::set_restrictive_permissions(&path).unwrap();
+        let signer = SigningKeys::load_or_create(&path).unwrap();
+        let token = include_str!("../tests/fixtures/rs256-compat-token.txt").trim();
+        let decoded = signer
+            .validate_access_token_with_issuer(
+                token,
+                "https://lab.example.com",
+                "https://lab.example.com",
+            )
+            .unwrap();
+        assert_eq!(decoded, sample_claims());
+        assert_eq!(
+            decode_header(token).unwrap().kid.as_deref(),
+            Some(signer.key_id.as_str())
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            pem,
+            "backend change must not rotate persisted keys"
+        );
+        let replacement = signer.issue_access_token(&sample_claims()).unwrap();
+        assert_eq!(
+            replacement, token,
+            "RS256 signature and claims must remain byte-compatible"
+        );
+    }
+
+    #[test]
+    fn tampered_rs256_signature_is_rejected() {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let signer = test_signer();
+        let token = signer.issue_access_token(&sample_claims()).unwrap();
+        let (signed, signature) = token.rsplit_once('.').unwrap();
+        let mut bytes = URL_SAFE_NO_PAD.decode(signature).unwrap();
+        bytes[0] ^= 1;
+        let tampered = format!("{signed}.{}", URL_SAFE_NO_PAD.encode(bytes));
+        assert!(
+            signer
+                .validate_access_token_with_issuer(
+                    &tampered,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn expired_rs256_token_is_rejected() {
+        let signer = test_signer();
+        let mut claims = sample_claims();
+        claims.exp = 1;
+        let token = signer.issue_access_token(&claims).unwrap();
+        assert!(
+            signer
+                .validate_access_token_with_issuer(
+                    &token,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn wrong_algorithm_is_rejected_even_with_valid_signature() {
+        let signer = test_signer();
+        let token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &sample_claims(),
+            &jsonwebtoken::EncodingKey::from_secret(b"public-test-only-hmac-key"),
+        )
+        .unwrap();
+        assert!(
+            signer
+                .validate_access_token_with_issuer(
+                    &token,
+                    "https://lab.example.com",
+                    "https://lab.example.com",
+                )
+                .is_err()
         );
     }
 

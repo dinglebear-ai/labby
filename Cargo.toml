@@ -94,7 +94,10 @@ rmcp = { version = "1.6", features = [
 ] }
 
 # oauth / jwt
-jsonwebtoken = { version = "10", features = ["rust_crypto"] }
+# Compatibility maintenance: AWS-LC avoids the vulnerable crypto-bigint 0.5
+# path pulled by jsonwebtoken's RustCrypto ECDSA provider. Keep exactly one JWT
+# provider enabled. This does not change algorithms, key files or token claims.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 rsa = "0.10.0-rc.16"
 rand = "0.10"
 rusqlite = { version = "0.39", features = ["bundled"] }
