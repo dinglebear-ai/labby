@@ -746,7 +746,7 @@ pub struct CodeModeHistoryEntry {
     /// Stable failure kind, when the operation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
-    /// Bounded tool-call trace captured for the operation.
+    /// Bounded tool-call metadata. Retained history excludes upstream response content.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "Vec<CodeModeExecutedCallSchema>")]
     pub calls: Vec<CodeModeExecutedCall>,
@@ -791,8 +791,13 @@ impl CodeModeHistory {
         }
     }
 
-    /// Append an entry, assign its sequence number, and evict oldest entries as needed.
+    /// Append metadata to shared history, assigning a sequence number and evicting old entries.
     pub fn push(&mut self, mut entry: CodeModeHistoryEntry) {
+        // History can be read by a different caller on the same route. Keep
+        // upstream response blocks on the requesting caller's execution trace.
+        for call in &mut entry.calls {
+            call.upstream_content = None;
+        }
         entry.seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let entry_bytes = entry_serialized_size(&entry);

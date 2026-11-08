@@ -298,6 +298,8 @@ status remains unchanged; omitted content must never trigger automatic replay.
 The existing mandatory call-trace metadata can itself exceed tiny configured
 budgets; this change does not increase those limits or silently remove call rows.
 All auxiliary state belongs to one execution and uses its caller/route authority.
+The caller's execution response can include those blocks. Shared Code Mode
+history keeps call metadata and excludes upstream response content.
 
 **Prior art.** Matches Cloudflare's `unwrapMcpResult`
 ([packages/codemode/src/mcp.ts](https://github.com/cloudflare/agents/blob/1bca2a62435dee1a75914c8840d028b832913d0f/packages/codemode/src/mcp.ts))
