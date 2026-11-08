@@ -1,3 +1,4 @@
+@import "./workspace-base.css";
 @import "./workspace-controls.css";
 @import "./workspace-projects.css";
 @import "./workspace-native.css";
@@ -17,7 +18,7 @@
 .labby-overview .lb-profile-menu[popover] { overflow-y:auto; }
 .labby-overview .labby-connection { font-size:11px; }
 @media(max-width:820px) {
-  .labby-overview .labby-mobile-nav { display:flex; }
+  .labby-overview .labby-mobile-nav { display:grid; }
   .labby-overview #console-integration { padding:20px 12px; }
   .labby-overview .ov-skip:focus { left:12px; }
   .labby-overview .labby-mobile-nav > button { border:0; background:transparent; color:var(--aurora-text-muted); }
