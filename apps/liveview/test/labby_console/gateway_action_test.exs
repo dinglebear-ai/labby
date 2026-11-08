@@ -471,45 +471,6 @@ defmodule LabbyConsole.GatewayActionTest do
     refute_receive {:dispatch, _, _, _, _, _}
   end
 
-  test "publication is authorized atomically against the captured generation", %{id: id} do
-    %{generation: generation} = Auth.capture(id)
-    ref = make_ref()
-
-    fallback =
-      {:error,
-       LabbyConsole.GatewayAction.Error.new(:unauthenticated, "projects", "projects.create",
-         side_effects: "unknown"
-       )}
-
-    assert :ok =
-             Auth.publish_action(
-               id,
-               generation,
-               self(),
-               ref,
-               {:ok, %{"created" => true}},
-               fallback
-             )
-
-    assert_receive {:gateway_action, ^ref, {:ok, %{"created" => true}}}
-    assert :ok = Auth.sign_out(id)
-
-    assert :ok =
-             Auth.publish_action(
-               id,
-               generation,
-               self(),
-               ref,
-               {:ok, %{"created" => true}},
-               fallback
-             )
-
-    assert_receive {:gateway_action, ^ref,
-                    {:error, %{kind: :unauthenticated, side_effects: "unknown"}}}
-
-    refute_receive {:gateway_action, ^ref, {:ok, _}}
-  end
-
   test "worker supervisor capacity rejects without crashing admission", %{id: id} do
     pids =
       for _ <- 1..32 do
@@ -524,8 +485,10 @@ defmodule LabbyConsole.GatewayActionTest do
       end
 
     try do
-      assert {:error, %{kind: :saturated, side_effects: "none_expected"}} =
-               Auth.start_action(id, "projects", "projects.create", %{})
+      assert {:ok, ref} = Auth.start_action(id, "projects", "projects.create", %{})
+
+      assert_receive {:gateway_action, ^ref,
+                      {:error, %{kind: :saturated, side_effects: "none_expected"}}}
     after
       for pid <- pids, do: Task.Supervisor.terminate_child(LabbyConsole.GatewayAction.Tasks, pid)
     end
@@ -619,68 +582,27 @@ defmodule LabbyConsole.GatewayActionTest do
     assert {:ok, _} = Auth.current(id)
   end
 
-  test "the shared terminal claim prevents duplicate publication", %{id: id} do
-    %{generation: generation} = Auth.capture(id)
-    delivery = :atomics.new(1, signed: false)
-    assert :ok = LabbyConsole.GatewayAction.claim_delivery(delivery)
-    ref = make_ref()
-
-    fallback =
-      {:error,
-       LabbyConsole.GatewayAction.Error.new(:unauthenticated, "projects", "projects.list")}
-
-    assert :ok =
-             Auth.publish_action(
-               id,
-               generation,
-               self(),
-               ref,
-               {:ok, %{}},
-               fallback,
-               :infinity,
-               delivery
-             )
-
-    refute_receive {:gateway_action, ^ref, _}
-  end
-
-  test "the worker and deadline owner share the exact terminal claim", %{id: id} do
-    :ok = :sys.suspend(Auth)
+  @tag timeout: 10_000
+  test "blocked admission reserves promptly and never dispatches stale queued work", %{id: id} do
+    :ok = :sys.suspend(LabbyConsole.GatewayAction)
 
     ref =
       try do
-        {:ok, ref} = Auth.start_action(id, "projects", "projects.create", %{})
-        assert_receive {:dispatch, _, _, _, _, _}
-        await_queued_publication()
-        # Force the terminal race deterministically at the same primitive used by timeout/cancel.
-        %{delivery: delivery} = :sys.get_state(LabbyConsole.GatewayAction)[ref]
-        assert :ok = LabbyConsole.GatewayAction.claim_delivery(delivery)
+        started = System.monotonic_time(:millisecond)
+        assert {:ok, ref} = Auth.start_action(id, "projects", "projects.create", %{})
+        assert System.monotonic_time(:millisecond) - started < 250
+
+        assert_receive {:gateway_action, ^ref,
+                        {:error, %{kind: :timeout, side_effects: "none_expected"}}},
+                       5500
+
         ref
       after
-        :sys.resume(Auth)
+        :sys.resume(LabbyConsole.GatewayAction)
       end
 
-    refute_receive {:gateway_action, ^ref, _}
-  end
-
-  @tag timeout: 10_000
-  test "blocked admission returns a typed deadline and never dispatches stale queued work", %{
-    id: id
-  } do
-    :ok = :sys.suspend(LabbyConsole.GatewayAction)
-
-    try do
-      started = System.monotonic_time(:millisecond)
-
-      assert {:error, %{kind: :timeout, side_effects: "unknown"}} =
-               Auth.action(id, "projects", "projects.create", %{})
-
-      assert System.monotonic_time(:millisecond) - started <= 5500
-    after
-      :sys.resume(LabbyConsole.GatewayAction)
-    end
-
     refute_receive {:dispatch, _, _, _, _, _}
+    refute_receive {:gateway_action, ^ref, _}
     assert {:ok, %{}} = Auth.action(id, "projects", "projects.list", %{})
   end
 

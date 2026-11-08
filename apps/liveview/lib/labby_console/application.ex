@@ -10,6 +10,7 @@ defmodule LabbyConsole.Application do
     children = [
       LabbyConsoleWeb.Telemetry,
       LabbyConsole.Auth,
+      LabbyConsole.GatewayAction.Lifecycle,
       {Task.Supervisor, name: LabbyConsole.GatewayAction.Tasks, max_children: 32},
       LabbyConsole.GatewayAction,
       {DNSCluster, query: Application.get_env(:labby_console, :dns_cluster_query) || :ignore},

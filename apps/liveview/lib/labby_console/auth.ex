@@ -21,6 +21,7 @@ defmodule LabbyConsole.Auth do
 
       if expired do
         :ets.delete(__MODULE__, id)
+        broadcast_revocation(id)
         GatewayAction.revoke(id)
       end
 
@@ -51,29 +52,21 @@ defmodule LabbyConsole.Auth do
     {:reply, match?(%{generation: ^generation}, state[id]), state}
   end
 
-  def handle_call(
-        {:publish, id, generation, owner, ref, result, revoked, deadline, delivery},
-        {worker, _},
-        state
-      ) do
+  def handle_call({:publish, op, result}, {worker, _}, state) do
     state = prune(state)
 
     if Process.alive?(worker) do
       result =
-        cond do
-          deadline != :infinity and System.monotonic_time(:millisecond) >= deadline ->
-            {:error, error} = revoked
-            {:error, %{error | kind: :timeout, status: nil}}
+        if match?(%{generation: generation} when generation == op.generation, state[op.id]),
+          do: result,
+          else:
+            {:error,
+             Error.new(:unauthenticated, op.service, op.action,
+               request_id: op.ref,
+               side_effects: if(op.mutation?, do: "unknown", else: "none_expected")
+             )}
 
-          match?(%{generation: ^generation}, state[id]) ->
-            result
-
-          true ->
-            revoked
-        end
-
-      if GatewayAction.claim_delivery(delivery) == :ok,
-        do: send(owner, {:gateway_action, ref, result})
+      LabbyConsole.GatewayAction.Lifecycle.publish(op.ref, result)
     end
 
     {:reply, :ok, state}
@@ -81,9 +74,24 @@ defmodule LabbyConsole.Auth do
 
   def handle_call({:delete, id}, _, state) do
     :ets.delete(__MODULE__, id)
+    if Map.has_key?(state, id), do: broadcast_revocation(id)
     GatewayAction.revoke(id)
     {:reply, :ok, Map.delete(state, id)}
   end
+
+  defp broadcast_revocation(id) when is_binary(id) do
+    if Process.whereis(LabbyConsole.PubSub),
+      do:
+        Phoenix.PubSub.broadcast(
+          LabbyConsole.PubSub,
+          "console-session:" <> id,
+          {:console_session_revoked, id}
+        )
+
+    :ok
+  end
+
+  defp broadcast_revocation(_), do: :ok
 
   @doc false
   def capture(id) do
@@ -102,23 +110,7 @@ defmodule LabbyConsole.Auth do
   def matches?(id, generation), do: match?(%{generation: ^generation}, capture(id))
 
   @doc false
-  def publish_action(
-        id,
-        generation,
-        owner,
-        ref,
-        result,
-        revoked,
-        deadline \\ :infinity,
-        delivery \\ nil
-      ) do
-    delivery = delivery || :atomics.new(1, signed: false)
-
-    GenServer.call(
-      __MODULE__,
-      {:publish, id, generation, owner, ref, result, revoked, deadline, delivery}
-    )
-  end
+  def publish_action(op, result), do: GenServer.call(__MODULE__, {:publish, op, result})
 
   def sign_in(token) when is_binary(token) and byte_size(token) in 1..4096 do
     target = Application.get_env(:labby_console, :gateway_url)
