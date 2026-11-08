@@ -6,6 +6,7 @@ defmodule LabbyConsole.Projects do
     %{
       projects: [],
       known_archived: [],
+      reconciliation_pending: [],
       query: "",
       scope: "active",
       layout: "list",
@@ -230,19 +231,38 @@ defmodule LabbyConsole.Projects do
     with {:ok, data} <- Auth.action(session_id, "access", "access.team.list", %{}),
          {:ok, teams} <- decode_teams(data, session),
          {:ok, data} <- Auth.action(session_id, "projects", "projects.list", %{}),
-         {:ok, active} <- decode_list(data) do
-      # Archived IDs must be re-read: retained permissions are never authority.
-      archived =
-        Enum.reduce(known, [], fn p, acc ->
-          case get(session_id, p.team_id, p.project_id) do
-            {:ok, %{status: "disabled"} = fresh} -> [fresh | acc]
-            _ -> acc
-          end
-        end)
-
-      {:ok, %{teams: teams, active: active, archived: archived}}
+         {:ok, active} <- decode_list(data),
+         {:ok, snapshots, inaccessible} <- refresh_known(session_id, known) do
+      # A get is later than the list. Its snapshot or definitive permission
+      # removal supersedes an earlier list row for this same Team assignment.
+      checked = Enum.map(snapshots ++ inaccessible, &identity/1)
+      active = Enum.reject(active, &(identity(&1) in checked))
+      active = Enum.filter(snapshots, &(&1.status == "active")) ++ active
+      archived = Enum.filter(snapshots, &(&1.status == "disabled"))
+      {:ok, %{teams: teams, active: active, archived: archived, inaccessible: inaccessible}}
     end
   end
+
+  defp refresh_known(session_id, known) do
+    known
+    |> Enum.uniq_by(&identity/1)
+    |> Enum.reduce_while({:ok, [], []}, fn p, {:ok, snapshots, inaccessible} ->
+      case get(session_id, p.team_id, p.project_id) do
+        {:ok, fresh} ->
+          {:cont, {:ok, [fresh | snapshots], inaccessible}}
+
+        # Only a definitive dispatch 403 removes the identity. Session preflight
+        # failures, timeouts, malformed data and other errors remain failures.
+        {:error, %Error{kind: :forbidden, status: 403}} ->
+          {:cont, {:ok, snapshots, [identity(p) | inaccessible]}}
+
+        {:error, %Error{}} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  def identity(project), do: Map.take(project, [:team_id, :project_id])
 
   def get(session_id, team, project) do
     with {:ok, row} <-

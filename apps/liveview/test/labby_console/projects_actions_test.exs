@@ -77,4 +77,42 @@ defmodule LabbyConsole.ProjectsActionsTest do
 
     refute_receive {:projects_dispatch, "projects.update", _}
   end
+
+  test "successful active list cannot conceal a failed known identity read", %{
+    state: state,
+    id: id
+  } do
+    identity = %{team_id: "t", project_id: "archived"}
+
+    for {response, kind} <- [{{503, %{}}, :gateway_error}, {{200, %{}}, :invalid_response}] do
+      Agent.update(state, &Map.put(&1, :get_failure, response))
+
+      assert {:error, %{kind: ^kind, action: "projects.get"}} =
+               Projects.refresh(id, %{}, [identity])
+
+      assert_receive {:projects_dispatch, "projects.get",
+                      %{"team_id" => "t", "project_id" => "archived"}}
+    end
+  end
+
+  test "definitive project get 403 removes stale list permission with explicit disposition", %{
+    state: state,
+    id: id
+  } do
+    row = %{
+      "project_id" => "revoked",
+      "team_id" => "t",
+      "name" => "Old authority",
+      "role" => "admin",
+      "status" => "active",
+      "policy_epoch" => 1,
+      "can_manage" => true
+    }
+
+    identity = %{team_id: "t", project_id: "revoked"}
+    Agent.update(state, &(&1 |> Map.put(:rows, [row]) |> Map.put(:get_failure, {403, %{}})))
+
+    assert {:ok, %{active: [], archived: [], inaccessible: [^identity]}} =
+             Projects.refresh(id, %{}, [identity])
+  end
 end

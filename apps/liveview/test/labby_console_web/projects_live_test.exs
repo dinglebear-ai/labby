@@ -133,4 +133,90 @@ defmodule LabbyConsoleWeb.ProjectsLiveTest do
     render_async(view, 2000)
     assert has_element?(view, "article[data-project=possible]")
   end
+
+  test "accepted archive remains unreconciled across transient known reads and retries reads only",
+       %{conn: conn, state: state} do
+    row = %{
+      "project_id" => "pending-archive",
+      "team_id" => "t",
+      "name" => "Pending archive",
+      "status" => "active",
+      "role" => "admin",
+      "policy_epoch" => 1,
+      "can_manage" => true
+    }
+
+    Agent.update(state, &%{&1 | rows: [row]})
+    signed = post(conn, "/sign-in", %{credential: "projects"})
+    {:ok, view, _} = live(recycle(signed), "/projects")
+    render_async(view, 2000)
+    id = LabbyConsole.Projects.key("t", "pending-archive")
+    view |> element("#project-open-#{id}") |> render_click()
+    view |> element("#projects-archive") |> render_click()
+    Agent.update(state, &Map.put(&1, :after_write_get_failure, {503, %{}}))
+    view |> element("#projects-confirm-archive") |> render_click()
+    render_async(view, 2000)
+    render_async(view, 2000)
+    assert has_element?(view, "#projects-error", "reconciliation incomplete")
+    refute render(view) =~ "Gateway state reconciled"
+    refute has_element?(view, "article[data-project=pending-archive]")
+    assert_receive {:projects_dispatch, "projects.archive", _}
+    assert_receive {:projects_dispatch, "projects.get", _}
+    assert_receive {:projects_dispatch, "projects.get", _}
+    view |> element("#projects-create") |> render_click()
+    assert has_element?(view, "#projects-save[disabled]")
+    view |> element("#projects-close") |> render_click()
+    view |> element("#projects-refresh") |> render_click()
+    render_async(view, 2000)
+    assert_receive {:projects_dispatch, "projects.get", %{"project_id" => "pending-archive"}}
+    assert has_element?(view, "#projects-error", "reconciliation incomplete")
+    refute_receive {:projects_dispatch, "projects.archive", _}
+    Agent.update(state, &Map.delete(&1, :get_failure))
+    view |> element("#projects-refresh") |> render_click()
+    render_async(view, 2000)
+    refute has_element?(view, "#projects-error")
+    view |> element("#projects-scope-archived") |> render_click()
+    assert has_element?(view, "article[data-project=pending-archive]")
+  end
+
+  test "uncertain write retains draft and guard when list succeeds but affected get fails", %{
+    conn: conn,
+    state: state
+  } do
+    signed = post(conn, "/sign-in", %{credential: "projects"})
+    {:ok, view, _} = live(recycle(signed), "/projects")
+    render_async(view, 2000)
+    view |> element("#projects-create") |> render_click()
+
+    Agent.update(
+      state,
+      &(&1 |> Map.put(:malformed, true) |> Map.put(:after_write_get_failure, {503, %{}}))
+    )
+
+    params = %{
+      "project" => %{
+        "name" => "Keep uncertain draft",
+        "project_id" => "uncertain-get",
+        "team_id" => "t"
+      }
+    }
+
+    render_click(view, "projects_save", params)
+    render_async(view, 2000)
+    assert has_element?(view, "#projects-save[disabled]")
+    view |> element("#projects-refresh") |> render_click()
+    render_async(view, 2000)
+    assert has_element?(view, "#projects-error", "reconciliation incomplete")
+    assert has_element?(view, "#projects-name[value='Keep uncertain draft']")
+    assert has_element?(view, "#projects-save[disabled]")
+    assert_receive {:projects_dispatch, "projects.get", %{"project_id" => "uncertain-get"}}
+    render_click(view, "projects_save", params)
+    assert_receive {:projects_dispatch, "projects.create", _}
+    refute_receive {:projects_dispatch, "projects.create", _}
+    Agent.update(state, &Map.delete(&1, :get_failure))
+    view |> element("#projects-refresh") |> render_click()
+    render_async(view, 2000)
+    refute has_element?(view, "#projects-save[disabled]")
+    assert has_element?(view, "article[data-project=uncertain-get]")
+  end
 end

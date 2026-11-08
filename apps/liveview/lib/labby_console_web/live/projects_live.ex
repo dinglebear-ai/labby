@@ -164,14 +164,19 @@ defmodule LabbyConsoleWeb.ProjectsLive do
     # Every known alias is re-read separately; another Team's row never inherits
     # the initiating alias's manage permission.
     known =
-      Enum.filter(state.projects, &(&1.status == "disabled" || &1.id in state.known_archived))
-      |> Enum.take(20)
+      state.reconciliation_pending ++
+        Enum.filter(state.projects, &(&1.status == "disabled" || &1.id in state.known_archived))
+
+    known = known |> Enum.map(&Projects.identity/1) |> Enum.uniq() |> Enum.take(20)
 
     id = socket.assigns.session_id
     scope = socket.assigns.current_scope
 
     socket
-    |> update(:projects, &%{&1 | projects: [], selected: nil, teams: []})
+    |> update(
+      :projects,
+      &%{&1 | projects: [], selected: nil, teams: [], reconciliation_pending: known}
+    )
     |> begin(:refresh, fn -> Projects.refresh(id, scope, known) end)
   end
 
@@ -250,17 +255,38 @@ defmodule LabbyConsoleWeb.ProjectsLive do
     location =
       if purpose == :refresh || match?({:reconcile, _}, purpose), do: "page", else: "form"
 
+    incomplete =
+      match?({:reconcile, _}, purpose) ||
+        (purpose == :refresh && socket.assigns.projects.reconciliation_pending != [])
+
+    uncertain_write = error.side_effects in ["unknown", "possible"]
+
     message =
-      if error.side_effects in ["unknown", "possible"],
-        do:
-          "Outcome uncertain. Do not submit again. Refresh or find this project by ID to reconcile gateway state.",
-        else:
+      cond do
+        incomplete ->
+          "Project reconciliation incomplete (#{error.kind}). Known identities are retained. Refresh to verify gateway state; no write has been retried."
+
+        uncertain_write ->
+          "Outcome uncertain. Do not submit again. Refresh or find this project by ID to reconcile gateway state."
+
+        true ->
           "Project unavailable (#{error.kind}). Check your access and the team and project ID."
+      end
 
     reply(socket, fn state ->
+      pending =
+        if uncertain_write && match?({:write, _}, purpose) do
+          affected = %{team_id: state.draft["team_id"], project_id: state.draft["project_id"]}
+          aliases = Enum.filter(state.projects, &(&1.project_id == affected.project_id))
+          [affected | Enum.map(aliases, &Projects.identity/1)] ++ state.reconciliation_pending
+        else
+          state.reconciliation_pending
+        end
+
       state = %{
         state
-        | uncertain: error.side_effects in ["unknown", "possible"] || state.uncertain
+        | uncertain: uncertain_write || match?({:reconcile, _}, purpose) || state.uncertain,
+          reconciliation_pending: Enum.uniq(pending) |> Enum.take(20)
       }
 
       # A failed permission check cannot leave an old managing row actionable.
@@ -291,7 +317,21 @@ defmodule LabbyConsoleWeb.ProjectsLive do
           do: state.active_team,
           else: (List.first(data.teams) || %{id: ""}).id
 
-      state = %{reconciled | teams: data.teams, active_team: team, uncertain: false}
+      notice =
+        if data.inaccessible != [],
+          do:
+            "Project access denied. Stale permissions were removed; lifecycle state is unavailable for inaccessible projects.",
+          else: state.notice
+
+      state = %{
+        reconciled
+        | teams: data.teams,
+          active_team: team,
+          uncertain: false,
+          reconciliation_pending: [],
+          notice: notice
+      }
+
       if preferences, do: Projects.restore_preferences(state, preferences), else: state
     end)
   end
@@ -320,9 +360,11 @@ defmodule LabbyConsoleWeb.ProjectsLive do
     # Lifecycle changes are organization-wide. Retain identity only and fetch each
     # alias through Rust instead of copying the mutating row's permission.
     known =
-      Enum.filter(state.projects, &(&1.status == "disabled" || &1.project_id == p.project_id))
+      state.reconciliation_pending ++
+        Enum.filter(state.projects, &(&1.status == "disabled" || &1.project_id == p.project_id))
 
-    known = Enum.uniq_by([p | known], & &1.id) |> Enum.take(20)
+    known = [p | known] |> Enum.map(&Projects.identity/1) |> Enum.uniq() |> Enum.take(20)
+
     id = socket.assigns.session_id
     scope = socket.assigns.current_scope
 
@@ -335,6 +377,7 @@ defmodule LabbyConsoleWeb.ProjectsLive do
           | dialog: nil,
             selected: nil,
             projects: [],
+            reconciliation_pending: known,
             scope: "active",
             query: ""
         }
@@ -343,20 +386,30 @@ defmodule LabbyConsoleWeb.ProjectsLive do
     {:noreply, begin(socket, {:reconcile, mode}, fn -> Projects.refresh(id, scope, known) end)}
   end
 
-  defp complete(socket, {:reconcile, mode}, result) do
+  defp complete(socket, {:reconcile, mode}, {:ok, data} = result) do
     case complete(socket, :refresh, result) do
-      {:noreply, updated} when is_tuple(result) and elem(result, 0) == :ok ->
-        reply(
-          updated,
-          &%{
-            &1
-            | notice:
-                "Project #{%{"create" => "created", "edit" => "renamed", "archive" => "archived", "restore" => "reactivated"}[mode]}. Gateway state reconciled."
-          }
-        )
-
-      other ->
-        other
+      {:noreply, updated} ->
+        if data.inaccessible == [] do
+          reply(
+            updated,
+            &%{
+              &1
+              | notice:
+                  "Project #{%{"create" => "created", "edit" => "renamed", "archive" => "archived", "restore" => "reactivated"}[mode]}. Gateway state reconciled."
+            }
+          )
+        else
+          # The accepted write is known, but a revoked assignment's lifecycle is
+          # no longer observable. Do not describe that disposition as verified.
+          reply(
+            updated,
+            &%{
+              &1
+              | notice:
+                  "Project change accepted. Access is now denied for affected assignments; stale permissions removed. Their lifecycle state cannot be inspected."
+            }
+          )
+        end
     end
   end
 

@@ -65,7 +65,10 @@ defmodule LabbyConsole.ProjectsFixture do
                 &(&1["project_id"] == params["project_id"] && &1["team_id"] == params["team_id"])
               )
 
-            if p, do: {{200, p}, s}, else: {{403, %{kind: "forbidden"}}, s}
+            case Map.get(s, :get_failure) do
+              nil -> if p, do: {{200, p}, s}, else: {{403, %{kind: "forbidden"}}, s}
+              response -> {response, s}
+            end
 
           _ when s.reject ->
             {{403, %{kind: "forbidden"}}, s}
@@ -111,6 +114,16 @@ defmodule LabbyConsole.ProjectsFixture do
             end
         end
       end)
+
+    if action in ~w(projects.create projects.update projects.archive projects.activate) &&
+         status == 200 do
+      Agent.update(state, fn s ->
+        case Map.get(s, :after_write_get_failure) do
+          nil -> s
+          failure -> Map.put(s, :get_failure, failure)
+        end
+      end)
+    end
 
     if action == "projects.create" && Agent.get(state, &Map.get(&1, :malformed, false)),
       do: send_resp(conn, 200, "{"),
