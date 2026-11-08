@@ -327,6 +327,10 @@ impl NoticeStore {
         self.published.notified().await;
     }
 
+    pub(super) fn notify_published(&self) {
+        self.published.notify_waiters();
+    }
+
     /// Open under the validated private installation, before accepting requests.
     pub(crate) async fn open_installation() -> Result<Self, NoticeError> {
         tokio::task::spawn_blocking(|| {
@@ -417,7 +421,7 @@ impl NoticeStore {
         self.run_admitted(permit, work).await
     }
 
-    /// Only for the bounded Events worker and subscription handlers. A
+    /// For the bounded Events and joined session presence workers. A
     /// delivery must wait for the polling pass that claimed it to finish
     /// using the connection, rather than release and reclaim the same row.
     pub(super) async fn run_event<T: Send + 'static>(
@@ -868,14 +872,21 @@ fn acknowledge_in(
         )? > 0
             && !acknowledged.contains(id)
         {
-            tx.execute(
-                "UPDATE agent_event_deliveries SET status='stopped' WHERE notice_id=? AND status='pending'",
-                [id],
-            )?;
+            stop_notice_delivery_in(tx, id)?;
             acknowledged.push(id.clone());
         }
     }
     Ok(acknowledged)
+}
+
+pub(super) fn stop_notice_delivery_in(tx: &Connection, id: &str) -> Result<(), NoticeError> {
+    // Stop retries, but keep a current claim counted until its worker releases
+    // it or it expires. An ACK cannot recall a request already on the wire.
+    tx.execute(
+        "UPDATE agent_event_deliveries SET status='stopped' WHERE notice_id=? AND status='pending'",
+        [id],
+    )?;
+    Ok(())
 }
 fn deliver_at<T>(
     db: &mut Connection,
