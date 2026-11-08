@@ -123,6 +123,18 @@ test-integration:
 live-e2e tier="pr" seed="1":
     scripts/ci/labby-live-e2e.sh "{{tier}}" "{{seed}}"
 
+# LiveView browser E2E: build current Rust Labby, start isolated backend + UI.
+liveview-e2e:
+    cd apps/liveview && npm run test:e2e
+
+# Controlled browser scenarios against API fixtures (not end-to-end evidence).
+liveview-browser-fixtures:
+    cd apps/liveview && mix assets.deploy && npm run test:browser:fixtures
+
+# LiveView unit, HTTP contract, and component regressions.
+liveview-test:
+    cd apps/liveview && mix precommit
+
 # Lint
 lint: skill-drift rust-toolchain-sync module-reachability
     # --all-targets so tests/examples/benches are linted too. Without it the

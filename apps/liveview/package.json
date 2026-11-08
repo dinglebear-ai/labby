@@ -1,0 +1,12 @@
+{
+  "name": "labby-liveview-e2e",
+  "private": true,
+  "scripts": {
+    "pretest:e2e": "node --test e2e-real/*.test.mjs && node e2e-real/build.mjs",
+    "test:e2e": "playwright test",
+    "test:browser:fixtures": "playwright test --config=playwright.fixtures.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1"
+  }
+}
