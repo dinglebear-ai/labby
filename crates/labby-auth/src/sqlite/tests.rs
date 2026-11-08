@@ -2306,6 +2306,81 @@ async fn v15_two_openers_serialize_and_indexes_are_used() {
 }
 
 #[tokio::test]
+async fn registered_client_survives_reopen_and_token_cleanup() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("auth.db");
+    let store = SqliteStore::open(path.clone()).await.unwrap();
+    let client = RegisteredClient {
+        client_id: "dcr_persistent-client".to_string(),
+        redirect_uris: vec!["https://client.example/callback".to_string()],
+        created_at: now_unix() - 365 * 24 * 3600,
+        token_endpoint_auth_method: "none".to_string(),
+        token_endpoint_auth_methods: Vec::new(),
+        jwks: None,
+        jwks_uri: None,
+    };
+    store.register_client(client.clone()).await.unwrap();
+    let mut expired = sample_refresh_token(&client.client_id, "expired-client-token");
+    expired.created_at = now_unix() - 600;
+    expired.expires_at = now_unix() - 10;
+    store.upsert_refresh_token(expired).await.unwrap();
+    drop(store);
+
+    let reopened = SqliteStore::open(path.clone()).await.unwrap();
+    assert_eq!(
+        reopened.find_client(&client.client_id).await.unwrap(),
+        Some(client.clone())
+    );
+    // Opening the database already runs bounded expired-token cleanup.
+    assert!(
+        reopened
+            .find_refresh_token("expired-client-token")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut expired = sample_refresh_token(&client.client_id, "explicit-cleanup-token");
+    expired.created_at = now_unix() - 600;
+    expired.expires_at = now_unix() - 10;
+    reopened.upsert_refresh_token(expired).await.unwrap();
+    assert_eq!(reopened.cleanup_expired().await.unwrap(), 1);
+    assert!(
+        reopened
+            .find_refresh_token("explicit-cleanup-token")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        reopened.find_client(&client.client_id).await.unwrap(),
+        Some(client.clone())
+    );
+    // A new grant reuses the stored registration after its old token expires.
+    reopened
+        .upsert_refresh_token(sample_refresh_token(
+            &client.client_id,
+            "renewed-client-token",
+        ))
+        .await
+        .unwrap();
+    drop(reopened);
+
+    let reopened = SqliteStore::open(path).await.unwrap();
+    assert_eq!(
+        reopened.find_client(&client.client_id).await.unwrap(),
+        Some(client.clone())
+    );
+    let renewed = reopened
+        .find_refresh_token("renewed-client-token")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(renewed.client_id, client.client_id);
+    // Public DCR has no secret or expiring token-endpoint credentials.
+    assert_eq!(client.token_endpoint_auth_method, "none");
+}
+
+#[tokio::test]
 async fn sqlite_store_cleanup_expired_removes_stale_rows() {
     let store = temp_store().await;
     let now = now_unix();
