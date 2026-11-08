@@ -19,7 +19,7 @@ defmodule LabbyConsoleWeb.SessionContextFixture do
       200,
       Jason.encode!(%{
         authenticated: true,
-        expires_at: System.system_time(:second) + 60,
+        expires_at: System.system_time(:second) + if(user == "short-lived", do: 2, else: 60),
         csrf_token: "context-fixture-csrf",
         user: %{sub: "same-external-subject"},
         authority_state: "ready",
@@ -128,6 +128,26 @@ defmodule LabbyConsoleWeb.LiveSessionTest do
     assert render(view) =~ "protected-row"
     assert :ok = Auth.sign_out(id)
     assert_redirect(view, "/sign-in", 1_000)
+  end
+
+  test "a connected caller expires without another browser event", %{conn: conn} do
+    server =
+      start_supervised!(
+        Supervisor.child_spec(
+          {Bandit, plug: LabbyConsoleWeb.SessionContextFixture, port: 0, ip: {127, 0, 0, 1}},
+          id: :short_session_gateway
+        )
+      )
+
+    {:ok, {_, port}} = ThousandIsland.listener_info(server)
+    Application.put_env(:labby_console, :gateway_url, "http://127.0.0.1:#{port}")
+    assert {:ok, id} = Auth.sign_in("short-lived")
+
+    {:ok, view, _} =
+      live_isolated(conn, LabbyConsoleWeb.SessionHarnessLive, session: %{"console_session" => id})
+
+    assert render(view) =~ "protected-row"
+    assert_redirect(view, "/sign-in", 4_000)
   end
 
   test "another session's revocation does not redirect this caller", %{

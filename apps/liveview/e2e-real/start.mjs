@@ -14,7 +14,9 @@ if(![credential,controlKey].every(v=>/^[a-f0-9]{64}$/.test(v||'')))throw new Err
 const binary=resolve(process.env.LABBY_E2E_BINARY||'../../target/debug/labby')
 const root=mkdtempSync(resolve(tmpdir(),'labby-liveview-real-'))
 const home=resolve(root,'labby')
+const accountHome=resolve(root,'account-home')
 mkdirSync(home,{mode:0o700})
+mkdirSync(accountHome,{mode:0o700})
 writeFileSync(resolve(home,'config.toml'),`config_version = 1
 [code_mode]
 enabled = false
@@ -31,7 +33,7 @@ url = "http://127.0.0.1:4300/mcp"
 `,{mode:0o600})
 writeFileSync(resolve(home,'.env'),`LABBY_AUTH_MODE=bearer\nLABBY_MCP_HTTP_TOKEN=${credential}\n`,{mode:0o600})
 const env=Object.fromEntries(['PATH','HOME','TMPDIR','LANG','SSL_CERT_FILE','NIX_SSL_CERT_FILE'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]))
-const gatewayEnv={...env,LABBY_HOME:home,LABBY_LOG_DIR:resolve(root,'logs'),LABBY_LOG:'labby=info,warn',LABBY_AUTH_MODE:'bearer',LABBY_MCP_HTTP_TOKEN:credential}
+const gatewayEnv={...env,HOME:accountHome,LABBY_HOME:home,LABBY_LOG_DIR:resolve(root,'logs'),LABBY_LOG:'labby=info,warn',LABBY_AUTH_MODE:'bearer',LABBY_MCP_HTTP_TOKEN:credential}
 const children=new Set(), sinks=[]
 let stopping=false, backend, upstream, control, restricted, restarting=false, restarts=0
 const receipt={pid:process.pid,sourceRevision:process.env.LABBY_E2E_SOURCE_REVISION||spawnSync('git',['rev-parse','HEAD'],{cwd:resolve('../..'),encoding:'utf8',timeout:2000}).stdout?.trim()||null,binary,binarySha256:null,ports:[4297,4298,4299,4300,4301],stages:[]}
