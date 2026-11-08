@@ -1,35 +1,19 @@
 defmodule LabbyConsoleWeb.ServerCatalogLive do
   use LabbyConsoleWeb, :live_view
-  alias LabbyConsole.{Auth, ServerCatalog}
+  on_mount {LabbyConsoleWeb.LiveSession, :authenticated}
+  alias LabbyConsole.{ServerCatalog}
 
-  def mount(%{"id" => name}, session, socket) do
-    id = session["console_session"]
+  def mount(%{"id" => name}, _session, socket) do
+    socket =
+      assign(socket,
+        page_title: "Server catalog",
+        name: name,
+        catalog: nil,
+        loading: true,
+        error: nil
+      )
 
-    case Auth.current(id) do
-      {:ok, user} ->
-        if connected?(socket),
-          do:
-            Process.send_after(
-              self(),
-              :session_expired,
-              max(0, user["expires_at"] - System.system_time(:second)) * 1000
-            )
-
-        socket =
-          assign(socket,
-            page_title: "Server catalog",
-            session_id: id,
-            name: name,
-            catalog: nil,
-            loading: true,
-            error: nil
-          )
-
-        {:ok, if(connected?(socket), do: load(socket), else: socket)}
-
-      _ ->
-        {:ok, redirect(socket, to: "/sign-in")}
-    end
+    {:ok, if(connected?(socket), do: load(socket), else: socket)}
   end
 
   def handle_info(:session_expired, socket),
@@ -66,7 +50,12 @@ defmodule LabbyConsoleWeb.ServerCatalogLive do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} authenticated={true}>
+    <Layouts.app
+      flash={@flash}
+      authenticated={true}
+      subject={@subject}
+      preference_key={@preference_key}
+    >
       <main id="console-integration" tabindex="-1">
         <.link navigate="/gateway">Back to servers</.link>
         <h1>Server catalog</h1>

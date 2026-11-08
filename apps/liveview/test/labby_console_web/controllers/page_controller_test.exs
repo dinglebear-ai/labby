@@ -6,6 +6,7 @@ defmodule LabbyConsoleWeb.PageControllerTest do
     html = html_response(conn, 200)
     assert html =~ "Labby Console"
     assert html =~ "Configure a gateway target"
-    refute html =~ "Connected"
+    refute html =~ ~s(id="gateway-status")
+    assert html =~ ~r/id="labby-connection"[^>]*data-state="connecting"/
   end
 end

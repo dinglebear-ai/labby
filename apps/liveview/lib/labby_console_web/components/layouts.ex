@@ -35,6 +35,7 @@ defmodule LabbyConsoleWeb.Layouts do
   attr :authenticated, :boolean, default: false
   attr :subject, :string, default: nil
   attr :preference_key, :string, default: nil
+  attr :main_id, :string, default: "console-integration"
 
   slot :inner_block, required: true
 
@@ -45,7 +46,7 @@ defmodule LabbyConsoleWeb.Layouts do
     <LabbyConsoleWeb.WorkspaceShell.shell
       id="labby-workspace-shell"
       page={String.downcase(@page)}
-      main_id="console-integration"
+      main_id={@main_id}
       authenticated={@authenticated}
       routes={@routes}
       subject={@subject}
@@ -63,6 +64,7 @@ defmodule LabbyConsoleWeb.Layouts do
     do: %{
       "overview" => "/overview",
       "gateway" => "/gateway",
+      "projects" => "/projects",
       "runtime" => "/runtime",
       "clients" => "/clients",
       "diagnostics" => "/diagnostics",

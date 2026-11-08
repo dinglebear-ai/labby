@@ -1,35 +1,19 @@
 defmodule LabbyConsoleWeb.OverviewLive do
   use LabbyConsoleWeb, :live_view
+  on_mount {LabbyConsoleWeb.LiveSession, :authenticated}
   alias LabbyConsole.{Auth, UsageMetrics}
 
-  def mount(_, session, socket) do
-    id = session["console_session"]
+  def mount(_, _session, socket) do
+    socket =
+      assign(socket,
+        page_title: "Overview",
+        inventory: nil,
+        usage: nil,
+        pending: [],
+        errors: []
+      )
 
-    case Auth.current(id) do
-      {:ok, user} ->
-        if connected?(socket),
-          do:
-            Process.send_after(
-              self(),
-              :session_expired,
-              max(0, user["expires_at"] - System.system_time(:second)) * 1000
-            )
-
-        socket =
-          assign(socket,
-            page_title: "Overview",
-            session_id: id,
-            inventory: nil,
-            usage: nil,
-            pending: [],
-            errors: []
-          )
-
-        {:ok, if(connected?(socket), do: load(socket), else: socket)}
-
-      _ ->
-        {:ok, redirect(socket, to: "/sign-in")}
-    end
+    {:ok, if(connected?(socket), do: load(socket), else: socket)}
   end
 
   def handle_event("refresh", _, %{assigns: %{pending: []}} = socket),
@@ -67,7 +51,13 @@ defmodule LabbyConsoleWeb.OverviewLive do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} authenticated={true} page="Overview">
+    <Layouts.app
+      flash={@flash}
+      authenticated={true}
+      subject={@subject}
+      preference_key={@preference_key}
+      page="Overview"
+    >
       <main id="console-integration" tabindex="-1">
         <header class="console-inventory-header">
           <div>

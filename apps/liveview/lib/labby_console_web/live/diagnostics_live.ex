@@ -1,35 +1,17 @@
 defmodule LabbyConsoleWeb.DiagnosticsLive do
   use LabbyConsoleWeb, :live_view
-  alias LabbyConsole.Auth
+  on_mount {LabbyConsoleWeb.LiveSession, :authenticated}
 
-  def mount(_, session, socket) do
-    id = session["console_session"]
+  def mount(_, _session, socket) do
+    socket =
+      assign(socket,
+        page_title: "Diagnostics",
+        rows: [],
+        loading: false,
+        error: nil
+      )
 
-    case Auth.current(id) do
-      {:ok, user} ->
-        if connected?(socket),
-          do:
-            Process.send_after(
-              self(),
-              :session_expired,
-              max(0, user["expires_at"] - System.system_time(:second)) * 1000
-            )
-
-        socket =
-          assign(socket,
-            page_title: "Diagnostics",
-            session_id: id,
-            subject: user["user"]["sub"],
-            rows: [],
-            loading: false,
-            error: nil
-          )
-
-        {:ok, if(connected?(socket), do: load(socket), else: socket)}
-
-      _ ->
-        {:ok, redirect(socket, to: "/sign-in")}
-    end
+    {:ok, if(connected?(socket), do: load(socket), else: socket)}
   end
 
   def handle_info(:session_expired, socket),
@@ -65,7 +47,13 @@ defmodule LabbyConsoleWeb.DiagnosticsLive do
 
   def render(assigns) do
     ~H"""
-    <Layouts.app flash={@flash} authenticated={true} page="Diagnostics">
+    <Layouts.app
+      flash={@flash}
+      authenticated={true}
+      subject={@subject}
+      preference_key={@preference_key}
+      page="Diagnostics"
+    >
       <main id="console-integration" tabindex="-1">
         <h1>Diagnostics</h1>
         <p>System checks from your gateway. Read-only findings; no repairs are performed.</p>

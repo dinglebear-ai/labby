@@ -21,6 +21,7 @@ defmodule LabbyConsoleWeb.Router do
     pipe_through :browser
 
     live "/", IntegrationLive, :index
+    live "/connection", ConnectionLive, :index
     get "/sign-in", SessionController, :new
     post "/sign-in", SessionController, :create
     post "/sign-out", SessionController, :delete
@@ -35,6 +36,7 @@ defmodule LabbyConsoleWeb.Router do
     live "/activity", UsageCallsLive, :index
     live "/logs", ServerLogsLive, :index
     live "/gateway/upstreams/:name/runtime", ServerRuntimeLive, :show
+    live "/projects", ProjectsLive, :index
   end
 
   # Other scopes may use custom stacks.

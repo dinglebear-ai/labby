@@ -219,6 +219,11 @@ defmodule LabbyConsoleWeb.WorkspaceShell do
         <.link :for={{page, label, icon} <- pages(@routes)} {navigation(@routes, page)}>
           <WorkspaceIcons.icon name={icon} class="ov-small" />{label}
         </.link>
+        <.form for={%{}} action="/sign-out" method="post" id={"#{@id}-sign-out"}>
+          <button type="submit" class="labby-icon-action">
+            <WorkspaceIcons.icon name="user" class="ov-small" />Sign out
+          </button>
+        </.form>
       </div>
     </details>
     <script :type={Phoenix.LiveView.ColocatedHook} name=".ProfileMenu">

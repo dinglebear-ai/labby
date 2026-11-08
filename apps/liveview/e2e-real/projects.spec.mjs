@@ -1,0 +1,71 @@
+import {test,expect} from '@playwright/test'
+import {signIn} from './session.mjs'
+
+test('Projects persists real create rename archive lookup restore and separates workspace selection',async({page},info)=>{
+ test.setTimeout(60000)
+ const id=`ui-project-${Date.now()}`
+ await signIn(page); await page.goto('/projects')
+ await expect(page.locator('#projects-create')).toBeEnabled()
+ await page.locator('#projects-create').click()
+ await page.locator('#projects-name').fill('UI lifecycle project')
+ await page.locator('#projects-id').fill(id)
+ await page.locator('#projects-save').click()
+ const row=page.locator(`article[data-project="${id}"]`)
+ await expect(row).toContainText('UI lifecycle project')
+ await row.locator('.pj-project-name').click()
+ const epoch=await page.locator('#project-policy-epoch').textContent()
+ await page.locator('#projects-use').click()
+ await expect(page.locator('#project-policy-epoch')).toHaveText(epoch)
+ await page.locator('#projects-edit').click();await page.locator('#projects-name').fill('Renamed real project');await page.locator('#projects-save').click()
+ await expect(row).toContainText('Renamed real project')
+ await page.locator('#projects-layout-grid').click()
+ await page.getByRole('searchbox',{name:'Search projects',exact:true}).fill(id)
+ await expect(page.locator('#projects-rows')).toHaveClass(/pj-grid/)
+ await expect.poll(()=>page.evaluate(()=>Object.keys(localStorage).filter(k=>k.startsWith('labby:projects:')).map(k=>JSON.parse(localStorage.getItem(k))).some(p=>p.query===document.querySelector('[name="filters[query]"]').value))).toBe(true)
+ await page.reload();await expect(row).toContainText('Renamed real project')
+ await expect(page.locator('#projects-rows')).toHaveClass(/pj-grid/)
+ await expect(page.getByRole('searchbox',{name:'Search projects',exact:true})).toHaveValue(id)
+ await expect(row).toHaveAttribute('data-current','true')
+ await row.locator('.pj-project-name').click();await page.locator('#projects-archive').click();await page.locator('#projects-confirm-archive').click()
+ await expect(row).toHaveCount(0)
+ await page.reload();await page.locator('#projects-lookup').click();await page.locator('#projects-id').fill(id);await page.locator('#projects-save').click()
+ await expect(page.locator('#projects-dialog')).toContainText('Archived')
+ await page.locator('#projects-restore').click();await page.locator('#projects-confirm-restore').click()
+ await expect(row).toBeVisible()
+ await page.reload();await expect(row).toContainText('Renamed real project')
+ for(const width of [1440,740,320]){
+  await page.setViewportSize({width,height:900});await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+  await page.screenshot({path:info.outputPath(`projects-${width}.png`),fullPage:true})
+ }
+ await row.locator('.pj-project-name').click();await page.keyboard.press('Escape');await expect(page.locator('#projects-dialog')).toHaveCount(0)
+})
+
+test('unknown Team/project lookup is rejected without revoking a valid browser session',async({page})=>{
+ await signIn(page);await page.goto('/projects')
+ await expect(page.locator('#projects-lookup')).toBeVisible()
+ await page.locator('#projects-lookup').click();await page.locator('#projects-id').fill('absent-project-forbidden-e2e')
+ await page.locator('#projects-save').click()
+ await expect(page.locator('#projects-form-error')).toContainText('forbidden')
+ await expect(page).toHaveURL(/\/projects$/)
+ await page.keyboard.press('Escape');await page.locator('#projects-refresh').click()
+ await expect(page.locator('#projects-create')).toBeEnabled()
+})
+
+
+test('Projects preferences stay isolated when a second real caller uses the same browser',async({page})=>{
+ const second=process.env.LABBY_E2E_SECOND_CREDENTIAL
+ if(!second)throw new Error('A second real caller credential is required for Projects preference isolation acceptance')
+ await signIn(page);await page.goto('/projects')
+ await expect(page.locator('#projects-main')).toHaveAttribute('data-preference-key',/^[a-f0-9]{64}$/)
+ const first=await page.locator('#projects-main').getAttribute('data-preference-key')
+ await page.locator('#projects-layout-grid').click()
+ await page.getByRole('searchbox',{name:'Search projects',exact:true}).fill('first-caller-only')
+ await expect.poll(()=>page.evaluate(key=>JSON.parse(localStorage.getItem(`labby:projects:${key}:v1`)||'{}').query,first)).toBe('first-caller-only')
+ await page.locator('#labby-workspace > summary').click()
+ await page.getByRole('button',{name:'Sign out',exact:true}).click();await expect(page).toHaveURL(/\/sign-in$/)
+ await page.getByLabel('Gateway credential').fill(second);await page.getByRole('button',{name:'Sign in',exact:true}).click()
+ await page.goto('/projects')
+ await expect(page.locator('#projects-main')).not.toHaveAttribute('data-preference-key',first)
+ await expect(page.getByRole('searchbox',{name:'Search projects',exact:true})).toHaveValue('')
+ await expect(page.locator('#projects-layout-list')).toHaveAttribute('aria-pressed','true')
+})
