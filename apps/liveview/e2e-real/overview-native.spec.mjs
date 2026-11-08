@@ -15,7 +15,20 @@ test('native Overview uses real telemetry, scoped drawers and caller-scoped card
   await expect(page.locator(`#ov-window-${window}`)).toHaveAttribute('aria-pressed','true')
   await expect(page.locator('#overview-usage')).toBeVisible()
   await expect(page.locator('#overview-refresh')).toBeEnabled({timeout:20000})
+  if (window === '1h') {
+   await page.locator('#ov-bucket-0').click()
+   await expect(page.locator('#ov-inspector')).toContainText('Retained calls')
+   await expect(page.locator('#ov-inspector [role=alert]')).toHaveCount(0)
+   await page.locator('#ov-inspector-close').click()
+   await expect(page.locator('#ov-inspector')).toHaveCount(0)
+  }
  }
+ await page.locator('#ov-call-rows tr button').first().click()
+ await expect(page.locator('#ov-call-attribution dt')).toContainText([
+  'Caller identity', 'Client', 'Client version', 'Surface', 'Agent', 'Task', 'Subject scoped',
+ ])
+ await page.locator('#ov-inspector-close').click()
+ await expect(page.locator('#ov-inspector')).toHaveCount(0)
  await page.locator('#ov-ranking-slowest').click()
  await expect(page.locator('#ov-rankings')).toContainText('Mean elapsed')
  await page.locator('#ov-rankings-open-0').click()

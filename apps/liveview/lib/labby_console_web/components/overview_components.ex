@@ -1011,6 +1011,18 @@ defmodule LabbyConsoleWeb.OverviewComponents do
                 <dt>{label}</dt><dd>{Map.get(@selected.call, key) || "Not reported"}</dd>
               </div><div>
                 <dt>Recorded at (UTC)</dt><dd>{stamp(@selected.call["ts_unix"])}</dd>
+              </div><div :for={
+                {label, key} <- [
+                  {"Client", "client_name"},
+                  {"Client version", "client_version"},
+                  {"Surface", "surface"},
+                  {"Agent", "agent_id"},
+                  {"Task", "task_id"}
+                ]
+              }>
+                <dt>{label}</dt><dd>{reported(get_in(@selected.call, ["attribution", key]))}</dd>
+              </div><div>
+                <dt>Subject scoped</dt><dd>{subject_scope(@selected.call["subject_scoped"])}</dd>
               </div>
             </dl>
           <% end %>
@@ -1070,6 +1082,11 @@ defmodule LabbyConsoleWeb.OverviewComponents do
   defp issues(rows), do: Enum.filter(rows, &(&1["enabled"] && !&1["connected"]))
   defp readiness(nil), do: "unavailable"
   defp readiness(value), do: value.status
+  defp reported(value) when is_binary(value) and value != "", do: value
+  defp reported(_), do: "Not reported"
+  defp subject_scope(true), do: "Yes"
+  defp subject_scope(false), do: "No"
+  defp subject_scope(_), do: "Not reported"
   defp leader_label(row, "tools"), do: row["tool"]
 
   defp leader_label(row, "callers"),

@@ -86,7 +86,7 @@ defmodule LabbyConsole.OverviewFixture do
       distinct_tools: if(empty, do: 0, else: 1),
       distinct_actors: if(empty, do: 0, else: 1),
       peak_per_min: count,
-      timeseries: [%{ts_unix: p["since_unix"], calls: count, failed: 0, outcomes: []}],
+      timeseries: metric_buckets(p, mode, count),
       top_tools: if(empty, do: [], else: [tool]),
       least_tools: if(empty, do: [], else: [tool]),
       slowest_tools: if(empty, do: [], else: [Map.put(tool, :avg_elapsed_ms, 125.5)]),
@@ -96,4 +96,36 @@ defmodule LabbyConsole.OverviewFixture do
       private: "never-render-this"
     }
   end
+
+  defp metric_buckets(params, mode, calls) when mode in [:rust_buckets, :invalid_bucket] do
+    buckets =
+      rust_buckets(params["since_unix"], params["until_unix"], params["bucket_count"], calls)
+
+    if mode == :invalid_bucket do
+      buckets ++ [%{ts_unix: params["until_unix"] + 1, calls: 1, failed: 0, outcomes: []}]
+    else
+      buckets
+    end
+  end
+
+  defp metric_buckets(params, _mode, calls),
+    do: [%{ts_unix: params["since_unix"], calls: calls, failed: 0, outcomes: []}]
+
+  # Source-faithful bucket starts from crates/labby-gateway/src/usage/store.rs.
+  # The requested count is retained, even when ceil-width produces empty bins
+  # whose start is beyond the inclusive requested range.
+  def rust_buckets(first, last, count, calls) when last > first do
+    width = div(last - first + count - 1, count)
+
+    for index <- 0..(count - 1) do
+      %{
+        ts_unix: first + index * width,
+        calls: if(index == 0, do: calls, else: 0),
+        failed: 0,
+        outcomes: if(index == 0, do: [%{kind: "succeeded", calls: calls}], else: [])
+      }
+    end
+  end
+
+  def rust_buckets(_, _, _, _), do: []
 end

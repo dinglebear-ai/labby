@@ -31,6 +31,38 @@ test('native Overview styles leave a legacy read page unchanged regardless of im
   assert.deepEqual(await measure(),before)
   await page.evaluate(()=>document.getElementById('console-integration').classList.add('ov-main','ov-compact-page'))
   assert.notEqual((await measure()).maxWidth,before.maxWidth)
+  const periods = [
+   {full: 'Last hour', short: '1h'},
+   {full: '24 hours', short: '24h'},
+   {full: '7 days', short: '7d'},
+   {full: '30 days', short: '30d'},
+  ]
+  await page.locator('#console-integration').evaluate((main, periods) => {
+   const group = document.createElement('div')
+   group.className = 'ov-periods'
+   for (const period of periods) {
+    const button = document.createElement('button')
+    button.setAttribute('aria-label', period.full)
+    for (const [className, label] of [['labby-time-label', period.full], ['labby-time-short', period.short]]) {
+     const span = document.createElement('span')
+     span.className = className
+     span.textContent = label
+     button.appendChild(span)
+    }
+    group.appendChild(button)
+   }
+   main.appendChild(group)
+  }, periods)
+  for (const width of [1440, 740, 320]) {
+   await page.setViewportSize({width, height: 900})
+   for (const period of periods) {
+    const button = page.getByRole('button', {name: period.full, exact: true})
+    assert.equal(await button.count(), 1)
+    assert.equal(await button.locator('.labby-time-label').isVisible(), width > 820)
+    assert.equal(await button.locator('.labby-time-short').isVisible(), width <= 820)
+   }
+  }
+
   await page.setViewportSize({width:320,height:900})
   await page.evaluate(()=>{
    document.getElementById('console-integration').insertAdjacentHTML('beforeend','<section id="ov-recent-calls" class="ov-panel"><div class="ov-table-scroll"><table class="ov-table ov-calls-table"><thead><tr><th>Calls</th></tr></thead><tbody id="ov-call-rows"><tr><td><button class="ov-call-name">Actual call</button></td><td>Server</td><td>Caller</td><td>ok</td><td>53ms</td><td>10:00 UTC</td></tr></tbody></table></div></section>')

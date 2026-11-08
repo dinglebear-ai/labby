@@ -31,17 +31,23 @@ defmodule LabbyConsoleWeb.OverviewLiveTest do
   test "overview combines scoped inventory and usage and clears failed summaries", %{conn: conn} do
     signed = post(conn, "/sign-in", %{credential: "fixture-only"})
     {:ok, view, _} = live(recycle(signed), "/overview")
-    render_async(view, 5_000)
+    settle(view)
     assert has_element?(view, "#overview-inventory")
     assert has_element?(view, "#overview-usage")
     assert has_element?(view, "a[aria-current=page]", "Overview")
     Application.put_env(:labby_console, :fixture_usage_metrics, "malformed")
     view |> element("#overview-refresh") |> render_click()
-    render_async(view, 5_000)
+    settle(view)
     assert has_element?(view, "#overview-usage-error")
     refute has_element?(view, "#overview-usage")
     assert has_element?(view, "#overview-inventory")
     send(view.pid, :session_expired)
     assert_redirect(view, "/sign-in", 2_000)
+  end
+
+  defp settle(view) do
+    render_async(view, 5_000)
+    render_async(view, 5_000)
+    refute has_element?(view, "#overview-refresh[disabled]")
   end
 end

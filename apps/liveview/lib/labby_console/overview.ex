@@ -90,7 +90,9 @@ defmodule LabbyConsole.Overview do
                "gateway",
                "gateway.usage.metrics",
                Map.merge(params, %{
-                 "bucket_count" => 24,
+                 # The inspector uses totals and retained calls. One bucket
+                 # avoids ceil-width empty bins beyond a short requested range.
+                 "bucket_count" => 1,
                  "timezone" => "UTC",
                  "include_facets" => false
                })

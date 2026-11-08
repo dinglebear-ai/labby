@@ -983,6 +983,12 @@
 
 
 /* Product-only states and controls retain the native visual hierarchy. */
+.labby-overview #console-integration.ov-main .labby-time-label { display:inline; }
+.labby-overview #console-integration.ov-main .labby-time-short { display:none; }
+@media(max-width:820px) {
+ .labby-overview #console-integration.ov-main .labby-time-label { display:none; }
+ .labby-overview #console-integration.ov-main .labby-time-short { display:inline; }
+}
 .labby-overview #console-integration.ov-main .ov-card-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:18px; }
 .labby-overview #console-integration.ov-main .ov-layout-card { grid-column:span var(--overview-span,3); min-width:0; }
 .labby-overview #console-integration.ov-main .ov-layout-card > .ov-panel { height:100%; margin:0; }

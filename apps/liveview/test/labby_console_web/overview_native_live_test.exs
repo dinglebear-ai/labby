@@ -44,6 +44,16 @@ defmodule LabbyConsoleWeb.OverviewNativeLiveTest do
     assert has_element?(view, "#overview-inventory")
     assert has_element?(view, "#ov-runtime")
     assert has_element?(view, "#ov-call-rows tr")
+
+    for {window, label} <- [
+          {"1h", "Last hour"},
+          {"24h", "24 hours"},
+          {"7d", "7 days"},
+          {"30d", "30 days"}
+        ] do
+      assert has_element?(view, "#ov-window-#{window}[aria-label='#{label}']")
+    end
+
     refute render(view) =~ "never-render-this"
     view |> element("#ov-window-30d") |> render_click()
     render_async(view, 5000)
@@ -156,5 +166,33 @@ defmodule LabbyConsoleWeb.OverviewNativeLiveTest do
     render_async(view, 5000)
     assert has_element?(view, "#ov-inspector [role=alert]", "Scoped usage is unavailable")
     assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+  end
+
+  test "Last hour bucket inspection uses exact clicked bounds and settles with real bucket geometry",
+       %{conn: conn, data: data} do
+    Agent.update(data, &%{&1 | mode: :rust_buckets})
+    {_, view} = open(conn)
+    assert_receive {:overview_metrics_params, %{"bucket_count" => 24}}
+    view |> element("#ov-window-1h") |> render_click()
+    render_async(view, 5000)
+    render_async(view, 5000)
+
+    assert_receive {:overview_metrics_params,
+                    %{"since_unix" => first, "until_unix" => last, "bucket_count" => 24}}
+
+    assert last - first == 3600
+
+    view |> element("#ov-bucket-0") |> render_click()
+    render_async(view, 5000)
+    bucket_last = first + 149
+
+    assert_receive {:overview_metrics_params,
+                    %{"since_unix" => ^first, "until_unix" => ^bucket_last, "bucket_count" => 1}}
+
+    assert_receive {:overview_calls_params,
+                    %{"since_unix" => ^first, "until_unix" => ^bucket_last, "limit" => 25}}
+
+    assert has_element?(view, "#ov-inspector", "Retained calls")
+    refute has_element?(view, "#ov-inspector [role=alert]")
   end
 end
