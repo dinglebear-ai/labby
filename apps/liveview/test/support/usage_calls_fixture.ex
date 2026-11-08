@@ -6,6 +6,9 @@ defmodule LabbyConsole.UsageCallsFixture do
     p = conn.body_params["params"]
 
     cond do
+      mode == "unauthorized" ->
+        send_resp(conn, 401, "revoked caller")
+
       mode == "forbidden" ->
         send_resp(conn, 403, "private failure")
 

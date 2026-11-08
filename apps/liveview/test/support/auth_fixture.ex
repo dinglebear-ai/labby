@@ -124,6 +124,9 @@ defmodule LabbyConsole.AuthFixture do
           :forbidden ->
             send_resp(conn, 403, "private failure")
 
+          :unauthorized ->
+            send_resp(conn, 401, "revoked caller")
+
           :invalid_rows ->
             send_resp(
               conn,
@@ -211,6 +214,7 @@ defmodule LabbyConsole.AuthFixture do
         "empty" -> :empty
         "malformed" -> :malformed
         "forbidden" -> :forbidden
+        "unauthorized" -> :unauthorized
         _ -> :normal
       end
 

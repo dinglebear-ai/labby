@@ -31,6 +31,9 @@ defmodule LabbyConsole.ServerLogsFixture do
         "forbidden" ->
           {403, "private failure"}
 
+        "unauthorized" ->
+          {401, "revoked caller"}
+
         "malformed" ->
           {200, "bad json"}
 

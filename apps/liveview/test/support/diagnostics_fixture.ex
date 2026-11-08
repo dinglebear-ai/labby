@@ -20,6 +20,9 @@ defmodule LabbyConsole.DiagnosticsFixture do
       "empty" ->
         send_resp(conn, 200, ~s({"findings":[]}))
 
+      "unauthorized" ->
+        send_resp(conn, 401, "revoked caller")
+
       "forbidden" ->
         send_resp(conn, 403, "private diagnostics failure")
 

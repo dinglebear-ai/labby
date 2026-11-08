@@ -51,6 +51,10 @@ defmodule LabbyConsoleWeb.ServerDetailsLiveTest do
     assert render_async(view, 5_000) =~ "Fixture Fetch"
     Application.put_env(:labby_console, :fixture_server_details, "forbidden")
     view |> element("#server-details-refresh") |> render_click()
+    assert render_async(view) =~ "unavailable"
+    assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+    Application.put_env(:labby_console, :fixture_server_details, "unauthorized")
+    view |> element("#server-details-refresh") |> render_click()
     assert_redirect(view, "/sign-in", 5_000)
   end
 

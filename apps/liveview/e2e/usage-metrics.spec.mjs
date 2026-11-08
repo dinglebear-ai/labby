@@ -38,7 +38,7 @@ test('exact usage windows, recovery, private fields, isolation and expiry', asyn
   await mode(page, 'empty')
   await page.getByRole('button', {name: 'Refresh usage', exact: true}).click()
   await expect(page.locator('#usage-empty')).toBeVisible()
-  await mode(page, 'forbidden')
+  await mode(page, 'unauthorized')
   await page.getByRole('button', {name: 'Refresh usage', exact: true}).click()
   await expect(page).toHaveURL(/\/sign-in$/)
   await page.goto('/usage')

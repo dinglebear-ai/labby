@@ -55,7 +55,7 @@ defmodule LabbyConsole.ServerLogsTest do
     Application.put_env(:labby_console, :fixture_server_logs, "empty")
     assert {:ok, %{entries: [], truncated: false}} = LabbyConsole.ServerLogs.query(id)
     assert {:error, :unauthenticated} = LabbyConsole.ServerLogs.query("stranger")
-    Application.put_env(:labby_console, :fixture_server_logs, "forbidden")
+    Application.put_env(:labby_console, :fixture_server_logs, "unauthorized")
     assert {:error, :unauthenticated} = LabbyConsole.ServerLogs.query(id)
   end
 

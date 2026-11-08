@@ -43,6 +43,10 @@ defmodule LabbyConsoleWeb.ClientsLiveTest do
     assert render_async(view) =~ "42 observations"
     Application.put_env(:labby_console, :fixture_clients, "forbidden")
     view |> element("#clients-refresh") |> render_click()
+    assert render_async(view) =~ "unavailable"
+    assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+    Application.put_env(:labby_console, :fixture_clients, "unauthorized")
+    view |> element("#clients-refresh") |> render_click()
     assert_redirect(view, "/sign-in", 5_000)
   end
 

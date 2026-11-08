@@ -43,7 +43,7 @@ test('server runtime snapshot, refresh recovery, isolation and expired access', 
   await page.getByRole('button', {name: 'Refresh runtime', exact: true}).click()
   await expect(page.locator('#server-runtime-content')).toContainText('Not reported')
   await expect(page.locator('#server-runtime-content [data-state="disconnected"]')).toBeVisible()
-  await mode(page, 'forbidden')
+  await mode(page, 'unauthorized')
   await page.getByRole('button', {name: 'Refresh runtime', exact: true}).click()
   await expect(page).toHaveURL(/\/sign-in$/)
   await page.goto('/gateway/upstreams/fixture-server/runtime')

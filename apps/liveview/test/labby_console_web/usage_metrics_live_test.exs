@@ -50,6 +50,10 @@ defmodule LabbyConsoleWeb.UsageMetricsLiveTest do
     assert render_async(view, 5_000) =~ "Usage analytics"
     Application.put_env(:labby_console, :fixture_usage_metrics, "forbidden")
     view |> element("#usage-refresh") |> render_click()
+    assert render_async(view) =~ "unavailable"
+    assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+    Application.put_env(:labby_console, :fixture_usage_metrics, "unauthorized")
+    view |> element("#usage-refresh") |> render_click()
     assert_redirect(view, "/sign-in", 5_000)
   end
 

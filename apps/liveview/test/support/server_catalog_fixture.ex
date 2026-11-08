@@ -20,6 +20,9 @@ defmodule LabbyConsole.ServerCatalogFixture do
           )
         )
 
+      mode == "unauthorized" ->
+        send_resp(conn, 401, "revoked caller")
+
       mode == "forbidden" ->
         send_resp(conn, 403, "{}")
 

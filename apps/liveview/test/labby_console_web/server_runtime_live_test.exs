@@ -49,6 +49,10 @@ defmodule LabbyConsoleWeb.ServerRuntimeLiveTest do
     assert render_async(view, 5_000) =~ "Runtime snapshot"
     Application.put_env(:labby_console, :fixture_server_runtime, "forbidden")
     view |> element("#server-runtime-refresh") |> render_click()
+    assert render_async(view) =~ "unavailable"
+    assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+    Application.put_env(:labby_console, :fixture_server_runtime, "unauthorized")
+    view |> element("#server-runtime-refresh") |> render_click()
     assert_redirect(view, "/sign-in", 5_000)
   end
 

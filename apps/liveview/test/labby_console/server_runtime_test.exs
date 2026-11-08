@@ -43,7 +43,7 @@ defmodule LabbyConsole.ServerRuntimeTest do
       assert {:error, :unavailable} = LabbyConsole.ServerRuntime.fetch(session, "fixture-server")
     end
 
-    Application.put_env(:labby_console, :fixture_server_runtime, "forbidden")
+    Application.put_env(:labby_console, :fixture_server_runtime, "unauthorized")
 
     assert {:error, :unauthenticated} =
              LabbyConsole.ServerRuntime.fetch(session, "fixture-server")

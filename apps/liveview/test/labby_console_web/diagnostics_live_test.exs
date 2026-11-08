@@ -38,6 +38,10 @@ defmodule LabbyConsoleWeb.DiagnosticsLiveTest do
     assert render_async(view) =~ "Disk space is low"
     Application.put_env(:labby_console, :fixture_diagnostics, "forbidden")
     view |> element("#diagnostics-refresh") |> render_click()
+    assert render_async(view) =~ "unavailable"
+    assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+    Application.put_env(:labby_console, :fixture_diagnostics, "unauthorized")
+    view |> element("#diagnostics-refresh") |> render_click()
     assert_redirect(view, "/sign-in", 5_000)
   end
 end

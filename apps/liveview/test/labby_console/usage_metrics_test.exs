@@ -59,7 +59,7 @@ defmodule LabbyConsole.UsageMetricsTest do
 
   test "unknown and revoked callers cannot obtain analytics", %{session: session} do
     assert {:error, :unauthenticated} = LabbyConsole.UsageMetrics.fetch("unknown", "24h")
-    Application.put_env(:labby_console, :fixture_usage_metrics, "forbidden")
+    Application.put_env(:labby_console, :fixture_usage_metrics, "unauthorized")
     assert {:error, :unauthenticated} = LabbyConsole.UsageMetrics.fetch(session, "24h")
   end
 end

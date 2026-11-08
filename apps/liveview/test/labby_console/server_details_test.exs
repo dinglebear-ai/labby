@@ -43,7 +43,7 @@ defmodule LabbyConsole.ServerDetailsTest do
       assert {:error, :unavailable} = LabbyConsole.ServerDetails.fetch(session, "fixture-server")
     end
 
-    Application.put_env(:labby_console, :fixture_server_details, "forbidden")
+    Application.put_env(:labby_console, :fixture_server_details, "unauthorized")
 
     assert {:error, :unauthenticated} =
              LabbyConsole.ServerDetails.fetch(session, "fixture-server")

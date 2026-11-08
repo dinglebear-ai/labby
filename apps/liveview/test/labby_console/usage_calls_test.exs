@@ -61,7 +61,7 @@ defmodule LabbyConsole.UsageCallsTest do
     assert {:error, :unauthenticated} =
              LabbyConsole.UsageCalls.list("stranger", %{since_unix: 100, until_unix: 200})
 
-    Application.put_env(:labby_console, :fixture_usage_calls, "forbidden")
+    Application.put_env(:labby_console, :fixture_usage_calls, "unauthorized")
 
     assert {:error, :unauthenticated} =
              LabbyConsole.UsageCalls.list(id, %{since_unix: 100, until_unix: 200})

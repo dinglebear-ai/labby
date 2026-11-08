@@ -41,7 +41,7 @@ defmodule LabbyConsole.DiagnosticsTest do
     Application.put_env(:labby_console, :fixture_diagnostics, "empty")
     assert {:ok, []} = LabbyConsole.Diagnostics.checks(id)
     assert {:error, :unauthenticated} = LabbyConsole.Diagnostics.checks("another-caller")
-    Application.put_env(:labby_console, :fixture_diagnostics, "forbidden")
+    Application.put_env(:labby_console, :fixture_diagnostics, "unauthorized")
     assert {:error, :unauthenticated} = LabbyConsole.Diagnostics.checks(id)
   end
 end

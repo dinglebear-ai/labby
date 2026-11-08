@@ -45,7 +45,7 @@ defmodule LabbyConsole.ClientsTest do
 
     Application.put_env(:labby_console, :fixture_clients, "empty")
     assert {:ok, []} = LabbyConsole.Clients.list(id)
-    Application.put_env(:labby_console, :fixture_clients, "forbidden")
+    Application.put_env(:labby_console, :fixture_clients, "unauthorized")
     assert {:error, :unauthenticated} = LabbyConsole.Clients.list(id)
   end
 end

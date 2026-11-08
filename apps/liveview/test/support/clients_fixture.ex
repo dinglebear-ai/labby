@@ -34,6 +34,9 @@ defmodule LabbyConsole.ClientsFixture do
         "empty" ->
           send_resp(conn, 200, "[]")
 
+        "unauthorized" ->
+          send_resp(conn, 401, "revoked caller")
+
         "forbidden" ->
           send_resp(conn, 403, "private failure")
 

@@ -10,6 +10,8 @@ defmodule LabbyConsole.Application do
     children = [
       LabbyConsoleWeb.Telemetry,
       LabbyConsole.Auth,
+      {Task.Supervisor, name: LabbyConsole.GatewayAction.Tasks, max_children: 32},
+      LabbyConsole.GatewayAction,
       {DNSCluster, query: Application.get_env(:labby_console, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: LabbyConsole.PubSub},
       # Start a worker by calling: LabbyConsole.Worker.start_link(arg)

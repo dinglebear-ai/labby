@@ -39,7 +39,7 @@ defmodule LabbyConsole.RuntimeTest do
     end
 
     assert {:error, :unauthenticated} = LabbyConsole.Runtime.metrics("stranger")
-    Application.put_env(:labby_console, :fixture_runtime, "forbidden")
+    Application.put_env(:labby_console, :fixture_runtime, "unauthorized")
     assert {:error, :unauthenticated} = LabbyConsole.Runtime.metrics(id)
   end
 

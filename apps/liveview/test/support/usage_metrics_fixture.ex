@@ -33,6 +33,9 @@ defmodule LabbyConsole.UsageMetricsFixture do
     }
 
     case Application.get_env(:labby_console, :fixture_usage_metrics, "normal") do
+      "unauthorized" ->
+        send_resp(conn, 401, "revoked caller")
+
       "forbidden" ->
         send_resp(conn, 403, "private error")
 

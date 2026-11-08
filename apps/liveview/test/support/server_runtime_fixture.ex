@@ -17,6 +17,9 @@ defmodule LabbyConsole.ServerRuntimeFixture do
     name = conn.body_params["params"]["name"]
 
     case mode do
+      "unauthorized" ->
+        send_resp(conn, 401, "revoked caller")
+
       "forbidden" ->
         send_resp(conn, 403, "private upstream failure")
 

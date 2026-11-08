@@ -14,6 +14,9 @@ defmodule LabbyConsole.ServerDetailsFixture do
     end
 
     case Application.get_env(:labby_console, :fixture_server_details, "normal") do
+      "unauthorized" ->
+        send_resp(conn, 401, "revoked caller")
+
       "forbidden" ->
         send_resp(conn, 403, "private upstream failure")
 

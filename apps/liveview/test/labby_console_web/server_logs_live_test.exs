@@ -47,6 +47,10 @@ defmodule LabbyConsoleWeb.ServerLogsLiveTest do
     assert render_async(view) =~ "boom"
     Application.put_env(:labby_console, :fixture_server_logs, "forbidden")
     view |> element("#logs-refresh") |> render_click()
+    assert render_async(view) =~ "unavailable"
+    assert {:ok, _} = LabbyConsole.Auth.current(get_session(signed, :console_session))
+    Application.put_env(:labby_console, :fixture_server_logs, "unauthorized")
+    view |> element("#logs-refresh") |> render_click()
     assert_redirect(view, "/sign-in", 5000)
   end
 

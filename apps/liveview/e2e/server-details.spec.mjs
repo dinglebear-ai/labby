@@ -35,7 +35,7 @@ test('server detail snapshot, refresh recovery, isolation and expired access', a
     await page.getByRole('button', {name: 'Refresh details', exact: true}).click()
     await expect(page.getByRole('heading', {name: 'Fixture Fetch'})).toBeVisible()
   }
-  await mode(page, 'forbidden')
+  await mode(page, 'unauthorized')
   await page.getByRole('button', {name: 'Refresh details', exact: true}).click()
   await expect(page).toHaveURL(/\/sign-in$/)
   await page.goto('/gateway/servers/fixture-server')

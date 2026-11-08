@@ -1,9 +1,11 @@
 defmodule LabbyConsole.Auth do
   @moduledoc "Per-caller gateway sessions. Credentials never enter browser storage."
   use GenServer
+  alias LabbyConsole.{GatewayAction, GatewayAction.Error}
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
   def init(state) do
+    :ets.new(__MODULE__, [:named_table, :set, :protected, read_concurrency: true])
     Process.send_after(self(), :expire, 60_000)
     {:ok, state}
   end
@@ -13,23 +15,110 @@ defmodule LabbyConsole.Auth do
     {:noreply, prune(state)}
   end
 
-  defp prune(state),
-    do:
-      Map.reject(state, fn {_, value} ->
-        value.session["expires_at"] <= System.system_time(:second)
-      end)
+  defp prune(state) do
+    Map.reject(state, fn {id, value} ->
+      expired = value.session["expires_at"] <= System.system_time(:second)
+
+      if expired do
+        :ets.delete(__MODULE__, id)
+        GatewayAction.revoke(id)
+      end
+
+      expired
+    end)
+  end
 
   def handle_call({:put, value}, _, state) do
     id = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     state = prune(state)
 
-    if map_size(state) < 10_000,
-      do: {:reply, {:ok, id}, Map.put(state, id, value)},
-      else: {:reply, {:error, :capacity}, state}
+    if map_size(state) < 10_000 do
+      value = Map.put(value, :generation, make_ref())
+      :ets.insert(__MODULE__, {id, value})
+      {:reply, {:ok, id}, Map.put(state, id, value)}
+    else
+      {:reply, {:error, :capacity}, state}
+    end
   end
 
-  def handle_call({:get, id}, _, state), do: {:reply, Map.get(state, id), state}
-  def handle_call({:delete, id}, _, state), do: {:reply, :ok, Map.delete(state, id)}
+  def handle_call({:get, id}, _, state) do
+    state = prune(state)
+    {:reply, Map.get(state, id), state}
+  end
+
+  def handle_call({:matches, id, generation}, _, state) do
+    state = prune(state)
+    {:reply, match?(%{generation: ^generation}, state[id]), state}
+  end
+
+  def handle_call(
+        {:publish, id, generation, owner, ref, result, revoked, deadline, delivery},
+        {worker, _},
+        state
+      ) do
+    state = prune(state)
+
+    if Process.alive?(worker) do
+      result =
+        cond do
+          deadline != :infinity and System.monotonic_time(:millisecond) >= deadline ->
+            {:error, error} = revoked
+            {:error, %{error | kind: :timeout, status: nil}}
+
+          match?(%{generation: ^generation}, state[id]) ->
+            result
+
+          true ->
+            revoked
+        end
+
+      if GatewayAction.claim_delivery(delivery) == :ok,
+        do: send(owner, {:gateway_action, ref, result})
+    end
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:delete, id}, _, state) do
+    :ets.delete(__MODULE__, id)
+    GatewayAction.revoke(id)
+    {:reply, :ok, Map.delete(state, id)}
+  end
+
+  @doc false
+  def capture(id) do
+    case :ets.lookup(__MODULE__, id) do
+      [{^id, value}] ->
+        if value.session["expires_at"] > System.system_time(:second), do: value, else: nil
+
+      [] ->
+        nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
+  @doc false
+  def matches?(id, generation), do: match?(%{generation: ^generation}, capture(id))
+
+  @doc false
+  def publish_action(
+        id,
+        generation,
+        owner,
+        ref,
+        result,
+        revoked,
+        deadline \\ :infinity,
+        delivery \\ nil
+      ) do
+    delivery = delivery || :atomics.new(1, signed: false)
+
+    GenServer.call(
+      __MODULE__,
+      {:publish, id, generation, owner, ref, result, revoked, deadline, delivery}
+    )
+  end
 
   def sign_in(token) when is_binary(token) and byte_size(token) in 1..4096 do
     target = Application.get_env(:labby_console, :gateway_url)
@@ -50,12 +139,13 @@ defmodule LabbyConsole.Auth do
   def sign_in(_), do: {:error, :sign_in_failed}
 
   def current(id) do
-    with %{target: target, cookie: cookie} <- GenServer.call(__MODULE__, {:get, id}),
-         {:ok, session} <- inspect_session(target, cookie) do
+    with %{target: target, cookie: cookie, generation: generation} <- capture(id),
+         {:ok, session} <- inspect_session(target, cookie),
+         true <- matches?(id, generation) do
       {:ok, session}
     else
-      {:error, :unavailable} ->
-        {:error, :unavailable}
+      {:error, reason} when reason in [:unavailable, :forbidden] ->
+        {:error, reason}
 
       _ ->
         GenServer.call(__MODULE__, {:delete, id})
@@ -63,82 +153,106 @@ defmodule LabbyConsole.Auth do
     end
   end
 
-  @reads %{
-    "gateway" =>
-      ~w(gateway.server.get gateway.discovered_tools gateway.discovered_resources gateway.discovered_prompts gateway.host.metrics gateway.clients.list gateway.mcp.list gateway.usage.metrics gateway.usage.calls),
-    "doctor" => ~w(system.checks),
-    "server_logs" => ~w(server_logs.query)
-  }
-  def read_action(id, service, action, params) when is_map(params) do
-    if action in Map.get(@reads, service, []) do
-      with {:ok, session} <- current(id),
-           %{target: target, cookie: cookie} <- GenServer.call(__MODULE__, {:get, id}),
-           {:ok, response} <-
-             request(
-               target,
-               :post,
-               "/v1/" <> service,
-               [{"cookie", cookie}, {"x-csrf-token", session["csrf_token"]}],
-               json: %{action: action, params: params},
-               receive_timeout: if(action == "gateway.host.metrics", do: 8_000, else: 2_000)
-             ) do
-        case response do
-          %{status: status} when status in [401, 403] ->
-            GenServer.call(__MODULE__, {:delete, id})
-            {:error, :unauthenticated}
+  @doc "Run a reviewed caller-bound action. Mutations are never automatically retried."
+  def action(id, service, action, params), do: GatewayAction.run(id, service, action, params)
 
-          %{status: 200, body: body} ->
-            with true <- not is_nil(GenServer.call(__MODULE__, {:get, id})),
-                 {:ok, data} <- Jason.decode(body),
-                 do: {:ok, data},
-                 else: (_ -> {:error, :unavailable})
+  @doc "Start an owned action; receive {:gateway_action, request_id, result}. Owner death cancels it."
+  def start_action(id, service, action, params),
+    do: GatewayAction.start(id, service, action, params)
 
-          _ ->
-            {:error, :unavailable}
-        end
-      else
-        {:error, :unauthenticated} -> {:error, :unauthenticated}
-        _ -> {:error, :unavailable}
-      end
-    else
-      {:error, :unavailable}
-    end
-  end
+  @doc "Cancel a request belonging to this session. Dispatched writes may have taken effect."
+  def cancel_action(id, request_id), do: GatewayAction.cancel(id, request_id)
 
-  def read_action(_, _, _, _), do: {:error, :unavailable}
+  def read_action(id, service, action, params),
+    do: GatewayAction.run(id, service, action, params, :read) |> read_result()
 
   def servers(id) do
-    with {:ok, session} <- current(id),
-         %{target: target, cookie: cookie} <- GenServer.call(__MODULE__, {:get, id}),
-         {:ok, response} <-
-           request(
-             target,
-             :post,
-             "/v1/gateway",
-             [{"cookie", cookie}, {"x-csrf-token", session["csrf_token"]}],
-             json: %{action: "gateway.list", params: %{}}
-           ) do
-      case response do
-        %{status: status} when status in [401, 403] ->
-          GenServer.call(__MODULE__, {:delete, id})
-          {:error, :unauthenticated}
+    with {:ok, data} <-
+           GatewayAction.run(id, "gateway", "gateway.list", %{}, :read) |> read_result(),
+         do: decode_servers(data)
+  end
 
-        %{status: 200, body: body} ->
-          if GenServer.call(__MODULE__, {:get, id}),
-            do: decode_servers(body),
-            else: {:error, :unauthenticated}
+  defp read_result({:error, %Error{kind: kind}}) when kind in [:unauthenticated, :forbidden],
+    do: {:error, kind}
+
+  defp read_result({:error, %Error{}}), do: {:error, :unavailable}
+  defp read_result(result), do: result
+
+  @doc false
+  def execute_action(op, coordinator, ref) do
+    with {:ok, session} <- current(op.id),
+         true <- matches?(op.id, op.generation),
+         :ok <- GenServer.call(coordinator, {:dispatch, ref}) do
+      case request(
+             op.session.target,
+             :post,
+             "/v1/" <> op.service,
+             [
+               {"cookie", op.session.cookie},
+               {"x-csrf-token", session["csrf_token"]},
+               {"content-type", "application/json"}
+             ],
+             body: op.json,
+             receive_timeout: if(op.action == "gateway.host.metrics", do: 8_000, else: 2_000)
+           ) do
+        {:ok, response} ->
+          action_response(op, response)
 
         _ ->
-          {:error, :unavailable}
+          {:error,
+           Error.new(:transport_error, op.service, op.action,
+             side_effects: if(op.mutation?, do: "unknown", else: "none_expected")
+           )}
       end
     else
-      {:error, :unauthenticated} -> {:error, :unauthenticated}
-      _ -> {:error, :unavailable}
+      {:error, reason} when reason in [:unauthenticated, :forbidden, :unavailable] ->
+        {:error, Error.new(reason, op.service, op.action)}
+
+      _ ->
+        {:error, Error.new(:cancelled, op.service, op.action)}
     end
   end
 
-  defp decode_servers(body) do
-    with {:ok, rows} when is_list(rows) <- Jason.decode(body),
+  defp action_response(op, %{private: %{labby_response_too_large: true}}),
+    do:
+      {:error,
+       Error.new(:response_too_large, op.service, op.action,
+         side_effects: if(op.mutation?, do: "unknown", else: "none_expected")
+       )}
+
+  defp action_response(op, %{status: status, body: body}) when status in 200..299 do
+    case Jason.decode(body) do
+      {:ok, data} ->
+        {:ok, data}
+
+      _ ->
+        {:error,
+         Error.new(:invalid_response, op.service, op.action,
+           side_effects: if(op.mutation?, do: "unknown", else: "none_expected")
+         )}
+    end
+  end
+
+  defp action_response(op, %{status: status, body: body}) do
+    data =
+      case Jason.decode(body) do
+        {:ok, data} -> data
+        _ -> nil
+      end
+
+    upstream_oauth? =
+      Error.envelope?(data, op.service, op.action) and data["kind"] == "oauth_needs_reauth"
+
+    if status == 401 and not upstream_oauth? do
+      GenServer.call(__MODULE__, {:delete, op.id})
+      {:error, Error.new(:unauthenticated, op.service, op.action, status: 401)}
+    else
+      {:error, Error.from_response(status, data, op.service, op.action, op.mutation?)}
+    end
+  end
+
+  defp decode_servers(rows) do
+    with true <- is_list(rows),
          true <-
            length(rows) <= 1000 &&
              Enum.all?(rows, fn row ->
@@ -174,7 +288,8 @@ defmodule LabbyConsole.Auth do
   defp inspect_session(target, cookie) do
     case request(target, :get, "/auth/session", [{"cookie", cookie}]) do
       {:ok, %{status: 200, body: body}} -> validate_session(body)
-      {:ok, %{status: status}} when status in [401, 403] -> {:error, :unauthenticated}
+      {:ok, %{status: 401}} -> {:error, :unauthenticated}
+      {:ok, %{status: 403}} -> {:error, :forbidden}
       _ -> {:error, :unavailable}
     end
   end
@@ -228,7 +343,15 @@ defmodule LabbyConsole.Auth do
 
             if byte_size(body) <= 65_536,
               do: {:cont, {req, %{resp | body: body}}},
-              else: {:halt, {req, %{resp | status: 413, body: ""}}}
+              else:
+                {:halt,
+                 {req,
+                  %{
+                    resp
+                    | status: 413,
+                      body: "",
+                      private: Map.put(resp.private, :labby_response_too_large, true)
+                  }}}
           end
         ],
         extra
