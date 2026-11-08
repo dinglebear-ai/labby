@@ -3,6 +3,11 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
   use GenServer
   alias LabbyConsole.{Auth, GatewayAction, GatewayAction.Error}
 
+  @dispatch_open 0
+  @dispatch_granted 1
+  @stopped_before_dispatch 2
+  @stopped_after_dispatch 3
+
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   @impl true
   def init(state) do
@@ -60,7 +65,6 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
         do: :ets.delete_object(__MODULE__, row)
 
     :ets.delete(__MODULE__, {:result, ref})
-    :ets.delete(__MODULE__, {:dispatched, ref})
     :ets.delete(__MODULE__, {:acked, ref})
     :ok
   rescue
@@ -82,8 +86,20 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     ArgumentError -> false
   end
 
-  # Insert the complete immutable result atomically, never a claim without data.
-  def select_terminal(ref, candidate) do
+  # Local cancellation and timeout first close the same atomic gate used by
+  # dispatch. Its monotonic phase determines certainty even if notify is delayed.
+  # HTTP error metadata has a status and retains the gateway's own assessment.
+  def select_terminal(ref, {:error, %Error{kind: kind, status: nil} = error})
+      when kind in [:cancelled, :timeout] do
+    candidate = local_failure(ref, error)
+    select_result(ref, {:error, candidate})
+  end
+
+  def select_terminal(ref, candidate), do: select_result(ref, candidate)
+
+  # The terminal payload remains independently durable. The dispatch gate is
+  # permission arbitration, so a stopped selector cannot strand a claimed result.
+  defp select_result(ref, candidate) do
     case terminal_result(ref) do
       nil ->
         if reserved?(ref) do
@@ -100,6 +116,45 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     ArgumentError -> candidate
   end
 
+  defp local_failure(ref, error) do
+    case :ets.lookup(__MODULE__, {:operation, ref}) do
+      [{{:operation, ^ref}, %{dispatch_gate: gate, mutation?: mutation?}}] ->
+        dispatched? = stop_dispatch(gate)
+        risk = if mutation? and dispatched?, do: "unknown", else: "none_expected"
+        recovery = Error.new(error.kind, error.service, error.action, side_effects: risk).recovery
+        %{error | side_effects: risk, recovery: recovery}
+
+      _ ->
+        error
+    end
+  rescue
+    ArgumentError -> error
+  end
+
+  defp stop_dispatch(gate) do
+    case :atomics.compare_exchange(gate, 1, @dispatch_open, @stopped_before_dispatch) do
+      :ok ->
+        false
+
+      @dispatch_granted ->
+        # Another stopper can win this CAS, but both observe the prior grant.
+        :atomics.compare_exchange(gate, 1, @dispatch_granted, @stopped_after_dispatch)
+        true
+
+      @stopped_before_dispatch ->
+        false
+
+      @stopped_after_dispatch ->
+        true
+    end
+  end
+
+  defp claim_dispatch(%{dispatch_gate: gate}) do
+    :atomics.compare_exchange(gate, 1, @dispatch_open, @dispatch_granted) == :ok
+  end
+
+  defp claim_dispatch(_), do: false
+
   def terminal_result(ref) do
     case :ets.lookup(__MODULE__, {:result, ref}) do
       [{{:result, ^ref}, result}] -> result
@@ -110,7 +165,13 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
   end
 
   def dispatched?(ref) do
-    :ets.member(__MODULE__, {:dispatched, ref})
+    case :ets.lookup(__MODULE__, {:operation, ref}) do
+      [{{:operation, ^ref}, %{dispatch_gate: gate}}] ->
+        :atomics.get(gate, 1) in [@dispatch_granted, @stopped_after_dispatch]
+
+      _ ->
+        false
+    end
   rescue
     ArgumentError -> true
   end
@@ -146,7 +207,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
   def cancel(id, ref) do
     case :ets.lookup(__MODULE__, {:operation, ref}) do
       [{{:operation, ^ref}, %{id: ^id} = op}] ->
-        select_terminal(ref, failure(Map.put(op, :dispatched?, dispatched?(ref)), :cancelled))
+        select_terminal(ref, failure(Map.put(op, :dispatched?, false), :cancelled))
         notify(ref)
         :ok
 
@@ -278,8 +339,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     case state[ref] do
       %{complete?: false} = op ->
         if now() < op.deadline and Process.alive?(op.coordinator) and Process.alive?(op.owner) and
-             Auth.matches?(op.id, op.generation) do
-          :ets.insert(__MODULE__, {{:dispatched, ref}, true})
+             Auth.matches?(op.id, op.generation) and claim_dispatch(op) do
           {:reply, :ok, Map.put(state, ref, %{op | dispatched?: true})}
         else
           {:reply, :cancelled, state}
@@ -479,7 +539,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
       ref =
         case row do
           {{:session, _, _}, ref} -> ref
-          {{kind, ref}, _} when kind in [:operation, :result, :dispatched, :acked] -> ref
+          {{kind, ref}, _} when kind in [:operation, :result, :acked] -> ref
           _ -> nil
         end
 

@@ -64,6 +64,7 @@ defmodule LabbyConsole.GatewayAction do
                 action: action,
                 json: json,
                 mutation?: action in @mutations,
+                dispatch_gate: :atomics.new(1, signed: false),
                 deadline: deadline,
                 delivery: delivery
               }
