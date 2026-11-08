@@ -74,6 +74,7 @@ fn init_tracing(
     filter_override: Option<&str>,
     console_enabled: bool,
     console_diagnostics: bool,
+    private_delivery: bool,
 ) -> tracing_appender::non_blocking::WorkerGuard {
     // Priority: explicit CLI override > LABBY_LOG env var > config.toml > default.
     let filter = if let Some(directive) = filter_override {
@@ -130,9 +131,20 @@ fn init_tracing(
             .is_some_and(|f| f.eq_ignore_ascii_case("json")),
     };
 
+    let private_wire_filter = filter_fn(move |metadata| {
+        // RMCP's debug request includes custom params, and HTTP traces may
+        // contain callback URLs or payloads. Preserve warnings and Labby events.
+        !private_delivery
+            || *metadata.level() <= tracing::Level::WARN
+            || !matches!(
+                metadata.target().split("::").next().unwrap_or(""),
+                "rmcp" | "reqwest" | "hyper" | "hyper_util" | "h2" | "rustls" | "tower_http"
+            )
+    });
     if use_json {
         tracing_subscriber::registry()
             .with(filter)
+            .with(private_wire_filter)
             .with(
                 fmt::layer()
                     .json()
@@ -162,6 +174,7 @@ fn init_tracing(
             }));
         tracing_subscriber::registry()
             .with(filter)
+            .with(private_wire_filter)
             .with(fmt_layer) // console (pretty)
             .with(fmt::layer().json().with_writer(non_blocking_file)) // file (JSON)
             .init();
@@ -620,6 +633,8 @@ pub async fn run() -> ExitCode {
         log_filter_override.as_deref(),
         !cli.quiet && !json_output,
         cli.verbose > 0 || matches!(&cli.command, cli::Command::Serve(_) | cli::Command::Mcp(_)),
+        matches!(&cli.command, cli::Command::Serve(args) if args.mcp_events)
+            || matches!(&cli.command, cli::Command::Mcp(args) if args.claude_channel),
     );
 
     // 3. Load .env files (secrets + URL env vars) for runtime paths.

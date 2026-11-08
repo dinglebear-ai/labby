@@ -844,6 +844,44 @@ impl SqliteStore {
         .await
     }
 
+    #[cfg(feature = "http-axum")]
+    pub(crate) async fn has_current_oauth_grant(
+        &self,
+        client: String,
+        subject: String,
+        resource: String,
+        scope: String,
+        provider: crate::types::ProviderBinding,
+    ) -> Result<bool, AuthError> {
+        let now = now_unix();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM refresh_tokens AS token
+                    JOIN inbound_identity_provider AS live
+                      ON live.singleton=1 AND live.generation=token.provider_generation
+                      AND live.issuer=token.identity_issuer
+                    JOIN registered_clients AS client ON client.client_id=token.client_id
+                    WHERE token.client_id=?1 AND token.subject=?2 AND token.resource=?3
+                      AND token.scope=?4 AND token.identity_issuer=?5
+                      AND token.provider_generation=?6 AND token.expires_at>?7
+                )",
+                params![
+                    client,
+                    subject,
+                    resource,
+                    scope,
+                    provider.identity_issuer,
+                    provider.provider_generation,
+                    now
+                ],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     /// Whether this local OAuth client holds an unexpired Lab refresh token.
     ///
     /// The check is scoped to `client_id`: consent established for one DCR

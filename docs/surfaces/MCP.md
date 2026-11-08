@@ -53,6 +53,12 @@ uses the authenticated HTTP API rather than a sandbox helper. See
 limits, and recovery, and the [canonical Code Mode reference](../../plugins/labby/.apm/skills/using-codemode/references/code-mode.md#response-notification-contract)
 for request and response examples.
 
+Opt-in push delivery reuses these inboxes. `labby serve --mcp-events` exposes
+webhook subscriptions on authenticated root HTTP MCP. `labby mcp --claude-channel`
+sends notices to its own Claude Code stdio connection after initialization.
+Neither transport receipt acknowledges the notice. See
+[Push delivery](../dev/AGENT_NOTIFICATIONS.md#push-delivery) for setup and limits.
+
 ## Trace metadata
 
 The tool-call boundary accepts W3C/SEP-414 `traceparent`, `tracestate`, and

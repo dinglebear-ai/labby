@@ -496,6 +496,32 @@ fn connected_client_from_discovery(
 
 #[cfg(feature = "gateway")]
 impl LabMcpServer {
+    fn channel_enabled(&self) -> bool {
+        self.transport_label == "stdio"
+            && self.gateway_manager.is_some()
+            && self.route_runtime.claude_channel.is_some()
+    }
+
+    fn add_inbox_binding(&self, context: &RequestContext<RoleServer>, info: &mut ServerConfig) {
+        let auth = super::context::auth_context_from_extensions(&context.extensions);
+        if self.transport_label == "http"
+            && self.route_scope.is_root()
+            && auth.is_some_and(|auth| !auth.via_session)
+            && super::context::tool_execute_scope_allowed(auth)
+            && super::context::verified_identity_from_extensions(&context.extensions).is_some()
+            && let Some(installation) = &self.installation_id
+            && let Some(binding) = self
+                .route_runtime
+                .code_mode_notifications
+                .bridge_binding(installation)
+        {
+            info.meta.get_or_insert_default().insert(
+                super::claude_channel::BRIDGE_BINDING_META.to_owned(),
+                serde_json::Value::String(binding),
+            );
+        }
+    }
+
     async fn observe_client(&self, context: &RequestContext<RoleServer>) {
         let actor_key = actor_key_from_extensions(&context.extensions);
         let scope_key = actor_key.map(|key| format!("actor:{key}")).or_else(|| {
@@ -539,6 +565,10 @@ fn withhold_legacy_unusable_capabilities(info: &mut ServerConfig) {
 
 impl ServerHandler for LabMcpServer {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        #[cfg(feature = "gateway")]
+        if self.channel_enabled() {
+            return Cow::Borrowed(super::claude_channel::protocol_versions());
+        }
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 
@@ -561,6 +591,8 @@ impl ServerHandler for LabMcpServer {
         #[cfg(feature = "gateway")]
         self.observe_client(&context).await;
         let mut info = self.get_info();
+        #[cfg(feature = "gateway")]
+        self.add_inbox_binding(&context, &mut info);
         // RMCP adapts subsequent request validation and wire behavior from the
         // negotiated peer version. Echo the requested version because every
         // SDK-known historical version is explicitly declared above.
@@ -615,9 +647,19 @@ impl ServerHandler for LabMcpServer {
             builder
         };
         #[cfg(feature = "gateway")]
-        let capabilities = builder.build();
+        let mut capabilities = if self.events_visible() {
+            builder.enable_events().build()
+        } else {
+            builder.build()
+        };
         #[cfg(not(feature = "gateway"))]
         let capabilities = builder.build();
+        #[cfg(feature = "gateway")]
+        let channel = self.channel_enabled();
+        #[cfg(feature = "gateway")]
+        if channel {
+            super::claude_channel::ChannelSession::advertise(&mut capabilities);
+        }
         let mut info = ServerConfig::new(capabilities);
         info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
         // A pointer, not skill content. It reaches clients that never parse the
@@ -641,7 +683,22 @@ impl ServerHandler for LabMcpServer {
                 instructions.push_str("\n\nCurrent limits are available to unscoped admin/trusted-local callers at lab://gateway/limits; the configuration is being updated, so no numeric snapshot is advertised.");
             }
         }
+        #[cfg(feature = "gateway")]
+        if channel {
+            super::claude_channel::ChannelSession::add_instructions(&mut info.instructions);
+        }
         info
+    }
+
+    async fn on_initialized(&self, _context: NotificationContext<RoleServer>) {
+        tracing::info!("client initialized");
+        #[cfg(feature = "gateway")]
+        if self.transport_label == "stdio"
+            && _context.peer.peer_info().is_some()
+            && let Some(channel) = &self.route_runtime.claude_channel
+        {
+            channel.initialized();
+        }
     }
 
     async fn on_cancelled(
@@ -761,6 +818,11 @@ impl ServerHandler for LabMcpServer {
                     .await;
             }
 
+            #[cfg(feature = "gateway")]
+            if super::agent_events::is_method(&request.method) {
+                return self.handle_event_request(request, &context).await;
+            }
+
             if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
                 return Err(ErrorData::new(
                     rmcp::model::ErrorCode::METHOD_NOT_FOUND,
@@ -792,10 +854,12 @@ impl ServerHandler for LabMcpServer {
         #[cfg(feature = "gateway")]
         self.observe_client(&context).await;
 
-        let mut result = DiscoverResult::from_server_info(
-            self.supported_protocol_versions().into_owned(),
-            self.get_info(),
-        );
+        #[allow(unused_mut)]
+        let mut info = self.get_info();
+        #[cfg(feature = "gateway")]
+        self.add_inbox_binding(&context, &mut info);
+        let mut result =
+            DiscoverResult::from_server_info(self.supported_protocol_versions().into_owned(), info);
         #[cfg(feature = "skills")]
         {
             result

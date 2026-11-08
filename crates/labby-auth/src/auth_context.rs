@@ -102,3 +102,50 @@ mod tests {
         );
     }
 }
+
+/// Server-created consent evidence for a bounded background subscription.
+/// Contains no access or refresh token. It can only be minted from claims
+/// already verified by the HTTP authentication layer.
+#[derive(Clone)]
+pub struct VerifiedOAuthGrant {
+    store: crate::sqlite::SqliteStore,
+    client: String,
+    subject: String,
+    resource: String,
+    scope: String,
+    provider: crate::types::ProviderBinding,
+}
+
+impl VerifiedOAuthGrant {
+    pub(crate) fn from_claims(
+        state: &crate::state::AuthState,
+        claims: &crate::jwt::AccessClaims,
+    ) -> Option<Self> {
+        let provider = state.inbound_provider_binding();
+        if claims.identity_issuer.as_deref() != Some(provider.identity_issuer.as_str()) {
+            return None;
+        }
+        Some(Self {
+            store: state.store.clone(),
+            client: claims.azp.clone(),
+            subject: claims.sub.clone(),
+            resource: claims.aud.clone(),
+            scope: claims.scope.clone(),
+            provider,
+        })
+    }
+
+    /// Recheck the grant, including provider replacement and consent
+    /// revocation, on the same authority tuple that enrolled the subscription.
+    pub async fn is_current(&self) -> Result<bool, crate::error::AuthError> {
+        self.store
+            .has_current_oauth_grant(
+                self.client.clone(),
+                self.subject.clone(),
+                self.resource.clone(),
+                self.scope.clone(),
+                self.provider.clone(),
+            )
+            .await
+    }
+}

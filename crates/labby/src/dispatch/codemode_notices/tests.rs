@@ -450,13 +450,12 @@ fn notice_production_windows_existing_file_acl_and_hardlinks_are_refused() {
 #[test]
 fn notice_production_existing_schema_missing_constraints_is_refused() {
     let c = Connection::open_in_memory().unwrap();
-    c.execute_batch(&SCHEMA_SQL.replace(
+    c.execute_batch(&schema::V1.replace(
         "UNIQUE(inbox_id, producer, dedupe_key)",
         "CHECK(attempts >= 0)",
     ))
     .unwrap();
-    c.pragma_update(None, "user_version", SCHEMA_VERSION)
-        .unwrap();
+    c.pragma_update(None, "user_version", 1).unwrap();
     c.pragma_update(None, "application_id", APPLICATION_ID)
         .unwrap();
     assert!(matches!(
@@ -647,4 +646,85 @@ fn notice_production_database_rejections_have_sanitized_reasons() {
     assert!(logs.contains("reason=\"integrity_check\""), "{logs}");
     assert!(!logs.contains("private_integrity_sentinel"), "{logs}");
     assert_eq!(validate_integrity("ok", false), Ok(()));
+}
+
+#[test]
+fn v1_migration_preserves_notice_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("inbox.sqlite3");
+    let v1 = Connection::open(&file).unwrap();
+    v1.execute_batch(schema::V1).unwrap();
+    v1.pragma_update(None, "application_id", APPLICATION_ID)
+        .unwrap();
+    v1.pragma_update(None, "user_version", 1).unwrap();
+    let who = who("v1-owner").key().unwrap();
+    let inbox = format!("inbox_{}", ulid::Ulid::new());
+    let acked = format!("notice_{}", ulid::Ulid::new());
+    let leased = format!("notice_{}", ulid::Ulid::new());
+    v1.execute(
+        "INSERT INTO agent_inboxes VALUES(?,?,'authenticated_client',3601000)",
+        params![inbox, who],
+    )
+    .unwrap();
+    for (id, key, acknowledged) in [(&acked, "v1", 1), (&leased, "leased", 0)] {
+        let payload =
+            serde_json::to_string(&("test", NoticeLevel::Info, "Indexing finished.", 3600))
+                .unwrap();
+        v1.execute(
+            "INSERT INTO agent_notices VALUES(?,?,'admin',?,?,'test','info','Indexing finished.',1001,3601000,1,31005,?)",
+            params![id, inbox, key, payload, acknowledged],
+        ).unwrap();
+    }
+    drop(v1);
+    let migrated = NoticeStore::from_connection(Connection::open(file).unwrap()).unwrap();
+    let mut db = migrated.connection.as_ref().unwrap().lock().unwrap();
+    let version: u32 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    assert!(take(&mut db, &who, 1006).is_none());
+    let original = publish_at(&mut db, "admin", &message(&inbox, "v1"), 1006).unwrap();
+    assert!(original.duplicate);
+    assert_eq!(original.id, acked);
+    let retry = take(&mut db, &who, 31_005).unwrap();
+    assert_eq!(retry.notifications[0].id, leased);
+    assert_eq!(retry.notifications[0].delivery_attempt, 2);
+}
+
+#[test]
+fn failed_v1_migration_is_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("inbox.sqlite3");
+    let v1 = Connection::open(&file).unwrap();
+    v1.execute_batch(schema::V1).unwrap();
+    v1.pragma_update(None, "application_id", APPLICATION_ID)
+        .unwrap();
+    v1.pragma_update(None, "user_version", 1).unwrap();
+    v1.execute(
+        "INSERT INTO agent_inboxes VALUES('inbox-1','owner','authenticated_client',3601000)",
+        [],
+    )
+    .unwrap();
+    let before = schema::schema_snapshot(&v1).unwrap();
+    let pages: u32 = v1
+        .pragma_query_value(None, "page_count", |row| row.get(0))
+        .unwrap();
+    v1.pragma_update(None, "max_page_count", pages).unwrap();
+    assert!(matches!(
+        NoticeStore::from_connection(v1),
+        Err(NoticeError::Unavailable)
+    ));
+    let db = Connection::open(file).unwrap();
+    assert_eq!(schema::schema_snapshot(&db).unwrap(), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT id FROM agent_inboxes", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "inbox-1"
+    );
 }

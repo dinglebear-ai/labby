@@ -999,7 +999,7 @@ fn code_mode_result(
 }
 
 mod description;
-mod notices;
+pub(super) mod notices;
 
 #[cfg(test)]
 pub(crate) use description::CODE_MODE_DESCRIPTION_MAX_BYTES;

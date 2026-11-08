@@ -1676,6 +1676,74 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "http-axum")]
+    #[tokio::test]
+    async fn background_oauth_grant_is_exact_and_revocable() {
+        let store = temp_store().await;
+        register_test_client(&store, "granted-client").await;
+        register_test_client(&store, "other-client").await;
+        let saved = sample_refresh_token("granted-client", "synthetic-event-refresh");
+        store.upsert_refresh_token(saved.clone()).await.unwrap();
+        let provider = store.inbound_provider_state().await.unwrap();
+        let binding = crate::types::ProviderBinding {
+            identity_issuer: provider.issuer,
+            provider_generation: provider.generation,
+        };
+        let check = |client: &str, subject: &str, resource: &str, scope: &str| {
+            store.has_current_oauth_grant(
+                client.to_owned(),
+                subject.to_owned(),
+                resource.to_owned(),
+                scope.to_owned(),
+                binding.clone(),
+            )
+        };
+        assert!(
+            check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !check("other-client", &saved.subject, &saved.resource, "lab")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !check(&saved.client_id, "other-subject", &saved.resource, "lab")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !check(
+                &saved.client_id,
+                &saved.subject,
+                "https://other.test/mcp",
+                "lab"
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            !check(
+                &saved.client_id,
+                &saved.subject,
+                &saved.resource,
+                "lab:admin"
+            )
+            .await
+            .unwrap()
+        );
+        store
+            .revoke_refresh_token(&saved.refresh_token)
+            .await
+            .unwrap();
+        assert!(
+            !check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+                .await
+                .unwrap()
+        );
+    }
+
     #[tokio::test]
     async fn has_refresh_token_for_client_reflects_unexpired_rows_only() {
         let store = temp_store().await;

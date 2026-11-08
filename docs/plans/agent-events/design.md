@@ -164,11 +164,9 @@ an integer. Clamp positive requested lifetimes to the table's bounds; reject zer
 and negative values. Reject unknown event names, non-null replay cursors, and
 unknown argument keys before callback I/O.
 
-The pinned RMCP capability type has no `events` field. Its custom request hook
-already exists. First add an optional `events: Option<JsonObject>` field and its
-builder toggle to the SDK fork, with omission and serialization tests. This is a
-named companion-repository prerequisite requiring approval in the plan review.
-Do not disguise `events` under `experimental` or rewrite serialized MCP responses.
+The pinned RMCP fork supplies the optional `events` field and builder toggle.
+Use the top-level capability alongside the existing custom request hook. Keep
+`experimental` for Claude's separate channel capability.
 
 Verify the HTTPS callback before activating a subscription. Use a random,
 single-use challenge in `{"type":"verification","challenge":"..."}` and require

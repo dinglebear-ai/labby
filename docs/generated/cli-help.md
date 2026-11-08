@@ -8598,11 +8598,14 @@ Commands:
   mcp  Run the MCP server over stdio instead of the default HTTP transport
 
 Options:
-      --auto-update
-          Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon)
-
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --mcp-events
+          Enable authenticated MCP Events webhook subscriptions on the HTTP MCP route
+
+      --auto-update
+          Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon)
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -8616,20 +8619,20 @@ Options:
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
-      --host <HOST>
-          Bind host for the HTTP transport
-
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --host <HOST>
+          Bind host for the HTTP transport
 
       --no-input
           Never prompt for missing input or confirmation
 
-      --port <PORT>
-          Bind port for the HTTP transport
-
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --port <PORT>
+          Bind port for the HTTP transport
 
       --log-level <LOG_LEVEL>
           Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
@@ -8694,17 +8697,20 @@ Run the Labby stdio MCP transport. stdout contains protocol bytes only
 Usage: labby mcp [OPTIONS]
 
 Options:
+      --claude-channel
+          Push this connection's Labby notices through Claude Code Channels
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --services <SERVICES>
-          Comma- or space-separated list of services to enable. Empty = all
 
       --color <COLOR>
           Control human-readable CLI styling
 
           [default: auto]
           [possible values: auto, plain, color]
+
+      --services <SERVICES>
+          Comma- or space-separated list of services to enable. Empty = all
 
       --log-level <LOG_LEVEL>
           Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`

@@ -209,6 +209,12 @@ pub(crate) struct McpRouteRuntime {
     pub(crate) code_mode_notifications: crate::dispatch::codemode_notices::NoticeStore,
     #[cfg(feature = "gateway")]
     notification_stdio_session: std::sync::OnceLock<String>,
+    #[cfg(feature = "gateway")]
+    pub(crate) agent_events: Option<Arc<crate::dispatch::agent_events::AgentEvents>>,
+    #[cfg(feature = "gateway")]
+    pub(crate) event_credential_adapter: Option<Arc<crate::access::AccessCredentialAdapter>>,
+    #[cfg(feature = "gateway")]
+    pub(crate) claude_channel: Option<Arc<super::claude_channel::ChannelSession>>,
     resources: RwLock<CatalogSnapshotStore<Resource>>,
     resource_templates: RwLock<CatalogSnapshotStore<ResourceTemplate>>,
     prompts: RwLock<CatalogSnapshotStore<Prompt>>,

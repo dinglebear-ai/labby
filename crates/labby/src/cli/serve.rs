@@ -258,6 +258,9 @@ pub struct McpArgs {
 /// `labby mcp` arguments.
 #[derive(Debug, Args)]
 pub struct McpServeArgs {
+    /// Push this connection's Labby notices through Claude Code Channels.
+    #[arg(long)]
+    pub claude_channel: bool,
     /// Comma- or space-separated list of services to enable. Empty = all.
     #[arg(long, value_delimiter = ',')]
     pub services: Vec<String>,
@@ -271,6 +274,11 @@ pub struct McpServeArgs {
 /// `labby serve` arguments.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
+    /// Enable authenticated MCP Events webhook subscriptions on the HTTP MCP route.
+    #[arg(long)]
+    pub mcp_events: bool,
+    #[arg(skip)]
+    pub(crate) claude_channel: bool,
     /// Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon).
     #[arg(long)]
     pub auto_update: bool,
@@ -303,6 +311,8 @@ pub async fn run_mcp(
 ) -> Result<ExitCode> {
     run(
         ServeArgs {
+            mcp_events: false,
+            claude_channel: args.claude_channel,
             auto_update: false,
             services: args.services,
             transport: Some(Transport::Stdio),
@@ -532,6 +542,18 @@ async fn run_server(
         std::env::var("LABBY_MCP_TRANSPORT").ok(),
         config.mcp.transport.as_deref(),
     )?;
+    if args.mcp_events && !(cfg!(feature = "gateway") && matches!(transport, Transport::Http)) {
+        anyhow::bail!("--mcp-events requires the gateway feature and the HTTP transport");
+    }
+    if args.claude_channel
+        && !(cfg!(feature = "gateway")
+            && matches!(transport, Transport::Stdio)
+            && config.code_mode.enabled)
+    {
+        anyhow::bail!(
+            "--claude-channel requires stdio with the gateway feature and Code Mode enabled for inbox controls"
+        );
+    }
     tracing::info!(
         subsystem = "cli",
         phase = "serve.start",
@@ -620,7 +642,7 @@ async fn run_server(
             transport = ?transport,
             "found a live labby serve daemon; running as a thin stdio bridge to it instead of a standalone instance"
         );
-        return run_stdio_bridge(live).await;
+        return run_stdio_bridge(live, args.claude_channel, &config.code_mode).await;
     }
 
     // A real daemon owns the installation lifecycle before observing/opening
@@ -853,6 +875,7 @@ async fn run_server(
                 spawn_depth,
                 suppress_upstream_runtime,
                 recursion_guard_degrades_upstreams,
+                args.claude_channel,
             )
             .await;
         }
@@ -1060,6 +1083,19 @@ async fn run_server(
                     crate::dispatch::codemode_notices::NoticeStore::disabled()
                 }
             };
+    }
+    #[cfg(feature = "gateway")]
+    if args.mcp_events {
+        if bearer_token.is_none() && oauth_state.is_none() {
+            anyhow::bail!(
+                "--mcp-events requires authenticated HTTP MCP (configure bearer or OAuth authentication)"
+            );
+        }
+        state.agent_events = Some(Arc::new(
+            crate::dispatch::agent_events::AgentEvents::open(state.agent_notifications.clone())
+                .await
+                .context("open durable MCP Events delivery")?,
+        ));
     }
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
@@ -1594,6 +1630,8 @@ async fn run_http(
 ) -> Result<ExitCode> {
     #[cfg(feature = "gateway")]
     let code_mode_shutdown = state.gateway_manager.clone();
+    #[cfg(feature = "gateway")]
+    let agent_events = state.agent_events.clone();
     // ── Single-master lock ────────────────────────────────────────────────────
     // Only one HTTP master instance may run per device at a time. Exits
     // immediately with a clear error if the lock is already held by another
@@ -1735,6 +1773,12 @@ async fn run_http(
             }
         }
     };
+    #[cfg(feature = "gateway")]
+    let event_worker = agent_events.map(|events| {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let guard = cancel.clone().drop_guard();
+        (guard, tokio::spawn(events.run(cancel)))
+    });
     let hosted_result = if let Some(registry) = resource_registry {
         tokio::select! {
             result = hosted_listener => result,
@@ -1743,6 +1787,13 @@ async fn run_http(
     } else {
         hosted_listener.await
     };
+    #[cfg(feature = "gateway")]
+    if let Some((guard, worker)) = event_worker {
+        drop(guard);
+        worker
+            .await
+            .context("join the MCP Events delivery worker")?;
+    }
     #[cfg(feature = "gateway")]
     if let Some(manager) = code_mode_shutdown {
         manager.shutdown_code_mode_runner_pool().await;
@@ -2735,15 +2786,66 @@ fn reject_protected_routes_without_gateway(
 /// every request is forwarded to `live` and its response piped straight
 /// back. See `crate::mcp::bridge` for what is and isn't forwarded.
 #[cfg(feature = "gateway")]
-async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<ExitCode> {
+async fn run_stdio_bridge(
+    live: crate::live_gateway::LiveGateway,
+    claude_channel: bool,
+    code_mode: &labby_runtime::gateway_config::CodeModeConfig,
+) -> Result<ExitCode> {
     use crate::mcp::bridge::{BridgeClientHandler, BridgeServerHandler};
 
+    if claude_channel {
+        let target =
+            url::Url::parse(live.server_url()).context("invalid Claude Channel daemon URL")?;
+        let loopback = match target.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            // Literal loopback avoids DNS or proxy ambiguity.
+            _ => false,
+        };
+        if !loopback {
+            anyhow::bail!(
+                "--claude-channel requires a daemon at a literal loopback address using this Labby installation"
+            );
+        }
+    }
     let client_handler = BridgeClientHandler::new();
     let service = live
         .connect_service_bounded(client_handler)
         .await
         .context("connect to live labby serve daemon for stdio bridging")?;
-    let handler = BridgeServerHandler::new(service);
+    let channel = if claude_channel {
+        let paths = crate::installation::InstallationPaths::resolve()?;
+        let installation = crate::dispatch::setup::access_bootstrap::existing_installation_id(
+            &paths,
+        )
+        .context("--claude-channel requires the local Labby installation used by the daemon")?;
+        let expected =
+            crate::dispatch::codemode_notices::inbox_binding(paths.root(), &installation);
+        let peer = service.peer_info();
+        let actual = peer
+            .as_ref()
+            .and_then(|info| info.meta.as_ref())
+            .and_then(|meta| meta.get(crate::mcp::claude_channel::BRIDGE_BINDING_META))
+            .and_then(serde_json::Value::as_str);
+        if actual != Some(expected.as_str()) {
+            anyhow::bail!(
+                "--claude-channel could not verify that the daemon shares this Labby inbox; check LABBY_HOME, authentication, and the daemon version"
+            );
+        }
+
+        Some(crate::mcp::claude_channel::ChannelSession::new(
+            crate::dispatch::codemode_notices::NoticeStore::open_installation()
+                .await
+                .context("open durable Claude Channel inbox")?,
+        ))
+    } else {
+        None
+    };
+    let handler = BridgeServerHandler::new(service).with_stdio_channel(
+        channel.clone(),
+        code_mode.max_response_bytes,
+        code_mode.max_response_tokens,
+    );
     let running = handler.serve(rmcp::transport::stdio_pipes()).await?;
     tracing::info!(
         subsystem = "startup",
@@ -2751,7 +2853,11 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
         transport = "stdio-bridge",
         "labby serve ready (bridging to live daemon)"
     );
-    running.waiting().await?;
+    if let Some(channel) = channel {
+        channel.wait(running).await?;
+    } else {
+        running.waiting().await?;
+    }
     tracing::info!(
         subsystem = "startup",
         phase = "stop",
@@ -2773,6 +2879,7 @@ fn run_stdio(
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
     recursion_guard_degrades_upstreams: bool,
+    #[cfg(feature = "gateway")] claude_channel: bool,
 ) -> impl Future<Output = Result<ExitCode>> {
     // The server bootstrap stays on the stack throughout this session. Keep
     // the protocol future on the heap rather than copying it into that frame.
@@ -2844,7 +2951,16 @@ fn run_stdio(
                         crate::dispatch::codemode_notices::NoticeStore::disabled()
                     }
                 };
-            Arc::new(crate::mcp::runtime::McpRouteRuntime::with_notification_store(store))
+            let mut runtime =
+                crate::mcp::runtime::McpRouteRuntime::with_notification_store(store.clone());
+            if claude_channel {
+                if !store.is_enabled() {
+                    anyhow::bail!("--claude-channel requires the durable notification inbox");
+                }
+                runtime.claude_channel =
+                    Some(crate::mcp::claude_channel::ChannelSession::new(store));
+            }
+            Arc::new(runtime)
         };
         #[cfg(not(feature = "gateway"))]
         let route_runtime = Default::default();
@@ -2870,6 +2986,8 @@ fn run_stdio(
             #[cfg(test)]
             code_mode_widget_callbacks_enabled_for_test: false,
         };
+        #[cfg(feature = "gateway")]
+        let channel = server.route_runtime.claude_channel.clone();
         let running = server.serve(rmcp::transport::stdio_pipes()).await;
         let server_result: Result<()> = match running {
             Ok(running) => {
@@ -2883,6 +3001,15 @@ fn run_stdio(
                     services = service_count,
                     "stdio mcp server ready"
                 );
+                #[cfg(feature = "gateway")]
+                {
+                    if let Some(channel) = channel {
+                        channel.wait(running).await.map_err(Into::into)
+                    } else {
+                        running.waiting().await.map(|_| ()).map_err(Into::into)
+                    }
+                }
+                #[cfg(not(feature = "gateway"))]
                 running.waiting().await.map(|_| ()).map_err(Into::into)
             }
             Err(error) => Err(error.into()),
@@ -3021,11 +3148,16 @@ fn build_mcp_service_with_scope(
     let shared_peers = Arc::clone(&notifier.peers);
     let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
     #[cfg(feature = "gateway")]
-    let shared_route_runtime = Arc::new(
-        crate::mcp::runtime::McpRouteRuntime::with_notification_store(
+    let shared_route_runtime = {
+        let mut runtime = crate::mcp::runtime::McpRouteRuntime::with_notification_store(
             state.agent_notifications.clone(),
-        ),
-    );
+        );
+        if route_scope.is_root() {
+            runtime.agent_events = state.agent_events.clone();
+            runtime.event_credential_adapter = state.access_credential_adapter.clone();
+        }
+        Arc::new(runtime)
+    };
     #[cfg(not(feature = "gateway"))]
     let shared_route_runtime: Arc<crate::mcp::runtime::McpRouteRuntime> = Default::default();
     shared_route_runtime.configure_depot(Arc::clone(&state.depot));

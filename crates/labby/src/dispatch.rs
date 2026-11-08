@@ -1,6 +1,8 @@
 pub(crate) mod access;
 pub(crate) mod access_bootstrap;
 pub(crate) mod access_errors;
+#[cfg(feature = "gateway")]
+pub(crate) mod agent_events;
 pub(crate) mod agent_llm;
 pub(crate) mod agent_payloads;
 pub(crate) mod agents;

@@ -99,6 +99,11 @@ pub struct BridgeServerHandler {
     _service: Option<RunningService<RoleClient, BridgeClientHandler>>,
     peer: Peer<RoleClient>,
     tool_security_schemes: Option<serde_json::Value>,
+    stdio_channel: Option<(
+        std::sync::Arc<super::claude_channel::ChannelSession>,
+        usize,
+        usize,
+    )>,
 }
 
 impl BridgeServerHandler {
@@ -108,7 +113,18 @@ impl BridgeServerHandler {
             _service: Some(service),
             peer,
             tool_security_schemes: None,
+            stdio_channel: None,
         }
+    }
+
+    pub(crate) fn with_stdio_channel(
+        mut self,
+        channel: Option<std::sync::Arc<super::claude_channel::ChannelSession>>,
+        max_bytes: usize,
+        max_tokens: usize,
+    ) -> Self {
+        self.stdio_channel = channel.map(|channel| (channel, max_bytes, max_tokens));
+        self
     }
 
     /// Project tools against the authentication policy of the outer proxy.
@@ -126,6 +142,7 @@ impl BridgeServerHandler {
             _service: None,
             peer,
             tool_security_schemes: None,
+            stdio_channel: None,
         }
     }
 }
@@ -250,6 +267,9 @@ impl BridgeServerHandler {
 
 impl ServerHandler for BridgeServerHandler {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        if self.stdio_channel.is_some() {
+            return Cow::Borrowed(super::claude_channel::protocol_versions());
+        }
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 
@@ -279,7 +299,7 @@ impl ServerHandler for BridgeServerHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
         Ok(DiscoverResult::from_server_info(
-            ProtocolVersion::KNOWN_VERSIONS.to_vec(),
+            self.supported_protocol_versions().into_owned(),
             self.get_info(),
         ))
     }
@@ -341,7 +361,8 @@ impl ServerHandler for BridgeServerHandler {
     /// capability subset that could drift from what the daemon truly
     /// supports (e.g. the `extensions` capability mcp-ui widgets need).
     fn get_info(&self) -> ServerConfig {
-        self.peer
+        let mut info = self
+            .peer
             .peer_info()
             .map(|info| {
                 let mut server_info = ServerConfig::new(info.capabilities.clone())
@@ -357,7 +378,26 @@ impl ServerHandler for BridgeServerHandler {
                 server_info.meta = info.meta.clone();
                 server_info
             })
-            .unwrap_or_else(|| ServerConfig::new(Default::default()))
+            .unwrap_or_else(|| ServerConfig::new(Default::default()));
+        // Events webhook registration is a direct HTTP capability, not a
+        // delegated operation on a local or proxy bridge.
+        info.capabilities.events = None;
+        if let Some(meta) = &mut info.meta {
+            meta.remove(super::claude_channel::BRIDGE_BINDING_META);
+        }
+        if let Some((_, _, _)) = &self.stdio_channel {
+            super::claude_channel::ChannelSession::advertise(&mut info.capabilities);
+            super::claude_channel::ChannelSession::add_instructions(&mut info.instructions);
+        }
+        info
+    }
+
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_some()
+            && let Some((channel, _, _)) = &self.stdio_channel
+        {
+            channel.initialized();
+        }
     }
 
     async fn list_tools(
@@ -397,9 +437,37 @@ impl ServerHandler for BridgeServerHandler {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let control = if let Some((channel, max_bytes, max_tokens)) = &self.stdio_channel
+            && matches!(
+                request.name.as_ref(),
+                super::catalog::CODE_MODE_TOOL_NAME
+                    | super::catalog::CODE_MODE_UI_TOOL_NAME
+                    | super::catalog::CODE_MODE_READ_TOOL_NAME
+            )
+            && let Some(args) = &mut request.arguments
+            && (args.contains_key("notification_inbox") || args.contains_key("ack_notifications"))
+        {
+            let mut input = serde_json::Map::new();
+            for key in ["notification_inbox", "ack_notifications"] {
+                if let Some(value) = args.remove(key) {
+                    input.insert(key.to_owned(), value);
+                }
+            }
+            let control = super::call_tool_codemode::notices::prepare_for_recipient(
+                channel.store.clone(),
+                Some(channel.recipient.clone()),
+                &input,
+                request.name.as_ref() == super::catalog::CODE_MODE_READ_TOOL_NAME,
+            )
+            .await
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+            Some((control, *max_bytes, *max_tokens))
+        } else {
+            None
+        };
         match self
             .forward_request(
                 ClientRequest::CallToolRequest(CallToolRequest::new(request)),
@@ -408,7 +476,12 @@ impl ServerHandler for BridgeServerHandler {
             )
             .await?
         {
-            ServerResult::CallToolResult(result) => Ok(CallToolResponse::Complete(result)),
+            ServerResult::CallToolResult(mut result) => {
+                if let Some((control, max_bytes, max_tokens)) = control {
+                    control.attach(&mut result, max_bytes, max_tokens).await;
+                }
+                Ok(CallToolResponse::Complete(result))
+            }
             ServerResult::InputRequiredResult(result) => {
                 Ok(CallToolResponse::InputRequired(result))
             }
@@ -602,6 +675,13 @@ impl ServerHandler for BridgeServerHandler {
         request: CustomRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
+        if super::agent_events::is_method(&request.method) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                "MCP Events requires a direct HTTP connection",
+                None,
+            ));
+        }
         match self
             .forward_request(
                 ClientRequest::CustomRequest(request),

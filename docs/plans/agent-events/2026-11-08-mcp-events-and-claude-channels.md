@@ -47,7 +47,7 @@ not a second workflow engine.
 | `dispatch/agent_events/subscriptions.rs` | Recipient-bound subscription lifecycle and storage operations. |
 | `dispatch/agent_events/webhook.rs` | Pinned HTTPS, callback verification, Standard Webhooks signing. |
 | `dispatch/agent_events/worker.rs` | Bounded claims, retry timing, completion fencing, cancellation. |
-| `dispatch/agent_events/mod.rs` | `AgentEvents` shared service and authority-check interface. |
+| `dispatch/agent_events.rs` | `AgentEvents` shared service and authority-check interface. |
 | `dispatch/codemode_notices/schema.rs` | Exact v1/v2 schemas and transactional migration. |
 | `mcp/notice_identity.rs` | Existing trusted recipient derivation, shared with both adapters. |
 | `mcp/agent_events.rs` | Native MCP Events method adaptation and capability gate. |
@@ -64,6 +64,35 @@ The user approved the companion SDK scope and native Skills migration on 2026-11
 See the [migration record](native-skills-migration.md) and
 [bounded implementation plan](2026-11-08-native-skills-sdk-migration.md) for
 validation and upstream candidate status. Event delivery remains below.
+
+### Local implementation record (2026-11-08)
+
+The Labby changes for Tasks 2–6 are grouped as one feature change after the SDK
+and native Skills prerequisite. The [current operator guide](../../dev/AGENT_NOTIFICATIONS.md)
+describes the two opt-in flags and the OAuth inbox registration required after
+an upgrade.
+
+- The inbox tests verify atomic migration, stable notice IDs, recipient
+  isolation, retry leases, and acknowledgments. A real Code Mode runner also
+  exercised pull delivery, acknowledgment, and restart through the existing
+  native MCP and HTTP paths.
+- The Events tests exercise the HTTP MCP adapter with a controlled HTTPS
+  receiver, including signing, source filtering, refresh, unsubscribe, and a
+  receiver acknowledgment before the HTTP response. The worker and handlers
+  share the existing SQLite connection. Events operations have a bounded
+  admission wait so a polling pass cannot starve a delivery it just claimed.
+- A disposable Labby daemon and two real stdio clients verified unsolicited
+  Claude Channel frames, isolation, and the recipient's acknowledgment. The
+  bridge rejected a second installation with a copied public installation ID,
+  and the opted-in stdio path required the legacy handshake.
+- The focused Nextest run passed 829 delivery, authentication, CLI, and MCP
+  checks. Strict lint and generated docs checks passed. The full workspace
+  run was stopped after debug daemon stack failures; the same Code Mode
+  fixture also overflowed the stack using the pre-feature binary.
+- Private and mixed DNS results are tested at the address boundary. The
+  controlled HTTPS receiver does not exercise a live DNS rebinding attempt or
+  a production proxy environment. Native ChatGPT and Claude responses remain
+  unverified under the client gate in Task 7.
 
 ### Task 1: Make MCP Events discoverable in RMCP
 

@@ -9,7 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const MAX_NOTICE_BATCH_BYTES: usize = 1024;
 pub(crate) const MAX_ACKS: usize = 32;
@@ -18,8 +18,10 @@ const MAX_PER_RECIPIENT: i64 = 32;
 const MAX_INBOXES: i64 = 2_000;
 const MAX_BATCH: usize = 3;
 const INBOX_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+mod schema;
 const APPLICATION_ID: i64 = 0x4c4e_5446;
+const DB_BUDGET: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct NoticeRecipient {
@@ -46,7 +48,7 @@ pub(crate) enum NoticeConsumer {
 }
 
 impl NoticeRecipient {
-    fn key(&self) -> Result<String, NoticeError> {
+    pub(super) fn key(&self) -> Result<String, NoticeError> {
         let valid = bounded(&self.route, 512)
             && self.actor.as_ref().is_none_or(|v| bounded(v, 512))
             && match &self.consumer {
@@ -256,6 +258,8 @@ pub(crate) struct NoticeStore {
     windows_guard: Option<Arc<labby_winjob::fs::SqliteVerificationGuard>>,
     // At most one blocking operation per store can be queued or executing.
     permit: Arc<Semaphore>,
+    published: Arc<tokio::sync::Notify>,
+    installation_root: Option<Arc<Path>>,
 }
 
 impl Default for NoticeStore {
@@ -276,6 +280,8 @@ impl NoticeStore {
             #[cfg(windows)]
             windows_guard: None,
             permit: Arc::new(Semaphore::new(1)),
+            published: Arc::new(tokio::sync::Notify::new()),
+            installation_root: None,
         }
     }
 
@@ -283,33 +289,7 @@ impl NoticeStore {
         // Startup contention has a separate bounded budget from request operations.
         connection.busy_timeout(Duration::from_secs(1))?;
         connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
-        {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-            let schema = schema_snapshot(&tx)?;
-            if version == 0 && application == 0 && schema.is_empty() {
-                tx.execute_batch(SCHEMA_SQL)?;
-                tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            } else {
-                let expected = Connection::open_in_memory()?;
-                expected.execute_batch(SCHEMA_SQL)?;
-                if version != SCHEMA_VERSION {
-                    return Err(validation_failure("schema_version", Some(version)));
-                }
-                if application != APPLICATION_ID {
-                    return Err(validation_failure("application_id", Some(application)));
-                }
-                if schema != schema_snapshot(&expected)? {
-                    return Err(validation_failure("schema_mismatch", None));
-                }
-            }
-            let integrity: String = tx.query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
-            let foreign_violation: bool = tx.prepare("PRAGMA foreign_key_check")?.exists([])?;
-            validate_integrity(&integrity, foreign_violation)?;
-            tx.commit()?;
-        }
+        schema::migrate(&mut connection)?;
         connection.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA max_page_count=4096;")?;
         connection.busy_timeout(Duration::from_millis(25))?;
         Ok(Self {
@@ -317,7 +297,23 @@ impl NoticeStore {
             #[cfg(windows)]
             windows_guard: None,
             permit: Arc::new(Semaphore::new(1)),
+            published: Arc::new(tokio::sync::Notify::new()),
+            installation_root: None,
         })
+    }
+
+    pub(crate) fn bridge_binding(&self, installation: &str) -> Option<String> {
+        self.installation_root
+            .as_deref()
+            .map(|root| inbox_binding(root, installation))
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.connection.is_some()
+    }
+
+    pub(crate) async fn published(&self) {
+        self.published.notified().await;
     }
 
     /// Open under the validated private installation, before accepting requests.
@@ -332,7 +328,7 @@ impl NoticeStore {
         .map_err(|_| NoticeError::Unavailable)?
     }
 
-    fn open_at(root: &Path) -> Result<Self, NoticeError> {
+    pub(crate) fn open_at(root: &Path) -> Result<Self, NoticeError> {
         Self::open_at_attempt(root, false)
     }
 
@@ -388,7 +384,10 @@ impl NoticeStore {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
             | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let store = Self::from_connection(Connection::open_with_flags(path, flags)?)?;
+        let store = Self {
+            installation_root: Some(Arc::from(root)),
+            ..Self::from_connection(Connection::open_with_flags(path, flags)?)?
+        };
         #[cfg(windows)]
         let store = Self {
             windows_guard: Some(Arc::new(verified)),
@@ -397,16 +396,38 @@ impl NoticeStore {
         Ok(store)
     }
 
-    async fn run<T: Send + 'static>(
+    pub(super) async fn run<T: Send + 'static>(
         &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+    ) -> Result<T, NoticeError> {
+        let permit = Arc::clone(&self.permit)
+            .try_acquire_owned()
+            .map_err(|_| NoticeError::Busy)?;
+        self.run_admitted(permit, work).await
+    }
+
+    /// Only for the bounded Events worker and subscription handlers. A
+    /// delivery must wait for the polling pass that claimed it to finish
+    /// using the connection, rather than release and reclaim the same row.
+    pub(super) async fn run_event<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+    ) -> Result<T, NoticeError> {
+        let permit = tokio::time::timeout(DB_BUDGET, Arc::clone(&self.permit).acquire_owned())
+            .await
+            .map_err(|_| NoticeError::Busy)?
+            .map_err(|_| NoticeError::Unavailable)?;
+        self.run_admitted(permit, work).await
+    }
+
+    async fn run_admitted<T: Send + 'static>(
+        &self,
+        permit: OwnedSemaphorePermit,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
         let db = self.connection.clone().ok_or(NoticeError::Unavailable)?;
         #[cfg(windows)]
         let guard = self.windows_guard.clone();
-        let permit = Arc::clone(&self.permit)
-            .try_acquire_owned()
-            .map_err(|_| NoticeError::Busy)?;
         // A deadline bounds response latency, not the durable write. The worker
         // retains its permit so a timeout cannot grow an unbounded work queue.
         let worker = tokio::task::spawn_blocking(move || {
@@ -427,7 +448,7 @@ impl NoticeStore {
             drop(db);
             result
         });
-        tokio::time::timeout(Duration::from_millis(250), worker)
+        tokio::time::timeout(DB_BUDGET, worker)
             .await
             .map_err(|_| NoticeError::Deadline)?
             .map_err(|_| NoticeError::Unavailable)?
@@ -484,8 +505,15 @@ impl NoticeStore {
             return Err(NoticeError::Forbidden);
         }
         validate_publish(&input)?;
-        self.run(move |db| publish_at(db, &producer.actor, &input, now_ms()))
-            .await
+        let signal = self.published.clone();
+        self.run(move |db| {
+            let receipt = publish_at(db, &producer.actor, &input, now_ms())?;
+            if !receipt.duplicate {
+                signal.notify_waiters();
+            }
+            Ok(receipt)
+        })
+        .await
     }
 
     /// The acceptor builds a candidate envelope. Only commit after it fits; return
@@ -499,6 +527,17 @@ impl NoticeStore {
         self.run(move |db| deliver_at(db, &key, now_ms(), accept))
             .await
     }
+}
+
+/// A location check, not a credential. Salt the canonical root with the
+/// installation ID so no path is revealed and copied roots do not match.
+pub(crate) fn inbox_binding(root: &Path, installation: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"labby-local-notice-store/v1\0");
+    digest.update(installation.as_bytes());
+    digest.update(b"\0");
+    digest.update(root.as_os_str().as_encoded_bytes());
+    hex::encode(digest.finalize())
 }
 
 pub(crate) fn validate_acknowledgments(ids: &[String]) -> Result<(), NoticeError> {
@@ -516,7 +555,7 @@ fn valid_id(value: &str, prefix: &str) -> bool {
         .strip_prefix(prefix)
         .is_some_and(|id| id.len() == 26 && ulid::Ulid::from_string(id).is_ok())
 }
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |v| i64::try_from(v.as_millis()).unwrap_or(i64::MAX))
@@ -548,9 +587,29 @@ fn validate_publish(input: &PublishNotice) -> Result<(), NoticeError> {
     }
     Ok(())
 }
-fn prune(db: &Connection, now: i64) -> Result<(), NoticeError> {
-    db.execute("DELETE FROM agent_notices WHERE expires <= ?", [now])?;
-    db.execute("DELETE FROM agent_inboxes WHERE expires <= ?", [now])?;
+pub(super) fn prune(db: &Connection, now: i64) -> Result<(), NoticeError> {
+    // Keep live claims counted until the bounded request ends, even if
+    // unsubscribe or expiry has already made their data ineligible.
+    db.execute(
+        "DELETE FROM agent_event_subscriptions WHERE (expires <= ?1 OR active=0)
+         AND NOT EXISTS (SELECT 1 FROM agent_event_deliveries WHERE subscription_id=agent_event_subscriptions.id AND claim_until>?1)",
+        [now],
+    )?;
+    db.execute(
+        "UPDATE agent_event_subscriptions SET previous_secret=NULL,previous_until=0
+         WHERE previous_until>0 AND previous_until<=?1",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_notices WHERE expires<=?1
+         AND NOT EXISTS (SELECT 1 FROM agent_event_deliveries WHERE notice_id=agent_notices.id AND claim_until>?1)",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_inboxes WHERE expires<=?1
+         AND NOT EXISTS (SELECT 1 FROM agent_notices WHERE inbox_id=agent_inboxes.id)",
+        [now],
+    )?;
     Ok(())
 }
 #[cfg(test)]
@@ -565,21 +624,26 @@ fn register_at(
     tx.commit()?;
     Ok(address)
 }
-fn register_in(
+pub(super) fn register_in(
     tx: &Connection,
     key: &str,
     scope: &str,
     now: i64,
 ) -> Result<InboxAddress, NoticeError> {
     prune(tx, now)?;
-    let existing: Option<String> = tx
+    let existing: Option<(String, i64)> = tx
         .query_row(
-            "SELECT id FROM agent_inboxes WHERE recipient=?",
+            "SELECT id,expires FROM agent_inboxes WHERE recipient=?",
             [key],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let id = if let Some(id) = existing {
+    let id = if let Some((id, expires)) = existing {
+        if expires <= now {
+            // An expired inbox can still hold a network lease. Keep the old
+            // address expired until the worker releases that lease.
+            return Err(NoticeError::Busy);
+        }
         id
     } else {
         let count: i64 = tx.query_row("SELECT count(*) FROM agent_inboxes", [], |r| r.get(0))?;
@@ -662,6 +726,7 @@ fn publish_at(
     };
     tx.execute("INSERT INTO agent_notices(id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires) VALUES(?,?,?,?,?,?,?,?,?,?)",
         params![id,input.inbox_id,actor,input.dedupe_key,payload,input.source,level,input.message,now,expires])?;
+    super::agent_events::enqueue(&tx, &id, input, now, expires)?;
     tx.commit()?;
     tracing::debug!(
         subsystem = "agent_notifications",
@@ -697,12 +762,16 @@ fn acknowledge_in(
         // Never reveal whether an unknown/foreign ID exists, and never ACK a notice
         // that this recipient has not been offered. Repeated own ACKs are idempotent.
         if tx.execute(
-            "UPDATE agent_notices SET acknowledged=1 WHERE id=? AND attempts>0 AND expires>?
+            "UPDATE agent_notices SET acknowledged=1 WHERE id=? AND (attempts>0 OR webhook_offered=1) AND expires>?
             AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient=? AND expires>?)",
             params![id, now, key, now],
         )? > 0
             && !acknowledged.contains(id)
         {
+            tx.execute(
+                "UPDATE agent_event_deliveries SET status='stopped' WHERE notice_id=? AND status='pending'",
+                [id],
+            )?;
             acknowledged.push(id.clone());
         }
     }
@@ -788,35 +857,6 @@ fn deliver_at<T>(
         return Ok(Some(value));
     }
     Ok(None)
-}
-
-const SCHEMA_SQL: &str = "CREATE TABLE agent_inboxes (
-                id TEXT PRIMARY KEY, recipient TEXT NOT NULL UNIQUE,
-                scope TEXT NOT NULL, expires INTEGER NOT NULL);
-            CREATE TABLE agent_notices (
-                id TEXT PRIMARY KEY, inbox_id TEXT NOT NULL REFERENCES agent_inboxes(id) ON DELETE CASCADE,
-                producer TEXT NOT NULL, dedupe_key TEXT NOT NULL, payload TEXT NOT NULL,
-                source TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL,
-                created INTEGER NOT NULL, expires INTEGER NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
-                acknowledged INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(inbox_id, producer, dedupe_key));
-            CREATE INDEX agent_notices_delivery ON agent_notices(inbox_id, acknowledged, next_attempt, created);
-";
-fn schema_snapshot(db: &Connection) -> Result<Vec<(String, String, String)>, NoticeError> {
-    let mut query = db.prepare(
-        "SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
-    )?;
-    Ok(query
-        .query_map([], |row| {
-            let sql: String = row.get(2)?;
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                sql.split_whitespace().collect::<String>(),
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?)
 }
 
 #[cfg(test)]
