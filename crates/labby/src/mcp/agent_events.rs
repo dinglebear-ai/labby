@@ -8,8 +8,14 @@ use rmcp::{
 };
 use serde::de::DeserializeOwned;
 
-use crate::dispatch::agent_events::{EventAuthority, EventError, EventsListParams};
-use crate::dispatch::codemode_notices::NoticeError;
+use crate::dispatch::{
+    agent_events::{
+        EventAuthority, EventError, EventsListParams, EventsSubscribeParams,
+        EventsUnsubscribeParams,
+    },
+    agent_messages::MessageEnrollment,
+    codemode_notices::NoticeError,
+};
 
 use super::{context, notice_identity::notice_recipient, server::LabMcpServer};
 
@@ -50,15 +56,13 @@ impl LabMcpServer {
         }
         if request.method == "events/list" {
             let value = parse_params::<EventsListParams>(request.params)?
-                .list()
+                .list(self.route_runtime.http_messages.is_some())
                 .map_err(event_error)?;
             return Ok(CustomResult::new(value));
         }
         if !context::tool_execute_scope_allowed(auth) {
             return Err(event_error(NoticeError::Identity.into()));
         }
-        let recipient = notice_recipient(self, context)
-            .ok_or_else(|| event_error(NoticeError::Identity.into()))?;
         let events = self
             .route_runtime
             .agent_events
@@ -66,45 +70,36 @@ impl LabMcpServer {
             .ok_or_else(|| event_error(NoticeError::Unavailable.into()))?;
         let value = match request.method.as_str() {
             "events/subscribe" => {
-                let identity = identity.expect("checked before event scope");
-                let authority = match identity.authenticator() {
-                    labby_auth::Authenticator::StaticBearer => Some(EventAuthority::StaticBearer),
-                    labby_auth::Authenticator::OauthBearer => context
-                        .extensions
-                        .get::<axum::http::request::Parts>()
-                        .and_then(|parts| {
-                            parts
-                                .extensions
-                                .get::<labby_auth::auth_context::VerifiedOAuthGrant>()
-                        })
-                        .cloned()
-                        .map(EventAuthority::OAuth),
-                    labby_auth::Authenticator::ProductCredential => {
-                        let adapter = self.route_runtime.event_credential_adapter.clone();
-                        let grant =
-                            context::bound_access_grant_from_extensions(&context.extensions);
-                        adapter.zip(grant).map(|(adapter, grant)| {
-                            EventAuthority::Product(
-                                adapter,
-                                Box::new(labby_auth::types::ProjectSessionBinding::from(grant)),
-                            )
-                        })
-                    }
-                    _ => None,
-                }
-                .ok_or_else(|| event_error(NoticeError::Identity.into()))?;
-                events
-                    .subscribe(
-                        recipient,
-                        Arc::new(authority),
-                        parse_params(request.params)?,
+                let params = parse_params::<EventsSubscribeParams>(request.params)?;
+                let (recipient, authority, enrollment) = if params.session_messages() {
+                    let (enrollment, authority) = self.event_message_enrollment(context).await?;
+                    (
+                        enrollment.binding.recipient.clone(),
+                        authority,
+                        Some(enrollment),
                     )
+                } else {
+                    let recipient = notice_recipient(self, context)
+                        .ok_or_else(|| event_error(NoticeError::Identity.into()))?;
+                    let authority = self
+                        .event_authority(identity.expect("checked before event scope"), context)
+                        .ok_or_else(|| event_error(NoticeError::Identity.into()))?;
+                    (recipient, authority, None)
+                };
+                events
+                    .subscribe(recipient, Arc::new(authority), params, enrollment)
                     .await
             }
             "events/unsubscribe" => {
-                events
-                    .unsubscribe(recipient, parse_params(request.params)?)
-                    .await
+                let params = parse_params::<EventsUnsubscribeParams>(request.params)?;
+                let recipient = if params.session_messages() {
+                    let (enrollment, _) = self.event_message_enrollment(context).await?;
+                    enrollment.binding.recipient
+                } else {
+                    notice_recipient(self, context)
+                        .ok_or_else(|| event_error(NoticeError::Identity.into()))?
+                };
+                events.unsubscribe(recipient, params).await
             }
             _ => {
                 return Err(ErrorData::new(
@@ -116,6 +111,52 @@ impl LabMcpServer {
         }
         .map_err(event_error)?;
         Ok(CustomResult::new(value))
+    }
+
+    async fn event_message_enrollment(
+        &self,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<(MessageEnrollment, EventAuthority), ErrorData> {
+        let (binding, authority) = self
+            .http_message_binding(context)
+            .await
+            .map_err(|error| event_error(error.into()))?;
+        let enrollment = self
+            .route_runtime
+            .code_mode_notifications
+            .registered_message_recipient(binding)
+            .await
+            .map_err(|error| event_error(error.into()))?;
+        Ok((enrollment, authority))
+    }
+
+    fn event_authority(
+        &self,
+        identity: &labby_auth::VerifiedIdentity,
+        context: &RequestContext<RoleServer>,
+    ) -> Option<EventAuthority> {
+        match identity.authenticator() {
+            labby_auth::Authenticator::StaticBearer => Some(EventAuthority::StaticBearer),
+            labby_auth::Authenticator::OauthBearer => context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .and_then(|parts| {
+                    parts
+                        .extensions
+                        .get::<labby_auth::auth_context::VerifiedOAuthGrant>()
+                })
+                .cloned()
+                .map(EventAuthority::OAuth),
+            labby_auth::Authenticator::ProductCredential => {
+                let adapter = self.route_runtime.event_credential_adapter.clone()?;
+                let grant = context::bound_access_grant_from_extensions(&context.extensions)?;
+                Some(EventAuthority::Product(
+                    adapter,
+                    Box::new(labby_auth::types::ProjectSessionBinding::from(grant)),
+                ))
+            }
+            _ => None,
+        }
     }
 }
 

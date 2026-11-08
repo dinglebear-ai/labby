@@ -15,7 +15,10 @@ use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore};
 use zeroize::Zeroizing;
 
-use super::codemode_notices::{NoticeError, NoticeRecipient, NoticeStore, now_ms};
+use super::{
+    agent_messages::MessageEnrollment,
+    codemode_notices::{NoticeConsumer, NoticeError, NoticeRecipient, NoticeStore, now_ms},
+};
 use types::*;
 use webhook::{HttpsWebhookSender, WebhookSender};
 
@@ -75,12 +78,22 @@ impl AgentEvents {
     }
 
     pub(crate) async fn subscribe(
-        &self,
+        self: &Arc<Self>,
         recipient: NoticeRecipient,
         check: Arc<dyn EventAuthorizer>,
         params: EventsSubscribeParams,
+        enrollment: Option<MessageEnrollment>,
     ) -> Result<serde_json::Value, EventError> {
         let (target, key, ttl) = params.validate()?;
+        if target.filter.session_messages != enrollment.is_some()
+            || target.filter.session_messages
+                != matches!(recipient.consumer, NoticeConsumer::MessageSession { .. })
+            || enrollment
+                .as_ref()
+                .is_some_and(|enrollment| enrollment.binding.recipient != recipient)
+        {
+            return Err(NoticeError::Identity.into());
+        }
         let id = target.id(&recipient)?;
         let recipient_key = recipient.key()?;
         let _permit = self
@@ -110,49 +123,37 @@ impl AgentEvents {
             recipient,
             authority_key: authority_key.clone(),
         };
-        // Install evidence before activation. The DB cannot yield this key
-        // to a worker until the subscription transaction commits.
-        {
-            let mut authorities = self
-                .authorities
-                .lock()
-                .map_err(|_| NoticeError::Unavailable)?;
-            authorities.retain(|_, entry| entry.expires > now);
-            if authorities.len() >= 2 * MAX_SUBSCRIPTIONS + MAX_VERIFICATIONS {
-                return Err(NoticeError::Full.into());
-            }
-            authorities.insert(
-                authority_key.clone(),
-                RegisteredAuthority {
-                    expires,
-                    check,
-                    cancel: tokio_util::sync::CancellationToken::new(),
-                },
-            );
-        }
+        let events = self.clone();
         let saved = self
             .store
-            .activate_event_subscription(
-                owner,
-                ValidatedSubscription {
-                    target,
-                    sealed_key,
-                    key_fingerprint,
-                    expires,
-                },
-                now,
-            )
-            .await;
-        let saved = match saved {
-            Ok(saved) => saved,
-            Err(error) => {
-                self.forget_authority(&authority_key);
-                return Err(error.into());
-            }
-        };
-        if let Some(old) = &saved.replaced_authority {
-            self.forget_authority(old);
-        }
+            .run_event(move |db| {
+                let now = now_ms();
+                // The blocking worker owns both the transaction and its evidence.
+                // A dropped waiter or response deadline cannot change commit disposition.
+                events.remember_authority(&authority_key, check, expires, now)?;
+                let saved = subscriptions::activate(
+                    db,
+                    &owner,
+                    &ValidatedSubscription {
+                        target,
+                        enrollment,
+                        sealed_key,
+                        key_fingerprint,
+                        expires,
+                    },
+                    now,
+                );
+                match &saved {
+                    Ok(saved) => {
+                        if let Some(old) = &saved.replaced_authority {
+                            events.forget_authority(old);
+                        }
+                    }
+                    Err(_) => events.forget_authority(&authority_key),
+                }
+                saved
+            })
+            .await?;
         Ok(serde_json::json!({
             "id": saved.id,
             "refreshBefore": timestamp(saved.expires)?,
@@ -162,11 +163,16 @@ impl AgentEvents {
     }
 
     pub(crate) async fn unsubscribe(
-        &self,
+        self: &Arc<Self>,
         recipient: NoticeRecipient,
         params: EventsUnsubscribeParams,
     ) -> Result<serde_json::Value, EventError> {
         let target = params.validate()?;
+        if target.filter.session_messages
+            != matches!(recipient.consumer, NoticeConsumer::MessageSession { .. })
+        {
+            return Err(NoticeError::Identity.into());
+        }
         let _permit = self
             .verification_slots
             .try_acquire()
@@ -176,13 +182,14 @@ impl AgentEvents {
             recipient,
             authority_key: String::new(),
         };
-        if let Some(old) = self
-            .store
-            .remove_event_subscription(owner, target, now_ms())
-            .await?
-        {
-            self.forget_authority(&old);
-        }
+        let events = self.clone();
+        self.store
+            .remove_event_subscription(owner, target, now_ms(), move |old| {
+                if let Some(old) = old {
+                    events.forget_authority(old);
+                }
+            })
+            .await?;
         Ok(serde_json::json!({}))
     }
 
@@ -233,6 +240,32 @@ impl AgentEvents {
         }
         self.sender.verify(&target.url, id, key).await?;
         *expires = Some(Instant::now() + VERIFICATION_TTL);
+        Ok(())
+    }
+
+    fn remember_authority(
+        &self,
+        key: &str,
+        check: Arc<dyn EventAuthorizer>,
+        expires: i64,
+        now: i64,
+    ) -> Result<(), NoticeError> {
+        let mut authorities = self
+            .authorities
+            .lock()
+            .map_err(|_| NoticeError::Unavailable)?;
+        authorities.retain(|_, entry| entry.expires > now);
+        if authorities.len() >= 2 * MAX_SUBSCRIPTIONS + MAX_VERIFICATIONS {
+            return Err(NoticeError::Full);
+        }
+        authorities.insert(
+            key.to_owned(),
+            RegisteredAuthority {
+                expires,
+                check,
+                cancel: tokio_util::sync::CancellationToken::new(),
+            },
+        );
         Ok(())
     }
 

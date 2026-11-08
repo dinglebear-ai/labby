@@ -7,7 +7,10 @@ use sha2::{Digest as _, Sha256};
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::super::codemode_notices::{NoticeError, NoticeRecipient};
+use super::super::{
+    agent_messages::MessageEnrollment,
+    codemode_notices::{NoticeError, NoticeRecipient},
+};
 
 pub(crate) const EVENT_NAME: &str = "labby.notification.created";
 pub(super) const MAX_SUBSCRIPTIONS: usize = 2_000;
@@ -43,6 +46,12 @@ pub(super) struct EventFilter {
         deserialize_with = "present_source"
     )]
     pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub session_messages: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn present_source<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
@@ -167,6 +176,7 @@ impl WebhookSecret {
 
 pub(super) struct ValidatedSubscription {
     pub target: SubscriptionTarget,
+    pub enrollment: Option<MessageEnrollment>,
     pub sealed_key: Vec<u8>,
     pub key_fingerprint: String,
     pub expires: i64,
@@ -195,11 +205,11 @@ pub(crate) struct EventsListParams {
 }
 
 impl EventsListParams {
-    pub(crate) fn list(self) -> Result<serde_json::Value, EventError> {
+    pub(crate) fn list(self, session_messages: bool) -> Result<serde_json::Value, EventError> {
         if self.cursor.is_some() {
             return Err(EventError::Invalid);
         }
-        Ok(serde_json::json!({"events":[{
+        let mut event = serde_json::json!({
             "name": EVENT_NAME,
             "description": "An advisory notice is published to your Labby inbox.",
             "delivery": ["webhook"],
@@ -215,7 +225,19 @@ impl EventsListParams {
                     "level":{"enum":["info","warning"]},"message":{"type":"string"},
                     "expires_at_unix_ms":{"type":"integer"}}
             }
-        }]}))
+        });
+        if session_messages {
+            event["inputSchema"]["properties"]["session_messages"] = serde_json::json!({
+                "type":"boolean",
+                "description":"Deliver only references for this registered message session.",
+                "default":false,
+            });
+            event["payloadSchema"]["properties"]["message_id"] = serde_json::json!({
+                "type":"string",
+                "description":"Read the full message through the messages tool with this session's proof.",
+            });
+        }
+        Ok(serde_json::json!({"events":[event]}))
     }
 }
 
@@ -262,6 +284,10 @@ pub(crate) struct EventsSubscribeParams {
 }
 
 impl EventsSubscribeParams {
+    pub(crate) fn session_messages(&self) -> bool {
+        self.arguments.session_messages
+    }
+
     pub(super) fn validate(self) -> Result<(SubscriptionTarget, WebhookSecret, i64), EventError> {
         if self.cursor.is_some() {
             return Err(EventError::Invalid);
@@ -301,6 +327,10 @@ pub(crate) struct EventsUnsubscribeParams {
 }
 
 impl EventsUnsubscribeParams {
+    pub(crate) fn session_messages(&self) -> bool {
+        self.arguments.session_messages
+    }
+
     pub(super) fn validate(self) -> Result<SubscriptionTarget, EventError> {
         SubscriptionTarget::new(
             &self.name,

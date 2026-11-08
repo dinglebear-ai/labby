@@ -6,7 +6,7 @@ pub(crate) mod proof;
 mod store;
 mod types;
 
-use rusqlite::TransactionBehavior;
+use rusqlite::{Connection, TransactionBehavior};
 use serde_json::Value;
 
 use super::codemode_notices::{NoticeError, NoticeStore, notice_write_error, now_ms};
@@ -54,6 +54,16 @@ impl NoticeStore {
             Ok(())
         })
         .await
+    }
+
+    pub(super) fn retain_message_enrollment_in(
+        db: &Connection,
+        enrollment: &MessageEnrollment,
+        now: i64,
+        expires: i64,
+    ) -> Result<String, NoticeError> {
+        enrollment.binding.validate()?;
+        store::retain_enrollment(db, enrollment, now, expires)
     }
 
     pub(crate) async fn registered_message_recipient(

@@ -220,6 +220,27 @@ pub(super) fn enrollment(
     })
 }
 
+pub(super) fn retain_enrollment(
+    db: &Connection,
+    enrollment: &MessageEnrollment,
+    now: i64,
+    expires: i64,
+) -> Result<String, NoticeError> {
+    if enrollment.binding.kind != SessionKind::Http || expires <= now {
+        return Err(NoticeError::Identity);
+    }
+    let mut session = find(db, &enrollment.binding, now)?
+        .filter(|session| {
+            !session.closed
+                && session.id == enrollment.session_id
+                && session.inbox == enrollment.inbox_id
+        })
+        .ok_or(NoticeError::NotFound)?;
+    session.retained_until = session.retained_until.max(expires);
+    touch(db, &mut session, SessionKind::Http, now)?;
+    Ok(session.inbox)
+}
+
 fn sessions(db: &Connection, owner: &str, now: i64) -> Result<Value, NoticeError> {
     let mut query = db.prepare(
         "SELECT s.id,s.inbox_id,s.label,s.last_seen,s.active_until,s.retained_until,s.closed

@@ -23,11 +23,13 @@ pub(super) fn input(source: &str, endpoint: usize) -> ValidatedSubscription {
             EVENT_NAME,
             EventFilter {
                 source: Some(source.into()),
+                session_messages: false,
             },
             "webhook",
             &format!("https://example.com/callback/{endpoint}"),
         )
         .unwrap(),
+        enrollment: None,
         sealed_key: vec![1],
         key_fingerprint: "test".into(),
         expires: 3_600_001,
@@ -42,7 +44,7 @@ async fn foreign_subscription_is_not_visible() {
         .await
         .unwrap();
     store
-        .remove_event_subscription(owner("bob"), input("CI", 1).target, 2)
+        .remove_event_subscription(owner("bob"), input("CI", 1).target, 2, |_| {})
         .await
         .unwrap();
     assert!(
@@ -56,11 +58,11 @@ async fn foreign_subscription_is_not_visible() {
             .unwrap()
     );
     store
-        .remove_event_subscription(owner("alice"), input("CI", 1).target, 3)
+        .remove_event_subscription(owner("alice"), input("CI", 1).target, 3, |_| {})
         .await
         .unwrap();
     store
-        .remove_event_subscription(owner("alice"), input("CI", 1).target, 4)
+        .remove_event_subscription(owner("alice"), input("CI", 1).target, 4, |_| {})
         .await
         .unwrap();
     assert_eq!(
@@ -524,6 +526,7 @@ async fn unsubscribe_cancels_in_flight_request_and_joins_worker() {
             who.recipient.clone(),
             Arc::new(EventAuthority::StaticBearer),
             params,
+            None,
         )
         .await
         .unwrap();
@@ -585,6 +588,7 @@ async fn receiver_can_ack_before_http_response() {
             recipient.clone(),
             Arc::new(EventAuthority::StaticBearer),
             params,
+            None,
         )
         .await
         .unwrap();
@@ -630,3 +634,5 @@ async fn receiver_can_ack_before_http_response() {
             .is_none()
     );
 }
+
+mod session_messages;

@@ -542,6 +542,37 @@ impl NoticeStore {
         self.run(move |db| deliver_at(db, &key, now_ms(), false, accept))
             .await
     }
+
+    /// Only the joined channel worker calls this after proving the same local
+    /// message session. Ordinary Code Mode offers and ACKs exclude these rows.
+    pub(crate) async fn deliver_with_message_refs<T: Send + 'static>(
+        &self,
+        recipient: NoticeRecipient,
+        accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
+    ) -> Result<Option<T>, NoticeError> {
+        let key = recipient.key()?;
+        self.run(move |db| deliver_at(db, &key, now_ms(), true, accept))
+            .await
+    }
+
+    /// Avoid refreshing bridge authority during idle channel polls.
+    pub(crate) async fn message_reference_due(
+        &self,
+        recipient: &NoticeRecipient,
+    ) -> Result<bool, NoticeError> {
+        let key = recipient.key()?;
+        self.run(move |db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM agent_notices n JOIN agent_inboxes i ON i.id=n.inbox_id
+                   WHERE i.recipient=?1 AND i.expires>?2 AND n.expires>?2
+                     AND n.next_attempt<=?2 AND n.acknowledged=0 AND n.message_id IS NOT NULL)",
+                params![key, now_ms()],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+    }
 }
 
 /// A location check, not a credential. Salt the canonical root with the

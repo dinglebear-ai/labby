@@ -685,7 +685,10 @@ impl ServerHandler for LabMcpServer {
         }
         #[cfg(feature = "gateway")]
         if channel {
-            super::claude_channel::ChannelSession::add_instructions(&mut info.instructions);
+            super::claude_channel::ChannelSession::add_instructions(
+                &mut info.instructions,
+                self.route_runtime.local_messages.is_some(),
+            );
         }
         info
     }

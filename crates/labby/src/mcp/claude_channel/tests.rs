@@ -9,16 +9,23 @@ async fn fixture(
     directory: &std::path::Path,
     store: NoticeStore,
     enabled: bool,
+    messages_enabled: bool,
 ) -> (
     Arc<ChannelSession>,
     BufReader<DuplexStream>,
     tokio::task::JoinHandle<()>,
 ) {
     let channel = ChannelSession::new(store.clone());
-    let mut runtime = crate::mcp::runtime::McpRouteRuntime::with_notification_store(store);
+    let mut runtime = crate::mcp::runtime::McpRouteRuntime::with_notification_store(store.clone());
     if enabled {
         runtime.claude_channel = Some(channel.clone());
     }
+    let messages = messages_enabled.then(|| {
+        let key = crate::dispatch::agent_messages::proof::MessageKey::from_test_bytes([8; 32]);
+        LocalMessageSession::standalone(store, &key, &"1".repeat(64), channel.recipient.clone())
+            .unwrap()
+    });
+    runtime.local_messages = messages.clone();
     let gateway = Arc::new(
         crate::dispatch::gateway::config_store::test_gateway_manager(
             directory.join("gateway.toml"),
@@ -46,7 +53,12 @@ async fn fixture(
     let channel_copy = channel.clone();
     let task = tokio::spawn(async move {
         let running = server.serve(server_pipe).await.unwrap();
-        if enabled {
+        if let Some(messages) = messages {
+            messages
+                .wait(running, enabled.then_some(channel_copy.as_ref()))
+                .await
+                .unwrap();
+        } else if enabled {
             channel_copy.wait(running).await.unwrap();
         } else {
             running.waiting().await.unwrap();
@@ -92,8 +104,8 @@ async fn opted_in_stdio_pushes_notice_only_to_its_own_connection() {
     let first_store = NoticeStore::open_at(directory.path()).unwrap();
     let second_store = NoticeStore::open_at(directory.path()).unwrap();
     let producer_store = NoticeStore::open_at(directory.path()).unwrap();
-    let (channel, mut first, task1) = fixture(directory.path(), first_store, true).await;
-    let (_, mut second, task2) = fixture(directory.path(), second_store, true).await;
+    let (channel, mut first, task1) = fixture(directory.path(), first_store, true, false).await;
+    let (_, mut second, task2) = fixture(directory.path(), second_store, true, false).await;
     write(
         &mut first,
         json!({
@@ -204,8 +216,13 @@ async fn opted_in_stdio_pushes_notice_only_to_its_own_connection() {
 #[tokio::test]
 async fn default_stdio_does_not_advertise_channel() {
     let directory = tempfile::tempdir().unwrap();
-    let (_, mut pipe, task) =
-        fixture(directory.path(), NoticeStore::memory().unwrap(), false).await;
+    let (_, mut pipe, task) = fixture(
+        directory.path(),
+        NoticeStore::memory().unwrap(),
+        false,
+        false,
+    )
+    .await;
     let info = initialize(&mut pipe).await;
     assert!(
         info["result"]["capabilities"]["experimental"]
@@ -215,6 +232,103 @@ async fn default_stdio_does_not_advertise_channel() {
     initialized(&mut pipe).await;
     drop(pipe);
     tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+async fn message_call(
+    pipe: &mut BufReader<DuplexStream>,
+    id: u64,
+    action: &str,
+    params: Value,
+) -> Value {
+    for attempt in 0..4 {
+        let request_id = id * 10 + attempt;
+        write(
+            pipe,
+            json!({
+                "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
+                "params":{"name":"messages","arguments":{"action":action,"params":params}}
+            }),
+        )
+        .await;
+        let result = tokio::time::timeout(Duration::from_secs(3), read(pipe))
+            .await
+            .unwrap();
+        assert_eq!(result["id"], request_id, "{result}");
+        if result["error"]["message"] == "message store busy" && attempt < 3 {
+            tokio::time::sleep(Duration::from_millis(25 * (attempt + 1))).await;
+            continue;
+        }
+        assert!(
+            result["result"]["structuredContent"].is_object(),
+            "{result}"
+        );
+        return result["result"]["structuredContent"].clone();
+    }
+    unreachable!("the final attempt returns or reports its failure")
+}
+
+#[tokio::test]
+async fn claude_channel_delivers_reference_to_its_peer() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = || NoticeStore::open_at(directory.path()).unwrap();
+    let (_, mut sender, task1) = fixture(directory.path(), store(), true, true).await;
+    let (_, mut target, task2) = fixture(directory.path(), store(), true, true).await;
+    initialize(&mut sender).await;
+    initialize(&mut target).await;
+    initialized(&mut sender).await;
+    initialized(&mut target).await;
+    let sender_info = message_call(&mut sender, 2, "register", json!({"label":"sender"})).await;
+    let target_info = message_call(&mut target, 2, "register", json!({"label":"target"})).await;
+    let text = "Text stays behind the authenticated read. ".repeat(100);
+    let receipt = message_call(
+        &mut sender,
+        3,
+        "send",
+        json!({
+            "to":{"kind":"session","session_id":target_info["session_id"]},
+            "body":text, "summary":"Please review the result", "idempotency_key":"reference"
+        }),
+    )
+    .await;
+    let frame = tokio::time::timeout(Duration::from_secs(3), read(&mut target))
+        .await
+        .unwrap();
+    assert_eq!(frame["method"], "notifications/claude/channel");
+    assert_eq!(frame["params"]["meta"]["message_id"], receipt["message_id"]);
+    assert_eq!(frame["params"]["content"], "Please review the result");
+    assert!(!frame.to_string().contains(&text));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), read(&mut sender))
+            .await
+            .is_err()
+    );
+    let full = message_call(
+        &mut target,
+        3,
+        "read",
+        json!({"message_id":receipt["message_id"]}),
+    )
+    .await;
+    assert_eq!(full["body"], text);
+    assert_eq!(full["sender_session_id"], sender_info["session_id"]);
+    let ack = message_call(
+        &mut target,
+        4,
+        "ack",
+        json!({"message_ids":[receipt["message_id"]]}),
+    )
+    .await;
+    assert_eq!(ack["acknowledged"], json!([receipt["message_id"]]));
+    drop(sender);
+    drop(target);
+    tokio::time::timeout(Duration::from_secs(3), task1)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), task2)
         .await
         .unwrap()
         .unwrap();

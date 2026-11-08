@@ -398,7 +398,10 @@ impl ServerHandler for BridgeServerHandler {
         }
         if let Some((_, _, _)) = &self.stdio_channel {
             super::claude_channel::ChannelSession::advertise(&mut info.capabilities);
-            super::claude_channel::ChannelSession::add_instructions(&mut info.instructions);
+            super::claude_channel::ChannelSession::add_instructions(
+                &mut info.instructions,
+                self.local_messages.is_some(),
+            );
         }
         info
     }

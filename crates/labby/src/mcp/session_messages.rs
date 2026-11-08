@@ -24,7 +24,16 @@ pub(crate) const TOOL_NAME: &str = "messages";
 
 impl LabMcpServer {
     pub(super) fn messages_visible(&self, context: &RequestContext<RoleServer>) -> bool {
-        if !self.route_scope.is_root() || self.registry.is_proxy_aggregate() {
+        if !self.route_scope.is_root()
+            || self.registry.is_proxy_aggregate()
+            || matches!(
+                super::bound_access::project_execution_binding(
+                    &context.extensions,
+                    std::time::SystemTime::now()
+                ),
+                super::bound_access::ProjectExecutionBinding::Unavailable
+            )
+        {
             return false;
         }
         match self.transport_label {

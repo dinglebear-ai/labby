@@ -1,6 +1,8 @@
 use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 
-use super::super::codemode_notices::{NoticeError, NoticeStore, prune, register_in};
+use super::super::codemode_notices::{
+    NoticeConsumer, NoticeError, NoticeStore, prune, register_in,
+};
 use super::types::*;
 
 impl NoticeStore {
@@ -14,6 +16,7 @@ impl NoticeStore {
             .await
     }
 
+    #[cfg(test)]
     pub(super) async fn activate_event_subscription(
         &self,
         owner: EventOwnerBinding,
@@ -29,7 +32,8 @@ impl NoticeStore {
         owner: EventOwnerBinding,
         target: SubscriptionTarget,
         now: i64,
-    ) -> Result<Option<String>, NoticeError> {
+        complete: impl FnOnce(Option<&str>) + Send + 'static,
+    ) -> Result<(), NoticeError> {
         let id = target.id(&owner.recipient)?;
         let key = owner.recipient.key()?;
         self.run_event(move |db| {
@@ -41,7 +45,8 @@ impl NoticeStore {
             disable(&tx, &id, &key)?;
             prune(&tx, now)?;
             tx.commit()?;
-            Ok(authority)
+            complete(authority.as_deref());
+            Ok(())
         })
         .await
     }
@@ -56,7 +61,21 @@ pub(super) fn activate(
     let id = validated.target.id(&owner.recipient)?;
     let recipient = owner.recipient.key()?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let inbox = register_in(&tx, &recipient, owner.recipient.scope(), now)?;
+    let is_message_inbox = matches!(
+        owner.recipient.consumer,
+        NoticeConsumer::MessageSession { .. }
+    );
+    let inbox_id = match (
+        &validated.enrollment,
+        validated.target.filter.session_messages,
+        is_message_inbox,
+    ) {
+        (Some(enrollment), true, true) if enrollment.binding.recipient == owner.recipient => {
+            NoticeStore::retain_message_enrollment_in(&tx, enrollment, now, validated.expires)?
+        }
+        (None, false, false) => register_in(&tx, &recipient, owner.recipient.scope(), now)?.id,
+        _ => return Err(NoticeError::Identity),
+    };
     let existing: Option<(bool, String)> = tx.query_row(
         "SELECT active=1 AND expires>?3,authority_key FROM agent_event_subscriptions WHERE id=?1 AND recipient=?2",
         params![id, recipient, now],
@@ -73,8 +92,8 @@ pub(super) fn activate(
     }
     let generation: i64 = tx.query_row(
         "INSERT INTO agent_event_subscriptions
-         (id,recipient,inbox_id,authority_key,callback,source,secret,secret_fingerprint,expires,generation)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1)
+         (id,recipient,inbox_id,authority_key,callback,source,secret,secret_fingerprint,expires,generation,session_messages)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?12)
          ON CONFLICT(id) DO UPDATE SET
            authority_key=excluded.authority_key, expires=excluded.expires, active=1,
            generation=agent_event_subscriptions.generation+1,
@@ -88,10 +107,12 @@ pub(super) fn activate(
              WHEN previous_until>?10 THEN previous_until ELSE 0 END,
            secret=excluded.secret, secret_fingerprint=excluded.secret_fingerprint
          WHERE agent_event_subscriptions.recipient=excluded.recipient
+           AND agent_event_subscriptions.inbox_id=excluded.inbox_id
+           AND agent_event_subscriptions.session_messages=excluded.session_messages
          RETURNING generation",
-        params![id, recipient, inbox.id, owner.authority_key, validated.target.url.as_str(),
+        params![id, recipient, inbox_id, owner.authority_key, validated.target.url.as_str(),
                 validated.target.filter.source, validated.sealed_key, validated.key_fingerprint,
-                validated.expires, now, now.saturating_add(ROTATION_MS)],
+                validated.expires, now, now.saturating_add(ROTATION_MS), validated.target.filter.session_messages],
         |row| row.get(0),
     ).optional()?.ok_or(NoticeError::NotFound)?;
     tx.execute(

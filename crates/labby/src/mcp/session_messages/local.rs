@@ -1,9 +1,6 @@
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+    sync::{Arc, atomic::AtomicBool},
+    time::{Duration, Instant},
 };
 
 use rmcp::{RoleServer, Service, service::RunningService};
@@ -13,7 +10,7 @@ use crate::{
     dispatch::{
         agent_messages::{
             SessionBinding, SessionKind,
-            proof::{BridgeProof, MessageKey},
+            proof::{BRIDGE_PROOF_MS, BridgeProof, MessageKey},
         },
         codemode_notices::{NoticeConsumer, NoticeError, NoticeRecipient, NoticeStore, now_ms},
     },
@@ -33,8 +30,29 @@ struct BridgeAuthority {
     key: MessageKey,
     installation: String,
     daemon_epoch: String,
-    expires_at: std::sync::atomic::AtomicI64,
+    cached: std::sync::Mutex<Option<CachedProof>>,
     refresh: Mutex<()>,
+}
+
+struct CachedProof {
+    signed_expiry: i64,
+    deadline: Instant,
+}
+
+impl CachedProof {
+    fn new(signed_expiry: i64) -> Self {
+        let remaining = signed_expiry
+            .saturating_sub(now_ms())
+            .clamp(0, BRIDGE_PROOF_MS);
+        Self {
+            signed_expiry,
+            deadline: Instant::now() + Duration::from_millis(remaining as u64),
+        }
+    }
+
+    fn is_current(&self) -> bool {
+        self.signed_expiry > now_ms() && self.deadline > Instant::now()
+    }
 }
 
 impl LocalMessageSession {
@@ -66,7 +84,7 @@ impl LocalMessageSession {
             key: key.clone(),
             installation,
             daemon_epoch,
-            expires_at: expires_at.into(),
+            cached: std::sync::Mutex::new(Some(CachedProof::new(expires_at))),
             refresh: Mutex::new(()),
         };
         Self::new(store, &key, recipient, owner_key, Some(bridge))
@@ -108,6 +126,31 @@ impl LocalMessageSession {
         Ok(self.binding.clone())
     }
 
+    pub(in crate::mcp) fn can_send_reference(&self, recipient: &NoticeRecipient) -> bool {
+        &self.binding.recipient == recipient && self.has_current_proof()
+    }
+
+    pub(in crate::mcp) async fn can_offer_reference(&self, recipient: &NoticeRecipient) -> bool {
+        if &self.binding.recipient != recipient || !self.visible() {
+            return false;
+        }
+        if self.has_current_proof() {
+            return true;
+        }
+        self.store.message_reference_due(recipient).await == Ok(true)
+            && self.require_current(true).await.is_ok()
+    }
+
+    fn has_current_proof(&self) -> bool {
+        self.visible()
+            && self.bridge.as_ref().is_none_or(|bridge| {
+                bridge
+                    .cached
+                    .lock()
+                    .is_ok_and(|proof| proof.as_ref().is_some_and(CachedProof::is_current))
+            })
+    }
+
     async fn require_current(&self, allow_cached: bool) -> Result<(), NoticeError> {
         if !self.visible() {
             return Err(NoticeError::Identity);
@@ -115,7 +158,7 @@ impl LocalMessageSession {
         let Some(bridge) = &self.bridge else {
             return Ok(());
         };
-        if allow_cached && bridge.expires_at.load(Ordering::Acquire) > now_ms() {
+        if allow_cached && self.has_current_proof() {
             return Ok(());
         }
         // Bound proof traffic and serialize definitive revocation with refreshes.
@@ -132,13 +175,16 @@ impl LocalMessageSession {
                 if proof.owner_key == self.binding.owner_key
                     && proof.daemon_epoch == bridge.daemon_epoch =>
             {
-                bridge.expires_at.store(proof.expires_at, Ordering::Release);
+                *bridge.cached.lock().map_err(|_| NoticeError::Unavailable)? =
+                    Some(CachedProof::new(proof.expires_at));
                 return Ok(());
             }
             Ok(_) | Err(NoticeError::Identity) => NoticeError::Identity,
             Err(error) => error,
         };
-        bridge.expires_at.store(0, Ordering::Release);
+        if let Ok(mut cached) = bridge.cached.lock() {
+            *cached = None;
+        }
         if error == NoticeError::Identity {
             self.close().await;
         }
@@ -186,7 +232,7 @@ impl LocalMessageSession {
         let peer = running.peer().clone();
         let channel_push = async {
             match channel {
-                Some(channel) => channel.run(peer).await,
+                Some(channel) => channel.run(peer, Some(self)).await,
                 None => std::future::pending().await,
             }
         };
