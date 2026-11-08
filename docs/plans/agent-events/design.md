@@ -37,6 +37,14 @@ Upstream 3.9 also dispatches `skills/list`, `skills/get`, and
 `resources/directory/read` natively, before custom handlers. Labby's current
 custom-handler adapters must be bridged to those native hooks when upgrading.
 
+The [fork exit assessment](rmcp-fork-assessment.md) confirms that native Skills
+can replace the original typed-response workaround, while OAuth `Send`, strict
+Origin handling, and configurable Unix-socket limits still need attention.
+It also identifies an upgrade gate for either v3.9 SDK: its 16 MiB Unix JSON
+ceiling is below Labby's current 24 MiB Skills transport budget. Preserve that
+budget or resolve the contract before changing Labby's pin. SDK tests alone do
+not qualify this behavior.
+
 Protocol references, inspected on 2026-11-08:
 
 - [ChatGPT MCP Events](https://developers.openai.com/plugins/build/mcp-events).

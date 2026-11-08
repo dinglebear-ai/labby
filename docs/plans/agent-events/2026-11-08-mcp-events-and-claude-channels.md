@@ -105,6 +105,11 @@ RequestContext<RoleServer>) -> Result<ReadResourceDirectoryResult, ErrorData>`.
 These native hooks adapt to the existing shared Skills handlers and preserve
 their full request context. Preserve current capability JSON, pagination,
 private cache scope, manifest checks, and caller/route isolation.
+Read the [fork exit assessment](rmcp-fork-assessment.md) before changing the pin.
+Its current OAuth and Origin behavior must remain intact. Resolve the 16 MiB SDK
+Unix JSON ceiling against Labby's 24 MiB Skills transport budget before treating
+the upgrade as compatible. Preserve Labby's unknown-cache-scope contract or
+make its changed handling an explicit reviewed decision.
 
 - [ ] **Step 1: Write wire regressions before changing adapters.** Exercise all three methods through the actual RMCP service for legacy initialization and `2026-07-28` discovery. Assert unchanged payloads and errors for authorized, foreign-route, and disabled-Skills callers. A direct `on_custom_request` unit test alone cannot cover the new dispatch interception.
 - [ ] **Step 2: Use a command-local Cargo path patch against the task's SDK candidate and run `cargo test -p labby --all-features --test skills_mcp_e2e`.** Expect the current custom-only handlers to fail via native dispatch. Do not commit workstation paths or unavailable Git revisions.
