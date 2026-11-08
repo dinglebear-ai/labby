@@ -35,7 +35,7 @@ fn db() -> Connection {
         .unwrap()
 }
 fn take(db: &mut Connection, key: &str, now: i64) -> Option<NoticeBatch> {
-    deliver_at(db, key, now, |v| Some(v.clone())).unwrap()
+    deliver_at(db, key, now, false, |v| Some(v.clone())).unwrap()
 }
 
 #[test]
@@ -146,7 +146,7 @@ fn notice_production_budget_rejection_is_transactional_and_count_is_bounded() {
         .unwrap();
     }
     assert!(
-        deliver_at::<()>(&mut c, &key, 1100, |_| None)
+        deliver_at::<()>(&mut c, &key, 1100, false, |_| None)
             .unwrap()
             .is_none()
     );
@@ -758,7 +758,19 @@ fn typed_message_reference_fits_notice_budget() {
         Err(NoticeError::Invalid)
     ));
     tx.commit().unwrap();
-    let delivered = take(&mut db, &key, 1002).unwrap();
+    assert!(
+        take(&mut db, &key, 1002).is_none(),
+        "legacy Code Mode cannot offer typed refs"
+    );
+    let delivered = deliver_at(&mut db, &key, 1002, true, |batch| Some(batch.clone()))
+        .unwrap()
+        .unwrap();
+    assert!(
+        acknowledge_at(&mut db, &key, std::slice::from_ref(&stored.id), 1003)
+            .unwrap()
+            .is_empty(),
+        "legacy ACK cannot acknowledge a typed ref"
+    );
     assert_eq!(delivered.notifications[0].id, stored.id);
     assert_eq!(
         delivered.notifications[0].message_id.as_deref(),

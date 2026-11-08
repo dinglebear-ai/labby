@@ -71,13 +71,13 @@ impl SessionBinding {
         Ok(())
     }
 
-    pub(super) fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         self.stdio_closed
             .as_ref()
             .is_some_and(|closed| closed.load(Ordering::Acquire))
     }
 
-    pub(super) fn close(&self) {
+    pub(crate) fn close(&self) {
         if let Some(closed) = &self.stdio_closed {
             closed.store(true, Ordering::Release);
         }

@@ -462,7 +462,7 @@ fn limits_cover_serialized_tool_result() {
 #[tokio::test]
 async fn concurrent_retry_has_one_receipt_across_independent_connections() {
     let mut fixture = Fixture::new();
-    let now = crate::dispatch::codemode_notices::now_ms();
+    let now = now_ms();
     let a = identity("owner", "a", SessionKind::Http);
     let b = identity("owner", "b", SessionKind::Http);
     fixture.register(&a, "sender", now);

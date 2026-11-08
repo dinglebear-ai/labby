@@ -539,7 +539,7 @@ impl NoticeStore {
         accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
     ) -> Result<Option<T>, NoticeError> {
         let key = recipient.key()?;
-        self.run(move |db| deliver_at(db, &key, now_ms(), accept))
+        self.run(move |db| deliver_at(db, &key, now_ms(), false, accept))
             .await
     }
 }
@@ -867,6 +867,7 @@ fn acknowledge_in(
         // that this recipient has not been offered. Repeated own ACKs are idempotent.
         if tx.execute(
             "UPDATE agent_notices SET acknowledged=1 WHERE id=? AND (attempts>0 OR webhook_offered=1) AND expires>?
+            AND message_id IS NULL
             AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient=? AND expires>?)",
             params![id, now, key, now],
         )? > 0
@@ -892,6 +893,7 @@ fn deliver_at<T>(
     db: &mut Connection,
     key: &str,
     now: i64,
+    include_message_refs: bool,
     mut accept: impl FnMut(&NoticeBatch) -> Option<T>,
 ) -> Result<Option<T>, NoticeError> {
     let inbox: Option<String> = db
@@ -906,18 +908,20 @@ fn deliver_at<T>(
     };
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let total: i64 = tx.query_row(
-        "SELECT count(*) FROM agent_notices WHERE inbox_id=? AND acknowledged=0 AND expires>?",
-        params![inbox, now],
+        "SELECT count(*) FROM agent_notices WHERE inbox_id=? AND acknowledged=0 AND expires>?
+        AND (? OR message_id IS NULL)",
+        params![inbox, now, include_message_refs],
         |r| r.get(0),
     )?;
     let notices = {
         let mut query = tx.prepare(
             "SELECT id,source,level,message,attempts,expires,message_id FROM agent_notices
             WHERE inbox_id=? AND acknowledged=0 AND expires>? AND next_attempt<=?
+            AND (? OR message_id IS NULL)
             ORDER BY next_attempt,created,id LIMIT 3",
         )?;
         query
-            .query_map(params![inbox, now, now], |r| {
+            .query_map(params![inbox, now, now, include_message_refs], |r| {
                 let level: String = r.get(2)?;
                 Ok(CodeModeNotice {
                     id: r.get(0)?,

@@ -1,4 +1,8 @@
 //! Session-scoped messages share the durable notice transaction and delivery paths.
+#[cfg(feature = "gateway")]
+pub(crate) mod http;
+#[cfg(feature = "gateway")]
+pub(crate) mod proof;
 mod store;
 mod types;
 

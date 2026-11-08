@@ -99,6 +99,7 @@ pub struct BridgeServerHandler {
     _service: Option<RunningService<RoleClient, BridgeClientHandler>>,
     peer: Peer<RoleClient>,
     tool_security_schemes: Option<serde_json::Value>,
+    local_messages: Option<std::sync::Arc<super::session_messages::LocalMessageSession>>,
     stdio_channel: Option<(
         std::sync::Arc<super::claude_channel::ChannelSession>,
         usize,
@@ -114,7 +115,16 @@ impl BridgeServerHandler {
             peer,
             tool_security_schemes: None,
             stdio_channel: None,
+            local_messages: None,
         }
+    }
+
+    pub(crate) fn with_local_messages(
+        mut self,
+        messages: Option<std::sync::Arc<super::session_messages::LocalMessageSession>>,
+    ) -> Self {
+        self.local_messages = messages;
+        self
     }
 
     pub(crate) fn with_stdio_channel(
@@ -143,6 +153,7 @@ impl BridgeServerHandler {
             peer,
             tool_security_schemes: None,
             stdio_channel: None,
+            local_messages: None,
         }
     }
 }
@@ -405,6 +416,9 @@ impl ServerHandler for BridgeServerHandler {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        let first_page = request
+            .as_ref()
+            .is_none_or(|params| params.cursor.is_none());
         let request = request
             .map(ListToolsRequest::with_param)
             .unwrap_or_default();
@@ -417,6 +431,21 @@ impl ServerHandler for BridgeServerHandler {
             .await?
         {
             ServerResult::ListToolsResult(mut result) => {
+                result.tools.retain(|tool| {
+                    tool.name.as_ref() != super::session_messages::TOOL_NAME
+                        && !labby_gateway::upstream::is_transport_local_tool(tool)
+                });
+                if first_page
+                    && self
+                        .local_messages
+                        .as_ref()
+                        .is_some_and(|local| local.visible())
+                {
+                    result.tools.push(
+                        super::permanent_tools::PermanentToolRegistry::new()
+                            .session_messages_tool(),
+                    );
+                }
                 if let Some(schemes) = &self.tool_security_schemes {
                     result.tools = result
                         .tools
@@ -440,6 +469,17 @@ impl ServerHandler for BridgeServerHandler {
         mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if request.name.as_ref() == super::session_messages::TOOL_NAME {
+            let local = self
+                .local_messages
+                .as_ref()
+                .ok_or_else(super::session_messages::hidden)?;
+            let binding = local
+                .authorize()
+                .await
+                .map_err(super::session_messages::tool_error)?;
+            return super::session_messages::execute(&local.store, binding, request).await;
+        }
         let control = if let Some((channel, max_bytes, max_tokens)) = &self.stdio_channel
             && matches!(
                 request.name.as_ref(),

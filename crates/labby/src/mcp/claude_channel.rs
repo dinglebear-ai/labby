@@ -69,7 +69,7 @@ impl ChannelSession {
         }
     }
 
-    async fn run(&self, peer: Peer<RoleServer>) -> std::convert::Infallible {
+    pub(super) async fn run(&self, peer: Peer<RoleServer>) -> std::convert::Infallible {
         self.initialized.notified().await;
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);

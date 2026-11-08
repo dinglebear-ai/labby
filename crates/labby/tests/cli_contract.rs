@@ -1367,3 +1367,13 @@ fn raw_journal_mode_rejects_json_before_starting_any_external_process() {
             .contains("No journal process was started")
     );
 }
+
+#[test]
+fn agent_messages_opt_in_is_available_on_serve_and_mcp() {
+    for command in ["serve", "mcp"] {
+        assert!(Cli::try_parse_from(["labby", command, "--agent-messages"]).is_ok());
+        let output = invoke(&[command, "--help"]);
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("--agent-messages"));
+    }
+}

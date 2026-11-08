@@ -38,6 +38,9 @@ pub struct AppState {
     pub(crate) agent_notifications: crate::dispatch::codemode_notices::NoticeStore,
     #[cfg(feature = "gateway")]
     pub(crate) agent_events: Option<Arc<crate::dispatch::agent_events::AgentEvents>>,
+    #[cfg(feature = "gateway")]
+    pub(crate) agent_messages:
+        Option<Arc<crate::dispatch::agent_messages::http::HttpMessageRuntime>>,
     /// Durable provider lifecycle dispatch, available only with browser OAuth authority.
     pub depot_admin: Option<Arc<crate::dispatch::depot::admin::Admin>>,
     depot_store: Option<Arc<crate::dispatch::depot::store::Store>>,
@@ -182,6 +185,8 @@ impl AppState {
             agent_notifications: crate::dispatch::codemode_notices::NoticeStore::default(),
             #[cfg(feature = "gateway")]
             agent_events: None,
+            #[cfg(feature = "gateway")]
+            agent_messages: None,
             depot_admin: None,
             depot_store: None,
             depot_policy: Default::default(),

@@ -59,6 +59,8 @@ pub(crate) mod route_scope;
 pub(crate) mod runtime;
 pub mod server;
 pub mod services;
+#[cfg(feature = "gateway")]
+pub(crate) mod session_messages;
 #[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "skills")]

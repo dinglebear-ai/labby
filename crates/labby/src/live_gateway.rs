@@ -1411,6 +1411,90 @@ impl LiveGateway {
             .await?)
     }
 
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn prove_message_bridge(
+        &self,
+        key: &crate::dispatch::agent_messages::proof::MessageKey,
+        installation: &str,
+    ) -> Result<
+        crate::dispatch::agent_messages::proof::BridgeProof,
+        crate::dispatch::codemode_notices::NoticeError,
+    > {
+        use crate::dispatch::{
+            agent_messages::proof::{BRIDGE_PROOF_PATH, BridgeProof, BridgeProofRequest},
+            codemode_notices::{NoticeError, now_ms},
+        };
+
+        if !matches!(self.base_url.host(), Some(Host::Ipv4(ip)) if ip.is_loopback())
+            && !matches!(self.base_url.host(), Some(Host::Ipv6(ip)) if ip.is_loopback())
+        {
+            return Err(NoticeError::Identity);
+        }
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| NoticeError::Unavailable)?;
+        tokio::time::timeout(Duration::from_secs(4), async {
+            let token = if let Some(root) = &self.saved_cli_session {
+                let saved = crate::oauth::cli_session::auth_client_for_root(
+                    root,
+                    &self.base_url,
+                    client.clone(),
+                )
+                .await
+                .map_err(|_| NoticeError::Unavailable)?
+                .ok_or(NoticeError::Identity)?;
+                saved
+                    .get_access_token()
+                    .await
+                    .map_err(|_| NoticeError::Unavailable)?
+            } else {
+                self.token.clone().ok_or(NoticeError::Identity)?
+            };
+            let token = zeroize::Zeroizing::new(token);
+            let request = BridgeProofRequest::new(key, &token, installation, now_ms())?;
+            let url = self
+                .base_url
+                .join(BRIDGE_PROOF_PATH)
+                .map_err(|_| NoticeError::Identity)?;
+            let mut response = client
+                .post(url)
+                .bearer_auth(token.as_str())
+                .json(&request)
+                .send()
+                .await
+                .map_err(|_| NoticeError::Unavailable)?;
+            match response.status() {
+                reqwest::StatusCode::OK => {}
+                status
+                    if status.is_server_error()
+                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                {
+                    return Err(NoticeError::Unavailable);
+                }
+                _ => return Err(NoticeError::Identity),
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| NoticeError::Unavailable)?
+            {
+                if chunk.len() > 2048 - body.len() {
+                    return Err(NoticeError::Identity);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            let proof: BridgeProof =
+                serde_json::from_slice(&body).map_err(|_| NoticeError::Identity)?;
+            proof.verify(key, &request, &token, now_ms())?;
+            Ok(proof)
+        })
+        .await
+        .map_err(|_| NoticeError::Unavailable)?
+    }
+
     pub async fn connect_service_bounded<H: rmcp::ClientHandler>(
         &self,
         handler: H,

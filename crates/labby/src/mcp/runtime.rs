@@ -212,6 +212,11 @@ pub(crate) struct McpRouteRuntime {
     #[cfg(feature = "gateway")]
     pub(crate) agent_events: Option<Arc<crate::dispatch::agent_events::AgentEvents>>,
     #[cfg(feature = "gateway")]
+    pub(crate) http_messages:
+        Option<Arc<crate::dispatch::agent_messages::http::HttpMessageRuntime>>,
+    #[cfg(feature = "gateway")]
+    pub(crate) local_messages: Option<Arc<super::session_messages::LocalMessageSession>>,
+    #[cfg(feature = "gateway")]
     pub(crate) event_credential_adapter: Option<Arc<crate::access::AccessCredentialAdapter>>,
     #[cfg(feature = "gateway")]
     pub(crate) claude_channel: Option<Arc<super::claude_channel::ChannelSession>>,

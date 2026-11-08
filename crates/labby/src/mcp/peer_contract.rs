@@ -218,6 +218,8 @@ pub(crate) struct PeerCatalogAudience {
     pub(crate) skill_library_management_visible: bool,
     pub(crate) skill_library_app_visible: bool,
     #[cfg(feature = "gateway")]
+    pub(crate) session_messages_visible: bool,
+    #[cfg(feature = "gateway")]
     pub(crate) oauth_subject: Option<String>,
     #[cfg(feature = "gateway")]
     pub(crate) project_listing: ProjectPeerListing,
@@ -318,6 +320,8 @@ impl Default for PeerCatalogAudience {
             native_stash_caller: false,
             skill_library_management_visible: false,
             skill_library_app_visible: false,
+            #[cfg(feature = "gateway")]
+            session_messages_visible: false,
             #[cfg(feature = "gateway")]
             oauth_subject: Some(SHARED_GATEWAY_OAUTH_SUBJECT.to_string()),
             #[cfg(feature = "gateway")]
@@ -553,6 +557,11 @@ impl PeerContract {
         let mut descriptors = Vec::new();
         let mut builtin_names = HashSet::new();
         let mut advertised_names = HashSet::new();
+        #[cfg(feature = "gateway")]
+        if self.audience.session_messages_visible {
+            descriptors.push(self.registry.permanent_tools().session_messages_tool());
+            advertised_names.insert(super::session_messages::TOOL_NAME.to_owned());
+        }
         let server_logs_app_visible = {
             #[cfg(feature = "gateway")]
             {
@@ -1036,6 +1045,7 @@ mod tests {
                 native_stash_caller: false,
                 skill_library_management_visible: false,
                 skill_library_app_visible: false,
+                session_messages_visible: false,
                 oauth_subject: Some("reader".to_string()),
                 project_listing: ProjectPeerListing::Legacy,
             },

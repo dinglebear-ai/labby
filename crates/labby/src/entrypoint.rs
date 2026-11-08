@@ -633,8 +633,8 @@ pub async fn run() -> ExitCode {
         log_filter_override.as_deref(),
         !cli.quiet && !json_output,
         cli.verbose > 0 || matches!(&cli.command, cli::Command::Serve(_) | cli::Command::Mcp(_)),
-        matches!(&cli.command, cli::Command::Serve(args) if args.mcp_events)
-            || matches!(&cli.command, cli::Command::Mcp(args) if args.claude_channel),
+        matches!(&cli.command, cli::Command::Serve(args) if args.mcp_events || args.agent_messages)
+            || matches!(&cli.command, cli::Command::Mcp(args) if args.claude_channel || args.agent_messages),
     );
 
     // 3. Load .env files (secrets + URL env vars) for runtime paths.

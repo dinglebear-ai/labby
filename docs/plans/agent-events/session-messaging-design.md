@@ -145,9 +145,9 @@ Each notice carries a bounded advisory summary and a typed `message_id` when
 it is a reference. Do not put the full body on push or on unrelated tool
 responses. If no summary was supplied, use a fixed short notice that identifies
 the sender's label. The sender's durable ID and original label are on
-`messages.read`. `messages.ack` acknowledges just this recipient's notice;
-a normal notice ACK, where offered via the existing path, also clears its
-message unread state.
+`messages.read`. `messages.ack` acknowledges the recipient's reference and
+clears its unread state. Ordinary Code Mode controls cannot offer or acknowledge
+typed references because those controls do not verify the message session.
 
 A stdio session uses its existing exact connection inbox; Claude Channels
 include the reference in `meta.message_id`. An HTTP messaging binding uses

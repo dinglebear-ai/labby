@@ -25,6 +25,17 @@ pub(crate) enum EventAuthority {
     ),
 }
 
+pub(crate) async fn require_current(
+    check: &dyn EventAuthorizer,
+) -> Result<(), crate::dispatch::codemode_notices::NoticeError> {
+    use crate::dispatch::codemode_notices::NoticeError;
+    match tokio::time::timeout(std::time::Duration::from_secs(2), check.check()).await {
+        Ok(EventAuthorityDecision::Current) => Ok(()),
+        Ok(EventAuthorityDecision::Revoked) => Err(NoticeError::Identity),
+        Ok(EventAuthorityDecision::RefreshRequired) | Err(_) => Err(NoticeError::Unavailable),
+    }
+}
+
 impl EventAuthorizer for EventAuthority {
     fn check(&self) -> BoxFuture<'_, EventAuthorityDecision> {
         use EventAuthorityDecision::{Current, RefreshRequired, Revoked};

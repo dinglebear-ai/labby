@@ -19,7 +19,9 @@ use super::codemode_notices::{NoticeError, NoticeRecipient, NoticeStore, now_ms}
 use types::*;
 use webhook::{HttpsWebhookSender, WebhookSender};
 
-pub(crate) use authority::{EventAuthority, EventAuthorityDecision, EventAuthorizer};
+pub(crate) use authority::{
+    EventAuthority, EventAuthorityDecision, EventAuthorizer, require_current,
+};
 pub(crate) use types::{
     EventError, EventsListParams, EventsSubscribeParams, EventsUnsubscribeParams,
 };
@@ -86,7 +88,7 @@ impl AgentEvents {
             .try_acquire()
             .map_err(|_| NoticeError::Busy)?;
         let _edit = self.edit(&id).await?;
-        Self::require_current(check.as_ref()).await?;
+        require_current(check.as_ref()).await?;
         self.store
             .check_subscription_capacity(recipient_key.clone(), id.clone(), now_ms())
             .await?;
@@ -99,7 +101,7 @@ impl AgentEvents {
         self.verify(cache_key, &target, &id, &key).await?;
         // Verification is an external await; a grant revoked during the
         // challenge must not activate a subscription.
-        Self::require_current(check.as_ref()).await?;
+        require_current(check.as_ref()).await?;
         let now = now_ms();
         let expires = now.saturating_add(ttl);
         let sealed_key = self.seal_key(&id, key.bytes())?;
@@ -200,16 +202,6 @@ impl AgentEvents {
             }
         };
         Ok(gate.lock_owned().await)
-    }
-
-    async fn require_current(check: &dyn EventAuthorizer) -> Result<(), EventError> {
-        match tokio::time::timeout(Duration::from_secs(2), check.check()).await {
-            Ok(EventAuthorityDecision::Current) => Ok(()),
-            Ok(EventAuthorityDecision::Revoked) => Err(NoticeError::Identity.into()),
-            Ok(EventAuthorityDecision::RefreshRequired) | Err(_) => {
-                Err(NoticeError::Unavailable.into())
-            }
-        }
     }
 
     async fn verify(
