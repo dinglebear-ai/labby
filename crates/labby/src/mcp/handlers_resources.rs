@@ -6349,9 +6349,7 @@ for (const value of [
 
     #[tokio::test]
     async fn shared_history_resource_omits_upstream_response_payloads() {
-        use crate::dispatch::gateway::code_mode::{
-            CodeModeExecutedCall, CodeModeHistoryEntry, CodeModeHistoryKind,
-        };
+        use labby_codemode::{CodeModeExecutedCall, CodeModeHistoryEntry, CodeModeHistoryKind};
 
         let server =
             code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::protected_subset(
