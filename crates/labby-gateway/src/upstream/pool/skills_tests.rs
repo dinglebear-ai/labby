@@ -1,9 +1,8 @@
 //! Regressions for upstream skills enumeration and retrieval (SEP-2640).
 //!
-//! The mock upstream here answers `skills/list` and `skills/get` through
-//! `on_custom_request`, which is how a real skills-capable server answers them:
-//! rmcp has no typed skills methods, so both sides ride the custom-request
-//! catch-all.
+//! The fixture adapter sends Skills responses through the SDK's ordinary
+//! result path, including intentionally malformed entries and future cache hints
+//! that cannot be constructed with its typed server result builders.
 //!
 //! What these pin down, in rough order of how badly it would hurt to get wrong:
 //! a partial walk is never returned as if it were complete; budgets stop the
@@ -599,11 +598,8 @@ async fn a_malformed_page_fails_rather_than_returning_a_partial_snapshot() {
 
 #[test]
 fn skills_list_errors_distinguish_malformed_results_from_protocol_failures() {
-    let malformed = serde_json::from_value::<Vec<String>>(json!({"not": "an array"}))
-        .expect_err("malformed fixture");
-    let malformed = super::skills_list::skills_list_error(
-        &rmcp::service::ServiceError::ResponseDeserialization(malformed),
-    );
+    let malformed =
+        super::skills_list::skills_list_error(&rmcp::service::ServiceError::UnexpectedResponse);
     assert!(malformed.contains("malformed result"));
 
     let protocol = super::skills_list::skills_list_error(&rmcp::service::ServiceError::McpError(
@@ -615,11 +611,8 @@ fn skills_list_errors_distinguish_malformed_results_from_protocol_failures() {
 
 #[test]
 fn skills_get_errors_distinguish_malformed_results_from_protocol_failures() {
-    let malformed = serde_json::from_value::<Vec<String>>(json!({"not": "an array"}))
-        .expect_err("malformed fixture");
-    let malformed = super::skills_list::skills_get_error(
-        &rmcp::service::ServiceError::ResponseDeserialization(malformed),
-    );
+    let malformed =
+        super::skills_list::skills_get_error(&rmcp::service::ServiceError::UnexpectedResponse);
     assert!(malformed.contains("skills/get returned a malformed result"));
 
     let protocol = super::skills_list::skills_get_error(&rmcp::service::ServiceError::McpError(

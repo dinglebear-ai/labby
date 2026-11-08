@@ -30,9 +30,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use rmcp::RoleClient;
-use rmcp::model::{ClientRequest, CustomRequest};
+use rmcp::model::{
+    ClientRequest, GetSkillRequest, GetSkillRequestParams, ListSkillsRequest,
+    PaginatedRequestParams,
+};
 use rmcp::service::{Peer, ServiceError};
-use serde_json::json;
 
 use super::super::types::SkillExposurePolicy;
 use labby_runtime::skills::wire::{
@@ -183,9 +185,7 @@ enum SkillIngestCap {
 
 fn skills_method_error(method: &str, error: &ServiceError) -> String {
     match error {
-        ServiceError::ResponseDeserialization(error) => {
-            format!("{method} returned a malformed result: {error}")
-        }
+        ServiceError::UnexpectedResponse => format!("{method} returned a malformed result"),
         error => format!("{method} failed: {error}"),
     }
 }
@@ -320,11 +320,9 @@ impl UpstreamPool {
                     incomplete: true,
                 });
             }
-            let params = cursor
-                .as_ref()
-                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
-            let request =
-                ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
+            let mut params = PaginatedRequestParams::default();
+            params.cursor = cursor.clone();
+            let request = ClientRequest::ListSkillsRequest(ListSkillsRequest::with_param(params));
             let started = Instant::now();
             let remaining = deadline.saturating_duration_since(started);
             let event = UpstreamRequestLog::skills_list(upstream_name, false);
@@ -336,7 +334,7 @@ impl UpstreamPool {
                 UpstreamCapability::Skills,
                 event,
                 started,
-                peer.send_request_as(request),
+                super::skills_wire::request(peer, request),
                 |_| 0,
                 None,
                 |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
@@ -455,11 +453,9 @@ impl UpstreamPool {
                 break;
             }
 
-            let params = cursor
-                .as_ref()
-                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
-            let request =
-                ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
+            let mut params = PaginatedRequestParams::default();
+            params.cursor = cursor.clone();
+            let request = ClientRequest::ListSkillsRequest(ListSkillsRequest::with_param(params));
 
             let page_start = Instant::now();
             let remaining = deadline.saturating_duration_since(page_start);
@@ -472,7 +468,7 @@ impl UpstreamPool {
                 UpstreamCapability::Skills,
                 event,
                 page_start,
-                peer.send_request_as(request),
+                super::skills_wire::request(peer, request),
                 |_| 0,
                 None,
                 |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
@@ -599,10 +595,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::skill(upstream_name, redacted_uri, subject.is_some());
         log_upstream_request_start(event);
 
-        let request = ClientRequest::CustomRequest(CustomRequest::new(
-            SKILLS_GET_METHOD,
-            Some(json!({ "uri": uri })),
-        ));
+        let request =
+            ClientRequest::GetSkillRequest(GetSkillRequest::new(GetSkillRequestParams::new(uri)));
         let timeout_ms = self.request_timeout.as_millis();
         let result = timed_capability_call(
             self,
@@ -610,7 +604,7 @@ impl UpstreamPool {
             UpstreamCapability::Skills,
             event,
             start,
-            peer.send_request_as::<SkillsGetResult>(request),
+            super::skills_wire::request::<SkillsGetResult>(peer, request),
             |_| 0,
             subject,
             |error| format!("upstream `{upstream_name}` {}", skills_get_error(error)),

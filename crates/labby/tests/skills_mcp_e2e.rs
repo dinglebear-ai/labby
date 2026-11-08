@@ -10,9 +10,10 @@ mod live_labby;
 mod skills_oauth;
 
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
-use labby_runtime::skills::wire::{SkillsGetResult, SkillsListResult};
+use rmcp::model::{CallToolRequestParams, ProtocolVersion, ReadResourceRequestParams};
 use rmcp::model::{
-    CallToolRequestParams, ClientRequest, CustomRequest, ProtocolVersion, ReadResourceRequestParams,
+    GetSkillRequestParams, GetSkillResult as SkillsGetResult, ListSkillsResult as SkillsListResult,
+    PaginatedRequestParams,
 };
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::transport::streamable_http_client::{
@@ -21,14 +22,21 @@ use rmcp::transport::streamable_http_client::{
 use serde_json::json;
 use std::time::Duration;
 
-async fn verify_http_skills(endpoint: &str, expected_uri: &str) {
+fn pagination(cursor: Option<String>) -> Option<PaginatedRequestParams> {
+    let mut params = PaginatedRequestParams::default();
+    params.cursor = cursor;
+    Some(params)
+}
+
+async fn verify_http_skills(endpoint: &str, expected_uri: &str, directory_read: bool) {
     for lifecycle in [
         ClientLifecycleMode::Initialize,
         ClientLifecycleMode::Discover {
             preferred_versions: vec![ProtocolVersion::V_2026_07_28],
         },
     ] {
-        verify_http_skills_with_lifecycle(endpoint, expected_uri, lifecycle, false).await;
+        verify_http_skills_with_lifecycle(endpoint, expected_uri, lifecycle, false, directory_read)
+            .await;
     }
 }
 
@@ -37,6 +45,7 @@ async fn verify_http_skills_with_lifecycle(
     expected_uri: &str,
     lifecycle: ClientLifecycleMode,
     oauth: bool,
+    directory_read: bool,
 ) {
     drop(rustls::crypto::ring::default_provider().install_default());
     let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.to_owned());
@@ -55,7 +64,7 @@ async fn verify_http_skills_with_lifecycle(
             ().serve_with_lifecycle(worker, lifecycle).await
         }
         .expect("MCP connection");
-        verify_skill_roundtrip(&client, expected_uri).await;
+        verify_skill_roundtrip(&client, expected_uri, directory_read).await;
         client.cancel().await.expect("client shutdown");
     })
     .await;
@@ -74,6 +83,7 @@ async fn skills_oauth_wrapped_http_client_preserves_native_results() {
         "skill://labby/using-labby/SKILL.md",
         ClientLifecycleMode::Initialize,
         true,
+        true,
     )
     .await;
     let cleanup = server.finish().await;
@@ -83,6 +93,7 @@ async fn skills_oauth_wrapped_http_client_preserves_native_results() {
 async fn verify_skill_roundtrip(
     client: &rmcp::service::Peer<rmcp::RoleClient>,
     expected_uri: &str,
+    directory_read: bool,
 ) {
     let server = client.peer_info().expect("Skills discover response");
     let instructions = server.instructions.as_deref().unwrap_or_default();
@@ -92,26 +103,38 @@ async fn verify_skill_roundtrip(
             && instructions.contains("skills/get"),
         "Skills extension must be explicitly advertised before use: {instructions:?}"
     );
-    let list: SkillsListResult = client
-        .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/list",
-            Some(json!({})),
-        )))
-        .await
-        .expect("native skills/list");
+    let list: SkillsListResult = client.list_skills(None).await.expect("native skills/list");
     let skill = list
         .skills
         .iter()
         .find(|skill| skill.uri == expected_uri)
         .unwrap_or_else(|| panic!("expected {expected_uri} in {list:?}"));
     let get: SkillsGetResult = client
-        .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/get",
-            Some(json!({"uri": skill.uri})),
-        )))
+        .get_skill(GetSkillRequestParams::new(skill.uri.clone()))
         .await
         .expect("native skills/get");
     assert_eq!(get.skill.uri, skill.uri);
+
+    assert_eq!(
+        server.capabilities.supports_directory_read(),
+        directory_read,
+        "directory support must follow the fixture's configured namespaces"
+    );
+    if directory_read {
+        let directory_uri = expected_uri.rsplit_once('/').expect("manifest parent").0;
+        let directory = client
+            .read_resource_directory(rmcp::model::ReadResourceDirectoryRequestParams::new(
+                directory_uri,
+            ))
+            .await
+            .expect("native directory read through the wire");
+        assert!(
+            directory
+                .resources
+                .iter()
+                .any(|resource| resource.uri == expected_uri)
+        );
+    }
     let read = client
         .read_resource(ReadResourceRequestParams::new(skill.uri.clone()))
         .await
@@ -123,7 +146,9 @@ async fn verify_skill_roundtrip(
     };
     assert_eq!(uri, expected_uri);
     assert!(text.contains("name: using-labby"));
-    let manifest = get.skill.resources.as_ref().expect("stable manifest");
+    let rmcp::model::SkillResources::Files(manifest) = &get.skill.resources else {
+        panic!("stable manifest");
+    };
     let file = manifest
         .iter()
         .find(|file| file.uri == expected_uri)
@@ -165,10 +190,7 @@ async fn verify_skill_roundtrip(
         );
     }
     let unknown = client
-        .send_request_as::<SkillsGetResult>(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/get",
-            Some(json!({"uri": "skill://labby/missing/SKILL.md"})),
-        )))
+        .get_skill(GetSkillRequestParams::new("skill://labby/missing/SKILL.md"))
         .await
         .expect_err("unknown skill must be rejected");
     assert!(
@@ -176,10 +198,7 @@ async fn verify_skill_roundtrip(
             if error.code == rmcp::model::ErrorCode::INVALID_PARAMS)
     );
     let invalid_cursor = client
-        .send_request_as::<SkillsListResult>(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/list",
-            Some(json!({"cursor": "not-a-valid-skills-cursor"})),
-        )))
+        .list_skills(pagination(Some(("not-a-valid-skills-cursor").into())))
         .await
         .expect_err("hostile Skills cursor must be rejected");
     assert!(
@@ -208,7 +227,7 @@ async fn skills_stdio_server_list_get_and_read() {
                 ().serve_with_lifecycle(transport, lifecycle)
                     .await
                     .expect("stdio initialize");
-            verify_skill_roundtrip(&client, "skill://labby/using-labby/SKILL.md").await;
+            verify_skill_roundtrip(&client, "skill://labby/using-labby/SKILL.md", true).await;
             client.cancel().await.expect("stdio shutdown");
         })
         .await
@@ -226,6 +245,7 @@ async fn skills_http_server_list_get_and_read_through_production_client() {
     verify_http_skills(
         &format!("{}/mcp", server.connection().base_url),
         "skill://labby/using-labby/SKILL.md",
+        true,
     )
     .await;
     let cleanup = server.finish().await;
@@ -275,20 +295,11 @@ async fn skills_http_list_cursor_reads_second_page_on_same_session() {
             ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize)
                 .await
                 .expect("MCP connection");
-        let first: SkillsListResult = client
-            .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-                "skills/list",
-                Some(json!({})),
-            )))
-            .await
-            .expect("first page");
+        let first: SkillsListResult = client.list_skills(None).await.expect("first page");
         assert_eq!(first.skills.len(), 128);
         let cursor = first.next_cursor.expect("second page cursor");
         let second: SkillsListResult = client
-            .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-                "skills/list",
-                Some(json!({ "cursor": cursor })),
-            )))
+            .list_skills(pagination(Some(cursor)))
             .await
             .expect("second page on same session");
         assert!(!second.skills.is_empty());
@@ -386,23 +397,14 @@ async fn skills_http_federated_cursor_rejects_changed_catalog_on_same_session() 
             ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize)
                 .await
                 .expect("MCP connection");
-        let list = |cursor: Option<String>| {
-            ClientRequest::CustomRequest(CustomRequest::new(
-                "skills/list",
-                Some(match cursor {
-                    Some(cursor) => json!({ "cursor": cursor }),
-                    None => json!({}),
-                }),
-            ))
-        };
         let first: SkillsListResult = client
-            .send_request_as(list(None))
+            .list_skills(pagination(None))
             .await
             .expect("first page");
         assert_eq!(first.skills.len(), 128);
         let cursor = first.next_cursor.expect("federated second-page cursor");
         let second: SkillsListResult = client
-            .send_request_as(list(Some(cursor.clone())))
+            .list_skills(pagination(Some(cursor.clone())))
             .await
             .expect("stable federated second page");
         assert!(
@@ -430,7 +432,7 @@ async fn skills_http_federated_cursor_rejects_changed_catalog_on_same_session() 
             .expect("gateway reload");
         assert_ne!(reload.is_error, Some(true), "gateway reload: {reload:?}");
         let changed: SkillsListResult = client
-            .send_request_as(list(None))
+            .list_skills(pagination(None))
             .await
             .expect("changed first page");
         let changed_cursor = changed.next_cursor.expect("replacement second-page cursor");
@@ -444,7 +446,7 @@ async fn skills_http_federated_cursor_rejects_changed_catalog_on_same_session() 
             "federated catalog must change the cursor"
         );
         let stale = client
-            .send_request_as::<SkillsListResult>(list(Some(cursor)))
+            .list_skills(pagination(Some(cursor)))
             .await
             .expect_err("old federated cursor must be stale");
         assert!(
@@ -494,6 +496,7 @@ proxy_skills = true
     verify_http_skills(
         &format!("{}/mcp", gateway.connection().base_url),
         "skill://skills-leaf/skill/labby/using-labby/SKILL.md",
+        false,
     )
     .await;
     let gateway_cleanup = gateway.finish().await;
@@ -533,6 +536,7 @@ async fn skills_gateway_federates_a_stdio_labby_server() {
     verify_http_skills(
         &format!("{}/mcp", gateway.connection().base_url),
         "skill://skills-stdio/skill/labby/using-labby/SKILL.md",
+        false,
     )
     .await;
     let cleanup = gateway.finish().await;
@@ -546,10 +550,13 @@ async fn skills_gateway_trust_policy_blocks_listing_get_and_resource_reads() {
         .start()
         .await
         .expect("leaf starts");
-    for policy in [
-        "proxy_skills = false",
-        "proxy_skills = true\nexpose_skills = []",
-        "proxy_skills = true\nexpose_skills = [\"not-using-labby\"]",
+    for (policy, directory_read) in [
+        ("proxy_skills = false", true),
+        ("proxy_skills = true\nexpose_skills = []", false),
+        (
+            "proxy_skills = true\nexpose_skills = [\"not-using-labby\"]",
+            false,
+        ),
     ] {
         let config = format!(
             "[[upstream]]\nname = \"skills-leaf\"\nurl = \"{}/mcp\"\nbearer_token_env = \"SKILLS_E2E_LEAF_TOKEN\"\n{policy}\n",
@@ -574,13 +581,7 @@ async fn skills_gateway_trust_policy_blocks_listing_get_and_resource_reads() {
                 ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize)
                     .await
                     .expect("policy connection");
-            let list: SkillsListResult = client
-                .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-                    "skills/list",
-                    Some(json!({})),
-                )))
-                .await
-                .expect("policy list");
+            let list: SkillsListResult = client.list_skills(None).await.expect("policy list");
             assert!(
                 list.skills
                     .iter()
@@ -589,12 +590,15 @@ async fn skills_gateway_trust_policy_blocks_listing_get_and_resource_reads() {
             );
             // Prove the server remains functional; absence must not be caused
             // by a broken transport or a wholly empty Skills catalog.
-            verify_skill_roundtrip(&client, "skill://labby/using-labby/SKILL.md").await;
+            verify_skill_roundtrip(
+                &client,
+                "skill://labby/using-labby/SKILL.md",
+                directory_read,
+            )
+            .await;
             let uri = "skill://skills-leaf/skill/labby/using-labby/SKILL.md";
             let get = client
-                .send_request_as::<SkillsGetResult>(ClientRequest::CustomRequest(
-                    CustomRequest::new("skills/get", Some(json!({"uri": uri}))),
-                ))
+                .get_skill(GetSkillRequestParams::new(uri))
                 .await
                 .expect_err("hidden skill cannot be fetched directly");
             assert!(

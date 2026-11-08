@@ -24,26 +24,26 @@ ACK controls already exist on write-capable Code Mode calls. Publication require
 `lab:admin`. The MCP adapter derives the recipient from verified identity,
 authorized client or credential, optional conversation metadata, and route.
 
-The fork dependency is RMCP `=3.7.0` at
-`c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2`. The separate SDK sync prerequisite
-is complete: [fork main at `01537b5`](https://github.com/dinglebear-ai/rust-sdk/commit/01537b5abaaaa055e439d5382a2f6c989ce2912e)
-includes upstream `5596a8a0bba2a1ec5519cc855cdadf23e4dcecdc` (v3.9.0).
-That upstream fixes the metadata-only custom-result classifier, but current Labby
-also uses fork APIs for raw responses and configurable Unix-socket limits.
-The sync passed all-feature, no-local and minimal-feature SDK tests, strict
-Clippy in both feature configurations, nightly formatting and source review.
-It does not change Labby's existing dependency pin or prove Labby compatibility.
-Upstream 3.9 also dispatches `skills/list`, `skills/get`, and
-`resources/directory/read` natively, before custom handlers. Labby's current
-custom-handler adapters must be bridged to those native hooks when upgrading.
+Labby now consumes RMCP `=3.9.0` at
+[`dc4c6da`](https://github.com/dinglebear-ai/rust-sdk/commit/dc4c6dac4a25ef91b4dab795df799dc008fb3661)
+on the reviewed candidate in [SDK fork PR #9](https://github.com/dinglebear-ai/rust-sdk/pull/9).
+The candidate includes upstream `f2b0ddf113d1ed426b77a81511eac6e4bffa0ac4`,
+uses native Skills, and removes the obsolete typed/raw-response APIs.
+Labby's native handlers retain its existing Skills policy and operation owner.
+Its independent client DTOs preserve unknown cache hints; outbound hints the
+SDK cannot express become `private`. The explicit 24 MiB Skills response budget
+and smaller error-body limits remain enforced.
 
-The [fork exit assessment](rmcp-fork-assessment.md) confirms that native Skills
-can replace the original typed-response workaround, while OAuth `Send`, strict
-Origin handling, and configurable Unix-socket limits still need attention.
-It also identifies an upgrade gate for either v3.9 SDK: its 16 MiB Unix JSON
-ceiling is below Labby's current 24 MiB Skills transport budget. Preserve that
-budget or resolve the contract before changing Labby's pin. SDK tests alone do
-not qualify this behavior.
+The reduced fork retains OAuth Send, strict Origin validation, configurable Unix
+response bounds, bounded SSE retries, workload JWT grants, repeated authentication
+challenges, and optional DPoP required by the existing production conformance gate.
+It adds the opt-in Events capability field and builder. This provides SDK plumbing;
+the delivery adapters below still need implementation.
+
+See [migration status and upstream candidates](native-skills-migration.md) for
+validation and publication evidence. The [fork exit assessment](rmcp-fork-assessment.md)
+records the earlier dependency snapshot and probes. The stock upstream conformance
+baseline remains independent of the production fork pin.
 
 Protocol references, inspected on 2026-11-08:
 

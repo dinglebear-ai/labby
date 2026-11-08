@@ -57,18 +57,13 @@ Paths in this table are relative to `crates/labby/src/`. Register new modules in
 `dispatch.rs` and `mcp.rs`. Keep focused tests beside their owner and register each
 test module explicitly.
 
-The SDK fork sync is a completed separate prerequisite: fork `main` is
-[`01537b5abaaaa055e439d5382a2f6c989ce2912e`](https://github.com/dinglebear-ai/rust-sdk/commit/01537b5abaaaa055e439d5382a2f6c989ce2912e),
-containing upstream `5596a8a0bba2a1ec5519cc855cdadf23e4dcecdc`. Its local SDK
-checks and source review passed; Labby's dependency remains unchanged.
-The additional SDK capability change in Task 1 is a
-companion-repository scope decision for this plan's review. Do not edit the SDK
-or update Labby's dependency merely because its source is cached by Cargo.
-
-Before Rust work, select the installed toolchain that resolves `rustc` and
-`cargo` to 1.97.1. Run `bash scripts/check-rust-toolchain-sync.sh` and
-`cargo metadata --offline --locked --no-deps --format-version 1`. The planning
-phase verified these inputs; it did not run Labby's Rust test suite.
+The SDK migration prerequisite is implemented at
+[`dc4c6da`](https://github.com/dinglebear-ai/rust-sdk/commit/dc4c6dac4a25ef91b4dab795df799dc008fb3661)
+in [fork PR #9](https://github.com/dinglebear-ai/rust-sdk/pull/9).
+The user approved the companion SDK scope and native Skills migration on 2026-11-08.
+See the [migration record](native-skills-migration.md) and
+[bounded implementation plan](2026-11-08-native-skills-sdk-migration.md) for
+validation and upstream candidate status. Event delivery remains below.
 
 ### Task 1: Make MCP Events discoverable in RMCP
 
@@ -82,17 +77,17 @@ phase verified these inputs; it did not run Labby's Rust test suite.
 `ServerCapabilitiesBuilder::enable_events()`, serialized as top-level `events`.
 The absent field remains omitted. Preserve the existing `experimental` field.
 
-- [ ] **Step 1: Obtain plan-review approval for the named SDK companion scope.** If not approved, continue independent notice/Channels tasks and keep MCP Events explicitly blocked.
-- [ ] **Step 2: Write the capability tests.** Assert that `serde_json::to_value(ServerCapabilities::default()).unwrap().get("events").is_none()` and that the enabled builder serializes `value["events"] == json!({})`. Test preservation of `experimental["claude/channel"]` beside `events`.
-- [ ] **Step 3: Run the failing tests.** In the SDK checkout: `cargo test -p rmcp --features server --test test_events_capability`. Expect a missing field/builder error before implementation.
-- [ ] **Step 4: Add the optional field and builder toggle.** Do not add a transport serializer shim or put this capability under `experimental`.
-- [ ] **Step 5: Run the capability tests and affected SDK serialization tests.** Expect all tests executed and passing, with normal capability JSON unchanged.
-- [ ] **Step 6: Commit the SDK change locally.** Stage only the two named files and use `feat(model): expose MCP Events capability`.
+- [x] **Step 1: SDK companion scope approved by the user on 2026-11-08.**
+- [x] **Step 2: Write the capability tests.** Assert that `serde_json::to_value(ServerCapabilities::default()).unwrap().get("events").is_none()` and that the enabled builder serializes `value["events"] == json!({})`. Test preservation of `experimental["claude/channel"]` beside `events`.
+- [x] **Step 3: Run the failing tests.** In the SDK checkout: `cargo test -p rmcp --features server --test test_events_capability`. Expect a missing field/builder error before implementation.
+- [x] **Step 4: Add the optional field and builder toggle.** Do not add a transport serializer shim or put this capability under `experimental`.
+- [x] **Step 5: Run the capability tests and affected SDK serialization tests.** Expect all tests executed and passing, with normal capability JSON unchanged.
+- [x] **Step 6: Commit the SDK change locally.** Stage the capability source, regression tests, and generated schema snapshots and use `feat(model): expose MCP Events capability`.
 
 ### Task 1a: Upgrade Labby without losing its existing native Skills surface
 
 **Files:** Modify `Cargo.toml`, `Cargo.lock`, `scripts/ci/mcp-conformance.sh`,
-the production-fork pin in `tools/verification/conformance/upstream-baseline.json`,
+`crates/labby-auth/Cargo.toml`,
 `crates/labby/src/mcp/server.rs`, and `crates/labby/src/mcp/skills.rs`.
 Extend `crates/labby/tests/skills_mcp_e2e.rs`.
 
@@ -111,11 +106,11 @@ Unix JSON ceiling against Labby's 24 MiB Skills transport budget before treating
 the upgrade as compatible. Preserve Labby's unknown-cache-scope contract or
 make its changed handling an explicit reviewed decision.
 
-- [ ] **Step 1: Write wire regressions before changing adapters.** Exercise all three methods through the actual RMCP service for legacy initialization and `2026-07-28` discovery. Assert unchanged payloads and errors for authorized, foreign-route, and disabled-Skills callers. A direct `on_custom_request` unit test alone cannot cover the new dispatch interception.
-- [ ] **Step 2: Use a command-local Cargo path patch against the task's SDK candidate and run `cargo test -p labby --all-features --test skills_mcp_e2e`.** Expect the current custom-only handlers to fail via native dispatch. Do not commit workstation paths or unavailable Git revisions.
-- [ ] **Step 3: Add the three native adapters and confirm capability negotiation.** Delegate to the existing Skills operation owner. Convert protocol DTOs with checked serialization; never drop unknown/error fields silently. Keep unrelated custom methods, including the future Events adapter, intact.
-- [ ] **Step 4: Once the SDK revision is available under separately authorized publication, update all Labby fork pins and the lockfile.** Use version `=3.9.0` and the actual reviewed revision. Keep the stock-upstream conformance baseline distinct. Regenerate dependency projections using their owner.
-- [ ] **Step 5: Verify and commit.** Run `cargo metadata --locked --format-version 1`, the Skills E2E target, `cargo test -p labby --all-features --lib mcp::skills`, and `just check`. Confirm the resolved fork identity and existing Skills wire behavior. Commit explicit paths as `chore(deps): adopt rmcp 3.9 with native Skills adapters`.
+- [x] **Step 1: Write wire regressions before changing adapters.** Exercise all three methods through the actual RMCP service for legacy initialization and `2026-07-28` discovery. Assert unchanged payloads and errors for authorized, foreign-route, and disabled-Skills callers. A direct `on_custom_request` unit test alone cannot cover the new dispatch interception.
+- [x] **Step 2: Use a command-local Cargo path patch against the task's SDK candidate and run `cargo test -p labby --all-features --test skills_mcp_e2e`.** The removed raw APIs first failed compilation; native list and directory dispatch regressions then reproduced method-not-found before their adapters were implemented. The real-server target passed after migration. Do not commit workstation paths or unavailable Git revisions.
+- [x] **Step 3: Add the three native adapters and confirm capability negotiation.** Delegate to the existing Skills operation owner. Convert protocol DTOs with checked serialization; never drop unknown/error fields silently. Keep unrelated custom methods, including the future Events adapter, intact.
+- [x] **Step 4: Once the SDK revision is available under separately authorized publication, update all Labby fork pins and the lockfile.** Use version `=3.9.0` and the actual reviewed revision. Keep the stock-upstream conformance baseline distinct. Regenerate dependency projections using their owner.
+- [x] **Step 5: Verify and commit.** Run `cargo metadata --locked --format-version 1`, the Skills E2E target, `cargo test -p labby --all-features --lib mcp::skills`, and `just check`. Confirm the resolved fork identity and existing Skills wire behavior. Commit explicit paths as `chore(deps): adopt rmcp 3.9 with native Skills adapters`.
 
 ### Task 2: Preserve inbox ownership while adding durable subscription state
 

@@ -1,6 +1,6 @@
 //! rmcp Unix-domain socket transport adapter.
 //!
-//! Socket I/O, HTTP framing, sessions, SSE, and raw-response preservation stay
+//! Socket I/O, HTTP framing, sessions, SSE, and native message decoding stay
 //! owned by rmcp's `UnixSocketHttpClient`. This adapter only applies Labby's
 //! established defensive SEP-2243 method/name headers at the final wire
 //! boundary, matching the reqwest HTTP adapter.
@@ -92,10 +92,6 @@ impl LabbyUnixSocketHttpClient {
 
 impl StreamableHttpClient for LabbyUnixSocketHttpClient {
     type Error = <UnixSocketHttpClient as StreamableHttpClient>::Error;
-
-    fn preserves_raw_responses() -> bool {
-        UnixSocketHttpClient::preserves_raw_responses()
-    }
 
     async fn post_message(
         &self,
@@ -341,9 +337,67 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unix_socket_adapter_preserves_raw_responses() {
-        assert!(LabbyUnixSocketHttpClient::preserves_raw_responses());
+    #[tokio::test]
+    async fn unix_socket_adapter_keeps_the_large_skills_budget() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::UnixListener;
+
+        let directory = tempfile::Builder::new()
+            .prefix("lb-uds-skill-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let socket = directory.path().join("mcp.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let padding_len = 17 * 1024 * 1024;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            let body = serde_json::to_vec(&serde_json::json!({
+                "jsonrpc":"2.0", "id":1,
+                "result":{"resultType":"complete", "skills":[], "_meta":{"padding":"x".repeat(padding_len)}}
+            })).unwrap();
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(&body).await.unwrap();
+        });
+        let client = LabbyUnixSocketHttpClient::new(
+            socket.to_str().unwrap(),
+            "http://localhost/mcp",
+            24 * 1024 * 1024,
+        );
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.post_message(
+                "/mcp".into(),
+                serde_json::from_value(
+                    serde_json::json!({"jsonrpc":"2.0","id":1,"method":"skills/list","params":{}}),
+                )
+                .unwrap(),
+                None,
+                None,
+                HashMap::new(),
+            ),
+        )
+        .await
+        .expect("bounded response")
+        .expect("native Skills response above the SDK default");
+        let message = match response {
+            StreamableHttpPostResponse::Json(message, _) => Some(message),
+            _ => None,
+        }
+        .expect("expected native JSON");
+        assert_eq!(
+            serde_json::to_value(message).unwrap()["result"]["_meta"]["padding"]
+                .as_str()
+                .unwrap()
+                .len(),
+            padding_len
+        );
+        server.await.unwrap();
     }
 
     #[tokio::test]

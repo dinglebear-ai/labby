@@ -30,6 +30,49 @@ use crate::skills::facade::{
     SkillCallerScope, SkillRegistryContext, get_visible_skill, list_visible_skills_page,
 };
 
+/// Adapt the shared operation's wire DTO without narrowing future cache hints
+/// into a decoding failure or allowing a broader cache than the source permits.
+pub(super) fn native_skills_result<T: serde::de::DeserializeOwned>(
+    result: CustomResult,
+) -> Result<T, ErrorData> {
+    let mut value = result.0;
+    if value
+        .get("cacheScope")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|scope| !matches!(scope, "public" | "private"))
+    {
+        value["cacheScope"] = serde_json::Value::String(CACHE_SCOPE_PRIVATE.to_owned());
+    }
+    serde_json::from_value(value)
+        .map_err(|error| ErrorData::internal_error(error.to_string(), None))
+}
+
+#[cfg(test)]
+mod native_wire_tests {
+    use super::*;
+
+    #[test]
+    fn native_conversion_keeps_metadata_and_uses_a_private_scope_for_future_hints() {
+        for scope in [None, Some("public"), Some("private"), Some("future-scope")] {
+            let mut value = serde_json::json!({"resultType":"complete","skills":[],"nextCursor":"page-2","ttlMs":42,"_meta":{"preserved":true}});
+            if let Some(scope) = scope {
+                value["cacheScope"] = serde_json::json!(scope);
+            }
+            let converted: rmcp::model::ListSkillsResult =
+                native_skills_result(CustomResult::new(value)).unwrap();
+            let converted = serde_json::to_value(converted).unwrap();
+            assert_eq!(converted["_meta"]["preserved"], true);
+            assert_eq!(converted["nextCursor"], "page-2");
+            assert_eq!(converted["ttlMs"], 42);
+            match scope {
+                None => assert!(converted.get("cacheScope").is_none()),
+                Some("public") => assert_eq!(converted["cacheScope"], "public"),
+                _ => assert_eq!(converted["cacheScope"], "private"),
+            }
+        }
+    }
+}
+
 #[cfg(feature = "gateway")]
 fn skill_oauth_subject<'a>(
     auth: Option<&labby_auth::auth_context::AuthContext>,

@@ -598,15 +598,13 @@ impl ServerHandler for LabMcpServer {
             .enable_completions();
         let builder = builder
             .enable_extensions_with(mcp_extensions({
-                #[cfg(feature = "gateway")]
+                #[cfg(feature = "skills")]
                 {
-                    self.gateway_manager.is_none()
-                        && self.route_scope.exposes_skills()
-                        && self.route_scope.exposes_resources()
+                    self.supports_skill_directories_snapshot()
                 }
-                #[cfg(not(feature = "gateway"))]
+                #[cfg(not(feature = "skills"))]
                 {
-                    self.route_scope.exposes_skills() && self.route_scope.exposes_resources()
+                    false
                 }
             }))
             .enable_tasks();
@@ -663,53 +661,128 @@ impl ServerHandler for LabMcpServer {
         );
     }
 
-    async fn on_custom_request(
+    #[cfg(feature = "skills")]
+    fn list_skills(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<rmcp::model::ListSkillsResult, ErrorData>> + Send {
+        // Keep the SDK shared request-dispatch frame bounded, like get_prompt.
+        Box::pin(async move {
+            let params = request
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            let result = self
+                .handle_skills_request(
+                    &CustomRequest::new(labby_runtime::skills::wire::SKILLS_LIST_METHOD, params),
+                    &context,
+                )
+                .await?;
+            super::skills::native_skills_result(result)
+        })
+    }
+
+    #[cfg(feature = "skills")]
+    fn get_skill(
+        &self,
+        request: rmcp::model::GetSkillRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<rmcp::model::GetSkillResult, ErrorData>> + Send {
+        // Keep the SDK shared request-dispatch frame bounded, like get_prompt.
+        Box::pin(async move {
+            let params = serde_json::to_value(request)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            let result = self
+                .handle_skills_request(
+                    &CustomRequest::new(
+                        labby_runtime::skills::wire::SKILLS_GET_METHOD,
+                        Some(params),
+                    ),
+                    &context,
+                )
+                .await?;
+            super::skills::native_skills_result(result)
+        })
+    }
+
+    #[cfg(feature = "skills")]
+    fn read_resource_directory(
+        &self,
+        request: rmcp::model::ReadResourceDirectoryRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<rmcp::model::ReadResourceDirectoryResult, ErrorData>> + Send
+    {
+        // Keep the SDK shared request-dispatch frame bounded, like get_prompt.
+        Box::pin(async move {
+            let params = serde_json::to_value(request)
+                .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+            let result = self
+                .handle_skill_directory_request(
+                    &CustomRequest::new(
+                        labby_runtime::skills::wire::RESOURCES_DIRECTORY_READ_METHOD,
+                        Some(params),
+                    ),
+                    &context,
+                )
+                .await?;
+            super::skills::native_skills_result(result)
+        })
+    }
+
+    fn on_custom_request(
         &self,
         request: CustomRequest,
         context: RequestContext<RoleServer>,
-    ) -> Result<CustomResult, ErrorData> {
-        #[cfg(not(feature = "skills"))]
-        let _ = &context;
+    ) -> impl Future<Output = Result<CustomResult, ErrorData>> + Send {
+        // The compatibility path also participates in the SDK dispatcher frame.
+        Box::pin(async move {
+            #[cfg(not(feature = "skills"))]
+            let _ = &context;
 
-        // `context` is threaded rather than ignored: the skills methods below
-        // are scope-gated, and once proxied skills land they route per OAuth
-        // subject. A context-blind custom-request handler is how the in-process
-        // peer ended up trusting every caller (lab-m01gl) — do not reintroduce
-        // that shape here.
-        #[cfg(feature = "skills")]
-        if matches!(
-            request.method.as_str(),
-            labby_runtime::skills::wire::SKILLS_LIST_METHOD
-                | labby_runtime::skills::wire::SKILLS_GET_METHOD
-        ) {
-            return self.handle_skills_request(&request, &context).await;
-        }
+            // `context` is threaded rather than ignored: the skills methods below
+            // are scope-gated, and once proxied skills land they route per OAuth
+            // subject. A context-blind custom-request handler is how the in-process
+            // peer ended up trusting every caller (lab-m01gl) — do not reintroduce
+            // that shape here.
+            #[cfg(feature = "skills")]
+            if matches!(
+                request.method.as_str(),
+                labby_runtime::skills::wire::SKILLS_LIST_METHOD
+                    | labby_runtime::skills::wire::SKILLS_GET_METHOD
+            ) {
+                return self.handle_skills_request(&request, &context).await;
+            }
 
-        #[cfg(feature = "skills")]
-        if request.method == labby_runtime::skills::wire::RESOURCES_DIRECTORY_READ_METHOD {
-            return self
-                .handle_skill_directory_request(&request, &context)
-                .await;
-        }
+            #[cfg(feature = "skills")]
+            if request.method == labby_runtime::skills::wire::RESOURCES_DIRECTORY_READ_METHOD {
+                return self
+                    .handle_skill_directory_request(&request, &context)
+                    .await;
+            }
 
-        if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
-            return Err(ErrorData::new(
-                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
-                request.method,
-                None,
-            ));
-        }
+            if request.method != MCP_RELAY_CANCELLATION_REQUEST_METHOD {
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                    request.method,
+                    None,
+                ));
+            }
 
-        let params = request
-            .params_as::<RelayCancellationNotification>()
-            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
-            .ok_or_else(|| {
-                ErrorData::invalid_params("Labby relay cancellation request omitted params", None)
-            })?;
-        let correlated = cancel_tracked_request_by_token(&params.token);
-        Ok(CustomResult::new(serde_json::json!({
-            "cancelled": correlated,
-        })))
+            let params = request
+                .params_as::<RelayCancellationNotification>()
+                .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
+                .ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        "Labby relay cancellation request omitted params",
+                        None,
+                    )
+                })?;
+            let correlated = cancel_tracked_request_by_token(&params.token);
+            Ok(CustomResult::new(serde_json::json!({
+                "cancelled": correlated,
+            })))
+        })
     }
 
     async fn discover(
@@ -933,7 +1006,9 @@ impl ServerHandler for LabMcpServer {
             restore_request_meta(&mut request.meta, &context.meta);
             let response = match labby_runtime::usage_actor::scope_attributed(
                 self.request_usage_attribution(&context),
-                self.read_resource_impl(request, context),
+                // The native SDK response types enlarge this future. Keep the
+                // attribution wrappers from storing another full copy on stack.
+                Box::pin(self.read_resource_impl(request, context)),
             )
             .await?
             {
@@ -1226,6 +1301,53 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn native_skills_handlers_list_get_and_directory() {
+        use rmcp::model::{GetSkillRequestParams, ReadResourceDirectoryRequestParams};
+        use rmcp::service::RequestContext;
+        let server = stateless_test_server(Default::default());
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let context = || RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        let listed = running
+            .service()
+            .list_skills(None, context())
+            .await
+            .expect("native list hook");
+        let skill = listed
+            .skills
+            .iter()
+            .find(|skill| skill.uri == "skill://labby/using-labby/SKILL.md")
+            .expect("first-party skill");
+        let fetched = running
+            .service()
+            .get_skill(GetSkillRequestParams::new(&skill.uri), context())
+            .await
+            .expect("native get hook");
+        assert_eq!(
+            serde_json::to_value(&fetched.skill).unwrap(),
+            serde_json::to_value(skill).unwrap()
+        );
+        let directory = running
+            .service()
+            .read_resource_directory(
+                ReadResourceDirectoryRequestParams::new("skill://labby/using-labby"),
+                context(),
+            )
+            .await
+            .expect("native directory hook");
+        assert!(
+            directory
+                .resources
+                .iter()
+                .any(|resource| resource.uri == skill.uri)
+        );
+        running.cancel().await.unwrap();
+    }
+
     #[cfg(all(feature = "skills", feature = "gateway", feature = "proxy-testkit"))]
     #[tokio::test]
     async fn directory_request_rechecks_config_after_discovery_without_hiding_skills() {
@@ -1263,11 +1385,20 @@ mod tests {
             RESOURCES_DIRECTORY_READ_METHOD,
             Some(serde_json::json!({"uri":"skill://labby/using-labby"})),
         );
-        let result = running
-            .service()
-            .on_custom_request(directory_request.clone(), context())
-            .await
-            .unwrap();
+        let result = rmcp::Service::handle_request(
+            running.service(),
+            rmcp::model::ClientRequest::ReadResourceDirectoryRequest(
+                rmcp::model::ReadResourceDirectoryRequest::new(
+                    rmcp::model::ReadResourceDirectoryRequestParams::new(
+                        "skill://labby/using-labby",
+                    ),
+                ),
+            ),
+            context(),
+        )
+        .await
+        .expect("advertised native directory dispatch");
+        let result = CustomResult::new(serde_json::to_value(result).unwrap());
         assert!(!result.0["resources"].as_array().unwrap().is_empty());
         let listed = running
             .service()
@@ -1306,6 +1437,24 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(denied.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        let denied_dispatch = rmcp::Service::handle_request(
+            running.service(),
+            rmcp::model::ClientRequest::ReadResourceDirectoryRequest(
+                rmcp::model::ReadResourceDirectoryRequest::new(
+                    rmcp::model::ReadResourceDirectoryRequestParams::new(
+                        "skill://labby/using-labby",
+                    ),
+                ),
+            ),
+            context(),
+        )
+        .await
+        .expect_err("revoked directory capability blocks native dispatch");
+        assert_eq!(
+            denied_dispatch.code,
+            rmcp::model::ErrorCode::METHOD_NOT_FOUND
+        );
+
         let changed = running.service().discover(context()).await.unwrap();
         assert!(
             !changed.capabilities.extensions.as_ref().unwrap()[SKILLS_EXTENSION_KEY]

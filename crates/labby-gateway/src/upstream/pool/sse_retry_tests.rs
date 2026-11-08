@@ -106,7 +106,7 @@ async fn sse_worker_stops_failed_get_reconnects_without_reposting_the_rpc() {
     }))
     .unwrap();
     transport.send(discovery).await.unwrap();
-    tokio::time::timeout(Duration::from_secs(2), transport.receive_raw())
+    tokio::time::timeout(Duration::from_secs(2), transport.receive())
         .await
         .unwrap()
         .unwrap();

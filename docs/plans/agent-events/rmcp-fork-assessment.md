@@ -1,5 +1,7 @@
 # RMCP fork exit assessment
 
+> Historical assessment snapshot. The [native Skills migration record](native-skills-migration.md) tracks the implemented adapters, current SDK pin, validation and upstream candidates.
+
 Investigated on 2026-11-08. This is a dependency assessment, not an implemented
 migration or a qualification of Labby against stock RMCP.
 
