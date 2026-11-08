@@ -44,12 +44,21 @@ pub(crate) fn capture(full: &Value, used: &mut usize) -> Option<Value> {
 
 /// Replace retained blocks with explicit omission metadata under final pressure.
 pub fn omit_code_mode_upstream_content(value: &mut Value) {
-    let Some(object) = value.as_object_mut() else {
-        return;
-    };
-    let Some(Value::Array(blocks)) = object.remove("content") else {
-        return;
-    };
+    if let Some(omitted) = omission_projection(value) {
+        *value = omitted;
+    }
+}
+
+/// Build omission metadata without cloning retained blocks. The caller can keep
+/// the original value for a reversible preservation probe.
+pub(crate) fn omission_projection(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    let blocks = object.get("content")?.as_array()?;
+    let mut omitted: serde_json::Map<String, Value> = object
+        .iter()
+        .filter(|(key, _)| key.as_str() != "content")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
     let count = object
         .get("omitted_blocks")
         .and_then(Value::as_u64)
@@ -58,12 +67,15 @@ pub fn omit_code_mode_upstream_content(value: &mut Value) {
         .get("omitted_bytes")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let extra = blocks
-        .iter()
-        .map(|block| serde_json::to_vec(block).map_or(0, |v| v.len() as u64))
-        .sum::<u64>();
-    object.insert("omitted_blocks".into(), json!(count + blocks.len() as u64));
-    object.insert("omitted_bytes".into(), json!(bytes.saturating_add(extra)));
+    let extra = blocks.iter().fold(0u64, |sum, block| {
+        sum.saturating_add(serde_json::to_vec(block).map_or(0, |v| v.len() as u64))
+    });
+    omitted.insert(
+        "omitted_blocks".into(),
+        json!(count.saturating_add(blocks.len() as u64)),
+    );
+    omitted.insert("omitted_bytes".into(), json!(bytes.saturating_add(extra)));
+    Some(Value::Object(omitted))
 }
 
 #[cfg(test)]

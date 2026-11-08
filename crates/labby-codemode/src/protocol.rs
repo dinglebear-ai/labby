@@ -84,7 +84,8 @@ pub(crate) enum CodeModeRunnerOutput {
         id: String,
         params: Value,
         /// Request the original successful MCP envelope, with identical dispatch.
-        #[serde(default)]
+        /// Omit false so ordinary calls keep their original wire shape.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         full_result: bool,
     },
     /// The sandbox called `writeArtifact(path, content, options?)`. The host
@@ -205,6 +206,26 @@ mod id_tests {
             assert_eq!(error.origin, crate::CodeModeErrorOrigin::Budget);
             assert!(error.tool.is_none());
             assert!(!wire.contains(&id));
+        }
+    }
+    #[test]
+    fn full_result_is_opt_in_on_the_wire_and_defaults_false_on_decode() {
+        let ordinary =
+            serde_json::json!({"type":"tool_call","seq":0,"id":"fixture::lookup","params":{}});
+        for flag in [None, Some(false), Some(true)] {
+            let mut wire = ordinary.clone();
+            if let Some(value) = flag {
+                wire["full_result"] = serde_json::json!(value);
+            }
+            let parsed: CodeModeRunnerOutput = serde_json::from_value(wire).unwrap();
+            assert!(
+                matches!(&parsed, CodeModeRunnerOutput::ToolCall { full_result, .. } if *full_result == flag.unwrap_or(false))
+            );
+            let mut expected = ordinary.clone();
+            if flag == Some(true) {
+                expected["full_result"] = serde_json::json!(true);
+            }
+            assert_eq!(serde_json::to_value(parsed).unwrap(), expected);
         }
     }
 }

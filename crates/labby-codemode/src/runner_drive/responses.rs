@@ -117,7 +117,7 @@ pub(super) async fn handle_completed_tool_call(
     // trace (`state.calls`) — but their ToolResult/ToolError responses are
     // still written back unconditionally so the sandbox's `callTool(...)`
     // promise settles normally.
-    let is_internal = id.starts_with("__lab_internal::");
+    let is_internal = protocol_boundary::is_internal_tool_id(&id);
     match result {
         Ok(outcome) => {
             let upstream_content = outcome.full_result.as_ref().and_then(|full| {

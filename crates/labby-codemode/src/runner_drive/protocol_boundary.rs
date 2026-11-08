@@ -21,7 +21,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
     child_pid: Option<u32>,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
-    let is_internal = id.starts_with("__lab_internal::");
+    let is_internal = is_internal_tool_id(&id);
     if is_internal {
         state.internal_calls_enqueued = state.internal_calls_enqueued.saturating_add(1);
     } else {
@@ -203,6 +203,18 @@ fn internal_call_over_ceiling_response(
             seq,
             error: Box::new(error),
         }
+    }
+}
+
+/// Keep admission and completion aligned with the namespace used by dispatch.
+pub(super) fn is_internal_tool_id(id: &str) -> bool {
+    // Use dispatch's canonical, allocation-free namespace splitter. Parsing is
+    // bounded by the byte guard; oversized IDs keep their bounded rejection path.
+    if id.len() <= crate::protocol::MAX_TOOL_ID_BYTES {
+        crate::types::split_namespaced_id(id)
+            .is_some_and(|(namespace, _)| namespace == "__lab_internal")
+    } else {
+        id.starts_with("__lab_internal::")
     }
 }
 

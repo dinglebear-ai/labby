@@ -60,6 +60,27 @@ impl CodeModeHost for McpHost {
             ui: None,
         })
     }
+    async fn read_resource(
+        &self,
+        _: String,
+        _: &CodeModeCaller,
+        _: CodeModeSurface,
+        _: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"contents":[]}))
+    }
+    async fn get_prompt(
+        &self,
+        _: String,
+        _: Value,
+        _: &CodeModeCaller,
+        _: CodeModeSurface,
+        _: &ToolScope,
+    ) -> Result<Value, ToolError> {
+        self.effects.fetch_add(1, Ordering::SeqCst);
+        Ok(json!({"messages":[]}))
+    }
     async fn resolve_snippet(
         &self,
         name: &str,
@@ -219,6 +240,9 @@ async fn full_flag_does_not_bypass_scope_or_reserved_provider_boundaries() {
     config.capability_filter = ToolScope::default();
     for id in [
         "__lab_internal::list_artifacts",
+        " __lab_internal::read_resource",
+        "__lab_internal::get_prompt ",
+        "__lab_internal ::read_resource",
         "state::get",
         "git::status",
         "openapi::demo.op",
@@ -227,7 +251,7 @@ async fn full_flag_does_not_bypass_scope_or_reserved_provider_boundaries() {
         let (_, replies) = run(
             &host,
             &config,
-            vec![json!({"type":"tool_call","seq":0,"id":id,"params":{},"full_result":true})],
+            vec![json!({"type":"tool_call","seq":0,"id":id,"params":{"uri":"fixture://read","prompt":"fixture/prompt"},"full_result":true})],
             false,
         )
         .await;
@@ -235,6 +259,11 @@ async fn full_flag_does_not_bypass_scope_or_reserved_provider_boundaries() {
             panic!("reject {id}")
         };
         assert_eq!(error.kind(), "invalid_param");
+        assert_eq!(
+            host.effects.load(Ordering::SeqCst),
+            0,
+            "{id} must not invoke a host"
+        );
     }
     assert_eq!(host.effects.load(Ordering::SeqCst), 0);
 }
@@ -382,4 +411,27 @@ async fn read_only_entrypoint_keeps_full_result_access_and_ordinary_call_admissi
     };
     assert_eq!(result["structuredContent"], json!({"rows":[1]}));
     assert_eq!(response.calls.len(), 1);
+}
+
+#[tokio::test]
+async fn padded_internal_ids_keep_default_false_dispatch_and_internal_trace_classification() {
+    let host = host();
+    let config = test_config(Duration::from_secs(10));
+    for (index, id) in [
+        "__lab_internal::read_resource",
+        " __lab_internal::read_resource",
+        "__lab_internal ::read_resource",
+        "__lab_internal::get_prompt ",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (outcome,replies) = run(&host,&config,vec![json!({"type":"tool_call","seq":0,"id":id,"params":{"uri":"fixture://read","prompt":"fixture/prompt"}})],false).await;
+        assert!(matches!(replies[0], CodeModeRunnerInput::ToolResult { .. }));
+        assert_eq!(host.effects.load(Ordering::SeqCst), index + 1);
+        let DriveOutcome::Completed(response) = outcome else {
+            panic!("default-false internal dispatch")
+        };
+        assert!(response.calls.is_empty());
+    }
 }

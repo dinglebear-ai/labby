@@ -23,37 +23,15 @@ pub(crate) fn truncate_execution_response(
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> CodeModeExecutionResponse {
-    if response_within_budget(
-        &response,
+    if auxiliary::omit_until_fitting(
+        &mut response,
         max_response_bytes,
         max_response_tokens,
         token_estimate_divisor,
-    ) {
+    )
+    .0
+    {
         return response;
-    }
-
-    // Auxiliary upstream content has its own capture ceiling AND shares the
-    // actual execution envelope budget. Omission is explicit, never an error
-    // or a reason to replay a completed tool operation.
-    for index in 0..response.calls.len() {
-        if !response.calls[index]
-            .upstream_content
-            .as_ref()
-            .is_some_and(|value| value.get("content").is_some())
-        {
-            continue;
-        }
-        if let Some(content) = response.calls[index].upstream_content.as_mut() {
-            crate::upstream_content::omit_code_mode_upstream_content(content);
-        }
-        if response_within_budget(
-            &response,
-            max_response_bytes,
-            max_response_tokens,
-            token_estimate_divisor,
-        ) {
-            return response;
-        }
     }
 
     // Preserve the model-requested final result before optional debug detail.
@@ -147,33 +125,36 @@ pub(crate) fn result_would_be_truncated(
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> bool {
-    if response_within_budget(
+    let (auxiliary_fits, originals) = auxiliary::omit_until_fitting(
         response,
         max_response_bytes,
         max_response_tokens,
         token_estimate_divisor,
-    ) {
-        return false;
-    }
+    );
     let params: Vec<_> = response
         .calls
         .iter_mut()
         .map(|call| call.params.take())
         .collect();
-    let changed = !response_within_budget(
-        response,
-        max_response_bytes,
-        max_response_tokens,
-        token_estimate_divisor,
-    ) && result_marker(
-        response,
-        max_response_bytes,
-        max_response_tokens,
-        token_estimate_divisor,
-    )
-    .is_some();
+    let changed = !auxiliary_fits
+        && !response_within_budget(
+            response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        )
+        && result_marker(
+            response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        )
+        .is_some();
     for (call, params) in response.calls.iter_mut().zip(params) {
         call.params = params;
+    }
+    for (index, original) in originals {
+        response.calls[index].upstream_content = Some(original);
     }
     changed
 }
@@ -308,6 +289,8 @@ pub(crate) fn response_within_budget(
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> bool {
+    #[cfg(test)]
+    ENVELOPE_ENCODES.with(|count| count.set(count.get() + 1));
     match serde_json::to_vec(response) {
         Ok(bytes) => {
             bytes.len() <= max_response_bytes
@@ -480,3 +463,8 @@ mod tests;
 #[cfg(test)]
 #[path = "truncate/resource_recovery_tests.rs"]
 mod resource_recovery_tests;
+
+#[cfg(test)]
+thread_local! { static ENVELOPE_ENCODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+mod auxiliary;

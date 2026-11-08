@@ -121,8 +121,8 @@ Each `codemode.search()` entry contains:
 
 The catalog searched by `codemode.search()` is complete for capabilities that
 were successfully discovered and are visible to the current caller, route, and
-tool scope. Only
-your filtered return value enters the model context. Use `codemode.describe()`
+tool scope. Projection controls the script result. Call metadata and bounded
+independent upstream content can also enter the model context. Use `codemode.describe()`
 for exact target docs, including generated TypeScript parameter declarations
 for tools.
 

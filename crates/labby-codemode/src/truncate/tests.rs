@@ -427,90 +427,53 @@ fn preservation_probe_matches_truncation_and_restores_every_field() {
         json!({"rows": vec!["🦀\\\"".repeat(64); 100]}),
     ] {
         for with_params in [false, true] {
-            let mut response = response_with_logs(result.clone(), vec!["log".repeat(100); 10]);
-            response.calls.push(CodeModeExecutedCall {
-                upstream_content: None,
-                id: "demo::query".into(),
-                ok: true,
-                elapsed_ms: 4,
-                start_ms: Some(1),
-                params: with_params.then(|| json!({"query": "x".repeat(8000)})),
-                params_digest: None,
-                error_kind: None,
-                ui: None,
-            });
-            response.result_shaping = Some(CodeModeResultShapeMetadata {
-                policy: CodeModeResultShapePolicy::Truncate,
-                changed: false,
-                truncated: false,
-                original_size_bytes: 11,
-                shaped_size_bytes: 11,
-                warning: Some("soft warning".into()),
-            });
-            for (bytes, tokens, divisor) in [
-                (512, usize::MAX, 4),
-                (2048, 512, 4),
-                (4096, usize::MAX, 4),
-                (usize::MAX, 1, 1),
-                (100_000, usize::MAX, 4),
+            for auxiliary in [
+                None,
+                Some(
+                    json!({"content":[{"type":"text","text":"x".repeat(5000)}],"omitted_blocks":2,"omitted_bytes":9000}),
+                ),
             ] {
-                let original = response.clone();
-                let expected =
-                    truncate_execution_response(original.clone(), bytes, tokens, divisor);
-                let preserve = result_would_be_truncated(&mut response, bytes, tokens, divisor);
-                assert_eq!(preserve, expected.result != original.result);
-                assert_eq!(
-                    response, original,
-                    "borrowed probe must restore raw response"
-                );
+                let mut response = response_with_logs(result.clone(), vec!["log".repeat(100); 10]);
+                response.calls.push(CodeModeExecutedCall {
+                    upstream_content: auxiliary,
+                    id: "demo::query".into(),
+                    ok: true,
+                    elapsed_ms: 4,
+                    start_ms: Some(1),
+                    params: with_params.then(|| json!({"query": "x".repeat(8000)})),
+                    params_digest: None,
+                    error_kind: None,
+                    ui: None,
+                });
+                response.result_shaping = Some(CodeModeResultShapeMetadata {
+                    policy: CodeModeResultShapePolicy::Truncate,
+                    changed: false,
+                    truncated: false,
+                    original_size_bytes: 11,
+                    shaped_size_bytes: 11,
+                    warning: Some("soft warning".into()),
+                });
+                for (bytes, tokens, divisor) in [
+                    (512, usize::MAX, 4),
+                    (2048, 512, 4),
+                    (4096, usize::MAX, 4),
+                    (usize::MAX, 1, 1),
+                    (100_000, usize::MAX, 4),
+                ] {
+                    let original = response.clone();
+                    let expected =
+                        truncate_execution_response(original.clone(), bytes, tokens, divisor);
+                    let preserve = result_would_be_truncated(&mut response, bytes, tokens, divisor);
+                    assert_eq!(preserve, expected.result != original.result);
+                    assert_eq!(
+                        response, original,
+                        "borrowed probe must restore raw response"
+                    );
+                }
             }
         }
     }
 }
 
-#[test]
-fn log_pressure_preserves_result_shaping_when_no_marker_shrinks_result() {
-    let mut response = response_with_logs(
-        json!({"ok": true}),
-        vec!["log \"quoted\" — unicode".repeat(200); 12],
-    );
-    let metadata = CodeModeResultShapeMetadata {
-        policy: CodeModeResultShapePolicy::Truncate,
-        changed: false,
-        truncated: false,
-        original_size_bytes: 11,
-        shaped_size_bytes: 11,
-        warning: None,
-    };
-    response.result_shaping = Some(metadata.clone());
-    let truncated = truncate_execution_response(response, 2048, usize::MAX, 4);
-    assert_eq!(truncated.result, Some(json!({"ok": true})));
-    assert_eq!(truncated.result_shaping, Some(metadata));
-    assert!(response_within_budget(&truncated, 2048, usize::MAX, 4));
-}
-
-#[test]
-fn within_budget_response_is_returned_unchanged() {
-    let logs: Vec<String> = (0..4).map(|i| format!("short {i}")).collect();
-    let response = response_with_logs(json!({"ok": true}), logs.clone());
-    let untouched = truncate_execution_response(response.clone(), 1024 * 1024, 100_000, 4);
-    assert_eq!(untouched, response);
-}
-
-#[test]
-fn auxiliary_content_obeys_byte_token_and_tiny_execution_budgets() {
-    let mut response = response_with_logs(json!({"selected":1}), vec![]);
-    response.calls.push(CodeModeExecutedCall{ id:"demo::lookup".into(), ok:true, elapsed_ms:0,start_ms:None,params:None,params_digest:None,error_kind:None,ui:None,upstream_content:Some(json!({"content":[{"type":"text","text":"x".repeat(5000)}],"omitted_blocks":0,"omitted_bytes":0})) });
-    for (bytes, tokens) in [(1000, 1000), (10000, 250), (1, 1)] {
-        let output = truncate_execution_response(response.clone(), bytes, tokens, 4);
-        assert!(output.calls[0].ok);
-        assert_eq!(output.result, Some(json!({"selected":1})));
-        let auxiliary = output.calls[0].upstream_content.as_ref().unwrap();
-        assert_eq!(auxiliary["omitted_blocks"], 1);
-        assert!(auxiliary["omitted_bytes"].as_u64().unwrap() >= 5000);
-        assert!(auxiliary.get("content").is_none());
-        if bytes > 1 {
-            assert!(response_within_budget(&output, bytes, tokens, 4));
-        }
-    }
-}
+#[path = "auxiliary_tests.rs"]
+mod auxiliary;
