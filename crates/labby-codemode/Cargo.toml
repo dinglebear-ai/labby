@@ -16,7 +16,8 @@ publish = false
 microsandbox-sdk = ["dep:microsandbox"]
 
 [dependencies]
-microsandbox = { version = "=0.7.3", optional = true, default-features = false, features = ["local", "net"] }
+# Use the release source with the tar migration until upstream ships it.
+microsandbox = { version = "=0.7.14", git = "https://github.com/dinglebear-ai/microsandbox.git", rev = "943c1904dbfd58b847eac1fe729432b733cd02d9", optional = true, default-features = false, features = ["local", "net"] }
 labby-primitives = { path = "../labby-primitives" }
 labby-runtime = { path = "../labby-runtime" }
 labby-openapi = { path = "../labby-openapi" }

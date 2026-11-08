@@ -3,11 +3,11 @@ unmaintained = "all"
 yanked = "deny"
 ignore = [
     # owner: jmagar (explicitly approved 2026-10-02)
-    # path: optional microsandbox 0.7.3 -> microsandbox-filesystem 0.7.3 -> bincode 2.0.1
-    # reason: upstream SDK requires this snapshot serializer; latest 0.7.6 still uses it.
+    # path: optional microsandbox 0.7.14 -> microsandbox-filesystem 0.7.14 -> bincode 2.0.1
+    # reason: the 0.7.14 SDK still requires this snapshot serializer.
     #         This advisory is maintenance status, not a reported vulnerability.
-    # re-review: 2026-11-02; remove when upstream replaces bincode or the SDK is removed.
-    { id = "RUSTSEC-2025-0141", reason = "Approved optional Microsandbox filesystem snapshot dependency on bincode 2.0.1; upstream 0.7.6 retains it; re-review 2026-11-02 and remove with upstream migration or SDK removal" },
+    # reviewed again 2026-11-08; remove when upstream replaces bincode or the SDK is removed.
+    { id = "RUSTSEC-2025-0141", reason = "Approved optional Microsandbox filesystem snapshot dependency on bincode 2.0.1; verified unchanged in 0.7.14 on 2026-11-08; remove with upstream migration or SDK removal" },
     # owner: jmagar
     # verified: 2026-10-23 with cargo tree --workspace --all-features --edges normal -i rsa
     # reason: rsa is a dev-dependency for synthetic OAuth signing fixtures only.
@@ -91,9 +91,9 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # Temporary, exact-source exception for the pinned rmcp decoder fix. The
 # dependency itself is rev-pinned in Cargo.toml/Cargo.lock; remove this entry
 # with the patch as soon as upstream rmcp publishes the equivalent fix.
-# The VMM backport likewise has an immutable revision in Cargo.toml/Cargo.lock.
-# Remove its source allowance when a compatible fixed upstream release exists.
+# The Microsandbox source is likewise pinned to its reviewed tar migration.
+# Remove its allowance when a compatible upstream release removes the dependency.
 allow-git = [
     "https://github.com/dinglebear-ai/rust-sdk",
-    "https://github.com/dinglebear-ai/libkrun",
+    "https://github.com/dinglebear-ai/microsandbox",
 ]

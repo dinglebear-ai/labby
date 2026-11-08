@@ -7,7 +7,7 @@ updated: "2026-10-02"
 # Code Mode sandbox spike
 
 This experiment adds `codemode.sandbox.run(request)` using the local Microsandbox
-Rust SDK, pinned to 0.7.3. It is separate from the existing MSB transport that
+Rust SDK, pinned to [0.7.14 with the tar migration](https://github.com/dinglebear-ai/microsandbox/commit/943c1904dbfd58b847eac1fe729432b733cd02d9). It is separate from the existing MSB transport that
 isolates the JavaScript runner. Here JavaScript asks the parent broker to launch
 a disposable guest workload and receives a structured result.
 
