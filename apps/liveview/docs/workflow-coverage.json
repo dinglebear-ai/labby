@@ -1,0 +1,7064 @@
+{
+  "schema_version": 1,
+  "objective": "Complete native mock parity then embedded OTP delivery and full review/live qualification",
+  "baseline_commit": "583d385f243bf4b3bedd598e6e4300a100514e5c",
+  "baseline_note": "Eleven read-model screens exist; none closes an entire mock area. Historical passes do not close final acceptance.",
+  "areas": [
+    {
+      "area": "overview",
+      "mock_route": "/labby/overview",
+      "mock_source": "lib/phx_book_web/live/labby_overview_live.ex",
+      "mock_sha256": "e581000141675b7ca9d56934da3b2e7be86617b3790d433130165ad8124f6bd7",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "overview.usage-windows",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "overview.volume-charts",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "overview.tool-and-caller-rankings",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "overview.host-and-client-panels",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "overview.card-reorder-and-resize",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "overview.scoped-detail-drawers",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "activity_tab",
+        "call_filter",
+        "chart",
+        "chart_mode",
+        "close_inspector",
+        "coverage",
+        "dismiss_attention",
+        "inspect_bucket",
+        "inspect_call",
+        "inspect_issue",
+        "inspect_scope",
+        "overview_customize",
+        "overview_move",
+        "overview_place",
+        "overview_preferences",
+        "overview_reset",
+        "overview_storage_error",
+        "overview_width",
+        "quick_server",
+        "ranking",
+        "refresh",
+        "retry_overview",
+        "scenario",
+        "toggle_attention",
+        "window"
+      ],
+      "contract_services": [
+        "gateway"
+      ],
+      "catalog_actions": [
+        {
+          "service": "gateway",
+          "action": "gateway.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.client_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.clients.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discover",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_prompts",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_resources",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_tools",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.apply",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.host.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.approve",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.reject",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.cleanup",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.restart",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.authorize",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.google_revoke",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.probe",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.release",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.renew",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.wait",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.public_urls.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.reload",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.remove",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.server.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.servers",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_actions",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.skills.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.ssh_hosts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.supported_services",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.calls",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.get_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_surface",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "gateway",
+      "mock_route": "/labby/gateway",
+      "mock_source": "lib/phx_book_web/live/labby_gateway_live.ex",
+      "mock_sha256": "97a78f7ee690462066751cfbab12d7875727e5d41015c44ff2d61838abf0f1c7",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "gateway.fleet-lenses-and-filters",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.table-card-list-layout",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.sort-and-column-order",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.selection-and-bulk-actions",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.add-edit-test-save",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.json-config-and-client-import",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.oauth-and-recovery",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.server-workspace-tabs",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.catalog-exposure-and-inspector",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.protected-routes",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "gateway.logs-and-runtime-cleanup",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "activity_filter",
+        "apply_json",
+        "bulk",
+        "cancel_confirm",
+        "catalog_bulk",
+        "catalog_cancel",
+        "catalog_conflict",
+        "catalog_filter",
+        "catalog_manage",
+        "catalog_save",
+        "catalog_select",
+        "catalog_toggle",
+        "clear_facets",
+        "clear_filter",
+        "clear_selection",
+        "clipboard_result",
+        "close_details",
+        "close_dialog",
+        "code_mode",
+        "column_move",
+        "column_reorder",
+        "confirm",
+        "connection_filter",
+        "copy",
+        "detail_view",
+        "dismiss_imports",
+        "dismiss_issue",
+        "dismiss_notice",
+        "dismiss_notifications",
+        "download",
+        "expand_runtime",
+        "facet",
+        "filter",
+        "form_change",
+        "form_json",
+        "form_oauth_outcome",
+        "form_oauth_start",
+        "form_test",
+        "generate_skill",
+        "group",
+        "import_configs",
+        "inspect",
+        "inspect_call",
+        "inspect_entry",
+        "issue_authorize",
+        "json_change",
+        "layout",
+        "log_level_toggle",
+        "logs_clear",
+        "logs_filter",
+        "logs_follow",
+        "mode",
+        "oauth_connect",
+        "oauth_outcome",
+        "open_catalog",
+        "open_form",
+        "preferences",
+        "preferences_error",
+        "reload_visible",
+        "reset_filters",
+        "restore_import",
+        "retry",
+        "retry_report",
+        "route_add",
+        "route_change",
+        "route_check",
+        "route_edit",
+        "route_remove",
+        "route_save",
+        "save_server",
+        "scan_configs",
+        "scenario",
+        "select_visible",
+        "selection_mode",
+        "server_action",
+        "setting",
+        "show_notifications",
+        "sort",
+        "toggle_selection",
+        "tools_filter",
+        "workspace",
+        "workspace_tab"
+      ],
+      "contract_services": [
+        "gateway"
+      ],
+      "catalog_actions": [
+        {
+          "service": "gateway",
+          "action": "gateway.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.client_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.clients.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discover",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_prompts",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_resources",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_tools",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.apply",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.host.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.approve",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.reject",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.cleanup",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.restart",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.authorize",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.google_revoke",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.probe",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.release",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.renew",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.wait",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.public_urls.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.reload",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.remove",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.server.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.servers",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_actions",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.skills.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.ssh_hosts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.supported_services",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.calls",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.get_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_surface",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "observe",
+      "mock_route": "/labby/observe",
+      "mock_source": "lib/phx_book_web/live/labby_workspace_live.ex",
+      "mock_sha256": "02deedf192537c5cf12da9432c37ee66dc401e485efe78cc859e0fadd45bc33e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "observe.activity-filters-and-pagination",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "observe.logs-follow-pause-filter-export",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "observe.trace-inspection",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "observe.related-resource-navigation",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "artifact_close",
+        "artifact_file",
+        "builder_input_cancel",
+        "builder_input_change",
+        "builder_input_edit",
+        "builder_input_remove",
+        "builder_input_save",
+        "builder_open_file",
+        "builder_search",
+        "builder_section",
+        "create_back",
+        "create_cancel_upload",
+        "create_next",
+        "create_search",
+        "create_select",
+        "create_setup_change",
+        "create_start",
+        "create_starting_change",
+        "create_upload_change",
+        "create_view",
+        "discover_add",
+        "discover_clear_all",
+        "discover_clear_filter",
+        "discover_collection",
+        "discover_filter",
+        "discover_fork",
+        "discover_inspect",
+        "discover_kind",
+        "discover_layout",
+        "discover_reset_secondary",
+        "discover_sort",
+        "discover_undo",
+        "dismiss_notice",
+        "library_clear_selection",
+        "library_collection",
+        "library_compose",
+        "library_edit",
+        "library_filter",
+        "library_fork",
+        "library_inspect",
+        "library_kind",
+        "library_layout",
+        "library_scope",
+        "library_select",
+        "observe_",
+        "observe_tab",
+        "studio_details",
+        "studio_details_change",
+        "studio_diagnostic",
+        "studio_edit",
+        "studio_export",
+        "studio_exposure",
+        "studio_file",
+        "studio_file_apply",
+        "studio_file_close",
+        "studio_file_dialog",
+        "studio_frontmatter",
+        "studio_kind",
+        "studio_member",
+        "studio_new",
+        "studio_output",
+        "studio_output_close",
+        "studio_preview",
+        "studio_recover",
+        "studio_replace_discard",
+        "studio_save",
+        "studio_template",
+        "studio_test_inputs",
+        "studio_upstream",
+        "studio_validate"
+      ],
+      "contract_services": [
+        "gateway",
+        "server_logs"
+      ],
+      "catalog_actions": [
+        {
+          "service": "gateway",
+          "action": "gateway.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.client_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.clients.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discover",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_prompts",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_resources",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_tools",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.apply",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.host.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.approve",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.reject",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.cleanup",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.restart",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.authorize",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.google_revoke",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.probe",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.release",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.renew",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.wait",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.public_urls.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.reload",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.remove",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.server.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.servers",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_actions",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.skills.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.ssh_hosts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.supported_services",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.calls",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.get_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_surface",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "server_logs",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "server_logs",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "server_logs",
+          "action": "server_logs.query",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "discover",
+      "mock_route": "/labby/discover",
+      "mock_source": "lib/phx_book_web/live/labby_workspace_live.ex",
+      "mock_sha256": "02deedf192537c5cf12da9432c37ee66dc401e485efe78cc859e0fadd45bc33e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "discover.search-filter-publisher",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "discover.artifact-detail",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "discover.fork-to-create",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "discover.saved-library-links",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "artifact_close",
+        "artifact_file",
+        "builder_input_cancel",
+        "builder_input_change",
+        "builder_input_edit",
+        "builder_input_remove",
+        "builder_input_save",
+        "builder_open_file",
+        "builder_search",
+        "builder_section",
+        "create_back",
+        "create_cancel_upload",
+        "create_next",
+        "create_search",
+        "create_select",
+        "create_setup_change",
+        "create_start",
+        "create_starting_change",
+        "create_upload_change",
+        "create_view",
+        "discover_add",
+        "discover_clear_all",
+        "discover_clear_filter",
+        "discover_collection",
+        "discover_filter",
+        "discover_fork",
+        "discover_inspect",
+        "discover_kind",
+        "discover_layout",
+        "discover_reset_secondary",
+        "discover_sort",
+        "discover_undo",
+        "dismiss_notice",
+        "library_clear_selection",
+        "library_collection",
+        "library_compose",
+        "library_edit",
+        "library_filter",
+        "library_fork",
+        "library_inspect",
+        "library_kind",
+        "library_layout",
+        "library_scope",
+        "library_select",
+        "observe_",
+        "observe_tab",
+        "studio_details",
+        "studio_details_change",
+        "studio_diagnostic",
+        "studio_edit",
+        "studio_export",
+        "studio_exposure",
+        "studio_file",
+        "studio_file_apply",
+        "studio_file_close",
+        "studio_file_dialog",
+        "studio_frontmatter",
+        "studio_kind",
+        "studio_member",
+        "studio_new",
+        "studio_output",
+        "studio_output_close",
+        "studio_preview",
+        "studio_recover",
+        "studio_replace_discard",
+        "studio_save",
+        "studio_template",
+        "studio_test_inputs",
+        "studio_upstream",
+        "studio_validate"
+      ],
+      "contract_services": [
+        "artifacts",
+        "sources"
+      ],
+      "catalog_actions": [
+        {
+          "service": "artifacts",
+          "action": "artifacts.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.archive",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.authority_status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.deactivate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.delete_remote",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_managed",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork_personal",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.history",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import_batch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.intake_candidate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_acp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_candidates",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_connections",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_mcp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote_skills",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.load_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.pin",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.refresh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.rollback",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.save",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_ard",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_marketplace",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_skills_sh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_license",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_publication",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.transfer_options",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.validate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "sources.configure",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "sources",
+          "action": "sources.delete",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "sources",
+          "action": "sources.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "sources.refresh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "create",
+      "mock_route": "/labby/create",
+      "mock_source": "lib/phx_book_web/live/labby_workspace_live.ex",
+      "mock_sha256": "02deedf192537c5cf12da9432c37ee66dc401e485efe78cc859e0fadd45bc33e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "create.artifact-kind-choice",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "create.editor-and-files",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "create.template-and-metadata",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "create.validation-and-preview",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "create.save-reopen-export",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "create.compose-and-publish",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "artifact_close",
+        "artifact_file",
+        "builder_input_cancel",
+        "builder_input_change",
+        "builder_input_edit",
+        "builder_input_remove",
+        "builder_input_save",
+        "builder_open_file",
+        "builder_search",
+        "builder_section",
+        "create_back",
+        "create_cancel_upload",
+        "create_next",
+        "create_search",
+        "create_select",
+        "create_setup_change",
+        "create_start",
+        "create_starting_change",
+        "create_upload_change",
+        "create_view",
+        "discover_add",
+        "discover_clear_all",
+        "discover_clear_filter",
+        "discover_collection",
+        "discover_filter",
+        "discover_fork",
+        "discover_inspect",
+        "discover_kind",
+        "discover_layout",
+        "discover_reset_secondary",
+        "discover_sort",
+        "discover_undo",
+        "dismiss_notice",
+        "library_clear_selection",
+        "library_collection",
+        "library_compose",
+        "library_edit",
+        "library_filter",
+        "library_fork",
+        "library_inspect",
+        "library_kind",
+        "library_layout",
+        "library_scope",
+        "library_select",
+        "observe_",
+        "observe_tab",
+        "studio_details",
+        "studio_details_change",
+        "studio_diagnostic",
+        "studio_edit",
+        "studio_export",
+        "studio_exposure",
+        "studio_file",
+        "studio_file_apply",
+        "studio_file_close",
+        "studio_file_dialog",
+        "studio_frontmatter",
+        "studio_kind",
+        "studio_member",
+        "studio_new",
+        "studio_output",
+        "studio_output_close",
+        "studio_preview",
+        "studio_recover",
+        "studio_replace_discard",
+        "studio_save",
+        "studio_template",
+        "studio_test_inputs",
+        "studio_upstream",
+        "studio_validate"
+      ],
+      "contract_services": [
+        "artifacts",
+        "bundles",
+        "snippets"
+      ],
+      "catalog_actions": [
+        {
+          "service": "artifacts",
+          "action": "artifacts.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.archive",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.authority_status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.deactivate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.delete_remote",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_managed",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork_personal",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.history",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import_batch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.intake_candidate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_acp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_candidates",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_connections",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_mcp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote_skills",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.load_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.pin",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.refresh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.rollback",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.save",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_ard",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_marketplace",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_skills_sh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_license",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_publication",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.transfer_options",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.validate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.delete",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.publish",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.set_visibility",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.artifact",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.exec",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.fixture",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.history",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.promote",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.receipt",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.remove",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.replay",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.validate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "library",
+      "mock_route": "/labby/library",
+      "mock_source": "lib/phx_book_web/live/labby_workspace_live.ex",
+      "mock_sha256": "02deedf192537c5cf12da9432c37ee66dc401e485efe78cc859e0fadd45bc33e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "library.collections-and-scopes",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "library.list-grid-search",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "library.artifact-inspection",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "library.edit-and-source-files",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "library.revision-and-package-relations",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "artifact_close",
+        "artifact_file",
+        "builder_input_cancel",
+        "builder_input_change",
+        "builder_input_edit",
+        "builder_input_remove",
+        "builder_input_save",
+        "builder_open_file",
+        "builder_search",
+        "builder_section",
+        "create_back",
+        "create_cancel_upload",
+        "create_next",
+        "create_search",
+        "create_select",
+        "create_setup_change",
+        "create_start",
+        "create_starting_change",
+        "create_upload_change",
+        "create_view",
+        "discover_add",
+        "discover_clear_all",
+        "discover_clear_filter",
+        "discover_collection",
+        "discover_filter",
+        "discover_fork",
+        "discover_inspect",
+        "discover_kind",
+        "discover_layout",
+        "discover_reset_secondary",
+        "discover_sort",
+        "discover_undo",
+        "dismiss_notice",
+        "library_clear_selection",
+        "library_collection",
+        "library_compose",
+        "library_edit",
+        "library_filter",
+        "library_fork",
+        "library_inspect",
+        "library_kind",
+        "library_layout",
+        "library_scope",
+        "library_select",
+        "observe_",
+        "observe_tab",
+        "studio_details",
+        "studio_details_change",
+        "studio_diagnostic",
+        "studio_edit",
+        "studio_export",
+        "studio_exposure",
+        "studio_file",
+        "studio_file_apply",
+        "studio_file_close",
+        "studio_file_dialog",
+        "studio_frontmatter",
+        "studio_kind",
+        "studio_member",
+        "studio_new",
+        "studio_output",
+        "studio_output_close",
+        "studio_preview",
+        "studio_recover",
+        "studio_replace_discard",
+        "studio_save",
+        "studio_template",
+        "studio_test_inputs",
+        "studio_upstream",
+        "studio_validate"
+      ],
+      "contract_services": [
+        "artifacts",
+        "bundles",
+        "snippets"
+      ],
+      "catalog_actions": [
+        {
+          "service": "artifacts",
+          "action": "artifacts.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.archive",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.authority_status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.deactivate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.delete_remote",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_managed",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork_personal",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.history",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import_batch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.intake_candidate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_acp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_candidates",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_connections",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_mcp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote_skills",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.load_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.pin",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.refresh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.rollback",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.save",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_ard",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_marketplace",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_skills_sh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_license",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_publication",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.transfer_options",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.validate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.delete",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.publish",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.set_visibility",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.artifact",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.exec",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.fixture",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.history",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.promote",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.receipt",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.remove",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.replay",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "snippets",
+          "action": "snippets.validate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "settings",
+      "mock_route": "/labby/settings",
+      "mock_source": "lib/phx_book_web/live/labby_settings_live.ex",
+      "mock_sha256": "9eba452cd87ade107773c57afd7c6d44dd24386d7cbebd02046c1cf67439e64e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "settings.settings-catalog",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "settings.grouped-forms",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "settings.draft-reset-review-apply-discard",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "settings.secret-redaction",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "settings.permission-and-unavailable-states",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "settings_apply",
+        "settings_change",
+        "settings_changed",
+        "settings_defaults",
+        "settings_filters",
+        "settings_reveal",
+        "settings_revert",
+        "settings_section"
+      ],
+      "contract_services": [
+        "gateway",
+        "setup"
+      ],
+      "catalog_actions": [
+        {
+          "service": "gateway",
+          "action": "gateway.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.client_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.clients.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.code_mode.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discover",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_prompts",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_resources",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.discovered_tools",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.apply",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.enrich.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.host.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.approve",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_pending.reject",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.import_tombstones.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_patch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.loadout.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.cleanup",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.mcp.restart",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.authorize",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.clear",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.google_revoke",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.probe",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.release",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.resource_lease.renew",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.oauth.wait",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.list_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.stage_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.protected_route.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.public_urls.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.reload",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.remove",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.server.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.servers",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_actions",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.service_config.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.skills.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.ssh_hosts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.supported_services",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.test",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.calls",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.usage.metrics",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.disable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.get_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.quarantine.restore",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_mcp_policy",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "gateway.virtual_server.set_surface",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "gateway",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "gateway",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "bootstrap",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "check",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "clients.session.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "clients.session.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "draft.commit",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "draft.discard",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "draft.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "draft.set",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "finalize",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "mcp.verification.call",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "mcp.verification.tools",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "proxy.configure",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "readiness.clients.defer",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "readiness.state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "repair",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "schema.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "settings.advanced_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.config.update",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.env.update",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.env_schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "settings.schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "settings.state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.update",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "tailcat.configure",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "tailcat.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "tailcat.enroll",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "stash",
+      "mock_route": "/labby/stash",
+      "mock_source": "lib/phx_book_web/live/labby_stash_live.ex",
+      "mock_sha256": "2d8e12eea5d27a868606f59a73740db913dd12a5151f727742fd2e6008adee25",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "stash.browse-and-filter",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "stash.file-detail-and-content",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "stash.upload-download",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "stash.rename-move-copy-delete",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "stash.transfer-and-grants",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "stash_cancel",
+        "stash_clear",
+        "stash_close",
+        "stash_dialog",
+        "stash_direction",
+        "stash_filter",
+        "stash_grant",
+        "stash_import",
+        "stash_inspect",
+        "stash_layout",
+        "stash_more",
+        "stash_recipients",
+        "stash_retry",
+        "stash_revoke",
+        "stash_save",
+        "stash_scenario",
+        "stash_scope",
+        "stash_select",
+        "stash_upload",
+        "stash_upload_cancel",
+        "stash_upload_validate"
+      ],
+      "contract_services": [
+        "stash",
+        "fs"
+      ],
+      "catalog_actions": [
+        {
+          "service": "fs",
+          "action": "fs.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "fs",
+          "action": "fs.preview",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "fs",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "fs",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.delete",
+          "api": true,
+          "destructive": true,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.folders",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.grants.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.grants.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.grants.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.metadata",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.move",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.read_text",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.rename",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.save_text",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.search",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "stash",
+          "action": "stash.stats",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "tasks",
+      "mock_route": "/labby/tasks",
+      "mock_source": "lib/phx_book_web/live/labby_tasks_live.ex",
+      "mock_sha256": "502b2bb1afb5075a174a236190165611db94dcb11fb3abb00ef07a110719a7c2",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "tasks.search-and-detail",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "tasks.create-edit-schedule",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "tasks.run-and-cancel",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "tasks.suspend-delete",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "tasks.retained-run-inspector",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "tasks_access",
+        "tasks_ask_delete",
+        "tasks_change",
+        "tasks_close",
+        "tasks_day",
+        "tasks_delete",
+        "tasks_filter",
+        "tasks_layout",
+        "tasks_mode",
+        "tasks_open",
+        "tasks_refresh",
+        "tasks_result",
+        "tasks_run",
+        "tasks_save",
+        "tasks_select",
+        "tasks_select_run",
+        "tasks_task_action",
+        "tasks_toggle",
+        "tasks_workspace"
+      ],
+      "contract_services": [
+        "tasks"
+      ],
+      "catalog_actions": [
+        {
+          "service": "tasks",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.cancel",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.queue",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.result",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_arm",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_delete",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_edit",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_pause",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "tasks",
+          "action": "tasks.schedule_run_now",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "projects",
+      "mock_route": "/labby/projects",
+      "mock_source": "lib/phx_book_web/live/labby_projects_live.ex",
+      "mock_sha256": "23c9fbc858ddcba1fb37cddd1ddd6a19bb34e91a7fbc1479c1476612aabe52e5",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "projects.team-filter-list-grid-search",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "projects.create-and-name-validation",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "projects.lookup-and-detail",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "projects.rename",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "projects.archive-confirm-and-restore",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "projects.permission-isolation",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "projects_activate",
+        "projects_archive",
+        "projects_close",
+        "projects_filter",
+        "projects_layout",
+        "projects_lookup",
+        "projects_notice",
+        "projects_open",
+        "projects_refresh",
+        "projects_reset",
+        "projects_restore",
+        "projects_save",
+        "projects_scope",
+        "projects_select"
+      ],
+      "contract_services": [
+        "projects",
+        "access"
+      ],
+      "catalog_actions": [
+        {
+          "service": "access",
+          "action": "access.gateway_credential.bind",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.gateway_credential.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.gateway_credential.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.platform_admin.grant",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "access",
+          "action": "access.platform_admin.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "access",
+          "action": "access.project.effective.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "access",
+          "action": "access.team.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.role.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.suspend",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.suspend",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team_invitation.accept",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team_invitation.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team_project.assign",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "projects.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "projects.archive",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "projects.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "projects.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "projects.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "projects.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "projects",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "agents",
+      "mock_route": "/labby/agents",
+      "mock_source": "lib/phx_book_web/live/labby_agents_live.ex",
+      "mock_sha256": "24f4582203db884b2c775f81b4748641d8157b14f2705303bb116d0d29b09938",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "agents.create-and-edit",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "agents.immutable-revisions-and-pins",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "agents.model-selection",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "agents.run-status-and-cancel",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "agents.suspend-delete",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "agents.pagination-and-errors",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "cancel",
+        "close",
+        "open",
+        "run",
+        "save",
+        "search",
+        "select",
+        "transition"
+      ],
+      "contract_services": [
+        "agents"
+      ],
+      "catalog_actions": [
+        {
+          "service": "agents",
+          "action": "agents.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.delete",
+          "api": true,
+          "destructive": true,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.models.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.run",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.session.cancel",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.session.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.suspend",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "agents.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "agents",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "access",
+      "mock_route": "/labby/access",
+      "mock_source": "lib/phx_book_web/live/labby_access_live.ex",
+      "mock_sha256": "d5a151cb6e7f41c29b30e21326fd37694d7fd51ef503c5662560a953f444fa53",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "access.team-and-project-membership",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "access.invitations",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "access.role-and-state-changes",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "access.last-owner-protection",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "access.credential-reference-management",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "close",
+        "open",
+        "submit",
+        "team"
+      ],
+      "contract_services": [
+        "access"
+      ],
+      "catalog_actions": [
+        {
+          "service": "access",
+          "action": "access.gateway_credential.bind",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.gateway_credential.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.gateway_credential.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.platform_admin.grant",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "access",
+          "action": "access.platform_admin.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "access",
+          "action": "access.project.effective.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "access",
+          "action": "access.team.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.role.set",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.member.suspend",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team.suspend",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team_invitation.accept",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team_invitation.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "access.team_project.assign",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "access",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "browser",
+      "mock_route": "/labby/browser",
+      "mock_source": "lib/phx_book_web/live/labby_browser_live.ex",
+      "mock_sha256": "0a628d9450ab79387e89761d8f0805650d02e91240189f86e93ab3fd37fe7a0e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "browser.pairing-consent-and-fingerprint",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "browser.revoke",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "browser.session-and-catalog",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "browser.enablement",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "browser.stale-document-call-fencing",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "close",
+        "inspect",
+        "open",
+        "submit"
+      ],
+      "contract_services": [
+        "browser"
+      ],
+      "catalog_actions": [
+        {
+          "service": "browser",
+          "action": "browser.call",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.pairing.approve",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.pairing.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.session.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.session.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.sessions",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "browser",
+          "action": "browser.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "browser",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "browser",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "diagnostics",
+      "mock_route": "/labby/diagnostics",
+      "mock_source": "lib/phx_book_web/live/labby_diagnostics_live.ex",
+      "mock_sha256": "147f638a0b163afea9d3d6436987bd571d1e98224b4abee871300dfccaa7155e",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "diagnostics.audit-and-findings",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "diagnostics.bounded-stream-and-stop",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "diagnostics.onboarding-service-action-audit",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "diagnostics.failures-and-export",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "audit",
+        "check",
+        "close",
+        "onboarding",
+        "stop",
+        "submit"
+      ],
+      "contract_services": [
+        "doctor",
+        "lab_admin"
+      ],
+      "catalog_actions": [
+        {
+          "service": "doctor",
+          "action": "access.check",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "audit.full",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "auth.check",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "capabilities.status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "oauth.relay.check",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "doctor",
+          "action": "proxy.check",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "proxy.preflight",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "doctor",
+          "action": "system.checks",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "lab_admin",
+          "action": "help",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "lab_admin",
+          "action": "onboarding.audit",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "lab_admin",
+          "action": "schema",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "setup",
+      "mock_route": "/labby/setup",
+      "mock_source": "lib/phx_book_web/live/labby_setup_live.ex",
+      "mock_sha256": "e1d204d29f26de8f1385e307ea278912651b6f0269d0c5c4bc0ba2692cd9fb8c",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "setup.draft-and-client-selection",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "setup.proof-defer-revoke",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "setup.tool-review-and-verification",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "setup.proxy-relay-plan",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "setup.review-apply-and-secret-markers",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "close",
+        "open",
+        "read",
+        "submit"
+      ],
+      "contract_services": [
+        "setup"
+      ],
+      "catalog_actions": [
+        {
+          "service": "setup",
+          "action": "bootstrap",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "check",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "clients.session.revoke",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "clients.session.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "draft.commit",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "draft.discard",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "draft.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "draft.set",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "finalize",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "mcp.verification.call",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "mcp.verification.tools",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "proxy.configure",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "readiness.clients.defer",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "readiness.state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "repair",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "schema.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "settings.advanced_state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.config.update",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.env.update",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.env_schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "settings.schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "settings.state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "settings.update",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "state",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "setup",
+          "action": "tailcat.configure",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "tailcat.enable",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "setup",
+          "action": "tailcat.enroll",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "depot",
+      "mock_route": "/labby/depot",
+      "mock_source": "lib/phx_book_web/live/labby_depot_live.ex",
+      "mock_sha256": "9ef687289ac5a466428e2c6d791fb932a2082e6456184af6b7e9efc2f6c08a8f",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "depot.control-plane-operations",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.source-enrollment-and-history",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.ingest-jobs-and-reconcile",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.exact-import-acquisition",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.bundle-draft-and-snapshot",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.provider-settings-and-proof",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.bounded-upload",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "depot.publish-approval-and-archive",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "authority",
+        "close",
+        "dismiss",
+        "open",
+        "publish-consume",
+        "publish-dismiss",
+        "publish-reconcile",
+        "publish-scenario",
+        "publish-source",
+        "search",
+        "submit",
+        "upload",
+        "upload-change",
+        "worker"
+      ],
+      "contract_services": [
+        "artifacts",
+        "bundles",
+        "sources",
+        "jobs",
+        "uploads",
+        "artifact_publish"
+      ],
+      "catalog_actions": [
+        {
+          "service": "artifact_publish",
+          "action": "artifacts.publish_skill_archive",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifact_publish",
+          "action": "help",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifact_publish",
+          "action": "schema",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.activate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.archive",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.authority_status",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.deactivate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.delete_remote",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_managed",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.follow_update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.fork_personal",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.get_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.history",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.import_batch",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.intake_candidate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_acp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_candidates",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_connections",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_mcp_registry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.list_remote_skills",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.load_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.pin",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.read_remote_skill",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.refresh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.rollback",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.save",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_ard",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_marketplace",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_remote",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.search_skills_sh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_license",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.set_publication",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.transfer_options",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "artifacts.validate",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "artifacts",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.add",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.delete",
+          "api": true,
+          "destructive": true,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.publish",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.remove",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "bundles.set_visibility",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "bundles",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "bundles",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "jobs",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "jobs",
+          "action": "jobs.cancel",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "jobs",
+          "action": "jobs.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "jobs",
+          "action": "jobs.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "jobs",
+          "action": "jobs.retry",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "jobs",
+          "action": "jobs.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "jobs",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "sources.configure",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "sources",
+          "action": "sources.delete",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "sources",
+          "action": "sources.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "sources",
+          "action": "sources.refresh",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "uploads",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "uploads",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "uploads",
+          "action": "uploads.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "uploads",
+          "action": "uploads.delete",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        },
+        {
+          "service": "uploads",
+          "action": "uploads.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": true
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "tools",
+      "mock_route": "/labby/tools",
+      "mock_source": "lib/phx_book_web/live/labby_tools_live.ex",
+      "mock_sha256": "07980b39a02c703d3d91a1ed479764d8c5485198e91113a5843bd4df14dfda9a",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "tools.workspace-area-hub",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "tools.navigation-and-keyboard",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "tools.service-action-reference",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [],
+      "contract_services": [
+        "lab_admin"
+      ],
+      "catalog_actions": [
+        {
+          "service": "lab_admin",
+          "action": "help",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "lab_admin",
+          "action": "onboarding.audit",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "lab_admin",
+          "action": "schema",
+          "api": false,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    },
+    {
+      "area": "environments",
+      "mock_route": "/labby/environments",
+      "mock_source": "lib/phx_book_web/live/labby_operations_live.ex",
+      "mock_sha256": "9fa3f9f9f00ce5328931529b2b5b78a00ba3624faeecb0e881936c4a4d293dda",
+      "state": "open",
+      "reference_workflows": [
+        {
+          "id": "environments.draft-and-environment-replacement",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "environments.build-idempotency-and-revision",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "environments.immutable-launch-reference",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "environments.create-start-stop-destroy-reconcile",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        },
+        {
+          "id": "environments.template-policy-and-runtime-errors",
+          "state": "open",
+          "tests": [],
+          "live_evidence": [],
+          "visual_evidence": []
+        }
+      ],
+      "handler_events": [
+        "close",
+        "open",
+        "submit"
+      ],
+      "contract_services": [
+        "dev_containers"
+      ],
+      "catalog_actions": [
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.build",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.build.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.destroy",
+          "api": true,
+          "destructive": true,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.draft.create",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.draft.update",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.environment.replace",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.launch_reference",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.rebuild",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.reconcile",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.start",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.stop",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.templates.get",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "dev_containers.templates.list",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "help",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        },
+        {
+          "service": "dev_containers",
+          "action": "schema",
+          "api": true,
+          "destructive": false,
+          "requires_admin": false
+        }
+      ],
+      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+    }
+  ],
+  "packaging": {
+    "state": "blocked_on_ui_parity",
+    "requirements": [
+      "native-otp-release",
+      "embedded-manifest-and-archive",
+      "safe-versioned-atomic-extraction",
+      "owned-child-supervision",
+      "http-websocket-existing-address",
+      "auth-isolation",
+      "first-warm-concurrent-interrupted-launch",
+      "crash-shutdown-update-rollback",
+      "native-artifact-live-canaries"
+    ]
+  },
+  "final_review": {
+    "state": "pending_after_implementation",
+    "skill": "vibin:full-review",
+    "scope": "all touched PR files",
+    "all_findings_resolved": false
+  },
+  "completed": false
+}
