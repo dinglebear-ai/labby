@@ -21,8 +21,18 @@ defmodule LabbyConsole.GatewayAction do
   @impl true
   def init(state), do: {:ok, state}
 
-  def start(id, service, action, params, mode \\ :action),
-    do: do_start(id, service, action, params, mode, :async)
+  def start(id, service, action, params, mode \\ :action) do
+    destination = :erlang.alias([:reply])
+
+    case do_start(id, service, action, params, mode, {:async, destination}) do
+      {:ok, _} = accepted ->
+        accepted
+
+      error ->
+        :erlang.unalias(destination)
+        error
+    end
+  end
 
   defp do_start(id, service, action, params, mode, delivery) do
     started = System.monotonic_time(:millisecond)
@@ -58,8 +68,14 @@ defmodule LabbyConsole.GatewayAction do
                 delivery: delivery
               }
 
-              Lifecycle.register(op)
-              {:ok, ref}
+              case Lifecycle.register(op) do
+                :ok ->
+                  {:ok, ref}
+
+                {:error, reason} ->
+                  Lifecycle.release(ref)
+                  {:error, Error.new(reason, service, action)}
+              end
 
             {:ok, _} ->
               Lifecycle.release(ref)
@@ -88,6 +104,9 @@ defmodule LabbyConsole.GatewayAction do
       with {:ok, ref} <- do_start(id, service, action, params, mode, {:sync, alias_ref}) do
         result =
           receive do
+            {:gateway_action_ready, ^ref, result} ->
+              result
+
             {:gateway_action_ready, ^ref} ->
               Lifecycle.terminal_result(ref) ||
                 {:error,
@@ -114,10 +133,26 @@ defmodule LabbyConsole.GatewayAction do
           end
 
         Lifecycle.ack(ref)
-        result
+        complete_reply(alias_ref, ref, result)
       end
     after
       :erlang.unalias(alias_ref)
+    end
+  end
+
+  @doc false
+  def complete_reply(destination, ref, result) do
+    :erlang.unalias(destination)
+    drain_reply(ref)
+    result
+  end
+
+  defp drain_reply(ref) do
+    receive do
+      {:gateway_action_ready, ^ref} -> drain_reply(ref)
+      {:gateway_action_ready, ^ref, _result} -> drain_reply(ref)
+    after
+      0 -> :ok
     end
   end
 

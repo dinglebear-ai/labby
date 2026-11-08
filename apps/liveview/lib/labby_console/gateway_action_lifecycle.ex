@@ -6,7 +6,8 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
   @impl true
   def init(state) do
-    :ets.new(__MODULE__, [:named_table, :public, :set, write_concurrency: true])
+    true = :ets.info(__MODULE__, :owner) == Process.whereis(LabbyConsole.Supervisor)
+    state = recover_receipts(state)
     Process.send_after(self(), :reap, 25)
     {:ok, state}
   end
@@ -44,6 +45,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
   end
 
   def release(ref) do
+    :ets.delete(__MODULE__, {:operation, ref})
     # Delete the global ticket before session rows. A reserver racing expiry
     # fails its final ticket check and cleans its own session row.
     for index <- 1..32 do
@@ -59,6 +61,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
     :ets.delete(__MODULE__, {:result, ref})
     :ets.delete(__MODULE__, {:dispatched, ref})
+    :ets.delete(__MODULE__, {:acked, ref})
     :ok
   rescue
     ArgumentError -> :ok
@@ -112,33 +115,89 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     ArgumentError -> true
   end
 
-  def register(op), do: GenServer.cast(__MODULE__, {:register, op})
+  def register(op) do
+    if reserved?(op.ref) do
+      :ets.insert(__MODULE__, {{:operation, op.ref}, op})
+
+      if reserved?(op.ref) do
+        GenServer.cast(__MODULE__, {:register, op})
+        :ok
+      else
+        :ets.delete(__MODULE__, {:operation, op.ref})
+        {:error, :unavailable}
+      end
+    else
+      {:error, :unavailable}
+    end
+  rescue
+    ArgumentError -> {:error, :unavailable}
+  end
+
   def admit(ref, coordinator), do: GenServer.cast(__MODULE__, {:admit, ref, coordinator})
   def notify(ref), do: GenServer.cast(__MODULE__, {:notify, ref})
-  def ack(ref), do: GenServer.cast(__MODULE__, {:ack, ref})
-  def cancel(id, ref), do: GenServer.call(__MODULE__, {:cancel, id, ref})
+
+  def ack(ref) do
+    if reserved?(ref), do: :ets.insert(__MODULE__, {{:acked, ref}, true})
+    GenServer.cast(__MODULE__, {:ack, ref})
+  rescue
+    ArgumentError -> :ok
+  end
+
+  def cancel(id, ref) do
+    case :ets.lookup(__MODULE__, {:operation, ref}) do
+      [{{:operation, ^ref}, %{id: ^id} = op}] ->
+        select_terminal(ref, failure(Map.put(op, :dispatched?, dispatched?(ref)), :cancelled))
+        notify(ref)
+        :ok
+
+      _ ->
+        {:error, :not_found}
+    end
+  rescue
+    ArgumentError -> {:error, :not_found}
+  end
+
   def revoke(id), do: GenServer.cast(__MODULE__, {:revoke, id})
-  def publish(ref, result), do: GenServer.call(__MODULE__, {:publish, ref, result})
+
+  def publish(ref, result) do
+    GenServer.call(__MODULE__, {:publish, ref, result})
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
 
   @impl true
   def handle_cast({:register, op}, state) do
-    if reserved?(op.ref) do
-      value =
-        Map.merge(op, %{
-          owner_monitor: Process.monitor(op.owner),
-          coordinator_monitor: Process.monitor(op.coordinator),
-          timer: Process.send_after(self(), {:deadline, op.ref}, max(0, op.deadline - now())),
-          worker: nil,
-          worker_monitor: nil,
-          dispatched?: false,
-          complete?: false,
-          acked?: false
-        })
+    cond do
+      Map.has_key?(state, op.ref) ->
+        {:noreply, state}
 
-      send(op.coordinator, {:admit, op.ref})
-      {:noreply, Map.put(state, op.ref, value)}
-    else
-      {:noreply, state}
+      reserved?(op.ref) ->
+        value =
+          Map.merge(op, %{
+            owner_monitor: Process.monitor(op.owner),
+            coordinator_monitor: Process.monitor(op.coordinator),
+            timer: Process.send_after(self(), {:deadline, op.ref}, max(0, op.deadline - now())),
+            worker: nil,
+            worker_monitor: nil,
+            dispatched?: false,
+            complete?: false,
+            acked?: false
+          })
+
+        send(op.coordinator, {:admit, op.ref})
+        {:noreply, Map.put(state, op.ref, value)}
+
+      true ->
+        # Expiry can retire a pre-registration ticket while its bounded cast
+        # is queued. An accepted caller must still receive a terminal receipt.
+        result = failure(Map.put(op, :dispatched?, false), :timeout)
+
+        case op.delivery do
+          {:async, destination} -> send(destination, {:gateway_action, op.ref, result})
+          {:sync, destination} -> send(destination, {:gateway_action_ready, op.ref, result})
+        end
+
+        {:noreply, state}
     end
   end
 
@@ -340,15 +399,15 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
         end
 
       result = select_terminal(ref, candidate)
-      Process.cancel_timer(op.timer)
+      if is_reference(op.timer), do: Process.cancel_timer(op.timer)
       if op.worker, do: Process.exit(op.worker, :kill)
 
       case op.delivery do
-        :async -> send(op.owner, {:gateway_action, ref, result})
+        {:async, destination} -> send(destination, {:gateway_action, ref, result})
         {:sync, alias_ref} -> send(alias_ref, {:gateway_action_ready, ref})
       end
 
-      op = %{op | complete?: true, acked?: op.delivery == :async}
+      op = %{op | complete?: true, acked?: match?({:async, _}, op.delivery)}
       retire(Map.put(state, ref, op), ref)
     end
   end
@@ -371,6 +430,63 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
       _ ->
         state
     end
+  end
+
+  # one_for_all restarts the HTTP supervisor before this child. Every original
+  # worker is therefore down before recovery can release capacity or notify.
+  defp recover_receipts(state) do
+    entries = for {{:operation, ref}, op} <- :ets.tab2list(__MODULE__), do: {ref, op}
+
+    state =
+      Enum.reduce(entries, state, fn {ref, op}, acc ->
+        cond do
+          not Process.alive?(op.owner) or :ets.member(__MODULE__, {:acked, ref}) ->
+            release(ref)
+            acc
+
+          true ->
+            recovered =
+              Map.merge(op, %{
+                owner_monitor: Process.monitor(op.owner),
+                coordinator_monitor: Process.monitor(op.coordinator),
+                timer: nil,
+                worker: nil,
+                worker_monitor: nil,
+                dispatched?: dispatched?(ref),
+                complete?: false,
+                acked?: false
+              })
+
+            finish(Map.put(acc, ref, recovered), ref, failure(recovered, :unavailable))
+        end
+      end)
+
+    # Callers interrupted before storing an operation cannot dispatch against
+    # the old coordinator; their global tickets still bound the transition.
+    for index <- 1..32 do
+      case :ets.lookup(__MODULE__, {:slot, index}) do
+        [{_, ref, _, owner, deadline, _coordinator}] ->
+          if not Map.has_key?(state, ref) and
+               (not Process.alive?(owner) or now() >= deadline),
+             do: release(ref)
+
+        _ ->
+          :ok
+      end
+    end
+
+    for row <- :ets.tab2list(__MODULE__) do
+      ref =
+        case row do
+          {{:session, _, _}, ref} -> ref
+          {{kind, ref}, _} when kind in [:operation, :result, :dispatched, :acked] -> ref
+          _ -> nil
+        end
+
+      if is_reference(ref) and not reserved?(ref), do: :ets.delete_object(__MODULE__, row)
+    end
+
+    state
   end
 
   defp now, do: System.monotonic_time(:millisecond)

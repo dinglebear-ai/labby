@@ -10,9 +10,7 @@ defmodule LabbyConsole.Application do
     children = [
       LabbyConsoleWeb.Telemetry,
       LabbyConsole.Auth,
-      LabbyConsole.GatewayAction.Lifecycle,
-      {Task.Supervisor, name: LabbyConsole.GatewayAction.Tasks, max_children: 32},
-      LabbyConsole.GatewayAction,
+      LabbyConsole.GatewayAction.Supervisor,
       {DNSCluster, query: Application.get_env(:labby_console, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: LabbyConsole.PubSub},
       # Start a worker by calling: LabbyConsole.Worker.start_link(arg)
@@ -23,8 +21,8 @@ defmodule LabbyConsole.Application do
 
     # See https://elixir.hexdocs.pm/Supervisor.html
     # for other strategies and supported options
-    opts = [strategy: :one_for_one, name: LabbyConsole.Supervisor]
-    Supervisor.start_link(children, opts)
+    opts = [name: LabbyConsole.Supervisor]
+    Supervisor.start_link(LabbyConsole.Application.Supervisor, children, opts)
   end
 
   # Tell Phoenix to update the endpoint configuration
@@ -33,5 +31,22 @@ defmodule LabbyConsole.Application do
   def config_change(changed, _new, removed) do
     LabbyConsoleWeb.Endpoint.config_change(changed, removed)
     :ok
+  end
+end
+
+defmodule LabbyConsole.Application.Supervisor do
+  @moduledoc false
+  use Supervisor
+
+  @impl true
+  def init(children) do
+    # Receipts outlive every transport child, including a transport-supervisor
+    # restart-budget escalation. Only stopping the whole application drops them.
+    :ets.new(
+      LabbyConsole.GatewayAction.Lifecycle,
+      [:named_table, :public, :set, write_concurrency: true]
+    )
+
+    Supervisor.init(children, strategy: :one_for_one)
   end
 end

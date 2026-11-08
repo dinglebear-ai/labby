@@ -238,7 +238,8 @@ defmodule LabbyConsole.GatewayActionLifecycleTest do
       # The real arbitration primitive stores all winner data before any notification.
       # Pause its notifier so the caller reaches its deadline (or observes coordinator loss).
       assert ^winner = GatewayAction.Lifecycle.select_terminal(ref, winner)
-      :ok = :sys.suspend(GatewayAction.Lifecycle)
+      notifier = Process.whereis(GatewayAction.Lifecycle)
+      :ok = :sys.suspend(notifier)
 
       try do
         if unquote(transition) == :coordinator_down,
@@ -246,7 +247,7 @@ defmodule LabbyConsole.GatewayActionLifecycleTest do
 
         assert_receive {:returned, ^owner, ^winner}, 5500
       after
-        :sys.resume(GatewayAction.Lifecycle)
+        resume_if_alive(notifier)
       end
 
       send(owner, :probe)
@@ -281,6 +282,12 @@ defmodule LabbyConsole.GatewayActionLifecycleTest do
     end
 
     refute_receive {:dispatch, _, _, _, _, _}
+  end
+
+  defp resume_if_alive(pid) do
+    if Process.alive?(pid), do: :sys.resume(pid)
+  catch
+    :exit, _ -> :ok
   end
 
   defp await_registration(owner, attempts \\ 100)
@@ -344,7 +351,7 @@ defmodule LabbyConsole.GatewayActionLifecycleTest do
   end
 
   test "an unavailable coordinator never masquerades as invalid caller authority", %{id: id} do
-    assert :ok = Supervisor.terminate_child(LabbyConsole.Supervisor, GatewayAction)
+    assert :ok = Supervisor.terminate_child(GatewayAction.Supervisor, GatewayAction)
 
     try do
       assert {:error, %{kind: :unavailable, side_effects: "none_expected"}} =
@@ -352,7 +359,7 @@ defmodule LabbyConsole.GatewayActionLifecycleTest do
 
       assert {:ok, _} = Auth.current(id)
     after
-      assert {:ok, _} = Supervisor.restart_child(LabbyConsole.Supervisor, GatewayAction)
+      assert {:ok, _} = Supervisor.restart_child(GatewayAction.Supervisor, GatewayAction)
     end
   end
 
