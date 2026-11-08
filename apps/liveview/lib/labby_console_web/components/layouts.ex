@@ -33,68 +33,43 @@ defmodule LabbyConsoleWeb.Layouts do
 
   attr :page, :string, default: "Gateway"
   attr :authenticated, :boolean, default: false
+  attr :subject, :string, default: nil
+  attr :preference_key, :string, default: nil
 
   slot :inner_block, required: true
 
   def app(assigns) do
-    ~H"""
-    <a class="console-skip" href="#console-integration">Skip to content</a>
-    <div class="console-frame">
-      <aside class="console-sidebar">
-        <a href="/" class="console-brand" aria-label="Labby Console home">
-          <svg viewBox="0 0 32 32" aria-hidden="true" data-labby-mark="fold"><path
-            d="M5 8.5Q5 6.3 7 5.2L14 1.5V22H22V30H14Q5 30 5 21Z"
-            fill="var(--aurora-accent-primary)"
-          /><path d="M22 22H25Q31 22 31 28V30H22Z" fill="var(--aurora-accent-pink)" /></svg>
-          <span class="console-wordmark">lab<span>by</span></span>
-        </a>
-        <p class="console-nav-label">Gateway</p>
-        <nav aria-label="Primary navigation">
-          <a
-            :for={{label, path, icon} <- navigation(@authenticated)}
-            href={path}
-            aria-current={if @page == label, do: "page"}
-            title={label}
-            aria-label={label}
-          ><svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.75"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          ><path d={icon} /></svg><span>{label}</span></a>
-        </nav>
-        <p id="console-scope">
-          {if @authenticated, do: "Authenticated session", else: "Public probes"}
-        </p>
-      </aside>
-      <div class="console-workspace">
-        <header class="console-topbar">
-          <span>Workspace / <strong>{@page}</strong></span><span class="console-runtime-label">LiveView Console</span>
-        </header>
-        {render_slot(@inner_block)}
-      </div>
-    </div>
+    assigns = assign(assigns, :routes, navigation(assigns.authenticated))
 
+    ~H"""
+    <LabbyConsoleWeb.WorkspaceShell.shell
+      id="labby-workspace-shell"
+      page={String.downcase(@page)}
+      main_id="console-integration"
+      authenticated={@authenticated}
+      routes={@routes}
+      subject={@subject}
+      preference_key={@preference_key}
+    >
+      {render_slot(@inner_block)}
+    </LabbyConsoleWeb.WorkspaceShell.shell>
     <.flash_group flash={@flash} />
     """
   end
 
-  defp navigation(false), do: [{"Gateway", "/", "M4 5h16v6H4zM4 15h16v5H4zM7 8h1M7 18h1"}]
+  defp navigation(false), do: %{"gateway" => "/"}
 
   defp navigation(true),
-    do: [
-      {"Overview", "/overview", "M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"},
-      {"Gateway", "/gateway", "M4 5h16v6H4zM4 15h16v5H4zM7 8h1M7 18h1"},
-      {"Runtime", "/runtime", "M3 12h4l3-8 4 16 3-8h4"},
-      {"Clients", "/clients", "M8 3v4M16 3v4M5 7h14v13H5zM9 12h.01M15 12h.01M9 16h6"},
-      {"Diagnostics", "/diagnostics", "M12 3 3 20h18L12 3zM12 9v5M12 17h.01"},
-      {"Usage", "/usage", "M4 20V10M10 20V4M16 20v-7M22 20H2"},
-      {"Activity", "/activity", "M3 12h4l3-8 4 16 3-8h4"},
-      {"Logs", "/logs", "M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"}
-    ]
+    do: %{
+      "overview" => "/overview",
+      "gateway" => "/gateway",
+      "runtime" => "/runtime",
+      "clients" => "/clients",
+      "diagnostics" => "/diagnostics",
+      "usage" => "/usage",
+      "activity" => "/activity",
+      "logs" => "/logs"
+    }
 
   attr :name, :string, required: true
   attr :id, :string, required: true

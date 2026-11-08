@@ -24,12 +24,13 @@ import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/labby_console"
 import topbar from "../vendor/topbar"
+import {WorkspaceChrome} from "./workspace_chrome.mjs"
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, LogFollow: {
+  hooks: {...colocatedHooks, WorkspaceChrome, LogFollow: {
     mounted() { this.follow() },
     updated() { this.follow() },
     follow() { if (this.el.dataset.following === "true") this.el.scrollTop = this.el.scrollHeight }

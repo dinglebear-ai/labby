@@ -65,10 +65,11 @@ defmodule LabbyConsole.MixProject do
     [
       setup: ["deps.get", "assets.setup", "assets.build"],
       "assets.setup": ["esbuild.install --if-missing"],
-      "assets.build": ["compile", "esbuild labby_console"],
+      "assets.build": ["compile", "esbuild labby_console", "esbuild workspace"],
       "assets.deploy": [
         "compile",
         "esbuild labby_console --minify",
+        "esbuild workspace --minify",
         "phx.digest"
       ],
       precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]

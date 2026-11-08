@@ -1,0 +1,27 @@
+@import "./workspace-controls.css";
+@import "./workspace-projects.css";
+@import "./workspace-native.css";
+/* Existing read-model pages keep their IDs and data behavior inside native chrome. */
+.labby-overview { width:100%; min-width:0; }
+.labby-overview .ov-body { width:0; }
+.labby-overview .lb-profile-text strong,.labby-overview .lb-profile-note { overflow-wrap:anywhere; }
+.labby-overview .lb-profile-avatar > svg { color:var(--aurora-accent-strong); width:18px; height:18px; }
+.labby-overview .ov-icon-button { display:inline-flex; align-items:center; justify-content:center; border:0; background:transparent; color:var(--aurora-text-muted); }
+.labby-overview .labby-mobile-nav { display:none; }
+.labby-overview .ov-sidebar nav { margin-bottom:14px; }
+.labby-overview .ov-sidebar .lb-profile { margin-top:auto; }
+.labby-overview #console-integration { min-width:0; width:100%; max-width:none; padding:24px; }
+.labby-overview #console-integration h1 { margin-bottom:8px; }
+.labby-overview #console-integration h1 + p { color:var(--aurora-text-muted); }
+.labby-overview #console-integration .console-panel { margin-block:20px; }
+.labby-overview .lb-profile-menu[popover] { overflow-y:auto; }
+.labby-overview .labby-connection { font-size:11px; }
+@media(max-width:820px) {
+  .labby-overview .labby-mobile-nav { display:flex; }
+  .labby-overview #console-integration { padding:20px 12px; }
+  .labby-overview .ov-skip:focus { left:12px; }
+  .labby-overview .labby-mobile-nav > button { border:0; background:transparent; color:var(--aurora-text-muted); }
+}
+@media(prefers-reduced-motion:reduce) {
+  .labby-overview *, .labby-overview *::before, .labby-overview *::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
