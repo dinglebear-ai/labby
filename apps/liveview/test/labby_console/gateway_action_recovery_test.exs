@@ -162,12 +162,11 @@ defmodule LabbyConsole.GatewayActionRecoveryTest do
     auth = Process.whereis(Auth)
     :ok = :sys.suspend(guardian)
     send(peer, {:respond, 200, "{}"})
-    await_publish_call(guardian, ref)
+    await_publish_notification(guardian, ref)
+    assert {:ok, %{}} = Lifecycle.terminal_result(ref)
     Process.exit(guardian, :kill)
 
-    assert_receive {:gateway_action, ^ref,
-                    {:error, %{kind: :unavailable, side_effects: "unknown"}}},
-                   1000
+    assert_receive {:gateway_action, ^ref, {:ok, %{}}}, 1000
 
     await_replacement(guardian)
     assert Process.whereis(Auth) == auth
@@ -269,18 +268,18 @@ defmodule LabbyConsole.GatewayActionRecoveryTest do
     refute_receive {:gateway_action_ready, ^ref}
   end
 
-  defp await_publish_call(pid, ref, attempts \\ 100)
+  defp await_publish_notification(pid, ref, attempts \\ 100)
 
-  defp await_publish_call(_, _, 0),
+  defp await_publish_notification(_, _, 0),
     do: flunk("authorization did not reach the guardian publication boundary")
 
-  defp await_publish_call(pid, ref, attempts) do
+  defp await_publish_notification(pid, ref, attempts) do
     {:messages, messages} = Process.info(pid, :messages)
 
-    unless Enum.any?(messages, &match?({:"$gen_call", _, {:publish, ^ref, _}}, &1)) do
+    unless Enum.any?(messages, &match?({:"$gen_cast", {:notify, ^ref}}, &1)) do
       receive do
       after
-        10 -> await_publish_call(pid, ref, attempts - 1)
+        10 -> await_publish_notification(pid, ref, attempts - 1)
       end
     end
   end

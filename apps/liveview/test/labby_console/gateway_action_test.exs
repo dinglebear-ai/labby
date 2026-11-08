@@ -215,6 +215,7 @@ defmodule LabbyConsole.GatewayActionTest do
   end
 
   test "global admission rejects operation 33 without dispatch", %{state: state} do
+    {:ok, extra} = Auth.sign_in("extra")
     hold(state)
 
     operations =
@@ -232,7 +233,7 @@ defmodule LabbyConsole.GatewayActionTest do
           refs ++ operations
       end
 
-    {:ok, extra} = Auth.sign_in("extra")
+    assert {:error, :sign_in_failed} = Auth.sign_in("saturated")
 
     assert {:error, %{kind: :saturated}} =
              Auth.start_action(extra, "projects", "projects.list", %{})

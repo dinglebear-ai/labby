@@ -34,6 +34,50 @@ defmodule LabbyConsole.GatewayAction do
     end
   end
 
+  # Only Auth constructs this fixed family from configuration or captured vault state.
+  # It shares the same reservation, watchdog, receipts and cancellation engine.
+  @doc false
+  def run_auth(kind, payload) when kind in [:exchange, :inspect, :logout] do
+    run({:auth_owner, self()}, "auth", Atom.to_string(kind), %{}, {:auth, kind, payload})
+  end
+
+  defp do_start(id, "auth", action, %{}, {:auth, kind, payload}, delivery)
+       when kind in [:exchange, :inspect, :logout] do
+    deadline = System.monotonic_time(:millisecond) + 5_000
+    coordinator = Process.whereis(__MODULE__)
+
+    with true <- is_pid(coordinator),
+         {:ok, ref} <- Lifecycle.reserve(id, self(), deadline, coordinator) do
+      op = %{
+        id: id,
+        ref: ref,
+        owner: self(),
+        coordinator: coordinator,
+        generation: nil,
+        auth_kind: kind,
+        auth_payload: payload,
+        service: "auth",
+        action: action,
+        mutation?: kind != :inspect,
+        dispatch_gate: :atomics.new(1, signed: false),
+        deadline: deadline,
+        delivery: delivery
+      }
+
+      case Lifecycle.register(op) do
+        :ok ->
+          {:ok, ref}
+
+        {:error, reason} ->
+          Lifecycle.release(ref)
+          {:error, Error.new(reason, "auth", action)}
+      end
+    else
+      {:error, reason} -> {:error, Error.new(reason, "auth", action)}
+      _ -> {:error, Error.new(:unavailable, "auth", action)}
+    end
+  end
+
   defp do_start(id, service, action, params, mode, delivery) do
     started = System.monotonic_time(:millisecond)
     deadline = started + if(action == "gateway.host.metrics", do: 12_000, else: 5_000)

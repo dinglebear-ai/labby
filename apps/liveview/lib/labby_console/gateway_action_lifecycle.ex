@@ -220,10 +220,31 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
   def revoke(id), do: GenServer.cast(__MODULE__, {:revoke, id})
 
+  # Auth selects the immutable receipt while generation validation is serialized
+  # by its vault. Guardian notification is nonblocking and recovery can deliver
+  # the selected winner even if the guardian disappears before notification.
   def publish(ref, result) do
-    GenServer.call(__MODULE__, {:publish, ref, result})
-  catch
-    :exit, _ -> {:error, :unavailable}
+    case :ets.lookup(__MODULE__, {:operation, ref}) do
+      [{{:operation, ^ref}, op}] ->
+        op = Map.put(op, :dispatched?, dispatched?(ref))
+
+        candidate =
+          cond do
+            now() >= op.deadline -> failure(op, :timeout)
+            not Process.alive?(op.coordinator) -> failure(op, :unavailable)
+            not Process.alive?(op.owner) -> failure(op, :cancelled)
+            true -> result
+          end
+
+        select_terminal(ref, candidate)
+        notify(ref)
+        :ok
+
+      _ ->
+        :ok
+    end
+  rescue
+    ArgumentError -> {:error, :unavailable}
   end
 
   @impl true
@@ -275,7 +296,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
           not Process.alive?(coordinator) ->
             {:noreply, finish(state, ref, failure(op, :unavailable))}
 
-          not Auth.matches?(op.id, op.generation) ->
+          not authorized?(op) ->
             {:noreply, finish(state, ref, failure(op, :unauthenticated))}
 
           true ->
@@ -284,13 +305,13 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
             case Task.Supervisor.start_child(GatewayAction.Tasks, fn ->
                    result =
                      try do
-                       Auth.execute_action(op, lifecycle, ref)
+                       execute(op, lifecycle, ref)
                      rescue
                        _ -> failure(%{op | dispatched?: true}, :transport_error)
                      end
 
                    case result do
-                     {:ok, _} -> Auth.publish_action(op, result)
+                     {:ok, _} -> publish_success(op, result, lifecycle)
                      other -> send(lifecycle, {:result, ref, other})
                    end
                  end) do
@@ -339,7 +360,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     case state[ref] do
       %{complete?: false} = op ->
         if now() < op.deadline and Process.alive?(op.coordinator) and Process.alive?(op.owner) and
-             Auth.matches?(op.id, op.generation) and claim_dispatch(op) do
+             authorized?(op) and claim_dispatch(op) do
           {:reply, :ok, Map.put(state, ref, %{op | dispatched?: true})}
         else
           {:reply, :cancelled, state}
@@ -357,24 +378,6 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     end
   end
 
-  def handle_call({:publish, ref, result}, _, state) do
-    case state[ref] do
-      %{complete?: false} = op ->
-        candidate =
-          cond do
-            now() >= op.deadline -> failure(op, :timeout)
-            not Process.alive?(op.coordinator) -> failure(op, :unavailable)
-            not Process.alive?(op.owner) -> failure(op, :cancelled)
-            true -> result
-          end
-
-        {:reply, :ok, finish(state, ref, candidate)}
-
-      _ ->
-        {:reply, :ok, state}
-    end
-  end
-
   @impl true
   def handle_info({:result, ref, result}, state) do
     case state[ref] do
@@ -382,7 +385,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
         result =
           cond do
             now() >= op.deadline -> failure(op, :timeout)
-            not Auth.matches?(op.id, op.generation) -> failure(op, :unauthenticated)
+            not authorized?(op) -> failure(op, :unauthenticated)
             true -> result
           end
 
@@ -548,6 +551,19 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
     state
   end
+
+  defp authorized?(%{auth_kind: kind}) when kind in [:exchange, :inspect, :logout], do: true
+  defp authorized?(op), do: Auth.matches?(op.id, op.generation)
+
+  defp execute(%{auth_kind: _} = op, lifecycle, ref),
+    do: Auth.execute_auth(op, lifecycle, ref)
+
+  defp execute(op, lifecycle, ref), do: Auth.execute_action(op, lifecycle, ref)
+
+  defp publish_success(%{auth_kind: _} = op, result, lifecycle),
+    do: send(lifecycle, {:result, op.ref, result})
+
+  defp publish_success(op, result, _), do: Auth.publish_action(op, result)
 
   defp now, do: System.monotonic_time(:millisecond)
 

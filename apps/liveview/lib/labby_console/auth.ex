@@ -113,17 +113,8 @@ defmodule LabbyConsole.Auth do
   def publish_action(op, result), do: GenServer.call(__MODULE__, {:publish, op, result})
 
   def sign_in(token) when is_binary(token) and byte_size(token) in 1..4096 do
-    target = Application.get_env(:labby_console, :gateway_url)
-
-    with true <- secure_target?(target),
-         {:ok, response} <-
-           request(target, :post, "/auth/bearer-session", [{"authorization", "Bearer " <> token}]),
-         200 <- response.status,
-         [cookie] <- Req.Response.get_header(response, "set-cookie"),
-         cookie <- hd(String.split(cookie, ";")),
-         {:ok, session} <- inspect_session(target, cookie) do
-      GenServer.call(__MODULE__, {:put, %{target: target, cookie: cookie, session: session}})
-    else
+    case GatewayAction.run_auth(:exchange, token) do
+      {:ok, value} -> GenServer.call(__MODULE__, {:put, value})
       _ -> {:error, :sign_in_failed}
     end
   end
@@ -131,18 +122,40 @@ defmodule LabbyConsole.Auth do
   def sign_in(_), do: {:error, :sign_in_failed}
 
   def current(id) do
-    with %{target: target, cookie: cookie, generation: generation} <- capture(id),
-         {:ok, session} <- inspect_session(target, cookie),
-         true <- matches?(id, generation) do
-      {:ok, session}
-    else
-      {:error, reason} when reason in [:unavailable, :forbidden] ->
-        {:error, reason}
-
-      _ ->
-        GenServer.call(__MODULE__, {:delete, id})
+    case capture(id) do
+      nil ->
         {:error, :unauthenticated}
+
+      snapshot ->
+        case GatewayAction.run_auth(:inspect, snapshot) do
+          {:ok, session} ->
+            current_result(id, snapshot.generation, {:ok, session})
+
+          {:error, reason} when reason in [:unauthenticated, :forbidden] ->
+            current_result(id, snapshot.generation, {:error, reason})
+
+          _ ->
+            {:error, :unavailable}
+        end
     end
+  end
+
+  defp current_result(id, generation, {:ok, session}) do
+    if matches?(id, generation), do: {:ok, session}, else: {:error, :unauthenticated}
+  end
+
+  defp current_result(_id, _generation, {:error, reason})
+       when reason in [:forbidden, :unavailable],
+       do: {:error, reason}
+
+  defp current_result(id, _generation, _) do
+    GenServer.call(__MODULE__, {:delete, id})
+    {:error, :unauthenticated}
+  end
+
+  # Action preflight is already inside an admitted worker and its absolute deadline.
+  defp current_in_action(op) do
+    current_result(op.id, op.generation, inspect_session(op.session.target, op.session.cookie))
   end
 
   @doc "Run a reviewed caller-bound action. Mutations are never automatically retried."
@@ -172,7 +185,7 @@ defmodule LabbyConsole.Auth do
 
   @doc false
   def execute_action(op, coordinator, ref) do
-    with {:ok, session} <- current(op.id),
+    with {:ok, session} <- current_in_action(op),
          true <- matches?(op.id, op.generation),
          :ok <- GenServer.call(coordinator, {:dispatch, ref}) do
       case request(
@@ -263,17 +276,52 @@ defmodule LabbyConsole.Auth do
     GenServer.call(__MODULE__, {:delete, id})
 
     case value do
-      %{target: target, cookie: cookie, session: session} ->
-        case request(target, :post, "/auth/logout", [
-               {"cookie", cookie},
-               {"x-csrf-token", session["csrf_token"]}
-             ]) do
-          {:ok, %{status: status}} when status in 200..299 -> :ok
+      %{target: _, cookie: _, session: _} ->
+        case GatewayAction.run_auth(:logout, value) do
+          {:ok, _} -> :ok
           _ -> {:error, :revocation_unconfirmed}
         end
 
       _ ->
         :ok
+    end
+  end
+
+  @doc false
+  def execute_auth(op, lifecycle, ref) do
+    with :ok <- GenServer.call(lifecycle, {:dispatch, ref}) do
+      auth_request(op.auth_kind, op.auth_payload)
+    else
+      _ -> {:error, :unavailable}
+    end
+  end
+
+  defp auth_request(:exchange, token) do
+    target = Application.get_env(:labby_console, :gateway_url)
+
+    with true <- secure_target?(target),
+         {:ok, response} <-
+           request(target, :post, "/auth/bearer-session", [{"authorization", "Bearer " <> token}]),
+         200 <- response.status,
+         [cookie] <- Req.Response.get_header(response, "set-cookie"),
+         cookie <- hd(String.split(cookie, ";")),
+         {:ok, session} <- inspect_session(target, cookie) do
+      {:ok, %{target: target, cookie: cookie, session: session}}
+    else
+      _ -> {:error, :sign_in_failed}
+    end
+  end
+
+  defp auth_request(:inspect, %{target: target, cookie: cookie}),
+    do: inspect_session(target, cookie)
+
+  defp auth_request(:logout, %{target: target, cookie: cookie, session: session}) do
+    case request(target, :post, "/auth/logout", [
+           {"cookie", cookie},
+           {"x-csrf-token", session["csrf_token"]}
+         ]) do
+      {:ok, %{status: status}} when status in 200..299 -> {:ok, :revoked}
+      _ -> {:error, :revocation_unconfirmed}
     end
   end
 
@@ -329,7 +377,13 @@ defmodule LabbyConsole.Auth do
           redirect: false,
           decode_body: false,
           receive_timeout: 2_000,
-          connect_options: [timeout: 2_000],
+          finch: [
+            conn_opts: [
+              transport_opts: [timeout: 2_000],
+              max_header_list_size: 65_536,
+              client_settings: [max_header_list_size: 65_536]
+            ]
+          ],
           into: fn {:data, data}, {req, resp} ->
             body = (resp.body || "") <> data
 

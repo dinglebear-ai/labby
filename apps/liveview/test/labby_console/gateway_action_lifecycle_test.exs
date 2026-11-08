@@ -357,10 +357,14 @@ defmodule LabbyConsole.GatewayActionLifecycleTest do
       assert {:error, %{kind: :unavailable, side_effects: "none_expected"}} =
                Auth.action(id, "projects", "projects.create", %{})
 
-      assert {:ok, _} = Auth.current(id)
+      snapshot = Auth.capture(id)
+      assert {:error, :unavailable} = Auth.current(id)
+      assert Auth.capture(id).generation == snapshot.generation
     after
       assert {:ok, _} = Supervisor.restart_child(GatewayAction.Supervisor, GatewayAction)
     end
+
+    assert {:ok, _} = Auth.current(id)
   end
 
   test "session deletion broadcasts once without exposing caller credentials", %{id: id} do
