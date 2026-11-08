@@ -27,7 +27,8 @@ automatically. Forbidden actions do not revoke otherwise valid sessions.
 
 Keep dispatch rejection distinct from transport ambiguity, retaining the gateway's
 bounded kind/context/recovery/side-effect metadata. Apply a 32 KiB action request
-budget, 64 KiB response budget, 5-second complete operation deadline (12 seconds
+budget by default (larger domain payloads require separately reviewed bounded
+transport), 64 KiB response budget, 5-second complete operation deadline (12 seconds
 for the existing host sample), and at most four concurrent operations per session
 and 32 globally. Admission rejects excess work visibly rather than queueing it
 without bounds. A failed or canceled write after dispatch has uncertain outcome
