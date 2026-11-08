@@ -4,7 +4,9 @@ use rusqlite::{Connection, OptionalExtension as _, TransactionBehavior, params};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use super::super::codemode_notices::{NoticeError, PublishNotice, now_ms, prune};
+use super::super::codemode_notices::{
+    NoticeError, PublishNotice, notice_write_error, now_ms, prune,
+};
 use super::subscriptions::disable;
 use super::types::{EVENT_NAME, EventError, WebhookSecret, parse_callback, timestamp};
 use super::webhook::{DeliveryOutcome, WebhookAttempt};
@@ -20,27 +22,45 @@ pub(in crate::dispatch) fn enqueue(
     input: &PublishNotice,
     now: i64,
     expires: i64,
+    message_id: Option<&str>,
 ) -> Result<(), NoticeError> {
-    let queued = tx.execute(
-        "INSERT INTO agent_event_deliveries(subscription_id,notice_id,generation,next_attempt)
+    let map_error = |error| notice_write_error(error, message_id.is_some());
+    let queued = tx
+        .execute(
+            "INSERT INTO agent_event_deliveries(subscription_id,notice_id,generation,next_attempt)
          SELECT id,?1,generation,?2 FROM agent_event_subscriptions
-         WHERE inbox_id=?3 AND active=1 AND expires>?2 AND (source IS NULL OR source=?4)",
-        params![notice_id, now, input.inbox_id, input.source],
-    )?;
+         WHERE inbox_id=?3 AND active=1 AND expires>?2 AND (source IS NULL OR source=?4)
+           AND session_messages=?5",
+            params![
+                notice_id,
+                now,
+                input.inbox_id,
+                input.source,
+                message_id.is_some()
+            ],
+        )
+        .map_err(map_error)?;
     if queued != 0 {
+        let mut data = serde_json::json!({
+            "id": notice_id, "source": input.source, "level": input.level,
+            "message": input.message, "expires_at_unix_ms": expires
+        });
+        if let Some(message_id) = message_id {
+            data["message_id"] = serde_json::Value::String(message_id.to_owned());
+        }
         let body = serde_json::to_vec(&serde_json::json!({
             "eventId": notice_id,
             "name": EVENT_NAME,
             "timestamp": timestamp(now)?,
             "cursor": null,
-            "data": {"id": notice_id, "source": input.source, "level": input.level,
-                     "message": input.message, "expires_at_unix_ms": expires}
+            "data": data
         }))
         .map_err(|_| NoticeError::Invalid)?;
         tx.execute(
             "UPDATE agent_notices SET event_body=? WHERE id=?",
             params![body, notice_id],
-        )?;
+        )
+        .map_err(map_error)?;
     }
     Ok(())
 }

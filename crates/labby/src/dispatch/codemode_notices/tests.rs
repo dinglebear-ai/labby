@@ -568,11 +568,14 @@ fn capture_logs(work: impl FnOnce()) -> String {
 #[test]
 fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
     let logs = capture_logs(|| {
-        let sqlite = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
-            Some("private notice payload and SQL".into()),
-        );
-        assert_eq!(NoticeError::from(sqlite), NoticeError::Unavailable);
+        let sqlite = || {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+                Some("private notice payload and SQL".into()),
+            )
+        };
+        assert_eq!(NoticeError::from(sqlite()), NoticeError::Unavailable);
+        assert_eq!(notice_write_error(sqlite(), true), NoticeError::Full);
         let io = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "private database path",
@@ -681,7 +684,7 @@ fn v1_migration_preserves_notice_state() {
     let version: u32 = db
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
     assert!(take(&mut db, &who, 1006).is_none());
     let original = publish_at(&mut db, "admin", &message(&inbox, "v1"), 1006).unwrap();
     assert!(original.duplicate);
@@ -727,4 +730,90 @@ fn failed_v1_migration_is_atomic() {
             .unwrap(),
         "inbox-1"
     );
+}
+
+#[test]
+fn typed_message_reference_fits_notice_budget() {
+    let mut db = db();
+    let key = who("message-target").key().unwrap();
+    let inbox = register_at(&mut db, &key, "authenticated_client", 1000).unwrap();
+    let msg = format!("message_{}", ulid::Ulid::new());
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO agent_messages
+           (id,owner_key,sender_id,sender_label,body,summary,request_digest,
+            idempotency_key,recipient_ids,created,expires)
+         VALUES(?,'owner','sender','label','long private body','preview','digest','key','[]',1000,5000)",
+        [&msg],
+    )
+    .unwrap();
+    let mut input = message(&inbox.id, &msg);
+    input.source = "labby.messages".into();
+    input.message = "\"".repeat(160);
+    let mut admission = admit_notice_targets(&tx, std::slice::from_ref(&inbox.id)).unwrap();
+    let stored =
+        insert_notice_in(&tx, &mut admission, "session", &input, 1001, Some(&msg)).unwrap();
+    assert!(matches!(
+        insert_notice_in(&tx, &mut admission, "session", &input, 1001, Some(&msg)),
+        Err(NoticeError::Invalid)
+    ));
+    tx.commit().unwrap();
+    let delivered = take(&mut db, &key, 1002).unwrap();
+    assert_eq!(delivered.notifications[0].id, stored.id);
+    assert_eq!(
+        delivered.notifications[0].message_id.as_deref(),
+        Some(msg.as_str())
+    );
+    let encoded = serde_json::to_string(&delivered).unwrap();
+    assert!(encoded.len() <= MAX_NOTICE_BATCH_BYTES);
+    assert!(!encoded.contains("long private body"));
+
+    // Even a valid legacy notice must be re-budgeted when a reference is
+    // added. Find an escaping-heavy edge within the legacy accepted range.
+    input.source = "\\".repeat(64);
+    let edge = (1..=384).find(|n| {
+        input.message = "\"".repeat(*n);
+        validate_publish(&input).is_ok() && validate_publish_reference(&input, Some(&msg)).is_err()
+    });
+    assert!(edge.is_some());
+}
+
+#[test]
+fn typed_message_reference_requires_internal_publish() {
+    let mut db = db();
+    let owner = who("legacy");
+    let key = owner.key().unwrap();
+    let inbox = register_at(&mut db, &key, owner.scope(), 1000).unwrap();
+    let external = serde_json::json!({
+        "inbox_id": inbox.id, "source": "fixture", "level": "info", "message": "ordinary",
+        "dedupe_key": "outside", "message_id": format!("message_{}", ulid::Ulid::new())
+    });
+    assert!(serde_json::from_value::<PublishNotice>(external).is_err());
+    publish_at(&mut db, "admin", &message(&inbox.id, "legacy"), 1001).unwrap();
+    let delivery = take(&mut db, &key, 1002).unwrap();
+    assert!(
+        serde_json::to_value(&delivery.notifications[0])
+            .unwrap()
+            .get("message_id")
+            .is_none()
+    );
+
+    let recipient = NoticeRecipient {
+        actor: Some("verified-owner".into()),
+        route: "root".into(),
+        consumer: NoticeConsumer::MessageSession {
+            binding: "private-binding".into(),
+        },
+    };
+    let message_inbox =
+        register_at(&mut db, &recipient.key().unwrap(), recipient.scope(), 1000).unwrap();
+    assert!(matches!(
+        publish_at(
+            &mut db,
+            "admin",
+            &message(&message_inbox.id, "outside"),
+            1001
+        ),
+        Err(NoticeError::NotFound)
+    ));
 }

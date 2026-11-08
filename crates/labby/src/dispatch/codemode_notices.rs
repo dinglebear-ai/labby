@@ -2,6 +2,7 @@
 //!
 //! This inbox is separate from operator notifications. A committed response lease
 //! is not a receipt: messages remain retryable until acknowledged or expired.
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -18,7 +19,8 @@ const MAX_PER_RECIPIENT: i64 = 32;
 const MAX_INBOXES: i64 = 2_000;
 const MAX_BATCH: usize = 3;
 const INBOX_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
+const MESSAGE_INBOX_SCOPE: &str = "message_session";
 mod schema;
 const APPLICATION_ID: i64 = 0x4c4e_5446;
 const DB_BUDGET: Duration = Duration::from_millis(250);
@@ -45,6 +47,9 @@ pub(crate) enum NoticeConsumer {
     Stdio {
         session: String,
     },
+    MessageSession {
+        binding: String,
+    },
 }
 
 impl NoticeRecipient {
@@ -59,6 +64,9 @@ impl NoticeRecipient {
                         && conversation.as_ref().is_none_or(|v| bounded(v, 128))
                 }
                 NoticeConsumer::Stdio { session } => bounded(session, 128),
+                NoticeConsumer::MessageSession { binding } => {
+                    self.actor.is_some() && bounded(binding, 128)
+                }
             };
         if !valid {
             return Err(NoticeError::Invalid);
@@ -80,6 +88,7 @@ impl NoticeRecipient {
             NoticeConsumer::Client { .. } => "authenticated_client",
             NoticeConsumer::Credential { .. } => "authenticated_credential",
             NoticeConsumer::Stdio { .. } => "stdio_connection",
+            NoticeConsumer::MessageSession { .. } => MESSAGE_INBOX_SCOPE,
         }
     }
 }
@@ -97,6 +106,8 @@ pub(crate) struct CodeModeNotice {
     pub source: String,
     pub level: NoticeLevel,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub delivery_attempt: u32,
     pub expires_at_unix_ms: i64,
 }
@@ -561,11 +572,19 @@ pub(crate) fn now_ms() -> i64 {
         .map_or(0, |v| i64::try_from(v.as_millis()).unwrap_or(i64::MAX))
 }
 fn validate_publish(input: &PublishNotice) -> Result<(), NoticeError> {
+    validate_publish_reference(input, None)
+}
+
+fn validate_publish_reference(
+    input: &PublishNotice,
+    message_id: Option<&str>,
+) -> Result<(), NoticeError> {
     if !valid_id(&input.inbox_id, "inbox_")
         || !bounded(&input.source, 64)
         || !bounded(&input.message, 384)
         || !bounded(&input.dedupe_key, 128)
         || !(1..=86_400).contains(&input.ttl_seconds)
+        || message_id.is_some_and(|id| !valid_id(id, "message_"))
     {
         return Err(NoticeError::Invalid);
     }
@@ -574,6 +593,7 @@ fn validate_publish(input: &PublishNotice) -> Result<(), NoticeError> {
         source: input.source.clone(),
         level: input.level,
         message: input.message.clone(),
+        message_id: message_id.map(str::to_owned),
         delivery_attempt: u32::MAX,
         expires_at_unix_ms: i64::MAX,
     };
@@ -605,9 +625,27 @@ pub(super) fn prune(db: &Connection, now: i64) -> Result<(), NoticeError> {
          AND NOT EXISTS (SELECT 1 FROM agent_event_deliveries WHERE notice_id=agent_notices.id AND claim_until>?1)",
         [now],
     )?;
+    // An expired receipt can release its retry key even while a leased
+    // notice pins the body. Expiry governs reads, independently of GC.
+    db.execute(
+        "UPDATE agent_messages SET idempotency_key=NULL
+         WHERE expires<=?1 AND idempotency_key IS NOT NULL",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_messages WHERE expires<=?1 AND NOT EXISTS
+         (SELECT 1 FROM agent_notices WHERE message_id=agent_messages.id)",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_message_sessions WHERE retained_until<=?1",
+        [now],
+    )?;
     db.execute(
         "DELETE FROM agent_inboxes WHERE expires<=?1
-         AND NOT EXISTS (SELECT 1 FROM agent_notices WHERE inbox_id=agent_inboxes.id)",
+         AND NOT EXISTS (SELECT 1 FROM agent_notices WHERE inbox_id=agent_inboxes.id)
+         AND NOT EXISTS (SELECT 1 FROM agent_event_subscriptions WHERE inbox_id=agent_inboxes.id)
+         AND NOT EXISTS (SELECT 1 FROM agent_message_sessions WHERE inbox_id=agent_inboxes.id)",
         [now],
     )?;
     Ok(())
@@ -673,23 +711,8 @@ fn publish_at(
 ) -> Result<PublishReceipt, NoticeError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     prune(&tx, now)?;
-    let inbox_expires: Option<i64> = tx
-        .query_row(
-            "SELECT expires FROM agent_inboxes WHERE id=?",
-            [&input.inbox_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(inbox_expires) = inbox_expires else {
-        return Err(NoticeError::NotFound);
-    };
-    let payload = serde_json::to_string(&(
-        input.source.as_str(),
-        input.level,
-        input.message.as_str(),
-        input.ttl_seconds,
-    ))
-    .map_err(|_| NoticeError::Invalid)?;
+    notice_inbox_expiry(&tx, input, now, false)?;
+    let payload = notice_payload(input)?;
     let prior: Option<(String, String)> = tx
         .query_row(
             "SELECT id,payload FROM agent_notices WHERE inbox_id=? AND producer=? AND dedupe_key=?",
@@ -707,15 +730,81 @@ fn publish_at(
             duplicate: true,
         });
     }
-    let total: i64 = tx.query_row("SELECT count(*) FROM agent_notices", [], |r| r.get(0))?;
-    let owned: i64 = tx.query_row(
-        "SELECT count(*) FROM agent_notices WHERE inbox_id=?",
-        [&input.inbox_id],
+    let mut admission = admit_notice_targets(&tx, std::slice::from_ref(&input.inbox_id))?;
+    let receipt = insert_notice_in(&tx, &mut admission, actor, input, now, None)?;
+    tx.commit()?;
+    tracing::debug!(
+        subsystem = "agent_notifications",
+        action = "publish",
+        duplicate = false,
+        "agent notice persisted"
+    );
+    Ok(receipt)
+}
+
+fn notice_inbox_expiry(
+    tx: &Connection,
+    input: &PublishNotice,
+    now: i64,
+    message_reference: bool,
+) -> Result<i64, NoticeError> {
+    tx.query_row(
+        "SELECT expires FROM agent_inboxes WHERE id=?1 AND expires>?2
+         AND (scope<>?3 OR ?4)",
+        params![input.inbox_id, now, MESSAGE_INBOX_SCOPE, message_reference],
         |r| r.get(0),
-    )?;
-    if total >= MAX_PENDING || owned >= MAX_PER_RECIPIENT {
+    )
+    .optional()?
+    .ok_or(NoticeError::NotFound)
+}
+
+fn notice_payload(input: &PublishNotice) -> Result<String, NoticeError> {
+    serde_json::to_string(&(
+        input.source.as_str(),
+        input.level,
+        input.message.as_str(),
+        input.ttl_seconds,
+    ))
+    .map_err(|_| NoticeError::Invalid)
+}
+
+/// Single-use admission for each target within the caller's write transaction.
+pub(super) struct NoticeAdmission(BTreeSet<String>);
+
+pub(super) fn admit_notice_targets(
+    tx: &Connection,
+    inboxes: &[String],
+) -> Result<NoticeAdmission, NoticeError> {
+    let ids: BTreeSet<_> = inboxes.iter().cloned().collect();
+    if ids.len() != inboxes.len() {
+        return Err(NoticeError::Invalid);
+    }
+    let total: i64 = tx.query_row("SELECT count(*) FROM agent_notices", [], |r| r.get(0))?;
+    if total.saturating_add(ids.len() as i64) > MAX_PENDING {
         return Err(NoticeError::Full);
     }
+    let mut owned = tx.prepare("SELECT count(*) FROM agent_notices WHERE inbox_id=?")?;
+    for inbox in &ids {
+        if owned.query_row([inbox], |r| r.get::<_, i64>(0))? >= MAX_PER_RECIPIENT {
+            return Err(NoticeError::Full);
+        }
+    }
+    Ok(NoticeAdmission(ids))
+}
+
+pub(super) fn insert_notice_in(
+    tx: &Connection,
+    admission: &mut NoticeAdmission,
+    actor: &str,
+    input: &PublishNotice,
+    now: i64,
+    message_id: Option<&str>,
+) -> Result<PublishReceipt, NoticeError> {
+    if !admission.0.remove(&input.inbox_id) {
+        return Err(NoticeError::Invalid);
+    }
+    validate_publish_reference(input, message_id)?;
+    let inbox_expires = notice_inbox_expiry(tx, input, now, message_id.is_some())?;
     let id = format!("notice_{}", ulid::Ulid::new());
     let expires = now
         .saturating_add(i64::from(input.ttl_seconds) * 1_000)
@@ -724,20 +813,31 @@ fn publish_at(
         NoticeLevel::Info => "info",
         NoticeLevel::Warning => "warning",
     };
-    tx.execute("INSERT INTO agent_notices(id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        params![id,input.inbox_id,actor,input.dedupe_key,payload,input.source,level,input.message,now,expires])?;
-    super::agent_events::enqueue(&tx, &id, input, now, expires)?;
-    tx.commit()?;
-    tracing::debug!(
-        subsystem = "agent_notifications",
-        action = "publish",
-        duplicate = false,
-        "agent notice persisted"
-    );
+    tx.execute(
+        "INSERT INTO agent_notices
+            (id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires,message_id)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        params![id, input.inbox_id, actor, input.dedupe_key, notice_payload(input)?, input.source,
+            level, input.message, now, expires, message_id],
+    )
+    .map_err(|error| notice_write_error(error, message_id.is_some()))?;
+    super::agent_events::enqueue(tx, &id, input, now, expires, message_id)?;
     Ok(PublishReceipt {
         id,
         duplicate: false,
     })
+}
+
+/// An atomic message write that hits the private page budget is a capacity
+/// failure. Keep existing notice and startup diagnostics and error semantics.
+pub(super) fn notice_write_error(error: rusqlite::Error, session_message: bool) -> NoticeError {
+    let full = session_message
+        && matches!(
+            &error,
+            rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::DiskFull
+        );
+    let original = NoticeError::from(error);
+    if full { NoticeError::Full } else { original }
 }
 #[cfg(test)]
 fn acknowledge_at(
@@ -801,7 +901,7 @@ fn deliver_at<T>(
     )?;
     let notices = {
         let mut query = tx.prepare(
-            "SELECT id,source,level,message,attempts,expires FROM agent_notices
+            "SELECT id,source,level,message,attempts,expires,message_id FROM agent_notices
             WHERE inbox_id=? AND acknowledged=0 AND expires>? AND next_attempt<=?
             ORDER BY next_attempt,created,id LIMIT 3",
         )?;
@@ -817,6 +917,7 @@ fn deliver_at<T>(
                         NoticeLevel::Info
                     },
                     message: r.get(3)?,
+                    message_id: r.get(6)?,
                     delivery_attempt: r.get::<_, u32>(4)?.saturating_add(1),
                     expires_at_unix_ms: r.get(5)?,
                 })

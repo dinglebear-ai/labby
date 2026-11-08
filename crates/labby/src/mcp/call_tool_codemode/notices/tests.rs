@@ -30,6 +30,7 @@ fn batch() -> NoticeBatch {
             source: "test".into(),
             level: NoticeLevel::Warning,
             message: "Indexing finished.".into(),
+            message_id: None,
             delivery_attempt: 1,
             expires_at_unix_ms: 10_000,
         }],
