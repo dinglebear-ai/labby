@@ -23,12 +23,14 @@ pub(crate) fn truncate_execution_response(
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> CodeModeExecutionResponse {
-    if response_within_budget(
-        &response,
+    if auxiliary::omit_until_fitting(
+        &mut response,
         max_response_bytes,
         max_response_tokens,
         token_estimate_divisor,
-    ) {
+    )
+    .0
+    {
         return response;
     }
 
@@ -123,33 +125,36 @@ pub(crate) fn result_would_be_truncated(
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> bool {
-    if response_within_budget(
+    let (auxiliary_fits, originals) = auxiliary::omit_until_fitting(
         response,
         max_response_bytes,
         max_response_tokens,
         token_estimate_divisor,
-    ) {
-        return false;
-    }
+    );
     let params: Vec<_> = response
         .calls
         .iter_mut()
         .map(|call| call.params.take())
         .collect();
-    let changed = !response_within_budget(
-        response,
-        max_response_bytes,
-        max_response_tokens,
-        token_estimate_divisor,
-    ) && result_marker(
-        response,
-        max_response_bytes,
-        max_response_tokens,
-        token_estimate_divisor,
-    )
-    .is_some();
+    let changed = !auxiliary_fits
+        && !response_within_budget(
+            response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        )
+        && result_marker(
+            response,
+            max_response_bytes,
+            max_response_tokens,
+            token_estimate_divisor,
+        )
+        .is_some();
     for (call, params) in response.calls.iter_mut().zip(params) {
         call.params = params;
+    }
+    for (index, original) in originals {
+        response.calls[index].upstream_content = Some(original);
     }
     changed
 }
@@ -284,6 +289,8 @@ pub(crate) fn response_within_budget(
     max_response_tokens: usize,
     token_estimate_divisor: u32,
 ) -> bool {
+    #[cfg(test)]
+    ENVELOPE_ENCODES.with(|count| count.set(count.get() + 1));
     match serde_json::to_vec(response) {
         Ok(bytes) => {
             bytes.len() <= max_response_bytes
@@ -456,3 +463,8 @@ mod tests;
 #[cfg(test)]
 #[path = "truncate/resource_recovery_tests.rs"]
 mod resource_recovery_tests;
+
+#[cfg(test)]
+thread_local! { static ENVELOPE_ENCODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+mod auxiliary;

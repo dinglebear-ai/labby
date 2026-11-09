@@ -527,6 +527,7 @@ struct CodeModeExecutedCallSchema {
     params: Option<Value>,
     error_kind: Option<String>,
     ui: Option<Value>,
+    upstream_content: Option<Value>,
 }
 
 /// Serializable result envelope for one Code Mode execution.
@@ -572,11 +573,13 @@ pub struct CodeModeExecutionOutcome {
 }
 
 /// Lightweight metadata for one host-brokered tool call. Cloudflare parity:
-/// the per-call result payload is NOT carried here — only the model needs the
-/// final `result`. Recording full per-call results bloated context and risked
-/// leaking secrets through the truncation preview.
+/// full per-call result payload is not carried here. Independent upstream
+/// content is retained separately under bounded auxiliary/output budgets.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModeExecutedCall {
+    /// Independent upstream content, bounded per execution. Omission counters
+    /// describe blocks not delivered under auxiliary or final response budgets.
+    pub upstream_content: Option<Value>,
     /// Fully-qualified `<namespace>::<tool>` identifier.
     pub id: String,
     /// Whether the brokered call completed successfully.
@@ -605,7 +608,7 @@ pub struct CodeModeExecutedCall {
 impl Serialize for CodeModeExecutedCall {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let (namespace, tool) = split_code_mode_call_id(&self.id);
-        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 9)?;
+        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 10)?;
         state.serialize_field("id", &self.id)?;
         state.serialize_field("namespace", namespace)?;
         state.serialize_field("tool", tool)?;
@@ -622,6 +625,9 @@ impl Serialize for CodeModeExecutedCall {
         }
         if let Some(ui) = &self.ui {
             state.serialize_field("ui", &ui.ui_meta)?;
+        }
+        if let Some(content) = &self.upstream_content {
+            state.serialize_field("upstream_content", content)?;
         }
         state.end()
     }
@@ -740,7 +746,7 @@ pub struct CodeModeHistoryEntry {
     /// Stable failure kind, when the operation failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error_kind: Option<String>,
-    /// Bounded tool-call trace captured for the operation.
+    /// Bounded tool-call metadata. Retained history excludes upstream response content.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     #[schemars(with = "Vec<CodeModeExecutedCallSchema>")]
     pub calls: Vec<CodeModeExecutedCall>,
@@ -785,8 +791,13 @@ impl CodeModeHistory {
         }
     }
 
-    /// Append an entry, assign its sequence number, and evict oldest entries as needed.
+    /// Append metadata to shared history, assigning a sequence number and evicting old entries.
     pub fn push(&mut self, mut entry: CodeModeHistoryEntry) {
+        // History can be read by a different caller on the same route. Keep
+        // upstream response blocks on the requesting caller's execution trace.
+        for call in &mut entry.calls {
+            call.upstream_content = None;
+        }
         entry.seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
         let entry_bytes = entry_serialized_size(&entry);

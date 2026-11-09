@@ -808,6 +808,7 @@ impl LabMcpServer {
                 });
                 let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
                 result.structured_content = Some(structured);
+                bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
                 notice_control
                     .attach(&mut result, notice_budget.0, notice_budget.1)
                     .await;
@@ -948,6 +949,7 @@ impl LabMcpServer {
             &response,
             self.route_scope.exposes_resources(),
         );
+        bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
         notice_control
             .attach(&mut result, notice_budget.0, notice_budget.1)
             .await;
@@ -1010,3 +1012,6 @@ pub(crate) use description::{
 
 #[cfg(test)]
 mod tests;
+
+mod upstream_budget;
+use upstream_budget::bound_upstream_content;

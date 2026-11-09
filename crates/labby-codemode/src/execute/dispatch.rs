@@ -75,7 +75,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     return self
                         .dispatch_internal_call(&tool, params, &caller, surface, scope)
                         .await
-                        .map(|value| ToolCallOutcome { value, ui: None })
+                        .map(|value| ToolCallOutcome {
+                            full_result: None,
+                            value,
+                            ui: None,
+                        })
                         .map_err(CodeModeCallError::from);
                 }
                 let id = scoped_call_id(scope, &parsed.raw, &namespace, &tool)?;
@@ -99,6 +103,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                         );
                     }
                     return Ok(ToolCallOutcome {
+                        full_result: outcome.full_result,
                         value: outcome.value,
                         ui: Some(ui),
                     });

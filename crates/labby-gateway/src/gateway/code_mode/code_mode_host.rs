@@ -1187,6 +1187,7 @@ impl GatewayManager {
         }
         let data = provider.authorize(self, token, params).await?;
         Ok(ToolCallOutcome {
+            full_result: None,
             value: serde_json::json!({
                 "ok": true,
                 "service": "gateway",
@@ -1294,7 +1295,11 @@ impl GatewayManager {
             sdk_kind: "provider_error".to_string(),
             message: error.to_string(),
         })?;
-        Ok(ToolCallOutcome { value, ui: None })
+        Ok(ToolCallOutcome {
+            full_result: None,
+            value,
+            ui: None,
+        })
     }
 
     /// Drain the `execution_id` step buffer and persist it in ONE bulk insert
@@ -1729,6 +1734,7 @@ impl GatewayManager {
                     );
                 }
                 Ok(ToolCallOutcome {
+                    full_result: Some(serde_json::json!(&result)),
                     value: unwrap_code_mode_upstream_result(result),
                     ui,
                 })
@@ -3254,6 +3260,55 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn successful_mcp_envelope_is_preserved_before_convenience_unwrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = GatewayManager::new(
+            dir.path().join("config.toml"),
+            GatewayRuntimeHandle::default(),
+        );
+        let pool = Arc::new(crate::upstream::pool::UpstreamPool::new());
+        for value in [
+            serde_json::json!({"rows":[1]}),
+            serde_json::json!(false),
+            serde_json::json!(0),
+            Value::Null,
+            serde_json::json!(""),
+        ] {
+            let mut result = CallToolResult::success(vec![
+                ContentBlock::text(value.to_string()),
+                ContentBlock::text("Independent advisory"),
+            ]);
+            result.structured_content = Some(value.clone());
+            let expected = serde_json::to_value(&result).unwrap();
+            let outcome = manager
+                .finish_dispatched_tool(
+                    pool.clone(),
+                    "demo",
+                    "lookup",
+                    CodeModeToolSafetyHints::default(),
+                    Some(Ok(result)),
+                )
+                .await
+                .unwrap();
+            assert_eq!(outcome.value, value);
+            assert_eq!(outcome.full_result, Some(expected));
+        }
+        let error = manager
+            .finish_dispatched_tool(
+                pool,
+                "demo",
+                "lookup",
+                CodeModeToolSafetyHints::default(),
+                Some(Ok(CallToolResult::error(vec![ContentBlock::text(
+                    "failure",
+                )]))),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "tool_error");
+    }
+
     // ── Issue #210 (lab-41e7m.2): the C6 unwrap precedence matrix ───────────
     //
     // `unwrap_code_mode_upstream_result` is a locked contract
@@ -3283,7 +3338,8 @@ mod tests {
     }
 
     /// C6 rule 1 precedes content inspection: when both are present the
-    /// structured value wins, content blocks are discarded, and the mcp-ui
+    /// structured value wins in the convenience value; the original envelope
+    /// is preserved separately, and the mcp-ui
     /// link is unaffected because it reads `_meta`, not `content`.
     #[test]
     fn unwrap_prefers_structured_content_and_meta_ui_link_survives() {

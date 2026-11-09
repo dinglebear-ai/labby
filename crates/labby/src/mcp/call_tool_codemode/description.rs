@@ -147,10 +147,10 @@ Pass `code` as `async () => { ... }`; its return value is the result.
 Workflow:
 1. Find: `(await codemode.search({ query: \"short intent\", limit: 5 })).results` gives each \
 tool's `path`, `id`, `helper`, and `signature`.
-2. Check (only if the signature is not enough): return `await codemode.describe(path)` and call \
-in the next run; output only reaches you if the script returns it.
-3. Call the `helper` as given (e.g. `codemode.my_server.get_issue(params)`; names become valid JS \
-identifiers), or `callTool(\"upstream::tool\", params)` with raw names.
+2. If the signature is insufficient, return `await codemode.describe(path)`; call in the next run.
+3. Call its `helper` or `callTool(\"upstream::tool\", params)`.
+Use `codemode.callToolResult(id, params)` for full MCP channels. Independent content survives \
+in `calls[].upstream_content` with explicit omission counters.
 Never guess tool or parameter names.
 
 Rules:

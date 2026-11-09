@@ -64,6 +64,9 @@ pub fn code_mode_execute_trace(response: &CodeModeExecutionResponse) -> Value {
             if let Some(error_kind) = &call.error_kind {
                 entry.insert("error_kind".to_string(), json!(error_kind));
             }
+            if let Some(content) = &call.upstream_content {
+                entry.insert("upstream_content".into(), content.clone());
+            }
             if let Some(ui) = &call.ui {
                 entry.insert("ui".to_string(), ui.ui_meta.clone());
             }
@@ -239,6 +242,7 @@ mod tests {
             result_shaping: None,
             ui: None,
             calls: vec![CodeModeExecutedCall {
+                upstream_content: None,
                 id: "quick-shell::run_command".to_string(),
                 ok: true,
                 elapsed_ms: 12,

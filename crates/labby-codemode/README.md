@@ -167,7 +167,11 @@ remove the need to bound fan-out, response size, and total calls.
 `CodeModeExecutionResponse` carries final `result`, call metadata, bounded logs,
 artifact receipts, and optional widget/shaping metadata. JavaScript `undefined`
 omits `result`; explicit `null` remains JSON null. Call traces hold timings,
-status, redacted parameters, and error kinds rather than full tool outputs.
+status, redacted parameters, error kinds, and bounded independent upstream
+content. `codemode.callToolResult(id, params)` provides the full successful MCP
+envelope through the same authorization and per-call byte ceiling as ordinary
+helpers. `calls[].upstream_content` survives script projection and records
+explicit omission counts under the 16 KiB aggregate and final response budgets.
 Final shaping and envelope truncation apply after execution; configured shaping
 does not alter the values that JS receives from `callTool`.
 

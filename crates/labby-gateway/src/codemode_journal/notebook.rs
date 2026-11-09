@@ -164,6 +164,7 @@ mod tests {
         (
             seq,
             CodeModeExecutedCall {
+                upstream_content: None,
                 id: id.into(),
                 ok: true,
                 elapsed_ms: 1,

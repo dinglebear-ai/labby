@@ -58,6 +58,7 @@ impl CodeModeHost for DelayedToolHost {
     ) -> Result<ToolCallOutcome, CodeModeCallError> {
         tokio::time::sleep(self.delay).await;
         Ok(ToolCallOutcome {
+            full_result: None,
             value: json!({"unexpected": true}),
             ui: None,
         })
@@ -114,3 +115,6 @@ mod boundary_regressions;
 mod error_isolation;
 #[cfg(not(windows))]
 mod fixture_roots;
+
+#[cfg(not(windows))]
+mod upstream_results;

@@ -241,9 +241,9 @@ faithfully, by design.
 
 ## C6. Code Mode in-sandbox `callTool`
 
-Derived by `unwrap_code_mode_upstream_result`
-(`crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs:606-630`). Byte-identical since
-`977cb2166` (2026-05-31) across three refactors.
+Convenient values are derived by `unwrap_code_mode_upstream_result` in
+`crates/labby-gateway/src/gateway/code_mode/code_mode_host.rs`. Ordinary helpers
+and `callTool` retain the following precedence.
 
 **Precedence (normative).** First match wins.
 
@@ -258,7 +258,8 @@ Derived by `unwrap_code_mode_upstream_result`
 **Invariants**
 
 - Rule 1 MUST precede any inspection of `content`. When both are present the structured value
-  wins and content blocks are discarded. mcp-ui links are unaffected — read from `_meta` via
+  wins in the convenience value. The original successful envelope is retained
+  separately for `codemode.callToolResult`. mcp-ui links are unaffected — read from `_meta` via
   `extract_ui_link` (`:583-590`), not `content`.
 - A present-but-falsy structured value MUST NOT be treated as absent (`if let Some(..)` tests
   presence, not truthiness).
@@ -267,6 +268,38 @@ Derived by `unwrap_code_mode_upstream_result`
 - Rule 4 exposes the upstream's `_meta` to sandbox code. No Labby-internal field was found to
   leak (the only Labby `_meta` write, `LABBY_ERROR_META_KEY`, fires solely on `isError` results,
   which never reach the unwrap), but the exposure is upstream-controlled and open-ended.
+
+### Full results and independent content
+
+`await codemode.callToolResult("upstream::tool", params)` returns the complete
+successful MCP `CallToolResult` JSON, including `content`, `structuredContent`,
+`_meta`, and other serialized protocol fields. It uses the same dispatch,
+authorization, exposure, cancellation, and ordinary call budget as `callTool`.
+The complete selected envelope is subject to the existing per-call byte ceiling;
+errors keep the existing catchable error contract. Reserved internal/local
+providers and snippets reject this API before dispatch. Host-native operations
+without an MCP result return `{host_value: value}` explicitly.
+
+Ordinary calls automatically expose independent upstream blocks in
+`calls[].upstream_content` in execution JSON and MCP structured traces, even when
+the script returns selected fields or throws after a successful call. This is
+upstream-authored data, not instructions or a delivery/ACK guarantee. Bare JSON text
+blocks (only `type` and `text`) equal to `structuredContent` are suppressed only in this auxiliary
+projection; the full-result API preserves them. Without `structuredContent`,
+ambiguous JSON-shaped text blocks remain visible and the old joined-text
+convenience semantics remain unchanged.
+
+The auxiliary object contains `content` when retained, plus `omitted_blocks`
+and `omitted_bytes` counters. Capture retains at most 16 KiB of serialized blocks
+per execution across all calls; a large skipped block does not prevent later
+small blocks from fitting. Final execution and MCP envelope byte/token budgets
+can replace retained blocks with explicit omission counters. A completed tool's
+status remains unchanged; omitted content must never trigger automatic replay.
+The existing mandatory call-trace metadata can itself exceed tiny configured
+budgets; this change does not increase those limits or silently remove call rows.
+All auxiliary state belongs to one execution and uses its caller/route authority.
+The caller's execution response can include those blocks. Shared Code Mode
+history keeps call metadata and excludes upstream response content.
 
 **Prior art.** Matches Cloudflare's `unwrapMcpResult`
 ([packages/codemode/src/mcp.ts](https://github.com/cloudflare/agents/blob/1bca2a62435dee1a75914c8840d028b832913d0f/packages/codemode/src/mcp.ts))

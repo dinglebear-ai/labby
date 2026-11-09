@@ -1244,6 +1244,16 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
                                 "elapsed_ms": { "type": "integer", "minimum": 0 },
                                 "start_ms": { "type": "integer", "minimum": 0 },
                                 "params": {},
+                                "upstream_content": {
+                                    "type":"object",
+                                    "properties": {
+                                        "content": {"type":"array", "items": {"type":"object"}},
+                                        "omitted_blocks": {"type":"integer", "minimum":0},
+                                        "omitted_bytes": {"type":"integer", "minimum":0}
+                                    },
+                                    "required":["omitted_blocks","omitted_bytes"],
+                                    "additionalProperties":false
+                                },
                                 "error_kind": { "type": "string" },
                                 "ui": {
                                     "type": "object",

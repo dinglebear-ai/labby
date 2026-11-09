@@ -134,6 +134,9 @@ pub struct ResolvedSnippet {
 /// optional captured MCP Apps (mcp-ui) widget link (last-wins across the run).
 #[derive(Debug, Clone)]
 pub struct ToolCallOutcome {
+    /// Original successful MCP envelope, before convenient-value unwrapping.
+    /// Absent for host-native operations that do not return MCP results.
+    pub full_result: Option<Value>,
     /// Unwrapped JSON value returned by the host tool.
     pub value: Value,
     /// Optional MCP App link captured from the tool result.

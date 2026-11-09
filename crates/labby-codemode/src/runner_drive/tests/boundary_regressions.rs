@@ -28,6 +28,7 @@ fn replies(capture: &Path) -> Vec<CodeModeRunnerInput> {
 async fn retrieval_after_internal_ceiling_rejects_every_promise_with_a_budget_error() {
     let mut requests: Vec<_> = (0..MAX_INTERNAL_CALLS_PER_RUN as u64)
         .map(|seq| CodeModeRunnerOutput::ToolCall {
+            full_result: false,
             seq,
             id: "__lab_internal::semantic_rank".into(),
             params: json!({"query":"q","limit":1}),
@@ -45,6 +46,7 @@ async fn retrieval_after_internal_ceiling_rejects_every_promise_with_a_budget_er
     ];
     for (index, name) in retrievals.iter().enumerate() {
         requests.push(CodeModeRunnerOutput::ToolCall {
+            full_result: false,
             seq: (MAX_INTERNAL_CALLS_PER_RUN + index) as u64,
             id: format!("__lab_internal::{name}"),
             params: json!({}),
@@ -88,6 +90,7 @@ async fn host_rejects_oversized_ids_without_echoing_or_retaining_them() {
         .iter()
         .enumerate()
         .map(|(seq, id)| CodeModeRunnerOutput::ToolCall {
+            full_result: false,
             seq: seq as u64,
             id: id.clone(),
             params: json!({}),
@@ -244,4 +247,36 @@ async fn non_admin_writable_runner_cannot_publish_metadata_path_aliases() {
             "caller has execute authority; this is path rejection, not an admin gate"
         );
     }
+}
+
+#[tokio::test]
+async fn over_ceiling_full_result_internal_calls_reject_without_discovery_fallback() {
+    let mut requests: Vec<_> = (0..MAX_INTERNAL_CALLS_PER_RUN as u64)
+        .map(|seq| CodeModeRunnerOutput::ToolCall {
+            seq,
+            id: "__lab_internal::semantic_rank".into(),
+            params: json!({"query":"q","limit":1}),
+            full_result: false,
+        })
+        .collect();
+    requests.push(CodeModeRunnerOutput::ToolCall {
+        seq: MAX_INTERNAL_CALLS_PER_RUN as u64,
+        id: "__lab_internal::semantic_rank".into(),
+        params: json!({"query":"q","limit":1}),
+        full_result: true,
+    });
+    let capture = tempfile::NamedTempFile::new().unwrap();
+    let mut runner =
+        PooledRunner::spawn_stub_script(&request_script(&requests, capture.path())).unwrap();
+    let host = NoopHost::default();
+    let cfg = test_config(Duration::from_secs(15));
+    let outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(&mut runner, &cfg, tokio::time::Instant::now() + cfg.timeout)
+        .await;
+    assert!(matches!(outcome, DriveOutcome::Completed(_)));
+    let replies = replies(capture.path());
+    let CodeModeRunnerInput::ToolError { error, .. } = replies.last().unwrap() else {
+        panic!("raw reserved call must reject")
+    };
+    assert_eq!(error.kind(), "internal_call_budget_exceeded");
 }

@@ -53,6 +53,26 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
         declarations = (ROOT / "crates/labby/src/mcp/permanent_tools.rs").read_text()
         self.assertNotIn('"openai/profile"', declarations)
 
+    def test_openai_review_preserves_ids_and_binds_lifetime_and_challenge_evidence(self) -> None:
+        data = json.loads(OPENAI_NORMATIVE.read_text())
+        self.assertEqual([row["id"] for row in data["requirements"]], [
+            f"OAI-CLAUSE-{number:03}" for number in range(1, 36)
+        ])
+        rows = {row["id"]: row for row in data["requirements"]}
+        self.assertEqual(data["captured_at"], "2026-11-08")
+        self.assertEqual(data["source_sha256"],
+                         "c2e577b84eb0b1eb6ce404f4b5a2d3d0c052f2a4bac836c2feee0af86b7d47b0")
+        self.assertEqual(rows["OAI-CLAUSE-020"]["verification_ids"],
+                         ["OAI-AUTH-002", "OAI-AUTH-003"])
+        self.assertEqual(rows["OAI-CLAUSE-035"]["verification_ids"], ["OAI-AUTH-009"])
+        self.assertIn("no client secret", rows["OAI-CLAUSE-035"]["disposition"])
+        harness = (ROOT / "scripts/ci/openai-auth-conformance.sh").read_text()
+        selector = "sqlite::extracted_tests::registered_client_survives_reopen_and_token_cleanup"
+        requirement = harness.split("    OAI-AUTH-009)", 1)[1].split("      ;;", 1)[0]
+        self.assertIn(f"run_test labby-auth {selector}", requirement)
+        self.assertIn(f"| test(={selector})", harness)
+        self.assertEqual(data["profile_tool_declared"], False)
+
     def test_mcp_source_fetch_recovers_from_transient_network_failure(self) -> None:
         response = Mock()
         response.read.return_value = b"source"
