@@ -78,8 +78,7 @@ defmodule LabbyConsoleWeb.SessionController do
 
         {:ok, id} ->
           conn
-          |> configure_session(renew: true)
-          |> clear_session()
+          |> renew_provider_session()
           |> put_session(:console_session, id)
           |> json(%{status: "complete"})
 
@@ -112,8 +111,12 @@ defmodule LabbyConsoleWeb.SessionController do
   end
 
   def provider_cancel(conn, params) when map_size(params) == 0 do
-    result = if id = get_session(conn, :console_session), do: Auth.sign_out(id), else: :ok
-    reset_result(conn, result)
+    if flow = get_session(conn, :oauth_flow_id) do
+      provider_cancel(conn, %{"flow_id" => flow})
+    else
+      result = if id = get_session(conn, :console_session), do: Auth.sign_out(id), else: :ok
+      reset_result(conn, result)
+    end
   end
 
   def provider_cancel(conn, _), do: provider_error(conn)
@@ -125,12 +128,18 @@ defmodule LabbyConsoleWeb.SessionController do
         else: %{status: "cancelled", revocation_unconfirmed: true}
 
     conn
-    |> configure_session(renew: true)
-    |> clear_session()
+    |> renew_provider_session()
     |> json(response)
   end
 
   defp reset_result(conn, _), do: provider_error(conn)
+
+  # The current page keeps its masked token for recovery/reset POSTs.
+  # Preserve only its underlying CSRF state while replacing browser authority.
+  defp renew_provider_session(conn) do
+    csrf = get_session(conn, :_csrf_token)
+    conn |> configure_session(renew: true) |> clear_session() |> put_session(:_csrf_token, csrf)
+  end
 
   defp provider_error(conn),
     do: conn |> put_status(:bad_request) |> json(%{error: "provider_sign_in_failed"})

@@ -162,6 +162,82 @@ defmodule LabbyConsoleWeb.OAuthLoginTest do
     assert json_response(recovered, 200)["status"] == "cancelled"
   end
 
+  test "active CSRF survives completion, cookie recovery, reset and fresh start", %{
+    conn: conn,
+    fixture: fixture
+  } do
+    {initial, token} = csrf_page(conn)
+    started = csrf_post(initial, "/sign-in/provider/start", %{}, token)
+    flow = get_session(started, :oauth_flow_id)
+    Agent.update(fixture, &%{&1 | ready: true})
+
+    :sys.replace_state(OAuthHandoff, fn state ->
+      put_in(state, [flow, :next_poll], System.monotonic_time(:millisecond) - 1)
+    end)
+
+    completed = csrf_post(started, "/sign-in/provider/poll", %{flow_id: flow}, token)
+    assert json_response(completed, 200)["status"] == "complete"
+    id = get_session(completed, :console_session)
+    body_lost = csrf_post(completed, "/sign-in/provider/poll", %{flow_id: flow}, token)
+    assert json_response(body_lost, 200)["status"] == "complete"
+    assert get_session(body_lost, :console_session) == id
+    whole_lost = csrf_post(started, "/sign-in/provider/poll", %{flow_id: flow}, token)
+    assert json_response(whole_lost, 200)["status"] == "complete"
+    assert get_session(whole_lost, :console_session) == id
+    reset = csrf_post(completed, "/sign-in/provider/cancel", %{}, token)
+    assert json_response(reset, 200)["status"] == "cancelled"
+    recovered_reset = csrf_post(reset, "/sign-in/provider/cancel", %{}, token)
+    assert json_response(recovered_reset, 200)["status"] == "cancelled"
+    fresh = csrf_post(recovered_reset, "/sign-in/provider/start", %{}, token)
+    assert json_response(fresh, 200)["flow_id"] != flow
+  end
+
+  test "empty reset cancels signed flow after lost start body and releases capacity", %{
+    conn: conn
+  } do
+    {initial, token} = csrf_page(conn)
+    started = csrf_post(initial, "/sign-in/provider/start", %{}, token)
+    owner = get_session(started, :oauth_owner)
+    flow = get_session(started, :oauth_flow_id)
+    reset = csrf_post(started, "/sign-in/provider/cancel", %{}, token)
+    assert json_response(reset, 200)["status"] == "cancelled"
+    refute Map.has_key?(:sys.get_state(OAuthHandoff), flow)
+    assert {:error, :invalid_flow} = LabbyConsole.Auth.oauth_poll(owner, flow)
+    assert :ets.lookup(OAuthHandoff, {:flow, flow}) == []
+    for n <- 1..4, do: assert({:ok, _} = LabbyConsole.Auth.oauth_start("signed-owner-reset-#{n}"))
+    assert {:error, :capacity} = LabbyConsole.Auth.oauth_start("signed-owner-reset-5")
+  end
+
+  test "active router rejects missing and forged CSRF on every provider POST", %{conn: conn} do
+    {initial, _} = csrf_page(conn)
+
+    for path <- ["/sign-in/provider/start", "/sign-in/provider/poll", "/sign-in/provider/cancel"],
+        token <- [nil, "forged-token"] do
+      assert_raise Plug.CSRFProtection.InvalidCSRFTokenError, fn ->
+        next = initial |> recycle() |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+        next = if token, do: put_req_header(next, "x-csrf-token", token), else: next
+        post(next, path, %{})
+      end
+    end
+  end
+
+  defp csrf_page(conn) do
+    initial = conn |> Plug.Conn.put_private(:plug_skip_csrf_protection, false) |> get("/sign-in")
+
+    [_, token] =
+      Regex.run(~r/<meta name="csrf-token" content="([^"]+)">/, html_response(initial, 200))
+
+    {initial, token}
+  end
+
+  defp csrf_post(previous, path, body, token) do
+    previous
+    |> recycle()
+    |> Plug.Conn.put_private(:plug_skip_csrf_protection, false)
+    |> put_req_header("x-csrf-token", token)
+    |> post(path, body)
+  end
+
   test "existing authenticated browser cannot start provider replacement", %{conn: conn} do
     conn =
       conn
