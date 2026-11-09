@@ -4,6 +4,136 @@
   "frozen_on": "2026-11-08",
   "files": [
     {
+      "path": "API_PARITY.md",
+      "sha256": "aef8967aafb2a24986c0029a8874cd08e308b289def2c97c2c8ed58fb427aa1f",
+      "bytes": 8818
+    },
+    {
+      "path": "DESIGN.md",
+      "sha256": "2085ac4d91bd75dd1d406122d855ae2c5e107bf1e6975352ca7a37401d2345da",
+      "bytes": 23993
+    },
+    {
+      "path": "assets/js/app.js",
+      "sha256": "2b5a9d7190c04477cd4598348181c926362110a5fe6dea84c008a85e5fa3c8aa",
+      "bytes": 3676
+    },
+    {
+      "path": "assets/js/labby_create_choices.mjs",
+      "sha256": "b21c757205bd06ff932b4e90ec4ff65eccde449cc86118e1704e7476289b5eb5",
+      "bytes": 922
+    },
+    {
+      "path": "assets/js/labby_editor_tools.mjs",
+      "sha256": "89927f98ed6722b8f0ebbaa1532e384aea5f19f59249943b02cc22dfd0676c24",
+      "bytes": 11288
+    },
+    {
+      "path": "assets/js/labby_editor_tools.test.mjs",
+      "sha256": "426e2a446a9d9e5c61cda957027e697267c449d648f617669364aa9de481d1c6",
+      "bytes": 461
+    },
+    {
+      "path": "assets/js/labby_logs.mjs",
+      "sha256": "e7239c94565638d33cb52be1d286457a5873de1f2300737231bc6baf73f1b067",
+      "bytes": 2144
+    },
+    {
+      "path": "assets/js/labby_menus.mjs",
+      "sha256": "9f22472c481f60092f04b539ffc08d9b2b065ebac724afef42a189ec4f64234e",
+      "bytes": 392
+    },
+    {
+      "path": "assets/js/labby_motion.mjs",
+      "sha256": "e385ff91028f58a3a54979cbdd9d6f7053af3044acab83cea3bc1d2fe55b4979",
+      "bytes": 7376
+    },
+    {
+      "path": "assets/js/labby_syntax.mjs",
+      "sha256": "efd495634ce47009d7c5a703a2856e0657d0960705878bb4b2d984e5ad48bbf0",
+      "bytes": 11446
+    },
+    {
+      "path": "assets/js/storybook.js",
+      "sha256": "17b5807b9807626acda2a550bb37f327590267441b43b81b4317fac1ffa97eab",
+      "bytes": 249
+    },
+    {
+      "path": "docs/aurora-source.json",
+      "sha256": "4272171d2088dc98d9612886ab693697dc8d6323953373bb1f901ef47bd8c6b6",
+      "bytes": 1128
+    },
+    {
+      "path": "docs/depot-create-capabilities.md",
+      "sha256": "f7efa077c3503f31f7bcec7fc58acb2bc8523bea5fdcb72368bdaf0e75dcd0b7",
+      "bytes": 8397
+    },
+    {
+      "path": "docs/depot-mock-coverage.md",
+      "sha256": "8211fb4caa225f9052b1238c0faff6cdf1a8c3e0bafb82613d8175c1c15d8f81",
+      "bytes": 5553
+    },
+    {
+      "path": "docs/labby-create-capabilities.md",
+      "sha256": "ae8f2d9a1e08021153a2d7d178ee20b92b42b5bcb191d426551f65ddcd968aa4",
+      "bytes": 7070
+    },
+    {
+      "path": "docs/labby-feature-parity.md",
+      "sha256": "0d0d0e80eefd3fc2036b3bb7c70dab2921af353733974d522df60b06f811b000",
+      "bytes": 4013
+    },
+    {
+      "path": "docs/labby-gateway-parity.md",
+      "sha256": "68f8da84781d180cae023b5afe39b8518ea48edacfc65b97459ad05675a00650",
+      "bytes": 9075
+    },
+    {
+      "path": "docs/labby-overview-api.md",
+      "sha256": "a21115ec8989700cbabf88621c52d107b4aef500f1c3dc10cd7d06bf5f70a30b",
+      "bytes": 21814
+    },
+    {
+      "path": "docs/labby-overview-validation.md",
+      "sha256": "5fff713d6d029f659385f70bc3570780f6955187a3fcca27e8f0ed945ca40241",
+      "bytes": 16986
+    },
+    {
+      "path": "docs/labby-projects-api-parity.md",
+      "sha256": "4959199cc7db6e6ab9a646c8359430822ff19fb14e26bdcc0c5fdb6f3be415a8",
+      "bytes": 8491
+    },
+    {
+      "path": "docs/labby-reinvention.md",
+      "sha256": "3f38374907a19bb00e01582725e20a0df530559250ba0a5009bc496bd1cdf7a4",
+      "bytes": 3956
+    },
+    {
+      "path": "docs/labby-settings-inventory.md",
+      "sha256": "4dd0159a7ac62a2d9a320d992b0e0be881dec98ed2dcb11cc60aca939a1fc82b",
+      "bytes": 5634
+    },
+    {
+      "path": "docs/labby-stash-api-parity.md",
+      "sha256": "9b45f28e2c97049366fd3ec600a5adf3ed51c38ee7848a8817d3cfa7a42482eb",
+      "bytes": 7679
+    },
+    {
+      "path": "docs/labby-tasks-api-parity.md",
+      "sha256": "265244e284c9dfb9b4f9d16cf6685457c00a0085cfd31fc22aa0109d0a92c16f",
+      "bytes": 10861
+    },
+    {
+      "path": "docs/labby-workspace-design.md",
+      "sha256": "d1a808950a4b84967ae02cae0b8820a12d626324dd74e8211b2250d4fb96f998",
+      "bytes": 13763
+    },
+    {
+      "path": "docs/labby-workspace-pages.md",
+      "sha256": "512b68f52c4b3c60ed86f46b24f997878e2eeaca1464bb27955cf2580a9fd935",
+      "bytes": 2840
+    },
+    {
       "path": "lib/aurora/components.ex",
       "sha256": "19fd797d7f179d8f4e86d59602a9e3681e3781bc2111d17eda4b90a37a0d6c70",
       "bytes": 20727
@@ -12,6 +142,11 @@
       "path": "lib/aurora/oauth.ex",
       "sha256": "87efef7df16cc116ca2464e8ebbe82a6568d6db09a9f630117d3c7343ca76061",
       "bytes": 5257
+    },
+    {
+      "path": "lib/phx_book.ex",
+      "sha256": "f35557b0931c289d28d240142f8e94501a45ecd657c56bdab749d8709c4962ad",
+      "bytes": 251
     },
     {
       "path": "lib/phx_book/application.ex",
@@ -159,9 +294,9 @@
       "bytes": 39906
     },
     {
-      "path": "lib/phx_book.ex",
-      "sha256": "f35557b0931c289d28d240142f8e94501a45ecd657c56bdab749d8709c4962ad",
-      "bytes": 251
+      "path": "lib/phx_book_web.ex",
+      "sha256": "e8c3b640a6c0300bf01eaacd0a654bf40d2bf16f31c5890e1fd36412758bd8a9",
+      "bytes": 2378
     },
     {
       "path": "lib/phx_book_web/components/atlas.ex",
@@ -339,14 +474,14 @@
       "bytes": 46129
     },
     {
-      "path": "lib/phx_book_web/components/layouts/root.html.heex",
-      "sha256": "6c17814f076e9737aa6f8944b67920ef5a3ebb81d1c9b6c313bd1729ad7a0aa4",
-      "bytes": 645
-    },
-    {
       "path": "lib/phx_book_web/components/layouts.ex",
       "sha256": "0b9521fc56ef1d0b2cd0a4140447149bfc53dd0f09863b5e5f872b2a1072e91d",
       "bytes": 2506
+    },
+    {
+      "path": "lib/phx_book_web/components/layouts/root.html.heex",
+      "sha256": "6c17814f076e9737aa6f8944b67920ef5a3ebb81d1c9b6c313bd1729ad7a0aa4",
+      "bytes": 645
     },
     {
       "path": "lib/phx_book_web/components/mock_data.ex",
@@ -399,14 +534,14 @@
       "bytes": 146
     },
     {
-      "path": "lib/phx_book_web/controllers/page_html/home.html.heex",
-      "sha256": "8a20904c52725a1ca782897143018834b754b8c253cc7ad0dda29b9f3d6091da",
-      "bytes": 13831
-    },
-    {
       "path": "lib/phx_book_web/controllers/page_html.ex",
       "sha256": "323251bdb3969e479f73486a59322a5ccd99ed1d9668ef60b31cbab6a5e9f0ad",
       "bytes": 236
+    },
+    {
+      "path": "lib/phx_book_web/controllers/page_html/home.html.heex",
+      "sha256": "8a20904c52725a1ca782897143018834b754b8c253cc7ad0dda29b9f3d6091da",
+      "bytes": 13831
     },
     {
       "path": "lib/phx_book_web/endpoint.ex",
@@ -514,54 +649,249 @@
       "bytes": 2117
     },
     {
-      "path": "lib/phx_book_web.ex",
-      "sha256": "e8c3b640a6c0300bf01eaacd0a654bf40d2bf16f31c5890e1fd36412758bd8a9",
-      "bytes": 2378
+      "path": "priv/labby/action-catalog.json",
+      "sha256": "4b4aab97d1d52af39c36d4b814de2b2aff4389ec3c202360e5d31cf598085bee",
+      "bytes": 353683
     },
     {
-      "path": "assets/js/app.js",
-      "sha256": "2b5a9d7190c04477cd4598348181c926362110a5fe6dea84c008a85e5fa3c8aa",
-      "bytes": 3676
+      "path": "priv/labby/creation-http-schemas.json",
+      "sha256": "fb8a5b93ba08060e7962fc2faf98ad9d98dcbf0039b3ed771423195253742048",
+      "bytes": 1050
     },
     {
-      "path": "assets/js/labby_create_choices.mjs",
-      "sha256": "b21c757205bd06ff932b4e90ec4ff65eccde449cc86118e1704e7476289b5eb5",
-      "bytes": 922
+      "path": "priv/labby/depot-operations.json",
+      "sha256": "0ae683e1878842a23bd8cfd051d252becaa644298dd0e3d0b239b3a4a0fe6daf",
+      "bytes": 129632
     },
     {
-      "path": "assets/js/labby_editor_tools.mjs",
-      "sha256": "89927f98ed6722b8f0ebbaa1532e384aea5f19f59249943b02cc22dfd0676c24",
-      "bytes": 11288
+      "path": "priv/labby/depot-supported-kinds.json",
+      "sha256": "1df90a7d3793441cd89e8741264e4104ea6de1845419b92b91904af2a383b29c",
+      "bytes": 400
     },
     {
-      "path": "assets/js/labby_editor_tools.test.mjs",
-      "sha256": "426e2a446a9d9e5c61cda957027e697267c449d648f617669364aa9de481d1c6",
-      "bytes": 461
+      "path": "priv/labby/service-catalog.json",
+      "sha256": "bb05bca4477c01093dc98db37d840ebf87ac33bb4ab090405f16cdad4fffbbef",
+      "bytes": 10322
     },
     {
-      "path": "assets/js/labby_logs.mjs",
-      "sha256": "e7239c94565638d33cb52be1d286457a5873de1f2300737231bc6baf73f1b067",
-      "bytes": 2144
+      "path": "priv/labby/settings-write-policy.json",
+      "sha256": "3d56013042f97ecd5d30ad835537aaa468182f6b8b587fddf33bfcc92a5fe4eb",
+      "bytes": 3320
     },
     {
-      "path": "assets/js/labby_menus.mjs",
-      "sha256": "9f22472c481f60092f04b539ffc08d9b2b065ebac724afef42a189ec4f64234e",
-      "bytes": 392
+      "path": "priv/labby_settings_catalog.json",
+      "sha256": "a1e06ebf8049c96ccd2a19c8f192bc8abafe08c1b3d1213ccb5832f6b86844c6",
+      "bytes": 543218
     },
     {
-      "path": "assets/js/labby_motion.mjs",
-      "sha256": "e385ff91028f58a3a54979cbdd9d6f7053af3044acab83cea3bc1d2fe55b4979",
-      "bytes": 7376
+      "path": "priv/static/assets/css/app.css",
+      "sha256": "fd83619fc1ddeb63b07742ed9688b29f8e32f80927a972e7b2e11e13a4e29545",
+      "bytes": 7153
     },
     {
-      "path": "assets/js/labby_syntax.mjs",
-      "sha256": "efd495634ce47009d7c5a703a2856e0657d0960705878bb4b2d984e5ad48bbf0",
-      "bytes": 11446
+      "path": "priv/static/assets/css/atlas.css",
+      "sha256": "370dfe15bdf76c3f4e9fbe11e885ac9da8673d8cef876c18243d44b31dcba2bc",
+      "bytes": 28420
     },
     {
-      "path": "assets/js/storybook.js",
-      "sha256": "17b5807b9807626acda2a550bb37f327590267441b43b81b4317fac1ffa97eab",
-      "bytes": 249
+      "path": "priv/static/assets/css/aurora-catalog.css",
+      "sha256": "852a58ec3f73eaf35f5a61ea0f1e6252a377c01ad2b34364a2bc9e85cfb73aff",
+      "bytes": 13091
+    },
+    {
+      "path": "priv/static/assets/css/aurora-gateway.css",
+      "sha256": "a8a977a07f4a7c28af451a43bdd8fcad333d2b80275bb069e39ec320d9710290",
+      "bytes": 11070
+    },
+    {
+      "path": "priv/static/assets/css/aurora-heex.css",
+      "sha256": "0701368f62c5bfa4f7fd4478ab6e4400714acc5f49466dc460b95145c9edb8c2",
+      "bytes": 13656
+    },
+    {
+      "path": "priv/static/assets/css/aurora-labby-pages.css",
+      "sha256": "bbad08a5a2b7c870ac9bcea6464864aa7e57f8f20a436f03192b3ce977d61c66",
+      "bytes": 15736
+    },
+    {
+      "path": "priv/static/assets/css/aurora-labby.css",
+      "sha256": "1718149b171f8e13a0966c7c9758658b86876682e6a49b803dbe1d1c9835b98a",
+      "bytes": 163840
+    },
+    {
+      "path": "priv/static/assets/css/aurora-mobile.css",
+      "sha256": "a67ca3452e36977947aac66365e9f56feba9625fb46df545ba4a91901b592a8f",
+      "bytes": 7100
+    },
+    {
+      "path": "priv/static/assets/css/aurora-oauth.css",
+      "sha256": "7280633d473fb0cf1e5bbcf8df843b31e472713ab5ac482482c3a2b7c78dad4f",
+      "bytes": 5018
+    },
+    {
+      "path": "priv/static/assets/css/aurora-overview.css",
+      "sha256": "245aa4f6210278398b99c1825d9517e897753b045712f690857dd0dd014a3be8",
+      "bytes": 6725
+    },
+    {
+      "path": "priv/static/assets/css/aurora-run-inspector.css",
+      "sha256": "d9d5f8700a15ace367c2b2326a0491487df3b899943627510c10d2362782484f",
+      "bytes": 4158
+    },
+    {
+      "path": "priv/static/assets/css/aurora-server-setup.css",
+      "sha256": "7bc047105f9b7f0f777704aef43759d8bb8a139ef8b7c1f57fc1e81c13f26a14",
+      "bytes": 12374
+    },
+    {
+      "path": "priv/static/assets/css/aurora-settings.css",
+      "sha256": "3a84201ec7390ffe1d33c6a4b3e5ad05a44cf602e7431fa431036048c817cf8d",
+      "bytes": 5900
+    },
+    {
+      "path": "priv/static/assets/css/aurora-workspace.css",
+      "sha256": "7e4cf02f9cb2b0ae3a731dc9c647267659a9568d99ff958d9fe4825c63da8b9c",
+      "bytes": 17362
+    },
+    {
+      "path": "priv/static/assets/css/labby-builder.css",
+      "sha256": "b5983260109ab5c3d7de588ce4f6fcd4e93552d5561f914f75f7fa5c212221a2",
+      "bytes": 20259
+    },
+    {
+      "path": "priv/static/assets/css/labby-collections.css",
+      "sha256": "251165ebe86fe9790f5e5c81cbd868408387a175b48fabab093bde5ad9c5f860",
+      "bytes": 21565
+    },
+    {
+      "path": "priv/static/assets/css/labby-control.css",
+      "sha256": "b0bb6f216272f8f4bf19eab30c5df18a6d91e3830a8b51a248976895a96cf48d",
+      "bytes": 79136
+    },
+    {
+      "path": "priv/static/assets/css/labby-controls.css",
+      "sha256": "6c828b4ddb524e3289dac00d9e947c39da22c2c9b409322cb1465a865e85bb35",
+      "bytes": 10195
+    },
+    {
+      "path": "priv/static/assets/css/labby-create-wizard.css",
+      "sha256": "c8f1a9452b665013ca7eb5c8dddb43a76a478e1cfc1d3968a7d07027c5f9516b",
+      "bytes": 10182
+    },
+    {
+      "path": "priv/static/assets/css/labby-create.css",
+      "sha256": "f68b8b46541466878dc58352623f2d6040c6f8e9cb963d3be0e83f1fe57dd6d5",
+      "bytes": 33629
+    },
+    {
+      "path": "priv/static/assets/css/labby-declutter.css",
+      "sha256": "9bf64a0c95c7d3223fa9faec0bf5224a12310f922c94e50f5aed7efd930b213b",
+      "bytes": 5601
+    },
+    {
+      "path": "priv/static/assets/css/labby-discover.css",
+      "sha256": "218d8221eb27eadaab8f7755dbf94b5d9f8999e73a5052ba165078ec4ae3ce94",
+      "bytes": 11944
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway-mobile.css",
+      "sha256": "c064259b39daf6764b4705135cbdfec86d1d634515e67ded41bd5dba8c5366a3",
+      "bytes": 12627
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway-parity.css",
+      "sha256": "084b81947ea55d2486c5fce9cbdea03470a8e2d2535363796196c800022a27e9",
+      "bytes": 49048
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway-workspace.css",
+      "sha256": "5371a6040f79f2e2233ab8c72e188eeb5b0b6a9efe7803acfc5f9a248ad9eec6",
+      "bytes": 25496
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway.css",
+      "sha256": "cc6e402258f1f205903a57be89439c100355c51444210cfbe748f1ff4eafdf1a",
+      "bytes": 13473
+    },
+    {
+      "path": "priv/static/assets/css/labby-inner-navigation.css",
+      "sha256": "65698522915c486bff823a8d8fa2fccae1e2efff93fd2c123769f4a4f9b94cd0",
+      "bytes": 5181
+    },
+    {
+      "path": "priv/static/assets/css/labby-logs.css",
+      "sha256": "5ed807183c86b5512d7c4bf6d2d22409effecadbc63b49adae06d39bec8cdf4d",
+      "bytes": 7056
+    },
+    {
+      "path": "priv/static/assets/css/labby-mobile.css",
+      "sha256": "087c2d7f840262773e491d94d01c8b28a9186aabee4839b4c78adeace2365f90",
+      "bytes": 20689
+    },
+    {
+      "path": "priv/static/assets/css/labby-motion.css",
+      "sha256": "006e421a0582e0ab4eb6563a4d1383548769fc4b50b7d1218774a07f42430fb9",
+      "bytes": 6189
+    },
+    {
+      "path": "priv/static/assets/css/labby-observe.css",
+      "sha256": "30e2477a6f5bcb155a197c2936aa01005edb147ba1cd79513f4cc53dd25c5203",
+      "bytes": 23170
+    },
+    {
+      "path": "priv/static/assets/css/labby-operations.css",
+      "sha256": "b2ce6f090ef26a30a441b3818aff649bead2bc347d6a6a9141c0b5b228cca114",
+      "bytes": 7088
+    },
+    {
+      "path": "priv/static/assets/css/labby-overview.css",
+      "sha256": "aaffa2ec1a0e3a099cd3770560d2a8b21538a070cabfbbade3c2a05cf0e3e551",
+      "bytes": 65322
+    },
+    {
+      "path": "priv/static/assets/css/labby-projects.css",
+      "sha256": "5f58e6b63da148ce480a2054e7596d6f78761835bef6fb33b20f507e45e05dde",
+      "bytes": 9153
+    },
+    {
+      "path": "priv/static/assets/css/labby-settings.css",
+      "sha256": "a83338f2eb7b9fc98a8b56150fee2f43bde65f4bd3d06dfbe5baa7f68113ecc7",
+      "bytes": 14670
+    },
+    {
+      "path": "priv/static/assets/css/labby-stash.css",
+      "sha256": "1dfa415382b7f6f2abd29e1f8a0f170e3636fdf6db5e6d3f09e1a1d4a9f0a65e",
+      "bytes": 20554
+    },
+    {
+      "path": "priv/static/assets/css/labby-tasks.css",
+      "sha256": "c17301a13a7668c337dbef2fe86402f3c4f152436696a2d5c22797d7ce8a5dbf",
+      "bytes": 12804
+    },
+    {
+      "path": "priv/static/assets/css/labby-ui.css",
+      "sha256": "3a74022d96e32dd4e5b0788d74e300c117892f3be360e1395de3e03d21d18b9a",
+      "bytes": 36632
+    },
+    {
+      "path": "priv/static/assets/css/labby-workspace.css",
+      "sha256": "c44659a009a73a42b00468ae513f7da00616c4e42cbf68663671bdf4ff77da79",
+      "bytes": 41846
+    },
+    {
+      "path": "priv/static/assets/css/signal.css",
+      "sha256": "1230415e0fefa6885d0c245dff7df2739071e64770b6462fcd55985142e48898",
+      "bytes": 34694
+    },
+    {
+      "path": "priv/static/assets/css/studio-scenarios.css",
+      "sha256": "261a09632dd47ff1ba294318868cf076cfa1eca340793bc66af2bdec4cf29784",
+      "bytes": 2600
+    },
+    {
+      "path": "priv/static/assets/css/workbench.css",
+      "sha256": "62d26fe231ae32b315b453134fcf1b747fa7ea890d27a9baa89c0391f50d7c55",
+      "bytes": 63819
     },
     {
       "path": "storybook/.index.exs",
@@ -902,311 +1232,6 @@
       "path": "test/test_helper.exs",
       "sha256": "b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12",
       "bytes": 15
-    },
-    {
-      "path": "docs/aurora-source.json",
-      "sha256": "4272171d2088dc98d9612886ab693697dc8d6323953373bb1f901ef47bd8c6b6",
-      "bytes": 1128
-    },
-    {
-      "path": "docs/depot-create-capabilities.md",
-      "sha256": "f7efa077c3503f31f7bcec7fc58acb2bc8523bea5fdcb72368bdaf0e75dcd0b7",
-      "bytes": 8397
-    },
-    {
-      "path": "docs/depot-mock-coverage.md",
-      "sha256": "8211fb4caa225f9052b1238c0faff6cdf1a8c3e0bafb82613d8175c1c15d8f81",
-      "bytes": 5553
-    },
-    {
-      "path": "docs/labby-create-capabilities.md",
-      "sha256": "ae8f2d9a1e08021153a2d7d178ee20b92b42b5bcb191d426551f65ddcd968aa4",
-      "bytes": 7070
-    },
-    {
-      "path": "docs/labby-feature-parity.md",
-      "sha256": "0d0d0e80eefd3fc2036b3bb7c70dab2921af353733974d522df60b06f811b000",
-      "bytes": 4013
-    },
-    {
-      "path": "docs/labby-gateway-parity.md",
-      "sha256": "68f8da84781d180cae023b5afe39b8518ea48edacfc65b97459ad05675a00650",
-      "bytes": 9075
-    },
-    {
-      "path": "docs/labby-overview-api.md",
-      "sha256": "a21115ec8989700cbabf88621c52d107b4aef500f1c3dc10cd7d06bf5f70a30b",
-      "bytes": 21814
-    },
-    {
-      "path": "docs/labby-overview-validation.md",
-      "sha256": "5fff713d6d029f659385f70bc3570780f6955187a3fcca27e8f0ed945ca40241",
-      "bytes": 16986
-    },
-    {
-      "path": "docs/labby-projects-api-parity.md",
-      "sha256": "4959199cc7db6e6ab9a646c8359430822ff19fb14e26bdcc0c5fdb6f3be415a8",
-      "bytes": 8491
-    },
-    {
-      "path": "docs/labby-reinvention.md",
-      "sha256": "3f38374907a19bb00e01582725e20a0df530559250ba0a5009bc496bd1cdf7a4",
-      "bytes": 3956
-    },
-    {
-      "path": "docs/labby-settings-inventory.md",
-      "sha256": "4dd0159a7ac62a2d9a320d992b0e0be881dec98ed2dcb11cc60aca939a1fc82b",
-      "bytes": 5634
-    },
-    {
-      "path": "docs/labby-stash-api-parity.md",
-      "sha256": "9b45f28e2c97049366fd3ec600a5adf3ed51c38ee7848a8817d3cfa7a42482eb",
-      "bytes": 7679
-    },
-    {
-      "path": "docs/labby-tasks-api-parity.md",
-      "sha256": "265244e284c9dfb9b4f9d16cf6685457c00a0085cfd31fc22aa0109d0a92c16f",
-      "bytes": 10861
-    },
-    {
-      "path": "docs/labby-workspace-design.md",
-      "sha256": "d1a808950a4b84967ae02cae0b8820a12d626324dd74e8211b2250d4fb96f998",
-      "bytes": 13763
-    },
-    {
-      "path": "docs/labby-workspace-pages.md",
-      "sha256": "512b68f52c4b3c60ed86f46b24f997878e2eeaca1464bb27955cf2580a9fd935",
-      "bytes": 2840
-    },
-    {
-      "path": "priv/static/assets/css/app.css",
-      "sha256": "fd83619fc1ddeb63b07742ed9688b29f8e32f80927a972e7b2e11e13a4e29545",
-      "bytes": 7153
-    },
-    {
-      "path": "priv/static/assets/css/atlas.css",
-      "sha256": "370dfe15bdf76c3f4e9fbe11e885ac9da8673d8cef876c18243d44b31dcba2bc",
-      "bytes": 28420
-    },
-    {
-      "path": "priv/static/assets/css/aurora-catalog.css",
-      "sha256": "852a58ec3f73eaf35f5a61ea0f1e6252a377c01ad2b34364a2bc9e85cfb73aff",
-      "bytes": 13091
-    },
-    {
-      "path": "priv/static/assets/css/aurora-gateway.css",
-      "sha256": "a8a977a07f4a7c28af451a43bdd8fcad333d2b80275bb069e39ec320d9710290",
-      "bytes": 11070
-    },
-    {
-      "path": "priv/static/assets/css/aurora-heex.css",
-      "sha256": "0701368f62c5bfa4f7fd4478ab6e4400714acc5f49466dc460b95145c9edb8c2",
-      "bytes": 13656
-    },
-    {
-      "path": "priv/static/assets/css/aurora-labby-pages.css",
-      "sha256": "bbad08a5a2b7c870ac9bcea6464864aa7e57f8f20a436f03192b3ce977d61c66",
-      "bytes": 15736
-    },
-    {
-      "path": "priv/static/assets/css/aurora-labby.css",
-      "sha256": "1718149b171f8e13a0966c7c9758658b86876682e6a49b803dbe1d1c9835b98a",
-      "bytes": 163840
-    },
-    {
-      "path": "priv/static/assets/css/aurora-mobile.css",
-      "sha256": "a67ca3452e36977947aac66365e9f56feba9625fb46df545ba4a91901b592a8f",
-      "bytes": 7100
-    },
-    {
-      "path": "priv/static/assets/css/aurora-oauth.css",
-      "sha256": "7280633d473fb0cf1e5bbcf8df843b31e472713ab5ac482482c3a2b7c78dad4f",
-      "bytes": 5018
-    },
-    {
-      "path": "priv/static/assets/css/aurora-overview.css",
-      "sha256": "245aa4f6210278398b99c1825d9517e897753b045712f690857dd0dd014a3be8",
-      "bytes": 6725
-    },
-    {
-      "path": "priv/static/assets/css/aurora-run-inspector.css",
-      "sha256": "d9d5f8700a15ace367c2b2326a0491487df3b899943627510c10d2362782484f",
-      "bytes": 4158
-    },
-    {
-      "path": "priv/static/assets/css/aurora-server-setup.css",
-      "sha256": "7bc047105f9b7f0f777704aef43759d8bb8a139ef8b7c1f57fc1e81c13f26a14",
-      "bytes": 12374
-    },
-    {
-      "path": "priv/static/assets/css/aurora-settings.css",
-      "sha256": "3a84201ec7390ffe1d33c6a4b3e5ad05a44cf602e7431fa431036048c817cf8d",
-      "bytes": 5900
-    },
-    {
-      "path": "priv/static/assets/css/aurora-workspace.css",
-      "sha256": "7e4cf02f9cb2b0ae3a731dc9c647267659a9568d99ff958d9fe4825c63da8b9c",
-      "bytes": 17362
-    },
-    {
-      "path": "priv/static/assets/css/labby-builder.css",
-      "sha256": "b5983260109ab5c3d7de588ce4f6fcd4e93552d5561f914f75f7fa5c212221a2",
-      "bytes": 20259
-    },
-    {
-      "path": "priv/static/assets/css/labby-collections.css",
-      "sha256": "251165ebe86fe9790f5e5c81cbd868408387a175b48fabab093bde5ad9c5f860",
-      "bytes": 21565
-    },
-    {
-      "path": "priv/static/assets/css/labby-control.css",
-      "sha256": "b0bb6f216272f8f4bf19eab30c5df18a6d91e3830a8b51a248976895a96cf48d",
-      "bytes": 79136
-    },
-    {
-      "path": "priv/static/assets/css/labby-controls.css",
-      "sha256": "6c828b4ddb524e3289dac00d9e947c39da22c2c9b409322cb1465a865e85bb35",
-      "bytes": 10195
-    },
-    {
-      "path": "priv/static/assets/css/labby-create-wizard.css",
-      "sha256": "c8f1a9452b665013ca7eb5c8dddb43a76a478e1cfc1d3968a7d07027c5f9516b",
-      "bytes": 10182
-    },
-    {
-      "path": "priv/static/assets/css/labby-create.css",
-      "sha256": "f68b8b46541466878dc58352623f2d6040c6f8e9cb963d3be0e83f1fe57dd6d5",
-      "bytes": 33629
-    },
-    {
-      "path": "priv/static/assets/css/labby-declutter.css",
-      "sha256": "9bf64a0c95c7d3223fa9faec0bf5224a12310f922c94e50f5aed7efd930b213b",
-      "bytes": 5601
-    },
-    {
-      "path": "priv/static/assets/css/labby-discover.css",
-      "sha256": "218d8221eb27eadaab8f7755dbf94b5d9f8999e73a5052ba165078ec4ae3ce94",
-      "bytes": 11944
-    },
-    {
-      "path": "priv/static/assets/css/labby-gateway-mobile.css",
-      "sha256": "c064259b39daf6764b4705135cbdfec86d1d634515e67ded41bd5dba8c5366a3",
-      "bytes": 12627
-    },
-    {
-      "path": "priv/static/assets/css/labby-gateway-parity.css",
-      "sha256": "084b81947ea55d2486c5fce9cbdea03470a8e2d2535363796196c800022a27e9",
-      "bytes": 49048
-    },
-    {
-      "path": "priv/static/assets/css/labby-gateway-workspace.css",
-      "sha256": "5371a6040f79f2e2233ab8c72e188eeb5b0b6a9efe7803acfc5f9a248ad9eec6",
-      "bytes": 25496
-    },
-    {
-      "path": "priv/static/assets/css/labby-gateway.css",
-      "sha256": "cc6e402258f1f205903a57be89439c100355c51444210cfbe748f1ff4eafdf1a",
-      "bytes": 13473
-    },
-    {
-      "path": "priv/static/assets/css/labby-inner-navigation.css",
-      "sha256": "65698522915c486bff823a8d8fa2fccae1e2efff93fd2c123769f4a4f9b94cd0",
-      "bytes": 5181
-    },
-    {
-      "path": "priv/static/assets/css/labby-logs.css",
-      "sha256": "5ed807183c86b5512d7c4bf6d2d22409effecadbc63b49adae06d39bec8cdf4d",
-      "bytes": 7056
-    },
-    {
-      "path": "priv/static/assets/css/labby-mobile.css",
-      "sha256": "087c2d7f840262773e491d94d01c8b28a9186aabee4839b4c78adeace2365f90",
-      "bytes": 20689
-    },
-    {
-      "path": "priv/static/assets/css/labby-motion.css",
-      "sha256": "006e421a0582e0ab4eb6563a4d1383548769fc4b50b7d1218774a07f42430fb9",
-      "bytes": 6189
-    },
-    {
-      "path": "priv/static/assets/css/labby-observe.css",
-      "sha256": "30e2477a6f5bcb155a197c2936aa01005edb147ba1cd79513f4cc53dd25c5203",
-      "bytes": 23170
-    },
-    {
-      "path": "priv/static/assets/css/labby-operations.css",
-      "sha256": "b2ce6f090ef26a30a441b3818aff649bead2bc347d6a6a9141c0b5b228cca114",
-      "bytes": 7088
-    },
-    {
-      "path": "priv/static/assets/css/labby-overview.css",
-      "sha256": "aaffa2ec1a0e3a099cd3770560d2a8b21538a070cabfbbade3c2a05cf0e3e551",
-      "bytes": 65322
-    },
-    {
-      "path": "priv/static/assets/css/labby-projects.css",
-      "sha256": "5f58e6b63da148ce480a2054e7596d6f78761835bef6fb33b20f507e45e05dde",
-      "bytes": 9153
-    },
-    {
-      "path": "priv/static/assets/css/labby-settings.css",
-      "sha256": "a83338f2eb7b9fc98a8b56150fee2f43bde65f4bd3d06dfbe5baa7f68113ecc7",
-      "bytes": 14670
-    },
-    {
-      "path": "priv/static/assets/css/labby-stash.css",
-      "sha256": "1dfa415382b7f6f2abd29e1f8a0f170e3636fdf6db5e6d3f09e1a1d4a9f0a65e",
-      "bytes": 20554
-    },
-    {
-      "path": "priv/static/assets/css/labby-tasks.css",
-      "sha256": "c17301a13a7668c337dbef2fe86402f3c4f152436696a2d5c22797d7ce8a5dbf",
-      "bytes": 12804
-    },
-    {
-      "path": "priv/static/assets/css/labby-ui.css",
-      "sha256": "3a74022d96e32dd4e5b0788d74e300c117892f3be360e1395de3e03d21d18b9a",
-      "bytes": 36632
-    },
-    {
-      "path": "priv/static/assets/css/labby-workspace.css",
-      "sha256": "c44659a009a73a42b00468ae513f7da00616c4e42cbf68663671bdf4ff77da79",
-      "bytes": 41846
-    },
-    {
-      "path": "priv/static/assets/css/signal.css",
-      "sha256": "1230415e0fefa6885d0c245dff7df2739071e64770b6462fcd55985142e48898",
-      "bytes": 34694
-    },
-    {
-      "path": "priv/static/assets/css/studio-scenarios.css",
-      "sha256": "261a09632dd47ff1ba294318868cf076cfa1eca340793bc66af2bdec4cf29784",
-      "bytes": 2600
-    },
-    {
-      "path": "priv/static/assets/css/workbench.css",
-      "sha256": "62d26fe231ae32b315b453134fcf1b747fa7ea890d27a9baa89c0391f50d7c55",
-      "bytes": 63819
-    },
-    {
-      "path": "API_PARITY.md",
-      "sha256": "aef8967aafb2a24986c0029a8874cd08e308b289def2c97c2c8ed58fb427aa1f",
-      "bytes": 8818
-    },
-    {
-      "path": "DESIGN.md",
-      "sha256": "2085ac4d91bd75dd1d406122d855ae2c5e107bf1e6975352ca7a37401d2345da",
-      "bytes": 23993
-    },
-    {
-      "path": "priv/labby_settings_catalog.json",
-      "sha256": "a1e06ebf8049c96ccd2a19c8f192bc8abafe08c1b3d1213ccb5832f6b86844c6",
-      "bytes": 543218
-    },
-    {
-      "path": "priv/labby/settings-write-policy.json",
-      "sha256": "3d56013042f97ecd5d30ad835537aaa468182f6b8b587fddf33bfcc92a5fe4eb",
-      "bytes": 3320
     }
   ],
   "supplements": [
@@ -1218,6 +1243,18 @@
       ],
       "reason": "Referenced Settings catalog and write-policy JSON were omitted from the initial authored-source capture. Their current original-checkout bytes are now frozen.",
       "qualification": "Settings section-level reference recapture must bind these data files to rendered evidence."
+    },
+    {
+      "captured_on": "2026-11-09T06:27:57.503540+00:00",
+      "paths": [
+        "priv/labby/action-catalog.json",
+        "priv/labby/depot-supported-kinds.json",
+        "priv/labby/creation-http-schemas.json",
+        "priv/labby/service-catalog.json",
+        "priv/labby/depot-operations.json"
+      ],
+      "reason": "Referenced API, creation and Depot JSON resources omitted from the original source capture are now frozen from the original checkout.",
+      "qualification": "Affected reference renders need recapture bound to these resource hashes."
     }
   ]
 }
