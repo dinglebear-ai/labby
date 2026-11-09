@@ -51,7 +51,9 @@ defmodule LabbyConsole.GatewayMutationFixture do
 
       "gateway.get" ->
         if rows[name],
-          do: {200, view(rows[name])},
+          do:
+            {200,
+             view(Map.merge(rows[name], Agent.get(agent, &(&1[:read_config_override] || %{}))))},
           else:
             {404,
              %{
@@ -83,6 +85,13 @@ defmodule LabbyConsole.GatewayMutationFixture do
 
       "gateway.add" ->
         config = params["spec"]
+        reference = Agent.get(agent, & &1[:normalized_reference])
+
+        config =
+          if params["bearer_token_value"] && reference,
+            do: Map.put(config, "bearer_token_env", reference),
+            else: config
+
         Agent.update(agent, &put_in(&1, [:rows, config["name"]], config))
         result(agent, action, config)
 
@@ -482,6 +491,143 @@ defmodule LabbyConsoleWeb.GatewayMutationsLiveTest do
       |> LazyHTML.attribute("phx-remove")
 
     assert [["focus", %{"to" => "#gateway-add"}]] = Jason.decode!(commands)
+  end
+
+  test "accepted raw bearer add reconciles the backend-derived reference only after matching readback",
+       %{conn: conn, state: state} do
+    {view, _} = open(conn)
+
+    Agent.update(
+      state,
+      &Map.merge(&1, %{
+        normalized_reference: "LABBY_GW_RAW_BEARER_AUTH_HEADER",
+        read_config_override: %{"bearer_token_env" => "UNRELATED_REFERENCE"}
+      })
+    )
+
+    view |> element("#gateway-add") |> render_click()
+
+    view
+    |> form("#gm-server-form",
+      server: %{
+        name: "raw-bearer",
+        url: "https://raw.example/mcp",
+        bearer_token_value: "transient-bearer-sentinel"
+      }
+    )
+    |> render_submit()
+
+    assert_receive {:gateway_mutation_wire, "gateway.add",
+                    %{
+                      "spec" => %{"bearer_token_env" => nil},
+                      "bearer_token_value" => "transient-bearer-sentinel"
+                    }},
+                   2_000
+
+    wait_idle(view)
+    assert has_element?(view, "#gm-receipt", "accepted")
+    assert has_element?(view, "#gateway-add[disabled]")
+    refute render(view) =~ "transient-bearer-sentinel"
+    render_click(view, "refresh", %{})
+    render_async(view)
+    assert has_element?(view, "#gm-receipt", "accepted")
+
+    render_submit(view, "gateway_save", %{
+      "server" => %{"name" => "repeat", "url" => "https://repeat.example/mcp"}
+    })
+
+    refute_receive {:gateway_mutation_wire, "gateway.add", _}
+    Agent.update(state, &Map.delete(&1, :read_config_override))
+    view |> element("#gm-reconcile") |> render_click()
+    wait_idle(view)
+    refute has_element?(view, "#gm-receipt")
+    refute has_element?(view, "#gateway-add[disabled]")
+
+    assert Agent.get(state, & &1.rows["raw-bearer"]["bearer_token_env"]) ==
+             "LABBY_GW_RAW_BEARER_AUTH_HEADER"
+  end
+
+  test "unknown raw bearer add retains its private hold despite a normalized affected read", %{
+    conn: conn,
+    state: state
+  } do
+    {view, _} = open(conn)
+
+    Agent.update(
+      state,
+      &Map.merge(&1, %{
+        normalized_reference: "LABBY_GW_UNKNOWN_BEARER_AUTH_HEADER",
+        malformed: "gateway.add"
+      })
+    )
+
+    view |> element("#gateway-add") |> render_click()
+
+    view
+    |> form("#gm-server-form",
+      server: %{
+        name: "unknown-bearer",
+        url: "https://raw.example/mcp",
+        bearer_token_value: "transient-bearer-sentinel"
+      }
+    )
+    |> render_submit()
+
+    assert_receive {:gateway_mutation_wire, "gateway.add", _}, 2_000
+    wait_idle(view)
+    view |> element("#gm-reconcile") |> render_click()
+    wait_idle(view)
+    assert has_element?(view, "#gm-receipt", "uncertain")
+    assert has_element?(view, "#gateway-add[disabled]")
+
+    render_submit(view, "gateway_save", %{
+      "server" => %{"name" => "unknown-bearer", "url" => "https://raw.example/mcp"}
+    })
+
+    refute_receive {:gateway_mutation_wire, "gateway.add", _}
+  end
+
+  for intent <- ~w(clear replace) do
+    test "uncertain #{intent} label update remains held after projected and unrelated reads", %{
+      conn: conn,
+      state: state
+    } do
+      intent = unquote(intent)
+      Agent.update(state, &put_in(&1, [:rows, "saved", "display_name"], "Existing label"))
+      {view, _} = open(conn)
+      render_click(view, "gateway_edit", %{"name" => "saved"})
+      wait_idle(view)
+      Agent.update(state, &Map.put(&1, :malformed, "gateway.update"))
+
+      render_submit(view, "gateway_save", %{
+        "server" => %{"display_name_intent" => intent, "display_name" => "New label"}
+      })
+
+      expected = if intent == "clear", do: nil, else: "New label"
+
+      assert_receive {:gateway_mutation_wire, "gateway.update",
+                      %{"patch" => %{"display_name" => ^expected}}},
+                     2_000
+
+      wait_idle(view)
+      assert has_element?(view, "#gm-receipt", "uncertain")
+      render_click(view, "refresh", %{})
+      render_async(view)
+      assert has_element?(view, "#gm-receipt", "uncertain")
+      view |> element("#gm-reconcile") |> render_click()
+      wait_idle(view)
+      assert has_element?(view, "#gm-receipt", "uncertain")
+      assert has_element?(view, "#gm-save[disabled]")
+      assert has_element?(view, "#gateway-add[disabled]")
+
+      render_submit(view, "gateway_save", %{
+        "server" => %{"display_name_intent" => intent, "display_name" => "New label"}
+      })
+
+      render_click(view, "gateway_add", %{})
+      refute_receive {:gateway_mutation_wire, "gateway.update", _}
+      refute_receive {:gateway_mutation_wire, "gateway.add", _}
+    end
   end
 
   defp open(conn) do

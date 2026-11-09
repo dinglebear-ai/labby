@@ -244,17 +244,18 @@ defmodule LabbyConsole.GatewayMutations do
     base = Map.put(base, "bearer_token_env", nullable(draft["bearer_token_env"]))
 
     base =
-      if state.mode == :add or draft["display_name_intent"] != "preserve",
-        do:
-          Map.put(
-            base,
-            "display_name",
-            if(draft["display_name_intent"] == "clear",
-              do: nil,
-              else: nullable(draft["display_name"])
-            )
-          ),
-        else: base
+      if draft["display_name_intent"] != "preserve" or
+           (state.mode == :add and draft["display_name"] != ""),
+         do:
+           Map.put(
+             base,
+             "display_name",
+             if(draft["display_name_intent"] == "clear",
+               do: nil,
+               else: nullable(draft["display_name"])
+             )
+           ),
+         else: base
 
     {base, errors} = connection_fields(state, base, errors)
 

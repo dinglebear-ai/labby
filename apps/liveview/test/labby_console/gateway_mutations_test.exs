@@ -42,6 +42,24 @@ defmodule LabbyConsole.GatewayMutationsTest do
     refute Map.has_key?(spec, "url")
   end
 
+  test "untouched blank add label is omitted while explicit clear and typed labels are preserved" do
+    state = draft(%{"name" => "new", "url" => "https://example.test/mcp"})
+    assert {:ok, _, %{"spec" => spec}} = Mutations.build_request(state, :save)
+    refute Map.has_key?(spec, "display_name")
+
+    assert {:ok, _, %{"spec" => %{"display_name" => nil} = cleared}} =
+             state
+             |> Mutations.change(%{"display_name_intent" => "clear"})
+             |> Mutations.build_request(:save)
+
+    assert Map.has_key?(cleared, "display_name")
+
+    assert {:ok, _, %{"spec" => %{"display_name" => "Typed label"}}} =
+             state
+             |> Mutations.change(%{"display_name" => "Typed label"})
+             |> Mutations.build_request(:save)
+  end
+
   test "strict get decoder binds exact name and rejects malformed config" do
     assert {:ok, _} = Mutations.draft_from_view(view(), "saved")
     assert {:error, _} = Mutations.draft_from_view(view(), "other")

@@ -475,10 +475,21 @@ defmodule LabbyConsoleWeb.GatewayLive do
 
     case GatewayMutations.draft_from_view(data, name) do
       {:ok, _} ->
+        # Accepted responses can contain backend-derived public fields. Keep the
+        # original uncertainty expectations until this name-bound decode passes.
+        expectations =
+          case receipt.expectations[name] do
+            {:present, _} ->
+              Map.put(receipt.expectations, name, {:present, digests(data["config"])})
+
+            :absent ->
+              receipt.expectations
+          end
+
         socket
         |> assign(
           mutation: empty_mutation(),
-          mutation_receipt: %{receipt | outcome: :accepted},
+          mutation_receipt: %{receipt | outcome: :accepted, expectations: expectations},
           mutation_notice: "Gateway change accepted. Reading affected configuration."
         )
         |> reconcile_mutation()
@@ -608,8 +619,8 @@ defmodule LabbyConsoleWeb.GatewayLive do
 
   defp private_write?(params, config),
     do:
-      Map.has_key?(params, "bearer_token_value") or not is_nil(config["display_name"]) or
-        Enum.any?(~w(env headers headers_env), &Map.has_key?(config, &1))
+      Map.has_key?(params, "bearer_token_value") or
+        Enum.any?(~w(env headers headers_env display_name), &Map.has_key?(config, &1))
 
   defp digests(config) do
     config
