@@ -8,6 +8,7 @@ import {provisionProviderPrincipals} from './provider-provision.mjs'
 import {startProviderIssuer} from './provider-issuer.mjs'
 import {startMcpServer} from './mcp-server.mjs'
 import {waitForHttp} from './launcher-support.mjs'
+import {providerConsoleEnv} from './provider-console-env.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'labby-provider-run-'))
 const binary = process.env.LABBY_E2E_BINARY
@@ -139,6 +140,8 @@ url = "http://127.0.0.1:4330/mcp"
     LABBY_AUTHELIA_CA_CERT_PATH: issuer.caPath,
     LABBY_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
   }
+  const consoleEnv = providerConsoleEnv(process.env, {home: accountHome, temporary})
+  record('console-toolcache-ready')
   upstream = await startMcpServer({port: 4330})
   launch(binary, [
     'serve', '--host', '127.0.0.1', '--port', '4329',
@@ -152,13 +155,7 @@ url = "http://127.0.0.1:4330/mcp"
     onReceipt: detail => record('public-provisioning', detail),
   })
   record(`two-principals-${provisioning.distinctReadyPrincipals}-wrong-issuer-rejected-${provisioning.wrongIssuerRejected}`)
-  launch('mix', ['run', '--no-start', 'e2e-real/provider-server.exs'], {
-    PATH: process.env.PATH,
-    HOME: accountHome,
-    TMPDIR: temporary,
-    LANG: env.LANG,
-    MIX_ENV: 'test',
-  }, 'console')
+  launch('mix', ['run', '--no-start', 'e2e-real/provider-server.exs'], consoleEnv, 'console')
   await waitForHttp('http://127.0.0.1:4328/sign-in', {stage: 'provider-console-ready'})
   record('console-ready')
   await waitForHttp('http://127.0.0.1:4328/assets/js/app.js', {stage: 'provider-js-asset'})
