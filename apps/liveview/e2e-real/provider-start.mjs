@@ -140,7 +140,10 @@ url = "http://127.0.0.1:4330/mcp"
     LABBY_AUTHELIA_CA_CERT_PATH: issuer.caPath,
     LABBY_TOKEN_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
   }
-  const consoleEnv = providerConsoleEnv(process.env, {home: accountHome, temporary})
+  const consoleEnv = {...providerConsoleEnv(process.env, {home: accountHome, temporary}),
+    LABBY_E2E_CONSOLE_HTTP_RECEIPT: join(root, 'console-http-counts.json')}
+  record('console-http-guard', {filename: 'console-http-counts.json', cap: 2048,
+    scope: 'owned-console-finch-request-start'})
   record('console-toolcache-ready')
   upstream = await startMcpServer({port: 4330})
   launch(binary, [

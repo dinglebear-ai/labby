@@ -8,6 +8,7 @@ import {createHash,timingSafeEqual,randomBytes} from 'node:crypto'
 import {BoundedDiagnostics,waitForHttp} from './launcher-support.mjs'
 import {startMcpServer} from './mcp-server.mjs'
 import {startRestricted} from './restricted-start.mjs'
+import {providerConsoleEnv} from './provider-console-env.mjs'
 
 const credential=process.env.LABBY_E2E_CREDENTIAL, controlKey=process.env.LABBY_E2E_CONTROL
 if(![credential,controlKey].every(v=>/^[a-f0-9]{64}$/.test(v||'')))throw new Error('Missing isolated test credentials')
@@ -65,6 +66,9 @@ async function main(){
  for(const sink of sinks){try{sink.secrets.push(readFileSync(resolve(process.env.LABBY_E2E_RESTRICTED_ROOT,'credential.txt'),'utf8').trim())}catch{}}
  control=createServer(async(req,res)=>{const supplied=Buffer.from(req.headers['x-test-control']||'');const expected=Buffer.from(controlKey);if(supplied.length!==expected.length||!timingSafeEqual(supplied,expected)){res.writeHead(403);res.end();return}if(req.method!=='POST'||req.url!=='/restart'){res.writeHead(404);res.end();return}if(restarting){res.writeHead(409);res.end();return}if(restarts>=3){res.writeHead(429);res.end();return}restarts++;restarting=true;try{await stopChild(backend);await startBackend();res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({restarted:true}))}catch(e){res.writeHead(503);res.end();fail(e)}finally{restarting=false}})
  await new Promise((r,j)=>{control.once('error',j);control.listen(4297,'127.0.0.1',r)})
- launch('mix',['run','--no-start','e2e-real/server.exs'],{...env,MIX_ENV:'test'},'liveview');await waitForHttp('http://127.0.0.1:4298/sign-in',{stage:'liveview_ready'});record('liveview_ready','complete');console.log(`Owned real Labby and MCP peer ready; private redacted diagnostics: ${root}`)
+ const consoleHttpReceipt=resolve(root,'console-http-counts.json')
+ const consoleEnv={...providerConsoleEnv(process.env,{home:accountHome,temporary}),LABBY_E2E_CONSOLE_HTTP_RECEIPT:consoleHttpReceipt}
+ record('console_http_guard','armed',{filename:'console-http-counts.json',cap:2048,scope:'owned-console-finch-request-start'})
+ launch('mix',['run','--no-start','e2e-real/server.exs'],consoleEnv,'liveview');await waitForHttp('http://127.0.0.1:4298/sign-in',{stage:'liveview_ready'});record('liveview_ready','complete');console.log(`Owned real Labby and MCP peer ready; private redacted diagnostics: ${root}`)
 }
 main().catch(fail)

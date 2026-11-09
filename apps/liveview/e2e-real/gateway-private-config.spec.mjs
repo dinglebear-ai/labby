@@ -4,10 +4,11 @@ import {readFileSync} from 'node:fs'
 import {join} from 'node:path'
 import {signIn,gatewayAction,mcpRpc} from './mcp-support.mjs'
 import {runPrivateScenario} from './private-scenario.mjs'
+import {privateToolCall} from './private-tool-call.mjs'
 
-// UI Gateway charges are source-derived estimates, separate from bounded direct
-// MCP/probe traffic and Auth preflights. Parent acceptance must measure runtime
-// Gateway actions. Each scenario reserves eight of forty actions for cleanup.
+// Source-estimate admission reserves eight of forty Gateway actions for cleanup.
+// Final measured Finch UI deltas plus exact direct calls must also fit forty.
+// Auth preflights are reported separately within the 128-console-HTTP postcondition.
 test.describe.configure({mode:'serial'})
 test.use({screenshot:'off',trace:'off',video:'off'})
 const digest=value=>createHash('sha256').update(value).digest('hex')
@@ -67,11 +68,12 @@ async function save(page,limit,step) {
  await step('save-accepted',()=>expect(page.locator('#gm-notice')).toContainText('accepted'))
 }
 
-async function hidden(page,view,values) {
- const projection=JSON.stringify(view),dom=await page.content()
- expect(values.some(value=>projection.includes(value))).toBe(false)
- expect(values.some(value=>dom.includes(value))).toBe(false)
- expect(await page.evaluate(values=>values.some(value=>JSON.stringify(localStorage).includes(value)),values)).toBe(false)
+async function hidden(page,view,values,step,prefix) {
+ await step(`${prefix}-view-redaction`,async()=>expect(values.some(value=>JSON.stringify(view).includes(value))).toBe(false))
+ const dom=await step(`${prefix}-dom-read`,()=>page.content())
+ await step(`${prefix}-dom-redaction`,async()=>expect(values.some(value=>dom.includes(value))).toBe(false))
+ const persisted=await step(`${prefix}-storage-read`,()=>page.evaluate(values=>values.some(value=>JSON.stringify(localStorage).includes(value)),values))
+ await step(`${prefix}-storage-redaction`,async()=>expect(persisted).toBe(false))
 }
 
 async function caller(limit) {
@@ -86,19 +88,18 @@ async function caller(limit) {
  return initialized.session
 }
 
-async function ownedTool(limit,session,name,localName) {
- const qualified=`${name}::${localName}`
+async function ownedTool(limit,session,name,localName,step,prefix) {
  for(let attempt=0;attempt<5;attempt++) {
-  const listing=await limit.protocol(()=>mcpRpc('tools/list',{},session))
-  const tool=listing.result.tools.find(tool=>tool.name===qualified)
-  if(tool) {
-   const response=await limit.protocol(()=>mcpRpc('tools/call',{name:tool.name,arguments:localName==='echo'?{text:'private-wire-canary'}:{}},session))
-   expect(response.result.isError===true).toBe(false)
+  const listing=await step(`${prefix}-tool-list`,()=>limit.protocol(()=>mcpRpc('tools/list',{},session)))
+  const call=privateToolCall(listing.result.tools,name,localName,localName==='echo'?{text:'private-wire-canary'}:{})
+  if(call) {
+   const response=await step(`${prefix}-tool-call`,()=>limit.protocol(()=>mcpRpc('tools/call',call,session)))
+   await step(`${prefix}-tool-result`,async()=>expect(response.result.isError===true).toBe(false))
    return response.result
   }
   if(attempt<4) await new Promise(resolve=>setTimeout(resolve,250))
  }
- throw new Error('Generated upstream qualified tool was not advertised within five reads')
+ throw new Error('Generated upstream tool was not advertised within five reads')
 }
 
 async function probe(limit) {
@@ -157,7 +158,7 @@ test('private HTTP literal replacement, preserve, clear, env header and derived 
  if(!/^[A-Za-z0-9_-]{16,128}$/.test(env||'')) throw new Error('Owned synthetic header environment is unavailable')
  const secrets=[first,second,draft,bearer,env]
  let sentinelConfig
- await runPrivateScenario({page,info,accounting:limit.receipt,cleanup:()=>cleanup(page,name,limit,sentinelConfig)},async step=>{
+ await runPrivateScenario({page,info,accounting:limit.receipt,consoleHttpReceipt:join(process.env.LABBY_E2E_PRIVATE_ROOT,'console-http-counts.json'),cleanup:()=>cleanup(page,name,limit,sentinelConfig)},async step=>{
   sentinelConfig=(await step('sentinel-read',()=>limit.action('gateway.get',{name:sentinel}))).config
   limit.charge(1,'UI initial fleet list')
   await step('sign-in',()=>signIn(page))
@@ -174,13 +175,13 @@ test('private HTTP literal replacement, preserve, clear, env header and derived 
   await save(page,limit,step)
 
   async function verify(literal,environment) {
-   const view=await limit.action('gateway.get',{name})
-   expect(/^[A-Z_][A-Z0-9_]*$/.test(view.config.bearer_token_env||'')).toBe(true)
-   await hidden(page,view,secrets)
-   const baseline=(await probe(limit)).sequence
-   await limit.action('gateway.status',{name})
-   await ownedTool(limit,session,name,'echo')
-   await wireAfter(limit,baseline,'tools/call',{'x-labby-literal':literal,'x-labby-env':environment,authorization:`Bearer ${bearer}`})
+   const view=await step('verify-http-config-read',()=>limit.action('gateway.get',{name}))
+   await step('verify-http-bearer-reference',async()=>expect(/^[A-Z_][A-Z0-9_]*$/.test(view.config.bearer_token_env||'')).toBe(true))
+   await hidden(page,view,secrets,step,'verify-http')
+   const baseline=(await step('verify-http-probe-baseline',()=>probe(limit))).sequence
+   await step('verify-http-status',()=>limit.action('gateway.status',{name}))
+   await ownedTool(limit,session,name,'echo',step,'verify-http')
+   await step('verify-http-wire-digests',()=>wireAfter(limit,baseline,'tools/call',{'x-labby-literal':literal,'x-labby-env':environment,authorization:`Bearer ${bearer}`}))
   }
 
   await step('verify-first-http',()=>verify(first,env))
@@ -217,7 +218,7 @@ test('private stdio environment replace, preserve and clear retain exact real su
  const first=randomBytes(24).toString('hex'),second=randomBytes(24).toString('hex')
  const fixture=JSON.parse(readFileSync(join(process.env.LABBY_E2E_PRIVATE_ROOT,'stdio-fixture.json'),'utf8'))
  let sentinelConfig
- await runPrivateScenario({page,info,accounting:limit.receipt,cleanup:()=>cleanup(page,name,limit,sentinelConfig)},async step=>{
+ await runPrivateScenario({page,info,accounting:limit.receipt,consoleHttpReceipt:join(process.env.LABBY_E2E_PRIVATE_ROOT,'console-http-counts.json'),cleanup:()=>cleanup(page,name,limit,sentinelConfig)},async step=>{
   sentinelConfig=(await step('sentinel-read',()=>limit.action('gateway.get',{name:sentinel}))).config
   limit.charge(1,'UI initial fleet list')
   await step('sign-in',()=>signIn(page))
@@ -233,13 +234,15 @@ test('private stdio environment replace, preserve and clear retain exact real su
   await save(page,limit,step)
 
   async function verify(value,args) {
-   const view=await limit.action('gateway.get',{name})
-   await hidden(page,view,[first,second])
-   await limit.action('gateway.status',{name})
-   const result=await ownedTool(limit,session,name,'observe_private_config')
-   const observation=JSON.parse(result.content.find(part=>part.type==='text').text)
-   expect(observation).toEqual({valuePresent:value!==null,valueSha256:value===null?null:digest(value),
-    argvSha256:digest(JSON.stringify(args.slice(1))),argumentCount:args.length-1,markerPresent:true})
+   const view=await step('verify-stdio-config-read',()=>limit.action('gateway.get',{name}))
+   await hidden(page,view,[first,second],step,'verify-stdio')
+   await step('verify-stdio-status',()=>limit.action('gateway.status',{name}))
+   const result=await ownedTool(limit,session,name,'observe_private_config',step,'verify-stdio')
+   await step('verify-stdio-wire-digests',async()=>{
+    const observation=JSON.parse(result.content.find(part=>part.type==='text').text)
+    expect(observation).toEqual({valuePresent:value!==null,valueSha256:value===null?null:digest(value),
+     argvSha256:digest(JSON.stringify(args.slice(1))),argumentCount:args.length-1,markerPresent:true})
+   })
   }
 
   await step('verify-first-stdio',()=>verify(first,fixture.args))
