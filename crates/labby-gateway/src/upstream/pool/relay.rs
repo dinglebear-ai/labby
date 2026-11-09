@@ -5043,9 +5043,11 @@ mod tests {
                         )
                     ));
                 } else {
-                    let CallToolResponse::Complete(result) = result.unwrap() else {
-                        panic!("complete expected")
+                    let completed = match result.unwrap() {
+                        CallToolResponse::Complete(result) => Some(result),
+                        _ => None,
                     };
+                    let result = completed.expect("complete expected");
                     assert_eq!(
                         result.is_error,
                         match name {
