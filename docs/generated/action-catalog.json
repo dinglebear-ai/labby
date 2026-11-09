@@ -141,6 +141,50 @@
   },
   {
     "service": "access",
+    "action": "access.platform_admin.list",
+    "description": "List persisted organization administrator grants",
+    "destructive": false,
+    "requires_admin": true,
+    "required_scopes": [
+      "lab:admin"
+    ],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "platform.read",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50, range 1 to 100"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "Nonnegative offset, default 0"
+      },
+      {
+        "name": "snapshot_revision",
+        "ty": "integer",
+        "required": false,
+        "description": "Required for nonzero offset, from the first page"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
     "action": "access.platform_admin.revoke",
     "description": "Revoke platform administrator authority",
     "destructive": false,
@@ -589,6 +633,54 @@
         "ty": "integer",
         "required": true,
         "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_invitation.list",
+    "description": "List redacted Team invitations and observed acceptance state",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "membership.manage",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50, range 1 to 100"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "Nonnegative offset, default 0"
+      },
+      {
+        "name": "snapshot_revision",
+        "ty": "integer",
+        "required": false,
+        "description": "Required for nonzero offset, from the first page"
       }
     ],
     "returns": "object",

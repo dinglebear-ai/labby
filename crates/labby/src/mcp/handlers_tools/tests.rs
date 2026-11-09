@@ -8315,3 +8315,5 @@ async fn synthetic_gateway_test_fences_revocation_during_probe() {
         "discouraged"
     );
 }
+
+mod access_inventory;

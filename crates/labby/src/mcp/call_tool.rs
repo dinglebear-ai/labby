@@ -2219,12 +2219,18 @@ impl LabMcpServer {
                                             kind = "service_unavailable",
                                             "installation identity is not bound on this process"
                                         );
-                                        Err(ToolError::Sdk {
+                                        if crate::dispatch::access::inventory_action(&action) {
+                                            Err(crate::dispatch::access::map_inventory_error(
+                                                crate::access::inventory::InventoryError::WorkerUnavailable,
+                                            ))
+                                        } else {
+                                            Err(ToolError::Sdk {
                                                 sdk_kind: "service_unavailable".to_owned(),
                                                 message:
                                                     "installation-bound access administration is unavailable"
                                                         .to_owned(),
                                             })
+                                        }
                                     } else {
                                         crate::dispatch::access::dispatch(
                                             crate::dispatch::access::AccessDispatchContext {
@@ -2554,12 +2560,15 @@ impl LabMcpServer {
             } else {
                 (entry.dispatch)(action.clone(), params).await
             };
-            // Preserve the response-fence contract through the legacy formatter,
-            // while still recording and notifying completion of the executed action.
-            let authority_error_envelope = result
+            // Preserve refined Access errors and the gateway response fence
+            // while still recording and notifying completion of the action.
+            let contract_error_envelope = result
                 .as_ref()
                 .err()
-                .filter(|error| service == "gateway" && error.kind() == "authority_changed")
+                .filter(|error| {
+                    (service == "gateway" && error.kind() == "authority_changed")
+                        || (service == "access" && matches!(error, ToolError::Contract { .. }))
+                })
                 .map(|error| tool_error_envelope(&service, &action, error));
             let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
             let elapsed_ms = start.elapsed().as_millis();
@@ -2573,7 +2582,7 @@ impl LabMcpServer {
                 actor_key,
                 input_tokens,
             );
-            if let Some(envelope) = authority_error_envelope {
+            if let Some(envelope) = contract_error_envelope {
                 result = error_result_from_envelope(envelope);
             }
             self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)

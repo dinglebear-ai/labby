@@ -6089,6 +6089,20 @@
           }
         }
       },
+      "AccessAccessPlatform_adminListParams": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "snapshot_revision": {
+            "type": "integer"
+          }
+        }
+      },
       "AccessAccessPlatform_adminRevokeParams": {
         "type": "object",
         "required": [
@@ -6263,6 +6277,26 @@
           }
         }
       },
+      "AccessAccessTeam_invitationListParams": {
+        "type": "object",
+        "required": [
+          "team_id"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "snapshot_revision": {
+            "type": "integer"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        }
+      },
       "AccessAccessTeam_projectAssignParams": {
         "type": "object",
         "required": [
@@ -6315,6 +6349,8 @@
               "access.team.list",
               "access.team.member.list",
               "access.team_project.list",
+              "access.team_invitation.list",
+              "access.platform_admin.list",
               "access.team.member.add",
               "access.team.member.role.set",
               "access.team.member.suspend",

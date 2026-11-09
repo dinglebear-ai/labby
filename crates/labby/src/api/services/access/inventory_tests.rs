@@ -488,3 +488,65 @@ async fn inventory_http_unbound_installation_is_read_only_unavailable() {
     assert_eq!(error["kind"], "service_unavailable");
     assert_eq!(error["side_effects"], "none_expected");
 }
+
+#[tokio::test]
+async fn secondary_inventory_http_actions_use_real_shared_store() {
+    let (_directory, _store, app) = fixture().await;
+    for (action, params, field) in [
+        (
+            "access.team_invitation.list",
+            serde_json::json!({"team_id":"bootstrap-initial-team"}),
+            "invitations",
+        ),
+        (
+            "access.platform_admin.list",
+            serde_json::json!({}),
+            "administrators",
+        ),
+    ] {
+        let (status, body) = request(&app, action, params, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body[field].is_array(), "{body}");
+        assert!(body["global_revision"].as_u64().is_some());
+    }
+}
+
+#[tokio::test]
+async fn secondary_inventory_http_deadlines_cleanup_and_csrf_follow_existing_boundary() {
+    let (_directory, store, app) = fixture().await;
+    for (action, params) in [
+        (
+            "access.team_invitation.list",
+            serde_json::json!({"team_id":"bootstrap-initial-team"}),
+        ),
+        ("access.platform_admin.list", serde_json::json!({})),
+    ] {
+        let (status, error) = request(&app, action, params.clone(), Some("0"), true).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+        assert_eq!(error["kind"], "invalid_param");
+        let (status, _) = request(&app, action, params.clone(), None, false).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (started, observed_start) = tokio::sync::oneshot::channel();
+        let (release, wait_release) = std::sync::mpsc::sync_channel(0);
+        let held_store = store.clone();
+        let blocker = tokio::spawn(async move {
+            crate::access::test_support::with_connection(&held_store, move |_| {
+                started.send(()).unwrap();
+                wait_release
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .unwrap();
+                Ok(())
+            })
+            .await
+            .unwrap();
+        });
+        observed_start.await.unwrap();
+        let (status, error) = request(&app, action, params.clone(), Some("5"), true).await;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{error}");
+        assert_eq!(error["side_effects"], "none_expected");
+        release.send(()).unwrap();
+        blocker.await.unwrap();
+        let (status, body) = request(&app, action, params, None, true).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+}

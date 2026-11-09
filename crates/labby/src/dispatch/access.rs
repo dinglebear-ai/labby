@@ -41,6 +41,8 @@ macro_rules! access_actions {
             action("access.team.list", "List the caller's teams", &[]),
             action("access.team.member.list", "List persisted Team memberships", inventory::PARAMS),
             action("access.team_project.list", "List persisted Team Project assignments", inventory::PARAMS),
+            action("access.team_invitation.list", "List redacted Team invitations and observed acceptance state", inventory::PARAMS),
+            admin_action("access.platform_admin.list", "List persisted organization administrator grants", inventory::PAGING_PARAMS),
             action(
                 "access.team.member.add",
                 "Add a team member",
@@ -150,6 +152,7 @@ pub(crate) fn required_capability(action: &str) -> Option<Capability> {
         "access.team.create" | "access.platform_admin.grant" | "access.platform_admin.revoke" => {
             Capability::PlatformManage
         }
+        "access.platform_admin.list" => Capability::PlatformRead,
         "access.team_invitation.accept" => Capability::ScopeOperate,
         "access.gateway_credential.list"
         | "access.team.member.list"
@@ -163,7 +166,8 @@ pub(crate) fn required_capability(action: &str) -> Option<Capability> {
         | "access.team.member.remove"
         | "access.team.suspend"
         | "access.team.activate"
-        | "access.team_invitation.create" => Capability::MembershipManage,
+        | "access.team_invitation.create"
+        | "access.team_invitation.list" => Capability::MembershipManage,
         _ => return None,
     })
 }
@@ -200,7 +204,7 @@ const fn action(
     }
 }
 /// Installation-scoped administration: the shared evaluator demands
-/// `platform.manage`, so the transport ceiling must carry `lab:admin`.
+/// a platform capability, so the transport ceiling must carry `lab:admin`.
 const fn admin_action(
     name: &'static str,
     description: &'static str,
@@ -729,7 +733,7 @@ mod tests {
     fn catalog_registers_only_canonical_access_actions() {
         assert_eq!(
             ACTIONS.len(),
-            if cfg!(feature = "gateway") { 19 } else { 16 }
+            if cfg!(feature = "gateway") { 21 } else { 18 }
         );
         assert!(ACTIONS.iter().all(|spec| spec.name.starts_with("access.")));
         assert!(ACTIONS.iter().all(|spec| !spec.destructive));

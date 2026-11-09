@@ -110,6 +110,70 @@
           "returns": "object"
         },
         {
+          "name": "access.team_invitation.list",
+          "description": "List redacted Team invitations and observed acceptance state",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.platform_admin.list",
+          "description": "List persisted organization administrator grants",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
           "name": "access.team.member.add",
           "description": "Add a team member",
           "destructive": false,

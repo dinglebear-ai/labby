@@ -29,6 +29,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "access:access.platform_admin.list": {
+      "required_capability": "platform.read",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "access:access.platform_admin.grant": {
       "required_capability": "platform.manage",
       "team_member": "deny",
@@ -140,6 +149,15 @@
     "access:access.team_invitation.accept": {
       "required_capability": "scope.operate",
       "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team_invitation.list": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
       "team_admin": "allow",
       "team_owner": "allow",
       "other_team_member": "deny",

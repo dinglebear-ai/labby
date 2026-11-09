@@ -1292,7 +1292,7 @@ fn require_platform_admin(tx: &Transaction<'_>, principal_id: &str) -> AccessSto
 fn is_platform_admin(tx: &Transaction<'_>, principal_id: &str) -> AccessStoreResult<bool> {
     tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')",[principal_id],|r|r.get(0)).map_err(map_sqlite_error)
 }
-fn require_team_manager(
+pub(super) fn require_team_manager(
     tx: &Transaction<'_>,
     principal_id: &str,
     organization_id: &str,
@@ -1445,7 +1445,7 @@ fn immediate(connection: &mut Connection) -> AccessStoreResult<Transaction<'_>> 
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)
 }
-fn unix_now() -> AccessStoreResult<i64> {
+pub(super) fn unix_now() -> AccessStoreResult<i64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))

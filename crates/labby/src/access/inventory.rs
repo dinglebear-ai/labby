@@ -72,6 +72,7 @@ pub(crate) type InventoryResult<T> = Result<T, InventoryError>;
 pub(crate) enum TeamInventoryKind {
     Members,
     Assignments,
+    Invitations,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +90,12 @@ pub(crate) struct TeamInventoryInput {
     pub(crate) deadline: AccessReadDeadline,
 }
 
+pub(crate) struct PlatformInventoryInput {
+    pub(crate) request: AuthorityRequest,
+    pub(crate) page: InventoryPage,
+    pub(crate) deadline: AccessReadDeadline,
+}
+
 impl AccessStore {
     pub(crate) async fn list_team_inventory(
         &self,
@@ -96,6 +103,16 @@ impl AccessStore {
     ) -> InventoryResult<Value> {
         self.with_inventory_connection(input.deadline, move |connection, cancellation| {
             list_team_inventory(connection, input, cancellation)
+        })
+        .await
+    }
+
+    pub(crate) async fn list_platform_inventory(
+        &self,
+        input: PlatformInventoryInput,
+    ) -> InventoryResult<Value> {
+        self.with_inventory_connection(input.deadline, move |connection, cancellation| {
+            list_platform_inventory(connection, input, cancellation)
         })
         .await
     }
@@ -129,8 +146,14 @@ fn list_team_inventory(
         .optional()
         .map_err(map_sqlite_error)?
         .ok_or(AccessStoreError::NotAuthorized)?;
-    super::authority::authorize_action_in_transaction(&transaction, input.request)?;
-    super::team::require_team_member(
+    super::authority::authorize_action_for_principal(&transaction, input.request, &actor)?;
+    let guard = match input.kind {
+        TeamInventoryKind::Invitations => super::team::require_team_manager,
+        TeamInventoryKind::Members | TeamInventoryKind::Assignments => {
+            super::team::require_team_member
+        }
+    };
+    guard(
         &transaction,
         &actor.id,
         &actor.organization_id,
@@ -150,11 +173,18 @@ fn list_team_inventory(
     {
         return Err(InventoryError::RevisionConflict);
     }
+    let observed_at = super::team::unix_now()?;
     let sql = match input.kind {
         TeamInventoryKind::Members => {
             "SELECT principal_id,role,status,membership_epoch FROM team_memberships
              WHERE organization_id=?1 AND team_id=?2
              ORDER BY principal_id COLLATE BINARY LIMIT ?3 OFFSET ?4"
+        }
+        TeamInventoryKind::Invitations => {
+            "SELECT invited_principal_id,role,status,team_membership_epoch,created_at,expires_at,accepted_at,revoked_at
+             FROM team_invitations WHERE organization_id=?1 AND team_id=?2
+             ORDER BY created_at,invited_principal_id COLLATE BINARY,invitation_digest
+             LIMIT ?3 OFFSET ?4"
         }
         TeamInventoryKind::Assignments => {
             "SELECT a.project_id,a.role,a.status,a.assignment_epoch,p.status,p.project_policy_epoch
@@ -182,7 +212,14 @@ fn list_team_inventory(
             has_more = true;
             break;
         }
-        let value = project_row(row, input.kind, input.page.limit)?;
+        let value = match input.kind {
+            TeamInventoryKind::Invitations => {
+                invitation_row(row, input.page.limit, observed_at, &target.0, target.2)?
+            }
+            TeamInventoryKind::Members | TeamInventoryKind::Assignments => {
+                project_row(row, input.kind, input.page.limit)?
+            }
+        };
         serde_json::to_writer(&mut encoded, &value).map_err(|_| overflow(input.page.limit))?;
         values.push(value);
     }
@@ -202,22 +239,158 @@ fn list_team_inventory(
     };
     let mut result = json!({
         "team_id": input.team_id,
-        "team_status": target.0,
         "global_revision": nonnegative(revision)?,
         "next_offset": next_offset,
     });
     match input.kind {
         TeamInventoryKind::Members => {
+            result["team_status"] = target.0.into();
             result["team_policy_epoch"] = nonnegative(target.1)?.into();
             result["team_membership_epoch"] = nonnegative(target.2)?.into();
             result["members"] = values.into();
         }
-        TeamInventoryKind::Assignments => result["assignments"] = values.into(),
+        TeamInventoryKind::Assignments => {
+            result["team_status"] = target.0.into();
+            result["assignments"] = values.into();
+        }
+        TeamInventoryKind::Invitations => {
+            result["team_membership_epoch"] = nonnegative(target.2)?.into();
+            result["observed_at"] = nonnegative(observed_at)?.into();
+            result["invitations"] = values.into();
+        }
     }
     serde_json::to_writer(PageSize::default(), &result).map_err(|_| overflow(input.page.limit))?;
     input.deadline.check(cancellation)?;
     transaction.commit().map_err(map_sqlite_error)?;
     Ok(result)
+}
+
+fn list_platform_inventory(
+    connection: &mut Connection,
+    input: PlatformInventoryInput,
+    cancellation: &CancellationToken,
+) -> InventoryResult<Value> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Deferred)
+        .map_err(map_sqlite_error)?;
+    let actor = super::read::resolve_principal(&transaction, input.request.identity())?;
+    super::authority::authorize_action_for_principal(&transaction, input.request, &actor)?;
+    let revision: i64 = transaction
+        .query_row(
+            "SELECT global_revision FROM access_metadata WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite_error)?;
+    if input
+        .page
+        .snapshot_revision
+        .is_some_and(|expected| expected != revision)
+    {
+        return Err(InventoryError::RevisionConflict);
+    }
+    let mut statement = transaction.prepare("SELECT a.principal_id,a.status,a.authority_epoch FROM platform_administrators a JOIN principals p ON p.principal_id=a.principal_id WHERE p.organization_id=?1 ORDER BY a.principal_id COLLATE BINARY LIMIT ?2 OFFSET ?3").map_err(map_sqlite_error)?;
+    let mut rows = statement
+        .query(params![
+            actor.organization_id,
+            i64::from(input.page.limit) + 1,
+            input.page.offset
+        ])
+        .map_err(map_sqlite_error)?;
+    let mut values = Vec::new();
+    let mut encoded = PageSize::default();
+    let mut has_more = false;
+    while let Some(row) = rows.next().map_err(map_sqlite_error)? {
+        input.deadline.check(cancellation)?;
+        if values.len() == input.page.limit as usize {
+            has_more = true;
+            break;
+        }
+        let principal_id = bounded_text(row, 0, input.page.limit)?;
+        let status = bounded_text(row, 1, input.page.limit)?;
+        if !matches!(status.as_str(), "active" | "revoked") {
+            return Err(AccessStoreError::MalformedVocabulary.into());
+        }
+        let epoch = nonnegative(row.get(2).map_err(map_sqlite_error)?)?;
+        let value = json!({"principal_id":principal_id,"status":status,"authority_epoch":epoch});
+        serde_json::to_writer(&mut encoded, &value).map_err(|_| overflow(input.page.limit))?;
+        values.push(value);
+    }
+    drop(rows);
+    drop(statement);
+    input.deadline.check(cancellation)?;
+    let next_offset = if has_more {
+        Some(
+            input
+                .page
+                .offset
+                .checked_add(i64::from(input.page.limit))
+                .ok_or(AccessStoreError::MalformedVocabulary)?,
+        )
+    } else {
+        None
+    };
+    let result = json!({"global_revision":nonnegative(revision)?,"administrators":values,"next_offset":next_offset});
+    serde_json::to_writer(PageSize::default(), &result).map_err(|_| overflow(input.page.limit))?;
+    input.deadline.check(cancellation)?;
+    transaction.commit().map_err(map_sqlite_error)?;
+    Ok(result)
+}
+
+fn invitation_row(
+    row: &Row<'_>,
+    limit: u32,
+    observed_at: i64,
+    team_status: &str,
+    team_epoch: i64,
+) -> InventoryResult<Value> {
+    let principal_id = bounded_text(row, 0, limit)?;
+    let role = bounded_text(row, 1, limit)?;
+    TeamRole::from_persisted(&role).ok_or(AccessStoreError::MalformedVocabulary)?;
+    let status = bounded_text(row, 2, limit)?;
+    if !matches!(
+        status.as_str(),
+        "pending" | "accepted" | "revoked" | "expired"
+    ) {
+        return Err(AccessStoreError::MalformedVocabulary.into());
+    }
+    let epoch: i64 = row.get(3).map_err(map_sqlite_error)?;
+    let created_at: i64 = row.get(4).map_err(map_sqlite_error)?;
+    let expires_at: i64 = row.get(5).map_err(map_sqlite_error)?;
+    let accepted_at: Option<i64> = row.get(6).map_err(map_sqlite_error)?;
+    let revoked_at: Option<i64> = row.get(7).map_err(map_sqlite_error)?;
+    let acceptance_state = acceptance_state(
+        &status,
+        expires_at,
+        team_status,
+        epoch,
+        team_epoch,
+        observed_at,
+    );
+    Ok(
+        json!({"principal_id":principal_id,"role":role,"status":status,"team_membership_epoch":nonnegative(epoch)?,"created_at":created_at,"expires_at":expires_at,"accepted_at":accepted_at,"revoked_at":revoked_at,"acceptance_state":acceptance_state}),
+    )
+}
+
+fn acceptance_state<'a>(
+    status: &'a str,
+    expires_at: i64,
+    team_status: &str,
+    issued_epoch: i64,
+    current_epoch: i64,
+    observed_at: i64,
+) -> &'a str {
+    if status != "pending" {
+        status
+    } else if expires_at <= observed_at {
+        "expired"
+    } else if team_status != "active" {
+        "team_unavailable"
+    } else if issued_epoch != current_epoch {
+        "stale_epoch"
+    } else {
+        "pending"
+    }
 }
 
 fn project_row(row: &Row<'_>, kind: TeamInventoryKind, limit: u32) -> InventoryResult<Value> {
@@ -229,6 +402,7 @@ fn project_row(row: &Row<'_>, kind: TeamInventoryKind, limit: u32) -> InventoryR
     }
     let epoch = nonnegative(row.get(3).map_err(map_sqlite_error)?)?;
     match kind {
+        TeamInventoryKind::Invitations => Err(AccessStoreError::MalformedVocabulary.into()),
         TeamInventoryKind::Members => {
             TeamRole::from_persisted(&role).ok_or(AccessStoreError::MalformedVocabulary)?;
             Ok(json!({"principal_id":id,"role":role,"status":status,"membership_epoch":epoch}))
@@ -283,5 +457,41 @@ impl Write for PageSize {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invitation_display_clock_and_precedence_preserve_terminal_states() {
+        // A fixed persisted row changes display state when the observation crosses expiry.
+        assert_eq!(
+            acceptance_state("pending", 20, "active", 1, 1, 19),
+            "pending"
+        );
+        assert_eq!(
+            acceptance_state("pending", 20, "active", 1, 1, 20),
+            "expired"
+        );
+        assert_eq!(
+            acceptance_state("pending", 20, "suspended", 1, 2, 20),
+            "expired"
+        );
+        assert_eq!(
+            acceptance_state("pending", 20, "suspended", 1, 2, 19),
+            "team_unavailable"
+        );
+        assert_eq!(
+            acceptance_state("pending", 20, "active", 1, 2, 19),
+            "stale_epoch"
+        );
+        for terminal in ["accepted", "revoked", "expired"] {
+            assert_eq!(
+                acceptance_state(terminal, 20, "suspended", 1, 2, 20),
+                terminal
+            );
+        }
     }
 }
