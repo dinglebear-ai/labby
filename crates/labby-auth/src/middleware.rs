@@ -765,11 +765,16 @@ async fn authenticate(
             .await
         {
             Ok(Some((bound_session, authorized))) => {
-                let session = bound_session.value;
-                if session.project_binding.is_some() {
-                    return authorize_project_session(layer, request, &auth_state.store, session)
-                        .await;
+                if bound_session.value.project_binding.is_some() {
+                    return authorize_project_session(
+                        layer,
+                        request,
+                        &auth_state.store,
+                        bound_session.value,
+                    )
+                    .await;
                 }
+                let session = &bound_session.value;
                 if bound_session.binding != auth_state.inbound_provider_binding() {
                     return Err(auth_error_response(
                         "authenticated identity provider binding is stale",
@@ -777,10 +782,7 @@ async fn authenticate(
                     ));
                 }
                 let viewer_domain = auth_state
-                    .verified_viewer_domain_for_session(&crate::types::ProviderBound {
-                        value: session.clone(),
-                        binding: bound_session.binding.clone(),
-                    })
+                    .verified_viewer_domain_for_session(&bound_session)
                     .await
                     .map_err(|_| {
                         auth_error_response("verified browser admission is unavailable", layer)
@@ -833,17 +835,15 @@ async fn authenticate(
                 } else {
                     None
                 };
-                if !session_csrf_valid(&request, &session) {
+                if !session_csrf_valid(&request, session) {
                     return Err(csrf_error_response("missing or invalid csrf token"));
                 }
-                let identity = VerifiedIdentity::external(
-                    Authenticator::BrowserSession,
-                    &bound_session.binding.identity_issuer,
-                    session.subject.clone(),
-                )
-                .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
+                let identity = auth_state
+                    .verified_browser_session_identity(&bound_session)
+                    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
                 let actor_key =
                     derive_actor_key(layer.actor_key_deriver.as_deref(), &session.subject);
+                let session = bound_session.value;
                 let auth = AuthContext {
                     actor_key,
                     sub: session.subject,
@@ -1793,6 +1793,173 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
+    async fn configured_authelia_state(issuer: &str) -> AuthState {
+        let base = test_auth_state().await;
+        let activation = base
+            .store
+            .activate_inbound_provider(
+                "authelia",
+                issuer,
+                "configured-provider-test",
+                crate::util::now_unix(),
+            )
+            .await
+            .unwrap();
+        let provider = crate::authelia::AutheliaProvider::new(
+            issuer.parse().unwrap(),
+            "client".into(),
+            "secret".into(),
+            "https://lab.example.com/auth/authelia/callback"
+                .parse()
+                .unwrap(),
+        )
+        .unwrap();
+        AuthState::for_tests_with_provider(
+            (*base.config).clone(),
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            crate::oauth_provider::InboundProviderRuntime::Authelia(Box::new(provider)),
+            activation.generation,
+        )
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_authelia_browser_cookie_emits_provider_identity() {
+        for issuer in [
+            "https://identity.example",
+            "https://identity.example/oidc/tenant",
+        ] {
+            let state = Arc::new(configured_authelia_state(issuer).await);
+            let session = session::create_bound_browser_session(
+                &state,
+                "provider-subject".into(),
+                Some("user@example.com".into()),
+                state.inbound_provider_binding(),
+            )
+            .await
+            .unwrap();
+            let app = Router::new()
+                .route(
+                    "/probe",
+                    get(
+                        |axum::Extension(identity): axum::Extension<VerifiedIdentity>| async move {
+                            assert_eq!(identity.authenticator(), Authenticator::BrowserSession);
+                            assert_eq!(identity.transport_credential_issuer(), "browser-session");
+                            match identity.principal_link() {
+                                PrincipalLink::External { issuer, subject } => {
+                                    format!("{issuer}|{subject}")
+                                }
+                                PrincipalLink::LocalCredential { credential_id } => {
+                                    format!("local|{credential_id}")
+                                }
+                            }
+                        },
+                    ),
+                )
+                .route_layer(AuthLayer::from_state(state.clone()).with_allow_session_cookie(true));
+            let response = app
+                .oneshot(
+                    HttpRequest::builder()
+                        .uri("/probe")
+                        .header(
+                            header::COOKIE,
+                            format!(
+                                "{}={}",
+                                state.config.session_cookie_name, session.session_id
+                            ),
+                        )
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "configured issuer {issuer}"
+            );
+            let body = axum::body::to_bytes(response.into_body(), 1024)
+                .await
+                .unwrap();
+            assert_eq!(&body[..], format!("{issuer}|provider-subject").as_bytes());
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn browser_cookie_rejects_unselected_or_stale_provider_binding() {
+        for issuer in [
+            Some("https://unknown.example"),
+            Some(crate::google::GOOGLE_ISSUER),
+            None,
+        ] {
+            let mut state = configured_authelia_state("https://identity.example/tenant").await;
+            let binding = if let Some(issuer) = issuer {
+                let activation = state
+                    .store
+                    .activate_inbound_provider(
+                        "authelia",
+                        issuer,
+                        "other-provider",
+                        crate::util::now_unix(),
+                    )
+                    .await
+                    .unwrap();
+                state.inbound_provider_generation = activation.generation;
+                crate::types::ProviderBinding {
+                    identity_issuer: issuer.into(),
+                    provider_generation: activation.generation,
+                }
+            } else {
+                state.inbound_provider_binding()
+            };
+            let session = session::create_bound_browser_session(
+                &state,
+                "provider-subject".into(),
+                Some("user@example.com".into()),
+                binding,
+            )
+            .await
+            .unwrap();
+            if issuer.is_none() {
+                state.inbound_provider_generation += 1;
+            }
+            let bound_session = state
+                .store
+                .find_bound_browser_session(&session.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                state
+                    .verified_browser_session_identity(&bound_session)
+                    .is_err()
+            );
+            let state = Arc::new(state);
+            let response =
+                echo_app(AuthLayer::from_state(state.clone()).with_allow_session_cookie(true))
+                    .oneshot(
+                        HttpRequest::builder()
+                            .uri("/probe")
+                            .header(
+                                header::COOKIE,
+                                format!(
+                                    "{}={}",
+                                    state.config.session_cookie_name, session.session_id
+                                ),
+                            )
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "binding {issuer:?}"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn browser_session_and_jwt_emit_the_same_provider_principal_link() {
         let state = Arc::new(test_auth_state().await);
@@ -1828,7 +1995,7 @@ mod tests {
                 jti: "identity-link-test".to_string(),
                 scope: "lab:read".to_string(),
                 azp: "oauth-client-123".to_string(),
-                identity_issuer: Some(crate::google::GOOGLE_ISSUER.to_string()),
+                identity_issuer: Some("https://ACCOUNTS.GOOGLE.COM/".to_string()),
                 identity_credential_id: None,
             })
             .unwrap();
