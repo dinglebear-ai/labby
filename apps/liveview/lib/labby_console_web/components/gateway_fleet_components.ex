@@ -260,7 +260,8 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             <div class="gf-row-actions">
               <button
                 type="button"
-                phx-click={inspect_action(@state.selected, row["id"])}
+                id={inspect_id(row["id"])}
+                phx-click={JS.push("inspect", value: %{id: row["id"]})}
                 phx-value-id={row["id"]}
                 aria-label={"Quick inspect " <> Fleet.label(row)}
                 aria-pressed={to_string(@state.selected == row["id"])}
@@ -277,7 +278,10 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
         id="gateway-inspector"
         class="gf-inspector"
         aria-labelledby="gateway-inspector-title"
-        phx-mounted={JS.focus(to: "#gateway-inspector-title")}
+        phx-mounted={
+          JS.push_focus(to: restore_target(@rows, @selected))
+          |> JS.focus(to: "#gateway-inspector-title")
+        }
         phx-remove={JS.pop_focus()}
         phx-window-keydown="close_inspector"
         phx-key="Escape"
@@ -320,6 +324,11 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
     do:
       "--gf-columns: minmax(160px, 2fr) repeat(#{length(prefs["columns"])}, minmax(70px, 1fr)) 76px"
 
-  defp inspect_action(nil, id), do: JS.push_focus() |> JS.push("inspect", value: %{id: id})
-  defp inspect_action(_, id), do: JS.push("inspect", value: %{id: id})
+  defp inspect_id(id), do: "gateway-inspect-" <> Base.url_encode64(id, padding: false)
+
+  defp restore_target(rows, selected) do
+    if Enum.any?(rows, &(&1["id"] == selected["id"])),
+      do: "#" <> inspect_id(selected["id"]),
+      else: "#servers-refresh"
+  end
 end

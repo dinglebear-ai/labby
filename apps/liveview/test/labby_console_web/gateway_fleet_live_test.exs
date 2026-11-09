@@ -151,17 +151,18 @@ defmodule LabbyConsoleWeb.GatewayFleetLiveTest do
     refute has_element?(view, "#server-list li")
   end
 
-  test "inspector saves opener focus once and retains accessible cell labels", %{conn: conn} do
+  test "inspector mount saves focus once while row switching only sends an event", %{conn: conn} do
     signed = post(conn, "/sign-in", %{credential: "fixture-only"})
     {:ok, view, _} = live(recycle(signed), "/gateway")
     render_async(view)
     opener = "#server-list button[aria-label^='Quick inspect']"
     commands = inspect_commands(view, opener)
-    assert Enum.map(commands, &hd/1) == ["push_focus", "push"]
+    assert Enum.map(commands, &hd/1) == ["push"]
     view |> element(opener) |> render_click()
+    assert_inspector_mount_target(view)
     assert Enum.map(inspect_commands(view, opener), &hd/1) == ["push"]
     view |> element("button[aria-label='Close server inspector']") |> render_click()
-    assert Enum.map(inspect_commands(view, opener), &hd/1) == ["push_focus", "push"]
+    assert Enum.map(inspect_commands(view, opener), &hd/1) == ["push"]
   end
 
   test "cell labels survive hidden and reordered columns in every layout", %{conn: conn} do
@@ -193,6 +194,50 @@ defmodule LabbyConsoleWeb.GatewayFleetLiveTest do
       refute has_element?(view, "#server-list [data-column=resources]")
       assert has_element?(view, "#server-list .gf-mobile-label[aria-hidden=true]")
     end
+  end
+
+  test "retained refresh remount saves a currently rendered restoration target", %{conn: conn} do
+    signed = post(conn, "/sign-in", %{credential: "fixture-only"})
+    {:ok, view, _} = live(recycle(signed), "/gateway")
+    render_async(view)
+    opener = "#server-list button[aria-label^='Quick inspect']"
+    view |> element(opener) |> render_click()
+    assert_inspector_mount_target(view)
+    Application.put_env(:labby_console, :gateway_fleet_gate, self())
+
+    Application.put_env(:labby_console, :gateway_fleet_rows, [
+      %{
+        "id" => "fixture-server",
+        "name" => "fixture-server",
+        "enabled" => true,
+        "connected" => true
+      }
+    ])
+
+    view |> element("#servers-refresh") |> render_click()
+    assert_receive {:fleet_read, request}, 2_000
+    refute has_element?(view, "#gateway-inspector")
+    send(request, :release_fleet)
+    render_async(view)
+    assert_inspector_mount_target(view)
+    view |> element("button[aria-label='Close server inspector']") |> render_click()
+    refute has_element?(view, "#gateway-inspector")
+  end
+
+  defp assert_inspector_mount_target(view) do
+    commands =
+      view
+      |> render()
+      |> LazyHTML.from_fragment()
+      |> LazyHTML.query("#gateway-inspector")
+      |> LazyHTML.attribute("phx-mounted")
+      |> hd()
+      |> Jason.decode!()
+
+    assert [["push_focus", %{"to" => target}], ["focus", %{"to" => "#gateway-inspector-title"}]] =
+             commands
+
+    assert has_element?(view, target)
   end
 
   defp inspect_commands(view, selector) do

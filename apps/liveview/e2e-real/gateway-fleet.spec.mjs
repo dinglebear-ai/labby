@@ -28,6 +28,19 @@ test('native Gateway fleet preserves real observations, preferences and read nav
   await page.getByRole('button', {name: 'Close server inspector', exact: true}).click()
   await expect(page.locator('#gateway-inspector')).toHaveCount(0)
   await expect(page.getByRole('button', {name: 'Quick inspect Real E2E Disabled', exact: true})).toBeFocused()
+  // Refresh removes the old row DOM, then reconciles the same selected ID.
+  // Each remounted inspector must save the newly connected row button.
+  for (const closeWith of ['escape', 'close']) {
+    await page.getByRole('button', {name: 'Quick inspect Real E2E Disabled', exact: true}).click()
+    await expect(page.locator('#gateway-inspector')).toBeVisible()
+    await page.locator('#servers-refresh').click()
+    await expect(page.locator('#servers-refresh')).toBeEnabled()
+    await expect(page.locator('#gateway-inspector-title')).toBeFocused()
+    if (closeWith === 'escape') await page.keyboard.press('Escape')
+    else await page.getByRole('button', {name: 'Close server inspector', exact: true}).click()
+    await expect(page.locator('#gateway-inspector')).toHaveCount(0)
+    await expect(page.getByRole('button', {name: 'Quick inspect Real E2E Disabled', exact: true})).toBeFocused()
+  }
   await page.locator('#gateway-view-menu > summary').click()
   await page.getByRole('button', {name: 'Cards', exact: true}).click()
   await expect(page.locator('#gateway-inventory')).toHaveAttribute('data-layout', 'cards')
