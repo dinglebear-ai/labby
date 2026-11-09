@@ -3,7 +3,10 @@
 use crate::dispatch::codemode_notices::{
     NoticeBatch, NoticeError, NoticeRecipient, NoticeStore, validate_acknowledgments,
 };
-use crate::mcp::{notice_identity::notice_recipient, server::LabMcpServer};
+use crate::mcp::{
+    notice_identity::{legacy_notice_recipient, notice_recipient},
+    server::LabMcpServer,
+};
 use rmcp::{
     RoleServer,
     model::{CallToolResult, ContentBlock},
@@ -14,7 +17,13 @@ use serde_json::{Map, Value};
 pub(crate) struct NoticeControl {
     store: NoticeStore,
     recipient: Option<NoticeRecipient>,
+    alternate: Option<NoticeRecipient>,
     fields: Map<String, Value>,
+}
+
+pub(crate) struct NoticeInput {
+    register: bool,
+    ids: Option<Vec<String>>,
 }
 
 pub(super) async fn prepare(
@@ -23,55 +32,70 @@ pub(super) async fn prepare(
     context: &RequestContext<RoleServer>,
     read_only: bool,
 ) -> Result<NoticeControl, NoticeError> {
+    let recipient = legacy_notice_recipient(server, context);
+    let alternate = notice_recipient(server, context).filter(|verified| {
+        recipient
+            .as_ref()
+            .is_some_and(|primary| verified != primary)
+    });
     prepare_for_recipient(
         server.route_runtime.code_mode_notifications.clone(),
-        notice_recipient(server, context),
-        args,
-        read_only,
+        recipient,
+        alternate,
+        NoticeInput::parse(args, read_only)?,
     )
     .await
+}
+
+impl NoticeInput {
+    pub(crate) fn parse(args: &Map<String, Value>, read_only: bool) -> Result<Self, NoticeError> {
+        let register = match args.get("notification_inbox") {
+            Some(Value::Bool(v)) => *v,
+            None => false,
+            _ => return Err(NoticeError::Invalid),
+        };
+        let ids = match args.get("ack_notifications") {
+            None => None,
+            Some(value) => {
+                let values = value
+                    .as_array()
+                    .filter(|v| v.len() <= crate::dispatch::codemode_notices::MAX_ACKS)
+                    .ok_or(NoticeError::Invalid)?;
+                let ids = values
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .filter(|s| s.len() == 33)
+                            .map(ToOwned::to_owned)
+                            .ok_or(NoticeError::Invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Some(ids)
+            }
+        };
+        if let Some(ids) = &ids {
+            validate_acknowledgments(ids)?;
+        }
+        if read_only && (register || ids.is_some()) {
+            return Err(NoticeError::ReadOnly);
+        }
+        Ok(Self { register, ids })
+    }
 }
 
 pub(crate) async fn prepare_for_recipient(
     store: NoticeStore,
     recipient: Option<NoticeRecipient>,
-    args: &Map<String, Value>,
-    read_only: bool,
+    alternate: Option<NoticeRecipient>,
+    input: NoticeInput,
 ) -> Result<NoticeControl, NoticeError> {
-    let register = match args.get("notification_inbox") {
-        Some(Value::Bool(v)) => *v,
-        None => false,
-        _ => return Err(NoticeError::Invalid),
-    };
-    let ids = match args.get("ack_notifications") {
-        None => None,
-        Some(value) => {
-            let values = value
-                .as_array()
-                .filter(|v| v.len() <= crate::dispatch::codemode_notices::MAX_ACKS)
-                .ok_or(NoticeError::Invalid)?;
-            let ids = values
-                .iter()
-                .map(|v| {
-                    v.as_str()
-                        .filter(|s| s.len() == 33)
-                        .map(ToOwned::to_owned)
-                        .ok_or(NoticeError::Invalid)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Some(ids)
-        }
-    };
-    if let Some(ids) = &ids {
-        validate_acknowledgments(ids)?;
-    }
+    let NoticeInput { register, ids } = input;
     let mut fields = Map::new();
     if register || ids.is_some() {
-        if read_only {
-            return Err(NoticeError::ReadOnly);
-        }
         let who = recipient.clone().ok_or(NoticeError::Identity)?;
-        let (inbox, acknowledged) = store.controls(who, register, ids).await?;
+        let (inbox, acknowledged) = store
+            .controls_for_recipients(who, alternate.clone(), register, ids)
+            .await?;
         if let Some(inbox) = inbox {
             fields.insert(
                 "notification_inbox".into(),
@@ -88,6 +112,7 @@ pub(crate) async fn prepare_for_recipient(
     Ok(NoticeControl {
         store,
         recipient,
+        alternate,
         fields,
     })
 }
@@ -145,7 +170,7 @@ impl NoticeControl {
             let fields = self.fields.clone();
             match self
                 .store
-                .deliver(who, move |batch| {
+                .deliver_for_recipients(who, self.alternate.clone(), move |batch| {
                     decorated(&original, &fields, Some(batch), max_bytes, max_tokens)
                 })
                 .await

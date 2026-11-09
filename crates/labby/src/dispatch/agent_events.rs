@@ -85,6 +85,7 @@ impl AgentEvents {
         enrollment: Option<MessageEnrollment>,
     ) -> Result<serde_json::Value, EventError> {
         let (target, key, ttl) = params.validate()?;
+        let ordinary_notice = !target.filter.session_messages;
         if target.filter.session_messages != enrollment.is_some()
             || target.filter.session_messages
                 != matches!(recipient.consumer, NoticeConsumer::MessageSession { .. })
@@ -107,8 +108,7 @@ impl AgentEvents {
             .await?;
         let key_fingerprint = key.fingerprint();
         let cache_key = Sha256::digest(
-            serde_json::to_vec(&(recipient_key, target.url.as_str(), &key_fingerprint))
-                .map_err(|_| EventError::Invalid)?,
+            serde_json::to_vec(&(&id, &key_fingerprint)).map_err(|_| EventError::Invalid)?,
         )
         .into();
         self.verify(cache_key, &target, &id, &key).await?;
@@ -154,12 +154,16 @@ impl AgentEvents {
                 saved
             })
             .await?;
-        Ok(serde_json::json!({
+        let mut result = serde_json::json!({
             "id": saved.id,
             "refreshBefore": timestamp(saved.expires)?,
             "cursor": null,
             "truncated": false
-        }))
+        });
+        if ordinary_notice {
+            result["_meta"] = serde_json::json!({"ai.dinglebear.labby/inboxId": saved.inbox_id});
+        }
+        Ok(result)
     }
 
     pub(crate) async fn unsubscribe(

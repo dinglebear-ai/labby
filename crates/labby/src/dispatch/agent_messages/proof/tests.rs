@@ -1,6 +1,31 @@
 use super::*;
 
 #[test]
+fn sealed_bridge_bearer_requires_the_installation_key_and_namespace() {
+    let key = MessageKey::from_test_bytes([7; 32]);
+    let other = MessageKey::from_test_bytes([8; 32]);
+    let installation = "a".repeat(64);
+    let secret = "synthetic-bearer";
+    let encoded = key.seal_bridge_bearer(&installation, secret).unwrap();
+    assert_ne!(
+        encoded,
+        key.seal_bridge_bearer(&installation, secret).unwrap()
+    );
+    assert_eq!(
+        &*key.open_bridge_bearer(&installation, &encoded).unwrap(),
+        secret.as_bytes()
+    );
+    assert!(other.open_bridge_bearer(&installation, &encoded).is_err());
+    assert!(key.open_bridge_bearer(&"b".repeat(64), &encoded).is_err());
+    let mut corrupted = URL_SAFE_NO_PAD.decode(encoded).unwrap();
+    corrupted[BRIDGE_NONCE_BYTES] ^= 1;
+    assert!(
+        key.open_bridge_bearer(&installation, &URL_SAFE_NO_PAD.encode(corrupted))
+            .is_err()
+    );
+}
+
+#[test]
 fn bridge_proof_cannot_be_replayed_or_rebound() {
     let key = MessageKey::from_test_bytes([3; 32]);
     let forgery = MessageKey::from_test_bytes([5; 32]);

@@ -1,7 +1,12 @@
 //! Private installation authority for session binding and local bridge proof.
 use std::{path::Path, sync::Arc};
 
+use base64::{
+    Engine as _,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use hmac::{Hmac, KeyInit as _, Mac as _};
+use labby_auth::upstream::encryption::{EncryptionKey, load_key, open_with_aad, seal_with_aad};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use subtle::ConstantTimeEq as _;
@@ -11,9 +16,13 @@ use crate::dispatch::codemode_notices::NoticeError;
 use crate::installation::secure_file;
 
 pub(crate) const BRIDGE_PROOF_PATH: &str = "/v1/notifications/agent/message-bridge-proof";
+pub(crate) const BRIDGE_AUTH_HEADER: &str = "labby-bridge-authorization";
 pub(crate) const SESSION_KEY_HEADER: &str = "labby-session-key";
 pub(crate) const BRIDGE_PROOF_MS: i64 = 5_000;
 const CHALLENGE_WINDOW_MS: u64 = 30_000;
+const MAX_BRIDGE_BEARER_BYTES: usize = 16 * 1024;
+const BRIDGE_NONCE_BYTES: usize = 12;
+const BRIDGE_TAG_BYTES: usize = 16;
 
 #[derive(Clone)]
 pub(crate) struct MessageKey(Arc<Zeroizing<[u8; 32]>>);
@@ -52,6 +61,10 @@ impl MessageKey {
     }
 
     pub(crate) fn digest(&self, domain: &str, fields: &[&[u8]]) -> String {
+        hex::encode(self.mac(domain, fields))
+    }
+
+    fn mac(&self, domain: &str, fields: &[&[u8]]) -> [u8; 32] {
         let mut mac = Hmac::<Sha256>::new_from_slice(self.0.as_ref().as_ref())
             .expect("32-byte installation MAC key");
         mac.update(b"labby.agent-messages.v1\0");
@@ -59,7 +72,51 @@ impl MessageKey {
             mac.update(&(field.len() as u64).to_be_bytes());
             mac.update(field);
         }
-        hex::encode(mac.finalize().into_bytes())
+        mac.finalize().into_bytes().into()
+    }
+
+    fn bridge_auth_key(&self, installation: &str) -> Result<EncryptionKey, NoticeError> {
+        let derived = Zeroizing::new(self.mac("bridge-authorization", &[installation.as_bytes()]));
+        let encoded = Zeroizing::new(STANDARD.encode(derived.as_slice()));
+        load_key(&encoded).map_err(|_| NoticeError::Unavailable)
+    }
+
+    pub(crate) fn seal_bridge_bearer(
+        &self,
+        installation: &str,
+        bearer: &str,
+    ) -> Result<String, NoticeError> {
+        if bearer.is_empty() || bearer.len() > MAX_BRIDGE_BEARER_BYTES {
+            return Err(NoticeError::Identity);
+        }
+        let key = self.bridge_auth_key(installation)?;
+        let (ciphertext, mut nonce) =
+            seal_with_aad(&key, bearer.as_bytes(), BRIDGE_PROOF_PATH.as_bytes())
+                .map_err(|_| NoticeError::Unavailable)?;
+        nonce.extend(ciphertext);
+        Ok(URL_SAFE_NO_PAD.encode(nonce))
+    }
+
+    pub(super) fn open_bridge_bearer(
+        &self,
+        installation: &str,
+        encoded: &str,
+    ) -> Result<Zeroizing<Vec<u8>>, NoticeError> {
+        const OVERHEAD: usize = BRIDGE_NONCE_BYTES + BRIDGE_TAG_BYTES;
+        if encoded.len() > (MAX_BRIDGE_BEARER_BYTES + OVERHEAD).div_ceil(3) * 4 {
+            return Err(NoticeError::Identity);
+        }
+        let envelope = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(|_| NoticeError::Identity)?;
+        if envelope.len() <= OVERHEAD || envelope.len() > MAX_BRIDGE_BEARER_BYTES + OVERHEAD {
+            return Err(NoticeError::Identity);
+        }
+        let (nonce, ciphertext) = envelope.split_at(BRIDGE_NONCE_BYTES);
+        let key = self.bridge_auth_key(installation)?;
+        open_with_aad(&key, ciphertext, nonce, BRIDGE_PROOF_PATH.as_bytes())
+            .map(Zeroizing::new)
+            .map_err(|_| NoticeError::Identity)
     }
 
     pub(crate) fn static_owner(&self, bearer: &str) -> String {

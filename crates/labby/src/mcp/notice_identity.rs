@@ -13,6 +13,23 @@ pub(super) fn notice_recipient(
     server: &LabMcpServer,
     context: &RequestContext<RoleServer>,
 ) -> Option<NoticeRecipient> {
+    resolve_notice_recipient(server, context, true)
+}
+
+/// The existing pull interface continues using its original address. Push
+/// enrollment always uses the issuer-bound recipient, never this legacy key.
+pub(super) fn legacy_notice_recipient(
+    server: &LabMcpServer,
+    context: &RequestContext<RoleServer>,
+) -> Option<NoticeRecipient> {
+    resolve_notice_recipient(server, context, false)
+}
+
+fn resolve_notice_recipient(
+    server: &LabMcpServer,
+    context: &RequestContext<RoleServer>,
+    issuer_bound: bool,
+) -> Option<NoticeRecipient> {
     let actor = server.request_actor_key(context);
     let client = authorized_client_id_from_extensions(&context.extensions);
     let auth = auth_context_from_extensions(&context.extensions);
@@ -39,7 +56,11 @@ pub(super) fn notice_recipient(
         (Some(_), Some(actor), Some(client), _) => (
             Some(actor.to_owned()),
             NoticeConsumer::Client {
-                id: oauth_client_binding(identity?, client)?,
+                id: if issuer_bound {
+                    oauth_client_binding(identity?, client)?
+                } else {
+                    client.to_owned()
+                },
                 conversation,
             },
         ),

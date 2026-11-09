@@ -120,8 +120,8 @@ async fn verify_skill_roundtrip(
         directory_read,
         "directory support must follow the fixture's configured namespaces"
     );
+    let directory_uri = expected_uri.rsplit_once('/').expect("manifest parent").0;
     if directory_read {
-        let directory_uri = expected_uri.rsplit_once('/').expect("manifest parent").0;
         let directory = client
             .read_resource_directory(rmcp::model::ReadResourceDirectoryRequestParams::new(
                 directory_uri,
@@ -133,6 +133,20 @@ async fn verify_skill_roundtrip(
                 .resources
                 .iter()
                 .any(|resource| resource.uri == expected_uri)
+        );
+    } else {
+        let denial = client
+            .send_request(rmcp::model::ClientRequest::ReadResourceDirectoryRequest(
+                rmcp::model::ReadResourceDirectoryRequest::new(
+                    rmcp::model::ReadResourceDirectoryRequestParams::new(directory_uri),
+                ),
+            ))
+            .await
+            .expect_err("a disabled directory RPC must be denied even if called directly");
+        assert!(
+            matches!(denial, rmcp::service::ServiceError::McpError(ref error)
+                if error.code == rmcp::model::ErrorCode::METHOD_NOT_FOUND),
+            "{denial:?}"
         );
     }
     let read = client
@@ -250,6 +264,47 @@ async fn skills_http_server_list_get_and_read_through_production_client() {
     .await;
     let cleanup = server.finish().await;
     assert!(cleanup.is_clean(), "owned server cleanup: {cleanup:?}");
+}
+
+#[tokio::test]
+async fn skills_stdio_bridge_list_get_and_directory_read() {
+    const TOKEN: &str = "skills-bridge-disposable-token";
+    let server = live_labby::LiveLabbyBuilder::new()
+        .env("LABBY_MCP_HTTP_TOKEN", TOKEN)
+        .start()
+        .await
+        .expect("isolated daemon starts");
+    for lifecycle in [
+        ClientLifecycleMode::Initialize,
+        ClientLifecycleMode::Discover {
+            preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        },
+    ] {
+        let mut command = live_labby::isolated_command(server.root());
+        command
+            .arg("mcp")
+            .env("LABBY_HOME", server.root().join("labby-home"))
+            .env("LABBY_AUTH_MODE", "bearer")
+            .env("LABBY_SERVER_URL", &server.connection().base_url)
+            .env("LABBY_MCP_HTTP_TOKEN", TOKEN);
+        let transport =
+            rmcp::transport::TokioChildProcess::new(tokio::process::Command::from(command))
+                .expect("stdio bridge process");
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let client =
+                ().serve_with_lifecycle(transport, lifecycle)
+                    .await
+                    .expect("canonical daemon bridge");
+            // The daemon owns the same installation lock, so standalone fallback
+            // cannot make this round trip pass.
+            verify_skill_roundtrip(&client, "skill://labby/using-labby/SKILL.md", true).await;
+            client.cancel().await.expect("bridge shutdown");
+        })
+        .await
+        .expect("bridge Skills deadline");
+    }
+    let cleanup = server.finish().await;
+    assert!(cleanup.is_clean(), "owned daemon cleanup: {cleanup:?}");
 }
 
 #[tokio::test]

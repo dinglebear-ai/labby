@@ -200,8 +200,8 @@ impl SqliteStore {
                 "INSERT INTO refresh_tokens (
                     refresh_token_hash, client_id, subject, resource, scope,
                     provider_refresh_token, created_at, expires_at,
-                    identity_issuer, provider_generation
-                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, issuer, generation
+                    identity_issuer, provider_generation, grant_family
+                 ) SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, issuer, generation, lower(hex(randomblob(16)))
                      FROM inbound_identity_provider WHERE singleton = 1
                  ON CONFLICT(refresh_token_hash) DO UPDATE SET
                     client_id = excluded.client_id,
@@ -249,8 +249,8 @@ impl SqliteStore {
                     "INSERT INTO refresh_tokens (
                         refresh_token_hash, client_id, subject, resource, scope,
                         provider_refresh_token, created_at, expires_at,
-                        identity_issuer, provider_generation)
-                     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10
+                        identity_issuer, provider_generation, grant_family)
+                     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, lower(hex(randomblob(16)))
                       WHERE EXISTS (SELECT 1 FROM inbound_identity_provider
                         WHERE singleton = 1 AND issuer = ?9 AND generation = ?10)
                      ON CONFLICT(refresh_token_hash) DO UPDATE SET
@@ -305,25 +305,28 @@ impl SqliteStore {
             .transpose()?;
         self.with_conn(move |conn| {
             let transaction = conn.transaction().map_err(sqlite_error)?;
-            let deleted = transaction
-                .execute(
+            let family: Option<Option<String>> = transaction
+                .query_row(
                     "DELETE FROM refresh_tokens
                      WHERE refresh_token_hash = ?1
-                       AND expires_at > ?2",
+                       AND expires_at > ?2
+                     RETURNING grant_family",
                     params![old_hash, now],
+                    |row| row.get(0),
                 )
+                .optional()
                 .map_err(sqlite_error)?;
 
-            if deleted == 0 {
+            let Some(family) = family else {
                 return Ok(None);
-            }
+            };
 
             transaction
                 .execute(
                     "INSERT INTO refresh_tokens (
                         refresh_token_hash, client_id, subject, resource, scope,
-                        provider_refresh_token, created_at, expires_at
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                        provider_refresh_token, created_at, expires_at, grant_family
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, coalesce(?9, lower(hex(randomblob(16)))))",
                     params![
                         new_hash,
                         new_token.client_id,
@@ -333,6 +336,7 @@ impl SqliteStore {
                         encrypted_provider_rt,
                         new_token.created_at,
                         new_token.expires_at,
+                        family,
                     ],
                 )
                 .map_err(sqlite_error)?;
@@ -368,28 +372,31 @@ impl SqliteStore {
         let replay_resource = new_token.resource.clone();
         self.with_conn(move |conn| {
             let transaction = conn.transaction().map_err(sqlite_error)?;
-            let deleted = transaction
-                .execute(
+            let family: Option<Option<String>> = transaction
+                .query_row(
                     "DELETE FROM refresh_tokens
                      WHERE refresh_token_hash = ?1
                        AND refresh_claim_id = ?2
                        AND refresh_claim_expires_at > ?3
                        AND expires_at > ?3
                        AND identity_issuer = ?4 AND provider_generation = ?5
-                       AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)",
+                       AND provider_generation = (SELECT generation FROM inbound_identity_provider WHERE singleton = 1)
+                     RETURNING grant_family",
                     params![old_hash, claim_id, now, binding.identity_issuer, binding.provider_generation],
+                    |row| row.get(0),
                 )
+                .optional()
                 .map_err(sqlite_error)?;
-            if deleted == 0 {
+            let Some(family) = family else {
                 return Ok(None);
-            }
+            };
             transaction
                 .execute(
                     "INSERT INTO refresh_tokens (
                         refresh_token_hash, client_id, subject, resource, scope,
                         provider_refresh_token, created_at, expires_at,
-                        identity_issuer, provider_generation
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                        identity_issuer, provider_generation, grant_family
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, coalesce(?11, lower(hex(randomblob(16)))))",
                     params![
                         new_hash,
                         new_token.client_id,
@@ -401,6 +408,7 @@ impl SqliteStore {
                         new_token.expires_at,
                         binding.identity_issuer,
                         binding.provider_generation,
+                        family,
                     ],
                 )
                 .map_err(sqlite_error)?;
@@ -845,19 +853,19 @@ impl SqliteStore {
     }
 
     #[cfg(feature = "http-axum")]
-    pub(crate) async fn has_current_oauth_grant(
+    pub(crate) async fn current_oauth_grant_family(
         &self,
         client: String,
         subject: String,
         resource: String,
         scope: String,
         provider: crate::types::ProviderBinding,
-    ) -> Result<bool, AuthError> {
+        family: Option<String>,
+    ) -> Result<Option<String>, AuthError> {
         let now = now_unix();
         self.with_conn(move |conn| {
             conn.query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM refresh_tokens AS token
+                "SELECT token.grant_family FROM refresh_tokens AS token
                     JOIN inbound_identity_provider AS live
                       ON live.singleton=1 AND live.generation=token.provider_generation
                       AND live.issuer=token.identity_issuer
@@ -865,7 +873,9 @@ impl SqliteStore {
                     WHERE token.client_id=?1 AND token.subject=?2 AND token.resource=?3
                       AND token.scope=?4 AND token.identity_issuer=?5
                       AND token.provider_generation=?6 AND token.expires_at>?7
-                )",
+                      AND token.grant_family IS NOT NULL
+                      AND (?8 IS NULL OR token.grant_family=?8)
+                    ORDER BY token.expires_at DESC, token.grant_family LIMIT 1",
                 params![
                     client,
                     subject,
@@ -873,10 +883,12 @@ impl SqliteStore {
                     scope,
                     provider.identity_issuer,
                     provider.provider_generation,
-                    now
+                    now,
+                    family,
                 ],
                 |row| row.get(0),
             )
+            .optional()
             .map_err(sqlite_error)
         })
         .await

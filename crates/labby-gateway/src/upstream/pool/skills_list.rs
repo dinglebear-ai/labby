@@ -38,8 +38,8 @@ use rmcp::service::{Peer, ServiceError};
 
 use super::super::types::SkillExposurePolicy;
 use labby_runtime::skills::wire::{
-    SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD, SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult,
-    SkillsListResult,
+    CACHE_SCOPE_PRIVATE, CACHE_SCOPE_PUBLIC, SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD,
+    SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult, SkillsListResult,
 };
 use labby_runtime::skills::{
     SkillRejection, ValidatedSkill, limits, parse_skill_resource_uri, validate_skill_entry,
@@ -440,6 +440,7 @@ impl UpstreamPool {
         };
         let mut out = UpstreamSkills::default();
         let mut cursor: Option<String> = None;
+        let mut unclassified_page = false;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
 
         for page in 0..limits::MAX_LIST_PAGES {
@@ -483,6 +484,9 @@ impl UpstreamPool {
 
             // A server MUST apply one cacheScope to every page of a list; a
             // change mid-walk means the pages do not describe one listing.
+            // The SDK normalizes an empty marker to absent. Such a page
+            // cannot establish that every page explicitly permitted sharing.
+            unclassified_page |= result.cache_scope.is_none();
             match (&out.cache_scope, &result.cache_scope) {
                 (None, scope) => out.cache_scope = scope.clone(),
                 (Some(first), Some(next)) if first != next => {
@@ -525,7 +529,8 @@ impl UpstreamPool {
             }
 
             let Some(next) = result.next_cursor else {
-                return Ok(out);
+                cursor = None;
+                break;
             };
             // Stop at a page boundary before another RPC whose results cannot
             // contribute to this request, not after receiving its first item.
@@ -568,6 +573,9 @@ impl UpstreamPool {
                 cap = limits::MAX_LIST_PAGES,
                 "skills/list exceeded the page cap — snapshot truncated"
             );
+        }
+        if unclassified_page && out.cache_scope.as_deref() == Some(CACHE_SCOPE_PUBLIC) {
+            out.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_owned());
         }
         Ok(out)
     }

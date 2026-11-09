@@ -716,17 +716,18 @@ impl LabMcpServer {
                 await_code_mode_execution(entry).await
             }
             InflightCodeModeRole::Leader(leader) => {
-                let result = broker
-                    .execute_with_trace_context(
-                        code,
-                        caller,
-                        self.code_mode_surface(),
-                        config,
-                        capability_filter,
-                        Some(Arc::<str>::from(execution_id.as_str())),
-                        request_trace_context(&context.extensions),
-                    )
-                    .await;
+                // Keep runner state out of the enclosing MCP dispatch future.
+                // The runner's catalog lookups share the same Tokio worker.
+                let result = Box::pin(broker.execute_with_trace_context(
+                    code,
+                    caller,
+                    self.code_mode_surface(),
+                    config,
+                    capability_filter,
+                    Some(Arc::<str>::from(execution_id.as_str())),
+                    request_trace_context(&context.extensions),
+                ))
+                .await;
                 leader.complete(&result);
                 result
             }

@@ -16,7 +16,7 @@
 //! Downstream -> daemon: tools, resources (including `ui://` mcp-ui
 //! resources -- the bridge has no URI-scheme awareness of its own; it just
 //! forwards `read_resource` verbatim and the daemon does its normal `ui://`
-//! routing on the other end), prompts, `complete`, and
+//! routing on the other end), Skills, skill directories, prompts, `complete`, and
 //! the SEP-2663 task extension (`tasks/get`, `tasks/update`, and
 //! `tasks/cancel`) plus the generic `CustomRequest` escape hatch. MRTR
 //! `input_required` and task responses are forwarded without collapsing
@@ -36,19 +36,22 @@
 //! capabilities required for MRTR, and the bridge uses the one-round helpers
 //! so `input_required` results are returned to the downstream client unchanged.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelTaskRequest,
     CancelledNotificationParam, ClientConfig, ClientNotification, ClientRequest, CompleteRequest,
     CompleteRequestParams, CompleteResult, CustomNotification, CustomRequest, CustomResult,
-    DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetTaskParams,
-    GetTaskRequest, GetTaskResult, Implementation, InitializeRequestParams, InitializeResult,
-    ListPromptsRequest, ListPromptsResult, ListResourceTemplatesRequest,
-    ListResourceTemplatesResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest,
-    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
-    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, ServerConfig,
-    ServerNotification, ServerResult, SubscriptionFilter, UpdateTaskParams, UpdateTaskRequest,
+    DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetSkillRequest,
+    GetSkillRequestParams, GetSkillResult, GetTaskParams, GetTaskRequest, GetTaskResult,
+    Implementation, InitializeRequestParams, InitializeResult, ListPromptsRequest,
+    ListPromptsResult, ListResourceTemplatesRequest, ListResourceTemplatesResult,
+    ListResourcesRequest, ListResourcesResult, ListSkillsRequest, ListSkillsResult,
+    ListToolsRequest, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
+    ProtocolVersion, ReadResourceDirectoryRequest, ReadResourceDirectoryRequestParams,
+    ReadResourceDirectoryResult, ReadResourceRequest, ReadResourceRequestParams,
+    ReadResourceResponse, ServerConfig, ServerNotification, ServerResult, SubscriptionFilter,
+    UpdateTaskParams, UpdateTaskRequest,
 };
 use rmcp::service::{
     NotificationContext, Peer, PeerRequestOptions, RequestContext, RunningService, ServiceError,
@@ -499,15 +502,12 @@ impl ServerHandler for BridgeServerHandler {
                     input.insert(key.to_owned(), value);
                 }
             }
-            let control = super::call_tool_codemode::notices::prepare_for_recipient(
-                channel.store.clone(),
-                Some(channel.recipient.clone()),
+            let input = super::call_tool_codemode::notices::NoticeInput::parse(
                 &input,
                 request.name.as_ref() == super::catalog::CODE_MODE_READ_TOOL_NAME,
             )
-            .await
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-            Some((control, *max_bytes, *max_tokens))
+            Some((channel, input, *max_bytes, *max_tokens))
         } else {
             None
         };
@@ -520,8 +520,32 @@ impl ServerHandler for BridgeServerHandler {
             .await?
         {
             ServerResult::CallToolResult(mut result) => {
-                if let Some((control, max_bytes, max_tokens)) = control {
-                    control.attach(&mut result, max_bytes, max_tokens).await;
+                // Code Mode adds an execution ID only after admitting the
+                // call. Validation errors must leave local controls untouched.
+                if let Some((channel, input, max_bytes, max_tokens)) = control
+                    && result.structured_content.as_ref().is_some_and(|trace| {
+                        trace.get("kind").and_then(serde_json::Value::as_str)
+                            == Some("code_mode_execute_trace")
+                            && trace
+                                .get("execution_id")
+                                .is_some_and(serde_json::Value::is_string)
+                    })
+                {
+                    match super::call_tool_codemode::notices::prepare_for_recipient(
+                        channel.store.clone(),
+                        Some(channel.recipient.clone()),
+                        None,
+                        input,
+                    )
+                    .await
+                    {
+                        Ok(control) => control.attach(&mut result, max_bytes, max_tokens).await,
+                        Err(error) => tracing::warn!(
+                            subsystem = "agent_notifications",
+                            kind = error.kind(),
+                            "bridge notice controls could not settle"
+                        ),
+                    }
                 }
                 Ok(CallToolResponse::Complete(result))
             }
@@ -708,6 +732,71 @@ impl ServerHandler for BridgeServerHandler {
             ServerResult::TaskAckResult(_) | ServerResult::EmptyResult(_) => Ok(()),
             _ => Err(unexpected_response("cancel_task")),
         }
+    }
+
+    fn list_skills(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListSkillsResult, ErrorData>> + Send {
+        Box::pin(async move {
+            let request = request
+                .map(ListSkillsRequest::with_param)
+                .unwrap_or_default();
+            match self
+                .forward_request(
+                    ClientRequest::ListSkillsRequest(request),
+                    &context,
+                    "list_skills",
+                )
+                .await?
+            {
+                ServerResult::ListSkillsResult(result) => Ok(result),
+                _ => Err(unexpected_response("list_skills")),
+            }
+        })
+    }
+
+    fn get_skill(
+        &self,
+        request: GetSkillRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<GetSkillResult, ErrorData>> + Send {
+        Box::pin(async move {
+            match self
+                .forward_request(
+                    ClientRequest::GetSkillRequest(GetSkillRequest::new(request)),
+                    &context,
+                    "get_skill",
+                )
+                .await?
+            {
+                ServerResult::GetSkillResult(result) => Ok(result),
+                _ => Err(unexpected_response("get_skill")),
+            }
+        })
+    }
+
+    fn read_resource_directory(
+        &self,
+        request: ReadResourceDirectoryRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceDirectoryResult, ErrorData>> + Send {
+        Box::pin(async move {
+            match self
+                .forward_request(
+                    ClientRequest::ReadResourceDirectoryRequest(ReadResourceDirectoryRequest::new(
+                        request,
+                    )),
+                    &context,
+                    "read_resource_directory",
+                )
+                .await?
+            {
+                ServerResult::ListResourcesResult(result) => Ok(result),
+                _ => Err(unexpected_response("read_resource_directory")),
+            }
+        })
     }
 
     /// Generic escape hatch for any method neither side has typed support

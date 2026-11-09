@@ -60,11 +60,22 @@ authority can list the definition. OAuth requires a current refresh grant for
 the same client, identity, scope, and resource. Product credentials must still
 match live access policy. Browser cookies do not enroll subscriptions.
 
+Use a secret in Standard Webhooks format. Prefix the standard Base64 encoding
+of 24–64 random bytes with `whsec_`. Verify `webhook-signature` against the
+exact request bytes using HMAC-SHA256 over
+`webhook-id.webhook-timestamp.raw-body`, with the decoded bytes as the key.
+The signature header contains one or more `v1,<base64>` signatures. The
+verification POST has `type: "verification"` and a `challenge` string.
+After verifying the signature, return a 2xx JSON response with that same
+`challenge` value. An empty 2xx response produces `challenge_failed`.
+
 Subscriptions apply to future notices. The default lifetime is one hour and
 the granted bounds are one minute to 24 hours. `ttlMs: null` grants 24 hours.
 Refresh with the same identity tuple and a fresh authenticated request.
-The response gives a finite `refreshBefore`. Use the same event name, filter,
-and URL, without the secret, to unsubscribe. Labby has no replay cursor.
+The response gives a finite `refreshBefore`. For ordinary notices it also
+returns the producer address in `_meta["ai.dinglebear.labby/inboxId"]`. Use
+that address to publish to the subscription. Use the same event name,
+filter, and URL, without the secret, to unsubscribe. Labby has no replay cursor.
 
 Callbacks must resolve exclusively to public addresses. Labby pins the checked
 addresses for each request, verifies TLS, and disables redirects and ambient
@@ -76,7 +87,7 @@ authority. Notice and subscription expiry still apply.
 
 Each event carries the existing notice ID, creation time, and advisory data.
 Transient delivery failures retry up to eight attempts, with one request per
-subscription and eight across workers. A successful HTTP callback ends webhook
+subscription, four per inbox, and eight across workers. A successful HTTP callback ends webhook
 retries. The notice remains available to its recipient until ACK or expiry.
 An ACK stops pending retries for that notice. See the [ChatGPT MCP Events
 profile](https://developers.openai.com/plugins/build/mcp-events) for the client
@@ -97,9 +108,9 @@ and sends `notifications/claude/channel` for pending notices. A normal
 `notification_inbox: true` Code Mode call returns the address to share with an
 authorized producer. The publishing API and channel must use the same private
 Labby installation; this also applies when the stdio connection bridges to a
-running daemon. The bridge requires an authenticated loopback daemon that
-confirms the same local installation. A new connection gets a new address. The worker ends when the
-connection closes.
+running daemon. Use an authenticated daemon at a literal loopback IP such as
+`127.0.0.1` or `::1`, with the same private installation as the bridge.
+A new connection gets a new address. The worker ends when the connection closes.
 
 Treat channel content as advisory and deduplicate on `meta.notice_id`.
 Send that ID in `ack_notifications` on a normal write-capable Code Mode call
@@ -113,7 +124,10 @@ timer, and watching CI or logs are separate producer features.
 Start an authenticated TCP MCP daemon with `labby serve --agent-messages`, or
 enable messaging on a direct local connection with `labby mcp --agent-messages`.
 On HTTP, configure each logical client session to send its own
-`Labby-Session-Key` header on every message tool call. Generate 32 random
+`Labby-Session-Key` header on authenticated root MCP requests, including
+`tools/list`, discovery, message calls, and message subscription operations.
+If `messages` is missing from the tool list, check the header on discovery
+and verify that the daemon started with messaging enabled. Generate 32 random
 bytes and encode them as 64 lowercase hexadecimal characters. Keep the key
 private in the client configuration and reuse it for that session's reconnects.
 Labby assigns a public `session_id` when the connection registers.
@@ -148,8 +162,12 @@ sessions use their verified owner identity and the private session key. A
 bridged stdio connection requires a daemon at a literal loopback address,
 the same private Labby installation, and a current authenticated bridge proof.
 Standalone stdio uses the installation's local owner group. A standalone
-process holds the installation lock, so use a shared daemon and stdio bridges
-for multiple concurrent local clients. Reopening stdio creates a new session.
+process holds the installation lock. For multiple concurrent local clients,
+start the authenticated daemon with `labby serve --agent-messages`, then run
+`labby mcp --agent-messages` for each stdio client. Set each bridge's
+`LABBY_SERVER_URL` to the daemon's literal loopback origin, use the same
+`LABBY_HOME`, and configure valid daemon authentication. Reopening stdio
+creates a new session.
 
 For HTTPS push, run `labby serve --agent-messages --mcp-events`. Register
 first, then subscribe to `labby.notification.created` with
@@ -175,12 +193,14 @@ created, and insecure files, symlinks, unsupported schema versions, or corrupt
 SQLite state are refused. Startup disables notices on failure; it never silently
 switches to an ephemeral inbox. Schema v3 adds session registrations and
 private message references while preserving earlier notices, subscriptions,
-and delivery leases. Keep `messaging.key` alongside the protected inbox
-backup so HTTP clients can reconnect to the same session. An older binary
-cannot open the upgraded store. Restore a consistent protected backup through the
-normal stopped-daemon maintenance workflow; do not delete or edit the live database
-to hide a storage failure. Notification data may be sensitive and must not be
-included in public diagnostics or shared backups.
+and delivery leases. The first gateway startup can migrate the inbox even when
+push and messaging are disabled. Before upgrading, stop the daemon and stdio
+processes that own this installation and take a consistent, protected backup of
+the installation. Keep the inbox and its keys together, including `messaging.key`
+if present. For rollback, restore the matching pre-upgrade backup while those
+processes are stopped, then verify the restored inbox on the older binary.
+Restoring the backup discards writes made after that snapshot. Notification data
+belongs in protected backups and redacted diagnostics.
 
 Startup storage diagnostics identify rejected `schema_version`, `application_id`,
 `schema_mismatch`, `integrity_check`, and `foreign_keys` validations through a
@@ -199,11 +219,12 @@ same ID; changed payload is a conflict. Registration refreshes a 30-day address;
 notice TTL is at most 24 hours and cannot outlive the address. Limits are detailed
 in the canonical reference, including global and recipient quotas.
 
-OAuth uses the full verified provider issuer and subject, the transport issuer,
-and the authorized client ID. OAuth inboxes from older versions did not record
-issuer provenance. Their rows remain until expiry, but OAuth consumers must
-register a new address and update the producer after upgrading. Static bearer and
-product credentials use verified credential fingerprints, not clientInfo or caller
+Existing OAuth Code Mode pull inboxes keep their address and pending notices.
+New OAuth push enrollments use an issuer-bound address derived from the verified
+provider and subject, transport issuer, and authorized client ID. Publish to
+the address returned by `events/subscribe` for push. The same signed OAuth
+identity can pull and ACK ordinary notices at its push address through Code Mode.
+Static bearer and product credentials use verified credential fingerprints, not clientInfo or caller
 supplied IDs. Protected-route identity includes its Team, loadout, and effective authority
 partition as well as the route label; rebinding a route cannot inherit an old
 partition's inbox. Optional hashed conversation metadata narrows routing.
@@ -224,7 +245,9 @@ the script from starting; a later script failure does not undo accepted controls
 Registration and ACK controls on the same call commit atomically. If a full
 response omits their receipt, repeat only the controls with a harmless compact
 script or your next ordinary call. Never replay a mutating script solely to
-recover a receipt.
+recover a receipt. On a stdio bridge, local notice controls settle after the
+daemon returns an admitted Code Mode execution result, including execution
+errors. A daemon validation rejection leaves those local controls untouched.
 
 ## Source ownership
 

@@ -13,6 +13,7 @@ use super::webhook::{DeliveryOutcome, WebhookAttempt};
 use super::{AgentEvents, EventAuthorityDecision};
 
 const MAX_IN_FLIGHT: usize = 8;
+const MAX_PER_INBOX_IN_FLIGHT: i64 = 4;
 const LEASE_MS: i64 = 30_000;
 const RETRY_DELAYS_MS: [i64; 7] = [1_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000];
 
@@ -111,8 +112,11 @@ fn claim_next(
            AND s.authority_key IN (SELECT value FROM json_each(?2))
            AND NOT EXISTS (SELECT 1 FROM agent_event_deliveries lease
                  WHERE lease.subscription_id=s.id AND lease.claim_until>?1)
+           AND (SELECT count(*) FROM agent_event_deliveries lease
+                 JOIN agent_event_subscriptions leased ON leased.id=lease.subscription_id
+                 WHERE leased.inbox_id=s.inbox_id AND lease.claim_until>?1) < ?3
          ORDER BY d.next_attempt,n.created,s.id,n.id LIMIT 1",
-            params![now, authority_keys_json],
+            params![now, authority_keys_json, MAX_PER_INBOX_IN_FLIGHT],
             |row| {
                 Ok(Claim {
                     subscription: row.get(0)?,
@@ -166,8 +170,17 @@ fn begin(db: &Connection, claim: &Claim, now: i64) -> Result<bool, NoticeError> 
     Ok(changed == 1)
 }
 
-fn mark_offered(db: &Connection, claim: &Claim, now: i64) -> Result<bool, NoticeError> {
-    Ok(db.execute(
+fn mark_offered(
+    db: &mut Connection,
+    claim: &Claim,
+    now: i64,
+    active: &CancellationToken,
+) -> Result<bool, NoticeError> {
+    if active.is_cancelled() {
+        return Ok(false);
+    }
+    let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let offered = tx.execute(
         "UPDATE agent_notices SET webhook_offered=1
          WHERE id=?1 AND expires>?4 AND acknowledged=0 AND EXISTS (
              SELECT 1 FROM agent_event_deliveries d
@@ -183,7 +196,12 @@ fn mark_offered(db: &Connection, claim: &Claim, now: i64) -> Result<bool, Notice
             now,
             claim.generation
         ],
-    )? == 1)
+    )? == 1;
+    if active.is_cancelled() {
+        return Ok(false);
+    }
+    tx.commit()?;
+    Ok(offered)
 }
 
 #[derive(Clone, Copy)]
@@ -273,11 +291,32 @@ impl AgentEvents {
                 let Some(keys) = self.authority_keys() else {
                     break;
                 };
-                let claim = self
+                let claim = match self
                     .store
-                    .run_event(move |db| claim_next(db, &keys, now_ms()))
-                    .await;
-                let Ok(Some(claim)) = claim else { break };
+                    .run_event_settled(move |db| claim_next(db, &keys, now_ms()))
+                    .await
+                {
+                    Ok(Some(claim)) => claim,
+                    Ok(None) => break,
+                    Err(NoticeError::Busy) => {
+                        tracing::debug!(
+                            subsystem = "agent_events",
+                            operation = "claim",
+                            kind = "rate_limited",
+                            "webhook claim deferred by store contention"
+                        );
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            subsystem = "agent_events",
+                            operation = "claim",
+                            kind = error.kind(),
+                            "webhook claim failed"
+                        );
+                        break;
+                    }
+                };
                 let events = self.clone();
                 let cancel = cancel.clone();
                 pending.spawn(async move {
@@ -290,27 +329,24 @@ impl AgentEvents {
         while pending.join_next().await.is_some() {}
     }
 
-    async fn deliver(&self, claim: Arc<Claim>, cancel: CancellationToken) {
+    async fn deliver(self: &Arc<Self>, claim: Arc<Claim>, cancel: CancellationToken) {
         let started_at = std::time::Instant::now();
-        let Some(authority_cancel) = self.authority_cancellation(&claim.authority) else {
-            let _ = self
-                .store
-                .run_event(move |db| finish(db, &claim, Finish::Release, now_ms()))
-                .await;
-            return;
-        };
-        let result = tokio::select! {
-            biased;
-            _ = cancel.cancelled() => Finish::Release,
-            _ = authority_cancel.cancelled() => Finish::Release,
-            result = self.deliver_inner(&claim) => result,
+        let result = if let Some(authority_cancel) = self.authority_cancellation(&claim.authority) {
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => Finish::Release,
+                _ = authority_cancel.cancelled() => Finish::Release,
+                result = self.deliver_inner(&claim) => result,
+            }
+        } else {
+            Finish::Release
         };
         tracing::debug!(
             subsystem = "agent_events",
             subscription_id = %claim.subscription,
             notice_id = %claim.notice,
             elapsed_ms = started_at.elapsed().as_millis() as u64,
-            outcome = match result {
+            transport_outcome = match result {
                 Finish::Outcome(DeliveryOutcome::Received) => "received",
                 Finish::Outcome(DeliveryOutcome::Retry { .. }) => "retry",
                 Finish::Outcome(DeliveryOutcome::Stop) => "stopped",
@@ -319,19 +355,30 @@ impl AgentEvents {
                 Finish::Revoke => "revoked",
                 Finish::Release => "released",
             },
-            "MCP event delivery attempt finished"
+            "MCP event transport attempt finished"
         );
         for attempt in 0..3 {
             let claim_copy = claim.clone();
             match self
                 .store
-                .run_event(move |db| finish(db, &claim_copy, result, now_ms()))
+                .run_event_settled(move |db| finish(db, &claim_copy, result, now_ms()))
                 .await
             {
                 Err(NoticeError::Busy) if attempt < 2 => {
                     tokio::time::sleep(Duration::from_millis(30)).await;
                 }
-                _ => break,
+                Ok(()) => {
+                    tracing::debug!(subsystem = "agent_events", operation = "settle",
+                        subscription_id = %claim.subscription, notice_id = %claim.notice,
+                        "MCP event delivery storage settled");
+                    break;
+                }
+                Err(error) => {
+                    tracing::warn!(subsystem = "agent_events", operation = "settle",
+                        subscription_id = %claim.subscription, notice_id = %claim.notice, kind = error.kind(),
+                        "MCP event delivery storage settlement failed");
+                    break;
+                }
             }
         }
         if matches!(
@@ -342,7 +389,7 @@ impl AgentEvents {
         }
     }
 
-    async fn deliver_inner(&self, claim: &Arc<Claim>) -> Finish {
+    async fn deliver_inner(self: &Arc<Self>, claim: &Arc<Claim>) -> Finish {
         match self.check_authority(&claim.authority).await {
             EventAuthorityDecision::Current => {}
             EventAuthorityDecision::Revoked => return Finish::Revoke,
@@ -377,21 +424,25 @@ impl AgentEvents {
         }
     }
 
-    fn attempt(&self, claim: &Arc<Claim>) -> Result<WebhookAttempt, EventError> {
+    fn attempt(self: &Arc<Self>, claim: &Arc<Claim>) -> Result<WebhookAttempt, EventError> {
         let key = |ciphertext| {
             self.open_key(&claim.subscription, ciphertext)
                 .and_then(WebhookSecret::from_bytes)
         };
         let witness = {
             let claim = claim.clone();
-            let store = self.store.clone();
+            let events = self.clone();
             Box::new(
-                move || -> futures::future::BoxFuture<'static, std::io::Result<()>> {
+                move |active: CancellationToken| -> futures::future::BoxFuture<'static, std::io::Result<()>> {
                     Box::pin(async move {
+                        if events.check_authority(&claim.authority).await != EventAuthorityDecision::Current {
+                            return Err(std::io::Error::other("webhook authority is no longer current"));
+                        }
                         for retry in 0..3 {
                             let claim = claim.clone();
-                            match store
-                                .run_event(move |db| mark_offered(db, &claim, now_ms()))
+                            let active = active.clone();
+                            match events.store
+                                .run_event(move |db| mark_offered(db, &claim, now_ms(), &active))
                                 .await
                             {
                                 Ok(true) => return Ok(()),

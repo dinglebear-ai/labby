@@ -119,7 +119,20 @@ async fn atomic_enqueue_and_retry_survive_independent_connections() {
             assert_eq!(retry.body, first.body);
             assert_ne!(retry.token, first.token);
             assert!(begin(db, &retry, now + LEASE_MS)?);
-            assert!(mark_offered(db, &retry, now + LEASE_MS)?);
+            let canceled = CancellationToken::new();
+            canceled.cancel();
+            assert!(!mark_offered(db, &retry, now + LEASE_MS, &canceled)?);
+            assert!(!db.query_row(
+                "SELECT webhook_offered FROM agent_notices WHERE id=?",
+                [&retry.notice],
+                |row| row.get::<_, bool>(0),
+            )?);
+            assert!(mark_offered(
+                db,
+                &retry,
+                now + LEASE_MS,
+                &CancellationToken::new()
+            )?);
             finish(
                 db,
                 &retry,
@@ -256,4 +269,50 @@ async fn eight_leases_globally_across_store_handles() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn slow_callbacks_for_one_inbox_leave_slots_for_another() {
+    let store = NoticeStore::memory().unwrap();
+    let now = now_ms();
+    let busy = owner("busy-callback-owner");
+    let quiet = owner("quiet-callback-owner");
+    for endpoint in 0..9 {
+        let who = if endpoint < 8 { &busy } else { &quiet };
+        let mut spec = input("ci", endpoint);
+        spec.expires = now + 3_600_000;
+        store
+            .activate_event_subscription(who.clone(), spec, now)
+            .await
+            .unwrap();
+    }
+    for who in [&busy, &quiet] {
+        let inbox = store.register(who.recipient.clone()).await.unwrap().id;
+        store
+            .publish(producer(), message(inbox, "ci", "fairness"))
+            .await
+            .unwrap();
+    }
+    let busy = busy.recipient.key().unwrap();
+    let quiet = quiet.recipient.key().unwrap();
+    store
+        .run_event_settled(move |db| {
+            let mut claims = Vec::new();
+            let now = now_ms();
+            while let Some(claim) = claim_next(db, OWNER_KEYS, now)? {
+                claims.push(claim.recipient);
+            }
+            assert_eq!(
+                claims
+                    .iter()
+                    .filter(|recipient| **recipient == busy)
+                    .count(),
+                4
+            );
+            assert!(claims.contains(&quiet));
+            assert_eq!(claims.len(), 5);
+            Ok(())
+        })
+        .await
+        .unwrap();
 }

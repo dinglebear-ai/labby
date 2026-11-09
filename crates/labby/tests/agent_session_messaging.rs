@@ -225,6 +225,22 @@ async fn session_messages_live_http_and_stdio() {
         .await
         .unwrap();
     let http = Http::new(&daemon.connection().base_url);
+    let unsealed = http
+        .client
+        .post(format!(
+            "{}/v1/notifications/agent/message-bridge-proof",
+            http.base
+        ))
+        .bearer_auth(TOKEN)
+        .json(&json!({"installation":"unissued","nonce":"unissued","sent_at":0,"mac":"unissued"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unsealed.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        unsealed.headers()[reqwest::header::CACHE_CONTROL],
+        "private, no-store"
+    );
     let root = daemon.root();
     let mut claude = Local::start(root, Some(&http.base)).await;
     let mut sibling = Local::start(root, Some(&http.base)).await;
@@ -317,6 +333,64 @@ async fn session_messages_live_http_and_stdio() {
         .await;
     assert_eq!(callback["error"]["code"], -32015, "{callback}");
     assert_eq!(callback["error"]["data"]["reason"], "destination_blocked");
+
+    let inbox_path = daemon
+        .root()
+        .join("labby-home/agent-notifications/inbox.sqlite3");
+    let active_inbox: String = rusqlite::Connection::open(&inbox_path)
+        .unwrap()
+        .query_row(
+            "SELECT inbox_id FROM agent_message_sessions WHERE id=? AND closed=0",
+            [c.as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let old_notice: Value = http.client.post(format!("{}/v1/notifications/agent", http.base))
+        .bearer_auth(TOKEN)
+        .json(&json!({
+            "inbox_id":active_inbox,"source":"fixture","level":"info","message":"Acknowledge after validation",
+            "dedupe_key":"bridge-validation","ttl_seconds":60,
+        }))
+        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    let old_id = &old_notice["id"];
+    let pushed = timeout(DEADLINE, claude.read()).await.unwrap();
+    assert_eq!(&pushed["params"]["meta"]["notice_id"], old_id);
+    let rejected = claude
+        .rpc(
+            "tools/call",
+            json!({
+                "name":"codemode","arguments":{"code":" ", "ack_notifications":[old_id]}
+            }),
+        )
+        .await;
+    assert!(
+        rejected.to_string().contains("code must not be empty"),
+        "{rejected}"
+    );
+    let acknowledged: bool = rusqlite::Connection::open(&inbox_path)
+        .unwrap()
+        .query_row(
+            "SELECT acknowledged FROM agent_notices WHERE id=?",
+            [old_id.as_str().unwrap()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        !acknowledged,
+        "a rejected daemon request must not consume the ACK"
+    );
+    let accepted = claude
+        .rpc(
+            "tools/call",
+            json!({
+                "name":"codemode","arguments":{"code":"return 1", "ack_notifications":[old_id]}
+            }),
+        )
+        .await;
+    assert_eq!(
+        reply(&accepted)["acknowledged_notifications"],
+        json!([old_id])
+    );
 
     sibling.finish().await;
     daemon.restart().await.unwrap();

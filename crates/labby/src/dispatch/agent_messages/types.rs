@@ -5,11 +5,11 @@ use std::sync::{
 
 use serde::{Deserialize, Serialize};
 
+pub(super) use crate::dispatch::codemode_notices::MESSAGE_RETENTION_MS as RETENTION_MS;
 use crate::dispatch::codemode_notices::{NoticeConsumer, NoticeError, NoticeRecipient};
 
 pub(crate) const MAX_MESSAGE_TOOL_BYTES: usize = 128 * 1024;
 pub(super) const MAX_MESSAGE_BODY_BYTES: usize = 16_384;
-pub(super) const RETENTION_MS: i64 = 86_400_000;
 pub(super) const MAX_SESSIONS_PER_OWNER: i64 = 32;
 pub(super) const MAX_SESSIONS: i64 = 512;
 pub(super) const MAX_MESSAGES_PER_OWNER: i64 = 64;

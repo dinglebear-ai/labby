@@ -183,7 +183,7 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
     let directory = tempfile::tempdir().unwrap();
     let publishing = NoticeStore::open_at(directory.path()).unwrap();
     let working = NoticeStore::open_at(directory.path()).unwrap();
-    let (sender, callback, mut received, https) = webhook::tests::receiver(2).await;
+    let (sender, callback, mut received, https) = webhook::tests::receiver(3).await;
     let encryption = load_key(&STANDARD.encode([b't'; 32])).unwrap();
     let events = Arc::new(AgentEvents::new(working, encryption, Arc::new(sender)));
     let manager = Arc::new(
@@ -364,7 +364,7 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
         enabled.clone(),
         "/mcp",
         "events/subscribe",
-        subscribe,
+        subscribe.clone(),
         true,
         true,
     )
@@ -372,8 +372,41 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
     assert_eq!(refreshed["result"]["id"], id, "{refreshed}");
     assert!(
         received.try_recv().is_err(),
-        "same key/url reused verification"
+        "same subscription and key reused verification"
     );
+    let mut changed_filter = subscribe;
+    changed_filter["arguments"]["source"] = json!("security");
+    let (_, distinct) = send(
+        enabled.clone(),
+        "/mcp",
+        "events/subscribe",
+        changed_filter.clone(),
+        true,
+        true,
+    )
+    .await;
+    let distinct_id = distinct["result"]["id"]
+        .as_str()
+        .expect("distinct subscription");
+    assert_ne!(distinct_id, id);
+    let (_, verification) = received
+        .try_recv()
+        .expect("new subscription ID was challenged");
+    assert_eq!(verification["type"], "verification");
+    changed_filter["delivery"]
+        .as_object_mut()
+        .unwrap()
+        .remove("secret");
+    let (_, closed_filter) = send(
+        enabled.clone(),
+        "/mcp",
+        "events/unsubscribe",
+        changed_filter,
+        true,
+        true,
+    )
+    .await;
+    assert_eq!(closed_filter["result"], json!({}));
     let mut unsubscribe = json!({
         "name":EVENT_NAME, "arguments":{"source":"ci"}, "delivery":{"mode":"webhook","url":callback},
         "_meta":modern_meta("other-conversation"),
@@ -398,6 +431,10 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
         })
         .await
         .unwrap();
+    assert_eq!(
+        accepted["result"]["_meta"]["ai.dinglebear.labby/inboxId"],
+        inbox
+    );
     let cancel = CancellationToken::new();
     let guard = cancel.clone().drop_guard();
     let worker = tokio::spawn(events.run(cancel));
@@ -636,3 +673,114 @@ async fn receiver_can_ack_before_http_response() {
 }
 
 mod session_messages;
+
+#[tokio::test]
+async fn revocation_between_attempt_and_body_release_blocks_the_offer() {
+    use super::super::codemode_notices::{NoticeLevel, NoticeProducer, PublishNotice};
+    use super::webhook::{DeliveryOutcome, WebhookAttempt, WebhookSender};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio_util::sync::CancellationToken;
+
+    struct Grant(AtomicBool);
+    impl EventAuthorizer for Grant {
+        fn check(&self) -> futures::future::BoxFuture<'_, EventAuthorityDecision> {
+            Box::pin(async {
+                if self.0.load(Ordering::Acquire) {
+                    EventAuthorityDecision::Current
+                } else {
+                    EventAuthorityDecision::Revoked
+                }
+            })
+        }
+    }
+    #[derive(Default)]
+    struct BodyGate {
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        settled: tokio::sync::Notify,
+        exposed: AtomicBool,
+    }
+    impl WebhookSender for BodyGate {
+        fn verify<'a>(
+            &'a self,
+            _: &'a url::Url,
+            _: &'a str,
+            _: &'a WebhookSecret,
+        ) -> futures::future::BoxFuture<'a, Result<(), EventError>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn send(
+            &self,
+            mut attempt: WebhookAttempt,
+        ) -> futures::future::BoxFuture<'_, DeliveryOutcome> {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                let authorized = attempt.offer.take().unwrap()(CancellationToken::new())
+                    .await
+                    .is_ok();
+                self.exposed.store(authorized, Ordering::Release);
+                self.settled.notify_one();
+                DeliveryOutcome::Stop
+            })
+        }
+    }
+
+    let store = NoticeStore::memory().unwrap();
+    let gate = Arc::new(BodyGate::default());
+    let grant = Arc::new(Grant(AtomicBool::new(true)));
+    let events = Arc::new(AgentEvents::new(
+        store.clone(),
+        load_key(&STANDARD.encode([b't'; 32])).unwrap(),
+        gate.clone(),
+    ));
+    let recipient = owner("revoked-during-connect").recipient;
+    let params = serde_json::from_value(subscribe_request("https://example.com/events")).unwrap();
+    let enrolled = events
+        .subscribe(recipient.clone(), grant.clone(), params, None)
+        .await
+        .unwrap();
+    let notice = store
+        .publish(
+            NoticeProducer {
+                actor: "fixture".into(),
+                admin: true,
+            },
+            PublishNotice {
+                inbox_id: enrolled["_meta"]["ai.dinglebear.labby/inboxId"]
+                    .as_str()
+                    .unwrap()
+                    .into(),
+                source: "ci".into(),
+                level: NoticeLevel::Info,
+                message: "Private build notice.".into(),
+                dedupe_key: "revoked".into(),
+                ttl_seconds: 60,
+            },
+        )
+        .await
+        .unwrap();
+    let cancel = CancellationToken::new();
+    let guard = cancel.clone().drop_guard();
+    let worker = tokio::spawn(events.run(cancel));
+    tokio::time::timeout(Duration::from_secs(3), gate.started.notified())
+        .await
+        .unwrap();
+    grant.0.store(false, Ordering::Release);
+    gate.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(3), gate.settled.notified())
+        .await
+        .unwrap();
+    assert!(!gate.exposed.load(Ordering::Acquire));
+    drop(guard);
+    tokio::time::timeout(Duration::from_secs(3), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, ack) = store
+        .controls(recipient, false, Some(vec![notice.id]))
+        .await
+        .unwrap();
+    assert_eq!(ack, Some(vec![]));
+}

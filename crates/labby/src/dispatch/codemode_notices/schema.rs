@@ -143,6 +143,111 @@ fn check_integrity(db: &Connection) -> Result<(), NoticeError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn expired_message_inbox_releases_capacity_before_the_ordinary_inbox() {
+        use super::super::{MESSAGE_INBOX_SCOPE, MESSAGE_RETENTION_MS, prune, register_at};
+        let mut db = Connection::open_in_memory().unwrap();
+        migrate(&mut db).unwrap();
+        let message = register_at(&mut db, "message-key", MESSAGE_INBOX_SCOPE, 1).unwrap();
+        let ordinary = register_at(&mut db, "notice-key", "authenticated_client", 1).unwrap();
+        assert_eq!(message.expires_at_unix_ms, MESSAGE_RETENTION_MS + 1);
+        prune(&db, MESSAGE_RETENTION_MS + 2).unwrap();
+        let remaining: String = db
+            .query_row("SELECT id FROM agent_inboxes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, ordinary.id);
+    }
+
+    #[tokio::test]
+    async fn v1_oauth_pull_address_and_new_verified_address_are_both_readable() {
+        use super::super::{
+            NoticeConsumer, NoticeLevel, NoticeProducer, NoticeRecipient, NoticeStore,
+            PublishNotice,
+        };
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(V1).unwrap();
+        db.pragma_update(None, "application_id", APPLICATION_ID)
+            .unwrap();
+        db.pragma_update(None, "user_version", 1).unwrap();
+        let recipient = |id: &str| NoticeRecipient {
+            actor: Some("same-legacy-oauth-actor".into()),
+            route: "root".into(),
+            consumer: NoticeConsumer::Client {
+                id: id.into(),
+                conversation: None,
+            },
+        };
+        let old = recipient("legacy-oauth-client");
+        let bound = recipient("issuer-bound-client");
+        let unrelated = recipient("other-issuer-bound-client");
+        let now = now_ms();
+        let inbox = format!("inbox_{}", ulid::Ulid::new());
+        let pending = format!("notice_{}", ulid::Ulid::new());
+        db.execute(
+            "INSERT INTO agent_inboxes VALUES(?1,?2,?3,?4)",
+            rusqlite::params![inbox, old.key().unwrap(), old.scope(), now + 60_000],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO agent_notices(id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires)
+             VALUES(?1,?2,'old-producer','old-dedupe','{}','ci','info','old notice',?3,?4)",
+            rusqlite::params![pending, inbox, now, now + 60_000],
+        ).unwrap();
+        let store = NoticeStore::from_connection(db).unwrap();
+        let enrolled = store.register(bound.clone()).await.unwrap();
+        let other = store.register(unrelated.clone()).await.unwrap();
+        let producer = NoticeProducer {
+            actor: "fixture".into(),
+            admin: true,
+        };
+        let publish = |inbox_id| PublishNotice {
+            inbox_id,
+            source: "ci".into(),
+            level: NoticeLevel::Info,
+            message: "new notice".into(),
+            dedupe_key: "one".into(),
+            ttl_seconds: 60,
+        };
+        let new = store
+            .publish(producer.clone(), publish(enrolled.id))
+            .await
+            .unwrap();
+        let other = store.publish(producer, publish(other.id)).await.unwrap();
+        assert!(
+            store
+                .deliver(unrelated, |batch| Some(batch.notifications.len()))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        let both = store
+            .deliver_for_recipients(old.clone(), Some(bound.clone()), |batch| {
+                Some(
+                    batch
+                        .notifications
+                        .iter()
+                        .map(|n| n.id.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(both.len(), 2);
+        assert!(both.contains(&pending) && both.contains(&new.id));
+        let (address, acked) = store
+            .controls_for_recipients(
+                old,
+                Some(bound),
+                true,
+                Some(vec![pending.clone(), new.id.clone(), other.id]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(address.unwrap().id, inbox);
+        assert_eq!(acked.unwrap(), vec![pending, new.id]);
+    }
+
     fn v2_fixture() -> Connection {
         let db = Connection::open_in_memory().unwrap();
         db.execute_batch("PRAGMA foreign_keys=ON;").unwrap();

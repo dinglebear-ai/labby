@@ -1295,7 +1295,14 @@ pub(crate) fn build_router_with_external_auth(
                 super::session_messages::descriptor(),
                 post(super::session_messages::prove),
             )
-            .map_router(|router| router.route_layer(make_auth_layer(false)));
+            .map_router(|router| {
+                router.route_layer(make_auth_layer(false)).route_layer(
+                    axum::middleware::from_fn_with_state(
+                        state.clone(),
+                        super::session_messages::authenticate_bridge,
+                    ),
+                )
+            });
         route_group = route_group.merge(proof);
     }
 

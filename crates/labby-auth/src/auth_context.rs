@@ -114,6 +114,7 @@ pub struct VerifiedOAuthGrant {
     resource: String,
     scope: String,
     provider: crate::types::ProviderBinding,
+    family: Arc<tokio::sync::OnceCell<Option<String>>>,
 }
 
 impl VerifiedOAuthGrant {
@@ -132,20 +133,35 @@ impl VerifiedOAuthGrant {
             resource: claims.aud.clone(),
             scope: claims.scope.clone(),
             provider,
+            family: Arc::default(),
         })
     }
 
     /// Recheck the grant, including provider replacement and consent
     /// revocation, on the same authority tuple that enrolled the subscription.
     pub async fn is_current(&self) -> Result<bool, crate::error::AuthError> {
-        self.store
-            .has_current_oauth_grant(
+        let lookup = |family| {
+            self.store.current_oauth_grant_family(
                 self.client.clone(),
                 self.subject.clone(),
                 self.resource.clone(),
                 self.scope.clone(),
                 self.provider.clone(),
+                family,
             )
-            .await
+        };
+        if let Some(family) = self.family.get() {
+            return match family {
+                Some(family) => Ok(lookup(Some(family.clone())).await?.is_some()),
+                None => Ok(false),
+            };
+        }
+        // Normal rotation preserves the grant that authorized enrollment.
+        // A new consent receives a different grant, even for the same tuple.
+        Ok(self
+            .family
+            .get_or_try_init(|| lookup(None))
+            .await?
+            .is_some())
     }
 }

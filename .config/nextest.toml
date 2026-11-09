@@ -37,7 +37,8 @@ threads-required = 'num-test-threads'
 # deadlines. The target shards still execute on separate CI runners in parallel.
 [[profile.ci.overrides]]
 filter = '''package(labby) & (
-    binary(=browser_runtime_e2e)
+    binary(=agent_session_messaging)
+    | binary(=browser_runtime_e2e)
     | binary(=codemode_qualification)
     | binary(=e2e_coverage_report)
     | binary(=gateway_auto_reconnect)

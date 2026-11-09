@@ -1421,7 +1421,9 @@ impl LiveGateway {
         crate::dispatch::codemode_notices::NoticeError,
     > {
         use crate::dispatch::{
-            agent_messages::proof::{BRIDGE_PROOF_PATH, BridgeProof, BridgeProofRequest},
+            agent_messages::proof::{
+                BRIDGE_AUTH_HEADER, BRIDGE_PROOF_PATH, BridgeProof, BridgeProofRequest,
+            },
             codemode_notices::{NoticeError, now_ms},
         };
 
@@ -1460,13 +1462,18 @@ impl LiveGateway {
             };
             let token = zeroize::Zeroizing::new(token);
             let request = BridgeProofRequest::new(key, &token, installation, now_ms())?;
+            let mut sealed = reqwest::header::HeaderValue::from_str(
+                &key.seal_bridge_bearer(installation, &token)?,
+            )
+            .map_err(|_| NoticeError::Unavailable)?;
+            sealed.set_sensitive(true);
             let url = self
                 .base_url
                 .join(BRIDGE_PROOF_PATH)
                 .map_err(|_| NoticeError::Identity)?;
             let mut response = client
                 .post(url)
-                .bearer_auth(token.as_str())
+                .header(BRIDGE_AUTH_HEADER, sealed)
                 .json(&request)
                 .send()
                 .await
@@ -1657,6 +1664,43 @@ mod tests {
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
             actions: None,
         }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn message_proof_does_not_expose_a_bearer_to_a_replacement_listener() {
+        use crate::dispatch::agent_messages::proof::{
+            BRIDGE_AUTH_HEADER, BRIDGE_PROOF_PATH, MessageKey,
+        };
+        const BEARER: &str = "synthetic-private-bridge-bearer";
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(BRIDGE_PROOF_PATH))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let gateway = test_gateway(server.uri(), Some(BEARER.into()));
+        let key = MessageKey::from_test_bytes([7; 32]);
+        assert!(
+            gateway
+                .prove_message_bridge(&key, &"a".repeat(64))
+                .await
+                .is_err()
+        );
+        let requests = server.received_requests().await.unwrap();
+        let [request] = requests.as_slice() else {
+            panic!("expected one proof request")
+        };
+        assert!(!request.headers.contains_key(reqwest::header::AUTHORIZATION));
+        let envelope = request
+            .headers
+            .get(BRIDGE_AUTH_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(!envelope.contains(BEARER));
+        assert!(!String::from_utf8_lossy(&request.body).contains(BEARER));
     }
 
     async fn detect_opportunistically(

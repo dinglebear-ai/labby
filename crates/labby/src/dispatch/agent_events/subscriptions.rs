@@ -122,6 +122,7 @@ pub(super) fn activate(
     tx.commit()?;
     Ok(EventSubscription {
         id,
+        inbox_id,
         expires: validated.expires,
         replaced_authority: existing.map(|(_, key)| key),
     })

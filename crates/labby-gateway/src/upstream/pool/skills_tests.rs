@@ -577,6 +577,26 @@ async fn a_cache_scope_change_mid_pagination_is_rejected() {
 }
 
 #[tokio::test]
+async fn unclassified_skills_page_does_not_promote_the_snapshot_to_public() {
+    for first in [
+        json!({ "skills": [entry("up", "alpha")], "nextCursor": "p2" }),
+        json!({ "skills": [entry("up", "alpha")], "nextCursor": "p2", "cacheScope": "" }),
+    ] {
+        let server = SkillsServer::new(vec![
+            first,
+            json!({ "skills": [entry("up", "beta")], "cacheScope": "public" }),
+        ]);
+        let pool = catalog_pool_with_server("up", server).await;
+        let snapshot = pool
+            .fetch_upstream_skills("up", &peer_for(&pool, "up").await)
+            .await
+            .expect("otherwise valid skills are usable");
+        assert_eq!(snapshot.skills.len(), 2);
+        assert_ne!(snapshot.cache_scope.as_deref(), Some("public"));
+    }
+}
+
+#[tokio::test]
 async fn a_malformed_page_fails_rather_than_returning_a_partial_snapshot() {
     // The important half: an error, not the one good page. Caching a partial
     // walk as complete would make a later rediscover return the same gap.

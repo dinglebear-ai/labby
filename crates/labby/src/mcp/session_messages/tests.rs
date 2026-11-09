@@ -209,7 +209,9 @@ async fn verified_static_rotation_changes_the_owner_and_binding() {
 #[tokio::test]
 async fn local_message_bridge_requires_authenticated_installation() {
     use crate::dispatch::{
-        agent_messages::proof::{BRIDGE_PROOF_PATH, BridgeProof, BridgeProofRequest},
+        agent_messages::proof::{
+            BRIDGE_AUTH_HEADER, BRIDGE_PROOF_PATH, BridgeProof, BridgeProofRequest,
+        },
         codemode_notices::now_ms,
     };
     use axum::{extract::ConnectInfo, http::StatusCode};
@@ -218,7 +220,7 @@ async fn local_message_bridge_requires_authenticated_installation() {
     async fn prove(
         router: &Router,
         challenge: &BridgeProofRequest,
-        token: &str,
+        sealed: &str,
         peer: Option<SocketAddr>,
     ) -> (StatusCode, Option<BridgeProof>) {
         let mut request = Request::builder()
@@ -226,7 +228,7 @@ async fn local_message_bridge_requires_authenticated_installation() {
             .uri(BRIDGE_PROOF_PATH)
             .header("host", "localhost")
             .header("content-type", "application/json")
-            .header("authorization", format!("Bearer {token}"))
+            .header(BRIDGE_AUTH_HEADER, sealed)
             .header("forwarded", "for=127.0.0.1");
         if let Some(peer) = peer {
             request = request.extension(ConnectInfo(peer));
@@ -251,25 +253,34 @@ async fn local_message_bridge_requires_authenticated_installation() {
     let installation = "1".repeat(64);
     let first = fixture(temp.path(), token, true);
     let challenge = BridgeProofRequest::new(&key, token, &installation, now_ms()).unwrap();
+    let sealed = key.seal_bridge_bearer(&installation, token).unwrap();
+    let wrong_bearer = key.seal_bridge_bearer(&installation, "wrong").unwrap();
+    let foreign_envelope = key.seal_bridge_bearer(&"2".repeat(64), token).unwrap();
     let loopback = Some("127.0.0.1:12345".parse().unwrap());
     let remote = Some("192.0.2.42:12345".parse().unwrap());
 
     assert_eq!(
-        prove(&first, &challenge, token, None).await.0,
+        prove(&first, &challenge, &sealed, None).await.0,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        prove(&first, &challenge, token, remote).await.0,
+        prove(&first, &challenge, &sealed, remote).await.0,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        prove(&first, &challenge, "wrong", loopback).await.0,
+        prove(&first, &challenge, &wrong_bearer, loopback).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        prove(&first, &challenge, &foreign_envelope, loopback)
+            .await
+            .0,
         StatusCode::UNAUTHORIZED
     );
 
     let other = BridgeProofRequest::new(&key, token, &"2".repeat(64), now_ms()).unwrap();
     assert_eq!(
-        prove(&first, &other, token, loopback).await.0,
+        prove(&first, &other, &sealed, loopback).await.0,
         StatusCode::FORBIDDEN
     );
     let forgery = BridgeProofRequest::new(
@@ -280,18 +291,18 @@ async fn local_message_bridge_requires_authenticated_installation() {
     )
     .unwrap();
     assert_eq!(
-        prove(&first, &forgery, token, loopback).await.0,
+        prove(&first, &forgery, &sealed, loopback).await.0,
         StatusCode::FORBIDDEN
     );
 
-    let (status, result) = prove(&first, &challenge, token, loopback).await;
+    let (status, result) = prove(&first, &challenge, &sealed, loopback).await;
     assert_eq!(status, StatusCode::OK);
     let result = result.unwrap();
     result.verify(&key, &challenge, token, now_ms()).unwrap();
     assert_eq!(result.owner_key, key.static_owner(token));
 
     let restarted = fixture(temp.path(), token, true);
-    let after = prove(&restarted, &challenge, token, loopback)
+    let after = prove(&restarted, &challenge, &sealed, loopback)
         .await
         .1
         .unwrap();
@@ -301,7 +312,7 @@ async fn local_message_bridge_requires_authenticated_installation() {
 
     let disabled = fixture(temp.path(), token, false);
     assert_eq!(
-        prove(&disabled, &challenge, token, loopback).await.0,
+        prove(&disabled, &challenge, &sealed, loopback).await.0,
         StatusCode::NOT_FOUND
     );
 }

@@ -12,7 +12,7 @@ use tokio::sync::Notify;
 use super::session_messages::LocalMessageSession;
 
 use crate::dispatch::codemode_notices::{
-    CodeModeNotice, NoticeConsumer, NoticeLevel, NoticeRecipient, NoticeStore,
+    CodeModeNotice, NoticeConsumer, NoticeLevel, NoticeRecipient, NoticeStore, now_ms,
 };
 
 pub(crate) const BRIDGE_BINDING_META: &str = "ai.dinglebear.labby/inboxBinding";
@@ -95,7 +95,7 @@ impl ChannelSession {
                 // The service's waiting future owns shutdown and its join.
                 return std::future::pending().await;
             }
-            if inbox_expires <= crate::dispatch::codemode_notices::now_ms() {
+            if inbox_expires <= now_ms() {
                 match self
                     .store
                     .controls(self.recipient.clone(), true, None)
@@ -127,17 +127,19 @@ impl ChannelSession {
                     {
                         continue;
                     }
-                    if !matches!(
-                        tokio::time::timeout(
-                            Duration::from_secs(5),
-                            peer.send_notification(envelope(&notice))
-                        )
-                        .await,
-                        Ok(Ok(())),
-                    ) {
-                        // A write failure leaves the normal notice lease in
-                        // place. No acknowledgment is manufactured here.
-                        break;
+                    let remaining = notice.expires_at_unix_ms.saturating_sub(now_ms());
+                    if remaining <= 0 {
+                        continue;
+                    }
+                    let send_limit = Duration::from_secs(5);
+                    let wait = send_limit.min(Duration::from_millis(remaining as u64));
+                    match tokio::time::timeout(wait, peer.send_notification(envelope(&notice)))
+                        .await
+                    {
+                        Ok(Ok(())) => {}
+                        Err(_) if wait < send_limit => {}
+                        // Leave the ordinary retry lease in place.
+                        _ => break,
                     }
                 }
             }

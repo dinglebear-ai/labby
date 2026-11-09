@@ -10,6 +10,7 @@ use reqwest::{StatusCode, header};
 use sha2::Sha256;
 use subtle::ConstantTimeEq as _;
 use tokio::sync::Semaphore;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use super::super::codemode_notices::now_ms;
@@ -20,7 +21,8 @@ const NETWORK_STEP_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_VERIFY_BYTES: usize = 8_192;
 const MAX_PAYLOAD_BYTES: usize = 262_144;
 
-pub(super) type OfferWitness = Box<dyn FnOnce() -> BoxFuture<'static, std::io::Result<()>> + Send>;
+pub(super) type OfferWitness =
+    Box<dyn FnOnce(CancellationToken) -> BoxFuture<'static, std::io::Result<()>> + Send>;
 
 pub(super) struct WebhookAttempt {
     pub url: Url,
@@ -139,8 +141,11 @@ impl HttpsWebhookSender {
             // Hyper polls the body on the connected request. A durable offer
             // precedes receiver processing, but DNS/TLS failures never set it.
             // If the generation or lease changed, abort before exposing bytes.
+            let active = CancellationToken::new();
+            let lifetime = active.clone().drop_guard();
             let body = reqwest::Body::wrap_stream(futures::stream::once(async move {
-                offer().await?;
+                let _lifetime = lifetime;
+                offer(active).await?;
                 Ok::<_, std::io::Error>(body)
             }));
             request

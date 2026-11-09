@@ -185,6 +185,7 @@ pub(super) struct ValidatedSubscription {
 #[derive(Debug)]
 pub(super) struct EventSubscription {
     pub id: String,
+    pub inbox_id: String,
     pub expires: i64,
     pub replaced_authority: Option<String>,
 }

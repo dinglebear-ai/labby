@@ -21,6 +21,7 @@ const MAX_BATCH: usize = 3;
 const INBOX_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const SCHEMA_VERSION: i64 = 3;
 const MESSAGE_INBOX_SCOPE: &str = "message_session";
+pub(super) const MESSAGE_RETENTION_MS: i64 = 86_400_000;
 mod schema;
 const APPLICATION_ID: i64 = 0x4c4e_5446;
 const DB_BUDGET: Duration = Duration::from_millis(250);
@@ -418,7 +419,7 @@ impl NoticeStore {
         let permit = Arc::clone(&self.permit)
             .try_acquire_owned()
             .map_err(|_| NoticeError::Busy)?;
-        self.run_admitted(permit, work).await
+        self.run_admitted(permit, work, Some(DB_BUDGET)).await
     }
 
     /// For the bounded Events and joined session presence workers. A
@@ -428,17 +429,32 @@ impl NoticeStore {
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        let permit = tokio::time::timeout(DB_BUDGET, Arc::clone(&self.permit).acquire_owned())
+        self.run_admitted(self.event_permit().await?, work, Some(DB_BUDGET))
+            .await
+    }
+
+    /// The delivery worker owns the result of an admitted claim or settlement.
+    /// Waiting for that result prevents a detached commit from losing its owner.
+    pub(super) async fn run_event_settled<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+    ) -> Result<T, NoticeError> {
+        self.run_admitted(self.event_permit().await?, work, None)
+            .await
+    }
+
+    async fn event_permit(&self) -> Result<OwnedSemaphorePermit, NoticeError> {
+        tokio::time::timeout(DB_BUDGET, Arc::clone(&self.permit).acquire_owned())
             .await
             .map_err(|_| NoticeError::Busy)?
-            .map_err(|_| NoticeError::Unavailable)?;
-        self.run_admitted(permit, work).await
+            .map_err(|_| NoticeError::Unavailable)
     }
 
     async fn run_admitted<T: Send + 'static>(
         &self,
         permit: OwnedSemaphorePermit,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+        deadline: Option<Duration>,
     ) -> Result<T, NoticeError> {
         let db = self.connection.clone().ok_or(NoticeError::Unavailable)?;
         #[cfg(windows)]
@@ -463,10 +479,13 @@ impl NoticeStore {
             drop(db);
             result
         });
-        tokio::time::timeout(DB_BUDGET, worker)
-            .await
-            .map_err(|_| NoticeError::Deadline)?
-            .map_err(|_| NoticeError::Unavailable)?
+        match deadline {
+            Some(deadline) => tokio::time::timeout(deadline, worker)
+                .await
+                .map_err(|_| NoticeError::Deadline)?,
+            None => worker.await,
+        }
+        .map_err(|_| NoticeError::Unavailable)?
     }
 
     pub(crate) async fn controls(
@@ -475,10 +494,22 @@ impl NoticeStore {
         register: bool,
         ids: Option<Vec<String>>,
     ) -> Result<(Option<InboxAddress>, Option<Vec<String>>), NoticeError> {
+        self.controls_for_recipients(recipient, None, register, ids)
+            .await
+    }
+
+    pub(crate) async fn controls_for_recipients(
+        &self,
+        recipient: NoticeRecipient,
+        alternate: Option<NoticeRecipient>,
+        register: bool,
+        ids: Option<Vec<String>>,
+    ) -> Result<(Option<InboxAddress>, Option<Vec<String>>), NoticeError> {
         if let Some(ids) = &ids {
             validate_acknowledgments(ids)?;
         }
         let key = recipient.key()?;
+        let alternate = alternate.as_ref().map(NoticeRecipient::key).transpose()?;
         self.run(move |db| {
             let now = now_ms();
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -489,7 +520,7 @@ impl NoticeStore {
             };
             let acknowledgments = ids
                 .as_ref()
-                .map(|ids| acknowledge_in(&tx, &key, ids, now))
+                .map(|ids| acknowledge_in(&tx, &key, alternate.as_deref(), ids, now))
                 .transpose()?;
             tx.commit()?;
             Ok((address, acknowledgments))
@@ -538,8 +569,18 @@ impl NoticeStore {
         recipient: NoticeRecipient,
         accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
     ) -> Result<Option<T>, NoticeError> {
+        self.deliver_for_recipients(recipient, None, accept).await
+    }
+
+    pub(crate) async fn deliver_for_recipients<T: Send + 'static>(
+        &self,
+        recipient: NoticeRecipient,
+        alternate: Option<NoticeRecipient>,
+        accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
+    ) -> Result<Option<T>, NoticeError> {
         let key = recipient.key()?;
-        self.run(move |db| deliver_at(db, &key, now_ms(), false, accept))
+        let alternate = alternate.as_ref().map(NoticeRecipient::key).transpose()?;
+        self.run(move |db| deliver_at(db, &key, alternate.as_deref(), now_ms(), false, accept))
             .await
     }
 
@@ -551,7 +592,7 @@ impl NoticeStore {
         accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
     ) -> Result<Option<T>, NoticeError> {
         let key = recipient.key()?;
-        self.run(move |db| deliver_at(db, &key, now_ms(), true, accept))
+        self.run(move |db| deliver_at(db, &key, None, now_ms(), true, accept))
             .await
     }
 
@@ -725,7 +766,12 @@ pub(super) fn register_in(
         }
         format!("inbox_{}", ulid::Ulid::new())
     };
-    let expires = now.saturating_add(INBOX_TTL_MS);
+    let ttl = if scope == MESSAGE_INBOX_SCOPE {
+        MESSAGE_RETENTION_MS
+    } else {
+        INBOX_TTL_MS
+    };
+    let expires = now.saturating_add(ttl);
     tx.execute(
         "INSERT INTO agent_inboxes(id,recipient,scope,expires) VALUES(?,?,?,?)
         ON CONFLICT(recipient) DO UPDATE SET expires=excluded.expires",
@@ -882,13 +928,14 @@ fn acknowledge_at(
     now: i64,
 ) -> Result<Vec<String>, NoticeError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let acknowledged = acknowledge_in(&tx, key, ids, now)?;
+    let acknowledged = acknowledge_in(&tx, key, None, ids, now)?;
     tx.commit()?;
     Ok(acknowledged)
 }
 fn acknowledge_in(
     tx: &Connection,
     key: &str,
+    alternate: Option<&str>,
     ids: &[String],
     now: i64,
 ) -> Result<Vec<String>, NoticeError> {
@@ -897,10 +944,10 @@ fn acknowledge_in(
         // Never reveal whether an unknown/foreign ID exists, and never ACK a notice
         // that this recipient has not been offered. Repeated own ACKs are idempotent.
         if tx.execute(
-            "UPDATE agent_notices SET acknowledged=1 WHERE id=? AND (attempts>0 OR webhook_offered=1) AND expires>?
+            "UPDATE agent_notices SET acknowledged=1 WHERE id=?1 AND (attempts>0 OR webhook_offered=1) AND expires>?2
             AND message_id IS NULL
-            AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient=? AND expires>?)",
-            params![id, now, key, now],
+            AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient IN (?3,?4) AND expires>?2)",
+            params![id, now, key, alternate],
         )? > 0
             && !acknowledged.contains(id)
         {
@@ -923,36 +970,37 @@ pub(super) fn stop_notice_delivery_in(tx: &Connection, id: &str) -> Result<(), N
 fn deliver_at<T>(
     db: &mut Connection,
     key: &str,
+    alternate: Option<&str>,
     now: i64,
     include_message_refs: bool,
     mut accept: impl FnMut(&NoticeBatch) -> Option<T>,
 ) -> Result<Option<T>, NoticeError> {
-    let inbox: Option<String> = db
-        .query_row(
-            "SELECT id FROM agent_inboxes WHERE recipient=? AND expires>?",
-            params![key, now],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(inbox) = inbox else {
+    let exists = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_inboxes WHERE recipient IN (?1,?2) AND expires>?3)",
+        params![key, alternate, now],
+        |r| r.get::<_, bool>(0),
+    )?;
+    if !exists {
         return Ok(None);
-    };
+    }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let total: i64 = tx.query_row(
-        "SELECT count(*) FROM agent_notices WHERE inbox_id=? AND acknowledged=0 AND expires>?
-        AND (? OR message_id IS NULL)",
-        params![inbox, now, include_message_refs],
+        "SELECT count(*) FROM agent_notices WHERE acknowledged=0 AND expires>?3
+         AND (?4 OR message_id IS NULL)
+         AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient IN (?1,?2) AND expires>?3)",
+        params![key, alternate, now, include_message_refs],
         |r| r.get(0),
     )?;
     let notices = {
         let mut query = tx.prepare(
             "SELECT id,source,level,message,attempts,expires,message_id FROM agent_notices
-            WHERE inbox_id=? AND acknowledged=0 AND expires>? AND next_attempt<=?
-            AND (? OR message_id IS NULL)
+            WHERE acknowledged=0 AND expires>?3 AND next_attempt<=?3
+            AND (?4 OR message_id IS NULL)
+            AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient IN (?1,?2) AND expires>?3)
             ORDER BY next_attempt,created,id LIMIT 3",
         )?;
         query
-            .query_map(params![inbox, now, now, include_message_refs], |r| {
+            .query_map(params![key, alternate, now, include_message_refs], |r| {
                 let level: String = r.get(2)?;
                 Ok(CodeModeNotice {
                     id: r.get(0)?,

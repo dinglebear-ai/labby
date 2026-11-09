@@ -44,6 +44,13 @@ impl HttpMessageRuntime {
         session_key(&parts.headers).is_some() && VerifiedCaller::from_parts(parts, adapter).is_ok()
     }
 
+    pub(crate) fn open_bridge_bearer(
+        &self,
+        sealed: &str,
+    ) -> Result<Zeroizing<Vec<u8>>, NoticeError> {
+        self.key.open_bridge_bearer(&self.installation, sealed)
+    }
+
     pub(crate) async fn binding(
         &self,
         parts: &Parts,

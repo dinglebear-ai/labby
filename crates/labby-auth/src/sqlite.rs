@@ -1690,31 +1690,33 @@ mod tests {
             provider_generation: provider.generation,
         };
         let check = |client: &str, subject: &str, resource: &str, scope: &str| {
-            store.has_current_oauth_grant(
+            store.current_oauth_grant_family(
                 client.to_owned(),
                 subject.to_owned(),
                 resource.to_owned(),
                 scope.to_owned(),
                 binding.clone(),
+                None,
             )
         };
+        let family = check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+            .await
+            .unwrap()
+            .expect("current consent");
         assert!(
-            check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+            check("other-client", &saved.subject, &saved.resource, "lab")
                 .await
                 .unwrap()
+                .is_none()
         );
         assert!(
-            !check("other-client", &saved.subject, &saved.resource, "lab")
+            check(&saved.client_id, "other-subject", &saved.resource, "lab")
                 .await
                 .unwrap()
+                .is_none()
         );
         assert!(
-            !check(&saved.client_id, "other-subject", &saved.resource, "lab")
-                .await
-                .unwrap()
-        );
-        assert!(
-            !check(
+            check(
                 &saved.client_id,
                 &saved.subject,
                 "https://other.test/mcp",
@@ -1722,9 +1724,10 @@ mod tests {
             )
             .await
             .unwrap()
+            .is_none()
         );
         assert!(
-            !check(
+            check(
                 &saved.client_id,
                 &saved.subject,
                 &saved.resource,
@@ -1732,15 +1735,43 @@ mod tests {
             )
             .await
             .unwrap()
+            .is_none()
         );
+        let bound = || {
+            store.current_oauth_grant_family(
+                saved.client_id.clone(),
+                saved.subject.clone(),
+                saved.resource.clone(),
+                "lab".into(),
+                binding.clone(),
+                Some(family.clone()),
+            )
+        };
+        let mut rotated = saved.clone();
+        rotated.refresh_token = "rotated-event-refresh".into();
         store
-            .revoke_refresh_token(&saved.refresh_token)
+            .rotate_refresh_token(&saved.refresh_token, rotated.clone())
+            .await
+            .unwrap()
+            .expect("normal rotation");
+        assert_eq!(bound().await.unwrap().as_deref(), Some(family.as_str()));
+        store
+            .revoke_refresh_token(&rotated.refresh_token)
             .await
             .unwrap();
+        assert!(bound().await.unwrap().is_none());
+
+        let mut replacement = saved.clone();
+        replacement.refresh_token = "replacement-event-refresh".into();
+        store.upsert_refresh_token(replacement).await.unwrap();
+        let new_family = check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+            .await
+            .unwrap()
+            .expect("fresh consent can enroll");
+        assert_ne!(family, new_family);
         assert!(
-            !check(&saved.client_id, &saved.subject, &saved.resource, "lab")
-                .await
-                .unwrap()
+            bound().await.unwrap().is_none(),
+            "new consent cannot restore an old enrollment"
         );
     }
 

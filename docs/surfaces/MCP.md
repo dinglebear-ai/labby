@@ -396,9 +396,11 @@ live in [`docs/contracts/skills-extension.md`](../contracts/skills-extension.md)
 which is also published in-band as the `lab://contracts/skills-extension`
 resource so a client that does not speak the extension can still discover it.
 
-Labby declares `io.modelcontextprotocol/skills` with an empty settings object —
-supported, with no optional features. It does **not** declare `directoryRead`,
-and a client must not call `resources/directory/read` against it.
+Labby declares `io.modelcontextprotocol/skills` in the peer's extension
+capabilities. The `directoryRead` setting is true on routes that serve native
+manifest-backed Skills without an enabled proxied Skills namespace. Check
+the connected peer's advertised setting before calling
+`resources/directory/read`. The server rechecks route policy on every call.
 
 ### Methods
 

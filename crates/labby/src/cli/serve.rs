@@ -1048,6 +1048,19 @@ async fn run_server(
     } else {
         None
     };
+    #[cfg(feature = "gateway")]
+    if bearer_token.is_none() && oauth_state.is_none() {
+        if args.mcp_events {
+            anyhow::bail!(
+                "--mcp-events requires authenticated HTTP MCP (configure bearer or OAuth authentication)"
+            );
+        }
+        if args.agent_messages {
+            anyhow::bail!(
+                "--agent-messages requires authenticated TCP MCP (configure bearer or OAuth authentication)"
+            );
+        }
+    }
     let project_session_state = if let Some(oauth_state) = oauth_state.as_ref() {
         labby_auth::project_session::ProjectSessionState::from_store(
             oauth_state.store.clone(),
@@ -1112,11 +1125,6 @@ async fn run_server(
     }
     #[cfg(feature = "gateway")]
     if args.mcp_events {
-        if bearer_token.is_none() && oauth_state.is_none() {
-            anyhow::bail!(
-                "--mcp-events requires authenticated HTTP MCP (configure bearer or OAuth authentication)"
-            );
-        }
         state.agent_events = Some(Arc::new(
             crate::dispatch::agent_events::AgentEvents::open(state.agent_notifications.clone())
                 .await
@@ -1125,11 +1133,6 @@ async fn run_server(
     }
     #[cfg(feature = "gateway")]
     if args.agent_messages {
-        if bearer_token.is_none() && oauth_state.is_none() {
-            anyhow::bail!(
-                "--agent-messages requires authenticated TCP MCP (configure bearer or OAuth authentication)"
-            );
-        }
         if !state.agent_notifications.is_enabled() {
             anyhow::bail!("--agent-messages requires the durable notification inbox");
         }
