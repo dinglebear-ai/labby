@@ -1,6 +1,7 @@
 import {defineConfig} from '@playwright/test'
 import {randomBytes} from 'node:crypto'
 import {createOwnedProviderTls} from './e2e-real/provider-run-ownership.mjs'
+import {privateArtifacts} from './e2e-real/private-artifacts.mjs'
 
 let providerTlsOwner
 
@@ -32,9 +33,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4328',
     headless: true,
-    trace: 'off',
-    screenshot: 'off',
-    video: 'off',
+    ...privateArtifacts(),
     launchOptions: {
       executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
       args: [`--ignore-certificate-errors-spki-list=${process.env.LABBY_E2E_PROVIDER_SPKI}`],

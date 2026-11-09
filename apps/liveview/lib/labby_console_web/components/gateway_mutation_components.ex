@@ -261,7 +261,7 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
             <p>Each array item is one argument. Spaces and empty arguments are preserved.</p>
           </div>
         </section>
-        <details class="gm-section">
+        <details id="gm-authentication" class="gm-section" phx-hook=".Disclosure">
           <summary><Icons.icon name="shield" />Authentication and private configuration</summary>
           <p :if={@mutation.model.oauth}>
             Saved OAuth configuration is preserved. Authorization and OAuth policy changes use the separate OAuth workflow.
@@ -298,7 +298,7 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
             draft={@draft}
           />
         </details>
-        <details class="gm-section">
+        <details id="gm-exposure" class="gm-section" phx-hook=".Disclosure">
           <summary><Icons.icon name="settings" />Exposure surfaces</summary>
           <.toggle
             :for={
@@ -348,6 +348,12 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
       </footer>
       <p>Saving is independent of testing. A saved change has its own connection status.</p>
     </.form>
+    <script :type={Phoenix.LiveView.ColocatedHook} name=".Disclosure">
+      export default {
+        beforeUpdate() { this.open = this.el.open },
+        updated() { this.el.open = this.open }
+      }
+    </script>
     """
   end
 
@@ -357,7 +363,7 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
 
   def private_map(assigns) do
     ~H"""
-    <details class="gm-private-map">
+    <details id={"gm-" <> @field <> "-disclosure"} class="gm-private-map" phx-hook=".Disclosure">
       <summary>{@label}</summary>
       <.field
         id={"gm-" <> @field <> "-intent"}

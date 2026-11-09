@@ -3,6 +3,7 @@ import {createHash,randomBytes} from 'node:crypto'
 import {readFileSync} from 'node:fs'
 import {join} from 'node:path'
 import {signIn,gatewayAction,mcpRpc} from './mcp-support.mjs'
+import {runPrivateScenario} from './private-scenario.mjs'
 
 // UI Gateway charges are source-derived estimates, separate from bounded direct
 // MCP/probe traffic and Auth preflights. Parent acceptance must measure runtime
@@ -36,10 +37,10 @@ async function settled(page) {
  await expect(page.locator('#gm-dialog')).toHaveCount(0)
 }
 
-async function edit(page,name,limit) {
+async function edit(page,name,limit,step) {
  limit.charge(1,'UI edit fresh get')
- await page.getByRole('button',{name:`Edit ${name}`,exact:true}).first().click()
- await expect(page.locator('#gm-name')).toHaveValue(name)
+ await step('edit-open',()=>page.getByRole('button',{name:`Edit ${name}`,exact:true}).first().click())
+ await step('edit-loaded',()=>expect(page.locator('#gm-name')).toHaveValue(name))
 }
 
 async function privateInput(locator,value) {
@@ -51,19 +52,19 @@ async function authentication(page) {
  if(await section.getAttribute('open')===null) await section.locator('summary').first().click()
 }
 
-async function privateMap(page,field,intent,value) {
- await authentication(page)
+async function privateMap(page,field,intent,value,step) {
+ await step(`${field}-authentication-open`,()=>authentication(page))
  const section=page.locator('details.gm-private-map').filter({has:page.locator(`#gm-${field}-intent`)})
- if(await section.getAttribute('open')===null) await section.locator('summary').click()
- await page.locator(`#gm-${field}-intent`).selectOption(intent)
- if(intent==='replace') await privateInput(page.locator(`#gm-${field}`),JSON.stringify(value))
+ if(await section.getAttribute('open')===null) await step(`${field}-map-open`,()=>section.locator('summary').click())
+ await step(`${field}-intent-${intent}`,()=>page.locator(`#gm-${field}-intent`).selectOption(intent))
+ if(intent==='replace') await step(`${field}-private-input`,()=>privateInput(page.locator(`#gm-${field}`),JSON.stringify(value)))
 }
 
-async function save(page,limit) {
+async function save(page,limit,step) {
  limit.charge(3,'UI write, affected get, fleet list')
- await page.locator('#gm-save').click() // Submitted writes are never replayed.
- await settled(page)
- await expect(page.locator('#gm-notice')).toContainText('accepted')
+ await step('save-submit-once',()=>page.locator('#gm-save').click()) // Submitted writes are never replayed.
+ await step('save-settled',()=>settled(page))
+ await step('save-accepted',()=>expect(page.locator('#gm-notice')).toContainText('accepted'))
 }
 
 async function hidden(page,view,values) {
@@ -147,12 +148,6 @@ async function cleanup(page,name,limit,sentinelConfig) {
  if(sentinelConfig) expect((await limit.action('gateway.get',{name:sentinel},true)).config).toEqual(sentinelConfig)
 }
 
-async function finish(page,name,limit,sentinelConfig,info) {
- try {await cleanup(page,name,limit,sentinelConfig)} finally {
-  await info.attach('private-config-action-accounting',{body:JSON.stringify(limit.receipt,null,2),contentType:'application/json'})
- }
-}
-
 test('private HTTP literal replacement, preserve, clear, env header and derived bearer reach the real upstream',async({page},info)=>{
  test.setTimeout(300000)
  const limit=budget(),name=`private-http-${randomBytes(5).toString('hex')}`
@@ -161,20 +156,22 @@ test('private HTTP literal replacement, preserve, clear, env header and derived 
  const env=process.env.LABBY_E2E_HEADER_VALUE
  if(!/^[A-Za-z0-9_-]{16,128}$/.test(env||'')) throw new Error('Owned synthetic header environment is unavailable')
  const secrets=[first,second,draft,bearer,env]
- const sentinelConfig=(await limit.action('gateway.get',{name:sentinel})).config
- try {
+ let sentinelConfig
+ await runPrivateScenario({page,info,accounting:limit.receipt,cleanup:()=>cleanup(page,name,limit,sentinelConfig)},async step=>{
+  sentinelConfig=(await step('sentinel-read',()=>limit.action('gateway.get',{name:sentinel}))).config
   limit.charge(1,'UI initial fleet list')
-  await signIn(page)
-  await settled(page)
-  const session=await caller(limit)
-  await page.locator('#gateway-add').click()
-  await page.locator('#gm-name').fill(name)
-  await page.locator('#gm-url').fill('http://127.0.0.1:4302/mcp')
-  await privateMap(page,'headers','replace',{'x-labby-literal':first})
-  await privateMap(page,'headers_env','replace',{'x-labby-env':'PROJECT_CANARY_HEADER_VALUE'})
+  await step('sign-in',()=>signIn(page))
+  await step('liveview-connected',()=>page.locator('[data-phx-session].phx-connected').waitFor())
+  await step('initial-fleet-ready',()=>settled(page))
+  const session=await step('mcp-initialize',()=>caller(limit))
+  await step('add-open',()=>page.locator('#gateway-add').click())
+  await step('draft-name',()=>page.locator('#gm-name').fill(name))
+  await step('draft-endpoint',()=>page.locator('#gm-url').fill('http://127.0.0.1:4302/mcp'))
+  await privateMap(page,'headers','replace',{'x-labby-literal':first},step)
+  await privateMap(page,'headers_env','replace',{'x-labby-env':'PROJECT_CANARY_HEADER_VALUE'},step)
   await expect(page.locator('#gm-bearer-env')).toHaveValue('')
-  await privateInput(page.locator('#gm-bearer-value'),bearer)
-  await save(page,limit)
+  await step('bearer-private-input',()=>privateInput(page.locator('#gm-bearer-value'),bearer))
+  await save(page,limit,step)
 
   async function verify(literal,environment) {
    const view=await limit.action('gateway.get',{name})
@@ -186,32 +183,32 @@ test('private HTTP literal replacement, preserve, clear, env header and derived 
    await wireAfter(limit,baseline,'tools/call',{'x-labby-literal':literal,'x-labby-env':environment,authorization:`Bearer ${bearer}`})
   }
 
-  await verify(first,env)
-  await edit(page,name,limit)
-  await privateMap(page,'headers','replace',{'x-labby-literal':second})
-  await save(page,limit)
-  await verify(second,env)
+  await step('verify-first-http',()=>verify(first,env))
+  await edit(page,name,limit,step)
+  await privateMap(page,'headers','replace',{'x-labby-literal':second},step)
+  await save(page,limit,step)
+  await step('verify-preserved-http',()=>verify(second,env))
 
-  await edit(page,name,limit)
-  await privateMap(page,'headers','replace',{'x-labby-literal':draft})
+  await edit(page,name,limit,step)
+  await privateMap(page,'headers','replace',{'x-labby-literal':draft},step)
   await expect(page.locator('#gm-test')).toHaveText('Test saved configuration')
   const baseline=(await probe(limit)).sequence
   limit.charge(1,'UI explicit saved-name private probe')
-  await page.locator('#gm-test').click()
+  await step('saved-private-probe',()=>page.locator('#gm-test').click())
   await expect(page.locator('#gm-test-result')).toContainText('Probe connected',{timeout:35000})
   await wireAfter(limit,baseline,'initialize',{'x-labby-literal':second,'x-labby-env':env,authorization:`Bearer ${bearer}`})
-  await privateMap(page,'headers','preserve')
-  await page.locator('#gm-display-intent').selectOption('replace')
-  await page.locator('#gm-display-name').fill('Private HTTP preserve canary')
-  await save(page,limit)
-  await verify(second,env)
+  await privateMap(page,'headers','preserve',undefined,step)
+  await step('display-intent',()=>page.locator('#gm-display-intent').selectOption('replace'))
+  await step('display-http-label',()=>page.locator('#gm-display-name').fill('Private HTTP preserve canary'))
+  await save(page,limit,step)
+  await step('verify-preserved-http',()=>verify(second,env))
 
-  await edit(page,name,limit)
-  await privateMap(page,'headers','clear')
-  await privateMap(page,'headers_env','clear')
-  await save(page,limit)
-  await verify(null,null)
- } finally {await finish(page,name,limit,sentinelConfig,info)}
+  await edit(page,name,limit,step)
+  await privateMap(page,'headers','clear',undefined,step)
+  await privateMap(page,'headers_env','clear',undefined,step)
+  await save(page,limit,step)
+  await step('verify-cleared-http',()=>verify(null,null))
+ })
 })
 
 test('private stdio environment replace, preserve and clear retain exact real subprocess argv boundaries',async({page},info)=>{
@@ -219,19 +216,21 @@ test('private stdio environment replace, preserve and clear retain exact real su
  const limit=budget(),name=`private-stdio-${randomBytes(5).toString('hex')}`
  const first=randomBytes(24).toString('hex'),second=randomBytes(24).toString('hex')
  const fixture=JSON.parse(readFileSync(join(process.env.LABBY_E2E_PRIVATE_ROOT,'stdio-fixture.json'),'utf8'))
- const sentinelConfig=(await limit.action('gateway.get',{name:sentinel})).config
- try {
+ let sentinelConfig
+ await runPrivateScenario({page,info,accounting:limit.receipt,cleanup:()=>cleanup(page,name,limit,sentinelConfig)},async step=>{
+  sentinelConfig=(await step('sentinel-read',()=>limit.action('gateway.get',{name:sentinel}))).config
   limit.charge(1,'UI initial fleet list')
-  await signIn(page)
-  await settled(page)
-  const session=await caller(limit)
-  await page.locator('#gateway-add').click()
-  await page.locator('#gm-name').fill(name)
-  await page.getByLabel('stdio',{exact:true}).check()
-  await page.locator('#gm-command').fill(fixture.command)
-  await page.locator('#gm-args').fill(JSON.stringify(fixture.args))
-  await privateMap(page,'env','replace',{PROJECT_CANARY_VALUE:first})
-  await save(page,limit)
+  await step('sign-in',()=>signIn(page))
+  await step('liveview-connected',()=>page.locator('[data-phx-session].phx-connected').waitFor())
+  await step('initial-fleet-ready',()=>settled(page))
+  const session=await step('mcp-initialize',()=>caller(limit))
+  await step('add-open',()=>page.locator('#gateway-add').click())
+  await step('draft-name',()=>page.locator('#gm-name').fill(name))
+  await step('draft-stdio-select',()=>page.getByLabel('stdio',{exact:true}).check())
+  await step('draft-command',()=>page.locator('#gm-command').fill(fixture.command))
+  await step('draft-arguments',()=>page.locator('#gm-args').fill(JSON.stringify(fixture.args)))
+  await privateMap(page,'env','replace',{PROJECT_CANARY_VALUE:first},step)
+  await save(page,limit,step)
 
   async function verify(value,args) {
    const view=await limit.action('gateway.get',{name})
@@ -243,21 +242,21 @@ test('private stdio environment replace, preserve and clear retain exact real su
     argvSha256:digest(JSON.stringify(args.slice(1))),argumentCount:args.length-1,markerPresent:true})
   }
 
-  await verify(first,fixture.args)
+  await step('verify-first-stdio',()=>verify(first,fixture.args))
   const replacement=[...fixture.args,'--flag=two words','a\\b','']
-  await edit(page,name,limit)
-  await page.locator('#gm-args').fill(JSON.stringify(replacement))
-  await privateMap(page,'env','replace',{PROJECT_CANARY_VALUE:second})
-  await save(page,limit)
-  await verify(second,replacement)
-  await edit(page,name,limit)
-  await page.locator('#gm-display-intent').selectOption('replace')
-  await page.locator('#gm-display-name').fill('Private stdio preserve canary')
-  await save(page,limit)
-  await verify(second,replacement)
-  await edit(page,name,limit)
-  await privateMap(page,'env','clear')
-  await save(page,limit)
-  await verify(null,replacement)
- } finally {await finish(page,name,limit,sentinelConfig,info)}
+  await edit(page,name,limit,step)
+  await step('replace-arguments',()=>page.locator('#gm-args').fill(JSON.stringify(replacement)))
+  await privateMap(page,'env','replace',{PROJECT_CANARY_VALUE:second},step)
+  await save(page,limit,step)
+  await step('verify-preserved-stdio',()=>verify(second,replacement))
+  await edit(page,name,limit,step)
+  await step('display-intent',()=>page.locator('#gm-display-intent').selectOption('replace'))
+  await step('display-stdio-label',()=>page.locator('#gm-display-name').fill('Private stdio preserve canary'))
+  await save(page,limit,step)
+  await step('verify-preserved-stdio',()=>verify(second,replacement))
+  await edit(page,name,limit,step)
+  await privateMap(page,'env','clear',undefined,step)
+  await save(page,limit,step)
+  await step('verify-cleared-stdio',()=>verify(null,replacement))
+ })
 })

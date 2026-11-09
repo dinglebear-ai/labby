@@ -3,6 +3,7 @@ import {randomBytes} from 'node:crypto'
 import {mkdtempSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
+import {privateArtifacts} from './e2e-real/private-artifacts.mjs'
 
 // A fresh synthetic credential for this owned daemon, never an operator token.
 process.env.LABBY_E2E_CREDENTIAL ||= randomBytes(32).toString('hex')
@@ -18,8 +19,7 @@ export default defineConfig({
   use: {
     baseURL: 'http://127.0.0.1:4298', headless: true,
     launchOptions: {executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH},
-    trace: 'off', // Sign-in contains an ephemeral credential; never record it.
-    screenshot: 'only-on-failure',
+    ...privateArtifacts(),
   },
   webServer: {
     command: 'node e2e-real/start.mjs',
