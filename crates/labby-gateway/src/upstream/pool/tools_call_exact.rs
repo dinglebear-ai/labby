@@ -756,12 +756,15 @@ mod tests {
         let (pool, _, _) = fixture(None, false).await;
         let pool = with_usage_store(pool, &store);
         let generation = pool.published_tool_catalog().await.unwrap().generation();
-        for (is_error, oversized, expected_outcome) in [
-            (Some(true), false, "tool_error"),
-            (Some(false), false, "ok"),
-            (None, false, "ok"),
-            (Some(true), true, "response_too_large"),
-        ] {
+        for (index, (is_error, oversized, expected_outcome, expected_count)) in [
+            (Some(true), false, "tool_error", 1),
+            (Some(false), false, "ok", 1),
+            (None, false, "ok", 2),
+            (Some(true), true, "response_too_large", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let mut expected = CallToolResult::success(vec![ContentBlock::text(if oversized {
                 "x".repeat(super::max_response_bytes() + 1)
             } else {
@@ -797,7 +800,11 @@ mod tests {
                     .is_routable()
             );
             assert_eq!(pool.upstream_tool_last_error("alpha").await, None);
-            assert!(wait_for_usage_count(&store, expected_outcome).await > 0);
+            assert_eq!(
+                wait_for_usage_count(&store, expected_outcome).await,
+                expected_count
+            );
+            assert_eq!(total_usage_count(&store).await, (index + 1) as i64);
         }
     }
 
