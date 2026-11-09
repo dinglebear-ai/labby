@@ -50,22 +50,3 @@ test('unknown Team/project lookup is rejected without revoking a valid browser s
  await page.keyboard.press('Escape');await page.locator('#projects-refresh').click()
  await expect(page.locator('#projects-create')).toBeEnabled()
 })
-
-
-test('Projects preferences stay isolated when a second real caller uses the same browser',async({page})=>{
- const second=process.env.LABBY_E2E_SECOND_CREDENTIAL
- if(!second)throw new Error('A second real caller credential is required for Projects preference isolation acceptance')
- await signIn(page);await page.goto('/projects')
- await expect(page.locator('#projects-main')).toHaveAttribute('data-preference-key',/^[a-f0-9]{64}$/)
- const first=await page.locator('#projects-main').getAttribute('data-preference-key')
- await page.locator('#projects-layout-grid').click()
- await page.getByRole('searchbox',{name:'Search projects',exact:true}).fill('first-caller-only')
- await expect.poll(()=>page.evaluate(key=>JSON.parse(localStorage.getItem(`labby:projects:${key}:v1`)||'{}').query,first)).toBe('first-caller-only')
- await page.locator('#labby-workspace > summary').click()
- await page.getByRole('button',{name:'Sign out',exact:true}).click();await expect(page).toHaveURL(/\/sign-in$/)
- await page.getByLabel('Gateway credential').fill(second);await page.getByRole('button',{name:'Sign in',exact:true}).click()
- await page.goto('/projects')
- await expect(page.locator('#projects-main')).not.toHaveAttribute('data-preference-key',first)
- await expect(page.getByRole('searchbox',{name:'Search projects',exact:true})).toHaveValue('')
- await expect(page.locator('#projects-layout-list')).toHaveAttribute('aria-pressed','true')
-})

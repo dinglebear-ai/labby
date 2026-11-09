@@ -9,7 +9,8 @@ process.env.LABBY_E2E_CREDENTIAL ||= randomBytes(32).toString('hex')
 process.env.LABBY_E2E_CONTROL ||= randomBytes(32).toString('hex')
 process.env.LABBY_E2E_RESTRICTED_ROOT ||= mkdtempSync(join(tmpdir(), 'labby-real-restricted-'))
 export default defineConfig({
-  testDir: './e2e-real', testMatch: '**/*.spec.mjs', workers: 1, retries: 0, timeout: 60000,
+  testDir: './e2e-real', testMatch: '**/*.spec.mjs',
+  testIgnore: '**/provider-*.spec.mjs', workers: 1, retries: 0, timeout: 60000,
   outputDir: 'test-results/real', maxFailures: 3, globalTimeout: 600000,
   use: {
     baseURL: 'http://127.0.0.1:4298', headless: true,

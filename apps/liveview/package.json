@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "pretest:e2e": "node --test e2e-real/*.test.mjs && node e2e-real/build.mjs",
-    "test:e2e": "playwright test",
+    "test:e2e": "playwright test --config=playwright.config.mjs && playwright test --config=playwright.provider.config.mjs",
     "test:browser:fixtures": "playwright test --config=playwright.fixtures.config.mjs"
   },
   "devDependencies": {
