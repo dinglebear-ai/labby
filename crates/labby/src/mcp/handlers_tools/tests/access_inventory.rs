@@ -432,3 +432,67 @@ async fn store_effects(store: &AccessStore) -> Vec<i64> {
         }).map_err(crate::access::test_support::sqlite_error)
     }).await.unwrap()
 }
+
+#[tokio::test]
+async fn lifecycle_caller_bound_mcp_unassign_persists_history_and_activation_is_recognized() {
+    let fixture = Fixture::new(true).await;
+    let created = fixture
+        .invoke(
+            "access.team.create",
+            json!({"team_id":"mcp-lifecycle","name":"MCP lifecycle"}),
+        )
+        .await;
+    assert_ne!(created.is_error, Some(true), "{created:?}");
+    let assigned = fixture
+        .invoke(
+            "access.team_project.assign",
+            json!({"team_id":"mcp-lifecycle","project_id":"bootstrap-default","role":"admin"}),
+        )
+        .await;
+    assert_ne!(assigned.is_error, Some(true), "{assigned:?}");
+    let params = json!({"team_id":"mcp-lifecycle","project_id":"bootstrap-default"});
+    let result = fixture
+        .invoke("access.team_project.unassign", params.clone())
+        .await;
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(envelope(&result)["data"]["status"], "revoked");
+    let readback = fixture
+        .invoke(
+            "access.team_project.list",
+            json!({"team_id":"mcp-lifecycle","limit":10}),
+        )
+        .await;
+    assert_eq!(
+        envelope(&readback)["data"]["assignments"][0]["status"],
+        "revoked"
+    );
+    let repeated = fixture.invoke("access.team_project.unassign", params).await;
+    error(
+        &repeated,
+        "access.team_project.unassign",
+        "forbidden",
+        "none_expected",
+    );
+    let activate = fixture
+        .invoke(
+            "access.team.member.activate",
+            json!({"team_id":"mcp-lifecycle","principal_id":"bootstrap-owner","role":"owner"}),
+        )
+        .await;
+    error(
+        &activate,
+        "access.team.member.activate",
+        "forbidden",
+        "none_expected",
+    );
+    let schema = fixture
+        .invoke("schema", json!({"action":"access.team_project.unassign"}))
+        .await;
+    assert_eq!(
+        envelope(&schema)["data"]["params"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}

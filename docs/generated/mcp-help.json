@@ -230,6 +230,34 @@
           "returns": "object"
         },
         {
+          "name": "access.team.member.activate",
+          "description": "Restore an inactive team member with an explicit role",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
           "name": "access.team.member.suspend",
           "description": "Suspend a team member",
           "destructive": false,
@@ -382,6 +410,28 @@
             },
             {
               "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_project.unassign",
+          "description": "Revoke a team project assignment",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "project_id",
               "ty": "string",
               "required": true,
               "description": ""

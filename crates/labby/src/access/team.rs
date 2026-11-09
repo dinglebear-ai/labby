@@ -242,6 +242,7 @@ pub(crate) struct TeamProjectAssignmentSnapshot {
     pub(crate) project_id: String,
     pub(crate) role: ProjectRole,
     pub(crate) assignment_epoch: u64,
+    pub(crate) status: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -534,7 +535,9 @@ pub(super) fn set_member_role(
         Some(input.role),
         None,
         "access.team_member.role",
+        None,
     )
+    .map(|_| ())
 }
 
 pub(super) fn suspend_member(
@@ -549,7 +552,9 @@ pub(super) fn suspend_member(
         None,
         Some("suspended"),
         "access.team_member.suspend",
+        None,
     )
+    .map(|_| ())
 }
 
 pub(super) fn remove_member(
@@ -564,6 +569,25 @@ pub(super) fn remove_member(
         None,
         Some("revoked"),
         "access.team_member.remove",
+        None,
+    )
+    .map(|_| ())
+}
+
+pub(super) fn activate_member(
+    connection: &mut Connection,
+    input: &AddTeamMemberInput,
+    request: super::AuthorityRequest,
+) -> AccessStoreResult<TeamMembershipSnapshot> {
+    mutate_member(
+        connection,
+        &input.actor,
+        &input.team_id,
+        &input.principal_id,
+        Some(input.role),
+        Some("active"),
+        "access.team_member.activate",
+        Some(request),
     )
 }
 
@@ -575,8 +599,12 @@ fn mutate_member(
     role: Option<TeamRole>,
     status: Option<&str>,
     action: &str,
-) -> AccessStoreResult<()> {
+    request: Option<super::AuthorityRequest>,
+) -> AccessStoreResult<TeamMembershipSnapshot> {
     let tx = immediate(connection)?;
+    if let Some(request) = request {
+        super::authority::authorize_action_in_transaction(&tx, request)?;
+    }
     let actor = resolve_principal(&tx, identity)?;
     require_team_manager(&tx, &actor.id, &actor.organization_id, team_id)?;
     let current_owner: bool = tx.query_row(
@@ -585,6 +613,24 @@ fn mutate_member(
     ).map_err(map_sqlite_error)?;
     if current_owner || role == Some(TeamRole::Owner) {
         require_team_owner(&tx, &actor.id, &actor.organization_id, team_id)?;
+    }
+    if status == Some("active") {
+        require_principal_in_organization(&tx, principal_id, &actor.organization_id)?;
+        // Allowlist revocation deliberately fences automatic Initial Team admission.
+        // Restoring that admission requires its lifecycle coordinator.
+        let restorable: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_memberships
+             WHERE organization_id=?1 AND team_id=?2 AND principal_id=?3
+               AND status IN ('suspended','revoked')
+               AND NOT(team_id='bootstrap-initial-team' AND status='revoked'))",
+                params![actor.organization_id, team_id, principal_id],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if !restorable {
+            return Err(AccessStoreError::TeamUnavailable);
+        }
     }
     protect_last_owner(
         &tx,
@@ -596,6 +642,13 @@ fn mutate_member(
     )?;
     let now = unix_now()?;
     let changed=match (role,status) {
+        (Some(role), Some("active")) => tx.execute(
+            "UPDATE team_memberships SET role=?1,status='active',
+             membership_epoch=membership_epoch+1,updated_at=?2,revoked_at=NULL
+             WHERE organization_id=?3 AND team_id=?4 AND principal_id=?5
+               AND status IN ('suspended','revoked')",
+            params![role.as_persisted(), now, actor.organization_id, team_id, principal_id],
+        ),
         (Some(role),None)=>tx.execute("UPDATE team_memberships SET role=?1,membership_epoch=membership_epoch+1,updated_at=?2 WHERE organization_id=?3 AND team_id=?4 AND principal_id=?5 AND status!='revoked' AND role!=?1",params![role.as_persisted(),now,actor.organization_id,team_id,principal_id]),
         (None,Some("revoked"))=>tx.execute("UPDATE team_memberships SET status='revoked',membership_epoch=membership_epoch+1,updated_at=?1,revoked_at=?1 WHERE organization_id=?2 AND team_id=?3 AND principal_id=?4 AND status!='revoked'",params![now,actor.organization_id,team_id,principal_id]),
         (None,Some(value))=>tx.execute("UPDATE team_memberships SET status=?1,membership_epoch=membership_epoch+1,updated_at=?2,revoked_at=NULL WHERE organization_id=?3 AND team_id=?4 AND principal_id=?5 AND status!=?1 AND status!='revoked'",params![value,now,actor.organization_id,team_id,principal_id]),
@@ -618,7 +671,31 @@ fn mutate_member(
         team_epoch,
         "team_manage",
     )?;
-    tx.commit().map_err(map_sqlite_error)
+    let membership = tx
+        .query_row(
+            "SELECT role,status,membership_epoch FROM team_memberships
+         WHERE organization_id=?1 AND team_id=?2 AND principal_id=?3",
+            params![actor.organization_id, team_id, principal_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(map_sqlite_error)?;
+    let result = TeamMembershipSnapshot {
+        organization_id: actor.organization_id,
+        team_id: team_id.to_owned(),
+        principal_id: principal_id.to_owned(),
+        role: TeamRole::from_persisted(&membership.0)
+            .ok_or(AccessStoreError::MalformedVocabulary)?,
+        status: membership.1,
+        membership_epoch: epoch(membership.2)?,
+    };
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(result)
 }
 
 pub(super) fn grant_platform_admin(
@@ -917,7 +994,84 @@ pub(super) fn assign_team_project(
         project_id: input.project_id.clone(),
         role: input.role,
         assignment_epoch: epoch(assignment_epoch)?,
+        status: "active".into(),
     })
+}
+
+pub(super) fn unassign_team_project(
+    connection: &mut Connection,
+    input: &ManageTeamProjectInput,
+    request: super::AuthorityRequest,
+) -> AccessStoreResult<TeamProjectAssignmentSnapshot> {
+    let tx = immediate(connection)?;
+    super::authority::authorize_action_in_transaction(&tx, request)?;
+    let actor = resolve_principal(&tx, &input.actor)?;
+    require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    // Resolve authority before revoking a grant that may itself authorize this caller.
+    require_project_manager(
+        &tx,
+        &actor.id,
+        &actor.organization_id,
+        &input.project_id,
+        None,
+    )?;
+    let assignment = tx
+        .query_row(
+            "SELECT a.role,a.assignment_epoch FROM team_project_assignments a
+         JOIN projects p ON p.organization_id=a.organization_id AND p.project_id=a.project_id
+         WHERE a.organization_id=?1 AND a.team_id=?2 AND a.project_id=?3
+           AND a.status='active' AND p.status='active'",
+            params![actor.organization_id, input.team_id, input.project_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or(AccessStoreError::TeamUnavailable)?;
+    let role =
+        ProjectRole::from_persisted(&assignment.0).ok_or(AccessStoreError::MalformedVocabulary)?;
+    let now = unix_now()?;
+    tx.execute(
+        "UPDATE team_project_assignments SET status='revoked',revoked_at=?1,updated_at=?1,
+           assignment_epoch=assignment_epoch+1
+         WHERE organization_id=?2 AND team_id=?3 AND project_id=?4 AND status='active'",
+        params![now, actor.organization_id, input.team_id, input.project_id],
+    )
+    .map_err(map_sqlite_error)?;
+    tx.execute(
+        "UPDATE projects SET project_policy_epoch=project_policy_epoch+1,updated_at=?1
+         WHERE organization_id=?2 AND project_id=?3",
+        params![now, actor.organization_id, input.project_id],
+    )
+    .map_err(map_sqlite_error)?;
+    let assignment_epoch = epoch(
+        assignment
+            .1
+            .checked_add(1)
+            .ok_or(AccessStoreError::MalformedVocabulary)?,
+    )?;
+    let revision = advance_global_revision(&tx, now)?;
+    audit(
+        &tx,
+        revision,
+        now,
+        &actor.id,
+        &actor.organization_id,
+        "access.team_project.unassign",
+        "team_project",
+        &format!("{}\0{}", input.team_id, input.project_id),
+        assignment_epoch,
+        "team_manage",
+    )?;
+    let result = TeamProjectAssignmentSnapshot {
+        organization_id: actor.organization_id,
+        team_id: input.team_id.clone(),
+        project_id: input.project_id.clone(),
+        role,
+        status: "revoked".into(),
+        assignment_epoch,
+    };
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(result)
 }
 
 pub(super) fn create_managed_project(

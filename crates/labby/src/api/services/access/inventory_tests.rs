@@ -550,3 +550,66 @@ async fn secondary_inventory_http_deadlines_cleanup_and_csrf_follow_existing_bou
         assert_eq!(status, StatusCode::OK, "{body}");
     }
 }
+
+#[tokio::test]
+async fn lifecycle_http_actions_preserve_csrf_and_persist_revoked_assignment() {
+    let (_directory, store, app) = fixture().await;
+    let (status, body) = request(
+        &app,
+        "access.team.create",
+        serde_json::json!({"team_id":"http-lifecycle","name":"HTTP lifecycle"}),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let params = serde_json::json!({"team_id":"http-lifecycle","project_id":"bootstrap-default"});
+    let (status,body)=request(&app,"access.team_project.assign",serde_json::json!({"team_id":"http-lifecycle","project_id":"bootstrap-default","role":"admin"}),None,true).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    for action in [
+        "access.team.member.activate",
+        "access.team_project.unassign",
+    ] {
+        let (status,body)=request(&app,action,serde_json::json!({"team_id":"http-lifecycle","project_id":"bootstrap-default","principal_id":"bootstrap-owner","role":"owner"}),None,false).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert_eq!(body["kind"], "forbidden");
+        assert_eq!(body["side_effects"], "none_expected");
+    }
+    let (status, body) = request(
+        &app,
+        "access.team_project.unassign",
+        params.clone(),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "revoked");
+    let (status, inventory) = request(
+        &app,
+        "access.team_project.list",
+        serde_json::json!({"team_id":"http-lifecycle","limit":10}),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{inventory}");
+    assert_eq!(inventory["assignments"][0]["status"], "revoked");
+    let (status, body) = request(&app, "access.team_project.unassign", params, None, true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["side_effects"], "none_expected");
+    let (status,body)=request(&app,"access.team.member.activate",serde_json::json!({"team_id":"http-lifecycle","principal_id":"bootstrap-owner","role":"owner"}),None,true).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["kind"], "forbidden");
+    let (_status, body) = request(
+        &app,
+        "schema",
+        serde_json::json!({"action":"access.team.member.activate"}),
+        None,
+        true,
+    )
+    .await;
+    assert_eq!(body["action"], "access.team.member.activate");
+    assert_eq!(body["params"].as_array().unwrap().len(), 3);
+    drop(store);
+}
