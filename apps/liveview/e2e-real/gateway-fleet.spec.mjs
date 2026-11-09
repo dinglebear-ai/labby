@@ -41,19 +41,25 @@ test('native Gateway fleet preserves real observations, preferences and read nav
     await expect(page.locator('#gateway-inspector')).toHaveCount(0)
     await expect(page.getByRole('button', {name: 'Quick inspect Real E2E Disabled', exact: true})).toBeFocused()
   }
-  await page.locator('#gateway-view-menu > summary').click()
-  await page.getByRole('button', {name: 'Cards', exact: true}).click()
+  await chooseViewAction(page, 'Cards')
   await expect(page.locator('#gateway-inventory')).toHaveAttribute('data-layout', 'cards')
   await page.setViewportSize({width: 1440, height: 900})
-  await page.getByRole('button', {name: 'Table', exact: true}).click()
-  await page.getByRole('button', {name: 'Move skills earlier', exact: true}).click()
-  await page.getByRole('button', {name: 'Resources', exact: true}).click()
+  await chooseViewAction(page, 'Table')
+  await expect(page.locator('#gateway-inventory')).toHaveAttribute('data-layout', 'table', {timeout: 5000})
+  await chooseViewAction(page, 'Move skills earlier')
+  await expect.poll(async () => {
+    const columns = await page.locator('#server-list li').first().locator('[data-column]').evaluateAll(cells => cells.map(cell => cell.dataset.column))
+    const skills = columns.indexOf('skills')
+    const prompts = columns.indexOf('prompts')
+    return skills >= 0 && prompts >= 0 && skills < prompts
+  }, {timeout: 5000}).toBe(true)
+  await chooseViewAction(page, 'Resources')
   await expect(page.locator('#server-list [data-column=resources]')).toHaveCount(0)
   for (const column of ['tools', 'prompts', 'skills', 'source']) {
     const snapshot = await page.locator(`#server-list [data-column=${column}]`).ariaSnapshot()
     expect(snapshot).toContain(column[0].toUpperCase() + column.slice(1))
   }
-  await page.getByRole('button', {name: 'Cards', exact: true}).click()
+  await chooseViewAction(page, 'Cards')
   const key = await page.locator('#gateway-preferences').getAttribute('data-preference-key')
   await expect.poll(() => page.evaluate(key => JSON.parse(localStorage.getItem(`labby:gateway:${key}:v1`) || '{}').layout, key)).toBe('cards')
   await page.reload()
@@ -71,3 +77,12 @@ test('native Gateway fleet preserves real observations, preferences and read nav
   await expect(page.locator('#servers-refresh')).toBeEnabled()
   await expect(page.locator('#servers-error')).toHaveCount(0)
 })
+
+
+async function chooseViewAction(page, name) {
+  const menu = page.locator('#gateway-view-menu')
+  if (await menu.getAttribute('open') === null) await menu.locator('summary').click()
+  const action = menu.getByRole('button', {name, exact: true})
+  await expect(action, `View menu action ${name} should be visible`).toBeVisible({timeout: 5000})
+  await action.click()
+}
