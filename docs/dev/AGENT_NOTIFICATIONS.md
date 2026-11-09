@@ -108,14 +108,75 @@ after considering it. A successful stdio write does not acknowledge the notice.
 These options deliver existing notices. Scheduling scripts, running tools on a
 timer, and watching CI or logs are separate producer features.
 
+## Private session messages
+
+Start an authenticated TCP MCP daemon with `labby serve --agent-messages`, or
+enable messaging on a direct local connection with `labby mcp --agent-messages`.
+On HTTP, configure each logical client session to send its own
+`Labby-Session-Key` header on every message tool call. Generate 32 random
+bytes and encode them as 64 lowercase hexadecimal characters. Keep the key
+private in the client configuration and reuse it for that session's reconnects.
+Labby assigns a public `session_id` when the connection registers.
+
+Call the `messages` tool with an action and a params object.
+
+| Action | Params | Result |
+| --- | --- | --- |
+| `register` | `{"label":"build monitor"}` | This session's ID and presence |
+| `sessions` | `{}` | The owner's retained session IDs, labels, and presence |
+| `send` | `to`, `body`, `idempotency_key`, optional `summary` | Message ID and the original recipient IDs |
+| `unread` | Optional `limit` from 1 to 32 | Unread summaries and IDs |
+| `read` | `message_id` | The full body, sender ID, original label, and timestamps |
+| `ack` | `message_ids`, up to 32 | IDs acknowledged by this session |
+
+Use `{"kind":"session","session_id":"…"}` for a direct message or
+`{"kind":"all_active"}` to broadcast. Broadcast snapshots the owner's active
+sessions, including the sender. HTTP sessions count as active for five minutes
+after successful messaging activity or subscription refresh. Stdio sessions
+renew a two-minute lease while the connection is live. A clean disconnect
+closes the registration. You can still send directly to a retained HTTP
+session whose activity lease has expired.
+
+Bodies can contain up to 16 KiB of UTF-8. An optional summary is limited to
+160 bytes. Labby keeps each message and its send receipt for 24 hours. Use the
+same idempotency key and payload if the inbox is busy or a send times out. Labby returns the
+original recipient list on replay. A changed payload with the same key is a
+conflict.
+
+Only the addressed session can read or acknowledge a message. Bearer and OAuth
+sessions use their verified owner identity and the private session key. A
+bridged stdio connection requires a daemon at a literal loopback address,
+the same private Labby installation, and a current authenticated bridge proof.
+Standalone stdio uses the installation's local owner group. A standalone
+process holds the installation lock, so use a shared daemon and stdio bridges
+for multiple concurrent local clients. Reopening stdio creates a new session.
+
+For HTTPS push, run `labby serve --agent-messages --mcp-events`. Register
+first, then subscribe to `labby.notification.created` with
+`arguments.session_messages: true` and the same bearer authority and
+`Labby-Session-Key`. Use the same proof for refresh and unsubscribe. For
+Claude Code, configure `["mcp","--agent-messages","--claude-channel"]` and
+follow the client approval process for custom channels. The short advisory
+push carries `data.message_id` over MCP Events or `meta.message_id` over
+Claude Channels. Call `messages.read` for the full body and `messages.ack`
+after handling it. Ordinary Code Mode inbox controls continue to handle
+short notices.
+
+An HTTP client must support the private header on both tool and Events
+requests to use message push. Native ChatGPT Work delivery with that header
+and native Claude Code acceptance require client verification. The direct
+`messages.unread` tool is available to eligible clients without push.
+
 ## Durability, isolation, and recovery
 
 The store is LABBY_HOME/agent-notifications/inbox.sqlite3, opened under the existing
 validated installation root. Its directory is private, the file is privately
 created, and insecure files, symlinks, unsupported schema versions, or corrupt
 SQLite state are refused. Startup disables notices on failure; it never silently
-switches to an ephemeral inbox. Schema v2 adds subscriptions and delivery
-receipts transactionally while preserving v1 notice state. An older binary
+switches to an ephemeral inbox. Schema v3 adds session registrations and
+private message references while preserving earlier notices, subscriptions,
+and delivery leases. Keep `messaging.key` alongside the protected inbox
+backup so HTTP clients can reconnect to the same session. An older binary
 cannot open the upgraded store. Restore a consistent protected backup through the
 normal stopped-daemon maintenance workflow; do not delete or edit the live database
 to hide a storage failure. Notification data may be sensitive and must not be

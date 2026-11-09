@@ -1445,10 +1445,16 @@ impl LiveGateway {
                 .await
                 .map_err(|_| NoticeError::Unavailable)?
                 .ok_or(NoticeError::Identity)?;
-                saved
-                    .get_access_token()
-                    .await
-                    .map_err(|_| NoticeError::Unavailable)?
+                saved.get_access_token().await.map_err(|error| {
+                    use rmcp::transport::auth::AuthError;
+                    match error {
+                        AuthError::AuthorizationRequired
+                        | AuthError::TokenRefreshRejected(_)
+                        | AuthError::TokenExpired
+                        | AuthError::InsufficientScope { .. } => NoticeError::Identity,
+                        _ => NoticeError::Unavailable,
+                    }
+                })?
             } else {
                 self.token.clone().ok_or(NoticeError::Identity)?
             };

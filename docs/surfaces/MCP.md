@@ -56,6 +56,14 @@ for request and response examples.
 Opt-in push delivery reuses these inboxes. `labby serve --mcp-events` exposes
 webhook subscriptions on authenticated root HTTP MCP. `labby mcp --claude-channel`
 sends notices to its own Claude Code stdio connection after initialization.
+
+`--agent-messages` enables the direct `messages` tool on an authenticated
+TCP MCP listener or local stdio connection. The tool assigns session IDs,
+sends private messages to one session or all active sessions under the
+same owner, and reads bodies up to 16 KiB. MCP Events and Claude Channels
+can carry a short reference for the recipient to open with `messages.read`.
+See the [session messaging guide](../dev/AGENT_NOTIFICATIONS.md#private-session-messages)
+for the HTTP session key, client setup, and delivery limits.
 Neither transport receipt acknowledges the notice. See
 [Push delivery](../dev/AGENT_NOTIFICATIONS.md#push-delivery) for setup and limits.
 

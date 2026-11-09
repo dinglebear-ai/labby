@@ -898,8 +898,10 @@ async fn run_server(
                 spawn_depth,
                 suppress_upstream_runtime,
                 recursion_guard_degrades_upstreams,
-                args.claude_channel,
-                args.agent_messages,
+                StdioAgentOptions {
+                    claude_channel: args.claude_channel,
+                    messages: args.agent_messages,
+                },
             )
             .await;
         }
@@ -2957,6 +2959,12 @@ fn local_message_recipient(
     )
 }
 
+#[cfg(feature = "gateway")]
+struct StdioAgentOptions {
+    claude_channel: bool,
+    messages: bool,
+}
+
 fn run_stdio(
     registry: Arc<ToolRegistry>,
     #[cfg(feature = "gateway")] gateway_manager: Arc<GatewayManager>,
@@ -2969,8 +2977,7 @@ fn run_stdio(
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
     recursion_guard_degrades_upstreams: bool,
-    #[cfg(feature = "gateway")] claude_channel: bool,
-    #[cfg(feature = "gateway")] agent_messages: bool,
+    #[cfg(feature = "gateway")] agent_options: StdioAgentOptions,
 ) -> impl Future<Output = Result<ExitCode>> {
     // The server bootstrap stays on the stack throughout this session. Keep
     // the protocol future on the heap rather than copying it into that frame.
@@ -3044,7 +3051,7 @@ fn run_stdio(
                 };
             let mut runtime =
                 crate::mcp::runtime::McpRouteRuntime::with_notification_store(store.clone());
-            if claude_channel {
+            if agent_options.claude_channel {
                 if !store.is_enabled() {
                     anyhow::bail!("--claude-channel requires the durable notification inbox");
                 }
@@ -3052,7 +3059,7 @@ fn run_stdio(
                     store.clone(),
                 ));
             }
-            if agent_messages {
+            if agent_options.messages {
                 let paths = crate::installation::InstallationPaths::resolve()?;
                 let installation = stdio_installation_id
                     .as_deref()

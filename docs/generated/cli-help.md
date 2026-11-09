@@ -8598,14 +8598,11 @@ Commands:
   mcp  Run the MCP server over stdio instead of the default HTTP transport
 
 Options:
+      --agent-messages
+          Enable private session messaging on authenticated TCP MCP
+
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
-
-      --mcp-events
-          Enable authenticated MCP Events webhook subscriptions on the HTTP MCP route
-
-      --auto-update
-          Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon)
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -8613,8 +8610,11 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --services <SERVICES>
-          Comma- or space-separated list of services to enable. Empty = all
+      --mcp-events
+          Enable authenticated MCP Events webhook subscriptions on the HTTP MCP route
+
+      --auto-update
+          Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon)
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
@@ -8622,8 +8622,8 @@ Options:
   -q, --quiet
           Suppress console logs, but always report command errors
 
-      --host <HOST>
-          Bind host for the HTTP transport
+      --services <SERVICES>
+          Comma- or space-separated list of services to enable. Empty = all
 
       --no-input
           Never prompt for missing input or confirmation
@@ -8631,14 +8631,17 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --host <HOST>
+          Bind host for the HTTP transport
+
       --port <PORT>
           Bind port for the HTTP transport
 
-      --log-level <LOG_LEVEL>
-          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
-
       --server <SERVER>
           Explicit Labby server URL; uses credentials bound to that destination
+
+      --log-level <LOG_LEVEL>
+          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
 
       --team-id <TEAM_ID>
           Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
@@ -8697,11 +8700,14 @@ Run the Labby stdio MCP transport. stdout contains protocol bytes only
 Usage: labby mcp [OPTIONS]
 
 Options:
-      --claude-channel
-          Push this connection's Labby notices through Claude Code Channels
+      --agent-messages
+          Enable private session messaging on this stdio connection
 
       --json
           Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --claude-channel
+          Push this connection's Labby notices through Claude Code Channels
 
       --color <COLOR>
           Control human-readable CLI styling
@@ -8712,11 +8718,11 @@ Options:
       --services <SERVICES>
           Comma- or space-separated list of services to enable. Empty = all
 
-      --log-level <LOG_LEVEL>
-          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
-
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
+
+      --log-level <LOG_LEVEL>
+          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
 
   -q, --quiet
           Suppress console logs, but always report command errors

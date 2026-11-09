@@ -415,3 +415,203 @@ async fn message_subscription_rechecks_enrollment_and_grant_after_challenge() {
         assert_eq!(persisted, 0);
     }
 }
+
+#[tokio::test]
+async fn message_session_over_real_http_and_https() {
+    use crate::dispatch::agent_messages::{http::HttpMessageRuntime, proof::MessageKey};
+    use serde_json::{Value, json};
+    use tokio_util::sync::CancellationToken;
+
+    const TOKEN: &str = "fixture-http-event-token";
+    const FIRST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const SECOND: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    let root = tempfile::tempdir().unwrap();
+    let store = NoticeStore::open_at(root.path()).unwrap();
+    let events_store = NoticeStore::open_at(root.path()).unwrap();
+    let (sender, callback, mut received, https) = webhook::tests::receiver(2).await;
+    let events = Arc::new(AgentEvents::new(
+        events_store,
+        load_key(&STANDARD.encode([b't'; 32])).unwrap(),
+        Arc::new(sender),
+    ));
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            root.path().join("gateway.toml"),
+            Default::default(),
+        ),
+    );
+    let mut state = crate::api::AppState::new().with_gateway_manager(manager);
+    state.agent_notifications = store;
+    state.agent_events = Some(events.clone());
+    state.agent_messages = Some(Arc::new(HttpMessageRuntime::new(
+        MessageKey::from_test_bytes([8; 32]),
+        "1".repeat(64),
+    )));
+    let router = crate::cli::serve::build_http_router(
+        state,
+        Some(TOKEN.to_owned()),
+        None,
+        &crate::config::McpPreferences::default(),
+        &[],
+        crate::mcp::peers::PeerNotifier::default(),
+        true,
+        false,
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let stop = CancellationToken::new();
+    let stop_guard = stop.clone().drop_guard();
+    let stop_http = stop.clone();
+    let http = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(stop_http.cancelled_owned())
+        .await
+        .unwrap();
+    });
+    let worker = tokio::spawn(events.run(stop));
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let rpc = |method: &'static str, key: Option<&'static str>, mut params: Value| {
+        let mut request = client
+            .post(&url)
+            .bearer_auth(TOKEN)
+            .header("accept", "application/json, text/event-stream")
+            .header("mcp-method", method)
+            .header("mcp-protocol-version", "2026-07-28");
+        if method == "tools/call" {
+            request = request.header("mcp-name", "messages");
+        }
+        if let Some(key) = key {
+            request = request.header("labby-session-key", key);
+        }
+        params["_meta"] = json!({
+            "io.modelcontextprotocol/protocolVersion":"2026-07-28",
+            "io.modelcontextprotocol/clientInfo":{"name":"http-fixture","version":"1"},
+            "io.modelcontextprotocol/clientCapabilities":{},
+            "openai/session":"copied-fixture-marker",
+        });
+        async move {
+            let response = request
+                .json(&json!({"jsonrpc":"2.0","id":1,"method":method,"params":params}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            response.json::<Value>().await.unwrap()
+        }
+    };
+    let tool = |key, action, params| {
+        rpc(
+            "tools/call",
+            Some(key),
+            json!({
+                "name":"messages","arguments":{"action":action,"params":params}
+            }),
+        )
+    };
+    let result = |reply: Value| {
+        assert!(
+            reply["error"].is_null() && reply["result"]["structuredContent"].is_object(),
+            "{reply}"
+        );
+        reply["result"]["structuredContent"].clone()
+    };
+    let first = result(tool(FIRST, "register", json!({"label":"sender"})).await);
+    let args = json!({"session_messages":true});
+    let subscription = json!({
+        "name":EVENT_NAME,"arguments":args,
+        "delivery":{"mode":"webhook","url":callback,"secret":format!("whsec_{}", STANDARD.encode([b'a';32]))}
+    });
+    let missing = rpc("events/subscribe", None, subscription.clone()).await;
+    assert_eq!(missing["error"]["data"]["kind"], "forbidden", "{missing}");
+    let unregistered = rpc("events/subscribe", Some(SECOND), subscription.clone()).await;
+    assert_eq!(
+        unregistered["error"]["data"]["kind"], "not_found",
+        "{unregistered}"
+    );
+
+    let second = result(tool(SECOND, "register", json!({"label":"receiver"})).await);
+    let listed = rpc("events/list", Some(SECOND), json!({})).await;
+    assert_eq!(
+        listed["result"]["events"][0]["inputSchema"]["properties"]["session_messages"]["type"],
+        "boolean"
+    );
+    assert_eq!(
+        listed["result"]["events"][0]["payloadSchema"]["properties"]["message_id"]["type"],
+        "string"
+    );
+    let subscribed = rpc("events/subscribe", Some(SECOND), subscription.clone()).await;
+    assert!(subscribed["result"]["id"].is_string(), "{subscribed}");
+    let refreshed = rpc("events/subscribe", Some(SECOND), subscription).await;
+    assert_eq!(
+        refreshed["result"]["id"], subscribed["result"]["id"],
+        "{refreshed}"
+    );
+    let (_, verification) = tokio::time::timeout(Duration::from_secs(3), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(verification["type"], "verification");
+
+    let unsubscribe = json!({
+        "name":EVENT_NAME,"arguments":args,"delivery":{"mode":"webhook","url":callback}
+    });
+    assert_eq!(
+        rpc("events/unsubscribe", Some(FIRST), unsubscribe.clone()).await["result"],
+        json!({})
+    );
+    let body = "The detailed diagnostic body stays in Labby. ".repeat(100);
+    let sent = result(
+        tool(
+            FIRST,
+            "send",
+            json!({
+                "to":{"kind":"session","session_id":second["session_id"]},
+                "body":body,"summary":"Diagnostic is ready","idempotency_key":"real-wire"
+            }),
+        )
+        .await,
+    );
+    let (_, push) = tokio::time::timeout(Duration::from_secs(5), received.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(push["data"]["message_id"], sent["message_id"]);
+    assert_eq!(push["data"]["message"], "Diagnostic is ready");
+    assert!(!push.to_string().contains(&body));
+    tokio::time::timeout(Duration::from_secs(3), https)
+        .await
+        .unwrap()
+        .unwrap();
+    let unread = result(tool(SECOND, "unread", json!({})).await);
+    assert_eq!(
+        unread["messages"][0]["message_id"], sent["message_id"],
+        "{unread}"
+    );
+    let full = result(tool(SECOND, "read", json!({"message_id":sent["message_id"]})).await);
+    assert_eq!(full["sender_session_id"], first["session_id"]);
+    assert_eq!(full["body"], body);
+    let ack = result(tool(SECOND, "ack", json!({"message_ids":[sent["message_id"]]})).await);
+    assert_eq!(ack["acknowledged"], json!([sent["message_id"]]));
+    assert_eq!(
+        rpc("events/unsubscribe", Some(SECOND), unsubscribe).await["result"],
+        json!({})
+    );
+    drop(stop_guard);
+    tokio::time::timeout(Duration::from_secs(3), worker)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), http)
+        .await
+        .unwrap()
+        .unwrap();
+}
