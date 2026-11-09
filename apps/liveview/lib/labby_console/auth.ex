@@ -7,6 +7,8 @@ defmodule LabbyConsole.Auth do
     do: Map.merge(status, %{state: :redacted, message: :redacted, reason: :redacted, log: []})
 
   alias LabbyConsole.{GatewayAction, GatewayAction.Error}
+
+  @access_inventory_reads ~w(access.team.member.list access.team_project.list access.team_invitation.list access.platform_admin.list)
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
   @impl true
@@ -294,6 +296,7 @@ defmodule LabbyConsole.Auth do
     with {:ok, session} <- current_in_action(op),
          true <- matches?(op.id, op.generation),
          {:ok, receive_timeout} <- GatewayAction.receive_timeout(op),
+         {:ok, access_headers} <- access_read_headers(op, receive_timeout),
          :ok <- GenServer.call(coordinator, {:dispatch, ref}) do
       case request(
              op.session.target,
@@ -303,7 +306,7 @@ defmodule LabbyConsole.Auth do
                {"cookie", op.session.cookie},
                {"x-csrf-token", session["csrf_token"]},
                {"content-type", "application/json"}
-             ],
+             ] ++ access_headers,
              body: op.json,
              receive_timeout: receive_timeout
            ) do
@@ -325,8 +328,32 @@ defmodule LabbyConsole.Auth do
     end
   end
 
+  defp access_read_headers(%{service: "access", action: action} = op, receive_timeout)
+       when action in @access_inventory_reads do
+    remaining = op.deadline - System.monotonic_time(:millisecond)
+    budget = min(1_500, min(remaining - 250, receive_timeout - 250))
+
+    if budget > 0,
+      do: {:ok, [{"x-labby-access-read-budget-ms", Integer.to_string(budget)}]},
+      else: {:error, :timeout}
+  end
+
+  defp access_read_headers(_, _), do: {:ok, []}
+
   defp action_path("access"), do: "/v1/access/admin"
   defp action_path(service), do: "/v1/" <> service
+
+  defp action_response(
+         %{service: "access", action: action} = op,
+         %{private: %{labby_response_too_large: true}}
+       )
+       when action in @access_inventory_reads do
+    {:error,
+     Error.new(:response_too_large, op.service, op.action,
+       metadata: %{"origin" => "budget"},
+       recovery: %{"action" => "reduce_work", "same_arguments" => "never"}
+     )}
+  end
 
   defp action_response(op, %{private: %{labby_response_too_large: true}}),
     do:

@@ -23,11 +23,13 @@ defmodule LabbyConsole.GatewayAction.Error do
           metadata: map()
         }
 
-  @kinds ~w(auth_failed forbidden oauth_needs_reauth oauth_scope_upgrade_required invalid_param missing_param validation_failed not_found conflict authority_changed rate_limited queue_saturated server_busy service_unavailable upstream_error timeout cancelled unknown_action access_setup_required)
+  @kinds ~w(auth_failed forbidden oauth_needs_reauth oauth_scope_upgrade_required invalid_param missing_param validation_failed not_found conflict authority_changed rate_limited queue_saturated server_busy service_unavailable upstream_error timeout cancelled unknown_action access_setup_required response_too_large)
   @kind_map Map.new(@kinds, &{&1, String.to_atom(&1)})
   @origins ~w(validation policy tool_execution upstream_transport discovery runtime budget bridge code_mode)
   @recovery_actions ~w(revise_and_retry retry_later reauthenticate rediscover do_not_retry confirm reduce_work start_dependency inspect_and_escalate)
   @same_arguments ~w(safe conditional discouraged never)
+  @access_inventory_reads ~w(access.team.member.list access.team_project.list access.team_invitation.list access.platform_admin.list)
+  @owner_protected_actions ~w(access.team.member.role.set access.team.member.suspend access.team.member.remove)
 
   def new(kind, service, action, opts \\ []) do
     risk = Keyword.get(opts, :side_effects, "none_expected")
@@ -81,13 +83,13 @@ defmodule LabbyConsole.GatewayAction.Error do
       do: %{
         error
         | recovery: recovery(data["recovery"], error.recovery) |> conservative_retry(risk),
-          metadata: metadata(data)
+          metadata: metadata(data) |> Map.merge(access_metadata(data, service, action, kind))
       },
       else: error
   end
 
   def envelope?(data, service, action) when is_map(data),
-    do: data["contract_version"] == 1 and data["service"] == service and data["action"] == action
+    do: data["contract_version"] === 1 and data["service"] == service and data["action"] == action
 
   def envelope?(_, _, _), do: false
 
@@ -121,6 +123,23 @@ defmodule LabbyConsole.GatewayAction.Error do
         Enum.all?(value, &(&1 in ["lab:read", "lab", "lab:admin"]))
     end)
   end
+
+  defp access_metadata(data, "access", action, :conflict)
+       when action in @access_inventory_reads do
+    %{} |> maybe_put("existing_id", data["existing_id"], &(&1 == "access_inventory"))
+  end
+
+  defp access_metadata(data, "access", action, :conflict)
+       when action in @owner_protected_actions do
+    %{} |> maybe_put("existing_id", data["existing_id"], &(&1 == "team_owner"))
+  end
+
+  defp access_metadata(data, "access", action, :response_too_large)
+       when action in @access_inventory_reads do
+    %{} |> maybe_put("budget_terminal", data["budget_terminal"], &is_boolean/1)
+  end
+
+  defp access_metadata(_, _, _, _), do: %{}
 
   defp identifier?(value),
     do:

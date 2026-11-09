@@ -8,11 +8,38 @@ defmodule LabbyConsole.GatewayAction do
 
   alias LabbyConsole.{Auth, GatewayAction.Error}
 
+  @access_reads ~w(
+    access.team.list
+    access.project.effective.list
+    access.gateway_credential.list
+    access.team.member.list
+    access.team_project.list
+    access.team_invitation.list
+    access.platform_admin.list
+  )
+  @access_mutations ~w(
+    access.team.create
+    access.team.member.add
+    access.team.member.role.set
+    access.team.member.suspend
+    access.team.member.remove
+    access.team.member.activate
+    access.team.suspend
+    access.team.activate
+    access.team_invitation.create
+    access.team_invitation.accept
+    access.team_project.assign
+    access.team_project.unassign
+    access.platform_admin.grant
+    access.platform_admin.revoke
+    access.gateway_credential.bind
+    access.gateway_credential.revoke
+  )
   @actions %{
     "gateway" => ~w(gateway.get gateway.test gateway.add gateway.update gateway.remove),
     "projects" =>
       ~w(projects.list projects.get projects.create projects.update projects.archive projects.activate),
-    "access" => ~w(access.team.list)
+    "access" => @access_reads ++ @access_mutations ++ ["help"]
   }
   @reads %{
     "gateway" =>
@@ -22,7 +49,7 @@ defmodule LabbyConsole.GatewayAction do
   }
   @gateway_mutations ~w(gateway.test gateway.add gateway.update gateway.remove)
   @mutations ~w(projects.create projects.update projects.archive projects.activate) ++
-               @gateway_mutations
+               @gateway_mutations ++ @access_mutations
 
   alias LabbyConsole.GatewayAction.Lifecycle
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -95,7 +122,8 @@ defmodule LabbyConsole.GatewayAction do
 
     cond do
       not is_binary(service) or not is_binary(action) or not is_map(params) or
-          action not in Map.get(policy, service, []) ->
+        action not in Map.get(policy, service, []) or
+          (service == "access" and action == "help" and map_size(params) != 0) ->
         {:error, Error.new(:not_allowed, nil, nil)}
 
       not is_pid(coordinator) ->
