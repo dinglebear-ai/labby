@@ -112,13 +112,10 @@ impl ChannelSession {
             let accept = |batch: &crate::dispatch::codemode_notices::NoticeBatch| {
                 Some(batch.notifications.clone())
             };
-            let batch = if include_references {
-                self.store
-                    .deliver_with_message_refs(self.recipient.clone(), accept)
-                    .await
-            } else {
-                self.store.deliver(self.recipient.clone(), accept).await
-            };
+            let batch = self
+                .store
+                .deliver_channel(self.recipient.clone(), include_references, accept)
+                .await;
             if let Ok(Some(notices)) = batch {
                 for notice in notices {
                     if notice.message_id.is_some()

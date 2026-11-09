@@ -443,7 +443,20 @@ async fn session_messages_live_http_and_stdio() {
         .json()
         .await
         .unwrap();
-    let frame = timeout(DEADLINE, claude.read()).await.unwrap();
+    let frame = timeout(DEADLINE, claude.read()).await.unwrap_or_else(|error| {
+        let state = rusqlite::Connection::open_with_flags(
+            &inbox_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .and_then(|db| {
+            db.query_row(
+                "SELECT attempts,acknowledged,next_attempt FROM agent_notices WHERE id=?",
+                [ordinary["id"].as_str().unwrap()],
+                |row| Ok((row.get::<_, u32>(0)?, row.get::<_, bool>(1)?, row.get::<_, i64>(2)?)),
+            )
+        });
+        panic!("ordinary Channel notice timed out after daemon restart ({error}). SQLite (offers, acknowledged, next_attempt_ms)={state:?}");
+    });
     assert_eq!(
         frame["params"]["meta"]["notice_id"], ordinary["id"],
         "{frame}"

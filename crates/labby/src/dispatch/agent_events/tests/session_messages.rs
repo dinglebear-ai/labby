@@ -277,7 +277,9 @@ async fn late_subscription_commit_keeps_current_authority() {
                 .await,
             Err(EventError::Store(NoticeError::Deadline))
         );
+        assert_eq!(store.run(|_| Ok(())).await, Err(NoticeError::Busy));
         lock.execute_batch("COMMIT").unwrap();
+        store.await_idle().await.unwrap();
         let active = store
             .run_event(|db| {
                 use rusqlite::OptionalExtension as _;

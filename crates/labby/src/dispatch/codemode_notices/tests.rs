@@ -81,6 +81,57 @@ fn notice_production_lease_retry_ack_and_dedupe_are_durable() {
     );
 }
 
+#[tokio::test]
+async fn channel_delivery_keeps_the_result_of_an_offer_past_the_request_deadline() {
+    let store = NoticeStore::memory().unwrap();
+    let recipient = who("channel");
+    let inbox = store.register(recipient.clone()).await.unwrap();
+    let notice = store
+        .publish(producer(), message(&inbox.id, "late-offer"))
+        .await
+        .unwrap();
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let delivery_store = store.clone();
+    let mut started = Some(started);
+    let mut delivery = tokio::spawn(async move {
+        delivery_store
+            .deliver_channel(recipient, false, move |batch| {
+                started.take().unwrap().send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                Some(batch.notifications[0].id.clone())
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    let first = tokio::time::timeout(DB_BUDGET + Duration::from_millis(25), &mut delivery).await;
+    release.send(()).unwrap();
+    let outcome = match first {
+        Ok(result) => result.unwrap(),
+        Err(_) => delivery.await.unwrap(),
+    };
+    let id = notice.id.clone();
+    let offers: u32 = store
+        .run_event_settled(move |db| {
+            Ok(db.query_row(
+                "SELECT attempts FROM agent_notices WHERE id=?",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(offers, 1, "the offer lease committed");
+    assert_eq!(
+        outcome,
+        Ok(Some(notice.id)),
+        "the worker must observe its committed offer"
+    );
+}
+
 #[test]
 fn notice_production_recipient_boundaries_and_no_foreign_ack() {
     let mut c = db();

@@ -433,7 +433,7 @@ impl NoticeStore {
             .await
     }
 
-    /// The delivery worker owns the result of an admitted claim or settlement.
+    /// The delivery worker owns the result of an admitted claim, offer, or settlement.
     /// Waiting for that result prevents a detached commit from losing its owner.
     pub(super) async fn run_event_settled<T: Send + 'static>(
         &self,
@@ -564,6 +564,7 @@ impl NoticeStore {
 
     /// The acceptor builds a candidate envelope. Only commit after it fits; return
     /// that candidate after the durable lease commits, never mutate output early.
+    #[cfg(test)]
     pub(crate) async fn deliver<T: Send + 'static>(
         &self,
         recipient: NoticeRecipient,
@@ -584,16 +585,28 @@ impl NoticeStore {
             .await
     }
 
-    /// Only the joined channel worker calls this after proving the same local
-    /// message session. Ordinary Code Mode offers and ACKs exclude these rows.
-    pub(crate) async fn deliver_with_message_refs<T: Send + 'static>(
+    /// Wait for an admitted channel offer so a committed lease has a sender.
+    /// The channel includes message references only with current session proof.
+    pub(crate) async fn deliver_channel<T: Send + 'static>(
         &self,
         recipient: NoticeRecipient,
+        include_message_refs: bool,
         accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
     ) -> Result<Option<T>, NoticeError> {
         let key = recipient.key()?;
-        self.run(move |db| deliver_at(db, &key, None, now_ms(), true, accept))
+        self.run_event_settled(move |db| {
+            deliver_at(db, &key, None, now_ms(), include_message_refs, accept)
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn await_idle(&self) -> Result<(), NoticeError> {
+        let _permit = tokio::time::timeout(Duration::from_secs(3), self.permit.acquire())
             .await
+            .map_err(|_| NoticeError::Busy)?
+            .map_err(|_| NoticeError::Unavailable)?;
+        Ok(())
     }
 
     /// Avoid refreshing bridge authority during idle channel polls.
