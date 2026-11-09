@@ -35,7 +35,7 @@ defmodule LabbyConsole.GatewayActionPayloadTest do
 
     try do
       send(peer, {:respond, 200, "{\"accepted\":true}"})
-      await(fn -> Lifecycle.terminal_result(ref) != nil end)
+      await_terminal_scrub(ref, token)
       assert {:ok, %{"accepted" => true}} = Lifecycle.terminal_result(ref)
       assert_compact(ref, token)
       assert Lifecycle.reserved?(ref)
@@ -92,7 +92,7 @@ defmodule LabbyConsole.GatewayActionPayloadTest do
 
     try do
       send(peer, {:respond, 200, "{\"accepted\":true}"})
-      await(fn -> Lifecycle.terminal_result(ref) != nil end)
+      await_terminal_scrub(ref, token)
       assert {:ok, %{"accepted" => true}} = Lifecycle.terminal_result(ref)
       assert_compact_ets(ref, token)
       assert Lifecycle.reserved?(ref)
@@ -255,7 +255,7 @@ defmodule LabbyConsole.GatewayActionPayloadTest do
 
     try do
       :sys.resume(GatewayAction)
-      await(fn -> Lifecycle.terminal_result(ref) != nil end)
+      await_terminal_scrub(ref, token)
       assert_compact(ref, token)
       await(fn -> :sys.get_state(Lifecycle)[ref].complete? end)
     after
@@ -340,6 +340,19 @@ defmodule LabbyConsole.GatewayActionPayloadTest do
 
     [ref] = for {{:operation, ref}, %{owner: ^owner}} <- :ets.tab2list(Lifecycle), do: ref
     ref
+  end
+
+  defp await_terminal_scrub(ref, token) do
+    await(fn ->
+      case :ets.lookup(Lifecycle, {:operation, ref}) do
+        [{{:operation, ^ref}, op}] ->
+          op.deadline > System.monotonic_time(:millisecond) and Lifecycle.reserved?(ref) and
+            Lifecycle.terminal_result(ref) != nil and not retains_payload?(op, token)
+
+        [] ->
+          false
+      end
+    end)
   end
 
   defp assert_compact(ref, token) do

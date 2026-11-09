@@ -360,12 +360,13 @@ defmodule LabbyConsole.GatewayActionTest do
         end
       end)
 
-    assert_receive {:owned, _}
+    assert_receive {:owned, refs}
     for _ <- 1..4, do: assert_receive({:dispatch, _, _, _, _, _})
     children = Task.Supervisor.children(LabbyConsole.GatewayAction.Tasks)
     monitors = Enum.map(children, &Process.monitor/1)
     Process.exit(owner, :kill)
     for monitor <- monitors, do: assert_receive({:DOWN, ^monitor, :process, _, _}, 1000)
+    await_released(refs, System.monotonic_time(:millisecond) + 1000)
     response(state, 200, "{}")
     assert {:ok, %{}} = Auth.action(id, "projects", "projects.create", %{})
   end
@@ -640,6 +641,23 @@ defmodule LabbyConsole.GatewayActionTest do
 
     refute_receive {:gateway_action, ^ref, {:ok, _}}
     assert {:error, :unauthenticated} = Auth.current(id)
+  end
+
+  defp await_released(refs, deadline) do
+    state = :sys.get_state(LabbyConsole.GatewayAction.Lifecycle, 1000)
+
+    released? =
+      Enum.all?(refs, fn ref ->
+        not Map.has_key?(state, ref) and
+          not LabbyConsole.GatewayAction.Lifecycle.reserved?(ref)
+      end)
+
+    unless released? do
+      assert System.monotonic_time(:millisecond) < deadline,
+             "caller reservations were not retired before admission"
+
+      await_released(refs, deadline)
+    end
   end
 
   defp await_queued_publication(attempts \\ 50)
