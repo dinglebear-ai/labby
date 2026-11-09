@@ -11,24 +11,40 @@ test('implemented screens retain the mock shell and readable desktop/mobile layo
   await page.getByRole('button', {name:'Sign in', exact:true}).click()
   await expect(page).toHaveURL(url => isGatewayURL(url, consoleOrigin))
   const routes = [
-    ['/gateway', '#server-list'],
-    ['/gateway/servers/real-e2e-disabled', '#server-details-content'],
-    ['/gateway/servers/real-e2e-disabled/catalog', '#catalog-results'],
-    ['/gateway/upstreams/real-e2e-disabled/runtime', '#server-runtime-content'],
-    ['/runtime', '#runtime-metrics'],
-    ['/clients', '#clients-list, #clients-empty'],
-    ['/diagnostics', '#diagnostics-findings'],
-    ['/usage', '#usage-summary'],
-    ['/activity', '#usage-calls-empty, .console-call-table'],
-    ['/logs', '#server-log-lines'],
+    ['/gateway', '#server-list', '/gateway'],
+    ['/gateway/servers/real-e2e-disabled', '#server-details-content', '/gateway'],
+    ['/gateway/servers/real-e2e-disabled/catalog', '#catalog-results', '/gateway'],
+    ['/gateway/upstreams/real-e2e-disabled/runtime', '#server-runtime-content', '/gateway'],
+    ['/runtime', '#runtime-metrics', '/runtime'],
+    ['/clients', '#clients-list, #clients-empty', '/clients'],
+    ['/diagnostics', '#diagnostics-findings', '/diagnostics'],
+    ['/usage', '#usage-summary', '/usage'],
+    ['/activity', '#usage-calls-empty, .console-call-table', '/activity'],
+    ['/logs', '#server-log-lines', '/logs'],
   ]
   for (const [width,height] of [[1280,900],[320,740]]) {
     await page.setViewportSize({width,height})
-    for (const [route,ready] of routes) {
+    for (const [route,ready,navigationHref] of routes) {
       await page.goto(route)
       await expect(page.locator(ready).first()).toBeVisible({timeout:15000})
       await expect(page.locator('h1')).toBeVisible()
-      await expect(page.locator('nav[aria-label="Primary navigation"] a[aria-current="page"]')).toHaveCount(1)
+      // Desktop groups and mobile More share the current destination contract.
+      const navigation = width===1280
+        ? page.locator('aside[aria-label="Labby navigation"] nav:is([aria-label="Primary navigation"], [aria-label="Workspace"], [aria-label="Operations"])')
+        : page.locator('nav:is([aria-label="Labby pages"], [aria-label="More Labby pages"])')
+      const current = navigation.locator('a[aria-current="page"]')
+      await expect(current).toHaveCount(1)
+      await expect(current).toHaveAttribute('href', navigationHref)
+      const needsMore = width===320 && navigationHref!=='/gateway'
+      if (needsMore) {
+        await page.getByRole('button', {name:'More pages', exact:true}).click()
+        await expect(page.locator('#labby-mobile-more-menu')).toBeVisible()
+      }
+      await expect(current).toBeVisible()
+      if (needsMore) {
+        await page.getByRole('button', {name:'Close more pages', exact:true}).click()
+        await expect(page.locator('#labby-mobile-more-menu')).toBeHidden()
+      }
       const dimensions=await page.evaluate(() => ({viewport:innerWidth, document:document.documentElement.scrollWidth}))
       expect(dimensions.document, `${route} horizontal page overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport)
       if (width===1280 && route==='/gateway') {
