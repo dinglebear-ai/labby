@@ -32,7 +32,7 @@ defmodule LabbyConsoleWeb.GatewayFleetLiveTest do
     assert has_element?(view, ".gateway-fleet")
     view |> element("button[phx-value-layout=cards]") |> render_click()
     assert has_element?(view, "#gateway-inventory[data-layout=cards]")
-    view |> element("button[phx-click=inspect]") |> render_click()
+    view |> element("button[aria-label^='Quick inspect']") |> render_click()
     assert has_element?(view, "#gateway-inspector", "fixture-server")
     assert has_element?(view, "#gateway-inspector", "Unknown")
     view |> form("#gateway-filters", %{lens: "disabled", source: "all"}) |> render_change()
@@ -149,5 +149,59 @@ defmodule LabbyConsoleWeb.GatewayFleetLiveTest do
     send(request, :release_fleet)
     render_async(view)
     refute has_element?(view, "#server-list li")
+  end
+
+  test "inspector saves opener focus once and retains accessible cell labels", %{conn: conn} do
+    signed = post(conn, "/sign-in", %{credential: "fixture-only"})
+    {:ok, view, _} = live(recycle(signed), "/gateway")
+    render_async(view)
+    opener = "#server-list button[aria-label^='Quick inspect']"
+    commands = inspect_commands(view, opener)
+    assert Enum.map(commands, &hd/1) == ["push_focus", "push"]
+    view |> element(opener) |> render_click()
+    assert Enum.map(inspect_commands(view, opener), &hd/1) == ["push"]
+    view |> element("button[aria-label='Close server inspector']") |> render_click()
+    assert Enum.map(inspect_commands(view, opener), &hd/1) == ["push_focus", "push"]
+  end
+
+  test "cell labels survive hidden and reordered columns in every layout", %{conn: conn} do
+    signed = post(conn, "/sign-in", %{credential: "fixture-only"})
+    {:ok, view, _} = live(recycle(signed), "/gateway?columns=skills,tools,source")
+    render_async(view)
+
+    for layout <- ~w(table cards list) do
+      view |> element("button[phx-value-layout='#{layout}']") |> render_click()
+
+      assert has_element?(
+               view,
+               "#server-list [data-column=skills] .gf-cell-label.sr-only",
+               "Skills"
+             )
+
+      assert has_element?(
+               view,
+               "#server-list [data-column=tools] .gf-cell-label.sr-only",
+               "Tools"
+             )
+
+      assert has_element?(
+               view,
+               "#server-list [data-column=source] .gf-cell-label.sr-only",
+               "Source"
+             )
+
+      refute has_element?(view, "#server-list [data-column=resources]")
+      assert has_element?(view, "#server-list .gf-mobile-label[aria-hidden=true]")
+    end
+  end
+
+  defp inspect_commands(view, selector) do
+    view
+    |> render()
+    |> LazyHTML.from_fragment()
+    |> LazyHTML.query(selector)
+    |> LazyHTML.attribute("phx-click")
+    |> hd()
+    |> Jason.decode!()
   end
 end

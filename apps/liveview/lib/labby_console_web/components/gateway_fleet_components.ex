@@ -231,7 +231,10 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             >
               <%= case column do %>
                 <% "source" -> %>
-                  <span class="gf-mobile-label">Source</span><span>{Fleet.source_label(row["source"])}</span>
+                  <span class="sr-only gf-cell-label">Source</span><span
+                    class="gf-mobile-label"
+                    aria-hidden="true"
+                  >Source</span><span>{Fleet.source_label(row["source"])}</span>
                 <% "status" -> %>
                   <span
                     class="gf-status"
@@ -243,7 +246,10 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
                     data-state="disabled"
                   >Disabled</small>
                 <% family -> %>
-                  <span class="gf-mobile-label">{String.capitalize(family)}</span><span data-observation={
+                  <span class="sr-only gf-cell-label">{String.capitalize(family)}</span><span
+                    class="gf-mobile-label"
+                    aria-hidden="true"
+                  >{String.capitalize(family)}</span><span data-observation={
                     row["observations"][family]["state"]
                   }>{Fleet.measurement(row, family)}</span><small
                     :if={row["observations"][family]["state"] in ~w(stale failed)}
@@ -254,7 +260,7 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             <div class="gf-row-actions">
               <button
                 type="button"
-                phx-click="inspect"
+                phx-click={inspect_action(@state.selected, row["id"])}
                 phx-value-id={row["id"]}
                 aria-label={"Quick inspect " <> Fleet.label(row)}
                 aria-pressed={to_string(@state.selected == row["id"])}
@@ -313,4 +319,7 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
   defp grid(prefs),
     do:
       "--gf-columns: minmax(160px, 2fr) repeat(#{length(prefs["columns"])}, minmax(70px, 1fr)) 76px"
+
+  defp inspect_action(nil, id), do: JS.push_focus() |> JS.push("inspect", value: %{id: id})
+  defp inspect_action(_, id), do: JS.push("inspect", value: %{id: id})
 end
