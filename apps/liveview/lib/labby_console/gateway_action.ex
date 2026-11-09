@@ -9,17 +9,20 @@ defmodule LabbyConsole.GatewayAction do
   alias LabbyConsole.{Auth, GatewayAction.Error}
 
   @actions %{
+    "gateway" => ~w(gateway.get gateway.test gateway.add gateway.update gateway.remove),
     "projects" =>
       ~w(projects.list projects.get projects.create projects.update projects.archive projects.activate),
     "access" => ~w(access.team.list)
   }
   @reads %{
     "gateway" =>
-      ~w(gateway.list gateway.server.get gateway.discovered_tools gateway.discovered_resources gateway.discovered_prompts gateway.host.metrics gateway.clients.list gateway.mcp.list gateway.usage.metrics gateway.usage.calls),
+      ~w(gateway.get gateway.list gateway.server.get gateway.discovered_tools gateway.discovered_resources gateway.discovered_prompts gateway.host.metrics gateway.clients.list gateway.mcp.list gateway.usage.metrics gateway.usage.calls),
     "doctor" => ~w(system.checks),
     "server_logs" => ~w(server_logs.query)
   }
-  @mutations ~w(projects.create projects.update projects.archive projects.activate)
+  @gateway_mutations ~w(gateway.test gateway.add gateway.update gateway.remove)
+  @mutations ~w(projects.create projects.update projects.archive projects.activate) ++
+               @gateway_mutations
 
   alias LabbyConsole.GatewayAction.Lifecycle
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
@@ -27,9 +30,10 @@ defmodule LabbyConsole.GatewayAction do
   def init(state), do: {:ok, state}
 
   def start(id, service, action, params, mode \\ :action) do
+    budget = operation_budget(service, action, mode)
     destination = :erlang.alias([:reply])
 
-    case do_start(id, service, action, params, mode, {:async, destination}) do
+    case do_start(id, service, action, params, mode, {:async, destination}, budget) do
       {:ok, _} = accepted ->
         accepted
 
@@ -47,9 +51,9 @@ defmodule LabbyConsole.GatewayAction do
     run({:auth_owner, self()}, "auth", Atom.to_string(kind), %{}, {:auth, kind, payload})
   end
 
-  defp do_start(id, "auth", action, %{}, {:auth, kind, payload}, delivery)
+  defp do_start(id, "auth", action, %{}, {:auth, kind, payload}, delivery, budget)
        when kind in [:exchange, :inspect, :logout, :handoff_start, :handoff_poll, :handoff_redeem] do
-    deadline = auth_deadline(kind, payload)
+    deadline = budget.deadline
     coordinator = Process.whereis(__MODULE__)
 
     with true <- is_pid(coordinator),
@@ -84,9 +88,8 @@ defmodule LabbyConsole.GatewayAction do
     end
   end
 
-  defp do_start(id, service, action, params, mode, delivery) do
-    started = System.monotonic_time(:millisecond)
-    deadline = started + if(action == "gateway.host.metrics", do: 12_000, else: 5_000)
+  defp do_start(id, service, action, params, mode, delivery, budget) do
+    deadline = budget.deadline
     policy = if mode == :read, do: @reads, else: @actions
     coordinator = Process.whereis(__MODULE__)
 
@@ -115,7 +118,9 @@ defmodule LabbyConsole.GatewayAction do
                 json: json,
                 mutation?: action in @mutations,
                 dispatch_gate: :atomics.new(1, signed: false),
+                started_at: budget.started_at,
                 deadline: deadline,
+                receive_timeout: budget.receive_timeout,
                 delivery: delivery
               }
 
@@ -144,10 +149,36 @@ defmodule LabbyConsole.GatewayAction do
     end
   end
 
-  defp auth_deadline(kind, payload) when kind in [:handoff_start, :handoff_poll, :handoff_redeem],
-    do: min(System.monotonic_time(:millisecond) + 5_000, payload.deadline)
+  defp operation_budget(service, action, mode) do
+    started = System.monotonic_time(:millisecond)
 
-  defp auth_deadline(_, _), do: System.monotonic_time(:millisecond) + 5_000
+    {total, receive_timeout} =
+      case {service, action} do
+        {"gateway", action} when action in @gateway_mutations -> {30_000, 25_000}
+        {"gateway", "gateway.host.metrics"} -> {12_000, 8_000}
+        _ -> {5_000, 2_000}
+      end
+
+    deadline =
+      case mode do
+        {:auth, kind, payload} when kind in [:handoff_start, :handoff_poll, :handoff_redeem] ->
+          min(started + total, payload.deadline)
+
+        _ ->
+          started + total
+      end
+
+    %{started_at: started, deadline: deadline, receive_timeout: receive_timeout}
+  end
+
+  @doc false
+  def receive_timeout(op) do
+    remaining = op.deadline - System.monotonic_time(:millisecond) - 250
+
+    if remaining > 0,
+      do: {:ok, min(op.receive_timeout, remaining)},
+      else: {:error, :timeout}
+  end
 
   defp auth_gate(kind, payload) when kind in [:handoff_start, :handoff_poll, :handoff_redeem],
     do: payload.network_gate
@@ -155,14 +186,12 @@ defmodule LabbyConsole.GatewayAction do
   defp auth_gate(_, _), do: :atomics.new(1, signed: false)
 
   def run(id, service, action, params, mode \\ :action) do
-    deadline =
-      System.monotonic_time(:millisecond) +
-        if(action == "gateway.host.metrics", do: 12_000, else: 5_000)
+    budget = operation_budget(service, action, mode)
 
     alias_ref = :erlang.alias()
 
     try do
-      with {:ok, ref} <- do_start(id, service, action, params, mode, {:sync, alias_ref}) do
+      with {:ok, ref} <- do_start(id, service, action, params, mode, {:sync, alias_ref}, budget) do
         result =
           receive do
             {:gateway_action_ready, ^ref, result} ->
@@ -176,7 +205,7 @@ defmodule LabbyConsole.GatewayAction do
                    side_effects: if(action in @mutations, do: "unknown", else: "none_expected")
                  )}
           after
-            max(0, deadline - System.monotonic_time(:millisecond)) ->
+            max(0, budget.deadline - System.monotonic_time(:millisecond)) ->
               candidate =
                 {:error,
                  Error.new(:timeout, service, action,

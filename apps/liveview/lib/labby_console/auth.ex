@@ -293,6 +293,7 @@ defmodule LabbyConsole.Auth do
   def execute_action(op, coordinator, ref) do
     with {:ok, session} <- current_in_action(op),
          true <- matches?(op.id, op.generation),
+         {:ok, receive_timeout} <- GatewayAction.receive_timeout(op),
          :ok <- GenServer.call(coordinator, {:dispatch, ref}) do
       case request(
              op.session.target,
@@ -304,7 +305,7 @@ defmodule LabbyConsole.Auth do
                {"content-type", "application/json"}
              ],
              body: op.json,
-             receive_timeout: if(op.action == "gateway.host.metrics", do: 8_000, else: 2_000)
+             receive_timeout: receive_timeout
            ) do
         {:ok, response} ->
           action_response(op, response)
@@ -316,7 +317,7 @@ defmodule LabbyConsole.Auth do
            )}
       end
     else
-      {:error, reason} when reason in [:unauthenticated, :forbidden, :unavailable] ->
+      {:error, reason} when reason in [:unauthenticated, :forbidden, :unavailable, :timeout] ->
         {:error, Error.new(reason, op.service, op.action)}
 
       _ ->
