@@ -61,6 +61,12 @@ defmodule LabbyConsoleWeb.OAuthLoginTest do
   test "provider choice has accessible link and bearer remains explicit", %{conn: conn} do
     page = conn |> get("/sign-in") |> html_response(200)
     assert page =~ "data-provider-login"
+    assert page =~ ~s(class="labby-auth-provider")
+    assert page =~ ~s(class="labby-auth-divider")
+    assert page =~ ~s(data-labby-mark="fold")
+    assert page =~ ~s(data-provider-status role="status" aria-live="polite")
+    assert page =~ ~s(data-provider-link hidden)
+    assert page =~ ~s(data-provider-cancel hidden)
     assert page =~ "Sign in with provider"
     assert page =~ "Gateway credential"
     assert page =~ ~s(rel="noopener noreferrer")

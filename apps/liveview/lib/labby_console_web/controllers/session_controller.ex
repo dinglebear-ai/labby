@@ -15,27 +15,15 @@ defmodule LabbyConsoleWeb.SessionController do
   end
 
   defp sign_in_page(conn, message) do
-    token = Plug.CSRFProtection.get_csrf_token()
+    page =
+      LabbyConsoleWeb.SignInPage.render(%{
+        token: Plug.CSRFProtection.get_csrf_token(),
+        message: message,
+        provider: LabbyConsole.OAuthHandoff.configured?(),
+        flow: get_session(conn, :oauth_flow_id) || ""
+      })
 
-    message =
-      if message, do: message |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
-
-    provider = if LabbyConsole.OAuthHandoff.configured?(), do: provider_choice(conn), else: ""
-
-    html(conn, """
-    <!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Labby</title><meta name="csrf-token" content="#{token}"><script defer src="/assets/js/app.js"></script><link rel="stylesheet" href="/vendor/aurora.css"><link rel="stylesheet" href="/assets/css/app.css"></head><body><main id="console-integration" class="console-auth"><section class="console-panel"><h1>Sign in to Labby</h1><p>Use a gateway bearer credential. It is exchanged once and never stored in your browser.</p>#{if message, do: "<p role=\"alert\">#{message}</p>", else: ""}<form action="/sign-in" method="post"><input type="hidden" name="_csrf_token" value="#{token}"><label for="credential">Gateway credential</label><input id="credential" name="credential" type="password" autocomplete="off" required maxlength="4096"><button type="submit">Sign in</button></form>#{provider}</section></main></body></html>
-    """)
-  end
-
-  defp provider_choice(conn) do
-    flow =
-      (get_session(conn, :oauth_flow_id) || "")
-      |> Phoenix.HTML.html_escape()
-      |> Phoenix.HTML.safe_to_string()
-
-    """
-    <section data-provider-login data-flow-id="#{flow}" aria-label="Provider sign-in"><h2>Provider sign-in</h2><button type="button" data-provider-start>Sign in with provider</button><p data-provider-status role="status" aria-live="polite"></p><a data-provider-link hidden target="_blank" rel="noopener noreferrer">Open provider sign-in</a><button type="button" data-provider-cancel hidden>Cancel provider sign-in</button></section>
-    """
+    html(conn, Phoenix.HTML.Safe.to_iodata(page))
   end
 
   def provider_start(conn, params) when map_size(params) == 0 do

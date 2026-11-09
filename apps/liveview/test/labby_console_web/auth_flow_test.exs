@@ -12,6 +12,35 @@ defmodule LabbyConsoleWeb.AuthFlowTest do
     assert response =~ "type=\"password\""
   end
 
+  test "public sign-in has Labby identity, dedicated styles and a labelled credential form", %{
+    conn: conn
+  } do
+    previous = Application.get_env(:labby_console, :gateway_url)
+    Application.delete_env(:labby_console, :gateway_url)
+    on_exit(fn -> Application.put_env(:labby_console, :gateway_url, previous) end)
+    page = conn |> get("/sign-in") |> html_response(200)
+    assert page =~ ~s(href="/assets/css/auth.css")
+    assert page =~ ~s(data-labby-mark="fold")
+    assert page =~ ~s(aria-labelledby="sign-in-title")
+    assert page =~ ~s(aria-describedby="credential-help")
+    assert page =~ ~s(id="credential-help")
+    assert page =~ ~s(name="_csrf_token")
+    refute page =~ "data-provider-login"
+    refute page =~ ~s(name="credential" value=)
+  end
+
+  test "failed credential sign-in keeps the branded form and an associated safe error", %{
+    conn: conn
+  } do
+    page =
+      conn |> post("/sign-in", %{credential: "private-invalid-credential"}) |> html_response(401)
+
+    assert page =~ ~s(data-labby-mark="fold")
+    assert page =~ ~s(id="sign-in-error" role="alert")
+    assert page =~ ~s(aria-describedby="credential-help sign-in-error")
+    refute page =~ "private-invalid-credential"
+  end
+
   test "protected gateway redirects an anonymous caller", %{conn: conn} do
     assert redirected_to(get(conn, "/gateway")) == "/sign-in"
   end

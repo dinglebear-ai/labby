@@ -42,6 +42,7 @@ npm-debug.log
 !/priv/static/assets/css/
 /priv/static/assets/css/*
 !/priv/static/assets/css/app.css
+!/priv/static/assets/css/auth.css
 !/priv/static/assets/default.css
 /node_modules/
 /test-results/
