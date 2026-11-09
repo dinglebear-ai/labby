@@ -25,6 +25,30 @@ defmodule LabbyConsoleWeb.GatewayFleetLiveTest do
     :ok
   end
 
+  test "normal initial render holds Add and Refresh until the connected fleet read completes", %{
+    conn: conn
+  } do
+    Application.put_env(:labby_console, :gateway_fleet_rows, [])
+    Application.put_env(:labby_console, :gateway_fleet_gate, self())
+    signed = post(conn, "/sign-in", %{credential: "fixture-only"})
+    initial = get(recycle(signed), "/gateway")
+    html = html_response(initial, 200) |> LazyHTML.from_document()
+    assert LazyHTML.query(html, "#gateway-add[disabled]") |> Enum.any?()
+    assert LazyHTML.query(html, "#servers-refresh[disabled]") |> Enum.any?()
+    assert LazyHTML.query(html, "#servers-loading") |> Enum.any?()
+
+    {:ok, view, _} = live(recycle(signed), "/gateway")
+    assert_receive {:fleet_read, request}, 2_000
+    assert has_element?(view, "#gateway-add[disabled]")
+    assert has_element?(view, "#servers-refresh[disabled]")
+    send(request, :release_fleet)
+    render_async(view)
+    refute has_element?(view, "#gateway-add[disabled]")
+    refute has_element?(view, "#servers-refresh[disabled]")
+    view |> element("#gateway-add") |> render_click()
+    assert has_element?(view, "#gm-dialog[role=dialog]", "Add server")
+  end
+
   test "fleet view controls, inspection and refresh reconciliation", %{conn: conn} do
     signed = post(conn, "/sign-in", %{credential: "fixture-only"})
     {:ok, view, _} = live(recycle(signed), "/gateway")

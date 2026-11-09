@@ -10,7 +10,7 @@ defmodule LabbyConsoleWeb.GatewayLive do
         page_title: "Gateway",
         rows: [],
         preferences: GatewayFleet.preferences(%{}),
-        loading: false,
+        loading: true,
         error: nil,
         selected: nil,
         epoch: nil,

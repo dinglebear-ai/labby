@@ -32,7 +32,9 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             id="gateway-add"
             type="button"
             phx-click="gateway_add"
-            disabled={!is_nil(@state.mutation_request) || !is_nil(@state.mutation_receipt)}
+            disabled={
+              @state.loading || !is_nil(@state.mutation_request) || !is_nil(@state.mutation_receipt)
+            }
           >Add server</button>
         </div>
       </header>

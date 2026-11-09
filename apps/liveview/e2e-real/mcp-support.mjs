@@ -8,7 +8,8 @@ export async function signIn(page) {
   await page.getByLabel('Gateway credential').fill(process.env.LABBY_E2E_CREDENTIAL)
   await page.getByRole('button',{name:'Sign in',exact:true}).click()
  }
- await expect(page).toHaveURL(url => isGatewayURL(url, consoleOrigin))
+ await expect(page).toHaveURL(url => isGatewayURL(url, consoleOrigin), {timeout: 15000})
+ await page.locator('[data-phx-session].phx-connected').waitFor({timeout: 15000})
 }
 export async function gatewayAction(action,params={}) {
  const response=await fetch(`${gateway}/v1/gateway`,{method:'POST',headers:{authorization:`Bearer ${process.env.LABBY_E2E_CREDENTIAL}`,'content-type':'application/json'},body:JSON.stringify({action,params}),signal:AbortSignal.timeout(15000)})
