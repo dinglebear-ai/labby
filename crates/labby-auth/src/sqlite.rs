@@ -1676,6 +1676,105 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "http-axum")]
+    #[tokio::test]
+    async fn background_oauth_grant_is_exact_and_revocable() {
+        let store = temp_store().await;
+        register_test_client(&store, "granted-client").await;
+        register_test_client(&store, "other-client").await;
+        let saved = sample_refresh_token("granted-client", "synthetic-event-refresh");
+        store.upsert_refresh_token(saved.clone()).await.unwrap();
+        let provider = store.inbound_provider_state().await.unwrap();
+        let binding = crate::types::ProviderBinding {
+            identity_issuer: provider.issuer,
+            provider_generation: provider.generation,
+        };
+        let check = |client: &str, subject: &str, resource: &str, scope: &str| {
+            store.current_oauth_grant_family(
+                client.to_owned(),
+                subject.to_owned(),
+                resource.to_owned(),
+                scope.to_owned(),
+                binding.clone(),
+                None,
+            )
+        };
+        let family = check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+            .await
+            .unwrap()
+            .expect("current consent");
+        assert!(
+            check("other-client", &saved.subject, &saved.resource, "lab")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            check(&saved.client_id, "other-subject", &saved.resource, "lab")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            check(
+                &saved.client_id,
+                &saved.subject,
+                "https://other.test/mcp",
+                "lab"
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            check(
+                &saved.client_id,
+                &saved.subject,
+                &saved.resource,
+                "lab:admin"
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        let bound = || {
+            store.current_oauth_grant_family(
+                saved.client_id.clone(),
+                saved.subject.clone(),
+                saved.resource.clone(),
+                "lab".into(),
+                binding.clone(),
+                Some(family.clone()),
+            )
+        };
+        let mut rotated = saved.clone();
+        rotated.refresh_token = "rotated-event-refresh".into();
+        store
+            .rotate_refresh_token(&saved.refresh_token, rotated.clone())
+            .await
+            .unwrap()
+            .expect("normal rotation");
+        assert_eq!(bound().await.unwrap().as_deref(), Some(family.as_str()));
+        store
+            .revoke_refresh_token(&rotated.refresh_token)
+            .await
+            .unwrap();
+        assert!(bound().await.unwrap().is_none());
+
+        let mut replacement = saved.clone();
+        replacement.refresh_token = "replacement-event-refresh".into();
+        store.upsert_refresh_token(replacement).await.unwrap();
+        let new_family = check(&saved.client_id, &saved.subject, &saved.resource, "lab")
+            .await
+            .unwrap()
+            .expect("fresh consent can enroll");
+        assert_ne!(family, new_family);
+        assert!(
+            bound().await.unwrap().is_none(),
+            "new consent cannot restore an old enrollment"
+        );
+    }
+
     #[tokio::test]
     async fn has_refresh_token_for_client_reflects_unexpired_rows_only() {
         let store = temp_store().await;

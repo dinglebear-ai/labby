@@ -1,14 +1,10 @@
 //! MCP adaptation only: derive recipient authority, handle control inputs, and
 //! attach advisory notices without replacing the user's result or error.
 use crate::dispatch::codemode_notices::{
-    NoticeBatch, NoticeConsumer, NoticeError, NoticeRecipient, NoticeStore,
-    validate_acknowledgments,
+    NoticeBatch, NoticeError, NoticeRecipient, NoticeStore, validate_acknowledgments,
 };
 use crate::mcp::{
-    context::{
-        auth_context_from_extensions, authorized_client_id_from_extensions,
-        openai_session_fingerprint,
-    },
+    notice_identity::{legacy_notice_recipient, notice_recipient},
     server::LabMcpServer,
 };
 use rmcp::{
@@ -18,106 +14,16 @@ use rmcp::{
 };
 use serde_json::{Map, Value};
 
-pub(super) fn recipient(
-    server: &LabMcpServer,
-    context: &RequestContext<RoleServer>,
-) -> Option<NoticeRecipient> {
-    let actor = server.request_actor_key(context);
-    let client = authorized_client_id_from_extensions(&context.extensions);
-    let auth = auth_context_from_extensions(&context.extensions);
-    let identity = crate::mcp::context::verified_identity_from_extensions(&context.extensions);
-    // Static bearer and product credentials have verified credential identities,
-    // not OAuth azp IDs. Never accept clientInfo or request arguments as authority.
-    let credential = identity.filter(|identity| {
-        matches!(
-            identity.authenticator(),
-            labby_auth::Authenticator::StaticBearer | labby_auth::Authenticator::ProductCredential
-        )
-    });
-    let conversation = openai_session_fingerprint(Some(&context.meta));
-    let (actor, consumer) = match (auth, actor, client, credential) {
-        (Some(_), Some(actor), Some(client), _) => (
-            Some(actor.to_owned()),
-            NoticeConsumer::Client {
-                id: client.to_owned(),
-                conversation,
-            },
-        ),
-        (Some(_), _, None, Some(identity)) => {
-            let (actor, id) = credential_binding(
-                identity,
-                crate::mcp::context::bound_access_grant_from_extensions(&context.extensions),
-            )?;
-            (Some(actor), NoticeConsumer::Credential { id, conversation })
-        }
-        (None, None, None, None) if server.transport_label == "stdio" => (
-            None,
-            NoticeConsumer::Stdio {
-                session: server.route_runtime.notification_stdio_session().to_owned(),
-            },
-        ),
-        _ => return None,
-    };
-    Some(NoticeRecipient {
-        actor,
-        route: server.route_scope.notification_authority_key(),
-        consumer,
-    })
-}
-
-// Diagnostic fingerprints are deliberately truncated. Never use them as an
-// authorization/storage namespace: hash complete verified, non-secret facts.
-fn credential_binding(
-    identity: &labby_auth::VerifiedIdentity,
-    bound: Option<&labby_primitives::product_credential::BoundAccessGrant>,
-) -> Option<(String, String)> {
-    use sha2::{Digest as _, Sha256};
-    let labby_auth::PrincipalLink::LocalCredential { credential_id } = identity.principal_link()
-    else {
-        return None;
-    };
-    let issuer = identity.transport_credential_issuer();
-    let material = match identity.authenticator() {
-        labby_auth::Authenticator::StaticBearer => {
-            serde_json::json!(["static", issuer, credential_id])
-        }
-        labby_auth::Authenticator::ProductCredential => {
-            let grant = bound?;
-            if grant.credential_id != *credential_id || grant.issuer != issuer {
-                return None;
-            }
-            let mut scopes = grant.scopes.clone();
-            scopes.sort();
-            scopes.dedup();
-            serde_json::json!({"kind":"product","issuer":issuer,"credential":credential_id,
-                "credential_generation":grant.credential_generation,"installation":grant.installation_id,
-                "principal":grant.principal_id,"organization":grant.organization_id,"project":grant.project_id,
-                "loadout":grant.loadout_id,"loadout_generation":grant.loadout_generation,
-                "assignment_generation":grant.assignment_generation,"route":grant.route_id,
-                "route_generation":grant.route_generation,"membership_epoch":grant.membership_epoch,
-                "organization_policy_epoch":grant.organization_policy_epoch,"project_policy_epoch":grant.project_policy_epoch,
-                "resource":grant.resource,"audience":grant.audience,"scopes":scopes})
-        }
-        _ => return None,
-    };
-    let principal = serde_json::to_vec(&serde_json::json!([
-        "labby.notice.actor.v1",
-        issuer,
-        credential_id
-    ]))
-    .ok()?;
-    let binding =
-        serde_json::to_vec(&serde_json::json!(["labby.notice.credential.v1", material])).ok()?;
-    Some((
-        hex::encode(Sha256::digest(principal)),
-        hex::encode(Sha256::digest(binding)),
-    ))
-}
-
-pub(super) struct NoticeControl {
+pub(crate) struct NoticeControl {
     store: NoticeStore,
     recipient: Option<NoticeRecipient>,
+    alternate: Option<NoticeRecipient>,
     fields: Map<String, Value>,
+}
+
+pub(crate) struct NoticeInput {
+    register: bool,
+    ids: Option<Vec<String>>,
 }
 
 pub(super) async fn prepare(
@@ -126,42 +32,70 @@ pub(super) async fn prepare(
     context: &RequestContext<RoleServer>,
     read_only: bool,
 ) -> Result<NoticeControl, NoticeError> {
-    let register = match args.get("notification_inbox") {
-        Some(Value::Bool(v)) => *v,
-        None => false,
-        _ => return Err(NoticeError::Invalid),
-    };
-    let ids = match args.get("ack_notifications") {
-        None => None,
-        Some(value) => {
-            let values = value
-                .as_array()
-                .filter(|v| v.len() <= crate::dispatch::codemode_notices::MAX_ACKS)
-                .ok_or(NoticeError::Invalid)?;
-            let ids = values
-                .iter()
-                .map(|v| {
-                    v.as_str()
-                        .filter(|s| s.len() == 33)
-                        .map(ToOwned::to_owned)
-                        .ok_or(NoticeError::Invalid)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Some(ids)
+    let recipient = legacy_notice_recipient(server, context);
+    let alternate = notice_recipient(server, context).filter(|verified| {
+        recipient
+            .as_ref()
+            .is_some_and(|primary| verified != primary)
+    });
+    prepare_for_recipient(
+        server.route_runtime.code_mode_notifications.clone(),
+        recipient,
+        alternate,
+        NoticeInput::parse(args, read_only)?,
+    )
+    .await
+}
+
+impl NoticeInput {
+    pub(crate) fn parse(args: &Map<String, Value>, read_only: bool) -> Result<Self, NoticeError> {
+        let register = match args.get("notification_inbox") {
+            Some(Value::Bool(v)) => *v,
+            None => false,
+            _ => return Err(NoticeError::Invalid),
+        };
+        let ids = match args.get("ack_notifications") {
+            None => None,
+            Some(value) => {
+                let values = value
+                    .as_array()
+                    .filter(|v| v.len() <= crate::dispatch::codemode_notices::MAX_ACKS)
+                    .ok_or(NoticeError::Invalid)?;
+                let ids = values
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .filter(|s| s.len() == 33)
+                            .map(ToOwned::to_owned)
+                            .ok_or(NoticeError::Invalid)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                Some(ids)
+            }
+        };
+        if let Some(ids) = &ids {
+            validate_acknowledgments(ids)?;
         }
-    };
-    if let Some(ids) = &ids {
-        validate_acknowledgments(ids)?;
-    }
-    let recipient = recipient(server, context);
-    let store = server.route_runtime.code_mode_notifications.clone();
-    let mut fields = Map::new();
-    if register || ids.is_some() {
-        if read_only {
+        if read_only && (register || ids.is_some()) {
             return Err(NoticeError::ReadOnly);
         }
+        Ok(Self { register, ids })
+    }
+}
+
+pub(crate) async fn prepare_for_recipient(
+    store: NoticeStore,
+    recipient: Option<NoticeRecipient>,
+    alternate: Option<NoticeRecipient>,
+    input: NoticeInput,
+) -> Result<NoticeControl, NoticeError> {
+    let NoticeInput { register, ids } = input;
+    let mut fields = Map::new();
+    if register || ids.is_some() {
         let who = recipient.clone().ok_or(NoticeError::Identity)?;
-        let (inbox, acknowledged) = store.controls(who, register, ids).await?;
+        let (inbox, acknowledged) = store
+            .controls_for_recipients(who, alternate.clone(), register, ids)
+            .await?;
         if let Some(inbox) = inbox {
             fields.insert(
                 "notification_inbox".into(),
@@ -178,6 +112,7 @@ pub(super) async fn prepare(
     Ok(NoticeControl {
         store,
         recipient,
+        alternate,
         fields,
     })
 }
@@ -224,7 +159,7 @@ fn decorated(
 }
 
 impl NoticeControl {
-    pub(super) async fn attach(
+    pub(crate) async fn attach(
         &self,
         result: &mut CallToolResult,
         max_bytes: usize,
@@ -235,7 +170,7 @@ impl NoticeControl {
             let fields = self.fields.clone();
             match self
                 .store
-                .deliver(who, move |batch| {
+                .deliver_for_recipients(who, self.alternate.clone(), move |batch| {
                     decorated(&original, &fields, Some(batch), max_bytes, max_tokens)
                 })
                 .await

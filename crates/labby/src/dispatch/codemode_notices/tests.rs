@@ -35,7 +35,7 @@ fn db() -> Connection {
         .unwrap()
 }
 fn take(db: &mut Connection, key: &str, now: i64) -> Option<NoticeBatch> {
-    deliver_at(db, key, now, |v| Some(v.clone())).unwrap()
+    deliver_at(db, key, None, now, false, |v| Some(v.clone())).unwrap()
 }
 
 #[test]
@@ -78,6 +78,57 @@ fn notice_production_lease_retry_ack_and_dedupe_are_durable() {
         publish_at(&mut c, "admin", &message(&inbox, "job-1"), 100_001)
             .unwrap()
             .duplicate
+    );
+}
+
+#[tokio::test]
+async fn channel_delivery_keeps_the_result_of_an_offer_past_the_request_deadline() {
+    let store = NoticeStore::memory().unwrap();
+    let recipient = who("channel");
+    let inbox = store.register(recipient.clone()).await.unwrap();
+    let notice = store
+        .publish(producer(), message(&inbox.id, "late-offer"))
+        .await
+        .unwrap();
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let delivery_store = store.clone();
+    let mut started = Some(started);
+    let mut delivery = tokio::spawn(async move {
+        delivery_store
+            .deliver_channel(recipient, false, move |batch| {
+                started.take().unwrap().send(()).unwrap();
+                blocked.recv_timeout(Duration::from_secs(5)).unwrap();
+                Some(batch.notifications[0].id.clone())
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    let first = tokio::time::timeout(DB_BUDGET + Duration::from_millis(25), &mut delivery).await;
+    release.send(()).unwrap();
+    let outcome = match first {
+        Ok(result) => result.unwrap(),
+        Err(_) => delivery.await.unwrap(),
+    };
+    let id = notice.id.clone();
+    let offers: u32 = store
+        .run_event_settled(move |db| {
+            Ok(db.query_row(
+                "SELECT attempts FROM agent_notices WHERE id=?",
+                [id],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+        .unwrap();
+    assert_eq!(offers, 1, "the offer lease committed");
+    assert_eq!(
+        outcome,
+        Ok(Some(notice.id)),
+        "the worker must observe its committed offer"
     );
 }
 
@@ -146,7 +197,7 @@ fn notice_production_budget_rejection_is_transactional_and_count_is_bounded() {
         .unwrap();
     }
     assert!(
-        deliver_at::<()>(&mut c, &key, 1100, |_| None)
+        deliver_at::<()>(&mut c, &key, None, 1100, false, |_| None)
             .unwrap()
             .is_none()
     );
@@ -450,13 +501,12 @@ fn notice_production_windows_existing_file_acl_and_hardlinks_are_refused() {
 #[test]
 fn notice_production_existing_schema_missing_constraints_is_refused() {
     let c = Connection::open_in_memory().unwrap();
-    c.execute_batch(&SCHEMA_SQL.replace(
+    c.execute_batch(&schema::V1.replace(
         "UNIQUE(inbox_id, producer, dedupe_key)",
         "CHECK(attempts >= 0)",
     ))
     .unwrap();
-    c.pragma_update(None, "user_version", SCHEMA_VERSION)
-        .unwrap();
+    c.pragma_update(None, "user_version", 1).unwrap();
     c.pragma_update(None, "application_id", APPLICATION_ID)
         .unwrap();
     assert!(matches!(
@@ -569,11 +619,14 @@ fn capture_logs(work: impl FnOnce()) -> String {
 #[test]
 fn notice_production_storage_diagnostics_exclude_sensitive_error_text() {
     let logs = capture_logs(|| {
-        let sqlite = rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
-            Some("private notice payload and SQL".into()),
-        );
-        assert_eq!(NoticeError::from(sqlite), NoticeError::Unavailable);
+        let sqlite = || {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_FULL),
+                Some("private notice payload and SQL".into()),
+            )
+        };
+        assert_eq!(NoticeError::from(sqlite()), NoticeError::Unavailable);
+        assert_eq!(notice_write_error(sqlite(), true), NoticeError::Full);
         let io = std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
             "private database path",
@@ -647,4 +700,183 @@ fn notice_production_database_rejections_have_sanitized_reasons() {
     assert!(logs.contains("reason=\"integrity_check\""), "{logs}");
     assert!(!logs.contains("private_integrity_sentinel"), "{logs}");
     assert_eq!(validate_integrity("ok", false), Ok(()));
+}
+
+#[test]
+fn v1_migration_preserves_notice_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("inbox.sqlite3");
+    let v1 = Connection::open(&file).unwrap();
+    v1.execute_batch(schema::V1).unwrap();
+    v1.pragma_update(None, "application_id", APPLICATION_ID)
+        .unwrap();
+    v1.pragma_update(None, "user_version", 1).unwrap();
+    let who = who("v1-owner").key().unwrap();
+    let inbox = format!("inbox_{}", ulid::Ulid::new());
+    let acked = format!("notice_{}", ulid::Ulid::new());
+    let leased = format!("notice_{}", ulid::Ulid::new());
+    v1.execute(
+        "INSERT INTO agent_inboxes VALUES(?,?,'authenticated_client',3601000)",
+        params![inbox, who],
+    )
+    .unwrap();
+    for (id, key, acknowledged) in [(&acked, "v1", 1), (&leased, "leased", 0)] {
+        let payload =
+            serde_json::to_string(&("test", NoticeLevel::Info, "Indexing finished.", 3600))
+                .unwrap();
+        v1.execute(
+            "INSERT INTO agent_notices VALUES(?,?,'admin',?,?,'test','info','Indexing finished.',1001,3601000,1,31005,?)",
+            params![id, inbox, key, payload, acknowledged],
+        ).unwrap();
+    }
+    drop(v1);
+    let migrated = NoticeStore::from_connection(Connection::open(file).unwrap()).unwrap();
+    let mut db = migrated.connection.as_ref().unwrap().lock().unwrap();
+    let version: u32 = db
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+    assert!(take(&mut db, &who, 1006).is_none());
+    let original = publish_at(&mut db, "admin", &message(&inbox, "v1"), 1006).unwrap();
+    assert!(original.duplicate);
+    assert_eq!(original.id, acked);
+    let retry = take(&mut db, &who, 31_005).unwrap();
+    assert_eq!(retry.notifications[0].id, leased);
+    assert_eq!(retry.notifications[0].delivery_attempt, 2);
+}
+
+#[test]
+fn failed_v1_migration_is_atomic() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("inbox.sqlite3");
+    let v1 = Connection::open(&file).unwrap();
+    v1.execute_batch(schema::V1).unwrap();
+    v1.pragma_update(None, "application_id", APPLICATION_ID)
+        .unwrap();
+    v1.pragma_update(None, "user_version", 1).unwrap();
+    v1.execute(
+        "INSERT INTO agent_inboxes VALUES('inbox-1','owner','authenticated_client',3601000)",
+        [],
+    )
+    .unwrap();
+    let before = schema::schema_snapshot(&v1).unwrap();
+    let pages: u32 = v1
+        .pragma_query_value(None, "page_count", |row| row.get(0))
+        .unwrap();
+    v1.pragma_update(None, "max_page_count", pages).unwrap();
+    assert!(matches!(
+        NoticeStore::from_connection(v1),
+        Err(NoticeError::Unavailable)
+    ));
+    let db = Connection::open(file).unwrap();
+    assert_eq!(schema::schema_snapshot(&db).unwrap(), before);
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT id FROM agent_inboxes", [], |row| row
+            .get::<_, String>(0))
+            .unwrap(),
+        "inbox-1"
+    );
+}
+
+#[test]
+fn typed_message_reference_fits_notice_budget() {
+    let mut db = db();
+    let key = who("message-target").key().unwrap();
+    let inbox = register_at(&mut db, &key, "authenticated_client", 1000).unwrap();
+    let msg = format!("message_{}", ulid::Ulid::new());
+    let tx = db.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO agent_messages
+           (id,owner_key,sender_id,sender_label,body,summary,request_digest,
+            idempotency_key,recipient_ids,created,expires)
+         VALUES(?,'owner','sender','label','long private body','preview','digest','key','[]',1000,5000)",
+        [&msg],
+    )
+    .unwrap();
+    let mut input = message(&inbox.id, &msg);
+    input.source = "labby.messages".into();
+    input.message = "\"".repeat(160);
+    let mut admission = admit_notice_targets(&tx, std::slice::from_ref(&inbox.id)).unwrap();
+    let stored =
+        insert_notice_in(&tx, &mut admission, "session", &input, 1001, Some(&msg)).unwrap();
+    assert!(matches!(
+        insert_notice_in(&tx, &mut admission, "session", &input, 1001, Some(&msg)),
+        Err(NoticeError::Invalid)
+    ));
+    tx.commit().unwrap();
+    assert!(
+        take(&mut db, &key, 1002).is_none(),
+        "legacy Code Mode cannot offer typed refs"
+    );
+    let delivered = deliver_at(&mut db, &key, None, 1002, true, |batch| Some(batch.clone()))
+        .unwrap()
+        .unwrap();
+    assert!(
+        acknowledge_at(&mut db, &key, std::slice::from_ref(&stored.id), 1003)
+            .unwrap()
+            .is_empty(),
+        "legacy ACK cannot acknowledge a typed ref"
+    );
+    assert_eq!(delivered.notifications[0].id, stored.id);
+    assert_eq!(
+        delivered.notifications[0].message_id.as_deref(),
+        Some(msg.as_str())
+    );
+    let encoded = serde_json::to_string(&delivered).unwrap();
+    assert!(encoded.len() <= MAX_NOTICE_BATCH_BYTES);
+    assert!(!encoded.contains("long private body"));
+
+    // Even a valid legacy notice must be re-budgeted when a reference is
+    // added. Find an escaping-heavy edge within the legacy accepted range.
+    input.source = "\\".repeat(64);
+    let edge = (1..=384).find(|n| {
+        input.message = "\"".repeat(*n);
+        validate_publish(&input).is_ok() && validate_publish_reference(&input, Some(&msg)).is_err()
+    });
+    assert!(edge.is_some());
+}
+
+#[test]
+fn typed_message_reference_requires_internal_publish() {
+    let mut db = db();
+    let owner = who("legacy");
+    let key = owner.key().unwrap();
+    let inbox = register_at(&mut db, &key, owner.scope(), 1000).unwrap();
+    let external = serde_json::json!({
+        "inbox_id": inbox.id, "source": "fixture", "level": "info", "message": "ordinary",
+        "dedupe_key": "outside", "message_id": format!("message_{}", ulid::Ulid::new())
+    });
+    assert!(serde_json::from_value::<PublishNotice>(external).is_err());
+    publish_at(&mut db, "admin", &message(&inbox.id, "legacy"), 1001).unwrap();
+    let delivery = take(&mut db, &key, 1002).unwrap();
+    assert!(
+        serde_json::to_value(&delivery.notifications[0])
+            .unwrap()
+            .get("message_id")
+            .is_none()
+    );
+
+    let recipient = NoticeRecipient {
+        actor: Some("verified-owner".into()),
+        route: "root".into(),
+        consumer: NoticeConsumer::MessageSession {
+            binding: "private-binding".into(),
+        },
+    };
+    let message_inbox =
+        register_at(&mut db, &recipient.key().unwrap(), recipient.scope(), 1000).unwrap();
+    assert!(matches!(
+        publish_at(
+            &mut db,
+            "admin",
+            &message(&message_inbox.id, "outside"),
+            1001
+        ),
+        Err(NoticeError::NotFound)
+    ));
 }

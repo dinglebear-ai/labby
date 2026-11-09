@@ -958,6 +958,10 @@ mod tests {
     /// A Ready runtime holding one genuinely issued product credential whose
     /// secret is `wire_credential(0xA5)`.
     async fn issued_runtime() -> (tempfile::TempDir, AccessRuntime) {
+        issued_runtime_with_scopes(r#"["lab:read"]"#).await
+    }
+
+    async fn issued_runtime_with_scopes(scopes: &str) -> (tempfile::TempDir, AccessRuntime) {
         use super::super::credential_store::{ActivateProofInput, ConsumeBootstrapInput};
         let directory = tempfile::tempdir().unwrap();
         #[cfg(unix)]
@@ -1012,7 +1016,7 @@ mod tests {
                 route_generation: 1,
                 resource: "http://127.0.0.1/mcp".into(),
                 audience: "http://127.0.0.1/mcp".into(),
-                scopes_json: r#"["lab:read"]"#.into(),
+                scopes_json: scopes.into(),
                 now,
                 credential_expires_at: now + 3600,
             })
@@ -1020,6 +1024,94 @@ mod tests {
             .unwrap();
         drop(store);
         (directory, AccessRuntime::initialize(path).await)
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn message_session_revalidates_exact_product_generation_and_project() {
+        use crate::dispatch::{
+            agent_messages::{
+                http::HttpMessageRuntime,
+                proof::{MessageKey, SESSION_KEY_HEADER},
+            },
+            codemode_notices::NoticeError,
+        };
+        use labby_auth::{Authenticator, VerifiedIdentity, auth_context::AuthContext};
+
+        let (_directory, runtime) = issued_runtime_with_scopes(r#"["lab"]"#).await;
+        let adapter = Arc::new(AccessCredentialAdapter::new(
+            runtime.clone(),
+            Arc::new(MatchingLiveAuthority),
+        ));
+        let source = adapter.verify(&wire_credential(0xA5)).await.unwrap();
+        let bound = adapter.resolve(&source).await.unwrap();
+        let message_runtime =
+            HttpMessageRuntime::new(MessageKey::from_test_bytes([8; 32]), "1".repeat(64));
+        let (mut parts, ()) = axum::http::Request::builder()
+            .header("authorization", "Bearer synthetic-verified-product-fixture")
+            .header(SESSION_KEY_HEADER, "a".repeat(64))
+            .body(())
+            .unwrap()
+            .into_parts();
+        parts.extensions.insert(
+            VerifiedIdentity::local_credential_with_issuer(
+                Authenticator::ProductCredential,
+                bound.issuer.clone(),
+                bound.credential_id.clone(),
+            )
+            .unwrap(),
+        );
+        parts.extensions.insert(AuthContext {
+            actor_key: None,
+            sub: bound.principal_id.clone(),
+            scopes: bound.scopes.clone(),
+            issuer: bound.issuer.clone(),
+            via_session: false,
+            csrf_token: None,
+            email: None,
+        });
+        parts.extensions.insert(bound.clone());
+        let first = message_runtime
+            .binding(&parts, Some(&adapter))
+            .await
+            .unwrap()
+            .0;
+
+        let mut foreign = bound.clone();
+        foreign.project_id = "foreign-project".into();
+        parts.extensions.insert(foreign);
+        assert_eq!(
+            message_runtime.binding(&parts, Some(&adapter)).await.err(),
+            Some(NoticeError::Identity)
+        );
+
+        parts.extensions.insert(bound.clone());
+        parts.extensions.get_mut::<AuthContext>().unwrap().scopes = vec!["lab:read".into()];
+        assert!(!HttpMessageRuntime::eligible(&parts, Some(&adapter)));
+        parts.extensions.get_mut::<AuthContext>().unwrap().scopes = bound.scopes.clone();
+
+        runtime.store().await.unwrap().with_connection(|db| {
+            db.execute(
+                "UPDATE project_credentials SET credential_generation=credential_generation+1 WHERE credential_id=?1",
+                [REAL_CREDENTIAL_ID],
+            ).map_err(super::super::store::map_sqlite_error)?;
+            Ok(())
+        }).await.unwrap();
+        assert_eq!(
+            message_runtime.binding(&parts, Some(&adapter)).await.err(),
+            Some(NoticeError::Identity)
+        );
+        let source = adapter.verify(&wire_credential(0xA5)).await.unwrap();
+        parts
+            .extensions
+            .insert(adapter.resolve(&source).await.unwrap());
+        let refreshed = message_runtime
+            .binding(&parts, Some(&adapter))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(refreshed.owner_key, first.owner_key);
+        assert_ne!(refreshed.binding_key, first.binding_key);
     }
 
     async fn admission_attempts(runtime: &AccessRuntime) -> i64 {

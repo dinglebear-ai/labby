@@ -121,6 +121,7 @@ mod skills_list;
 mod skills_provider;
 #[cfg(feature = "skills")]
 mod skills_targeted;
+mod skills_wire;
 mod subject_tool_observation;
 mod task_authority;
 #[cfg(feature = "skills")]

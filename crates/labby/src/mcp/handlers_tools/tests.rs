@@ -8315,3 +8315,69 @@ async fn synthetic_gateway_test_fences_revocation_during_probe() {
         "discouraged"
     );
 }
+
+#[tokio::test]
+async fn tool_and_hash_agree_on_message_visibility() {
+    use crate::dispatch::agent_messages::{
+        http::HttpMessageRuntime,
+        proof::{MessageKey, SESSION_KEY_HEADER},
+    };
+    use crate::mcp::{runtime::McpRouteRuntime, session_messages::TOOL_NAME};
+    let mut server = test_server(
+        completion_test_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    server.transport_label = "http";
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let mut runtime = McpRouteRuntime::with_notification_store(
+        crate::dispatch::codemode_notices::NoticeStore::memory().unwrap(),
+    );
+    runtime.http_messages = Some(Arc::new(HttpMessageRuntime::new(
+        MessageKey::from_test_bytes([8; 32]),
+        "1".repeat(64),
+    )));
+    server.route_runtime = Arc::new(runtime);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    for (scope, cookie, include_key, expected) in [
+        ("lab", false, true, true),
+        ("lab:read", false, true, false),
+        ("lab:admin", true, true, false),
+        ("lab:admin", false, false, false),
+    ] {
+        let mut context = durable_scoped_context(running.peer().clone(), &[scope]);
+        let parts = context
+            .extensions
+            .get_mut::<axum::http::request::Parts>()
+            .unwrap();
+        parts
+            .extensions
+            .get_mut::<labby_auth::auth_context::AuthContext>()
+            .unwrap()
+            .via_session = cookie;
+        parts
+            .headers
+            .insert("authorization", "Bearer synthetic".parse().unwrap());
+        if include_key {
+            parts
+                .headers
+                .insert(SESSION_KEY_HEADER, "a".repeat(64).parse().unwrap());
+        }
+        let contract = running
+            .service()
+            .snapshot_tool_catalog_for_request(&context)
+            .await;
+        let tools = running
+            .service()
+            .list_tools_impl(None, context)
+            .await
+            .unwrap()
+            .tools;
+        assert_eq!(tools.iter().any(|tool| tool.name == TOOL_NAME), expected);
+        assert_eq!(ToolCatalogSnapshot::from_descriptors(&tools), contract);
+    }
+    running.cancel().await.unwrap();
+}

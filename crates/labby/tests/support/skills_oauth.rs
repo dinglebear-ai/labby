@@ -174,7 +174,7 @@ async fn oauth_roundtrip() {
         StreamableHttpClientTransportConfig::with_uri(endpoint),
     );
     let client = ().serve_with_lifecycle(worker, ClientLifecycleMode::Initialize).await.unwrap();
-    verify_skill_roundtrip(&client, "skill://labby/using-labby/SKILL.md").await;
+    verify_skill_roundtrip(&client, "skill://labby/using-labby/SKILL.md", true).await;
     client.cancel().await.unwrap();
     let requests = authority.received_requests().await.unwrap();
     let exchange = requests

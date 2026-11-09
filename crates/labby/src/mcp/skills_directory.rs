@@ -24,6 +24,26 @@ fn native_namespaces_only<'a>(
 }
 
 impl LabMcpServer {
+    /// Keep RMCP's synchronous dispatch gate aligned with our discovery view.
+    pub(crate) fn supports_skill_directories_snapshot(&self) -> bool {
+        if !self.route_scope.exposes_skills() || !self.route_scope.exposes_resources() {
+            return false;
+        }
+        #[cfg(feature = "gateway")]
+        if let Some(manager) = &self.gateway_manager {
+            let Some(upstreams) = manager.upstream_config_snapshot() else {
+                return false;
+            };
+            return native_namespaces_only(
+                upstreams
+                    .iter()
+                    .map(|u| (u.name.as_str(), u.enabled, u.proxy_skills)),
+                |name| self.route_scope.allows_upstream(name),
+            );
+        }
+        true
+    }
+
     pub(crate) async fn supports_skill_directories(&self) -> bool {
         if !self.route_scope.exposes_skills() || !self.route_scope.exposes_resources() {
             return false;

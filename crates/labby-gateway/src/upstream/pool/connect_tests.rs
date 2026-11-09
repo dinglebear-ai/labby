@@ -10,7 +10,7 @@ use rmcp::model::{
     ServerNotification, Task, TaskPayload, TaskStatus, TaskStatusNotification,
     TaskStatusNotificationParams,
 };
-use rmcp::service::{RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use serde_json::{Value, json};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -987,39 +987,6 @@ struct OrderedRelayNotificationFixture {
     messages: VecDeque<RxJsonRpcMessage<RoleClient>>,
 }
 
-struct OrderedRelayRawFixture {
-    messages: VecDeque<RawRxJsonRpcMessage<RoleClient>>,
-}
-
-impl Transport<RoleClient> for OrderedRelayRawFixture {
-    type Error = Infallible;
-
-    fn preserves_raw_responses() -> bool {
-        true
-    }
-
-    fn send(
-        &mut self,
-        _item: TxJsonRpcMessage<RoleClient>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
-        std::future::ready(Ok(()))
-    }
-
-    async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
-        None
-    }
-
-    fn receive_raw(
-        &mut self,
-    ) -> impl Future<Output = Option<RawRxJsonRpcMessage<RoleClient>>> + Send {
-        std::future::ready(self.messages.pop_front())
-    }
-
-    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        std::future::ready(Ok(()))
-    }
-}
-
 impl Transport<RoleClient> for OrderedRelayNotificationFixture {
     type Error = Infallible;
 
@@ -1085,7 +1052,7 @@ async fn ordered_relay_raw_receive_preserves_order_cancellation_and_result_body(
             }
         })
     });
-    let notification = RawRxJsonRpcMessage::<RoleClient>::notification(
+    let notification = RxJsonRpcMessage::<RoleClient>::notification(
         ServerNotification::ProgressNotification(ProgressNotification::new(
             ProgressNotificationParam::new(
                 ProgressToken(NumberOrString::String("ordered-progress".into())),
@@ -1099,34 +1066,35 @@ async fn ordered_relay_raw_receive_preserves_order_cancellation_and_result_body(
         "skills": [{"uri": "skill://up/x/SKILL.md"}],
         "extensionOnly": {"preserved": true}
     });
-    let response =
-        RawRxJsonRpcMessage::<RoleClient>::response(result_body.clone(), NumberOrString::Number(7));
-    let fixture = OrderedRelayRawFixture {
+    let response = RxJsonRpcMessage::<RoleClient>::response(
+        rmcp::model::ServerResult::CustomResult(rmcp::model::CustomResult::new(
+            result_body.clone(),
+        )),
+        NumberOrString::Number(7),
+    );
+    let fixture = OrderedRelayNotificationFixture {
         messages: VecDeque::from([notification, response]),
     };
     let mut transport = OrderedRelayNotificationTransport::new(fixture, Some(interceptor));
 
-    let timed_out = tokio::time::timeout(
-        std::time::Duration::from_millis(10),
-        transport.receive_raw(),
-    )
-    .await;
+    let timed_out =
+        tokio::time::timeout(std::time::Duration::from_millis(10), transport.receive()).await;
     assert!(
         timed_out.is_err(),
-        "raw response must wait for notification delivery"
+        "native response must wait for notification delivery"
     );
 
     release.add_permits(1);
-    let message = transport.receive_raw().await.expect("raw response");
+    let message = transport.receive().await.expect("native response");
     assert!(
-        matches!(message, RawRxJsonRpcMessage::<RoleClient>::Response(_)),
-        "expected raw response"
+        matches!(message, RxJsonRpcMessage::<RoleClient>::Response(_)),
+        "expected native response"
     );
-    let RawRxJsonRpcMessage::<RoleClient>::Response(response) = message else {
+    let RxJsonRpcMessage::<RoleClient>::Response(response) = message else {
         return;
     };
     assert_eq!(observed.lock().await.as_slice(), ["before-result"]);
-    assert_eq!(response.result, result_body);
+    assert_eq!(serde_json::to_value(response.result).unwrap(), result_body);
 }
 
 #[tokio::test]

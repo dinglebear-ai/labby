@@ -25,5 +25,17 @@ pub mod transport;
 #[allow(dead_code)]
 pub mod types;
 
+/// Tools with this descriptor marker require the client's direct transport.
+pub const TRANSPORT_LOCAL_TOOL_META: &str = "ai.dinglebear.labby/transportLocal";
+
+#[must_use]
+pub fn is_transport_local_tool(tool: &rmcp::model::Tool) -> bool {
+    tool.meta
+        .as_ref()
+        .and_then(|meta| meta.get(TRANSPORT_LOCAL_TOOL_META))
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
+}
+
 #[cfg(test)]
 mod test_isolation;

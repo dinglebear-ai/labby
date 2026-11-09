@@ -100,6 +100,17 @@ impl GatewayManager {
         self.config.read().await.clone()
     }
 
+    /// Nonblocking upstream snapshot for synchronous capability discovery.
+    /// A configuration transaction holding the lock yields no snapshot so
+    /// callers can withhold optional capabilities until publication completes.
+    #[must_use]
+    pub fn upstream_config_snapshot(&self) -> Option<Vec<UpstreamConfig>> {
+        self.config
+            .try_read()
+            .ok()
+            .map(|config| config.upstream.clone())
+    }
+
     /// Return the configured upstream names without cloning the full gateway config.
     pub async fn upstream_names(&self) -> BTreeSet<String> {
         self.config

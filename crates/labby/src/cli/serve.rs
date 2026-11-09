@@ -258,6 +258,12 @@ pub struct McpArgs {
 /// `labby mcp` arguments.
 #[derive(Debug, Args)]
 pub struct McpServeArgs {
+    /// Enable private session messaging on this stdio connection.
+    #[arg(long)]
+    pub agent_messages: bool,
+    /// Push this connection's Labby notices through Claude Code Channels.
+    #[arg(long)]
+    pub claude_channel: bool,
     /// Comma- or space-separated list of services to enable. Empty = all.
     #[arg(long, value_delimiter = ',')]
     pub services: Vec<String>,
@@ -271,6 +277,14 @@ pub struct McpServeArgs {
 /// `labby serve` arguments.
 #[derive(Debug, Args)]
 pub struct ServeArgs {
+    /// Enable private session messaging on authenticated TCP MCP.
+    #[arg(long)]
+    pub agent_messages: bool,
+    /// Enable authenticated MCP Events webhook subscriptions on the HTTP MCP route.
+    #[arg(long)]
+    pub mcp_events: bool,
+    #[arg(skip)]
+    pub(crate) claude_channel: bool,
     /// Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon).
     #[arg(long)]
     pub auto_update: bool,
@@ -303,6 +317,9 @@ pub async fn run_mcp(
 ) -> Result<ExitCode> {
     run(
         ServeArgs {
+            mcp_events: false,
+            agent_messages: args.agent_messages,
+            claude_channel: args.claude_channel,
             auto_update: false,
             services: args.services,
             transport: Some(Transport::Stdio),
@@ -532,6 +549,25 @@ async fn run_server(
         std::env::var("LABBY_MCP_TRANSPORT").ok(),
         config.mcp.transport.as_deref(),
     )?;
+    if args.mcp_events && !(cfg!(feature = "gateway") && matches!(transport, Transport::Http)) {
+        anyhow::bail!("--mcp-events requires the gateway feature and the HTTP transport");
+    }
+    if args.agent_messages
+        && !(cfg!(feature = "gateway") && matches!(transport, Transport::Http | Transport::Stdio))
+    {
+        anyhow::bail!(
+            "--agent-messages requires the gateway feature and authenticated TCP or local stdio"
+        );
+    }
+    if args.claude_channel
+        && !(cfg!(feature = "gateway")
+            && matches!(transport, Transport::Stdio)
+            && config.code_mode.enabled)
+    {
+        anyhow::bail!(
+            "--claude-channel requires stdio with the gateway feature and Code Mode enabled for inbox controls"
+        );
+    }
     tracing::info!(
         subsystem = "cli",
         phase = "serve.start",
@@ -598,6 +634,10 @@ async fn run_server(
     );
 
     let stdio_mode = should_run_stdio(transport, args.command.as_ref());
+    let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
+    if args.agent_messages && stdio_recursion_guard_active(stdio_mode, spawn_depth) {
+        anyhow::bail!("--agent-messages requires a direct stdio connection");
+    }
 
     // `labby` should have exactly one canonical, long-running gateway; every
     // other invocation is a thin client to it. A stdio instance is normally
@@ -620,7 +660,13 @@ async fn run_server(
             transport = ?transport,
             "found a live labby serve daemon; running as a thin stdio bridge to it instead of a standalone instance"
         );
-        return run_stdio_bridge(live).await;
+        return run_stdio_bridge(
+            live,
+            args.claude_channel,
+            args.agent_messages,
+            &config.code_mode,
+        )
+        .await;
     }
 
     // A real daemon owns the installation lifecycle before observing/opening
@@ -721,7 +767,6 @@ async fn run_server(
     let file_stash_runtime =
         initialize_selected_file_stash_runtime(&registry, config, capability_health.as_ref()).await;
 
-    let spawn_depth = resolve_lab_spawn_depth(std::env::var("LABBY_SPAWN_DEPTH").ok());
     let suppress_upstream_runtime = stdio_recursion_guard_active(stdio_mode, spawn_depth);
     #[cfg(feature = "gateway")]
     let recursion_guard_degrades_upstreams =
@@ -853,6 +898,10 @@ async fn run_server(
                 spawn_depth,
                 suppress_upstream_runtime,
                 recursion_guard_degrades_upstreams,
+                StdioAgentOptions {
+                    claude_channel: args.claude_channel,
+                    messages: args.agent_messages,
+                },
             )
             .await;
         }
@@ -999,6 +1048,19 @@ async fn run_server(
     } else {
         None
     };
+    #[cfg(feature = "gateway")]
+    if bearer_token.is_none() && oauth_state.is_none() {
+        if args.mcp_events {
+            anyhow::bail!(
+                "--mcp-events requires authenticated HTTP MCP (configure bearer or OAuth authentication)"
+            );
+        }
+        if args.agent_messages {
+            anyhow::bail!(
+                "--agent-messages requires authenticated TCP MCP (configure bearer or OAuth authentication)"
+            );
+        }
+    }
     let project_session_state = if let Some(oauth_state) = oauth_state.as_ref() {
         labby_auth::project_session::ProjectSessionState::from_store(
             oauth_state.store.clone(),
@@ -1060,6 +1122,30 @@ async fn run_server(
                     crate::dispatch::codemode_notices::NoticeStore::disabled()
                 }
             };
+    }
+    #[cfg(feature = "gateway")]
+    if args.mcp_events {
+        state.agent_events = Some(Arc::new(
+            crate::dispatch::agent_events::AgentEvents::open(state.agent_notifications.clone())
+                .await
+                .context("open durable MCP Events delivery")?,
+        ));
+    }
+    #[cfg(feature = "gateway")]
+    if args.agent_messages {
+        if !state.agent_notifications.is_enabled() {
+            anyhow::bail!("--agent-messages requires the durable notification inbox");
+        }
+        let key =
+            crate::dispatch::agent_messages::proof::MessageKey::open_at(installation_paths.root())
+                .context("open private message installation key")?;
+        let installation = crate::dispatch::codemode_notices::inbox_binding(
+            installation_paths.root(),
+            &installation_id,
+        );
+        state.agent_messages = Some(Arc::new(
+            crate::dispatch::agent_messages::http::HttpMessageRuntime::new(key, installation),
+        ));
     }
     state.installation_id = Some(Arc::from(installation_id));
     #[cfg(feature = "gateway")]
@@ -1594,6 +1680,8 @@ async fn run_http(
 ) -> Result<ExitCode> {
     #[cfg(feature = "gateway")]
     let code_mode_shutdown = state.gateway_manager.clone();
+    #[cfg(feature = "gateway")]
+    let agent_events = state.agent_events.clone();
     // ── Single-master lock ────────────────────────────────────────────────────
     // Only one HTTP master instance may run per device at a time. Exits
     // immediately with a clear error if the lock is already held by another
@@ -1735,6 +1823,12 @@ async fn run_http(
             }
         }
     };
+    #[cfg(feature = "gateway")]
+    let event_worker = agent_events.map(|events| {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let guard = cancel.clone().drop_guard();
+        (guard, tokio::spawn(events.run(cancel)))
+    });
     let hosted_result = if let Some(registry) = resource_registry {
         tokio::select! {
             result = hosted_listener => result,
@@ -1743,6 +1837,13 @@ async fn run_http(
     } else {
         hosted_listener.await
     };
+    #[cfg(feature = "gateway")]
+    if let Some((guard, worker)) = event_worker {
+        drop(guard);
+        worker
+            .await
+            .context("join the MCP Events delivery worker")?;
+    }
     #[cfg(feature = "gateway")]
     if let Some(manager) = code_mode_shutdown {
         manager.shutdown_code_mode_runner_pool().await;
@@ -2194,9 +2295,21 @@ async fn serve_unix_listener(
 }
 
 async fn log_mcp_request(
-    req: axum::extract::Request,
+    mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // Mark the proof secret before passing the request to the SDK.
+    #[cfg(feature = "gateway")]
+    {
+        let name = crate::dispatch::agent_messages::proof::SESSION_KEY_HEADER;
+        for (header, value) in req.headers_mut() {
+            if header == name {
+                value.set_sensitive(true);
+            }
+        }
+    }
+    #[cfg(not(feature = "gateway"))]
+    let _ = &mut req;
     fn bounded_header(
         headers: &axum::http::HeaderMap,
         name: &str,
@@ -2735,15 +2848,81 @@ fn reject_protected_routes_without_gateway(
 /// every request is forwarded to `live` and its response piped straight
 /// back. See `crate::mcp::bridge` for what is and isn't forwarded.
 #[cfg(feature = "gateway")]
-async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<ExitCode> {
+async fn run_stdio_bridge(
+    live: crate::live_gateway::LiveGateway,
+    claude_channel: bool,
+    agent_messages: bool,
+    code_mode: &labby_runtime::gateway_config::CodeModeConfig,
+) -> Result<ExitCode> {
     use crate::mcp::bridge::{BridgeClientHandler, BridgeServerHandler};
 
+    if claude_channel || agent_messages {
+        let target =
+            url::Url::parse(live.server_url()).context("invalid local notification daemon URL")?;
+        let loopback = match target.host() {
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+            // Literal loopback avoids DNS or proxy ambiguity.
+            _ => false,
+        };
+        if !loopback {
+            anyhow::bail!(
+                "local push and messaging require a daemon at a literal loopback address using this Labby installation"
+            );
+        }
+    }
     let client_handler = BridgeClientHandler::new();
     let service = live
         .connect_service_bounded(client_handler)
         .await
         .context("connect to live labby serve daemon for stdio bridging")?;
-    let handler = BridgeServerHandler::new(service);
+    let (channel, messages) = if claude_channel || agent_messages {
+        let paths = crate::installation::InstallationPaths::resolve()?;
+        let installation = crate::dispatch::setup::access_bootstrap::existing_installation_id(
+            &paths,
+        )
+        .context("local push and messaging require the Labby installation used by the daemon")?;
+        let expected =
+            crate::dispatch::codemode_notices::inbox_binding(paths.root(), &installation);
+        let peer = service.peer_info();
+        let actual = peer
+            .as_ref()
+            .and_then(|info| info.meta.as_ref())
+            .and_then(|meta| meta.get(crate::mcp::claude_channel::BRIDGE_BINDING_META))
+            .and_then(serde_json::Value::as_str);
+        if actual != Some(expected.as_str()) {
+            anyhow::bail!(
+                "could not verify that the daemon shares this Labby inbox; check LABBY_HOME, authentication, and the daemon version"
+            );
+        }
+
+        let store = crate::dispatch::codemode_notices::NoticeStore::open_installation()
+            .await
+            .context("open durable local inbox")?;
+        let channel =
+            claude_channel.then(|| crate::mcp::claude_channel::ChannelSession::new(store.clone()));
+        let messages = if agent_messages {
+            let key = crate::dispatch::agent_messages::proof::MessageKey::open_at(paths.root())
+                .context("open private message installation key")?;
+            let recipient =
+                local_message_recipient(channel.as_deref(), || ulid::Ulid::new().to_string());
+            Some(crate::mcp::session_messages::LocalMessageSession::bridge(
+                store, key, expected, recipient, live,
+            ).await.context("verify live daemon message authority; enable --agent-messages on the daemon and check authentication")?)
+        } else {
+            None
+        };
+        (channel, messages)
+    } else {
+        (None, None)
+    };
+    let handler = BridgeServerHandler::new(service)
+        .with_local_messages(messages.clone())
+        .with_stdio_channel(
+            channel.clone(),
+            code_mode.max_response_bytes,
+            code_mode.max_response_tokens,
+        );
     let running = handler.serve(rmcp::transport::stdio_pipes()).await?;
     tracing::info!(
         subsystem = "startup",
@@ -2751,7 +2930,13 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
         transport = "stdio-bridge",
         "labby serve ready (bridging to live daemon)"
     );
-    running.waiting().await?;
+    if let Some(messages) = messages {
+        messages.wait(running, channel.as_deref()).await?;
+    } else if let Some(channel) = channel {
+        channel.wait(running).await?;
+    } else {
+        running.waiting().await?;
+    }
     tracing::info!(
         subsystem = "startup",
         phase = "stop",
@@ -2759,6 +2944,28 @@ async fn run_stdio_bridge(live: crate::live_gateway::LiveGateway) -> Result<Exit
         "labby serve stdio bridge stopped"
     );
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "gateway")]
+fn local_message_recipient(
+    channel: Option<&crate::mcp::claude_channel::ChannelSession>,
+    session: impl FnOnce() -> String,
+) -> crate::dispatch::codemode_notices::NoticeRecipient {
+    use crate::dispatch::codemode_notices::{NoticeConsumer, NoticeRecipient};
+    channel.map_or_else(
+        || NoticeRecipient {
+            actor: None,
+            route: "root".into(),
+            consumer: NoticeConsumer::Stdio { session: session() },
+        },
+        |channel| channel.recipient.clone(),
+    )
+}
+
+#[cfg(feature = "gateway")]
+struct StdioAgentOptions {
+    claude_channel: bool,
+    messages: bool,
 }
 
 fn run_stdio(
@@ -2773,6 +2980,7 @@ fn run_stdio(
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
     recursion_guard_degrades_upstreams: bool,
+    #[cfg(feature = "gateway")] agent_options: StdioAgentOptions,
 ) -> impl Future<Output = Result<ExitCode>> {
     // The server bootstrap stays on the stack throughout this session. Keep
     // the protocol future on the heap rather than copying it into that frame.
@@ -2844,7 +3052,36 @@ fn run_stdio(
                         crate::dispatch::codemode_notices::NoticeStore::disabled()
                     }
                 };
-            Arc::new(crate::mcp::runtime::McpRouteRuntime::with_notification_store(store))
+            let mut runtime =
+                crate::mcp::runtime::McpRouteRuntime::with_notification_store(store.clone());
+            if agent_options.claude_channel {
+                if !store.is_enabled() {
+                    anyhow::bail!("--claude-channel requires the durable notification inbox");
+                }
+                runtime.claude_channel = Some(crate::mcp::claude_channel::ChannelSession::new(
+                    store.clone(),
+                ));
+            }
+            if agent_options.messages {
+                let paths = crate::installation::InstallationPaths::resolve()?;
+                let installation = stdio_installation_id
+                    .as_deref()
+                    .context("missing local installation identity")?;
+                let binding =
+                    crate::dispatch::codemode_notices::inbox_binding(paths.root(), installation);
+                let key = crate::dispatch::agent_messages::proof::MessageKey::open_at(paths.root())
+                    .context("open private message installation key")?;
+                let recipient = local_message_recipient(runtime.claude_channel.as_deref(), || {
+                    runtime.notification_stdio_session().to_owned()
+                });
+                runtime.local_messages = Some(
+                    crate::mcp::session_messages::LocalMessageSession::standalone(
+                        store, &key, &binding, recipient,
+                    )
+                    .context("initialize local message session")?,
+                );
+            }
+            Arc::new(runtime)
         };
         #[cfg(not(feature = "gateway"))]
         let route_runtime = Default::default();
@@ -2870,6 +3107,10 @@ fn run_stdio(
             #[cfg(test)]
             code_mode_widget_callbacks_enabled_for_test: false,
         };
+        #[cfg(feature = "gateway")]
+        let channel = server.route_runtime.claude_channel.clone();
+        #[cfg(feature = "gateway")]
+        let messages = server.route_runtime.local_messages.clone();
         let running = server.serve(rmcp::transport::stdio_pipes()).await;
         let server_result: Result<()> = match running {
             Ok(running) => {
@@ -2883,6 +3124,20 @@ fn run_stdio(
                     services = service_count,
                     "stdio mcp server ready"
                 );
+                #[cfg(feature = "gateway")]
+                {
+                    if let Some(messages) = messages {
+                        messages
+                            .wait(running, channel.as_deref())
+                            .await
+                            .map_err(Into::into)
+                    } else if let Some(channel) = channel {
+                        channel.wait(running).await.map_err(Into::into)
+                    } else {
+                        running.waiting().await.map(|_| ()).map_err(Into::into)
+                    }
+                }
+                #[cfg(not(feature = "gateway"))]
                 running.waiting().await.map(|_| ()).map_err(Into::into)
             }
             Err(error) => Err(error.into()),
@@ -3021,11 +3276,17 @@ fn build_mcp_service_with_scope(
     let shared_peers = Arc::clone(&notifier.peers);
     let shared_code_mode_app_state = notifier.code_mode_app_state.clone();
     #[cfg(feature = "gateway")]
-    let shared_route_runtime = Arc::new(
-        crate::mcp::runtime::McpRouteRuntime::with_notification_store(
+    let shared_route_runtime = {
+        let mut runtime = crate::mcp::runtime::McpRouteRuntime::with_notification_store(
             state.agent_notifications.clone(),
-        ),
-    );
+        );
+        if route_scope.is_root() {
+            runtime.agent_events = state.agent_events.clone();
+            runtime.http_messages = state.agent_messages.clone();
+            runtime.event_credential_adapter = state.access_credential_adapter.clone();
+        }
+        Arc::new(runtime)
+    };
     #[cfg(not(feature = "gateway"))]
     let shared_route_runtime: Arc<crate::mcp::runtime::McpRouteRuntime> = Default::default();
     shared_route_runtime.configure_depot(Arc::clone(&state.depot));
