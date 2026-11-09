@@ -1585,3 +1585,162 @@ async fn atomic_route_save_rejects_team_qualified_routes_before_gateway_write() 
         );
     }
 }
+
+#[tokio::test]
+async fn update_private_maps_replace_preserve_clear_and_stay_write_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut http = fixture_http_upstream("private-headers");
+    http.enabled = false;
+    http.headers
+        .insert("x-old".into(), "old-header-fixture".into());
+    let mut stdio = fixture_stdio_upstream("private-env");
+    stdio.enabled = false;
+    stdio
+        .env
+        .insert("OLD_VALUE".into(), "old-env-fixture".into());
+    manager
+        .add(http, None, None, None)
+        .await
+        .expect("add disabled HTTP");
+    manager
+        .add(stdio, None, None, None)
+        .await
+        .expect("add disabled stdio");
+
+    for (name, field, replacement) in [
+        (
+            "private-headers",
+            "headers",
+            serde_json::json!({"x-new": "new-header-fixture"}),
+        ),
+        (
+            "private-env",
+            "env",
+            serde_json::json!({"NEW_VALUE": "new-env-fixture"}),
+        ),
+    ] {
+        let patch = serde_json::from_value(serde_json::json!({field: replacement})).unwrap();
+        let view = manager
+            .update(name, patch, None, None, None)
+            .await
+            .expect("replace private map");
+        let durable = load_gateway_config(&path).unwrap();
+        let upstream = durable.upstream.iter().find(|u| u.name == name).unwrap();
+        assert_eq!(serde_json::to_value(upstream).unwrap()[field], replacement);
+        let live = manager.current_config().await;
+        let upstream = live.upstream.iter().find(|u| u.name == name).unwrap();
+        assert_eq!(serde_json::to_value(upstream).unwrap()[field], replacement);
+        let public = serde_json::to_value(view).unwrap();
+        assert!(
+            public["config"].get(field).is_none(),
+            "private maps are not readable"
+        );
+        assert!(!public.to_string().contains("new-header-fixture"));
+        assert!(!public.to_string().contains("new-env-fixture"));
+
+        for preserve in [serde_json::json!({}), serde_json::json!({field: null})] {
+            let patch = serde_json::from_value(preserve).unwrap();
+            manager
+                .update(name, patch, None, None, None)
+                .await
+                .expect("preserve map");
+            let durable = load_gateway_config(&path).unwrap();
+            let upstream = durable.upstream.iter().find(|u| u.name == name).unwrap();
+            assert_eq!(serde_json::to_value(upstream).unwrap()[field], replacement);
+        }
+        let patch = serde_json::from_value(serde_json::json!({field: {}})).unwrap();
+        manager
+            .update(name, patch, None, None, None)
+            .await
+            .expect("clear map");
+        let durable = load_gateway_config(&path).unwrap();
+        let upstream = durable.upstream.iter().find(|u| u.name == name).unwrap();
+        let stored = serde_json::to_value(upstream).unwrap();
+        assert!(
+            stored.get(field).is_none(),
+            "empty maps are cleared and omitted on serialization"
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_private_maps_reject_invalid_headers_and_protected_env_atomically() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut http = fixture_http_upstream("checked-headers");
+    http.enabled = false;
+    let mut stdio = fixture_stdio_upstream("checked-env");
+    stdio.enabled = false;
+    manager.add(http, None, None, None).await.unwrap();
+    manager.add(stdio, None, None, None).await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let live_before = serde_json::to_value(manager.current_config().await).unwrap();
+    for (name, patch) in [
+        (
+            "checked-headers",
+            serde_json::json!({"headers": {"Authorization": "sensitive-fixture-value"}}),
+        ),
+        (
+            "checked-headers",
+            serde_json::json!({"headers": {"x-invalid name": "sensitive-fixture-value"}}),
+        ),
+        (
+            "checked-headers",
+            serde_json::json!({"headers": {"x-value": "sensitive-fixture-value\r\n"}}),
+        ),
+        (
+            "checked-env",
+            serde_json::json!({"env": {"LD_PRELOAD": "sensitive-fixture-value"}}),
+        ),
+    ] {
+        let patch = serde_json::from_value(patch).unwrap();
+        let error = manager
+            .update(name, patch, None, None, None)
+            .await
+            .expect_err("invalid private map must fail");
+        assert_eq!(error.kind(), "invalid_param");
+        assert!(!error.to_string().contains("sensitive-fixture-value"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            serde_json::to_value(manager.current_config().await).unwrap(),
+            live_before
+        );
+    }
+}
+
+#[test]
+fn update_private_maps_reject_non_string_wire_values() {
+    for patch in [
+        serde_json::json!({"env": {"VALUE": 123}}),
+        serde_json::json!({"headers": {"x-value": ["not", "a", "string"]}}),
+        serde_json::json!({"env": ["not-a-map"]}),
+        serde_json::json!({"headers": "not-a-map"}),
+    ] {
+        assert!(
+            serde_json::from_value::<crate::gateway::params::GatewayUpdatePatch>(patch).is_err()
+        );
+    }
+}
+
+#[test]
+fn update_private_maps_reject_scalar_secrets_without_echoing_them() {
+    for field in ["env", "headers"] {
+        let error = serde_json::from_value::<crate::gateway::params::GatewayUpdatePatch>(
+            serde_json::json!({field: "private-scalar-fixture-value"}),
+        )
+        .expect_err("private map must not accept scalar input");
+        assert!(!error.to_string().contains("private-scalar-fixture-value"));
+    }
+}
+
+#[test]
+fn update_private_maps_reject_scalar_patch_without_echoing_private_values() {
+    let error = serde_json::from_value::<crate::gateway::params::GatewayUpdateParams>(
+        serde_json::json!({"name": "private-maps", "patch": "pasted-private-map-fixture"}),
+    )
+    .expect_err("the patch must be an object");
+    assert!(!error.to_string().contains("pasted-private-map-fixture"));
+}

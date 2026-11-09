@@ -257,6 +257,12 @@ pub(crate) fn update_upstream(
     if let Some(args) = patch.args {
         cfg.upstream[index].args = args;
     }
+    if let Some(env) = patch.env {
+        cfg.upstream[index].env = env;
+    }
+    if let Some(headers) = patch.headers {
+        cfg.upstream[index].headers = headers;
+    }
     if let Some(bearer_token_env) = patch.bearer_token_env {
         cfg.upstream[index].bearer_token_env = bearer_token_env;
     }

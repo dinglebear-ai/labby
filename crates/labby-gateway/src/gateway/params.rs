@@ -350,6 +350,12 @@ pub(crate) struct GatewayUpdatePatch {
     pub command: Option<Option<String>>,
     #[serde(default)]
     pub args: Option<Vec<String>>,
+    /// Write-only stdio environment values. Omitted/null preserves. An empty object clears.
+    #[serde(default, deserialize_with = "deserialize_private_configuration")]
+    pub env: Option<BTreeMap<String, String>>,
+    /// Write-only literal HTTP headers. Omitted/null preserves. An empty object clears.
+    #[serde(default, deserialize_with = "deserialize_private_configuration")]
+    pub headers: Option<BTreeMap<String, String>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub bearer_token_env: Option<Option<String>>,
     /// Replace environment-backed HTTP headers; an empty map clears them.
@@ -376,6 +382,20 @@ pub(crate) struct GatewayUpdatePatch {
     pub oauth: Option<Option<UpstreamOauthConfig>>,
     #[serde(default, deserialize_with = "deserialize_nullable")]
     pub code_mode: Option<Option<CodeModeConfig>>,
+}
+
+// Serde's default type errors can quote an invalid scalar input verbatim. These
+// write-only maps and their enclosing patch can contain pasted credentials.
+fn deserialize_private_configuration<'de, T, D>(deserializer: D) -> Result<T, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    T::deserialize(deserializer).map_err(|_| {
+        serde::de::Error::custom(
+            "private configuration has invalid structure or field types. env and headers require string-valued objects or null",
+        )
+    })
 }
 
 /// Distinguish absent from null for `Option<Option<T>>` patch fields.
@@ -410,6 +430,7 @@ mod tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct GatewayUpdateParams {
     pub name: String,
+    #[serde(deserialize_with = "deserialize_private_configuration")]
     pub patch: GatewayUpdatePatch,
     #[serde(default)]
     pub bearer_token_value: Option<String>,
