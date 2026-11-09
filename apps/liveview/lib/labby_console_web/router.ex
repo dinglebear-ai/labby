@@ -29,6 +29,7 @@ defmodule LabbyConsoleWeb.Router do
     post "/sign-in/provider/cancel", SessionController, :provider_cancel
     post "/sign-out", SessionController, :delete
     live "/overview", OverviewLive, :index
+    live "/observe", ObserveLive, :index
     live "/gateway", GatewayLive, :index
     live "/gateway/servers/:id", ServerDetailsLive, :show
     live "/gateway/servers/:id/catalog", ServerCatalogLive, :show

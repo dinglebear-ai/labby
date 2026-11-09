@@ -26,7 +26,7 @@ defmodule LabbyConsole.ServerLogs do
            truncated: truncated
          }}
       else
-        {:error, :unauthenticated} -> {:error, :unauthenticated}
+        {:error, reason} when reason in [:unauthenticated, :forbidden] -> {:error, reason}
         _ -> {:error, :unavailable}
       end
     else

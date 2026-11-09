@@ -116,7 +116,7 @@ defmodule LabbyConsoleWeb.WorkspaceShell do
             :for={
               {page, label, icon} <-
                 Enum.filter(pages(@routes), fn {page, _, _} ->
-                  page in ~w(overview gateway projects)
+                  page in ~w(overview gateway observe projects)
                 end)
             }
             id={"labby-mobile-#{page}"}
@@ -134,7 +134,7 @@ defmodule LabbyConsoleWeb.WorkspaceShell do
             title="More pages"
             class={[
               "labby-icon-action",
-              @page not in ~w(overview gateway projects) &&
+              @page not in ~w(overview gateway observe projects) &&
                 "labby-more-current"
             ]}
           ><WorkspaceIcons.icon name="more" class="ov-small" /></button>
@@ -153,7 +153,7 @@ defmodule LabbyConsoleWeb.WorkspaceShell do
               :for={
                 {page, label, icon} <-
                   Enum.reject(pages(@routes), fn {page, _, _} ->
-                    page in ~w(overview gateway projects)
+                    page in ~w(overview gateway observe projects)
                   end)
               }
               id={"labby-mobile-#{page}"}
