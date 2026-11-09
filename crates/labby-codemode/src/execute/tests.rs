@@ -133,6 +133,7 @@ impl CodeModeHost for FixtureHost {
         }
         if let Some(value) = &self.tool_call_result {
             return Ok(ToolCallOutcome {
+                full_result: None,
                 value: value.clone(),
                 ui: None,
             });

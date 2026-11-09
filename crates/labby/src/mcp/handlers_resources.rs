@@ -6348,6 +6348,83 @@ for (const value of [
     }
 
     #[tokio::test]
+    async fn shared_history_resource_omits_upstream_response_payloads() {
+        use labby_codemode::{CodeModeExecutedCall, CodeModeHistoryEntry, CodeModeHistoryKind};
+
+        let server =
+            code_mode_server_with_scope(crate::mcp::route_scope::McpRouteScope::protected_subset(
+                "ops",
+                ["gateway-alpha"],
+                ["gateway"],
+                true,
+            ))
+            .await;
+        let manager = server.gateway_manager.as_ref().expect("manager");
+        for (execution_id, ok, private_text) in [
+            ("successful-execution", true, "private-upstream-success"),
+            ("failed-execution", false, "private-upstream-before-error"),
+        ] {
+            let call = CodeModeExecutedCall {
+                upstream_content: Some(json!({
+                    "content": [{"type": "text", "text": private_text}],
+                    "omitted_blocks": 0,
+                    "omitted_bytes": 0,
+                })),
+                id: "gateway-alpha::lookup".into(),
+                ok: true,
+                elapsed_ms: 1,
+                start_ms: None,
+                params: None,
+                params_digest: None,
+                error_kind: None,
+                ui: None,
+            };
+            // The execution trace sent to its own caller still carries the blocks.
+            assert_eq!(
+                serde_json::to_value(&call).unwrap()["upstream_content"]["content"][0]["text"],
+                private_text
+            );
+            manager
+                .record_code_mode_history(CodeModeHistoryEntry {
+                    execution_id: Some(execution_id.into()),
+                    seq: 0,
+                    route_scope: server.route_scope.label(),
+                    kind: CodeModeHistoryKind::Execute,
+                    ok,
+                    elapsed_ms: 7,
+                    input_tokens: None,
+                    output_tokens: None,
+                    error_kind: (!ok).then(|| "execution_failed".into()),
+                    calls: vec![call],
+                    match_count: None,
+                })
+                .await;
+        }
+        let (transport, _client_transport) = tokio::io::duplex(64);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let history = complete_resource(
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(CODE_MODE_HISTORY_APP_URI),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .expect("read same-route history"),
+        );
+        let ResourceContents::TextResourceContents { text, .. } = &history.contents[0] else {
+            panic!("expected text resource");
+        };
+        assert!(text.contains("successful-execution"));
+        assert!(text.contains("failed-execution"));
+        assert!(text.contains("gateway-alpha::lookup"));
+        assert!(!text.contains("private-upstream-success"));
+        assert!(!text.contains("private-upstream-before-error"));
+    }
+
+    #[tokio::test]
     async fn skybridge_resource_is_readable_by_uri_despite_being_unlisted() {
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(

@@ -95,6 +95,7 @@ impl CodeModeHost for Host {
         tokio::time::sleep(self.latency).await;
         self.active.fetch_sub(1, Ordering::Relaxed);
         Ok(ToolCallOutcome {
+            full_result: None,
             value: json!({"i":params["i"]}),
             ui: None,
         })

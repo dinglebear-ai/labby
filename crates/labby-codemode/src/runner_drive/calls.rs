@@ -25,6 +25,7 @@ pub(super) fn enqueue_tool_call<'a, H: CodeModeHost>(
     call_ordinal: Option<u64>,
     id: String,
     params: Value,
+    full_result: bool,
     tool_deadline: tokio::time::Instant,
     execution_start: std::time::Instant,
     cfg: &RunnerConfig,
@@ -62,6 +63,18 @@ pub(super) fn enqueue_tool_call<'a, H: CodeModeHost>(
                 &cancellation,
             )
             .await;
+        let result = result.map(|mut outcome| {
+            if full_result {
+                // Hosts without a native MCP envelope expose an explicit host-value
+                // shape instead; no fabricated MCP response or second dispatch.
+                let full = outcome
+                    .full_result
+                    .clone()
+                    .unwrap_or_else(|| json!({"host_value": outcome.value}));
+                outcome.value = full;
+            }
+            outcome
+        });
         let elapsed_ms = call_start.elapsed().as_millis();
         (
             seq,
@@ -148,7 +161,11 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
                         id,
                         redacted_params,
                         params_digest,
-                        Ok(ToolCallOutcome { value, ui: None }),
+                        Ok(ToolCallOutcome {
+                            full_result: None,
+                            value,
+                            ui: None,
+                        }),
                         call_start.elapsed().as_millis(),
                         start_ms,
                     );
@@ -210,7 +227,11 @@ pub(super) fn enqueue_local_provider_call<'a, H: CodeModeHost>(
             );
         }
         let result = dispatched
-            .map(|value| ToolCallOutcome { value, ui: None })
+            .map(|value| ToolCallOutcome {
+                full_result: None,
+                value,
+                ui: None,
+            })
             .map_err(|error| CodeModeCallError::from(error).with_tool(id.clone()));
         (
             seq,

@@ -59,6 +59,8 @@ mod truncate;
 /// Live TypeScript signature / `.d.ts` generator for Code Mode tool descriptors.
 mod ts_signatures;
 mod types;
+mod upstream_content;
+pub use upstream_content::omit_code_mode_upstream_content;
 mod util;
 mod wrapper;
 
