@@ -36,6 +36,7 @@ defmodule LabbyConsoleWeb.Layouts do
   attr :subject, :string, default: nil
   attr :preference_key, :string, default: nil
   attr :main_id, :string, default: "console-integration"
+  attr :server_count, :integer, default: nil
 
   slot :inner_block, required: true
 
@@ -51,6 +52,7 @@ defmodule LabbyConsoleWeb.Layouts do
       routes={@routes}
       subject={@subject}
       preference_key={@preference_key}
+      server_count={@server_count}
     >
       {render_slot(@inner_block)}
     </LabbyConsoleWeb.WorkspaceShell.shell>

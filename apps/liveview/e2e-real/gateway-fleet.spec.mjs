@@ -1,0 +1,46 @@
+import {test, expect} from '@playwright/test'
+import {signIn, readyCatalog, gatewayAction} from './mcp-support.mjs'
+
+// Run serially in the owning real harness. This journey uses its isolated
+// configured peers and has a two-minute deadline and fewer than 100 requests.
+test('native Gateway fleet preserves real observations, preferences and read navigation', async ({page}, info) => {
+  test.setTimeout(120000)
+  await readyCatalog()
+  const inventory = await gatewayAction('gateway.list')
+  const fixture = inventory.find(row => row.name === 'real-e2e-disabled')
+  expect(fixture).toBeTruthy()
+  expect(fixture.enabled).toBe(false)
+  await signIn(page)
+  await expect(page.locator('#servers-refresh')).toBeEnabled()
+  await expect(page.getByRole('link', {name: 'Real E2E Disabled', exact: true})).toBeVisible()
+  await page.getByLabel('Search servers', {exact: true}).fill('real-e2e-disabled')
+  await expect(page.locator('#server-list li')).toHaveCount(1)
+  await expect(page.locator('#server-list [data-state=disabled]')).toBeVisible()
+  await page.locator('button[phx-click=inspect]').click()
+  await expect(page.locator('#gateway-inspector')).toContainText('Real E2E Disabled')
+  const tools = fixture.capability_observation?.tools
+  const measured = Number.isInteger(tools?.exposed) && Number.isInteger(tools?.discovered)
+  await expect(page.locator('#gateway-inspector')).toContainText(measured ? `${tools.exposed} / ${tools.discovered}` : 'Unknown')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#gateway-inspector')).toHaveCount(0)
+  await expect(page.locator('button[phx-click=inspect]')).toBeFocused()
+  await page.locator('#gateway-view-menu > summary').click()
+  await page.getByRole('button', {name: 'Cards', exact: true}).click()
+  await expect(page.locator('#gateway-inventory')).toHaveAttribute('data-layout', 'cards')
+  const key = await page.locator('#gateway-preferences').getAttribute('data-preference-key')
+  await expect.poll(() => page.evaluate(key => JSON.parse(localStorage.getItem(`labby:gateway:${key}:v1`) || '{}').layout, key)).toBe('cards')
+  await page.reload()
+  await expect(page.locator('#gateway-inventory')).toHaveAttribute('data-layout', 'cards')
+  for (const width of [1440, 740, 320]) {
+    await page.setViewportSize({width, height: 900})
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({path: info.outputPath(`gateway-fleet-${width}.png`), fullPage: true})
+  }
+  await page.locator('button[phx-click=inspect]').click()
+  await page.getByRole('link', {name: 'Catalog', exact: true}).click()
+  await expect(page).toHaveURL(/\/gateway\/servers\/real-e2e-disabled\/catalog$/)
+  await page.goto('/gateway')
+  await page.locator('#servers-refresh').click()
+  await expect(page.locator('#servers-refresh')).toBeEnabled()
+  await expect(page.locator('#servers-error')).toHaveCount(0)
+})

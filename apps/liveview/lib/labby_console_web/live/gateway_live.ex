@@ -1,64 +1,44 @@
 defmodule LabbyConsoleWeb.GatewayLive do
   use LabbyConsoleWeb, :live_view
   on_mount {LabbyConsoleWeb.LiveSession, :authenticated}
-  alias LabbyConsole.Auth
+  alias LabbyConsole.{Auth, GatewayFleet}
+  alias LabbyConsoleWeb.GatewayFleetComponents, as: UI
 
   def mount(_, _session, socket) do
     socket =
       assign(socket,
         page_title: "Gateway",
         rows: [],
-        query: "",
+        preferences: GatewayFleet.preferences(%{}),
         loading: false,
-        error: nil
+        error: nil,
+        selected: nil,
+        epoch: nil,
+        deadline: nil,
+        url_preferences: false,
+        storage_warning: false
       )
 
     {:ok, if(connected?(socket), do: load(socket), else: socket)}
   end
 
-  def handle_info(:session_expired, socket),
-    do: {:noreply, socket |> assign(rows: []) |> redirect(to: "/sign-in")}
+  def handle_params(params, _, socket) do
+    params =
+      case params["columns"] do
+        value when is_binary(value) and byte_size(value) <= 256 ->
+          Map.put(params, "columns", String.split(value, ","))
 
-  def handle_event("refresh", _, %{assigns: %{loading: false}} = socket),
-    do: {:noreply, load(socket)}
+        _ ->
+          params
+      end
 
-  def handle_event("refresh", _, socket), do: {:noreply, socket}
+    preferences = GatewayFleet.preferences(params)
 
-  def handle_event("search", %{"query" => query}, socket),
-    do: {:noreply, assign(socket, query: String.slice(query, 0, 256))}
-
-  defp visible_rows(rows, query) do
-    query = query |> String.trim() |> String.downcase()
-
-    Enum.filter(rows, fn row ->
-      Enum.any?([row["name"], row["display_name"]], fn value ->
-        is_binary(value) && String.contains?(String.downcase(value), query)
-      end)
-    end)
+    {:noreply,
+     socket
+     |> assign(preferences: preferences, url_preferences: map_size(params) > 0)
+     |> preferences_changed()}
   end
-
-  defp load(socket) do
-    id = socket.assigns.session_id
-
-    socket
-    |> assign(loading: true, error: nil)
-    |> start_async(:servers, fn -> Auth.servers(id) end)
-  end
-
-  def handle_async(:servers, {:ok, {:ok, rows}}, socket),
-    do: {:noreply, assign(socket, rows: rows, loading: false, error: nil)}
-
-  def handle_async(:servers, {:ok, {:error, :unauthenticated}}, socket),
-    do: {:noreply, socket |> assign(rows: []) |> redirect(to: "/sign-in")}
-
-  def handle_async(:servers, _, socket),
-    do:
-      {:noreply,
-       assign(socket,
-         rows: [],
-         loading: false,
-         error: "Gateway inventory is unavailable. Try again."
-       )}
 
   def render(assigns) do
     ~H"""
@@ -67,77 +47,144 @@ defmodule LabbyConsoleWeb.GatewayLive do
       authenticated={true}
       subject={@subject}
       preference_key={@preference_key}
+      page="Gateway"
+      server_count={if @loading || @error, do: nil, else: length(@rows)}
     >
-      <main id="console-integration" tabindex="-1">
-        <h1>Gateway</h1><p>Configured servers visible to your gateway session.</p>
-        <div class="console-session">
-          <span id="identity">{@subject}</span><.form for={%{}} action="/sign-out" method="post">
-            <button>Sign out</button>
-          </.form>
-        </div>
-        <section class="console-panel" aria-busy={to_string(@loading)}>
-          <header class="console-inventory-header">
-            <h2>
-              Server inventory <small>{length(visible_rows(@rows, @query))} / {length(@rows)}</small>
-            </h2><Layouts.refresh_action
-              id="servers-refresh"
-              label="Refresh"
-              event="refresh"
-              disabled={@loading}
-            />
-          </header>
-          <.form for={%{}} id="servers-search" phx-change="search" role="search">
-            <label for="servers-query" class="sr-only">Search servers</label>
-            <input
-              id="servers-query"
-              type="search"
-              name="query"
-              value={@query}
-              placeholder="Search servers…"
-              aria-label="Search servers"
-              phx-debounce="150"
-            />
-          </.form>
-          <p
-            :if={!@loading && !@error && @rows != [] && visible_rows(@rows, @query) == []}
-            id="servers-no-matches"
-          >
-            No servers match your search.
-          </p>
-          <p :if={@loading} role="status">Loading servers…</p>
-          <p :if={@error} id="servers-error" role="alert">{@error}</p>
-          <p :if={!@loading && !@error && @rows == []} id="servers-empty">
-            No servers are visible to this session.
-          </p>
-          <ul id="server-list">
-            <li
-              :for={row <- visible_rows(@rows, @query)}
-              id={"server-" <> Base.url_encode64(row["id"], padding: false)}
-            >
-              <strong><.link navigate={"/gateway/servers/" <> URI.encode(row["id"], &URI.char_unreserved?/1)}>{row[
-                "display_name"
-              ] || row["name"]}</.link></strong><.link navigate={"/gateway/servers/" <> URI.encode(row["name"], &URI.char_unreserved?/1) <> "/catalog"}>Catalog</.link><.link navigate={"/gateway/upstreams/" <> URI.encode(row["name"], &URI.char_unreserved?/1) <> "/runtime"}>Runtime</.link><span
-                class="console-status"
-                data-state={
-                  cond do
-                    !row["enabled"] -> "disabled"
-                    row["connected"] -> "connected"
-                    true -> "disconnected"
-                  end
-                }
-              >{cond do
-                !row["enabled"] -> "Disabled"
-                row["connected"] -> "Connected"
-                true -> "Disconnected"
-              end}</span>
-            </li>
-          </ul>
-        </section>
-        <p>
-          Read-only snapshot. Refresh reloads the inventory without reconnecting upstream servers.
-        </p>
-      </main>
+      <UI.page state={assigns} />
     </Layouts.app>
     """
+  end
+
+  def handle_event("refresh", _, %{assigns: %{loading: false}} = socket),
+    do: {:noreply, load(socket)}
+
+  def handle_event("refresh", _, socket), do: {:noreply, socket}
+
+  def handle_event("search", %{"query" => query}, socket),
+    do: update_preferences(socket, %{"query" => query})
+
+  def handle_event("filter", params, socket),
+    do: update_preferences(socket, Map.take(params, ~w(lens source)))
+
+  def handle_event("layout", %{"layout" => layout}, socket),
+    do: update_preferences(socket, %{"layout" => layout})
+
+  def handle_event("sort", params, socket),
+    do: update_preferences(socket, Map.take(params, ~w(sort direction)))
+
+  def handle_event("column", %{"column" => column}, socket) do
+    columns = socket.assigns.preferences["columns"]
+    columns = if column in columns, do: List.delete(columns, column), else: columns ++ [column]
+    update_preferences(socket, %{"columns" => columns})
+  end
+
+  def handle_event("column_move", %{"column" => column, "direction" => direction}, socket) do
+    prefs = GatewayFleet.move_column(socket.assigns.preferences, column, direction)
+    update_preferences(socket, prefs)
+  end
+
+  def handle_event("gateway_preferences", %{"preferences" => prefs}, socket) do
+    if socket.assigns.url_preferences,
+      do: {:noreply, preferences_changed(socket)},
+      else: update_preferences(socket, GatewayFleet.preferences(prefs))
+  end
+
+  def handle_event("gateway_storage_unavailable", _, socket),
+    do: {:noreply, assign(socket, storage_warning: true)}
+
+  def handle_event("inspect", %{"id" => id}, socket) do
+    selected = Enum.find_value(socket.assigns.rows, fn row -> if row["id"] == id, do: id end)
+    {:noreply, assign(socket, selected: selected)}
+  end
+
+  def handle_event("close_inspector", _, socket), do: {:noreply, assign(socket, selected: nil)}
+  def handle_event(_, _, socket), do: {:noreply, socket}
+
+  defp update_preferences(socket, changes) do
+    preferences = GatewayFleet.preferences(Map.merge(socket.assigns.preferences, changes))
+    query = preferences |> Map.update!("columns", &Enum.join(&1, ",")) |> URI.encode_query()
+
+    {:noreply,
+     socket
+     |> assign(preferences: preferences)
+     |> preferences_changed()
+     |> push_patch(to: "/gateway?" <> query)}
+  end
+
+  defp preferences_changed(socket),
+    do:
+      push_event(socket, "gateway-preferences-state", %{
+        key: socket.assigns.preference_key,
+        preferences: socket.assigns.preferences
+      })
+
+  defp load(socket) do
+    epoch = make_ref()
+    id = socket.assigns.session_id
+    generation = socket.assigns.session_generation
+    timer = Process.send_after(self(), {:gateway_fleet_timeout, epoch}, 12_000)
+
+    socket
+    |> assign(rows: [], loading: true, error: nil, epoch: epoch, deadline: timer)
+    |> start_async({:servers, epoch, generation}, fn -> GatewayFleet.fetch(id) end)
+  end
+
+  def handle_async({:servers, epoch, generation}, result, socket) do
+    if socket.assigns.epoch == epoch && Auth.matches?(socket.assigns.session_id, generation) do
+      Process.cancel_timer(socket.assigns.deadline)
+      complete(result, assign(socket, loading: false, epoch: nil, deadline: nil))
+    else
+      {:noreply, socket}
+    end
+  end
+
+  defp complete({:ok, {:ok, rows}}, socket) do
+    selected =
+      if Enum.any?(rows, &(&1["id"] == socket.assigns.selected)), do: socket.assigns.selected
+
+    {:noreply, assign(socket, rows: rows, selected: selected, error: nil)}
+  end
+
+  defp complete({:ok, {:error, :unauthenticated}}, socket), do: {:noreply, expire(socket)}
+
+  defp complete({:ok, {:error, :forbidden}}, socket),
+    do: {:noreply, assign(socket, rows: [], selected: nil, error: :forbidden)}
+
+  defp complete(_, socket),
+    do: {:noreply, assign(socket, rows: [], selected: nil, error: :unavailable)}
+
+  def handle_info({:gateway_fleet_timeout, epoch}, %{assigns: %{epoch: epoch}} = socket)
+      when not is_nil(epoch) do
+    socket = cancel_async(socket, {:servers, epoch, socket.assigns.session_generation})
+
+    {:noreply,
+     assign(socket,
+       rows: [],
+       selected: nil,
+       epoch: nil,
+       deadline: nil,
+       loading: false,
+       error: :unavailable
+     )}
+  end
+
+  def handle_info(:session_expired, socket), do: {:noreply, expire(socket)}
+  def handle_info(_, socket), do: {:noreply, socket}
+
+  defp expire(socket) do
+    if socket.assigns.deadline, do: Process.cancel_timer(socket.assigns.deadline)
+
+    socket =
+      if socket.assigns.epoch,
+        do:
+          cancel_async(
+            socket,
+            {:servers, socket.assigns.epoch, socket.assigns.session_generation}
+          ),
+        else: socket
+
+    socket
+    |> assign(rows: [], selected: nil, epoch: nil, loading: false)
+    |> redirect(to: "/sign-in")
   end
 end

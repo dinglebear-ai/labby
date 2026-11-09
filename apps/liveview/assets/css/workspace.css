@@ -3,6 +3,7 @@
 @import "./workspace-projects.css";
 @import "./workspace-native.css";
 @import "./overview-dashboard.css";
+@import "./gateway-fleet.css";
 /* Existing read-model pages keep their IDs and data behavior inside native chrome. */
 .labby-overview { width:100%; min-width:0; }
 .labby-overview .ov-body { width:0; }
