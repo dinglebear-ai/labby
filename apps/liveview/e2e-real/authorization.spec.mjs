@@ -37,6 +37,8 @@ test('owner sign-out revokes the console session even when its old cookie is rep
   await expect(page.locator('#identity')).not.toBeEmpty()
   const oldCookies = await context.cookies()
   expect(oldCookies.length).toBeGreaterThan(0)
+  await page.locator('#labby-workspace').getByLabel('Session menu', {exact: true}).click()
+  await expect(page.getByRole('button', {name: 'Sign out', exact: true})).toBeVisible()
   await page.getByRole('button', {name: 'Sign out', exact: true}).click()
   await expect(page).toHaveURL(/\/sign-in$/)
   const replay = await browser.newContext()

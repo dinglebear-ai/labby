@@ -1,12 +1,14 @@
+import {isGatewayURL} from './gateway-url.mjs'
 import {expect} from '@playwright/test'
 const gateway='http://127.0.0.1:4299'
 export async function signIn(page) {
  await page.goto('/gateway')
+ const consoleOrigin = new URL(page.url()).origin
  if (page.url().endsWith('/sign-in')) {
   await page.getByLabel('Gateway credential').fill(process.env.LABBY_E2E_CREDENTIAL)
   await page.getByRole('button',{name:'Sign in',exact:true}).click()
  }
- await expect(page).toHaveURL(/\/gateway$/)
+ await expect(page).toHaveURL(url => isGatewayURL(url, consoleOrigin))
 }
 export async function gatewayAction(action,params={}) {
  const response=await fetch(`${gateway}/v1/gateway`,{method:'POST',headers:{authorization:`Bearer ${process.env.LABBY_E2E_CREDENTIAL}`,'content-type':'application/json'},body:JSON.stringify({action,params}),signal:AbortSignal.timeout(15000)})

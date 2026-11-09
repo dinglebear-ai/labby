@@ -1,3 +1,4 @@
+import {isGatewayURL} from './gateway-url.mjs'
 import {test, expect} from '@playwright/test'
 
 // Real Labby only. The reviewed mock is a design reference, not a network dependency
@@ -5,9 +6,10 @@ import {test, expect} from '@playwright/test'
 test('implemented screens retain the mock shell and readable desktop/mobile layouts', async ({page}, testInfo) => {
   test.setTimeout(120000)
   await page.goto('/sign-in')
+  const consoleOrigin = new URL(page.url()).origin
   await page.getByLabel('Gateway credential').fill(process.env.LABBY_E2E_CREDENTIAL)
   await page.getByRole('button', {name:'Sign in', exact:true}).click()
-  await expect(page).toHaveURL(/\/gateway$/)
+  await expect(page).toHaveURL(url => isGatewayURL(url, consoleOrigin))
   const routes = [
     ['/gateway', '#server-list'],
     ['/gateway/servers/real-e2e-disabled', '#server-details-content'],
