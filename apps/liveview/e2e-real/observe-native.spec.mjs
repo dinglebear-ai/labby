@@ -1,3 +1,4 @@
+import {loadedLevelsMatch} from './loaded-log-levels.mjs'
 import {test, expect} from '@playwright/test'
 import {signIn, readyCatalog, callRealTool, gatewayAction} from './mcp-support.mjs'
 
@@ -54,10 +55,39 @@ test('native Observe inspects actual calls and bounded logs with pause export an
   await expect(page.locator('#observe-main')).toContainText('Follow paused')
   const level = page.getByRole('combobox', {name: 'Level', exact: true})
   await expect(level).toBeVisible()
+  const loadedLevels = page.locator('.ob-logs .ob-level')
+  await expect(loadedLevels.first()).toBeVisible()
+  const observedLevel = (await loadedLevels.first().textContent()).trim()
+  expect(['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR']).toContain(observedLevel)
+  await level.selectOption(observedLevel)
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  await expect.poll(async () => loadedLevelsMatch(await loadedLevels.allTextContents(), observedLevel)).toBe(true)
+  await expect(page.locator('#observe-export')).toBeEnabled()
+
+  // A completed tool_error does not guarantee a process log at ERROR level.
+  // Use the same bounded Rust query as the UI to distinguish rows from an empty snapshot.
+  const reference = await page.request.post('http://127.0.0.1:4299/v1/server_logs', {
+    headers: {authorization: `Bearer ${process.env.LABBY_E2E_CREDENTIAL}`},
+    data: {action: 'server_logs.query', params: {level: 'ERROR', limit: 200, max_scan_bytes: 32768, stop_after_limit: true}},
+    timeout: 15000,
+  })
+  expect(reference.ok()).toBe(true)
+  const errors = await reference.json()
+  expect(errors.kind).toBe('server_logs')
+  expect(Array.isArray(errors.entries)).toBe(true)
+  expect(errors.entries.every(row => row.level === 'ERROR')).toBe(true)
   await level.selectOption('ERROR')
   await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
   await expect(page.locator('#observe-export')).toBeEnabled()
-  await expect.poll(async () => (await page.locator('.ob-logs .ob-level').allTextContents()).every(value => value === 'ERROR')).toBe(true)
+  if (errors.entries.length > 0) {
+    await expect.poll(async () => loadedLevelsMatch(await loadedLevels.allTextContents(), 'ERROR')).toBe(true)
+  } else {
+    await expect(page.locator('.ob-empty')).toHaveText('No retained records match these filters.')
+    await expect(loadedLevels).toHaveCount(0)
+    await expect(page.locator('#observe-result-count')).toHaveText('0 loaded records')
+  }
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  await expect(page.locator('#observe-error')).toHaveCount(0)
   await expect(level).toBeVisible()
   await level.selectOption('')
   await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
