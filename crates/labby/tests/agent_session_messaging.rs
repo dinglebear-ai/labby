@@ -77,22 +77,58 @@ impl Http {
     }
 
     async fn messages(&self, key: &str, action: &str, params: Value) -> Value {
-        let mut reply = Value::Null;
-        for _ in 0..4 {
-            reply = self
-                .rpc(Some(key), "tools/call", arguments(action, params.clone()))
-                .await;
-            if reply["error"]["data"]["kind"] != "rate_limited" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
-        reply
+        message_rpc_with_retry(action, params, async |request| {
+            self.rpc(Some(key), "tools/call", request).await
+        })
+        .await
     }
 }
 
 fn arguments(action: &str, params: Value) -> Value {
     json!({"name":"messages","arguments":{"action":action,"params":params}})
+}
+
+async fn message_rpc_with_retry(
+    action: &str,
+    params: Value,
+    mut rpc: impl AsyncFnMut(Value) -> Value,
+) -> Value {
+    let request = arguments(action, params);
+    for _ in 0..3 {
+        let reply = rpc(request.clone()).await;
+        match reply["error"]["data"]["kind"].as_str() {
+            Some(kind @ ("rate_limited" | "timeout")) => {
+                eprintln!("messages.{action} returned {kind}, retrying the same arguments");
+            }
+            _ => return reply,
+        }
+        // A timeout can outlive the write, so preserve the send's idempotency key.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    rpc(request).await
+}
+
+#[tokio::test]
+async fn message_fixture_retries_timeout_with_identical_arguments() {
+    let params = json!({
+        "to":{"kind":"all_active"},"body":"fixture","idempotency_key":"same-request"
+    });
+    let mut requests = Vec::new();
+    let result = message_rpc_with_retry("send", params.clone(), async |request| {
+        requests.push(request);
+        if requests.len() == 1 {
+            json!({"error":{"code":-32000,"data":{"kind":"timeout"}}})
+        } else {
+            json!({"result":{"structuredContent":{"duplicate":true}}})
+        }
+    })
+    .await;
+    assert_eq!(
+        result["result"]["structuredContent"]["duplicate"], true,
+        "{result}"
+    );
+    let expected = arguments("send", params);
+    assert_eq!(requests, [expected.clone(), expected]);
 }
 
 struct Local {
@@ -194,17 +230,10 @@ impl Local {
     }
 
     async fn messages(&mut self, action: &str, params: Value) -> Value {
-        let mut reply = Value::Null;
-        for _ in 0..4 {
-            reply = self
-                .rpc("tools/call", arguments(action, params.clone()))
-                .await;
-            if reply["error"]["data"]["kind"] != "rate_limited" {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
-        reply
+        message_rpc_with_retry(action, params, async |request| {
+            self.rpc("tools/call", request).await
+        })
+        .await
     }
 
     async fn finish(mut self) {
