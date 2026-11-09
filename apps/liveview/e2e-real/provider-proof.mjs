@@ -1,11 +1,12 @@
 import {spawn} from 'node:child_process'
-import {mkdtempSync,mkdirSync,readFileSync,writeFileSync} from 'node:fs'
+import {mkdtempSync,mkdirSync,writeFileSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
-import {createHash,randomBytes} from 'node:crypto'
+import {randomBytes} from 'node:crypto'
 import {createServer} from 'node:net'
 import {startProviderIssuer} from './provider-issuer.mjs'
 import {provisionProviderPrincipals} from './provider-provision.mjs'
+import {validateProofSelection} from './provider-run-ownership.mjs'
 import {waitForHttp} from './launcher-support.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'labby-provider-proof-'))
@@ -28,10 +29,12 @@ async function admit(port) {
   await new Promise(resolve => probe.close(resolve))
 }
 try {
-  receipt.binarySha256 = createHash('sha256').update(readFileSync(binary)).digest('hex')
-  if (receipt.binarySha256 !== '27abb58398d90efd4e26359d6edd76cea84f6a9d51eba8e42772441dcb10d72d') {
-    throw new Error('PROVIDER_PROOF_BINARY_MISMATCH')
-  }
+  const selection = validateProofSelection({
+    binary,
+    expectedSha256: process.env.LABBY_E2E_EXPECTED_BINARY_SHA256,
+    sourceRevision: receipt.sourceRevision,
+  })
+  receipt.binarySha256 = selection.binarySha256
   await admit(4329)
   await admit(4331)
   issuer = await startProviderIssuer({port: 4331})

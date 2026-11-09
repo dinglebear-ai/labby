@@ -1,13 +1,15 @@
 import {defineConfig} from '@playwright/test'
 import {randomBytes} from 'node:crypto'
-import {prepareProviderTls} from './e2e-real/provider-issuer.mjs'
+import {createOwnedProviderTls} from './e2e-real/provider-run-ownership.mjs'
+
+let providerTlsOwner
 
 // Material exists before Chromium launch, allowing an issuer-only SPKI exception.
 if (!process.env.LABBY_E2E_PROVIDER_TLS) {
-  const tls = prepareProviderTls()
+  const tls = createOwnedProviderTls()
+  providerTlsOwner = tls
   process.env.LABBY_E2E_PROVIDER_TLS = tls.root
   process.env.LABBY_E2E_PROVIDER_SPKI = tls.spki
-  process.env.LABBY_E2E_PROVIDER_TLS_OWNED = 'true'
 }
 if (!/^[A-Za-z0-9+/]{43}=$/.test(process.env.LABBY_E2E_PROVIDER_SPKI || '')) {
   throw new Error('The selected controlled issuer requires its exact SPKI pin')
@@ -17,6 +19,7 @@ process.env.LABBY_E2E_PROVIDER_PASSWORD ||= randomBytes(32).toString('hex')
 process.env.LABBY_E2E_MEMBER_PASSWORD ||= randomBytes(32).toString('hex')
 
 export default defineConfig({
+  metadata: {providerTlsOwner},
   testDir: './e2e-real',
   testMatch: ['provider-login.spec.mjs', 'provider-projects-isolation.spec.mjs'],
   workers: 1,

@@ -29,8 +29,8 @@ let issuer
 let upstream
 let stopping = false
 
-function record(stage) {
-  receipt.stages.push(stage)
+function record(stage, detail = {}) {
+  receipt.stages.push({stage, ...detail})
   writeFileSync(join(root, 'receipt.json'), JSON.stringify(receipt, null, 2), {mode: 0o600})
 }
 
@@ -147,7 +147,10 @@ url = "http://127.0.0.1:4330/mcp"
   await waitForHttp('http://127.0.0.1:4329/health', {stage: 'provider-gateway-health'})
   await waitForHttp('http://127.0.0.1:4329/ready', {stage: 'provider-gateway-ready'})
   record('gateway-ready')
-  const provisioning = await provisionProviderPrincipals({issuer})
+  const provisioning = await provisionProviderPrincipals({
+    issuer,
+    onReceipt: detail => record('public-provisioning', detail),
+  })
   record(`two-principals-${provisioning.distinctReadyPrincipals}-wrong-issuer-rejected-${provisioning.wrongIssuerRejected}`)
   launch('mix', ['run', '--no-start', 'e2e-real/provider-server.exs'], {
     PATH: process.env.PATH,
@@ -163,7 +166,10 @@ url = "http://127.0.0.1:4330/mcp"
   console.log(`Controlled IdP launcher ready. Private receipts ${root}`)
 }
 
-main().catch(() => {
-  record('startup-failed')
+main().catch(error => {
+  const code = /^PROVIDER_[A-Z0-9_]+$/.test(error.message || '')
+    ? error.message
+    : 'PROVIDER_STARTUP_FAILED'
+  record('startup-failed', {code, request: error.requestMetadata})
   void stop(1)
 })

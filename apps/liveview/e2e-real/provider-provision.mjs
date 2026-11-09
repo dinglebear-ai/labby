@@ -2,6 +2,14 @@ import {request as httpRequest} from 'node:http'
 import {request as httpsRequest} from 'node:https'
 import {createHash, randomBytes} from 'node:crypto'
 
+export function requireWrongIssuerRejection(response) {
+  if (response?.status !== 401) {
+    throw Object.assign(new Error('PROVIDER_WRONG_ISSUER_EXPECTED_401'), {
+      requestMetadata: response?.metadata,
+    })
+  }
+}
+
 // Direct public HTTP contracts only. Cookies remain in this server-side helper.
 export async function provisionProviderPrincipals({issuer, gateway = 'http://127.0.0.1:4329', onReceipt = () => {}}) {
   let requests = 0
@@ -93,7 +101,7 @@ export async function provisionProviderPrincipals({issuer, gateway = 'http://127
     if (wrongIssuer) callback.searchParams.set('iss', 'https://untrusted.invalid')
     const completed = await call(callback.href)
     if (wrongIssuer) {
-      if (completed.status < 400) throw new Error('PROVIDER_WRONG_ISSUER_ACCEPTED')
+      requireWrongIssuerRejection(completed)
       return
     }
     check(completed, 200)
