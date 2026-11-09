@@ -1209,6 +1209,20 @@ fn credential_runtime_error(error: AccessStoreError) -> CredentialLifecycleError
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn inventory_lifecycle_acquisition_uses_original_absolute_deadline() {
+        let runtime = AccessRuntime::blocked_unavailable();
+        let _held = runtime.state.lock().await;
+        let deadline =
+            super::super::inventory::AccessReadDeadline::after(std::time::Duration::from_millis(5));
+        let error = crate::dispatch::access::inventory_store(&runtime, Some(deadline))
+            .await
+            .unwrap_err()
+            .to_agent_value();
+        assert_eq!(error["kind"], "timeout");
+        assert_eq!(error["side_effects"], "none_expected");
+    }
+
     /// Release-profile guard: without `proxy-testkit` the deterministic Dev
     /// Container runtime is compiled out, so `LABBY_E2E_DETERMINISTIC_EXECUTORS`
     /// cannot substitute a fake engine in a product build. The crate forbids

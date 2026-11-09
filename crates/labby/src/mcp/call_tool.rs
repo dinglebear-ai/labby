@@ -2171,6 +2171,8 @@ impl LabMcpServer {
             } else if matches!(action.as_str(), "help" | "schema") {
                 (entry.dispatch)(action.clone(), params).await
             } else if service == "access" {
+                let read_deadline = crate::dispatch::access::inventory_action(&action)
+                    .then(crate::access::inventory::AccessReadDeadline::server);
                 let auth = auth_context_from_extensions(&context.extensions);
                 let identity =
                     crate::mcp::context::verified_identity_from_extensions(&context.extensions)
@@ -2182,7 +2184,12 @@ impl LabMcpServer {
                     Some(identity) => {
                         // Store lifecycle failures are typed outages, never
                         // authorization decisions.
-                        match self.access_runtime.store().await {
+                        match crate::dispatch::access::inventory_store(
+                            &self.access_runtime,
+                            read_deadline,
+                        )
+                        .await
+                        {
                             Ok(store) => match self.caller_ceiling(auth) {
                                 Some(ceiling) => {
                                     // A route-bound grant pins administration
@@ -2222,6 +2229,7 @@ impl LabMcpServer {
                                         crate::dispatch::access::dispatch(
                                             crate::dispatch::access::AccessDispatchContext {
                                                 store,
+                                                read_deadline,
                                                 identity,
                                                 ceiling,
                                                 installation_id,
@@ -2241,9 +2249,7 @@ impl LabMcpServer {
                                     required_scopes: Vec::new(),
                                 }),
                             },
-                            Err(error) => Err(crate::dispatch::access_errors::map_runtime_error(
-                                "access", error,
-                            )),
+                            Err(error) => Err(error),
                         }
                     }
                     None => Err(ToolError::Forbidden {

@@ -6145,6 +6145,26 @@
           }
         }
       },
+      "AccessAccessTeamMemberListParams": {
+        "type": "object",
+        "required": [
+          "team_id"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "snapshot_revision": {
+            "type": "integer"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        }
+      },
       "AccessAccessTeamMemberRemoveParams": {
         "type": "object",
         "required": [
@@ -6262,6 +6282,26 @@
           }
         }
       },
+      "AccessAccessTeam_projectListParams": {
+        "type": "object",
+        "required": [
+          "team_id"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "snapshot_revision": {
+            "type": "integer"
+          },
+          "team_id": {
+            "type": "string"
+          }
+        }
+      },
       "AccessActionRequest": {
         "type": "object",
         "required": [
@@ -6273,6 +6313,8 @@
             "enum": [
               "access.team.create",
               "access.team.list",
+              "access.team.member.list",
+              "access.team_project.list",
               "access.team.member.add",
               "access.team.member.role.set",
               "access.team.member.suspend",

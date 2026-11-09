@@ -42,6 +42,74 @@
           "returns": "object"
         },
         {
+          "name": "access.team.member.list",
+          "description": "List persisted Team memberships",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_project.list",
+          "description": "List persisted Team Project assignments",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
           "name": "access.team.member.add",
           "description": "Add a team member",
           "destructive": false,

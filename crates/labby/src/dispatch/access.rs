@@ -1,5 +1,10 @@
 //! Shared multi-user administration dispatch.
 
+mod inventory;
+pub(crate) use inventory::{
+    inventory_action, inventory_store, map_error as map_inventory_error, read_deadline_from_headers,
+};
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use labby_auth::VerifiedIdentity;
@@ -34,6 +39,8 @@ macro_rules! access_actions {
                 &[string("team_id"), string("name")],
             ),
             action("access.team.list", "List the caller's teams", &[]),
+            action("access.team.member.list", "List persisted Team memberships", inventory::PARAMS),
+            action("access.team_project.list", "List persisted Team Project assignments", inventory::PARAMS),
             action(
                 "access.team.member.add",
                 "Add a team member",
@@ -144,7 +151,9 @@ pub(crate) fn required_capability(action: &str) -> Option<Capability> {
             Capability::PlatformManage
         }
         "access.team_invitation.accept" => Capability::ScopeOperate,
-        "access.gateway_credential.list" => Capability::ScopeRead,
+        "access.gateway_credential.list"
+        | "access.team.member.list"
+        | "access.team_project.list" => Capability::ScopeRead,
         "access.gateway_credential.bind"
         | "access.gateway_credential.revoke"
         | "access.team_project.assign" => Capability::ScopeManage,
@@ -211,6 +220,7 @@ const fn admin_action(
 #[derive(Clone)]
 pub(crate) struct AccessDispatchContext {
     pub(crate) store: crate::access::AccessStore,
+    pub(crate) read_deadline: Option<crate::access::inventory::AccessReadDeadline>,
     pub(crate) identity: VerifiedIdentity,
     pub(crate) ceiling: AuthorityCeiling,
     pub(crate) installation_id: String,
@@ -235,6 +245,10 @@ pub(crate) async fn dispatch(
     }
     if !ACTIONS.iter().any(|spec| spec.name == action_name) {
         return Err(unknown_action(action_name));
+    }
+
+    if inventory_action(action_name) {
+        return inventory::dispatch(context, action_name, params).await;
     }
 
     // Filtered list operations derive visibility inside AccessStore. Every mutation is
@@ -688,11 +702,34 @@ pub async fn dispatch_unbound(action: &str, params: Value) -> Result<Value, Tool
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn inventory_dispatch_reads_actual_store() {
+        let (_directory, store, identity) = crate::access::test_support::fixture().await;
+        let ceiling = AuthorityCeiling::durable_execution();
+        for action in ["access.team.member.list", "access.team_project.list"] {
+            let result = dispatch(
+                AccessDispatchContext {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    ceiling: ceiling.clone(),
+                    read_deadline: None,
+                    installation_id: "local-installation".into(),
+                    #[cfg(feature = "gateway")]
+                    gateway_manager: None,
+                },
+                action,
+                json!({"team_id":"bootstrap-initial-team"}),
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+
     #[test]
     fn catalog_registers_only_canonical_access_actions() {
         assert_eq!(
             ACTIONS.len(),
-            if cfg!(feature = "gateway") { 17 } else { 14 }
+            if cfg!(feature = "gateway") { 19 } else { 16 }
         );
         assert!(ACTIONS.iter().all(|spec| spec.name.starts_with("access.")));
         assert!(ACTIONS.iter().all(|spec| !spec.destructive));

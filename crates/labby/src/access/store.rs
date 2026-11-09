@@ -1,3 +1,5 @@
+mod inventory;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(test)]

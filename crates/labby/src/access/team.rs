@@ -1291,7 +1291,7 @@ fn require_team_manager(
         Err(AccessStoreError::NotAuthorized)
     }
 }
-fn require_team_member(
+pub(super) fn require_team_member(
     tx: &Transaction<'_>,
     principal_id: &str,
     organization_id: &str,

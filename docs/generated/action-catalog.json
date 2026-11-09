@@ -329,6 +329,54 @@
   },
   {
     "service": "access",
+    "action": "access.team.member.list",
+    "description": "List persisted Team memberships",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50, range 1 to 100"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "Nonnegative offset, default 0"
+      },
+      {
+        "name": "snapshot_revision",
+        "ty": "integer",
+        "required": false,
+        "description": "Required for nonzero offset, from the first page"
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
     "action": "access.team.member.remove",
     "description": "Remove a team member",
     "destructive": false,
@@ -583,6 +631,54 @@
         "ty": "string",
         "required": true,
         "description": ""
+      }
+    ],
+    "returns": "object",
+    "surface_availability": {
+      "cli": false,
+      "mcp": true,
+      "api": true,
+      "web_ui": false
+    },
+    "requires_http_subject": false,
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
+    "inventory_scope": "global_inventory_not_active_runtime_exposure",
+    "builtin": false
+  },
+  {
+    "service": "access",
+    "action": "access.team_project.list",
+    "description": "List persisted Team Project assignments",
+    "destructive": false,
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "resource_capability",
+    "required_capability": "scope.read",
+    "resource_family": "platform",
+    "params": [
+      {
+        "name": "team_id",
+        "ty": "string",
+        "required": true,
+        "description": ""
+      },
+      {
+        "name": "limit",
+        "ty": "integer",
+        "required": false,
+        "description": "Page size, default 50, range 1 to 100"
+      },
+      {
+        "name": "offset",
+        "ty": "integer",
+        "required": false,
+        "description": "Nonnegative offset, default 0"
+      },
+      {
+        "name": "snapshot_revision",
+        "ty": "integer",
+        "required": false,
+        "description": "Required for nonzero offset, from the first page"
       }
     ],
     "returns": "object",

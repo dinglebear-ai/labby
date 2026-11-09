@@ -21,6 +21,7 @@ mod gateway_credential;
 mod gateway_loadout;
 mod health;
 mod integrity;
+pub(crate) mod inventory;
 mod loadout;
 mod migrations;
 pub(crate) mod offline_migration;
