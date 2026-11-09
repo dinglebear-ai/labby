@@ -1155,6 +1155,7 @@ fn blocked_reason(error: &AccessStoreError) -> AccessBlockedReason {
         | AccessStoreError::InvalidBootstrapInput
         | AccessStoreError::InvalidTeamInput
         | AccessStoreError::TeamUnavailable
+        | AccessStoreError::InvitationExpiryCommitted
         | AccessStoreError::TeamCredentialBindingUnavailable
         | AccessStoreError::ProjectionWatermarkRegressed
         | AccessStoreError::LastActiveTeamOwner

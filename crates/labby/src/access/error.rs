@@ -42,6 +42,8 @@ pub(crate) enum AccessStoreError {
     InvalidTeamInput,
     #[error("team or membership is unavailable")]
     TeamUnavailable,
+    #[error("invitation expiry metadata was committed")]
+    InvitationExpiryCommitted,
     #[error("team credential binding is unavailable")]
     TeamCredentialBindingUnavailable,
     #[error("authority projection acknowledgement regressed below the persisted watermark")]
