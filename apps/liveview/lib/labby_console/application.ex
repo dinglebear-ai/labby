@@ -11,6 +11,7 @@ defmodule LabbyConsole.Application do
       LabbyConsoleWeb.Telemetry,
       LabbyConsole.Auth,
       LabbyConsole.GatewayAction.Supervisor,
+      LabbyConsole.OAuthHandoff,
       {DNSCluster, query: Application.get_env(:labby_console, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: LabbyConsole.PubSub},
       # Start a worker by calling: LabbyConsole.Worker.start_link(arg)

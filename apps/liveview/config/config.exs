@@ -53,4 +53,16 @@ config :phoenix, :json_library, Jason
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"
 
-config :phoenix, :filter_parameters, ["password", "credential", "token", "secret"]
+config :phoenix, :filter_parameters, [
+  "password",
+  "credential",
+  "token",
+  "secret",
+  "flow_id",
+  "code_verifier",
+  "poll_token",
+  "redeem_code",
+  "authorization_url",
+  "oauth_owner",
+  "oauth_flow_id"
+]

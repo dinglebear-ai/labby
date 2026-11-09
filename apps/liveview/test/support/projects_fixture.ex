@@ -20,7 +20,15 @@ defmodule LabbyConsole.ProjectsFixture do
     })
   end
 
+  post "/v1/access/admin" do
+    dispatch_action(conn)
+  end
+
   post "/v1/:service" do
+    if service == "access", do: send_resp(conn, 404, ""), else: dispatch_action(conn)
+  end
+
+  defp dispatch_action(conn) do
     action = conn.body_params["action"]
     params = conn.body_params["params"]
     state = conn.private.projects_state

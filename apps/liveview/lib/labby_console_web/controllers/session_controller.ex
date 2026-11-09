@@ -4,15 +4,136 @@ defmodule LabbyConsoleWeb.SessionController do
   plug :no_store
   defp no_store(conn, _), do: put_resp_header(conn, "cache-control", "no-store")
 
-  def new(conn, _), do: sign_in_page(conn, Phoenix.Flash.get(conn.assigns.flash, :error))
+  def new(conn, _) do
+    owner =
+      get_session(conn, :oauth_owner) ||
+        Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+    conn
+    |> put_session(:oauth_owner, owner)
+    |> sign_in_page(Phoenix.Flash.get(conn.assigns.flash, :error))
+  end
 
   defp sign_in_page(conn, message) do
     token = Plug.CSRFProtection.get_csrf_token()
 
+    message =
+      if message, do: message |> Phoenix.HTML.html_escape() |> Phoenix.HTML.safe_to_string()
+
+    provider = if LabbyConsole.OAuthHandoff.configured?(), do: provider_choice(conn), else: ""
+
     html(conn, """
-    <!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Labby</title><link rel="stylesheet" href="/vendor/aurora.css"><link rel="stylesheet" href="/assets/css/app.css"></head><body><main id="console-integration" class="console-auth"><section class="console-panel"><h1>Sign in to Labby</h1><p>Use a gateway bearer credential. It is exchanged once and never stored in your browser.</p>#{if message, do: "<p role=\"alert\">#{message}</p>", else: ""}<form action="/sign-in" method="post"><input type="hidden" name="_csrf_token" value="#{token}"><label for="credential">Gateway credential</label><input id="credential" name="credential" type="password" autocomplete="off" required maxlength="4096"><button type="submit">Sign in</button></form></section></main></body></html>
+    <!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Labby</title><meta name="csrf-token" content="#{token}"><script defer src="/assets/js/app.js"></script><link rel="stylesheet" href="/vendor/aurora.css"><link rel="stylesheet" href="/assets/css/app.css"></head><body><main id="console-integration" class="console-auth"><section class="console-panel"><h1>Sign in to Labby</h1><p>Use a gateway bearer credential. It is exchanged once and never stored in your browser.</p>#{if message, do: "<p role=\"alert\">#{message}</p>", else: ""}<form action="/sign-in" method="post"><input type="hidden" name="_csrf_token" value="#{token}"><label for="credential">Gateway credential</label><input id="credential" name="credential" type="password" autocomplete="off" required maxlength="4096"><button type="submit">Sign in</button></form>#{provider}</section></main></body></html>
     """)
   end
+
+  defp provider_choice(conn) do
+    flow =
+      (get_session(conn, :oauth_flow_id) || "")
+      |> Phoenix.HTML.html_escape()
+      |> Phoenix.HTML.safe_to_string()
+
+    """
+    <section data-provider-login data-flow-id="#{flow}" aria-label="Provider sign-in"><h2>Provider sign-in</h2><button type="button" data-provider-start>Sign in with provider</button><p data-provider-status role="status" aria-live="polite"></p><a data-provider-link hidden target="_blank" rel="noopener noreferrer">Open provider sign-in</a><button type="button" data-provider-cancel hidden>Cancel provider sign-in</button></section>
+    """
+  end
+
+  def provider_start(conn, params) when map_size(params) == 0 do
+    if get_session(conn, :console_session) do
+      conn |> put_status(:conflict) |> json(%{error: "sign_out_required"})
+    else
+      owner =
+        get_session(conn, :oauth_owner) ||
+          Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+      case Auth.oauth_start(owner) do
+        {:ok, result} ->
+          conn
+          |> put_session(:oauth_owner, owner)
+          |> put_session(:oauth_flow_id, result.flow_id)
+          |> json(result)
+
+        {:error, :origin_mismatch} ->
+          conn |> put_status(:bad_request) |> json(%{error: "provider_origin_mismatch"})
+
+        _ ->
+          provider_error(conn)
+      end
+    end
+  end
+
+  def provider_start(conn, _), do: provider_error(conn)
+
+  def provider_poll(conn, %{"flow_id" => flow} = params)
+      when map_size(params) == 1 and is_binary(flow) and byte_size(flow) <= 128 do
+    if id = get_session(conn, :console_session) do
+      case Auth.current(id) do
+        {:ok, _} -> json(conn, %{status: "complete"})
+        _ -> provider_error(conn)
+      end
+    else
+      case Auth.oauth_poll(get_session(conn, :oauth_owner), flow) do
+        {:pending, delay} ->
+          json(conn, %{status: "pending", next_poll_ms: delay})
+
+        {:ok, id} ->
+          conn
+          |> configure_session(renew: true)
+          |> clear_session()
+          |> put_session(:console_session, id)
+          |> json(%{status: "complete"})
+
+        _ ->
+          provider_error(conn)
+      end
+    end
+  end
+
+  def provider_poll(conn, _), do: provider_error(conn)
+
+  def provider_cancel(conn, %{"flow_id" => flow} = params)
+      when map_size(params) == 1 and is_binary(flow) and byte_size(flow) <= 128 do
+    cond do
+      id = get_session(conn, :console_session) ->
+        reset_result(conn, Auth.sign_out(id))
+
+      get_session(conn, :oauth_flow_id) == flow and is_binary(get_session(conn, :oauth_owner)) ->
+        case Auth.oauth_cancel(get_session(conn, :oauth_owner), flow) do
+          {:error, :invalid_flow} -> reset_result(conn, :ok)
+          result -> reset_result(conn, result)
+        end
+
+      is_nil(get_session(conn, :oauth_owner)) ->
+        reset_result(conn, :ok)
+
+      true ->
+        provider_error(conn)
+    end
+  end
+
+  def provider_cancel(conn, params) when map_size(params) == 0 do
+    result = if id = get_session(conn, :console_session), do: Auth.sign_out(id), else: :ok
+    reset_result(conn, result)
+  end
+
+  def provider_cancel(conn, _), do: provider_error(conn)
+
+  defp reset_result(conn, result) when result in [:ok, {:error, :revocation_unconfirmed}] do
+    response =
+      if result == :ok,
+        do: %{status: "cancelled"},
+        else: %{status: "cancelled", revocation_unconfirmed: true}
+
+    conn
+    |> configure_session(renew: true)
+    |> clear_session()
+    |> json(response)
+  end
+
+  defp reset_result(conn, _), do: provider_error(conn)
+
+  defp provider_error(conn),
+    do: conn |> put_status(:bad_request) |> json(%{error: "provider_sign_in_failed"})
 
   def create(conn, %{"credential" => credential}) do
     case Auth.sign_in(credential) do

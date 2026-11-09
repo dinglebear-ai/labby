@@ -2,6 +2,10 @@ import Config
 
 config :labby_console, :gateway_url, System.get_env("LABBY_CONSOLE_GATEWAY_URL")
 
+if auth_origin = System.get_env("LABBY_CONSOLE_GATEWAY_AUTH_ORIGIN") do
+  config :labby_console, :gateway_auth_origin, auth_origin
+end
+
 # config/runtime.exs is executed for all environments, including
 # during releases. It is executed after compilation and before the
 # system starts, so it is typically used to load production configuration

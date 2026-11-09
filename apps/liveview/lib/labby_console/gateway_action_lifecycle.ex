@@ -1,6 +1,11 @@
 defmodule LabbyConsole.GatewayAction.Lifecycle do
   @moduledoc "Bounded operation reservations, durable terminal outcomes and worker ownership."
   use GenServer
+
+  @impl true
+  def format_status(status),
+    do: Map.merge(status, %{state: :redacted, message: :redacted, reason: :redacted, log: []})
+
   alias LabbyConsole.{Auth, GatewayAction, GatewayAction.Error}
 
   @dispatch_open 0
@@ -218,6 +223,18 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
     ArgumentError -> {:error, :not_found}
   end
 
+  @doc false
+  def cancel_handoff(gate) do
+    stop_dispatch(gate)
+
+    for {{:operation, ref}, %{dispatch_gate: ^gate, id: id}} <- :ets.tab2list(__MODULE__),
+        do: cancel(id, ref)
+
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
   def revoke(id), do: GenServer.cast(__MODULE__, {:revoke, id})
 
   # Auth selects the immutable receipt while generation validation is serialized
@@ -258,6 +275,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
           Map.merge(op, %{
             owner_monitor: Process.monitor(op.owner),
             coordinator_monitor: Process.monitor(op.coordinator),
+            handoff_monitors: handoff_monitors(op),
             timer: Process.send_after(self(), {:deadline, op.ref}, max(0, op.deadline - now())),
             worker: nil,
             worker_monitor: nil,
@@ -405,7 +423,8 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
   def handle_info({:DOWN, monitor, :process, _, _}, state) do
     case Enum.find(state, fn {_, op} ->
-           monitor in [op.owner_monitor, op.coordinator_monitor, op.worker_monitor]
+           monitor in ([op.owner_monitor, op.coordinator_monitor, op.worker_monitor] ++
+                         op.handoff_monitors)
          end) do
       nil ->
         {:noreply, state}
@@ -487,6 +506,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
       %{complete?: true, acked?: true, worker: nil} = op ->
         Process.demonitor(op.owner_monitor, [:flush])
         Process.demonitor(op.coordinator_monitor, [:flush])
+        Enum.each(op.handoff_monitors, &Process.demonitor(&1, [:flush]))
         release(ref)
         Map.delete(state, ref)
 
@@ -512,6 +532,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
               Map.merge(op, %{
                 owner_monitor: Process.monitor(op.owner),
                 coordinator_monitor: Process.monitor(op.coordinator),
+                handoff_monitors: handoff_monitors(op),
                 timer: nil,
                 worker: nil,
                 worker_monitor: nil,
@@ -551,6 +572,18 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
     state
   end
+
+  defp handoff_monitors(%{auth_kind: kind, auth_payload: payload})
+       when kind in [:handoff_start, :handoff_poll, :handoff_redeem],
+       do: Enum.map([payload.guardian, payload.auth_guardian], &Process.monitor/1)
+
+  defp handoff_monitors(_), do: []
+
+  defp authorized?(%{auth_kind: kind, auth_payload: payload})
+       when kind in [:handoff_start, :handoff_poll, :handoff_redeem],
+       do:
+         Process.whereis(LabbyConsole.OAuthHandoff) == payload.guardian and
+           Process.whereis(Auth) == payload.auth_guardian and :atomics.get(payload.gate, 1) == 0
 
   defp authorized?(%{auth_kind: kind}) when kind in [:exchange, :inspect, :logout], do: true
   defp authorized?(op), do: Auth.matches?(op.id, op.generation)

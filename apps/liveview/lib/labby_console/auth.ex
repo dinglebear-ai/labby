@@ -1,15 +1,22 @@
 defmodule LabbyConsole.Auth do
   @moduledoc "Per-caller gateway sessions. Credentials never enter browser storage."
   use GenServer
+
+  @impl true
+  def format_status(status),
+    do: Map.merge(status, %{state: :redacted, message: :redacted, reason: :redacted, log: []})
+
   alias LabbyConsole.{GatewayAction, GatewayAction.Error}
   def start_link(_), do: GenServer.start_link(__MODULE__, %{}, name: __MODULE__)
 
+  @impl true
   def init(state) do
     :ets.new(__MODULE__, [:named_table, :set, :protected, read_concurrency: true])
     Process.send_after(self(), :expire, 60_000)
     {:ok, state}
   end
 
+  @impl true
   def handle_info(:expire, state) do
     Process.send_after(self(), :expire, 60_000)
     {:noreply, prune(state)}
@@ -29,6 +36,7 @@ defmodule LabbyConsole.Auth do
     end)
   end
 
+  @impl true
   def handle_call({:put, value}, _, state) do
     id = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
     state = prune(state)
@@ -79,6 +87,74 @@ defmodule LabbyConsole.Auth do
     {:reply, :ok, Map.delete(state, id)}
   end
 
+  def handle_call({:handoff_owner_authenticated, owner}, _, state) do
+    state = prune(state)
+
+    authenticated =
+      is_binary(owner) and
+        Enum.any?(state, fn {_, value} -> Map.get(value, :oauth_owner) == owner end)
+
+    {:reply, authenticated, state}
+  end
+
+  def handle_call({:take_handoff_session, owner, flow_id}, _, state) do
+    state = prune(state)
+
+    found =
+      if is_binary(owner) and is_binary(flow_id),
+        do:
+          Enum.find(state, fn {_, value} ->
+            Map.get(value, :oauth_owner) == owner and Map.get(value, :oauth_flow_id) == flow_id
+          end)
+
+    case found do
+      {id, value} ->
+        :ets.delete(__MODULE__, id)
+        broadcast_revocation(id)
+        GatewayAction.revoke(id)
+        {:reply, value, Map.delete(state, id)}
+
+      _ ->
+        {:reply, nil, state}
+    end
+  end
+
+  def handle_call({:adopt_handoff, owner, flow_id, completed_ref}, {source, _}, state) do
+    state = prune(state)
+
+    receipt =
+      if source == Process.whereis(LabbyConsole.OAuthHandoff),
+        do: handoff_receipt(owner, flow_id, completed_ref),
+        else: nil
+
+    if source == Process.whereis(LabbyConsole.OAuthHandoff) and is_map(receipt) and
+         receipt.guardian == self() and Process.alive?(receipt.caller) and
+         System.monotonic_time(:millisecond) < receipt.deadline and map_size(state) < 10_000 and
+         :atomics.compare_exchange(receipt.gate, 1, 0, 1) == :ok do
+      id = Base.url_encode64(:crypto.strong_rand_bytes(32), padding: false)
+
+      value =
+        receipt.value
+        |> Map.put(:generation, make_ref())
+        |> Map.put(:oauth_owner, owner)
+        |> Map.put(:oauth_flow_id, flow_id)
+
+      :ets.insert(__MODULE__, {id, value})
+      {:reply, {:ok, id}, Map.put(state, id, value)}
+    else
+      {:reply, {:error, :invalid_flow}, state}
+    end
+  end
+
+  defp handoff_receipt(owner, flow_id, completed_ref) do
+    case :ets.lookup(LabbyConsole.OAuthHandoff, {:receipt, completed_ref}) do
+      [{{:receipt, ^completed_ref}, %{owner: ^owner, flow_id: ^flow_id} = value}] -> value
+      _ -> nil
+    end
+  rescue
+    ArgumentError -> nil
+  end
+
   defp broadcast_revocation(id) when is_binary(id) do
     if Process.whereis(LabbyConsole.PubSub),
       do:
@@ -111,6 +187,36 @@ defmodule LabbyConsole.Auth do
 
   @doc false
   def publish_action(op, result), do: GenServer.call(__MODULE__, {:publish, op, result})
+
+  def oauth_start(owner) do
+    if GenServer.call(__MODULE__, {:handoff_owner_authenticated, owner}),
+      do: {:error, :sign_out_required},
+      else: LabbyConsole.OAuthHandoff.start(owner)
+  end
+
+  def oauth_poll(owner, flow), do: LabbyConsole.OAuthHandoff.poll(owner, flow)
+
+  def oauth_cancel(owner, flow) do
+    result = LabbyConsole.OAuthHandoff.cancel(owner, flow)
+
+    case GenServer.call(__MODULE__, {:take_handoff_session, owner, flow}) do
+      nil ->
+        result
+
+      snapshot ->
+        case GatewayAction.run_auth(:logout, snapshot) do
+          {:ok, _} -> :ok
+          _ -> {:error, :revocation_unconfirmed}
+        end
+    end
+  end
+
+  @doc false
+  def adopt_handoff(owner, flow_id, completed_ref) do
+    GenServer.call(__MODULE__, {:adopt_handoff, owner, flow_id, completed_ref})
+  catch
+    :exit, _ -> {:error, :unavailable}
+  end
 
   def sign_in(token) when is_binary(token) and byte_size(token) in 1..4096 do
     case GatewayAction.run_auth(:exchange, token) do
@@ -191,7 +297,7 @@ defmodule LabbyConsole.Auth do
       case request(
              op.session.target,
              :post,
-             "/v1/" <> op.service,
+             action_path(op.service),
              [
                {"cookie", op.session.cookie},
                {"x-csrf-token", session["csrf_token"]},
@@ -217,6 +323,9 @@ defmodule LabbyConsole.Auth do
         {:error, Error.new(:cancelled, op.service, op.action)}
     end
   end
+
+  defp action_path("access"), do: "/v1/access/admin"
+  defp action_path(service), do: "/v1/" <> service
 
   defp action_response(op, %{private: %{labby_response_too_large: true}}),
     do:
@@ -296,6 +405,71 @@ defmodule LabbyConsole.Auth do
     end
   end
 
+  defp auth_request(:handoff_start, %{target: target, origin: origin, verifier: verifier}) do
+    challenge = :crypto.hash(:sha256, verifier) |> Base.url_encode64(padding: false)
+
+    with {:ok, %{status: 201, body: body}} <-
+           handoff_request(target, origin, "/auth/desktop/start", %{code_challenge: challenge}),
+         {:ok, data} <- Jason.decode(body),
+         true <-
+           is_map(data) and
+             Enum.sort(Map.keys(data)) == ~w(authorization_url expires_at poll_token redeem_code),
+         %{
+           "authorization_url" => url,
+           "expires_at" => expiry,
+           "poll_token" => poll,
+           "redeem_code" => redeem
+         } <- data,
+         true <-
+           is_integer(expiry) and expiry > System.system_time(:second) and
+             expiry <= System.system_time(:second) + 305,
+         true <-
+           is_binary(poll) and byte_size(poll) in 1..256 and is_binary(redeem) and
+             byte_size(redeem) in 1..256,
+         :ok <- LabbyConsole.OAuthHandoff.authorization_url(url, origin) do
+      {:ok, %{authorization_url: url, expires_at: expiry, poll_token: poll, redeem_code: redeem}}
+    else
+      {:error, :origin_mismatch} -> {:error, :origin_mismatch}
+      _ -> {:error, :invalid_response}
+    end
+  end
+
+  defp auth_request(:handoff_poll, flow) do
+    with {:ok, %{status: status, body: body}} when status in [200, 202] <-
+           handoff_request(flow.target, flow.origin, "/auth/desktop/poll", %{
+             poll_token: flow.poll_token
+           }),
+         {:ok, %{"ready" => ready, "expires_at" => expiry} = data} <- Jason.decode(body),
+         true <-
+           map_size(data) == 2 and is_integer(expiry) and expiry >= 0 and
+             expiry <= flow.expires_at + 5,
+         true <-
+           (status == 202 and ready == false) or
+             (status == 200 and ready == true and expiry > System.system_time(:second) and
+                expiry <= flow.expires_at + 5) do
+      {:ok, if(ready, do: :ready, else: :pending)}
+    else
+      {:ok, %{status: status}} when status in [429, 503] -> {:ok, :pending}
+      _ -> {:error, :invalid_response}
+    end
+  end
+
+  defp auth_request(:handoff_redeem, flow) do
+    with true <- System.monotonic_time(:millisecond) < flow.deadline,
+         {:ok, %{status: 204} = response} <-
+           handoff_request(flow.target, flow.origin, "/auth/desktop/redeem", %{
+             redeem_code: flow.redeem_code,
+             code_verifier: flow.verifier
+           }),
+         [cookie] <- Req.Response.get_header(response, "set-cookie"),
+         cookie <- hd(String.split(cookie, ";")),
+         {:ok, session} <- inspect_session(flow.target, cookie) do
+      {:ok, %{target: flow.target, cookie: cookie, session: session}}
+    else
+      _ -> {:error, :fresh_sign_in_required}
+    end
+  end
+
   defp auth_request(:exchange, token) do
     target = Application.get_env(:labby_console, :gateway_url)
 
@@ -323,6 +497,18 @@ defmodule LabbyConsole.Auth do
       {:ok, %{status: status}} when status in 200..299 -> {:ok, :revoked}
       _ -> {:error, :revocation_unconfirmed}
     end
+  end
+
+  defp handoff_request(target, origin, path, body) do
+    authority = origin |> String.split("://", parts: 2) |> List.last()
+
+    request(
+      target,
+      :post,
+      path,
+      [{"origin", origin}, {"host", authority}, {"content-type", "application/json"}],
+      body: Jason.encode!(body)
+    )
   end
 
   defp inspect_session(target, cookie) do

@@ -24,6 +24,9 @@ defmodule LabbyConsoleWeb.Router do
     live "/connection", ConnectionLive, :index
     get "/sign-in", SessionController, :new
     post "/sign-in", SessionController, :create
+    post "/sign-in/provider/start", SessionController, :provider_start
+    post "/sign-in/provider/poll", SessionController, :provider_poll
+    post "/sign-in/provider/cancel", SessionController, :provider_cancel
     post "/sign-out", SessionController, :delete
     live "/overview", OverviewLive, :index
     live "/gateway", GatewayLive, :index

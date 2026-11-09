@@ -28,6 +28,9 @@ import {WorkspaceChrome} from "./workspace_chrome.mjs"
 import ProjectsPreferences from "./projects_preferences.mjs"
 import OverviewLayout from "./overview_layout.mjs"
 import GatewayPreferences from "./gateway_preferences.mjs"
+import {mountOAuthLogin} from "./oauth_login.mjs"
+
+mountOAuthLogin(document)
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {

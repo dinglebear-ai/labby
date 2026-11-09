@@ -45,8 +45,17 @@ defmodule LabbyConsole.ActionFixture do
     send_resp(conn, 204, "")
   end
 
+  post "/v1/access/admin" do
+    dispatch_action(conn, "access")
+  end
+
   post "/v1/:service" do
+    if service == "access", do: send_resp(conn, 404, ""), else: dispatch_action(conn, service)
+  end
+
+  defp dispatch_action(conn, service) do
     {owner, response} = Agent.get(conn.private.fixture, &{&1.owner, &1.response})
+    send(owner, {:action_path, conn.request_path})
 
     send(
       owner,

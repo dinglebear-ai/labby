@@ -1,6 +1,11 @@
 defmodule LabbyConsole.GatewayAction do
   @moduledoc "Caller-owned, supervised gateway operations with immediate bounded admission."
   use GenServer
+
+  @impl true
+  def format_status(status),
+    do: Map.merge(status, %{state: :redacted, message: :redacted, reason: :redacted, log: []})
+
   alias LabbyConsole.{Auth, GatewayAction.Error}
 
   @actions %{
@@ -37,13 +42,14 @@ defmodule LabbyConsole.GatewayAction do
   # Only Auth constructs this fixed family from configuration or captured vault state.
   # It shares the same reservation, watchdog, receipts and cancellation engine.
   @doc false
-  def run_auth(kind, payload) when kind in [:exchange, :inspect, :logout] do
+  def run_auth(kind, payload)
+      when kind in [:exchange, :inspect, :logout, :handoff_start, :handoff_poll, :handoff_redeem] do
     run({:auth_owner, self()}, "auth", Atom.to_string(kind), %{}, {:auth, kind, payload})
   end
 
   defp do_start(id, "auth", action, %{}, {:auth, kind, payload}, delivery)
-       when kind in [:exchange, :inspect, :logout] do
-    deadline = System.monotonic_time(:millisecond) + 5_000
+       when kind in [:exchange, :inspect, :logout, :handoff_start, :handoff_poll, :handoff_redeem] do
+    deadline = auth_deadline(kind, payload)
     coordinator = Process.whereis(__MODULE__)
 
     with true <- is_pid(coordinator),
@@ -58,8 +64,8 @@ defmodule LabbyConsole.GatewayAction do
         auth_payload: payload,
         service: "auth",
         action: action,
-        mutation?: kind != :inspect,
-        dispatch_gate: :atomics.new(1, signed: false),
+        mutation?: kind not in [:inspect, :handoff_poll],
+        dispatch_gate: auth_gate(kind, payload),
         deadline: deadline,
         delivery: delivery
       }
@@ -137,6 +143,16 @@ defmodule LabbyConsole.GatewayAction do
         end
     end
   end
+
+  defp auth_deadline(kind, payload) when kind in [:handoff_start, :handoff_poll, :handoff_redeem],
+    do: min(System.monotonic_time(:millisecond) + 5_000, payload.deadline)
+
+  defp auth_deadline(_, _), do: System.monotonic_time(:millisecond) + 5_000
+
+  defp auth_gate(kind, payload) when kind in [:handoff_start, :handoff_poll, :handoff_redeem],
+    do: payload.network_gate
+
+  defp auth_gate(_, _), do: :atomics.new(1, signed: false)
 
   def run(id, service, action, params, mode \\ :action) do
     deadline =

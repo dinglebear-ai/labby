@@ -23,6 +23,11 @@ defmodule LabbyConsole.GatewayActionTest do
     %{state: state, id: id}
   end
 
+  test "access team list uses the real fixed admin action endpoint", %{id: id} do
+    assert {:ok, %{}} = Auth.action(id, "access", "access.team.list", %{})
+    assert_receive {:action_path, "/v1/access/admin"}
+  end
+
   test "explicit lifecycle actions forward caller cookie and authoritative CSRF", %{id: id} do
     for {service, action} <- [
           {"projects", "projects.list"},
