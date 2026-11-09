@@ -66,3 +66,10 @@ export async function seedRealCalls(count) {
   if(result.isError) throw new Error('Real pagination call failed')
  }
 }
+
+export async function gatewaySettled(page, step, prefix) {
+  await step(`${prefix}-dialog-closed`, () => expect(page.locator('#gm-dialog')).toHaveCount(0, {timeout: 35000}))
+  await step(`${prefix}-add-ready`, () => expect(page.locator('#gateway-add')).toBeEnabled({timeout: 35000}))
+  await step(`${prefix}-refresh-ready`, () => expect(page.locator('#servers-refresh')).toBeEnabled())
+  await step(`${prefix}-receipt-cleared`, () => expect(page.locator('#gm-receipt')).toHaveCount(0))
+}

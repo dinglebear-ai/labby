@@ -1,6 +1,6 @@
 import {test, expect} from '@playwright/test'
 import {randomBytes} from 'node:crypto'
-import {signIn, gatewayAction} from './mcp-support.mjs'
+import {signIn, gatewayAction, gatewaySettled as settled} from './mcp-support.mjs'
 import {runPrivateScenario} from './private-scenario.mjs'
 
 // The parent runs this file only after both source reviews. It uses the owned
@@ -15,12 +15,6 @@ function scenarioBudget() {
     receipt.gatewayEstimated += count
     if (receipt.gatewayEstimated > (cleanup ? 30 : 26)) throw new Error('Native Gateway scenario exceeded its action budget')
   }}
-}
-
-async function settled(page, step, prefix) {
-  await step(`${prefix}-add-ready`, () => expect(page.locator('#gateway-add')).toBeEnabled({timeout: 35000}))
-  await step(`${prefix}-refresh-ready`, () => expect(page.locator('#servers-refresh')).toBeEnabled())
-  await step(`${prefix}-receipt-cleared`, () => expect(page.locator('#gm-receipt')).toHaveCount(0))
 }
 
 async function edit(page, name, charge, step, prefix) {

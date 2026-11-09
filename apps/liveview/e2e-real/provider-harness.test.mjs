@@ -1,7 +1,7 @@
 import {test} from 'node:test'
 import assert from 'node:assert/strict'
 import {execFileSync} from 'node:child_process'
-import {mkdtempSync, readFileSync, readdirSync, rmSync} from 'node:fs'
+import {mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync} from 'node:fs'
 import {tmpdir} from 'node:os'
 import {dirname, join, resolve} from 'node:path'
 import {fileURLToPath} from 'node:url'
@@ -14,8 +14,18 @@ test('normal npm E2E entrypoint runs both real suites after existing pretest bui
   const manifest = JSON.parse(readFileSync(join(application, 'package.json'), 'utf8'))
   assert.equal(manifest.scripts['test:e2e'],
     'playwright test --config=playwright.config.mjs && playwright test --config=playwright.provider.config.mjs')
-  assert.equal(manifest.scripts['pretest:e2e'],
-    'node --test e2e-real/*.test.mjs && node e2e-real/build.mjs')
+  const fixture = mkdtempSync(join(tmpdir(), 'labby-pretest-order-'))
+  try {
+    const suite = join(fixture, 'e2e-real')
+    mkdirSync(suite)
+    writeFileSync(join(suite, 'build.mjs'), "import {writeFileSync} from 'node:fs'; writeFileSync('assets-ready', '')")
+    writeFileSync(join(suite, 'browser.test.mjs'), "import {test} from 'node:test'; import assert from 'node:assert/strict'; import {existsSync} from 'node:fs'; test('assets precede browser helpers', () => assert.equal(existsSync('assets-ready'), true))")
+    const env = {...process.env}
+    delete env.NODE_TEST_CONTEXT
+    execFileSync('/bin/sh', ['-c', manifest.scripts['pretest:e2e']], {cwd: fixture, env, timeout: 10000, stdio: 'pipe'})
+  } finally {
+    rmSync(fixture, {recursive: true, force: true})
+  }
   const lock = JSON.parse(readFileSync(join(application, 'package-lock.json'), 'utf8'))
   assert.equal(lock.packages[''].devDependencies['@playwright/test'], manifest.devDependencies['@playwright/test'])
 })
