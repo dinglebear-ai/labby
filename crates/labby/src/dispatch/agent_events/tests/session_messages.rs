@@ -429,7 +429,7 @@ async fn message_session_over_real_http_and_https() {
     let root = tempfile::tempdir().unwrap();
     let store = NoticeStore::open_at(root.path()).unwrap();
     let events_store = NoticeStore::open_at(root.path()).unwrap();
-    let (sender, callback, mut received, https) = webhook::tests::receiver(2).await;
+    let (sender, callback, secret, mut received, https) = webhook::tests::receiver(2).await;
     let events = Arc::new(AgentEvents::new(
         events_store,
         load_key(&STANDARD.encode([b't'; 32])).unwrap(),
@@ -528,7 +528,7 @@ async fn message_session_over_real_http_and_https() {
     let args = json!({"session_messages":true});
     let subscription = json!({
         "name":EVENT_NAME,"arguments":args,
-        "delivery":{"mode":"webhook","url":callback,"secret":format!("whsec_{}", STANDARD.encode([b'a';32]))}
+        "delivery":{"mode":"webhook","url":callback,"secret":secret}
     });
     let missing = rpc("events/subscribe", None, subscription.clone()).await;
     assert_eq!(missing["error"]["data"]["kind"], "forbidden", "{missing}");

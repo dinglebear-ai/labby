@@ -160,12 +160,16 @@ fn subscription_ttl_distinguishes_omitted_null_and_integer() {
 }
 
 fn subscribe_request(url: &str) -> serde_json::Value {
+    subscribe_request_with_secret(url, &format!("whsec_{}", STANDARD.encode([b'a'; 32])))
+}
+
+fn subscribe_request_with_secret(url: &str, secret: &str) -> serde_json::Value {
     serde_json::json!({
         "name": EVENT_NAME,
         "arguments":{"source":"ci"},
         "delivery":{
             "mode":"webhook", "url": url,
-            "secret":format!("whsec_{}", STANDARD.encode([b'a';32]))
+            "secret":secret
         },
     })
 }
@@ -183,7 +187,7 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
     let directory = tempfile::tempdir().unwrap();
     let publishing = NoticeStore::open_at(directory.path()).unwrap();
     let working = NoticeStore::open_at(directory.path()).unwrap();
-    let (sender, callback, mut received, https) = webhook::tests::receiver(3).await;
+    let (sender, callback, secret, mut received, https) = webhook::tests::receiver(3).await;
     let encryption = load_key(&STANDARD.encode([b't'; 32])).unwrap();
     let events = Arc::new(AgentEvents::new(working, encryption, Arc::new(sender)));
     let manager = Arc::new(
@@ -301,7 +305,7 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
     .await;
     assert_eq!(list["result"]["events"][0]["name"], EVENT_NAME, "{list}");
     assert_eq!(list["result"]["events"][0]["delivery"], json!(["webhook"]));
-    let mut subscribe = subscribe_request(&callback);
+    let mut subscribe = subscribe_request_with_secret(&callback, &secret);
     subscribe["_meta"] = modern_meta("c1");
     let (status, _) = send(
         enabled.clone(),
@@ -611,7 +615,7 @@ async fn receiver_can_ack_before_http_response() {
     let publisher = NoticeStore::open_at(directory.path()).unwrap();
     let worker = NoticeStore::open_at(directory.path()).unwrap();
     let recipient = owner("early-ack").recipient;
-    let (sender, callback, mut requests, receiver) =
+    let (sender, callback, secret, mut requests, receiver) =
         webhook::tests::receiver_with_offer_check(2, Some((publisher.clone(), recipient.clone())))
             .await;
     let events = Arc::new(AgentEvents::new(
@@ -619,7 +623,7 @@ async fn receiver_can_ack_before_http_response() {
         load_key(&STANDARD.encode([b't'; 32])).unwrap(),
         Arc::new(sender),
     ));
-    let params = serde_json::from_value(subscribe_request(&callback)).unwrap();
+    let params = serde_json::from_value(subscribe_request_with_secret(&callback, &secret)).unwrap();
     events
         .subscribe(
             recipient.clone(),

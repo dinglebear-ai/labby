@@ -72,6 +72,7 @@ run_requirement() {
       ;;
     OAI-AUTH-009)
       run_test labby api::router::tests::disabled_dynamic_registration_is_neither_advertised_nor_mounted
+      run_test labby-auth sqlite::extracted_tests::registered_client_survives_reopen_and_token_cleanup
       ;;
     OAI-AUTH-010)
       run_test labby-auth token::tests::revocation_endpoint_invalidates_refresh_token_and_is_idempotent
@@ -145,6 +146,7 @@ readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_ca
 | test(=api::router::tests::protected_mcp_route_unauthorized_header_points_to_route_metadata)
 | test(=api::router::tests::protected_mcp_route_insufficient_scope_returns_rfc_9728_challenge)
 | test(=api::router::tests::disabled_dynamic_registration_is_neither_advertised_nor_mounted)
+| test(=sqlite::extracted_tests::registered_client_survives_reopen_and_token_cleanup)
 | test(=api::router::tests::every_inventoried_customer_or_write_http_route_authenticates_before_dispatch)
 | test(=mcp::permanent_tools::tests::every_registry_service_tool_declares_the_required_oauth_scope)
 | test(=mcp::context::tests::every_registered_action_uses_its_catalog_admin_metadata)'

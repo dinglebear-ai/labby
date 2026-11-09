@@ -1,5 +1,11 @@
 use super::*;
 
+fn random_signing_key() -> [u8; 32] {
+    let mut key = [0; 32];
+    getrandom::fill(&mut key).expect("generate a webhook signing key for the test");
+    key
+}
+
 #[test]
 fn standard_webhooks_signs_the_exact_bytes() {
     let key = WebhookSecret::from_bytes(vec![b'a'; 32]).unwrap();
@@ -56,6 +62,7 @@ pub(in crate::dispatch::agent_events) async fn receiver(
 ) -> (
     HttpsWebhookSender,
     String,
+    String,
     tokio::sync::mpsc::Receiver<(String, serde_json::Value)>,
     tokio::task::JoinHandle<()>,
 ) {
@@ -72,6 +79,7 @@ pub(in crate::dispatch::agent_events) async fn receiver_with_offer_check(
     ack: Option<OfferCheck>,
 ) -> (
     HttpsWebhookSender,
+    String,
     String,
     tokio::sync::mpsc::Receiver<(String, serde_json::Value)>,
     tokio::task::JoinHandle<()>,
@@ -98,6 +106,8 @@ pub(in crate::dispatch::agent_events) async fn receiver_with_offer_check(
         connector: Some(client),
         ..Default::default()
     };
+    let key = random_signing_key();
+    let secret = format!("whsec_{}", STANDARD.encode(key));
     let (tx, rx) = tokio::sync::mpsc::channel(requests);
     let task = tokio::spawn(async move {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
@@ -125,7 +135,7 @@ pub(in crate::dispatch::agent_events) async fn receiver_with_offer_check(
                 let id = &headers["webhook-id"];
                 // Independently verify the on-wire string. No call to the
                 // sender's signing helper and no re-serialization of the body.
-                let mut mac = Hmac::<Sha256>::new_from_slice(&[b'a'; 32]).unwrap();
+                let mut mac = Hmac::<Sha256>::new_from_slice(&key).unwrap();
                 mac.update(id.as_bytes());
                 mac.update(b".");
                 mac.update(headers["webhook-timestamp"].as_bytes());
@@ -167,6 +177,7 @@ pub(in crate::dispatch::agent_events) async fn receiver_with_offer_check(
     (
         sender,
         format!("https://event-receiver.test:{}", address.port()),
+        secret,
         rx,
         task,
     )
@@ -174,8 +185,8 @@ pub(in crate::dispatch::agent_events) async fn receiver_with_offer_check(
 
 #[tokio::test]
 async fn verifies_real_https_challenge_and_rejects_bad_or_oversized_replies() {
-    let (sender, base, mut requests, task) = receiver(4).await;
-    let key = WebhookSecret::from_bytes(vec![b'a'; 32]).unwrap();
+    let (sender, base, secret, mut requests, task) = receiver(4).await;
+    let key = WebhookSecret::parse(&secret).unwrap();
     let id = "sub_fixture";
     for (path, expected) in [
         ("/valid", Ok(())),
@@ -194,14 +205,16 @@ async fn verifies_real_https_challenge_and_rejects_bad_or_oversized_replies() {
 
 #[test]
 fn rotation_signs_with_both_keys_until_the_overlap_expires() {
+    let current = random_signing_key();
+    let previous = random_signing_key();
     let mut attempt = WebhookAttempt {
         url: Url::parse("https://example.com").unwrap(),
         subscription_id: "sub_fixture".into(),
         event_id: "notice_fixture".into(),
         body: br#"{"value":"ready"}"#.to_vec(),
-        key: WebhookSecret::from_bytes(vec![b'a'; 32]).unwrap(),
+        key: WebhookSecret::from_bytes(current.to_vec()).unwrap(),
         previous_key: Some((
-            WebhookSecret::from_bytes(vec![b'b'; 32]).unwrap(),
+            WebhookSecret::from_bytes(previous.to_vec()).unwrap(),
             now_ms() + 300_000,
         )),
         offer: None,
@@ -209,7 +222,7 @@ fn rotation_signs_with_both_keys_until_the_overlap_expires() {
     let time = now_ms() / 1000;
     let signature = sign(&attempt, time);
     let mut signatures = signature.split(' ');
-    for secret in [[b'a'; 32], [b'b'; 32]] {
+    for secret in [current, previous] {
         let bytes = STANDARD
             .decode(signatures.next().unwrap().strip_prefix("v1,").unwrap())
             .unwrap();

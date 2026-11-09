@@ -350,7 +350,7 @@ inventoried route, registered service, or action therefore fails CI until its
 authentication exposure is explicitly classified.
 
 [`openai-auth-normative.json`](../../tools/verification/conformance/openai-auth-normative.json)
-records the reviewed 2026-10-11 guide digest and 34 stable clause dispositions.
+records the reviewed 2026-11-08 guide digest and 35 stable clause dispositions.
 The original 21 clause IDs retain their evidence. Thirteen additional
 multi-account/profile clauses are explicitly conditional: Labby does not
 designate a built-in tool with `_meta["openai/profile"]: true`, so their profile
@@ -359,6 +359,14 @@ rather than passing implementation claims. The guide allows multiple connections
 without a profile tool; this optional feature is not required for OAuth linking.
 If Labby designates such a tool later, those dispositions must be reconsidered
 and backed by behavioral evidence for credential scoping and stable identity.
+The reviewed source contains 40,182 bytes; all 34 retained excerpts remain
+present. No hash-verified previous capture was available, so this review does
+not claim an exact historical text diff. The added lifetime clause covers
+persisted public DCR client reuse across database reopen and expired-token
+cleanup; these registrations issue no client secret. Default mode advertises
+RFC 9207 issuer binding and returns the exact issuer. Explicit Codex issuer
+compatibility mode disables that advertisement and omits the response issuer;
+it does not claim stable-callback eligibility through issuer identification.
 `refresh_openai_auth_denominator.py --check` still fetches the live guide in CI
 and rejects any digest or retained-clause drift. `--source-file <captured-guide>`
 applies the same checks offline to reviewed bytes; it does not establish that the
