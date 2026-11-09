@@ -269,6 +269,7 @@ defmodule LabbyConsoleWeb.WorkspaceShell do
       {"create", "Create", "plus"},
       {"library", "Library", "library"},
       {"projects", "Projects", "folder"},
+      {"access", "People & teams", "shield"},
       {"tasks", "Tasks", "clock"},
       {"agents", "Agents", "bot"},
       {"stash", "Stash", "database"},
@@ -288,7 +289,7 @@ defmodule LabbyConsoleWeb.WorkspaceShell do
     [
       {"Gateway", ~w(overview gateway observe)},
       {"Build", ~w(discover create library)},
-      {"Workspace", ~w(projects tasks agents stash)},
+      {"Workspace", ~w(projects access tasks agents stash)},
       {"Operations", ~w(runtime clients diagnostics usage activity logs)}
     ]
     |> Enum.map(fn {label, keys} ->

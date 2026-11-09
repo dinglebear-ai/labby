@@ -6,6 +6,7 @@
 @import "./gateway-fleet.css";
 @import "./gateway-mutations.css";
 @import "./observe.css";
+@import "./access.css";
 /* Existing read-model pages keep their IDs and data behavior inside native chrome. */
 .labby-overview { width:100%; min-width:0; }
 .labby-overview .ov-body { width:0; }

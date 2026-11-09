@@ -68,6 +68,7 @@ defmodule LabbyConsoleWeb.Layouts do
       "gateway" => "/gateway",
       "observe" => "/observe",
       "projects" => "/projects",
+      "access" => "/access",
       "runtime" => "/runtime",
       "clients" => "/clients",
       "diagnostics" => "/diagnostics",

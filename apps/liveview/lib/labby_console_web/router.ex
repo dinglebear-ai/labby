@@ -42,6 +42,7 @@ defmodule LabbyConsoleWeb.Router do
     live "/gateway/upstreams/:name/runtime", ServerRuntimeLive, :show
     live "/gateway/upstream-runtime", ServerRuntimeLive, :show
     live "/projects", ProjectsLive, :index
+    live "/access", AccessLive, :index
   end
 
   # Other scopes may use custom stacks.

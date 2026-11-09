@@ -29,6 +29,7 @@ import ProjectsPreferences from "./projects_preferences.mjs"
 import OverviewLayout from "./overview_layout.mjs"
 import GatewayPreferences from "./gateway_preferences.mjs"
 import ObservePreferences from "./observe_preferences.mjs"
+import AccessSecrets from "./access_secrets.mjs"
 import {mountOAuthLogin} from "./oauth_login.mjs"
 
 mountOAuthLogin(document)
@@ -37,7 +38,7 @@ const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, WorkspaceChrome, ProjectsPreferences, OverviewLayout, GatewayPreferences, ObservePreferences, LogFollow: {
+  hooks: {...colocatedHooks, AccessSecrets, WorkspaceChrome, ProjectsPreferences, OverviewLayout, GatewayPreferences, ObservePreferences, LogFollow: {
     mounted() { this.follow() },
     updated() { this.follow() },
     follow() { if (this.el.dataset.following === "true") this.el.scrollTop = this.el.scrollHeight }
