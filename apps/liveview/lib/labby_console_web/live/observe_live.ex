@@ -59,7 +59,7 @@ defmodule LabbyConsoleWeb.ObserveLive do
       Enum.all?(filters, fn {_key, value} ->
         is_binary(value) && String.valid?(value) && byte_size(value) <= 256
       end) && (filters["level"] || "") in ["", "TRACE", "DEBUG", "INFO", "WARN", "ERROR"] &&
-        (filters["outcome"] || "") in ["", "ok", "timeout", "upstream_error"]
+        (filters["outcome"] || "") in ["", "ok", "timeout", "upstream_error", "tool_error"]
 
     if valid do
       {:noreply,

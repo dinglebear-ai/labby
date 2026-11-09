@@ -84,7 +84,8 @@ defmodule LabbyConsoleWeb.ObserveComponents do
                 {"All outcomes", ""},
                 {"Succeeded", "ok"},
                 {"Timeout", "timeout"},
-                {"Upstream error", "upstream_error"}
+                {"Upstream error", "upstream_error"},
+                {"Tool error", "tool_error"}
               ]
             }
             value={value}

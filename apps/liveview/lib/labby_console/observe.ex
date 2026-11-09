@@ -24,7 +24,8 @@ defmodule LabbyConsole.Observe do
     upstream = filters["upstream"] || ""
     outcome = filters["outcome"] || ""
 
-    if bounded?(query) && bounded?(upstream) && outcome in ["", "ok", "timeout", "upstream_error"] do
+    if bounded?(query) && bounded?(upstream) &&
+         outcome in ["", "ok", "timeout", "upstream_error", "tool_error"] do
       {first, last} = bounds(window, now)
 
       %{since_unix: first, until_unix: last}

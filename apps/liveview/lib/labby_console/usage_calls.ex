@@ -36,7 +36,7 @@ defmodule LabbyConsole.UsageCalls do
       is_integer(p[:since_unix]) && is_integer(p[:until_unix]) &&
       p[:since_unix] >= 0 && p[:until_unix] >= p[:since_unix] &&
       p[:until_unix] - p[:since_unix] <= 604_800 &&
-      p[:outcome] in [nil, "ok", "timeout", "upstream_error"] && cursor?(p[:cursor]) &&
+      p[:outcome] in [nil, "ok", "timeout", "upstream_error", "tool_error"] && cursor?(p[:cursor]) &&
       Enum.all?(
         [:upstream, :search],
         &(is_nil(p[&1]) || (is_binary(p[&1]) && String.valid?(p[&1]) && byte_size(p[&1]) <= 256))

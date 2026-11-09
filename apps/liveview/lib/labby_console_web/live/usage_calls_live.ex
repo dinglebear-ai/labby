@@ -27,7 +27,8 @@ defmodule LabbyConsoleWeb.UsageCallsLive do
   def handle_event("refresh", _, socket), do: {:noreply, socket}
 
   def handle_event("filters", %{"window" => window, "outcome" => outcome}, socket)
-      when window in ["1h", "24h", "7d"] and outcome in ["all", "ok", "timeout", "upstream_error"] do
+      when window in ["1h", "24h", "7d"] and
+             outcome in ["all", "ok", "timeout", "upstream_error", "tool_error"] do
     if socket.assigns.loading do
       {:noreply, socket}
     else
@@ -127,7 +128,8 @@ defmodule LabbyConsoleWeb.UsageCallsLive do
                   {"All outcomes", "all"},
                   {"Succeeded", "ok"},
                   {"Timeout", "timeout"},
-                  {"Upstream error", "upstream_error"}
+                  {"Upstream error", "upstream_error"},
+                  {"Tool error", "tool_error"}
                 ]
               }
               value={value}
