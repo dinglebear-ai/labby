@@ -55,6 +55,9 @@ test('Projects heading keeps every action reachable at desktop tablet and mobile
             actionsWrap:getComputedStyle(document.querySelector('.pj-heading-actions')).flexWrap}
         })
         measurements.push({...geometry, longText})
+        assert.deepEqual(geometry.actions.map(action => action.id), [
+          'projects-lookup', 'projects-refresh', 'projects-create'
+        ])
         await page.screenshot({path:resolve(output, `projects-${width}-${longText ? 'long' : 'normal'}.png`)})
         for (const action of geometry.actions) {
           if (action.left < 0 || action.right > width) failures.push(`${action.id} outside ${width}px viewport, longText=${longText}`)
