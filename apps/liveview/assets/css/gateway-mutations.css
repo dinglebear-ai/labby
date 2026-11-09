@@ -1,0 +1,45 @@
+/* Native Gateway forms port the frozen Aurora authored dialog hierarchy. */
+.gateway-fleet .gf-heading-actions { display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.gateway-fleet .gf-row-actions { flex-wrap:wrap; }
+.gateway-fleet .gm-row-actions { display:flex; gap:6px; flex-wrap:wrap; }
+.gateway-fleet .gm-row-actions button { padding:5px 7px; font-size:11px; }
+.gateway-fleet .gm-status { padding:14px 17px; margin-block:16px; border:1px solid var(--aurora-border-default); border-radius:7px; background:var(--aurora-panel-medium); overflow-wrap:anywhere; }
+.gateway-fleet .gm-status p { margin-block:6px; font-size:13px; line-height:1.7; }
+.gateway-fleet .gm-backdrop { position:fixed; z-index:100; inset:0; display:flex; justify-content:center; align-items:center; padding:24px; background:color-mix(in srgb,var(--aurora-page-bg) 78%,transparent); backdrop-filter:blur(5px); }
+.gateway-fleet #gm-focus { width:min(860px,100%); min-width:0; display:flex; justify-content:center; }
+.gateway-fleet .gm-dialog { width:100%; min-width:0; max-height:90dvh; overflow-y:auto; padding:25px; border:1px solid var(--aurora-border-strong); border-radius:10px; background:var(--aurora-panel-strong); box-shadow:var(--aurora-shadow-strong); }
+.gateway-fleet .gm-dialog > header { display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }
+.gateway-fleet .gm-dialog h2 { font-size:23px; line-height:1.4; margin:7px 0 0; font-weight:550; }
+.gateway-fleet .gm-dialog h3 { display:flex; align-items:center; gap:9px; font-size:14px; margin:0 0 15px; font-weight:550; }
+.gateway-fleet .gm-dialog p { font-size:var(--aurora-type-body-sm); color:var(--aurora-text-muted); line-height:1.8; margin:10px 0; overflow-wrap:anywhere; }
+.gateway-fleet .gm-header-actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }
+.gateway-fleet .gm-form > fieldset { min-width:0; border:0; padding:0; margin:0; }
+.gateway-fleet .gm-field { min-width:0; margin:14px 0; }
+.gateway-fleet .gm-field > label { display:block; margin-bottom:7px; font-size:var(--aurora-type-body-sm); color:var(--aurora-text-muted); }
+.gateway-fleet .gm-field :is(input,textarea,select) { display:block; box-sizing:border-box; border:1px solid var(--aurora-border-default); background:var(--aurora-control-surface); color:var(--aurora-text-primary); padding:9px 10px; border-radius:5px; width:100%; max-width:100%; min-width:0; font:inherit; font-size:var(--aurora-type-body-sm); min-height:36px; }
+.gateway-fleet .gm-field textarea { resize:vertical; overflow-wrap:anywhere; white-space:pre-wrap; }
+.gateway-fleet .gm-field :is(input,textarea,select):focus { border-color:var(--aurora-accent-primary); outline:2px solid var(--aurora-accent-primary-surface); }
+.gateway-fleet .gm-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 20px; }
+.gateway-fleet .gm-section { min-width:0; margin:20px 0; padding:17px; border:1px solid var(--aurora-border-default); border-radius:7px; background:var(--aurora-panel-medium); }
+.gateway-fleet .gm-section summary { display:flex; align-items:center; gap:9px; font-size:13px; cursor:pointer; }
+.gateway-fleet .gm-private-map { border-top:1px solid var(--aurora-border-default); padding-top:12px; margin-top:16px; }
+.gateway-fleet .gm-toggle { display:flex; align-items:center; gap:9px; margin-block:14px; font-size:13px; }
+.gateway-fleet .gm-toggle input { accent-color:var(--aurora-accent-primary); }
+.gateway-fleet .gm-segments { display:flex; gap:12px; padding:10px 0; border:0; min-width:0; flex-wrap:wrap; }
+.gateway-fleet .gm-segments legend { font-size:13px; color:var(--aurora-text-muted); margin-bottom:7px; }
+.gateway-fleet .gm-segments label { display:flex; align-items:center; gap:7px; font-size:13px; }
+.gateway-fleet .gm-footer { display:flex; flex-wrap:wrap; gap:10px; justify-content:flex-end; align-items:center; border-top:1px solid var(--aurora-border-default); margin-top:25px; padding-top:20px; }
+.gateway-fleet .gm-spacer { flex:1; }
+.gateway-fleet .gm-primary { background:var(--aurora-accent-primary-surface); border-color:var(--aurora-accent-primary); }
+.gateway-fleet .gm-danger { border-color:var(--aurora-error); color:var(--aurora-error); }
+.gateway-fleet .gm-errors { color:var(--aurora-error); border:1px solid currentColor; border-radius:5px; padding:12px 24px; font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
+@media(max-width:740px) {
+  .gateway-fleet .gm-backdrop { padding:9px; }
+  .gateway-fleet .gm-dialog { padding:19px; max-height:94dvh; }
+  .gateway-fleet .gm-grid { grid-template-columns:minmax(0,1fr); }
+  .gateway-fleet .gm-dialog > header { gap:10px; flex-wrap:wrap; }
+  .gateway-fleet .gm-header-actions { margin-left:auto; }
+  .gateway-fleet .gm-footer button { min-height:39px; flex:1 1 auto; }
+  .gateway-fleet .gm-spacer { display:none; }
+  .gateway-fleet .gf-heading-actions { width:100%; }
+}

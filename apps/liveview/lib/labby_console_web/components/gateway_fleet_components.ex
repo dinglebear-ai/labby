@@ -3,6 +3,7 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
   use LabbyConsoleWeb, :html
   alias LabbyConsole.GatewayFleet, as: Fleet
   alias LabbyConsoleWeb.WorkspaceIcons, as: Icons
+  alias LabbyConsoleWeb.GatewayMutationComponents, as: Mutations
 
   attr :state, :map, required: true
 
@@ -25,8 +26,17 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             <h1>Gateway</h1><p>Manage your connected MCP servers.</p>
           </div>
         </div>
-        <.link navigate="/overview" class="gf-overview">Usage in Overview <Icons.icon name="arrow" /></.link>
+        <div class="gf-heading-actions">
+          <.link navigate="/overview" class="gf-overview">Usage in Overview
+          <Icons.icon name="arrow" /></.link><button
+            id="gateway-add"
+            type="button"
+            phx-click="gateway_add"
+            disabled={!is_nil(@state.mutation_request) || !is_nil(@state.mutation_receipt)}
+          >Add server</button>
+        </div>
       </header>
+      <Mutations.status state={@state} />
       <section class="gf-summary" aria-label="Loaded fleet summary">
         <span><i class="gf-dot"></i>{Enum.count(@state.rows, & &1["connected"])} connected</span>
         <span>{Enum.count(@state.rows, &(!&1["enabled"]))} disabled</span>
@@ -266,6 +276,7 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
                 aria-label={"Quick inspect " <> Fleet.label(row)}
                 aria-pressed={to_string(@state.selected == row["id"])}
               ><Icons.icon name="info" /><span>Inspect</span></button>
+              <.mutation_actions :if={row["source"] == "custom_gateway"} row={row} state={@state} />
             </div>
           </li>
         </ul>
@@ -309,11 +320,55 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             </dd>
           </div>
         </dl>
+        <.mutation_actions
+          :if={@selected["source"] == "custom_gateway"}
+          row={@selected}
+          state={@state}
+          inspector={true}
+        />
         <nav aria-label="Selected server sections">
           <.link navigate={details_path(@selected)}>Open server</.link><.link navigate={"/gateway/servers/" <> segment(@selected["name"]) <> "/catalog"}>Catalog</.link><.link navigate={"/gateway/upstreams/" <> segment(@selected["name"]) <> "/runtime"}>Runtime</.link>
         </nav>
       </section>
+      <Mutations.dialog state={@state} />
     </main>
+    """
+  end
+
+  attr :row, :map, required: true
+  attr :state, :map, required: true
+  attr :inspector, :boolean, default: false
+
+  def mutation_actions(assigns) do
+    ~H"""
+    <div class="gm-row-actions" role="group" aria-label={"Manage " <> @row["name"]}>
+      <button
+        :for={
+          {action, event, label} <- [
+            {"edit", "gateway_edit", "Edit"},
+            {"test", "gateway_row_test", "Test"},
+            {"remove", "gateway_remove", "Delete"}
+          ]
+        }
+        id={
+          if(@inspector,
+            do: Mutations.action_id(action, @row["name"]) <> "-inspector",
+            else: Mutations.action_id(action, @row["name"])
+          )
+        }
+        type="button"
+        phx-click={event}
+        phx-value-name={@row["name"]}
+        phx-value-opener={
+          if(@inspector,
+            do: Mutations.action_id(action, @row["name"]) <> "-inspector",
+            else: Mutations.action_id(action, @row["name"])
+          )
+        }
+        aria-label={label <> " " <> @row["name"]}
+        disabled={!is_nil(@state.mutation_request) || !is_nil(@state.mutation_receipt)}
+      >{label}</button>
+    </div>
     """
   end
 
