@@ -105,20 +105,49 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
   # The terminal payload remains independently durable. The dispatch gate is
   # permission arbitration, so a stopped selector cannot strand a claimed result.
   defp select_result(ref, candidate) do
-    case terminal_result(ref) do
-      nil ->
-        if reserved?(ref) do
-          :ets.insert_new(__MODULE__, {{:result, ref}, candidate})
-          terminal_result(ref)
-        else
-          candidate
-        end
+    result =
+      case terminal_result(ref) do
+        nil ->
+          if reserved?(ref) do
+            :ets.insert_new(__MODULE__, {{:result, ref}, candidate})
+            terminal_result(ref)
+          else
+            candidate
+          end
 
-      winner ->
-        winner
-    end
+        winner ->
+          winner
+      end
+
+    scrub_request(ref)
+    result
   rescue
     ArgumentError -> candidate
+  end
+
+  # Receipts can outlive worker shutdown and synchronous acknowledgement. Keep
+  # only ownership, dispatch certainty and handoff fencing in those reservations.
+  defp control_metadata(op) do
+    metadata = Map.drop(op, [:json, :session, :auth_payload])
+
+    case op do
+      %{auth_kind: kind, auth_payload: payload}
+      when kind in [:handoff_start, :handoff_poll, :handoff_redeem] ->
+        Map.put(metadata, :auth_payload, Map.take(payload, [:guardian, :auth_guardian, :gate]))
+
+      _ ->
+        metadata
+    end
+  end
+
+  defp scrub_request(ref) do
+    case :ets.lookup(__MODULE__, {:operation, ref}) do
+      [{{:operation, ^ref}, op}] ->
+        :ets.update_element(__MODULE__, {:operation, ref}, {2, control_metadata(op)})
+
+      [] ->
+        :ok
+    end
   end
 
   defp local_failure(ref, error) do
@@ -183,10 +212,11 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
   def register(op) do
     if reserved?(op.ref) do
-      :ets.insert(__MODULE__, {{:operation, op.ref}, op})
+      :ets.insert_new(__MODULE__, {{:operation, op.ref}, op})
+      if terminal_result(op.ref), do: scrub_request(op.ref)
 
       if reserved?(op.ref) do
-        GenServer.cast(__MODULE__, {:register, op})
+        GenServer.cast(__MODULE__, {:register, control_metadata(op)})
         :ok
       else
         :ets.delete(__MODULE__, {:operation, op.ref})
@@ -319,11 +349,12 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
           true ->
             lifecycle = self()
+            request = :ets.lookup_element(__MODULE__, {:operation, ref}, 2)
 
             case Task.Supervisor.start_child(GatewayAction.Tasks, fn ->
                    result =
                      try do
-                       execute(op, lifecycle, ref)
+                       terminal_result(ref) || execute(request, lifecycle, ref)
                      rescue
                        _ -> failure(%{op | dispatched?: true}, :transport_error)
                      end
@@ -529,7 +560,7 @@ defmodule LabbyConsole.GatewayAction.Lifecycle do
 
           true ->
             recovered =
-              Map.merge(op, %{
+              Map.merge(control_metadata(op), %{
                 owner_monitor: Process.monitor(op.owner),
                 coordinator_monitor: Process.monitor(op.coordinator),
                 handoff_monitors: handoff_monitors(op),
