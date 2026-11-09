@@ -69,23 +69,74 @@
         {
           "id": "gateway.fleet-lenses-and-filters",
           "state": "open",
-          "tests": [],
-          "live_evidence": [],
-          "visual_evidence": []
+          "tests": [
+            "apps/liveview/test/labby_console/gateway_fleet_test.exs",
+            "apps/liveview/test/labby_console_web/gateway_fleet_live_test.exs",
+            "apps/liveview/e2e-real/gateway-fleet.spec.mjs"
+          ],
+          "live_evidence": [
+            {
+              "kind": "real-rust-mcp-browser",
+              "app_revision": "983808723126ddfc0ac37fecbe946ae3f230b04d",
+              "backend_revision": "c6c61720b8ca3fee24f44cbfd1a859b31775d549",
+              "backend_sha256": "1a7e2b8847a959725387b981163c02c820a60a5c0fa54b570b1260fe4f4b415c",
+              "test": "e2e-real/gateway-fleet.spec.mjs",
+              "result": "passed",
+              "suite_result": "8 passed, 3 failed, 14 unrun",
+              "log_sha256": "99fdfb25436cac11295aa57cef14e297009dcdf92503af46ed4e609d013a1ec4",
+              "scope": "Fleet search, table/card layouts, column ordering and visibility, preference reload, inspector focus across refresh, catalog navigation and three viewport captures. Full workflow qualification remains open."
+            }
+          ],
+          "visual_evidence": [],
+          "qualification_note": "Source-reviewed and partially live-tested. Additional workflow and final visual acceptance remain required."
         },
         {
           "id": "gateway.table-card-list-layout",
           "state": "open",
-          "tests": [],
-          "live_evidence": [],
-          "visual_evidence": []
+          "tests": [
+            "apps/liveview/test/labby_console/gateway_fleet_test.exs",
+            "apps/liveview/test/labby_console_web/gateway_fleet_live_test.exs",
+            "apps/liveview/e2e-real/gateway-fleet.spec.mjs"
+          ],
+          "live_evidence": [
+            {
+              "kind": "real-rust-mcp-browser",
+              "app_revision": "983808723126ddfc0ac37fecbe946ae3f230b04d",
+              "backend_revision": "c6c61720b8ca3fee24f44cbfd1a859b31775d549",
+              "backend_sha256": "1a7e2b8847a959725387b981163c02c820a60a5c0fa54b570b1260fe4f4b415c",
+              "test": "e2e-real/gateway-fleet.spec.mjs",
+              "result": "passed",
+              "suite_result": "8 passed, 3 failed, 14 unrun",
+              "log_sha256": "99fdfb25436cac11295aa57cef14e297009dcdf92503af46ed4e609d013a1ec4",
+              "scope": "Fleet search, table/card layouts, column ordering and visibility, preference reload, inspector focus across refresh, catalog navigation and three viewport captures. Full workflow qualification remains open."
+            }
+          ],
+          "visual_evidence": [],
+          "qualification_note": "Source-reviewed and partially live-tested. Additional workflow and final visual acceptance remain required."
         },
         {
           "id": "gateway.sort-and-column-order",
           "state": "open",
-          "tests": [],
-          "live_evidence": [],
-          "visual_evidence": []
+          "tests": [
+            "apps/liveview/test/labby_console/gateway_fleet_test.exs",
+            "apps/liveview/test/labby_console_web/gateway_fleet_live_test.exs",
+            "apps/liveview/e2e-real/gateway-fleet.spec.mjs"
+          ],
+          "live_evidence": [
+            {
+              "kind": "real-rust-mcp-browser",
+              "app_revision": "983808723126ddfc0ac37fecbe946ae3f230b04d",
+              "backend_revision": "c6c61720b8ca3fee24f44cbfd1a859b31775d549",
+              "backend_sha256": "1a7e2b8847a959725387b981163c02c820a60a5c0fa54b570b1260fe4f4b415c",
+              "test": "e2e-real/gateway-fleet.spec.mjs",
+              "result": "passed",
+              "suite_result": "8 passed, 3 failed, 14 unrun",
+              "log_sha256": "99fdfb25436cac11295aa57cef14e297009dcdf92503af46ed4e609d013a1ec4",
+              "scope": "Fleet search, table/card layouts, column ordering and visibility, preference reload, inspector focus across refresh, catalog navigation and three viewport captures. Full workflow qualification remains open."
+            }
+          ],
+          "visual_evidence": [],
+          "qualification_note": "Source-reviewed and partially live-tested. Additional workflow and final visual acceptance remain required."
         },
         {
           "id": "gateway.selection-and-bulk-actions",
@@ -531,9 +582,27 @@
         {
           "id": "projects.permission-isolation",
           "state": "open",
-          "tests": [],
-          "live_evidence": [],
-          "visual_evidence": []
+          "tests": [
+            "apps/liveview/test/labby_console_web/projects_live_test.exs",
+            "apps/liveview/e2e-real/provider-projects-isolation.spec.mjs"
+          ],
+          "live_evidence": [
+            {
+              "kind": "real-tls-oidc-browser",
+              "app_revision": "c19af15956612f5f624ebaa9a76520740b5147ba",
+              "backend_revision": "c6c61720b8ca3fee24f44cbfd1a859b31775d549",
+              "backend_sha256": "1a7e2b8847a959725387b981163c02c820a60a5c0fa54b570b1260fe4f4b415c",
+              "tests": [
+                "provider-login.spec.mjs",
+                "provider-projects-isolation.spec.mjs"
+              ],
+              "result": "3 passed",
+              "log_sha256": "58f03cb816b47fd4eb11031b8f0817d040c2db697bb01d50f7ccf62380f6c39d",
+              "scope": "Public OIDC provisioning and provider handoff, distinct-principal same-browser preferences, connected-tab signout revocation and independent member read-only assigned Project access. Controlled issuer interoperability only."
+            }
+          ],
+          "visual_evidence": [],
+          "qualification_note": "Partial live isolation evidence. All remaining membership, mutation-denial and final visual cases stay open."
         }
       ],
       "contract_services": [
