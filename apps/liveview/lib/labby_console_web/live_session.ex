@@ -7,6 +7,7 @@ defmodule LabbyConsoleWeb.LiveSession do
   @return_paths %{
     LabbyConsoleWeb.ProjectsLive => "/projects",
     LabbyConsoleWeb.GatewayLive => "/gateway",
+    LabbyConsoleWeb.ObserveLive => "/observe",
     LabbyConsoleWeb.RuntimeLive => "/runtime",
     LabbyConsoleWeb.ClientsLive => "/clients",
     LabbyConsoleWeb.DiagnosticsLive => "/diagnostics",

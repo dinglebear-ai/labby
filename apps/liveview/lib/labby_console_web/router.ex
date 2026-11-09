@@ -40,6 +40,7 @@ defmodule LabbyConsoleWeb.Router do
     live "/activity", UsageCallsLive, :index
     live "/logs", ServerLogsLive, :index
     live "/gateway/upstreams/:name/runtime", ServerRuntimeLive, :show
+    live "/gateway/upstream-runtime", ServerRuntimeLive, :show
     live "/projects", ProjectsLive, :index
   end
 

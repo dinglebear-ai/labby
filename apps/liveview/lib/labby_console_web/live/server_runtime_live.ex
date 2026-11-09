@@ -3,18 +3,30 @@ defmodule LabbyConsoleWeb.ServerRuntimeLive do
   on_mount {LabbyConsoleWeb.LiveSession, :authenticated}
   alias LabbyConsole.{ServerRuntime}
 
-  def mount(%{"name" => server_id}, _session, socket) do
-    socket =
-      assign(socket,
-        page_title: "Runtime snapshot",
-        server_id: server_id,
-        row: nil,
-        loading: false,
-        error: nil
-      )
+  def mount(params, _session, socket) do
+    server_id = params["name"]
 
-    {:ok, if(connected?(socket), do: load(socket), else: socket)}
+    if valid_name?(server_id) do
+      socket =
+        assign(socket,
+          page_title: "Runtime snapshot",
+          server_id: server_id,
+          row: nil,
+          loading: false,
+          error: nil
+        )
+
+      {:ok, if(connected?(socket), do: load(socket), else: socket)}
+    else
+      {:ok, redirect(socket, to: "/gateway")}
+    end
   end
+
+  # The Rust upstream configuration accepts 1..128 ASCII bytes, including dots.
+  defp valid_name?(name) when is_binary(name) and byte_size(name) in 1..128,
+    do: String.valid?(name) && Regex.match?(~r/\A[A-Za-z0-9_.-]+\z/, name)
+
+  defp valid_name?(_), do: false
 
   def handle_event("refresh", _, %{assigns: %{loading: false}} = socket),
     do: {:noreply, load(socket)}

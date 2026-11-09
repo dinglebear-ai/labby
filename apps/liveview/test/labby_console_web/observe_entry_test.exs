@@ -88,4 +88,28 @@ defmodule LabbyConsoleWeb.ObserveEntryTest do
     assert has_element?(view, ".ob-logs li", "actual log")
     assert has_element?(view, "#observe-error", "unknown freshness")
   end
+
+  test "normal Observe outage retry preserves the destination and valid login", %{
+    conn: conn,
+    state: state
+  } do
+    signed = post(conn, "/sign-in", %{credential: "fixture-only"})
+    id = get_session(signed, :console_session)
+    previous = Application.get_env(:labby_console, :fixture_auth_session)
+    on_exit(fn -> Application.put_env(:labby_console, :fixture_auth_session, previous) end)
+    Application.put_env(:labby_console, :fixture_auth_session, :unavailable)
+
+    outage = get(recycle(signed), "/observe")
+    assert redirected_to(outage) == "/connection?return_to=%2Fobserve"
+    assert LabbyConsole.Auth.capture(id)
+    {:ok, retry, _} = live(recycle(signed), redirected_to(outage))
+    assert has_element?(retry, "#connection-retry[href='/observe']", "Retry connection")
+
+    Application.put_env(:labby_console, :fixture_auth_session, previous)
+    Agent.update(state, fn _ -> {:response, 200, %{calls: []}} end)
+    {:ok, recovered, _} = live(recycle(signed), "/observe")
+    render_async(recovered)
+    assert has_element?(recovered, "#observe-main")
+    assert {:ok, _} = LabbyConsole.Auth.current(id)
+  end
 end

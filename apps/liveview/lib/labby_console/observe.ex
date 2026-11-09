@@ -62,6 +62,9 @@ defmodule LabbyConsole.Observe do
     end)
   end
 
+  def server_link(%{"upstream" => value}) when value in [".", ".."],
+    do: "/gateway/upstream-runtime?" <> URI.encode_query(%{"name" => value})
+
   def server_link(%{"upstream" => value}) when is_binary(value) and value != "",
     do: "/gateway/upstreams/" <> URI.encode(value, &URI.char_unreserved?/1) <> "/runtime"
 

@@ -171,6 +171,7 @@ defmodule LabbyConsoleWeb.LiveSessionTest do
     for path <- [
           "/overview",
           "/gateway",
+          "/observe",
           "/runtime",
           "/clients",
           "/diagnostics",
@@ -231,5 +232,22 @@ defmodule LabbyConsoleWeb.LiveSessionTest do
 
     {:ok, local, _} = live(build_conn(), "/connection?return_to=%2Fprojects")
     assert has_element?(local, "#connection-retry[href='/projects']")
+  end
+
+  test "Observe on_mount retains its retry destination when session inspection is unavailable", %{
+    session_id: id
+  } do
+    previous = Application.get_env(:labby_console, :fixture_auth_session)
+    Application.put_env(:labby_console, :fixture_auth_session, :unavailable)
+    on_exit(fn -> Application.put_env(:labby_console, :fixture_auth_session, previous) end)
+    socket = %Phoenix.LiveView.Socket{view: LabbyConsoleWeb.ObserveLive}
+
+    assert {:halt, redirected} =
+             LiveSession.on_mount(:authenticated, %{}, %{"console_session" => id}, socket)
+
+    assert redirected.redirected ==
+             {:redirect, %{status: 302, to: "/connection?return_to=%2Fobserve"}}
+
+    assert Auth.capture(id)
   end
 end
