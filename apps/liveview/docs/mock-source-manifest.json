@@ -1197,6 +1197,27 @@
       "path": "DESIGN.md",
       "sha256": "2085ac4d91bd75dd1d406122d855ae2c5e107bf1e6975352ca7a37401d2345da",
       "bytes": 23993
+    },
+    {
+      "path": "priv/labby_settings_catalog.json",
+      "sha256": "a1e06ebf8049c96ccd2a19c8f192bc8abafe08c1b3d1213ccb5832f6b86844c6",
+      "bytes": 543218
+    },
+    {
+      "path": "priv/labby/settings-write-policy.json",
+      "sha256": "3d56013042f97ecd5d30ad835537aaa468182f6b8b587fddf33bfcc92a5fe4eb",
+      "bytes": 3320
+    }
+  ],
+  "supplements": [
+    {
+      "captured_on": "2026-11-09T03:09:41.238879+00:00",
+      "paths": [
+        "priv/labby_settings_catalog.json",
+        "priv/labby/settings-write-policy.json"
+      ],
+      "reason": "Referenced Settings catalog and write-policy JSON were omitted from the initial authored-source capture. Their current original-checkout bytes are now frozen.",
+      "qualification": "Settings section-level reference recapture must bind these data files to rendered evidence."
     }
   ]
 }
