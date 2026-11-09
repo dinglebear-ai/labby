@@ -38,6 +38,7 @@ struct Http {
 
 impl Http {
     fn new(base: &str) -> Self {
+        drop(rustls::crypto::ring::default_provider().install_default());
         Self {
             client: reqwest::Client::builder()
                 .no_proxy()
@@ -82,6 +83,42 @@ impl Http {
         })
         .await
     }
+
+    async fn publish_notice(&self, inbox_id: &str, message: &str, dedupe_key: &str) -> Value {
+        let (status, body) = retry_notice_request(
+            "publish notice",
+            json!({
+                "inbox_id":inbox_id,"source":"fixture","level":"info","message":message,
+                "dedupe_key":dedupe_key,"ttl_seconds":60,
+            }),
+            async |input| {
+                let response = self
+                    .client
+                    .post(format!("{}/v1/notifications/agent", self.base))
+                    .bearer_auth(TOKEN)
+                    .json(&input)
+                    .send()
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let body = response.json::<Value>().await.unwrap_or_else(|error| {
+                    panic!("notice publish returned HTTP {status} with invalid JSON ({error})")
+                });
+                (status, body)
+            },
+            |(status, body)| match (*status, body["kind"].as_str()) {
+                (reqwest::StatusCode::TOO_MANY_REQUESTS, kind @ Some("rate_limited"))
+                | (reqwest::StatusCode::GATEWAY_TIMEOUT, kind @ Some("timeout")) => kind,
+                _ => None,
+            },
+        )
+        .await;
+        assert!(
+            status.is_success(),
+            "notice publish returned HTTP {status} with {body}"
+        );
+        body
+    }
 }
 
 fn arguments(action: &str, params: Value) -> Value {
@@ -91,21 +128,35 @@ fn arguments(action: &str, params: Value) -> Value {
 async fn message_rpc_with_retry(
     action: &str,
     params: Value,
-    mut rpc: impl AsyncFnMut(Value) -> Value,
+    rpc: impl AsyncFnMut(Value) -> Value,
 ) -> Value {
-    let request = arguments(action, params);
+    retry_notice_request(
+        &format!("messages.{action}"),
+        arguments(action, params),
+        rpc,
+        |reply| reply["error"]["data"]["kind"].as_str(),
+    )
+    .await
+}
+
+async fn retry_notice_request<T>(
+    label: &str,
+    request: Value,
+    mut send: impl AsyncFnMut(Value) -> T,
+    retry_kind: impl Fn(&T) -> Option<&str>,
+) -> T {
     for _ in 0..3 {
-        let reply = rpc(request.clone()).await;
-        match reply["error"]["data"]["kind"].as_str() {
+        let reply = send(request.clone()).await;
+        match retry_kind(&reply) {
             Some(kind @ ("rate_limited" | "timeout")) => {
-                eprintln!("messages.{action} returned {kind}, retrying the same arguments");
+                eprintln!("{label} returned {kind}, retrying the same request");
             }
             _ => return reply,
         }
-        // A timeout can outlive the write, so preserve the send's idempotency key.
+        // A timeout can outlive the write, so preserve the idempotency or dedupe key.
         tokio::time::sleep(Duration::from_millis(30)).await;
     }
-    rpc(request).await
+    send(request).await
 }
 
 #[tokio::test]
@@ -129,6 +180,36 @@ async fn message_fixture_retries_timeout_with_identical_arguments() {
     );
     let expected = arguments("send", params);
     assert_eq!(requests, [expected.clone(), expected]);
+}
+
+#[tokio::test]
+async fn notice_fixture_retries_http_timeout_with_identical_body() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers};
+
+    let server = MockServer::start().await;
+    let requests = AtomicUsize::new(0);
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/v1/notifications/agent"))
+        .and(matchers::body_json(json!({
+            "inbox_id":"inbox-fixture","source":"fixture","level":"info","message":"Notice",
+            "dedupe_key":"same-notice","ttl_seconds":60,
+        })))
+        .respond_with(move |_: &Request| {
+            if requests.fetch_add(1, Ordering::Relaxed) == 0 {
+                ResponseTemplate::new(504).set_body_json(json!({"kind":"timeout"}))
+            } else {
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"id":"notice-fixture","duplicate":true}))
+            }
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let result = Http::new(&server.uri())
+        .publish_notice("inbox-fixture", "Notice", "same-notice")
+        .await;
+    assert_eq!(result, json!({"id":"notice-fixture","duplicate":true}));
 }
 
 struct Local {
@@ -374,13 +455,13 @@ async fn session_messages_live_http_and_stdio() {
             |row| row.get(0),
         )
         .unwrap();
-    let old_notice: Value = http.client.post(format!("{}/v1/notifications/agent", http.base))
-        .bearer_auth(TOKEN)
-        .json(&json!({
-            "inbox_id":active_inbox,"source":"fixture","level":"info","message":"Acknowledge after validation",
-            "dedupe_key":"bridge-validation","ttl_seconds":60,
-        }))
-        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+    let old_notice = http
+        .publish_notice(
+            &active_inbox,
+            "Acknowledge after validation",
+            "bridge-validation",
+        )
+        .await;
     let old_id = &old_notice["id"];
     let pushed = timeout(DEADLINE, claude.read()).await.unwrap();
     assert_eq!(&pushed["params"]["meta"]["notice_id"], old_id);
@@ -456,22 +537,9 @@ async fn session_messages_live_http_and_stdio() {
         );
         inbox
     };
-    let ordinary: Value = http
-        .client
-        .post(format!("{}/v1/notifications/agent", http.base))
-        .bearer_auth(TOKEN)
-        .json(&json!({
-            "inbox_id":inbox,"source":"fixture","level":"info","message":"Legacy notice",
-            "dedupe_key":"ordinary-after-restart","ttl_seconds":60,
-        }))
-        .send()
-        .await
-        .unwrap()
-        .error_for_status()
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let ordinary = http
+        .publish_notice(&inbox, "Legacy notice", "ordinary-after-restart")
+        .await;
     let frame = timeout(DEADLINE, claude.read()).await.unwrap_or_else(|error| {
         let state = rusqlite::Connection::open_with_flags(
             &inbox_path,
