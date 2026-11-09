@@ -1,5 +1,8 @@
 /* Project composition. Shared chrome, controls, typography and motion come from labby-ui. */
 .pj-main { min-width:0; }
+.pj-main .lb-page-heading { flex-wrap:wrap; }
+.pj-main .lb-page-heading>div:first-child { flex:1 1 240px; min-width:0; }
+.pj-main .lb-page-heading>div:first-child>div { min-width:0; overflow-wrap:anywhere; }
 .pj-collection { border:1px solid var(--aurora-border-default); border-radius:8px; background:var(--aurora-panel-medium); overflow:hidden; }
 .pj-toolbar,.pj-scopes,.pj-row,.pj-project-meta,.pj-layout,.pj-counts,.pj-counts>span,.pj-notice,.pj-preview-note,.pj-inspector-status { display:flex; align-items:center; }
 .pj-toolbar { padding:12px; gap:12px; }
@@ -84,6 +87,7 @@
 @media (max-width:820px) { .pj-toolbar { gap:8px; } .pj-input { min-height:44px; font-size:16px; } .pj-search>svg { top:14px; } .pj-scopes button { min-width:44px; min-height:44px; padding:8px; } .pj-row { padding:12px; gap:10px; flex-wrap:wrap; } .pj-project-copy { flex-basis:calc(100% - 48px); } .pj-project-id { display:block; margin-left:0; margin-top:3px; } .pj-counts,.pj-grid .pj-counts { margin-left:46px; flex:1; } .pj-project-meta { gap:8px 12px; } .pj-project-copy p { margin-bottom:8px; } .pj-open { min-width:44px; } .pj-dialog { width:calc(100vw - 24px); max-height:calc(100dvh - 24px); } .pj-backdrop { padding:12px; } .pj-dialog footer .lb-action { min-height:44px; } .pj-visible { font-size:11px; } .pj-notice>button { min-width:44px; min-height:44px; display:grid; place-items:center; } }
 
 .pj-heading-actions,.pj-filter-form { display:flex; align-items:center; gap:8px; min-width:0; }
+.pj-heading-actions { flex-wrap:wrap; }
 .pj-filter-form { flex:1; }
 .pj-team-select { width:180px; flex-shrink:0; }
 .pj-context { margin:0; padding:0 12px 12px; font-size:12px; color:var(--aurora-text-muted); line-height:1.5; }
