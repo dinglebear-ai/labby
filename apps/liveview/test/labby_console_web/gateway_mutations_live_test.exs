@@ -475,6 +475,7 @@ defmodule LabbyConsoleWeb.GatewayMutationsLiveTest do
       },
       mutation_request: nil,
       mutation_receipt: nil,
+      lifecycle_receipt: nil,
       rows: [
         %{"id" => "saved", "name" => "saved", "enabled" => true, "source" => "custom_gateway"}
       ],

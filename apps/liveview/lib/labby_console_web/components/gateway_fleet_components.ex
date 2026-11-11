@@ -4,6 +4,7 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
   alias LabbyConsole.GatewayFleet, as: Fleet
   alias LabbyConsoleWeb.WorkspaceIcons, as: Icons
   alias LabbyConsoleWeb.GatewayMutationComponents, as: Mutations
+  alias LabbyConsoleWeb.GatewayLifecycleComponents, as: Lifecycle
 
   attr :state, :map, required: true
 
@@ -32,13 +33,12 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
             id="gateway-add"
             type="button"
             phx-click="gateway_add"
-            disabled={
-              @state.loading || !is_nil(@state.mutation_request) || !is_nil(@state.mutation_receipt)
-            }
+            disabled={@state.loading || Mutations.busy?(@state)}
           >Add server</button>
         </div>
       </header>
       <Mutations.status state={@state} />
+      <Lifecycle.status state={@state} />
       <section class="gf-summary" aria-label="Loaded fleet summary">
         <span><i class="gf-dot"></i>{Enum.count(@state.rows, & &1["connected"])} connected</span>
         <span>{Enum.count(@state.rows, &(!&1["enabled"]))} disabled</span>
@@ -333,6 +333,7 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
         </nav>
       </section>
       <Mutations.dialog state={@state} />
+      <Lifecycle.dialog state={@state} />
     </main>
     """
   end
@@ -368,7 +369,28 @@ defmodule LabbyConsoleWeb.GatewayFleetComponents do
           )
         }
         aria-label={label <> " " <> @row["name"]}
-        disabled={!is_nil(@state.mutation_request) || !is_nil(@state.mutation_receipt)}
+        disabled={Mutations.busy?(@state)}
+      >{label}</button>
+      <button
+        :for={{action, label} <- Lifecycle.controls(@row)}
+        id={
+          if(@inspector,
+            do: Mutations.action_id(action, @row["name"]) <> "-inspector",
+            else: Mutations.action_id(action, @row["name"])
+          )
+        }
+        type="button"
+        phx-click="gateway_lifecycle"
+        phx-value-name={@row["name"]}
+        phx-value-lifecycle={action}
+        phx-value-opener={
+          if(@inspector,
+            do: Mutations.action_id(action, @row["name"]) <> "-inspector",
+            else: Mutations.action_id(action, @row["name"])
+          )
+        }
+        aria-label={label <> " " <> @row["name"]}
+        disabled={Mutations.busy?(@state)}
       >{label}</button>
     </div>
     """

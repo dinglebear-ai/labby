@@ -2,7 +2,7 @@
   "schema_version": 1,
   "objective": "Complete native mock parity then embedded OTP delivery and full review/live qualification",
   "baseline_commit": "5cb9dd2f7",
-  "baseline_note": "Sixteen authenticated screens exist. Caller-bound action transport, Projects lifecycle and Access workspace are implemented; 45 of 320 catalog actions are wired across 5 of 20 services. Six areas are partial, twelve are open, none is closed. Historical passes do not prove a later candidate passed.",
+  "baseline_note": "Sixteen authenticated screens exist. Caller-bound action transport, Projects lifecycle, Access workspace and Gateway upstream lifecycle are implemented; 48 of 320 catalog actions are wired across 5 of 20 services. Six areas are partial, twelve are open, none is closed. Historical passes do not prove a later candidate passed.",
   "areas": [
     {
       "area": "overview",
@@ -189,16 +189,21 @@
         },
         {
           "id": "gateway.logs-and-runtime-cleanup",
-          "state": "open",
-          "tests": [],
+          "state": "partial",
+          "tests": [
+            "apps/liveview/test/labby_console/gateway_lifecycle_test.exs",
+            "apps/liveview/test/labby_console/gateway_lifecycle_admission_test.exs",
+            "apps/liveview/test/labby_console_web/gateway_lifecycle_live_test.exs"
+          ],
           "live_evidence": [],
-          "visual_evidence": []
+          "visual_evidence": [],
+          "qualification_note": "Per-server start/stop/reload implemented test-first against gateway.mcp.enable, gateway.mcp.disable and gateway.mcp.restart, with optional runtime cleanup on stop and its matched/terminated counts. Source-reviewed and covered by ExUnit only: no live backend or browser evidence on this host, because the pinned Rust toolchain cannot be selected here. Standalone gateway.mcp.cleanup preview and upstream log inspection remain open."
         }
       ],
       "contract_services": [
         "gateway"
       ],
-      "coverage_note": "Inventory/search, server details, retained catalog, passive runtime, host runtime, clients and add/update/remove/test with OAuth handoff implemented; start/stop/reload, configuration editor/import and bulk actions open."
+      "coverage_note": "Inventory/search, server details, retained catalog, passive runtime, host runtime, clients, add/update/remove/test with OAuth handoff and per-server start/stop/reload implemented; configuration editor/import, bulk actions and standalone process-cleanup preview open."
     },
     {
       "area": "observe",

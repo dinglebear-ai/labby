@@ -1,7 +1,8 @@
 defmodule LabbyConsoleWeb.GatewayLive do
   use LabbyConsoleWeb, :live_view
   on_mount {LabbyConsoleWeb.LiveSession, :authenticated}
-  alias LabbyConsole.{Auth, GatewayFleet, GatewayMutations, GatewayAction.Error}
+  alias LabbyConsole.{Auth, GatewayFleet, GatewayLifecycle, GatewayMutations, GatewayAction.Error}
+  alias LabbyConsoleWeb.GatewayLifecycleComponents, as: LifecycleUI
   alias LabbyConsoleWeb.GatewayFleetComponents, as: UI
 
   def mount(_, _session, socket) do
@@ -22,7 +23,10 @@ defmodule LabbyConsoleWeb.GatewayLive do
         mutation_receipt: nil,
         mutation_notice: nil,
         mutation_restore: nil,
-        mutation_focus_after_load: nil
+        mutation_focus_after_load: nil,
+        lifecycle: nil,
+        lifecycle_receipt: nil,
+        lifecycle_notice: nil
       )
 
     {:ok, if(connected?(socket), do: load(socket), else: socket)}
@@ -30,6 +34,7 @@ defmodule LabbyConsoleWeb.GatewayLive do
 
   def handle_params(params, _, socket) do
     socket = if socket.assigns.mutation.dialog, do: close_mutation(socket), else: socket
+    socket = if socket.assigns.lifecycle, do: close_lifecycle(socket), else: socket
 
     params =
       case params["columns"] do
@@ -117,12 +122,19 @@ defmodule LabbyConsoleWeb.GatewayLive do
 
   def handle_event(event, _, %{assigns: %{mutation_request: request}} = socket)
       when not is_nil(request) and
-             event in ~w(gateway_add gateway_edit gateway_remove gateway_row_test gateway_test gateway_save gateway_confirm_remove gateway_form_change gateway_json gateway_json_change gateway_apply_json gateway_reconcile),
+             event in ~w(gateway_add gateway_edit gateway_remove gateway_row_test gateway_test gateway_save gateway_confirm_remove gateway_form_change gateway_json gateway_json_change gateway_apply_json gateway_reconcile gateway_lifecycle gateway_lifecycle_confirm gateway_lifecycle_reconcile gateway_lifecycle_acknowledge),
       do: {:noreply, socket}
 
   def handle_event(event, _, %{assigns: %{mutation_receipt: receipt}} = socket)
       when not is_nil(receipt) and
-             event in ~w(gateway_add gateway_edit gateway_remove gateway_row_test gateway_test gateway_save gateway_confirm_remove),
+             event in ~w(gateway_add gateway_edit gateway_remove gateway_row_test gateway_test gateway_save gateway_confirm_remove gateway_lifecycle gateway_lifecycle_confirm),
+      do: {:noreply, socket}
+
+  # A retained lifecycle receipt blocks every further Gateway change, including
+  # a configuration write, until it is reconciled or explicitly acknowledged.
+  def handle_event(event, _, %{assigns: %{lifecycle_receipt: receipt}} = socket)
+      when not is_nil(receipt) and
+             event in ~w(gateway_add gateway_edit gateway_remove gateway_row_test gateway_test gateway_save gateway_confirm_remove gateway_reconcile gateway_lifecycle gateway_lifecycle_confirm),
       do: {:noreply, socket}
 
   def handle_event("gateway_add", _, socket) do
@@ -228,6 +240,115 @@ defmodule LabbyConsoleWeb.GatewayLive do
        )}
     end
   end
+
+  def handle_event("gateway_lifecycle", %{"name" => name, "lifecycle" => action} = params, socket) do
+    row = Enum.find(socket.assigns.rows, &(&1["name"] == name))
+    mode = LifecycleUI.mode(action)
+    offered = row && Enum.any?(LifecycleUI.controls(row), fn {value, _} -> value == action end)
+
+    if offered and mode do
+      opener = LabbyConsoleWeb.GatewayMutationComponents.action_id(action, name)
+
+      opener =
+        if params["opener"] == opener <> "-inspector", do: opener <> "-inspector", else: opener
+
+      {:noreply,
+       assign(socket,
+         lifecycle: %{
+           mode: mode,
+           name: name,
+           cleanup: false,
+           errors: [],
+           opener: "#" <> opener
+         },
+         lifecycle_notice: nil,
+         mutation_restore: nil
+       )}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_event("gateway_lifecycle_cancel", _, socket),
+    do: {:noreply, close_lifecycle(socket)}
+
+  def handle_event(
+        "gateway_lifecycle_change",
+        %{"lifecycle" => %{"cleanup" => cleanup}},
+        %{assigns: %{lifecycle: %{} = lifecycle}} = socket
+      ),
+      do: {:noreply, assign(socket, lifecycle: %{lifecycle | cleanup: cleanup == "true"})}
+
+  def handle_event(
+        "gateway_lifecycle_confirm",
+        params,
+        %{assigns: %{lifecycle: %{} = lifecycle}} = socket
+      ) do
+    cleanup =
+      case params do
+        %{"lifecycle" => %{"cleanup" => value}} -> value == "true"
+        _ -> lifecycle.cleanup
+      end
+
+    request =
+      case lifecycle.mode do
+        :start -> GatewayLifecycle.request(:enable, lifecycle.name)
+        :stop -> GatewayLifecycle.request({:disable, cleanup}, lifecycle.name)
+        :reload -> GatewayLifecycle.request(:restart, lifecycle.name)
+      end
+
+    socket = assign(socket, lifecycle: %{lifecycle | cleanup: cleanup, errors: []})
+
+    case request do
+      {:ok, action, action_params} ->
+        {:noreply,
+         begin_mutation(
+           socket,
+           {:lifecycle, lifecycle.mode, lifecycle.name},
+           action,
+           action_params
+         )}
+
+      :error ->
+        {:noreply,
+         assign(socket,
+           lifecycle: %{
+             lifecycle
+             | errors: ["This upstream identifier cannot be used for a lifecycle operation."]
+           }
+         )}
+    end
+  end
+
+  def handle_event(
+        "gateway_lifecycle_reconcile",
+        _,
+        %{assigns: %{mutation_request: nil, lifecycle_receipt: %{verifiable: true} = receipt}} =
+          socket
+      ),
+      do:
+        {:noreply,
+         begin_mutation(
+           socket,
+           {:lifecycle_reconcile, receipt.name, receipt.expected},
+           "gateway.get",
+           %{"name" => receipt.name}
+         )}
+
+  def handle_event(
+        "gateway_lifecycle_acknowledge",
+        _,
+        %{assigns: %{mutation_request: nil, lifecycle_receipt: %{verifiable: false}}} = socket
+      ),
+      do:
+        {:noreply,
+         socket
+         |> assign(
+           lifecycle_receipt: nil,
+           lifecycle_notice:
+             "Receipt acknowledged without verification. The console cannot confirm that the connection was replaced. Inspect the runtime snapshot for this upstream."
+         )
+         |> load()}
 
   def handle_event("close_inspector", _, socket), do: {:noreply, assign(socket, selected: nil)}
   def handle_event(_, _, socket), do: {:noreply, socket}
@@ -347,7 +468,10 @@ defmodule LabbyConsoleWeb.GatewayLive do
         mutation_receipt: nil,
         mutation_notice: nil,
         mutation_restore: nil,
-        mutation_focus_after_load: nil
+        mutation_focus_after_load: nil,
+        lifecycle: nil,
+        lifecycle_receipt: nil,
+        lifecycle_notice: nil
       )
 
     if socket.assigns.deadline, do: Process.cancel_timer(socket.assigns.deadline)
@@ -531,6 +655,87 @@ defmodule LabbyConsoleWeb.GatewayLive do
     end
   end
 
+  defp finish_mutation(socket, %{purpose: {:lifecycle, mode, name}} = request, {:ok, data}) do
+    opener = socket.assigns.lifecycle && socket.assigns.lifecycle.opener
+
+    case GatewayLifecycle.result(request.action, data, name) do
+      {:ok, %{state: :settled} = projection} ->
+        socket
+        |> assign(
+          lifecycle: nil,
+          lifecycle_receipt: nil,
+          lifecycle_notice: settled_notice(mode, name, projection)
+        )
+        |> load()
+        |> assign(mutation_focus_after_load: opener)
+
+      {:ok, %{state: pending}} ->
+        retain_lifecycle(socket, request, mode, name, pending_notice(pending, name))
+
+      :error ->
+        retain_lifecycle(
+          socket,
+          request,
+          mode,
+          name,
+          "The Gateway returned a #{request.action} response for #{name} that cannot be verified. Its outcome is unknown and has not been retried."
+        )
+    end
+  end
+
+  defp finish_mutation(
+         socket,
+         %{purpose: {:lifecycle_reconcile, name, expected}},
+         result
+       ) do
+    observed =
+      case result do
+        {:ok, %{"config" => %{"name" => ^name, "enabled" => enabled}}} when is_boolean(enabled) ->
+          enabled
+
+        _ ->
+          :unavailable
+      end
+
+    if observed == expected do
+      socket
+      |> assign(
+        lifecycle_receipt: nil,
+        lifecycle_notice:
+          "Affected enablement for #{name} now matches the requested state. The request has not been replayed. Process cleanup is not verified by this read."
+      )
+      |> load()
+    else
+      assign(socket,
+        lifecycle_notice:
+          "Affected enablement for #{name} is unavailable or does not match the requested state. Its receipt is retained and another Gateway change remains blocked."
+      )
+    end
+  end
+
+  defp finish_mutation(
+         socket,
+         %{purpose: {:lifecycle, mode, name}} = request,
+         {:error, %Error{} = error}
+       ) do
+    if error.side_effects in ~w(possible unknown) do
+      retain_lifecycle(
+        socket,
+        request,
+        mode,
+        name,
+        "Outcome uncertain (#{error.kind}). The #{request.action} request has not been retried. Inspect the affected upstream before another operation."
+      )
+    else
+      message =
+        "Gateway lifecycle operation failed (#{error.kind}). No change was made to #{name}."
+
+      if socket.assigns.lifecycle,
+        do: update(socket, :lifecycle, &%{&1 | errors: [message]}),
+        else: assign(socket, lifecycle_notice: message)
+    end
+  end
+
   defp finish_mutation(socket, request, {:error, %Error{} = error}),
     do: mutation_failure(socket, request, error)
 
@@ -681,6 +886,91 @@ defmodule LabbyConsoleWeb.GatewayLive do
         mutation_notice:
           "Affected configuration inspection is incomplete or cannot verify this operation. Its receipt is retained. Another write remains blocked."
       )
+    end
+  end
+
+  defp retain_lifecycle(socket, request, mode, name, notice) do
+    assign(socket,
+      lifecycle: nil,
+      lifecycle_receipt: %{
+        action: request.action,
+        name: name,
+        outcome: :uncertain,
+        expected: mode != :stop,
+        verifiable: mode in [:start, :stop],
+        request_id: request[:ref]
+      },
+      lifecycle_notice: notice
+    )
+  end
+
+  defp settled_notice(:start, name, %{connected: connected}),
+    do:
+      "Server #{name} is now enabled. " <>
+        if(connected,
+          do: "Its connection is established.",
+          else: "It is not connected yet; connection status is reported separately."
+        )
+
+  defp settled_notice(:stop, name, %{cleanup: cleanup}) do
+    "Server #{name} is now disabled. Its saved configuration is preserved." <>
+      case cleanup do
+        %{matched: matched, killed: killed} ->
+          " Runtime cleanup: #{matched} matched, #{killed} terminated."
+
+        nil ->
+          ""
+      end
+  end
+
+  defp settled_notice(:reload, name, %{connected: connected}),
+    do:
+      if(connected,
+        do: "The #{name} connection was replaced and reconnected.",
+        else:
+          "The #{name} connection was replaced, but the replacement is not connected. Inspect its runtime snapshot."
+      )
+
+  defp pending_notice(:in_flight, name),
+    do:
+      "The bounded reload wait for #{name} ended before the Gateway reported completion. Backend work may continue and has not been retried."
+
+  defp pending_notice(:already_running, name),
+    do:
+      "A reload for #{name} is already in flight. No second reload was started. That backend work may continue."
+
+  defp close_lifecycle(socket) do
+    request = socket.assigns.mutation_request
+    socket = assign(socket, lifecycle: nil)
+
+    if request && match?({:lifecycle, _, _}, request.purpose) do
+      Auth.cancel_action(socket.assigns.session_id, request.ref)
+      result = LabbyConsole.GatewayAction.Lifecycle.terminal_result(request.ref)
+      socket = assign(socket, mutation_request: nil)
+      {:lifecycle, mode, name} = request.purpose
+
+      case result do
+        {:ok, data} ->
+          finish_mutation(
+            socket,
+            %{request | purpose: {:lifecycle, mode, name}},
+            {:ok, data}
+          )
+
+        {:error, %Error{side_effects: risk} = error} when risk in ~w(possible unknown) ->
+          retain_lifecycle(
+            socket,
+            request,
+            mode,
+            name,
+            "Outcome uncertain (#{error.kind}) after the local wait was ended. The #{request.action} request has not been retried."
+          )
+
+        _ ->
+          socket
+      end
+    else
+      socket
     end
   end
 

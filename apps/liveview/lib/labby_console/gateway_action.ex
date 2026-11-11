@@ -35,8 +35,11 @@ defmodule LabbyConsole.GatewayAction do
     access.gateway_credential.bind
     access.gateway_credential.revoke
   )
+  @gateway_lifecycle ~w(gateway.mcp.enable gateway.mcp.disable gateway.mcp.restart)
   @actions %{
-    "gateway" => ~w(gateway.get gateway.test gateway.add gateway.update gateway.remove),
+    "gateway" =>
+      ~w(gateway.get gateway.test gateway.add gateway.update gateway.remove) ++
+        @gateway_lifecycle,
     "projects" =>
       ~w(projects.list projects.get projects.create projects.update projects.archive projects.activate),
     "access" => @access_reads ++ @access_mutations ++ ["help"]
@@ -47,7 +50,8 @@ defmodule LabbyConsole.GatewayAction do
     "doctor" => ~w(system.checks),
     "server_logs" => ~w(server_logs.query)
   }
-  @gateway_mutations ~w(gateway.test gateway.add gateway.update gateway.remove)
+  @gateway_mutations ~w(gateway.test gateway.add gateway.update gateway.remove) ++
+                       @gateway_lifecycle
   @mutations ~w(projects.create projects.update projects.archive projects.activate) ++
                @gateway_mutations ++ @access_mutations
 

@@ -3,6 +3,12 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
   use LabbyConsoleWeb, :html
   alias LabbyConsoleWeb.WorkspaceIcons, as: Icons
 
+  @doc "True when any retained Gateway operation or receipt blocks a further change."
+  def busy?(state),
+    do:
+      !is_nil(state.mutation_request) or !is_nil(state.mutation_receipt) or
+        !is_nil(state.lifecycle_receipt)
+
   attr :state, :map, required: true
 
   def status(assigns) do
@@ -52,7 +58,7 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
     assigns =
       assign(assigns,
         mutation: mutation,
-        busy: !is_nil(assigns.state.mutation_request) || !is_nil(assigns.state.mutation_receipt),
+        busy: busy?(assigns.state),
         opener: opener
       )
 
@@ -450,7 +456,7 @@ defmodule LabbyConsoleWeb.GatewayMutationComponents do
 
   def restore_target(rows, selected, opener) do
     Enum.find_value(rows, "#gateway-add", fn row ->
-      Enum.find_value(~w(edit remove test), fn action ->
+      Enum.find_value(~w(edit remove test start stop reload), fn action ->
         target = "#" <> action_id(action, row["name"])
 
         cond do

@@ -1,7 +1,8 @@
 # LiveView implementation status
 
-Source review: 2026-11-10 at `5cb9dd2f7`. This inventory describes implemented
-code. Test results belong to the candidate-specific PR verification receipt.
+Source review: 2026-11-11 at `3632fb1a8` plus the Gateway lifecycle slice on
+this branch. This inventory describes implemented code. Test results belong to
+the candidate-specific PR verification receipt.
 
 Supersedes the 2026-11-08 review at `583d385f2`, which predated the caller-bound
 action transport, the Projects lifecycle and the Access workspace.
@@ -29,11 +30,12 @@ operations with bounded admission, cancellation and restart recovery.
 | | Count |
 | --- | --- |
 | Allowlisted reads | 21 |
-| Allowlisted mutations | 24 |
-| Total actions wired | 45 of 320 in the contract catalog (14%) |
+| Allowlisted mutations | 27 |
+| Total actions wired | 48 of 320 in the contract catalog (15%) |
 | Services touched | 5 of 20 (`gateway`, `projects`, `access`, `doctor`, `server_logs`) |
 
-Mutations by service: `gateway` 4 (test/add/update/remove), `projects` 4
+Mutations by service: `gateway` 7 (test/add/update/remove plus `gateway.mcp.enable`,
+`gateway.mcp.disable`, `gateway.mcp.restart`), `projects` 4
 (create/update/archive/activate), `access` 16 (team, membership, role,
 invitation, project assignment, platform admin, gateway credential).
 
@@ -65,7 +67,7 @@ percentage: the areas have different sizes and navigation structures.
 | Mock area | State | Real console | Remaining scope |
 | --- | --- | --- | --- |
 | Overview | partial | `/overview`: inventory, last-24-hour usage, drilldowns, independent loading/error states, refresh | Charts, leaders and full dashboard composition |
-| Gateway | partial | `/gateway` inventory/search; server details, retained tool/resource/prompt catalog, passive server runtime; `/runtime`, `/clients`; add/update/remove/test with normalized-save reconciliation; OAuth handoff | Start/stop/reload, configuration editor/import, bulk actions, remaining re-auth journeys |
+| Gateway | partial | `/gateway` inventory/search; server details, retained tool/resource/prompt catalog, passive server runtime; `/runtime`, `/clients`; add/update/remove/test with normalized-save reconciliation; OAuth handoff; per-server start/stop/reload with optional runtime cleanup, bounded reload wait, retained receipts and enablement reconciliation | Configuration editor/import, bulk actions, standalone process-cleanup preview, protected routes, remaining re-auth journeys |
 | Observe | partial | `/observe` workspace plus `/usage`, `/activity`, `/logs`: usage windows, opaque call pagination, bounded log polling, positive log filters | Traces and richer inspectors |
 | Projects | partial | `/projects`: list/get/create/update/archive/activate, Team membership reads, caller-isolated filter/layout preferences, uncertain-state retention until reads reconcile | Remaining mock dialogs and workspace composition |
 | Access | partial | `/access`: team, membership, role, suspend/activate, invitations, project assignment, platform admin, gateway credential bind/revoke; secret redaction | Remaining administration journeys and role matrix coverage |
@@ -79,10 +81,16 @@ test setup are not console UI features.
 
 ## Verification coverage and limits
 
-- 448 ExUnit cases across 62 files cover public transport, authentication, HTTP
+- 479 ExUnit cases across 65 files cover public transport, authentication, HTTP
   contracts, LiveView state, caller isolation, invalid responses, bounded reads,
   refresh, expiry, action admission, payload bounds, deadlines, cancellation and
   guardian-restart recovery.
+- Lifecycle coverage asserts that the three `gateway.mcp.*` actions are
+  mutations and never reads, that neighbouring `gateway.reload` and
+  `gateway.mcp.cleanup` stay unwired and undispatched, and that an unverifiable
+  or unfinished response is never presented as a completed lifecycle change.
+  That slice has no live-backend or browser evidence: the real-backend harness
+  refuses to run where the pinned Rust toolchain cannot be selected.
 - 110 Playwright cases across 13 fixture specs and 63 real-backend files.
 - Fixture browser journeys cover controlled failures, revocation and recovery.
 - The separate real-backend suite builds the selected source and exercises actual
