@@ -79,11 +79,11 @@ test setup are not console UI features.
 
 ## Verification coverage and limits
 
-- 397 ExUnit cases across 62 files cover public transport, authentication, HTTP
+- 448 ExUnit cases across 62 files cover public transport, authentication, HTTP
   contracts, LiveView state, caller isolation, invalid responses, bounded reads,
   refresh, expiry, action admission, payload bounds, deadlines, cancellation and
   guardian-restart recovery.
-- 110 Playwright cases across 26 fixture specs and 63 real-backend files.
+- 110 Playwright cases across 13 fixture specs and 63 real-backend files.
 - Fixture browser journeys cover controlled failures, revocation and recovery.
 - The separate real-backend suite builds the selected source and exercises actual
   Rust Labby plus a local MCP protocol peer: discovery/execution, populated call
