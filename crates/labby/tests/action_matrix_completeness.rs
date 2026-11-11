@@ -757,7 +757,7 @@ fn security_invariants_are_independent_of_execution_intent() {
                 ScenarioOwner::CatalogGovernance
             );
         } else {
-            assert!(action.required_scopes.is_empty());
+            assert_eq!(action.required_scopes, Vec::<String>::new());
         }
         if action.destructive {
             let execution_intent = intent

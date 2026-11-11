@@ -592,7 +592,7 @@ deployment_id = "catalog"
         .await
         .unwrap()
         .0;
-        assert!(invalid["items"].as_array().unwrap().is_empty());
+        assert_eq!(invalid["items"].as_array().unwrap(), &Vec::<Value>::new());
         assert_eq!(invalid["coverageComplete"], false);
         assert_eq!(invalid["failures"][0]["kind"], "incompatible");
         assert!(invalid["nextCursor"].is_null());

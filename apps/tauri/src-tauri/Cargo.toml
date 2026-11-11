@@ -3,7 +3,7 @@ name = "labby-desktop"
 version = "2.6.2" # x-release-please-version
 description = "Native desktop shell for the Labby Control Plane"
 edition = "2024"
-rust-version = "1.97.1"
+rust-version = "1.99.1"
 license = "AGPL-3.0-only"
 publish = false
 

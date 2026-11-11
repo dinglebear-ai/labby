@@ -2036,7 +2036,10 @@ async fn palette_search_reports_truncation_when_global_inspection_budget_is_exha
         )
         .await
         .expect("bounded search");
-    assert!(searched.entries.is_empty());
+    assert_eq!(
+        searched.entries,
+        Vec::<crate::gateway::palette::LauncherEntryView>::new()
+    );
     assert!(searched.truncated);
 }
 
@@ -2742,7 +2745,7 @@ async fn semantic_rank_returns_empty_when_unconfigured() {
         )
         .await
         .unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<(String, f32)>::new());
 }
 
 #[tokio::test]
@@ -2828,7 +2831,7 @@ async fn semantic_rank_never_returns_ids_outside_scope_filtered_catalog() {
         )
         .await
         .unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<(String, f32)>::new());
 }
 #[tokio::test]
 async fn warm_embedding_cache_shares_vectors_without_copying() {

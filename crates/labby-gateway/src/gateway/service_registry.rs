@@ -34,7 +34,7 @@ const MAX_PUBLISHED_ACTIONS: usize = 4096;
 
 fn next_service_registry_generation() -> u64 {
     NEXT_SERVICE_REGISTRY_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
             generation.checked_add(1)
         })
         .expect("gateway service-registry generation exhausted")

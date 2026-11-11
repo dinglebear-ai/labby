@@ -913,10 +913,9 @@ mod tests {
             bounded_audit_snapshot(&connection, "browser").unwrap_err(),
             "conformance audit observation exceeds 100-row bound"
         );
-        assert!(
-            bounded_audit_snapshot(&connection, "unrelated-browser")
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            bounded_audit_snapshot(&connection, "unrelated-browser").unwrap(),
+            Vec::<InvocationAudit>::new()
         );
     }
 

@@ -561,7 +561,7 @@ mod tests {
         assert!(
             write_spooled_record(&mut output, &record, &mut records, &mut bytes, 10, 1).is_err()
         );
-        assert!(output.is_empty());
+        assert_eq!(output, Vec::<u8>::new());
     }
 
     #[tokio::test]
@@ -668,12 +668,12 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
+        assert_eq!(
             store
                 .claim_authority_projection_batch(39, 256)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::<crate::access::outbox::PendingProjection>::new()
         );
         let retried = store
             .claim_authority_projection_batch(1000, 256)

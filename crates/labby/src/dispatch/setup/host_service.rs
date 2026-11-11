@@ -3452,7 +3452,7 @@ mod tests {
     fn watchdog_behavior_covers_success_hang_exhaustion_backoff_and_maintenance() {
         let (ok, delays) = exercise_watchdog(false, &[1, 2, 4, 8], || true, || panic!());
         assert!(ok);
-        assert!(delays.is_empty());
+        assert_eq!(delays, Vec::<u64>::new());
 
         let mut probes = 0;
         let (ok, delays) = exercise_watchdog(
@@ -3478,7 +3478,7 @@ mod tests {
         );
         let (ok, delays) = exercise_watchdog(true, &[1], || panic!(), || panic!());
         assert!(ok);
-        assert!(delays.is_empty());
+        assert_eq!(delays, Vec::<u64>::new());
 
         for _ in 0..5 {
             assert!(!exercise_watchdog(false, &[1], || false, || false).0);

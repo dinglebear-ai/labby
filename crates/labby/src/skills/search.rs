@@ -218,8 +218,14 @@ mod tests {
     #[test]
     fn empty_queries_and_zero_limits_return_no_hits() {
         let entry = skill("skill://labby/alpha/SKILL.md", "alpha", "other");
-        assert!(search_skill_entries(&[entry.clone()], "   ", 10).is_empty());
-        assert!(search_skill_entries(&[entry], "alpha", 0).is_empty());
+        assert_eq!(
+            search_skill_entries(&[entry.clone()], " ", 10),
+            Vec::<SkillSearchHit>::new()
+        );
+        assert_eq!(
+            search_skill_entries(&[entry], "alpha", 0),
+            Vec::<SkillSearchHit>::new()
+        );
     }
 
     #[test]

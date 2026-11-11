@@ -212,7 +212,7 @@ mod tests {
             .await
             .expect("list");
         let skills = value["skills"].as_array().expect("skills");
-        assert!(!skills.is_empty());
+        assert_ne!(skills, &Vec::<Value>::new());
         assert!(skills.iter().all(|skill| skill.get("text").is_none()));
         let uris = skills
             .iter()

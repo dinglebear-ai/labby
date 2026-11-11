@@ -807,7 +807,10 @@ mod tests {
                 .artifact_access("skill://labby/using-labby/SKILL.md")
                 .is_none()
         );
-        assert!(providers.collision_rejections().is_empty());
+        assert_eq!(
+            providers.collision_rejections(),
+            Vec::<CollisionRejection>::new()
+        );
     }
 
     #[test]
@@ -862,7 +865,7 @@ mod tests {
         );
         let (merged, rejections) = merge_bundled_first(vec![first.clone()], vec![second]);
         assert_eq!(merged.len(), 2);
-        assert!(rejections.is_empty());
+        assert_eq!(rejections, Vec::<CollisionRejection>::new());
     }
 
     #[test]
@@ -900,6 +903,9 @@ mod tests {
             ),
         ]));
 
-        assert!(merge_bundled_first(Vec::new(), vec![blocked]).0.is_empty());
+        assert_eq!(
+            merge_bundled_first(Vec::new(), vec![blocked]).0,
+            Vec::<SkillProviderEntry>::new()
+        );
     }
 }

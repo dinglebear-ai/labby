@@ -73,11 +73,11 @@ pub(super) fn hidden_tool_call_error(
 ) -> CapabilityCallError {
     let message = hidden_tool_error(config, tool_name);
     CapabilityCallError::Mcp {
-        data: rmcp::model::ErrorData::new(
+        data: Box::new(rmcp::model::ErrorData::new(
             rmcp::model::ErrorCode::METHOD_NOT_FOUND,
             message.clone(),
             None,
-        ),
+        )),
         message: message.clone(),
     }
 }

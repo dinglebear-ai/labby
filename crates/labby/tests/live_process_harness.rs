@@ -299,7 +299,7 @@ async fn boots_real_binary_reports_both_readiness_contracts_and_cleans_up() {
         .expect("live labby starts");
     let root = guard.root().to_path_buf();
     assert!(guard.connection().base_url.starts_with("http://127.0.0.1:"));
-    assert!(!guard.identity().binary_sha256.is_empty());
+    assert_ne!(guard.identity().binary_sha256, "");
     let result = guard.finish().await;
     assert!(result.is_clean(), "cleanup failures: {:?}", result.failures);
     assert!(!root.exists(), "owned root leaked: {}", root.display());

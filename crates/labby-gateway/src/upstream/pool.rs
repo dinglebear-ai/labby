@@ -263,7 +263,7 @@ pub(crate) struct HeaderRecoveryMetricsStore {
 
 impl HeaderRecoveryMetricsStore {
     fn increment_saturating(counter: &AtomicU64) -> u64 {
-        match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        match counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             Some(value.saturating_add(1))
         }) {
             Ok(previous) | Err(previous) => previous.saturating_add(1),

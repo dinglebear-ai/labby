@@ -529,7 +529,7 @@ async fn http_upstream_falls_back_when_discover_method_not_found_arrives_over_ss
     .await
     .expect("SSE legacy upstream should initialize");
 
-    assert!(tools.is_empty());
+    assert_eq!(tools, Vec::<rmcp::model::Tool>::new());
     assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 1);
 }
 
@@ -625,7 +625,7 @@ async fn http_upstream_initializes_when_discovery_requires_a_session() {
     .await
     .expect("session-required upstream should use initialize");
 
-    assert!(tools.is_empty());
+    assert_eq!(tools, Vec::<rmcp::model::Tool>::new());
     assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 1);
 }
 
@@ -701,7 +701,7 @@ async fn http_upstream_keeps_modern_lifecycle_without_legacy_probe() {
     .await
     .expect("modern upstream should connect");
 
-    assert!(tools.is_empty());
+    assert_eq!(tools, Vec::<rmcp::model::Tool>::new());
     assert_eq!(responder.discover_requests.load(Ordering::SeqCst), 1);
     assert_eq!(responder.initialize_requests.load(Ordering::SeqCst), 0);
 }
@@ -980,7 +980,10 @@ async fn shared_discovery_skips_oauth_http_upstreams() {
     pool.discover_all(&[oauth_http_config()]).await;
 
     assert_eq!(pool.upstream_count().await, 0);
-    assert!(pool.upstream_status().await.is_empty());
+    assert_eq!(
+        pool.upstream_status().await,
+        Vec::<(String, crate::upstream::types::UpstreamHealth)>::new()
+    );
 }
 
 struct OrderedRelayNotificationFixture {

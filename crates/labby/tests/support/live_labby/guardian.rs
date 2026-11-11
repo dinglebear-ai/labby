@@ -209,10 +209,9 @@ mod tests {
             assert!(result.is_ok(), "{result:?}");
             let (daemon_pid, address, listener_ready, before_publication, pid) = observed.unwrap();
             assert!(missing_observed && listener_ready && before_publication);
-            assert!(
-                process_group_members_checked(group as i32)
-                    .unwrap()
-                    .is_empty()
+            assert_eq!(
+                process_group_members_checked(group as i32).unwrap(),
+                Vec::<u32>::new()
             );
             assert!(TcpListener::bind(address).is_ok());
             if publish {
@@ -294,7 +293,7 @@ mod tests {
                 );
             }
             let members = process_group_members_checked_before(group, expires)?;
-            assert!(members.is_empty());
+            assert_eq!(members, Vec::<u32>::new());
             std::fs::write(&marker, b"empty observation admitted").unwrap();
             Ok(members)
         };
@@ -657,10 +656,9 @@ exit "$cleanup"
                 std::thread::sleep(Duration::from_millis(5));
             };
             assert_eq!(observe_cleanup_child(child.id()).unwrap(), Some(observed));
-            assert!(
-                process_group_members_checked(child.id() as i32)
-                    .unwrap()
-                    .is_empty()
+            assert_eq!(
+                process_group_members_checked(child.id() as i32).unwrap(),
+                Vec::<u32>::new()
             );
             signal_cleanup_group(child.id()).unwrap();
             assert_eq!(child.wait().unwrap(), observed);
@@ -726,10 +724,9 @@ exit "$cleanup"
         assert!(signals >= 2);
         assert!(retained_leader_before_resignal);
         assert!(errors.is_empty(), "{errors:?}");
-        assert!(
-            process_group_members_checked(group as i32)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            process_group_members_checked(group as i32).unwrap(),
+            Vec::<u32>::new()
         );
         assert!(TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], port))).is_ok());
         assert!(
@@ -790,7 +787,10 @@ exit "$cleanup"
                 Some(9),
                 "{mode}: {result:?}"
             );
-            assert!(process_group_members_checked(group).unwrap().is_empty());
+            assert_eq!(
+                process_group_members_checked(group).unwrap(),
+                Vec::<u32>::new()
+            );
             assert!(ready.exists(), "{mode}: descendant never became ready");
             // Only a descendant surviving settlement can observe this release
             // and create the marker; pre-cleanup scheduling cannot fail the test.
@@ -900,10 +900,9 @@ exit "$cleanup"
         let original_start = process_start_identity(original_group as u32);
         if mode == "kill-after-restart" {
             guard.restart().await.unwrap();
-            assert!(
-                process_group_members_checked(original_group)
-                    .unwrap()
-                    .is_empty()
+            assert_eq!(
+                process_group_members_checked(original_group).unwrap(),
+                Vec::<u32>::new()
             );
         }
         let group = guard.ledger.process_group.unwrap();

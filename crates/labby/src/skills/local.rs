@@ -618,10 +618,10 @@ mod tests {
             )
             .is_err()
         );
-        assert!(out.is_empty());
+        assert_eq!(out, Vec::<(String, PathBuf, usize)>::new());
         let loaded = load_local_skills_bounded(missing, None).expect("missing root is normal");
         assert!(loaded.skills.is_empty());
-        assert!(loaded.rejections.is_empty());
+        assert_eq!(loaded.rejections, Vec::<LocalSkillRejection>::new());
     }
 
     #[test]

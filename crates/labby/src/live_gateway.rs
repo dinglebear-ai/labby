@@ -2841,7 +2841,7 @@ mod tests {
             .verify_oauth_issuer(&Url::parse(&server.uri()).unwrap())
             .await
             .unwrap();
-        assert!(jwks.keys.is_empty());
+        assert_eq!(jwks.keys, Vec::<labby_auth::jwt::JwkKey>::new());
     }
 
     #[tokio::test]

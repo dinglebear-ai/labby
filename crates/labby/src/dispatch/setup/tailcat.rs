@@ -447,7 +447,7 @@ mod tests {
                 && !loadout.expose_skills
                 && !loadout.expose_code_mode
         );
-        assert!(loadout.services.is_empty());
+        assert_eq!(loadout.services, Vec::<String>::new());
         assert_eq!(config.upstream[0].env["MICROSANDBOX_MCP_HOST_PATHS"], ":");
         let (again, outcome) = super::render_live_config(
             &rendered,

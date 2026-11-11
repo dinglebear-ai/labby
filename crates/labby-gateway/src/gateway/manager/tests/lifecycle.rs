@@ -335,7 +335,7 @@ async fn reload_does_not_duplicate_existing_quarantined_virtual_server() {
         .expect("reload");
 
     let migrated = load_gateway_config(&path).expect("load migrated config");
-    assert!(migrated.virtual_servers.is_empty());
+    assert_eq!(migrated.virtual_servers, Vec::<VirtualServerConfig>::new());
     assert_eq!(migrated.quarantined_virtual_servers.len(), 1);
     assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-service");
 }
@@ -363,7 +363,7 @@ fn quarantine_migration_is_noop_when_only_existing_quarantine_remains() {
     );
 
     assert!(!migration.changed());
-    assert!(migrated.virtual_servers.is_empty());
+    assert_eq!(migrated.virtual_servers, Vec::<VirtualServerConfig>::new());
     assert_eq!(migrated.quarantined_virtual_servers.len(), 1);
 }
 

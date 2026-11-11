@@ -432,6 +432,6 @@ async fn padded_internal_ids_keep_default_false_dispatch_and_internal_trace_clas
         let DriveOutcome::Completed(response) = outcome else {
             panic!("default-false internal dispatch")
         };
-        assert!(response.calls.is_empty());
+        assert_eq!(response.calls, Vec::<CodeModeExecutedCall>::new());
     }
 }

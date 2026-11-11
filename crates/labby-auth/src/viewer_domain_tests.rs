@@ -166,13 +166,13 @@ async fn handler_observes_admin_scope_only_for_the_configured_admin_session() {
         StatusCode::UNAUTHORIZED,
         "a session without an email is never the configured admin"
     );
-    assert!(scopes.is_empty());
+    assert_eq!(scopes, Vec::<String>::new());
 }
 
 #[test]
 fn viewer_policy_is_default_off_and_exact_verified_email_only() {
     let mut config = test_auth_config();
-    assert!(config.viewer_email_domains.is_empty());
+    assert_eq!(config.viewer_email_domains, Vec::<String>::new());
     assert!(
         config
             .viewer_domain_for_verified_email(Some("member@lime-technology.com"), Some(true))
@@ -463,7 +463,10 @@ async fn callback_admits_only_verified_domain_and_persists_real_bound_evidence()
             .await
             .unwrap();
         assert_eq!(evidence.is_some(), verified);
-        assert!(state.store.list_allowed_users().await.unwrap().is_empty());
+        assert_eq!(
+            state.store.list_allowed_users().await.unwrap(),
+            Vec::<crate::types::AllowedUserRow>::new()
+        );
         // The same signed email + legacy administrative `hd` must not mint an
         // OAuth-client admin grant. Viewer admission is deliberately browser-only.
         state

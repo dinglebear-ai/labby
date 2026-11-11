@@ -855,12 +855,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(
+        assert_eq!(
             access
                 .managed_artifact_mirrors_pending_purge(64)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::<ManagedArtifactMirror>::new()
         );
 
         // Simulate a purge that failed after restriction committed: the durable state says
@@ -899,12 +899,12 @@ mod tests {
             destination.get(&source_record.descriptor.id),
             Err(ArtifactError::NotFound("record"))
         ));
-        assert!(
+        assert_eq!(
             access
                 .managed_artifact_mirrors_pending_purge(64)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::<ManagedArtifactMirror>::new()
         );
     }
 

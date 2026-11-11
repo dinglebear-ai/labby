@@ -707,7 +707,7 @@ async fn self_hosted_oauth_registers_authorizes_and_grants_usable_default_scope(
     );
     let service = connect(proxy.url(), Some(&token)).await;
     let tools = service.peer().list_all_tools().await.unwrap();
-    assert!(!tools.is_empty());
+    assert_ne!(tools, Vec::<rmcp::model::Tool>::new());
     for tool in tools {
         assert_eq!(
             tool.meta.unwrap().0["securitySchemes"],

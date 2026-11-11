@@ -1342,7 +1342,10 @@ mod tests {
             Vec::new(),
         );
 
-        assert!(withheld_by_access(&tools, &scope).is_empty());
+        assert_eq!(
+            withheld_by_access(&tools, &scope),
+            Vec::<WithheldTools>::new()
+        );
         assert_eq!(
             withheld_by_access(&tools, &scope.read_only()),
             vec![

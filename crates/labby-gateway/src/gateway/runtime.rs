@@ -40,7 +40,7 @@ pub(super) use status_snapshot::RuntimeProcessSnapshotCache;
 
 fn next_pool_publication_generation() -> u64 {
     NEXT_POOL_PUBLICATION_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
             generation.checked_add(1)
         })
         .expect("gateway pool publication generation exhausted")

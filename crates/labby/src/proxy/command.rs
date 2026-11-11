@@ -324,7 +324,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(command.program, target);
-        assert!(command.args.is_empty());
+        assert_eq!(command.args, Vec::<OsString>::new());
     }
 
     #[test]

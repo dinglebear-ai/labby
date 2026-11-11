@@ -507,7 +507,7 @@ fn cleanup_failed(identity: &CleanupIdentity, counted: bool) {
 }
 
 fn decrement_active_sandbox() {
-    let _ = ACTIVE_SANDBOXES.fetch_update(
+    let _ = ACTIVE_SANDBOXES.try_update(
         std::sync::atomic::Ordering::Relaxed,
         std::sync::atomic::Ordering::Relaxed,
         |active| Some(active.saturating_sub(1)),

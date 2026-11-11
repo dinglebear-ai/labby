@@ -3007,7 +3007,7 @@ mod tests {
                 .unwrap();
             assert_eq!(mirror.authorization_project_id, "bootstrap-default");
             assert!(mirror.authorization_team_id.is_none());
-            assert!(!mirror.identity_ref_json.is_empty());
+            assert_ne!(mirror.identity_ref_json, "");
         }
 
         let observed = store
@@ -3036,7 +3036,7 @@ mod tests {
             observed_mirror.authorization_project_id,
             "bootstrap-default"
         );
-        assert!(!observed_mirror.identity_ref_json.is_empty());
+        assert_ne!(observed_mirror.identity_ref_json, "");
 
         let due_after_observation = store
             .auto_approved_artifact_subscriptions_due(10, 64)

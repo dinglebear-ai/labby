@@ -123,7 +123,7 @@ fn completion_unknown_prompt_argument_returns_empty_result() {
 
     let completion = complete_prompt_arg(&registry, "run-action", "params", "{");
 
-    assert!(completion.values.is_empty());
+    assert_eq!(completion.values, Vec::<String>::new());
     assert_eq!(completion.total, Some(0));
     assert_eq!(completion.has_more, Some(false));
 }

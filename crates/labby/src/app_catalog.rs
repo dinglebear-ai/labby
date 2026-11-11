@@ -94,7 +94,10 @@ mod tests {
 
     #[test]
     fn default_visibility_publishes_no_labby_app_revisions() {
-        assert!(enabled_versions(false, McpAppsConfig::default()).is_empty());
+        assert_eq!(
+            enabled_versions(false, McpAppsConfig::default()),
+            Vec::<(String, String)>::new()
+        );
     }
 
     #[cfg(feature = "skills")]

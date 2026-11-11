@@ -660,13 +660,19 @@ mod tests {
     #[test]
     fn extract_mcp_entries_root_fallback_disabled_returns_empty() {
         let v = serde_json::json!({"a": {"command": "x"}});
-        assert!(super::extract_mcp_entries(&v, false).is_empty());
+        assert_eq!(
+            super::extract_mcp_entries(&v, false),
+            Vec::<(String, &serde_json::Value)>::new()
+        );
     }
 
     #[test]
     fn extract_mcp_entries_root_fallback_skips_non_server_root() {
         let v = serde_json::json!({"theme": "dark", "version": 1});
-        assert!(super::extract_mcp_entries(&v, true).is_empty());
+        assert_eq!(
+            super::extract_mcp_entries(&v, true),
+            Vec::<(String, &serde_json::Value)>::new()
+        );
     }
 
     #[test]

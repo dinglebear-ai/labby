@@ -42,7 +42,7 @@ fn setup_proxy_non_tty_without_yes_fails_without_reading_stdin() {
         .expect("run noninteractive setup proxy");
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["kind"], "confirmation_required");
     assert_eq!(error["error"]["recovery"]["action"], "confirm");

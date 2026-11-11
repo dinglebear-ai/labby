@@ -2656,11 +2656,9 @@ mod tests {
             Some(downstream_progress)
         );
 
-        assert!(
-            routes
-                .register_task_id("native-task", "gateway-task")
-                .await
-                .is_empty()
+        assert_eq!(
+            routes.register_task_id("native-task", "gateway-task").await,
+            Vec::<TaskStatusNotificationParams>::new()
         );
         assert_eq!(
             routes.gateway_task_id("native-task").await.as_deref(),

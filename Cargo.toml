@@ -6,7 +6,7 @@ members = ["crates/labby-tailcat", "crates/labby-apis", "crates/labby", "crates/
 [workspace.package]
 version = "2.6.2"
 edition = "2024"
-rust-version = "1.97.1"
+rust-version = "1.99.1"
 keywords = ["mcp", "gateway", "homelab", "labby", "agents"]
 description = "Rust MCP gateway with Code Mode, authentication, setup, logs, CLI, HTTP API, and operator web UI."
 license = "AGPL-3.0-only"
@@ -184,6 +184,12 @@ multiple_crate_versions = "allow"
 # TODO(stubs): re-enable once every service's real impl calls self.http — these
 # fire on stub method bodies that will become async the moment the HTTP call lands.
 unused_async = "allow"
+# Rust 1.99 extends the rule above to trait impls. Same reasoning, and its
+# suggested fix is actively unsafe here: rewriting `async fn` to
+# `fn -> impl Future` makes the body run eagerly at call time instead of at
+# await, and clippy emits malformed output for unit-returning handlers
+# (`impl Future<Output = >`). Revisit only as a deliberate hand-audited pass.
+unused_async_trait_impl = "allow"
 
 # TODO(lint-pass): pre-existing warnings promoted to errors by RUSTFLAGS=-D warnings
 # in CI. Allow for now; fix incrementally in follow-up PRs.

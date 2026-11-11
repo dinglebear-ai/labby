@@ -1046,10 +1046,10 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         .and_then(|section| section.split("\n  codemode-runner-smoke:").next())
         .expect("msrv job");
     let gateway_msrv_warm = msrv_job
-        .find("cargo +1.97.1 check -p labby-gateway --all-features")
+        .find("cargo +1.99.1 check -p labby-gateway --all-features")
         .expect("gateway MSRV test-target warm-up command");
     let workspace_msrv = msrv_job
-        .find("cargo +1.97.1 check --workspace --all-features --all-targets --locked")
+        .find("cargo +1.99.1 check --workspace --all-features --all-targets --locked")
         .expect("required workspace MSRV command");
     assert!(
         msrv_job.contains("--all-targets --locked") && gateway_msrv_warm < workspace_msrv,
@@ -1342,7 +1342,7 @@ fn nextest_ci_isolates_process_harnesses_and_timing_oracles() {
             );
         }
     }
-    assert!(!process_binaries.is_empty());
+    assert_ne!(process_binaries, Vec::<String>::new());
     for binary in process_binaries {
         assert!(
             process_override.contains(&format!("binary(={binary})")),

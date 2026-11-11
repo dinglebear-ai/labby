@@ -1466,7 +1466,10 @@ mod tests {
         .await
         .expect("advertised native directory dispatch");
         let result = CustomResult::new(serde_json::to_value(result).unwrap());
-        assert!(!result.0["resources"].as_array().unwrap().is_empty());
+        assert_ne!(
+            result.0["resources"].as_array().unwrap(),
+            &Vec::<serde_json::Value>::new()
+        );
         let listed = running
             .service()
             .list_resources(None, context())

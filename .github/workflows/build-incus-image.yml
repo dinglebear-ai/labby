@@ -47,8 +47,8 @@ jobs:
         set -euo pipefail
         sudo apt-get update
         sudo apt-get install -y debootstrap gpg incus libcap-ng-dev rsync shellcheck squashfs-tools uidmap
-        rustup toolchain install 1.97.1 --profile minimal --target x86_64-unknown-linux-gnu
-        rustup default 1.97.1
+        rustup toolchain install 1.99.1 --profile minimal --target x86_64-unknown-linux-gnu
+        rustup default 1.99.1
         corepack enable
         corepack prepare pnpm@9.15.9 --activate
         distrobuilder_version=3.3.1

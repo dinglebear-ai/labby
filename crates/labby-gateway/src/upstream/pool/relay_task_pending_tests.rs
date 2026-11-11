@@ -103,11 +103,9 @@ async fn pending_task_repeated_id_retains_only_the_admitted_prefix() {
             .iter()
             .all(|event| event.task.task.task_id == "gateway")
     );
-    assert!(
-        routes
-            .register_task_id("native", "gateway")
-            .await
-            .is_empty()
+    assert_eq!(
+        routes.register_task_id("native", "gateway").await,
+        Vec::<TaskStatusNotificationParams>::new()
     );
 }
 
@@ -193,17 +191,13 @@ async fn pending_task_oversized_event_and_id_do_not_consume_admission() {
                 .is_none()
         );
     }
-    assert!(
-        routes
-            .register_task_id("oversized", "oversized")
-            .await
-            .is_empty()
+    assert_eq!(
+        routes.register_task_id("oversized", "oversized").await,
+        Vec::<TaskStatusNotificationParams>::new()
     );
-    assert!(
-        routes
-            .register_task_id(&large_id, &large_id)
-            .await
-            .is_empty()
+    assert_eq!(
+        routes.register_task_id(&large_id, &large_id).await,
+        Vec::<TaskStatusNotificationParams>::new()
     );
     assert!(
         routes
@@ -235,11 +229,9 @@ async fn pending_task_expiry_releases_capacity_without_delivering_stale_events()
             .await
             .is_none()
     );
-    assert!(
-        routes
-            .register_task_id("expired", "expired")
-            .await
-            .is_empty()
+    assert_eq!(
+        routes.register_task_id("expired", "expired").await,
+        Vec::<TaskStatusNotificationParams>::new()
     );
     let retained = routes.register_task_id("fresh", "fresh").await;
     assert_eq!(retained.len(), 1);
@@ -392,11 +384,11 @@ async fn pending_task_ordered_relay_handler_bounds_queue_and_preserves_subscript
         agent.events.lock().await.is_empty(),
         "unregistered events are not exposed downstream"
     );
-    assert!(
+    assert_eq!(
         routes
             .register_task_id("subscription-only", "gateway-subscription")
-            .await
-            .is_empty()
+            .await,
+        Vec::<TaskStatusNotificationParams>::new()
     );
     let pending = routes.register_task_id("native", "gateway-native").await;
     assert_eq!(pending.len(), limits(&routes).await.per_id);

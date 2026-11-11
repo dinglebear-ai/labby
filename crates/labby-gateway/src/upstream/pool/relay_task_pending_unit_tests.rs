@@ -94,7 +94,10 @@ fn pending_task_expiry_removes_old_prefix_and_empty_id_budget() {
     assert_eq!(buffer.ids.len(), 1);
     assert_eq!(buffer.count, 1);
     assert_eq!(buffer.discarded.expired, 2);
-    assert!(buffer.drain("b", later, limits().ttl).is_empty());
+    assert_eq!(
+        buffer.drain("b", later, limits().ttl),
+        Vec::<TaskStatusNotificationParams>::new()
+    );
     let retained = buffer.drain("a", later, limits().ttl);
     assert_eq!(retained.len(), 1);
     assert_eq!(
@@ -109,10 +112,9 @@ fn pending_task_registration_checks_ttl_without_new_notification() {
     let now = Instant::now();
     let mut buffer = PendingTaskBuffer::default();
     buffer.admit(status("a", "old"), limits(), now);
-    assert!(
-        buffer
-            .drain("a", now + limits().ttl, limits().ttl)
-            .is_empty()
+    assert_eq!(
+        buffer.drain("a", now + limits().ttl, limits().ttl),
+        Vec::<TaskStatusNotificationParams>::new()
     );
     assert_eq!(buffer.count, 0);
     assert_eq!(buffer.bytes, 0);

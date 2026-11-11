@@ -1819,7 +1819,7 @@ mod tests {
             .await
             .unwrap();
         let listed = dispatch(reader, "agents.list", json!({})).await.unwrap();
-        assert!(listed["agents"].as_array().unwrap().is_empty());
+        assert_eq!(listed["agents"].as_array().unwrap(), &Vec::<Value>::new());
     }
 
     /// Bind exactly the parameters the shared catalog marks required, so the

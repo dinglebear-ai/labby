@@ -69,7 +69,7 @@ fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
     let projection = project_operator_skills(&operator);
 
     assert_eq!(projection.discovered_count, 2);
-    assert!(projection.skills.is_empty());
+    assert_eq!(projection.skills, Vec::<Value>::new());
     assert_eq!(projection.rejected[0]["reason"], "invalid_frontmatter");
     assert_eq!(
         projection.rejected[0]["detail"],
@@ -2254,7 +2254,10 @@ async fn protected_gateway_subset_stage_actions_persist_without_hot_mounting() {
     let desired = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
         .await
         .expect("route state after staged removal");
-    assert!(desired.as_array().expect("state array").is_empty());
+    assert_eq!(
+        desired.as_array().expect("state array"),
+        &Vec::<serde_json::Value>::new()
+    );
 }
 
 #[tokio::test]
@@ -5103,7 +5106,10 @@ async fn gateway_import_dry_run_returns_plan_without_mutating_config() {
     .await
     .unwrap();
 
-    assert!(result["imported"].as_array().unwrap().is_empty());
+    assert_eq!(
+        result["imported"].as_array().unwrap(),
+        &Vec::<serde_json::Value>::new()
+    );
     assert_eq!(result["planned"][0]["name"], "fixture");
     assert_eq!(result["planned"][0]["transport"], "stdio");
     assert!(!result.to_string().contains("secret"));

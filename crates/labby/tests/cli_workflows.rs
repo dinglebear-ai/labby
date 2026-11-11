@@ -195,7 +195,7 @@ async fn guided_inputs_are_never_requested_by_json_or_noninteractive_commands() 
     ] {
         let output = run(home.path(), &args).await;
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, Vec::<u8>::new());
         let error: Value = serde_json::from_slice(&output.stderr).unwrap();
         assert_eq!(error["error"]["kind"], "invalid_param");
         assert_eq!(error["error"]["side_effects"], "none_expected");
@@ -609,7 +609,7 @@ async fn explicitly_selected_context_never_falls_back_to_local_execution() {
     )
     .await;
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let failure: Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(failure["ok"], false);
     assert!(!home.path().join(".labby/auth.db").exists());

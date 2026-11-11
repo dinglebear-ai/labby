@@ -421,7 +421,10 @@ mod tests {
                     let old_group = guard.ledger.process_group.unwrap();
                     let error = guard.restart().await.unwrap_err();
                     assert!(error.contains(expected_error), "{error}");
-                    assert!(process_group_members_checked(old_group).unwrap().is_empty());
+                    assert_eq!(
+                        process_group_members_checked(old_group).unwrap(),
+                        Vec::<u32>::new()
+                    );
                     let cleanup = guard.finish().await;
                     assert_eq!(
                         cleanup.is_clean(),
@@ -461,10 +464,9 @@ mod tests {
                 assert_eq!(*stages.lock().unwrap(), expected_stages);
                 for (group, daemon_pid, address, members) in records.iter() {
                     assert!(members.contains(daemon_pid));
-                    assert!(
-                        process_group_members_checked(*group as i32)
-                            .unwrap()
-                            .is_empty()
+                    assert_eq!(
+                        process_group_members_checked(*group as i32).unwrap(),
+                        Vec::<u32>::new()
                     );
                     // A reaped daemon PID can remain visible briefly as a zombie,
                     // or be reused by another process. The owned group and listener

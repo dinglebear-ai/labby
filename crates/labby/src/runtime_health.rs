@@ -146,7 +146,7 @@ mod tests {
     #[test]
     fn records_are_sorted_and_replaceable() {
         let health = SubsystemHealth::default();
-        assert!(health.degraded_codes().is_empty());
+        assert_eq!(health.degraded_codes(), Vec::<&str>::new());
         health.record_degraded("zeta", "first".into());
         health.record_degraded(ARTIFACTS_UNAVAILABLE, "cause".into());
         health.record_degraded("zeta", "second".into());
@@ -161,7 +161,7 @@ mod tests {
         let details = health.degraded_details();
         assert_eq!(health.degraded_codes(), ["blank_detail"]);
         assert_eq!(details.len(), 1);
-        assert!(!details[0].1.trim().is_empty());
+        assert_ne!(details[0].1.trim(), "");
         assert!(details[0].1.contains("Doctor capability findings"));
     }
 }

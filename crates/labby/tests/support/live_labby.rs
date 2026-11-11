@@ -2818,7 +2818,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("entry cap exceeded"));
-        assert!(pending.is_empty());
+        assert_eq!(pending, Vec::<(PathBuf, usize)>::new());
         assert_eq!(discovered, CLEANUP_MAX_FILES);
     }
 
@@ -2907,7 +2907,10 @@ mod tests {
         let cleanup = guard.finish().await;
         assert!(cleanup.is_clean(), "{:?}", cleanup.failures);
         assert!(cleanup.forced, "surviving descendant requires escalation");
-        assert!(process_group_members_checked(group).unwrap().is_empty());
+        assert_eq!(
+            process_group_members_checked(group).unwrap(),
+            Vec::<u32>::new()
+        );
     }
 
     #[test]
@@ -3081,10 +3084,9 @@ mod tests {
             std::fs::read_to_string(registry.path().join(pid.to_string()).join("status")).unwrap(),
             "0\n"
         );
-        assert!(
-            process_group_members_checked(pid as i32)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            process_group_members_checked(pid as i32).unwrap(),
+            Vec::<u32>::new()
         );
     }
 
@@ -3143,7 +3145,10 @@ mod tests {
             } else {
                 assert!(result.unwrap_err().contains("cleanup helper exited"));
             }
-            assert!(process_group_members_checked(group).unwrap().is_empty());
+            assert_eq!(
+                process_group_members_checked(group).unwrap(),
+                Vec::<u32>::new()
+            );
         }
     }
 
@@ -3467,7 +3472,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let artifact = temp.path().join("single-line.log");
         std::fs::write(&artifact, vec![b'x'; LOG_TAIL_BYTES + 1]).unwrap();
-        assert!(tail(&artifact).is_empty());
+        assert_eq!(tail(&artifact), "");
     }
 
     #[cfg(unix)]

@@ -401,7 +401,10 @@ async fn an_empty_listing_is_not_an_error() {
         .fetch_upstream_skills("empty", &peer_for(&pool, "empty").await)
         .await
         .expect("an empty listing is a success");
-    assert!(skills.skills.is_empty());
+    assert_eq!(
+        skills.skills,
+        Vec::<labby_runtime::skills::manifest::ValidatedSkill>::new()
+    );
     assert!(!skills.truncated);
 }
 
@@ -501,7 +504,10 @@ async fn the_candidate_cap_bounds_invalid_skill_floods() {
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM + 5,
         "the fetched page remains visible to operator discovery accounting"
     );
-    assert!(skills.skills.is_empty());
+    assert_eq!(
+        skills.skills,
+        Vec::<labby_runtime::skills::manifest::ValidatedSkill>::new()
+    );
     assert_eq!(
         skills.excluded_count(),
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
@@ -653,7 +659,10 @@ async fn skills_get_resolves_a_skill_that_never_appeared_in_a_listing() {
         .fetch_upstream_skills("up", &peer)
         .await
         .expect("empty listing");
-    assert!(listed.skills.is_empty());
+    assert_eq!(
+        listed.skills,
+        Vec::<labby_runtime::skills::manifest::ValidatedSkill>::new()
+    );
 
     let fetched = pool
         .fetch_upstream_skill("up", &peer, "skill://up/unlisted/SKILL.md", None)
@@ -1305,7 +1314,10 @@ async fn skills_are_not_fetched_at_all_unless_the_upstream_opts_in() {
     };
     let exposed = pool.upstream_skills(&config, None).await.expect("no error");
 
-    assert!(exposed.skills.is_empty());
+    assert_eq!(
+        exposed.skills,
+        Vec::<labby_runtime::skills::manifest::ValidatedSkill>::new()
+    );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,
@@ -1325,7 +1337,10 @@ async fn an_upstream_without_the_extension_is_empty_not_an_error() {
         .upstream_skills(&skills_config("up", None), None)
         .await
         .expect("absence of the extension is not an error");
-    assert!(exposed.skills.is_empty());
+    assert_eq!(
+        exposed.skills,
+        Vec::<labby_runtime::skills::manifest::ValidatedSkill>::new()
+    );
     assert_eq!(
         calls.load(Ordering::SeqCst),
         0,

@@ -1338,7 +1338,10 @@ mod tests {
             personal.is_err(),
             "slow source should be reported incomplete"
         );
-        assert!(depot.unwrap().unwrap().entries.is_empty());
+        assert_eq!(
+            depot.unwrap().unwrap().entries,
+            Vec::<CatalogDescriptor>::new()
+        );
     }
 
     #[tokio::test]
@@ -1758,7 +1761,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.entries.is_empty());
+        assert_eq!(result.entries, Vec::<CatalogDescriptor>::new());
         assert!(
             result.incomplete_sources.is_empty(),
             "unrequested local kinds must not read the store"
@@ -2215,14 +2218,14 @@ mod tests {
             }))
             .unwrap()
         };
-        assert!(
+        assert_eq!(
             project_depot_artifact_search(
                 response("unsupported_kind"),
                 CodeModeCatalogKind::Subagent
             )
             .unwrap()
-            .entries
-            .is_empty()
+            .entries,
+            Vec::<CatalogDescriptor>::new()
         );
         assert!(
             project_depot_artifact_search(
@@ -2295,7 +2298,7 @@ mod tests {
 
         let (completed, pending) =
             bounded_ordered_until(requests.collect(), Duration::from_secs(1)).await;
-        assert!(pending.is_empty());
+        assert_eq!(pending, Vec::<usize>::new());
         let buckets = completed
             .into_iter()
             .map(|(_, bucket)| bucket)
@@ -2412,7 +2415,7 @@ mod tests {
                 CodeModeSurface::Mcp,
             )
             .await;
-        assert!(results.unwrap().entries.is_empty());
+        assert_eq!(results.unwrap().entries, Vec::<CatalogDescriptor>::new());
     }
 
     #[tokio::test]
@@ -2509,6 +2512,9 @@ mod tests {
             team_provider_ids(&topology, &CodeModeCaller::TrustedLocal).await,
             ["team"]
         );
-        assert!(team_provider_ids(&topology, &scoped).await.is_empty());
+        assert_eq!(
+            team_provider_ids(&topology, &scoped).await,
+            Vec::<String>::new()
+        );
     }
 }

@@ -367,7 +367,7 @@ mod tests {
             "skills": []
         }))
         .expect("ok");
-        assert!(result.skills.is_empty());
+        assert_eq!(result.skills, Vec::<SkillEntry>::new());
         assert!(result.next_cursor.is_none());
     }
 

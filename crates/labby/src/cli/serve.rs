@@ -1,7 +1,6 @@
 //! `labby serve` — start the MCP server.
 
 #[cfg(all(feature = "tailcat", unix))]
-#[path = "serve/tailcat.rs"]
 mod tailcat {
     // Compose the opt-in private controller from the hosted gateway authority.
     use crate::{
@@ -3683,7 +3682,7 @@ mod tests {
         let runtime = initialize_selected_file_stash_runtime(&registry, &config, &health).await;
 
         assert!(!stash_root.exists());
-        assert!(health.degraded_codes().is_empty());
+        assert_eq!(health.degraded_codes(), Vec::<&str>::new());
         assert!(matches!(
             runtime.status().await,
             crate::file_stash::FileStashStatus::Blocked(_)
@@ -3769,7 +3768,7 @@ mod tests {
                 panic!("excluded artifacts service must not touch Artifact Library storage")
             });
         assert!(result.is_none());
-        assert!(health.degraded_codes().is_empty());
+        assert_eq!(health.degraded_codes(), Vec::<&str>::new());
     }
 
     #[cfg(feature = "skills")]

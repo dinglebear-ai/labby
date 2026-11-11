@@ -120,7 +120,10 @@ where
 #[derive(Debug)]
 pub enum CapabilityCallError {
     Mcp {
-        data: rmcp::model::ErrorData,
+        /// Boxed: `ErrorData` dominates this enum's size, and clippy's
+        /// `result_large_err` fires on every `Result<_, CapabilityCallError>`
+        /// in the gateway when it is stored inline.
+        data: Box<rmcp::model::ErrorData>,
         message: String,
     },
     Timeout {
@@ -158,7 +161,10 @@ pub enum CapabilityCallError {
 impl CapabilityCallError {
     pub(super) fn from_service_error(error: rmcp::ServiceError, message: String) -> Self {
         match error {
-            rmcp::ServiceError::McpError(data) => Self::Mcp { data, message },
+            rmcp::ServiceError::McpError(data) => Self::Mcp {
+                data: Box::new(data),
+                message,
+            },
             rmcp::ServiceError::Timeout { .. } => Self::Timeout { message },
             rmcp::ServiceError::TransportSend(_)
             | rmcp::ServiceError::TransportClosed

@@ -549,7 +549,7 @@ mod tests {
             .list_upstream_prompts_allowed_until(&[], None, deadline_at)
             .await;
 
-        assert!(prompts.is_empty());
+        assert_eq!(prompts, Vec::<Prompt>::new());
         // `StalledPromptServer` never resolves, so honoring the deadline is the
         // only way to get here at all — a run that ignored it would hang until
         // the harness killed it. The ceiling just needs to sit far below that,
@@ -689,11 +689,11 @@ mod tests {
             entry.prompt_last_error = Some("old error".to_string());
         }
 
-        assert!(pool.list_upstream_prompts(&[]).await.is_empty());
+        assert_eq!(pool.list_upstream_prompts(&[]).await, Vec::<Prompt>::new());
         let catalog = pool.catalog.read().await;
         let entry = &catalog["unsupported"];
         assert_eq!(entry.prompt_count, 0);
-        assert!(entry.prompt_names.is_empty());
+        assert_eq!(entry.prompt_names, Vec::<String>::new());
         assert_eq!(entry.prompt_health, types::UpstreamHealth::Healthy);
         assert!(entry.prompt_last_error.is_none());
         drop(catalog);
@@ -719,7 +719,7 @@ mod tests {
         assert_eq!(before.routes().len(), 2);
 
         fail_list_prompts.store(true, Ordering::SeqCst);
-        assert!(pool.list_upstream_prompts(&[]).await.is_empty());
+        assert_eq!(pool.list_upstream_prompts(&[]).await, Vec::<Prompt>::new());
         let after = pool
             .published_prompt_catalog()
             .await
@@ -841,7 +841,7 @@ mod tests {
             .expect("pre-stale publication");
 
         release.notify_one();
-        assert!(listing.await.expect("listing task").is_empty());
+        assert_eq!(listing.await.expect("listing task"), Vec::<Prompt>::new());
         if let Some(connection_b) = removed_b {
             connection_b.shutdown("alpha", "test.prompt-list.aba").await;
         }
