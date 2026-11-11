@@ -628,7 +628,12 @@ channel pointers. Automatic main builds use `incus-dev-SHA` and
    runs after the upgrade gates and before the registry call. It
    publishes the immutable npm version under a version-specific candidate
    dist-tag; the `latest` consumer pointer is not advanced yet. No
-   distribution workflow is triggered by `release.published`.
+   distribution workflow is triggered by `release.published`. Every npm
+   publication runs with `--provenance`, so each published version carries a
+   Sigstore attestation binding it to this repository, the release workflow,
+   and the release tag. Both publishing jobs therefore need `id-token: write`;
+   a publish that cannot mint the attestation fails rather than publishing
+   unattested.
 9. Only after every candidate qualification and publisher succeeds does
    `release.yml` promote the draft through the verified promotion helper. It
    advances and verifies npm's `latest` dist-tag only after that promotion.

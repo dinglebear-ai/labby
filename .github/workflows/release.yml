@@ -443,6 +443,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # npm --provenance mints a Sigstore attestation from this job's OIDC
+      # identity. Without id-token: write the publish fails closed.
+      id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -473,7 +476,7 @@ jobs:
           if npm view "$package_name@$version" version >/dev/null 2>&1; then
             echo "$package_name@$version is already published"
           else
-            npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
+            npm publish --provenance --access public --tag "candidate-$version" ./packages/labby-mcp
           fi
 
   mcp-candidate:
@@ -632,7 +635,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
-          npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
+          npm publish --provenance --access public --tag "candidate-$version" ./packages/labby-mcp
       - name: Publish qualified draft release
         env:
           GH_TOKEN: ${{ github.token }}

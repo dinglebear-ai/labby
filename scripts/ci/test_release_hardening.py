@@ -846,7 +846,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_irreversible_publications_remain_visible_and_stable_pointer_is_last(self) -> None:
         release = self.text(".github/workflows/release.yml")
-        candidate = release.index('npm publish --access public --tag "candidate-$version"')
+        candidate = release.index('npm publish --provenance --access public --tag "candidate-$version"')
         promote = release.index("scripts/ci/promote-release.sh")
         stable = release.index("scripts/ci/promote-npm-pointer.py promote")
         self.assertLess(candidate, promote)
@@ -854,6 +854,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         reminder = self.text(".github/workflows/release-publish-reminder.yml")
         self.assertIn("[.tag_name, .draft] | @tsv", reminder)
         self.assertIn("draft release is missing release-manifest.json", reminder)
+
+    def test_every_npm_publication_is_provenance_attested(self) -> None:
+        text = self.text(".github/workflows/release.yml")
+        publishes = [line.strip() for line in text.splitlines() if "npm publish" in line]
+        self.assertTrue(publishes, "release.yml must publish the npm launcher")
+        for line in publishes:
+            self.assertIn("--provenance", line, f"npm publish without provenance: {line}")
+        release = yaml.load(text, Loader=yaml.BaseLoader)
+        for name, job in release["jobs"].items():
+            if not any("npm publish" in step.get("run", "") for step in job.get("steps", [])):
+                continue
+            self.assertEqual(
+                "write",
+                job.get("permissions", {}).get("id-token"),
+                f"job {name} publishes to npm but cannot mint a provenance attestation",
+            )
 
     def test_stable_promotion_is_serialized_and_restored_before_redraft(self):
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
