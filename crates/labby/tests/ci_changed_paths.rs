@@ -2070,14 +2070,24 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(!release.contains("release-image-rollback.sh"));
     assert!(!release.contains("ghcr.io"));
     assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
-    assert!(release.contains("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"));
+    // npm authenticates through GitHub OIDC (trusted publishing), so no npm
+    // secret may remain: a lingering token would silently re-enable token auth
+    // and mask a broken trusted-publisher configuration.
+    assert!(!release.contains("NODE_AUTH_TOKEN"));
+    assert!(!release.contains("secrets.NPM_TOKEN"));
     let npm_identity = release
         .find("name: Validate npm publication identity")
         .expect("release must authenticate to npm before publication");
     let artifact_upload = release
         .find("name: Upload qualified assets to draft release")
         .expect("release must upload qualified assets to the draft release");
-    assert!(release.contains("run: npm whoami >/dev/null"));
+    // `npm whoami` cannot survive trusted publishing: with no token there is no
+    // identity to query, so it would fail on a working configuration.
+    assert!(!release.contains("npm whoami >/dev/null"));
+    assert!(release.contains("run: scripts/ci/check-oidc-publisher.sh"));
+    // `npm dist-tag` only speaks OIDC from npm 11.21.0, and Node 24 bundles
+    // 11.19.1, so the pin is what keeps promotion off token auth.
+    assert!(release.contains("npm install -g npm@"));
     assert!(npm_identity < artifact_upload);
 }
 
