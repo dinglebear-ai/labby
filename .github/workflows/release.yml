@@ -32,6 +32,9 @@ jobs:
     permissions:
       contents: write # Create a dev draft only after source and version validation.
       actions: read
+      # Proving the OIDC identity exists here is what lets the publication
+      # readiness check fail before any build work starts.
+      id-token: write
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -47,6 +50,10 @@ jobs:
           node-version: "lts/*"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
+      # check-oidc-publisher.sh enforces one npm floor everywhere, and the
+      # bundled npm is below it, so preflight pins before asserting readiness.
+      - name: Pin an npm release that publishes over OIDC
+        run: npm install -g npm@11.21.2
       - name: Validate release tag, ancestry, and version lockstep
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,20 +80,21 @@ jobs:
           npm pack --dry-run --json ./packages/labby-mcp >/dev/null
       - name: Validate publication credentials before building
         env:
-          NPM_TOKEN_PRESENT: ${{ secrets.NPM_TOKEN != '' }}
           MCP_PRIVATE_KEY_PRESENT: ${{ secrets.MCP_PRIVATE_KEY != '' }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           channel=$(python3 scripts/ci/release_channel.py "$RELEASE_TAG" | python3 -c 'import json,sys; print(json.load(sys.stdin)["channel"])')
-          test "$NPM_TOKEN_PRESENT" = true || { echo '::error::NPM_TOKEN is not configured'; exit 1; }
           if [[ "$channel" == stable ]]; then
             test "$MCP_PRIVATE_KEY_PRESENT" = true || { echo '::error::MCP_PRIVATE_KEY is not configured'; exit 1; }
           fi
+      # npm publishes through GitHub OIDC (trusted publishing), so there is no
+      # token identity to query: `npm whoami` would fail even where publication
+      # succeeds. Assert the OIDC identity this workflow publishes with instead.
+      # Only npmjs.com knows whether it trusts this publisher, so a
+      # misconfigured trusted publisher can still only surface at publish time.
       - name: Validate npm publication identity before building
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm whoami >/dev/null
+        run: scripts/ci/check-oidc-publisher.sh
       - name: Prepare dev release draft
         if: contains(github.ref_name, '-dev.')
         env:
@@ -443,6 +451,9 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      # npm --provenance mints a Sigstore attestation from this job's OIDC
+      # identity. Without id-token: write the publish fails closed.
+      id-token: write
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -452,10 +463,10 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
+      - name: Pin an npm release that publishes over OIDC
+        run: npm install -g npm@11.21.2
       - name: Validate npm publication identity
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm whoami >/dev/null
+        run: scripts/ci/check-oidc-publisher.sh
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: lab-*
@@ -465,7 +476,6 @@ jobs:
       - name: Publish candidate-tagged npm launcher
         env:
           LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           package_name="$(node -p "require('./packages/labby-mcp/package.json').name")"
@@ -473,7 +483,7 @@ jobs:
           if npm view "$package_name@$version" version >/dev/null 2>&1; then
             echo "$package_name@$version is already published"
           else
-            npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
+            npm publish --provenance --access public --tag "candidate-$version" ./packages/labby-mcp
           fi
 
   mcp-candidate:
@@ -517,10 +527,13 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
+      # promote-npm-pointer.py shells out to `npm dist-tag`, which only speaks
+      # OIDC from npm 11.21.0 onward. Node 24 bundles 11.19.1, so pin first;
+      # the readiness check then verifies the npm that will actually publish.
+      - name: Pin an npm release that publishes over OIDC
+        run: npm install -g npm@11.21.2
       - name: Validate npm publication identity
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: npm whoami >/dev/null
+        run: scripts/ci/check-oidc-publisher.sh
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: lab-*
@@ -608,8 +621,6 @@ jobs:
             GH_VERIFIER="$GH_VERIFIER" scripts/ci/verify-release-provenance.sh --repo ${{ github.repository }} --workflow release.yml --ref ${{ github.ref }} --artifact "$artifact"
           done
       - name: Prepare npm stable pointer transaction
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           python3 scripts/ci/promote-npm-pointer.py prepare \
             --package "$(node -p "require('./packages/labby-mcp/package.json').name")" \
@@ -629,18 +640,15 @@ jobs:
         if: steps.npm-version.outputs.exists != 'true'
         env:
           LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
-          npm publish --access public --tag "candidate-$version" ./packages/labby-mcp
+          npm publish --provenance --access public --tag "candidate-$version" ./packages/labby-mcp
       - name: Publish qualified draft release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: scripts/ci/promote-release.sh
       - name: Advance npm stable pointer after release promotion
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           package_name="$(node -p "require('./packages/labby-mcp/package.json').name")"
           version="$(node -p "require('./packages/labby-mcp/package.json').version")"
@@ -652,7 +660,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
           ROLLBACK_STATUS_FILE: /tmp/labby-release-rollback.json
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -u
           npm_rc=0
