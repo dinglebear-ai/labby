@@ -20,6 +20,12 @@ platform = 'cfg(windows)'
 filter = 'package(labby-codemode) & test(git::provider::tests::)'
 threads-required = 'num-test-threads'
 
+# The bearer-rotation case opens the same on-disk inbox from two routers.
+# Reserve the runner's slots so concurrent tests do not consume its DB deadline.
+[[profile.ci.overrides]]
+filter = 'package(labby) & test(=mcp::session_messages::tests::verified_static_rotation_changes_the_owner_and_binding)'
+threads-required = 'num-test-threads'
+
 # Shared lifecycle harness tests are compiled into many integration binaries.
 # They launch real daemons, process groups, listeners, and cleanup guardians.
 # Windows first exposed concurrent copies exhausting readiness budgets; hosted
@@ -37,7 +43,8 @@ threads-required = 'num-test-threads'
 # deadlines. The target shards still execute on separate CI runners in parallel.
 [[profile.ci.overrides]]
 filter = '''package(labby) & (
-    binary(=browser_runtime_e2e)
+    binary(=agent_session_messaging)
+    | binary(=browser_runtime_e2e)
     | binary(=codemode_qualification)
     | binary(=e2e_coverage_report)
     | binary(=gateway_auto_reconnect)

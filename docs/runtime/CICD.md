@@ -759,6 +759,10 @@ must include a dependency-path comment and should be removed once the upstream
 dependency path is gone. The weekly scheduled CI run keeps those exceptions
 visible even if no pull request touches dependency policy.
 
+Both CI workspaces use the same [pinned Cargo Deny installer](../../scripts/ci/install-pinned-cargo-deny.sh).
+If the release URL fails, the installer tries GitHub's release asset API for
+the same archive. It verifies the pinned SHA-256 before extracting either download.
+
 ## JavaScript Advisories
 
 `scripts/ci/js-advisory-policy.json` is the exhaustive ownership inventory for committed npm and pnpm manifests and lockfiles. `scripts/ci/js_advisory_gate.py` fails when a dependency file has no owner, has multiple owners, an audit cannot produce usable results, or a high/critical advisory is present. Any exception must record the advisory ID, a non-empty rationale, and an ISO date expiry; expired or malformed exceptions fail before network scanning. Pull requests changing any JavaScript manifest or lockfile route to this required job, and the weekly CI schedule scans all graphs even without a dependency change.

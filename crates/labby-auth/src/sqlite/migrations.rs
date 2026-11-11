@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 18;
+pub(crate) const SCHEMA_VERSION: i64 = 19;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
@@ -415,6 +415,21 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
     }
     if current < 18 {
         migrate_v18(conn)?;
+    }
+    if current < 19 {
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        add_column_if_missing(&transaction, "refresh_tokens", "grant_family", "TEXT")?;
+        transaction
+            .execute_batch(
+                "UPDATE refresh_tokens SET grant_family=lower(hex(randomblob(16)))
+                 WHERE grant_family IS NULL;
+                 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_authority
+                   ON refresh_tokens(client_id, subject, resource, scope,
+                                     identity_issuer, provider_generation, expires_at, grant_family);
+                 PRAGMA user_version = 19;",
+            )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
     }
     Ok(())
 }

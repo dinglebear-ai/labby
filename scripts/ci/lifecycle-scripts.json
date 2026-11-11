@@ -22,6 +22,7 @@
     "scripts/ci/build-incus-image.sh",
     "scripts/ci/smoke-incus-image.sh",
     "scripts/ci/check-lifecycle-scripts.sh",
+    "scripts/ci/install-pinned-cargo-deny.sh",
     "scripts/ci/labby-live-e2e.sh",
     "scripts/ci/labby-owned-process-gate.sh",
     "scripts/ci/mcp-conformance.sh",

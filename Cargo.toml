@@ -87,7 +87,7 @@ toml = "1.1"
 serde-saphyr = { version = "1.2.0", default-features = false, features = ["deserialize"] }
 
 # mcp
-rmcp = { version = "=3.7.0", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2", features = [
+rmcp = { version = "=3.9.0", git = "https://github.com/dinglebear-ai/rust-sdk.git", rev = "dc4c6dac4a25ef91b4dab795df799dc008fb3661", features = [
   "server",
   "transport-io",
   "transport-child-process",
@@ -105,7 +105,7 @@ jsonwebtoken = { version = "10", features = ["rust_crypto"] }
 rsa = "0.10.0-rc.16"
 ed25519-dalek = { version = "2.2", features = ["pkcs8", "pem"] }
 rand = "0.10"
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 sha2 = "0.11"
 hmac = "0.13"
 percent-encoding = "2.3"
@@ -314,3 +314,18 @@ inherits = "release"
 lto = "off"
 codegen-units = 16
 incremental = false
+
+# Temporary, exact-source exception for the unreleased sqlx libsqlite3-sys
+# ceiling bump (launchbadge/sqlx#4502). sqlx 0.9.0 caps libsqlite3-sys below
+# 0.38.0, which pins the bundled SQLite that RUSTSEC-2026-0459 reports, and
+# libsqlite3-sys sets links = "sqlite3" so rusqlite 0.41 (libsqlite3-sys 0.39)
+# cannot coexist with it. Remove this patch and the matching deny.toml
+# allow-git entry as soon as sqlx publishes a release carrying #4502.
+[patch.crates-io]
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+sqlx-core = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+sqlx-macros = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+sqlx-macros-core = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+sqlx-mysql = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+sqlx-postgres = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }
+sqlx-sqlite = { git = "https://github.com/launchbadge/sqlx", rev = "10462fa4414c6c7f1ed1d39bb31678e3b726878c" }

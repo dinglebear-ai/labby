@@ -32,7 +32,7 @@ An assertion about one role is not accepted as evidence for another role.
 | Component | Pin |
 |---|---|
 | MCP protocol | `2026-07-28` |
-| Labby rmcp dependency | fork `3.7.0`, Git revision `c8f2ac4cb10ac7882bfb0c7ca048977c3dde91e2` |
+| Labby rmcp dependency | fork `3.9.0`, Git revision [`dc4c6dac4a25ef91b4dab795df799dc008fb3661`](https://github.com/dinglebear-ai/rust-sdk/commit/dc4c6dac4a25ef91b4dab795df799dc008fb3661) |
 | rmcp conformance fixture | stock upstream `3.7.0` |
 | rmcp fixture tag commit | `5d6a11f2ae022f513aec0f6e0f10f89a57891a7f` |
 | MCP conformance package | `0.2.0-alpha.12` |

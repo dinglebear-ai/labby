@@ -30,14 +30,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use rmcp::RoleClient;
-use rmcp::model::{ClientRequest, CustomRequest};
+use rmcp::model::{
+    ClientRequest, GetSkillRequest, GetSkillRequestParams, ListSkillsRequest,
+    PaginatedRequestParams,
+};
 use rmcp::service::{Peer, ServiceError};
-use serde_json::json;
 
 use super::super::types::SkillExposurePolicy;
 use labby_runtime::skills::wire::{
-    SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD, SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult,
-    SkillsListResult,
+    CACHE_SCOPE_PRIVATE, CACHE_SCOPE_PUBLIC, SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD,
+    SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult, SkillsListResult,
 };
 use labby_runtime::skills::{
     SkillRejection, ValidatedSkill, limits, parse_skill_resource_uri, validate_skill_entry,
@@ -183,9 +185,7 @@ enum SkillIngestCap {
 
 fn skills_method_error(method: &str, error: &ServiceError) -> String {
     match error {
-        ServiceError::ResponseDeserialization(error) => {
-            format!("{method} returned a malformed result: {error}")
-        }
+        ServiceError::UnexpectedResponse => format!("{method} returned a malformed result"),
         error => format!("{method} failed: {error}"),
     }
 }
@@ -320,11 +320,9 @@ impl UpstreamPool {
                     incomplete: true,
                 });
             }
-            let params = cursor
-                .as_ref()
-                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
-            let request =
-                ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
+            let mut params = PaginatedRequestParams::default();
+            params.cursor = cursor.clone();
+            let request = ClientRequest::ListSkillsRequest(ListSkillsRequest::with_param(params));
             let started = Instant::now();
             let remaining = deadline.saturating_duration_since(started);
             let event = UpstreamRequestLog::skills_list(upstream_name, false);
@@ -336,7 +334,7 @@ impl UpstreamPool {
                 UpstreamCapability::Skills,
                 event,
                 started,
-                peer.send_request_as(request),
+                super::skills_wire::request(peer, request),
                 |_| 0,
                 None,
                 |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
@@ -442,6 +440,7 @@ impl UpstreamPool {
         };
         let mut out = UpstreamSkills::default();
         let mut cursor: Option<String> = None;
+        let mut unclassified_page = false;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
 
         for page in 0..limits::MAX_LIST_PAGES {
@@ -455,11 +454,9 @@ impl UpstreamPool {
                 break;
             }
 
-            let params = cursor
-                .as_ref()
-                .map_or_else(|| json!({}), |cursor| json!({ "cursor": cursor }));
-            let request =
-                ClientRequest::CustomRequest(CustomRequest::new(SKILLS_LIST_METHOD, Some(params)));
+            let mut params = PaginatedRequestParams::default();
+            params.cursor = cursor.clone();
+            let request = ClientRequest::ListSkillsRequest(ListSkillsRequest::with_param(params));
 
             let page_start = Instant::now();
             let remaining = deadline.saturating_duration_since(page_start);
@@ -472,7 +469,7 @@ impl UpstreamPool {
                 UpstreamCapability::Skills,
                 event,
                 page_start,
-                peer.send_request_as(request),
+                super::skills_wire::request(peer, request),
                 |_| 0,
                 None,
                 |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
@@ -487,6 +484,9 @@ impl UpstreamPool {
 
             // A server MUST apply one cacheScope to every page of a list; a
             // change mid-walk means the pages do not describe one listing.
+            // The SDK normalizes an empty marker to absent. Such a page
+            // cannot establish that every page explicitly permitted sharing.
+            unclassified_page |= result.cache_scope.is_none();
             match (&out.cache_scope, &result.cache_scope) {
                 (None, scope) => out.cache_scope = scope.clone(),
                 (Some(first), Some(next)) if first != next => {
@@ -529,7 +529,8 @@ impl UpstreamPool {
             }
 
             let Some(next) = result.next_cursor else {
-                return Ok(out);
+                cursor = None;
+                break;
             };
             // Stop at a page boundary before another RPC whose results cannot
             // contribute to this request, not after receiving its first item.
@@ -573,6 +574,9 @@ impl UpstreamPool {
                 "skills/list exceeded the page cap — snapshot truncated"
             );
         }
+        if unclassified_page && out.cache_scope.as_deref() == Some(CACHE_SCOPE_PUBLIC) {
+            out.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_owned());
+        }
         Ok(out)
     }
 
@@ -599,10 +603,8 @@ impl UpstreamPool {
         let event = UpstreamRequestLog::skill(upstream_name, redacted_uri, subject.is_some());
         log_upstream_request_start(event);
 
-        let request = ClientRequest::CustomRequest(CustomRequest::new(
-            SKILLS_GET_METHOD,
-            Some(json!({ "uri": uri })),
-        ));
+        let request =
+            ClientRequest::GetSkillRequest(GetSkillRequest::new(GetSkillRequestParams::new(uri)));
         let timeout_ms = self.request_timeout.as_millis();
         let result = timed_capability_call(
             self,
@@ -610,7 +612,7 @@ impl UpstreamPool {
             UpstreamCapability::Skills,
             event,
             start,
-            peer.send_request_as::<SkillsGetResult>(request),
+            super::skills_wire::request::<SkillsGetResult>(peer, request),
             |_| 0,
             subject,
             |error| format!("upstream `{upstream_name}` {}", skills_get_error(error)),

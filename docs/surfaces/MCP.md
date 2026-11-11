@@ -53,6 +53,20 @@ uses the authenticated HTTP API rather than a sandbox helper. See
 limits, and recovery, and the [canonical Code Mode reference](../../plugins/labby/.apm/skills/using-codemode/references/code-mode.md#response-notification-contract)
 for request and response examples.
 
+Opt-in push delivery reuses these inboxes. `labby serve --mcp-events` exposes
+webhook subscriptions on authenticated root HTTP MCP. `labby mcp --claude-channel`
+sends notices to its own Claude Code stdio connection after initialization.
+
+`--agent-messages` enables the direct `messages` tool on an authenticated
+TCP MCP listener or local stdio connection. The tool assigns session IDs,
+sends private messages to one session or all active sessions under the
+same owner, and reads bodies up to 16 KiB. MCP Events and Claude Channels
+can carry a short reference for the recipient to open with `messages.read`.
+See the [session messaging guide](../dev/AGENT_NOTIFICATIONS.md#private-session-messages)
+for the HTTP session key, client setup, and delivery limits.
+Neither transport receipt acknowledges the notice. See
+[Push delivery](../dev/AGENT_NOTIFICATIONS.md#push-delivery) for setup and limits.
+
 ## Trace metadata
 
 The tool-call boundary accepts W3C/SEP-414 `traceparent`, `tracestate`, and
@@ -382,9 +396,11 @@ live in [`docs/contracts/skills-extension.md`](../contracts/skills-extension.md)
 which is also published in-band as the `lab://contracts/skills-extension`
 resource so a client that does not speak the extension can still discover it.
 
-Labby declares `io.modelcontextprotocol/skills` with an empty settings object —
-supported, with no optional features. It does **not** declare `directoryRead`,
-and a client must not call `resources/directory/read` against it.
+Labby declares `io.modelcontextprotocol/skills` in the peer's extension
+capabilities. The `directoryRead` setting is true on routes that serve native
+manifest-backed Skills without an enabled proxied Skills namespace. Check
+the connected peer's advertised setting before calling
+`resources/directory/read`. The server rechecks route policy on every call.
 
 ### Methods
 

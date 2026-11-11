@@ -473,6 +473,8 @@ pub fn build_route_descriptors() -> Vec<RouteDescriptor> {
         setup_handoff_descriptor(false),
         setup_handoff_descriptor(true),
     ]);
+    #[cfg(feature = "gateway")]
+    routes.push(super::session_messages::descriptor());
     routes.extend(crate::api::services::oauth_relay::public_descriptors());
     routes.extend(crate::api::services::browser::public_descriptors());
     routes.extend(prefixed(

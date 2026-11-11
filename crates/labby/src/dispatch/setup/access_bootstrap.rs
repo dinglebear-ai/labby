@@ -623,7 +623,7 @@ fn read_identity_with_sharing_retry(
     unreachable!("the final attempt always returns")
 }
 
-pub(super) fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
+pub(crate) fn existing_installation_id(paths: &InstallationPaths) -> std::io::Result<String> {
     let path = paths.root().join(INSTALLATION_ID_FILE);
     #[cfg(windows)]
     let bytes = read_identity_with_sharing_retry(|| read_private(&path))?;

@@ -1411,6 +1411,103 @@ impl LiveGateway {
             .await?)
     }
 
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn prove_message_bridge(
+        &self,
+        key: &crate::dispatch::agent_messages::proof::MessageKey,
+        installation: &str,
+    ) -> Result<
+        crate::dispatch::agent_messages::proof::BridgeProof,
+        crate::dispatch::codemode_notices::NoticeError,
+    > {
+        use crate::dispatch::{
+            agent_messages::proof::{
+                BRIDGE_AUTH_HEADER, BRIDGE_PROOF_PATH, BridgeProof, BridgeProofRequest,
+            },
+            codemode_notices::{NoticeError, now_ms},
+        };
+
+        if !matches!(self.base_url.host(), Some(Host::Ipv4(ip)) if ip.is_loopback())
+            && !matches!(self.base_url.host(), Some(Host::Ipv6(ip)) if ip.is_loopback())
+        {
+            return Err(NoticeError::Identity);
+        }
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| NoticeError::Unavailable)?;
+        tokio::time::timeout(Duration::from_secs(4), async {
+            let token = if let Some(root) = &self.saved_cli_session {
+                let saved = crate::oauth::cli_session::auth_client_for_root(
+                    root,
+                    &self.base_url,
+                    client.clone(),
+                )
+                .await
+                .map_err(|_| NoticeError::Unavailable)?
+                .ok_or(NoticeError::Identity)?;
+                saved.get_access_token().await.map_err(|error| {
+                    use rmcp::transport::auth::AuthError;
+                    match error {
+                        AuthError::AuthorizationRequired
+                        | AuthError::TokenRefreshRejected(_)
+                        | AuthError::TokenExpired
+                        | AuthError::InsufficientScope { .. } => NoticeError::Identity,
+                        _ => NoticeError::Unavailable,
+                    }
+                })?
+            } else {
+                self.token.clone().ok_or(NoticeError::Identity)?
+            };
+            let token = zeroize::Zeroizing::new(token);
+            let request = BridgeProofRequest::new(key, &token, installation, now_ms())?;
+            let mut sealed = reqwest::header::HeaderValue::from_str(
+                &key.seal_bridge_bearer(installation, &token)?,
+            )
+            .map_err(|_| NoticeError::Unavailable)?;
+            sealed.set_sensitive(true);
+            let url = self
+                .base_url
+                .join(BRIDGE_PROOF_PATH)
+                .map_err(|_| NoticeError::Identity)?;
+            let mut response = client
+                .post(url)
+                .header(BRIDGE_AUTH_HEADER, sealed)
+                .json(&request)
+                .send()
+                .await
+                .map_err(|_| NoticeError::Unavailable)?;
+            match response.status() {
+                reqwest::StatusCode::OK => {}
+                status
+                    if status.is_server_error()
+                        || status == reqwest::StatusCode::TOO_MANY_REQUESTS =>
+                {
+                    return Err(NoticeError::Unavailable);
+                }
+                _ => return Err(NoticeError::Identity),
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_| NoticeError::Unavailable)?
+            {
+                if chunk.len() > 2048 - body.len() {
+                    return Err(NoticeError::Identity);
+                }
+                body.extend_from_slice(&chunk);
+            }
+            let proof: BridgeProof =
+                serde_json::from_slice(&body).map_err(|_| NoticeError::Identity)?;
+            proof.verify(key, &request, &token, now_ms())?;
+            Ok(proof)
+        })
+        .await
+        .map_err(|_| NoticeError::Unavailable)?
+    }
+
     pub async fn connect_service_bounded<H: rmcp::ClientHandler>(
         &self,
         handler: H,
@@ -1567,6 +1664,43 @@ mod tests {
             dispatch_timeout: DEFAULT_DISPATCH_TIMEOUT,
             actions: None,
         }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn message_proof_does_not_expose_a_bearer_to_a_replacement_listener() {
+        use crate::dispatch::agent_messages::proof::{
+            BRIDGE_AUTH_HEADER, BRIDGE_PROOF_PATH, MessageKey,
+        };
+        const BEARER: &str = "synthetic-private-bridge-bearer";
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(BRIDGE_PROOF_PATH))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let gateway = test_gateway(server.uri(), Some(BEARER.into()));
+        let key = MessageKey::from_test_bytes([7; 32]);
+        assert!(
+            gateway
+                .prove_message_bridge(&key, &"a".repeat(64))
+                .await
+                .is_err()
+        );
+        let requests = server.received_requests().await.unwrap();
+        let [request] = requests.as_slice() else {
+            panic!("expected one proof request")
+        };
+        assert!(!request.headers.contains_key(reqwest::header::AUTHORIZATION));
+        let envelope = request
+            .headers
+            .get(BRIDGE_AUTH_HEADER)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(!envelope.contains(BEARER));
+        assert!(!String::from_utf8_lossy(&request.body).contains(BEARER));
     }
 
     async fn detect_opportunistically(

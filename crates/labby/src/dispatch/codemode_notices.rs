@@ -2,6 +2,7 @@
 //!
 //! This inbox is separate from operator notifications. A committed response lease
 //! is not a receipt: messages remain retryable until acknowledged or expired.
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -9,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub(crate) const MAX_NOTICE_BATCH_BYTES: usize = 1024;
 pub(crate) const MAX_ACKS: usize = 32;
@@ -18,8 +19,12 @@ const MAX_PER_RECIPIENT: i64 = 32;
 const MAX_INBOXES: i64 = 2_000;
 const MAX_BATCH: usize = 3;
 const INBOX_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 3;
+const MESSAGE_INBOX_SCOPE: &str = "message_session";
+pub(super) const MESSAGE_RETENTION_MS: i64 = 86_400_000;
+mod schema;
 const APPLICATION_ID: i64 = 0x4c4e_5446;
+const DB_BUDGET: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct NoticeRecipient {
@@ -43,10 +48,13 @@ pub(crate) enum NoticeConsumer {
     Stdio {
         session: String,
     },
+    MessageSession {
+        binding: String,
+    },
 }
 
 impl NoticeRecipient {
-    fn key(&self) -> Result<String, NoticeError> {
+    pub(super) fn key(&self) -> Result<String, NoticeError> {
         let valid = bounded(&self.route, 512)
             && self.actor.as_ref().is_none_or(|v| bounded(v, 512))
             && match &self.consumer {
@@ -57,6 +65,9 @@ impl NoticeRecipient {
                         && conversation.as_ref().is_none_or(|v| bounded(v, 128))
                 }
                 NoticeConsumer::Stdio { session } => bounded(session, 128),
+                NoticeConsumer::MessageSession { binding } => {
+                    self.actor.is_some() && bounded(binding, 128)
+                }
             };
         if !valid {
             return Err(NoticeError::Invalid);
@@ -78,6 +89,7 @@ impl NoticeRecipient {
             NoticeConsumer::Client { .. } => "authenticated_client",
             NoticeConsumer::Credential { .. } => "authenticated_credential",
             NoticeConsumer::Stdio { .. } => "stdio_connection",
+            NoticeConsumer::MessageSession { .. } => MESSAGE_INBOX_SCOPE,
         }
     }
 }
@@ -95,6 +107,8 @@ pub(crate) struct CodeModeNotice {
     pub source: String,
     pub level: NoticeLevel,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub delivery_attempt: u32,
     pub expires_at_unix_ms: i64,
 }
@@ -256,6 +270,8 @@ pub(crate) struct NoticeStore {
     windows_guard: Option<Arc<labby_winjob::fs::SqliteVerificationGuard>>,
     // At most one blocking operation per store can be queued or executing.
     permit: Arc<Semaphore>,
+    published: Arc<tokio::sync::Notify>,
+    installation_root: Option<Arc<Path>>,
 }
 
 impl Default for NoticeStore {
@@ -276,6 +292,8 @@ impl NoticeStore {
             #[cfg(windows)]
             windows_guard: None,
             permit: Arc::new(Semaphore::new(1)),
+            published: Arc::new(tokio::sync::Notify::new()),
+            installation_root: None,
         }
     }
 
@@ -283,33 +301,7 @@ impl NoticeStore {
         // Startup contention has a separate bounded budget from request operations.
         connection.busy_timeout(Duration::from_secs(1))?;
         connection.execute_batch("PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;")?;
-        {
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-            let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-            let schema = schema_snapshot(&tx)?;
-            if version == 0 && application == 0 && schema.is_empty() {
-                tx.execute_batch(SCHEMA_SQL)?;
-                tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            } else {
-                let expected = Connection::open_in_memory()?;
-                expected.execute_batch(SCHEMA_SQL)?;
-                if version != SCHEMA_VERSION {
-                    return Err(validation_failure("schema_version", Some(version)));
-                }
-                if application != APPLICATION_ID {
-                    return Err(validation_failure("application_id", Some(application)));
-                }
-                if schema != schema_snapshot(&expected)? {
-                    return Err(validation_failure("schema_mismatch", None));
-                }
-            }
-            let integrity: String = tx.query_row("PRAGMA quick_check(1)", [], |r| r.get(0))?;
-            let foreign_violation: bool = tx.prepare("PRAGMA foreign_key_check")?.exists([])?;
-            validate_integrity(&integrity, foreign_violation)?;
-            tx.commit()?;
-        }
+        schema::migrate(&mut connection)?;
         connection.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA max_page_count=4096;")?;
         connection.busy_timeout(Duration::from_millis(25))?;
         Ok(Self {
@@ -317,7 +309,27 @@ impl NoticeStore {
             #[cfg(windows)]
             windows_guard: None,
             permit: Arc::new(Semaphore::new(1)),
+            published: Arc::new(tokio::sync::Notify::new()),
+            installation_root: None,
         })
+    }
+
+    pub(crate) fn bridge_binding(&self, installation: &str) -> Option<String> {
+        self.installation_root
+            .as_deref()
+            .map(|root| inbox_binding(root, installation))
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.connection.is_some()
+    }
+
+    pub(crate) async fn published(&self) {
+        self.published.notified().await;
+    }
+
+    pub(super) fn notify_published(&self) {
+        self.published.notify_waiters();
     }
 
     /// Open under the validated private installation, before accepting requests.
@@ -332,7 +344,7 @@ impl NoticeStore {
         .map_err(|_| NoticeError::Unavailable)?
     }
 
-    fn open_at(root: &Path) -> Result<Self, NoticeError> {
+    pub(crate) fn open_at(root: &Path) -> Result<Self, NoticeError> {
         Self::open_at_attempt(root, false)
     }
 
@@ -388,7 +400,10 @@ impl NoticeStore {
         let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
             | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX
             | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        let store = Self::from_connection(Connection::open_with_flags(path, flags)?)?;
+        let store = Self {
+            installation_root: Some(Arc::from(root)),
+            ..Self::from_connection(Connection::open_with_flags(path, flags)?)?
+        };
         #[cfg(windows)]
         let store = Self {
             windows_guard: Some(Arc::new(verified)),
@@ -397,16 +412,53 @@ impl NoticeStore {
         Ok(store)
     }
 
-    async fn run<T: Send + 'static>(
+    pub(super) async fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+    ) -> Result<T, NoticeError> {
+        let permit = Arc::clone(&self.permit)
+            .try_acquire_owned()
+            .map_err(|_| NoticeError::Busy)?;
+        self.run_admitted(permit, work, Some(DB_BUDGET)).await
+    }
+
+    /// For the bounded Events and joined session presence workers. A
+    /// delivery must wait for the polling pass that claimed it to finish
+    /// using the connection, rather than release and reclaim the same row.
+    pub(super) async fn run_event<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+    ) -> Result<T, NoticeError> {
+        self.run_admitted(self.event_permit().await?, work, Some(DB_BUDGET))
+            .await
+    }
+
+    /// The delivery worker owns the result of an admitted claim, offer, or settlement.
+    /// Waiting for that result prevents a detached commit from losing its owner.
+    pub(super) async fn run_event_settled<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+    ) -> Result<T, NoticeError> {
+        self.run_admitted(self.event_permit().await?, work, None)
+            .await
+    }
+
+    async fn event_permit(&self) -> Result<OwnedSemaphorePermit, NoticeError> {
+        tokio::time::timeout(DB_BUDGET, Arc::clone(&self.permit).acquire_owned())
+            .await
+            .map_err(|_| NoticeError::Busy)?
+            .map_err(|_| NoticeError::Unavailable)
+    }
+
+    async fn run_admitted<T: Send + 'static>(
+        &self,
+        permit: OwnedSemaphorePermit,
+        work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
+        deadline: Option<Duration>,
     ) -> Result<T, NoticeError> {
         let db = self.connection.clone().ok_or(NoticeError::Unavailable)?;
         #[cfg(windows)]
         let guard = self.windows_guard.clone();
-        let permit = Arc::clone(&self.permit)
-            .try_acquire_owned()
-            .map_err(|_| NoticeError::Busy)?;
         // A deadline bounds response latency, not the durable write. The worker
         // retains its permit so a timeout cannot grow an unbounded work queue.
         let worker = tokio::task::spawn_blocking(move || {
@@ -427,10 +479,13 @@ impl NoticeStore {
             drop(db);
             result
         });
-        tokio::time::timeout(Duration::from_millis(250), worker)
-            .await
-            .map_err(|_| NoticeError::Deadline)?
-            .map_err(|_| NoticeError::Unavailable)?
+        match deadline {
+            Some(deadline) => tokio::time::timeout(deadline, worker)
+                .await
+                .map_err(|_| NoticeError::Deadline)?,
+            None => worker.await,
+        }
+        .map_err(|_| NoticeError::Unavailable)?
     }
 
     pub(crate) async fn controls(
@@ -439,10 +494,22 @@ impl NoticeStore {
         register: bool,
         ids: Option<Vec<String>>,
     ) -> Result<(Option<InboxAddress>, Option<Vec<String>>), NoticeError> {
+        self.controls_for_recipients(recipient, None, register, ids)
+            .await
+    }
+
+    pub(crate) async fn controls_for_recipients(
+        &self,
+        recipient: NoticeRecipient,
+        alternate: Option<NoticeRecipient>,
+        register: bool,
+        ids: Option<Vec<String>>,
+    ) -> Result<(Option<InboxAddress>, Option<Vec<String>>), NoticeError> {
         if let Some(ids) = &ids {
             validate_acknowledgments(ids)?;
         }
         let key = recipient.key()?;
+        let alternate = alternate.as_ref().map(NoticeRecipient::key).transpose()?;
         self.run(move |db| {
             let now = now_ms();
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -453,7 +520,7 @@ impl NoticeStore {
             };
             let acknowledgments = ids
                 .as_ref()
-                .map(|ids| acknowledge_in(&tx, &key, ids, now))
+                .map(|ids| acknowledge_in(&tx, &key, alternate.as_deref(), ids, now))
                 .transpose()?;
             tx.commit()?;
             Ok((address, acknowledgments))
@@ -484,21 +551,93 @@ impl NoticeStore {
             return Err(NoticeError::Forbidden);
         }
         validate_publish(&input)?;
-        self.run(move |db| publish_at(db, &producer.actor, &input, now_ms()))
-            .await
+        let signal = self.published.clone();
+        self.run(move |db| {
+            let receipt = publish_at(db, &producer.actor, &input, now_ms())?;
+            if !receipt.duplicate {
+                signal.notify_waiters();
+            }
+            Ok(receipt)
+        })
+        .await
     }
 
     /// The acceptor builds a candidate envelope. Only commit after it fits; return
     /// that candidate after the durable lease commits, never mutate output early.
+    #[cfg(test)]
     pub(crate) async fn deliver<T: Send + 'static>(
         &self,
         recipient: NoticeRecipient,
         accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
     ) -> Result<Option<T>, NoticeError> {
+        self.deliver_for_recipients(recipient, None, accept).await
+    }
+
+    pub(crate) async fn deliver_for_recipients<T: Send + 'static>(
+        &self,
+        recipient: NoticeRecipient,
+        alternate: Option<NoticeRecipient>,
+        accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
+    ) -> Result<Option<T>, NoticeError> {
         let key = recipient.key()?;
-        self.run(move |db| deliver_at(db, &key, now_ms(), accept))
+        let alternate = alternate.as_ref().map(NoticeRecipient::key).transpose()?;
+        self.run(move |db| deliver_at(db, &key, alternate.as_deref(), now_ms(), false, accept))
             .await
     }
+
+    /// Wait for an admitted channel offer so a committed lease has a sender.
+    /// The channel includes message references only with current session proof.
+    pub(crate) async fn deliver_channel<T: Send + 'static>(
+        &self,
+        recipient: NoticeRecipient,
+        include_message_refs: bool,
+        accept: impl FnMut(&NoticeBatch) -> Option<T> + Send + 'static,
+    ) -> Result<Option<T>, NoticeError> {
+        let key = recipient.key()?;
+        self.run_event_settled(move |db| {
+            deliver_at(db, &key, None, now_ms(), include_message_refs, accept)
+        })
+        .await
+    }
+
+    #[cfg(test)]
+    pub(super) async fn await_idle(&self) -> Result<(), NoticeError> {
+        let _permit = tokio::time::timeout(Duration::from_secs(3), self.permit.acquire())
+            .await
+            .map_err(|_| NoticeError::Busy)?
+            .map_err(|_| NoticeError::Unavailable)?;
+        Ok(())
+    }
+
+    /// Avoid refreshing bridge authority during idle channel polls.
+    pub(crate) async fn message_reference_due(
+        &self,
+        recipient: &NoticeRecipient,
+    ) -> Result<bool, NoticeError> {
+        let key = recipient.key()?;
+        self.run(move |db| {
+            Ok(db.query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM agent_notices n JOIN agent_inboxes i ON i.id=n.inbox_id
+                   WHERE i.recipient=?1 AND i.expires>?2 AND n.expires>?2
+                     AND n.next_attempt<=?2 AND n.acknowledged=0 AND n.message_id IS NOT NULL)",
+                params![key, now_ms()],
+                |row| row.get(0),
+            )?)
+        })
+        .await
+    }
+}
+
+/// A location check, not a credential. Salt the canonical root with the
+/// installation ID so no path is revealed and copied roots do not match.
+pub(crate) fn inbox_binding(root: &Path, installation: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"labby-local-notice-store/v1\0");
+    digest.update(installation.as_bytes());
+    digest.update(b"\0");
+    digest.update(root.as_os_str().as_encoded_bytes());
+    hex::encode(digest.finalize())
 }
 
 pub(crate) fn validate_acknowledgments(ids: &[String]) -> Result<(), NoticeError> {
@@ -516,17 +655,25 @@ fn valid_id(value: &str, prefix: &str) -> bool {
         .strip_prefix(prefix)
         .is_some_and(|id| id.len() == 26 && ulid::Ulid::from_string(id).is_ok())
 }
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |v| i64::try_from(v.as_millis()).unwrap_or(i64::MAX))
 }
 fn validate_publish(input: &PublishNotice) -> Result<(), NoticeError> {
+    validate_publish_reference(input, None)
+}
+
+fn validate_publish_reference(
+    input: &PublishNotice,
+    message_id: Option<&str>,
+) -> Result<(), NoticeError> {
     if !valid_id(&input.inbox_id, "inbox_")
         || !bounded(&input.source, 64)
         || !bounded(&input.message, 384)
         || !bounded(&input.dedupe_key, 128)
         || !(1..=86_400).contains(&input.ttl_seconds)
+        || message_id.is_some_and(|id| !valid_id(id, "message_"))
     {
         return Err(NoticeError::Invalid);
     }
@@ -535,6 +682,7 @@ fn validate_publish(input: &PublishNotice) -> Result<(), NoticeError> {
         source: input.source.clone(),
         level: input.level,
         message: input.message.clone(),
+        message_id: message_id.map(str::to_owned),
         delivery_attempt: u32::MAX,
         expires_at_unix_ms: i64::MAX,
     };
@@ -548,9 +696,47 @@ fn validate_publish(input: &PublishNotice) -> Result<(), NoticeError> {
     }
     Ok(())
 }
-fn prune(db: &Connection, now: i64) -> Result<(), NoticeError> {
-    db.execute("DELETE FROM agent_notices WHERE expires <= ?", [now])?;
-    db.execute("DELETE FROM agent_inboxes WHERE expires <= ?", [now])?;
+pub(super) fn prune(db: &Connection, now: i64) -> Result<(), NoticeError> {
+    // Keep live claims counted until the bounded request ends, even if
+    // unsubscribe or expiry has already made their data ineligible.
+    db.execute(
+        "DELETE FROM agent_event_subscriptions WHERE (expires <= ?1 OR active=0)
+         AND NOT EXISTS (SELECT 1 FROM agent_event_deliveries WHERE subscription_id=agent_event_subscriptions.id AND claim_until>?1)",
+        [now],
+    )?;
+    db.execute(
+        "UPDATE agent_event_subscriptions SET previous_secret=NULL,previous_until=0
+         WHERE previous_until>0 AND previous_until<=?1",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_notices WHERE expires<=?1
+         AND NOT EXISTS (SELECT 1 FROM agent_event_deliveries WHERE notice_id=agent_notices.id AND claim_until>?1)",
+        [now],
+    )?;
+    // An expired receipt can release its retry key even while a leased
+    // notice pins the body. Expiry governs reads, independently of GC.
+    db.execute(
+        "UPDATE agent_messages SET idempotency_key=NULL
+         WHERE expires<=?1 AND idempotency_key IS NOT NULL",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_messages WHERE expires<=?1 AND NOT EXISTS
+         (SELECT 1 FROM agent_notices WHERE message_id=agent_messages.id)",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_message_sessions WHERE retained_until<=?1",
+        [now],
+    )?;
+    db.execute(
+        "DELETE FROM agent_inboxes WHERE expires<=?1
+         AND NOT EXISTS (SELECT 1 FROM agent_notices WHERE inbox_id=agent_inboxes.id)
+         AND NOT EXISTS (SELECT 1 FROM agent_event_subscriptions WHERE inbox_id=agent_inboxes.id)
+         AND NOT EXISTS (SELECT 1 FROM agent_message_sessions WHERE inbox_id=agent_inboxes.id)",
+        [now],
+    )?;
     Ok(())
 }
 #[cfg(test)]
@@ -565,21 +751,26 @@ fn register_at(
     tx.commit()?;
     Ok(address)
 }
-fn register_in(
+pub(super) fn register_in(
     tx: &Connection,
     key: &str,
     scope: &str,
     now: i64,
 ) -> Result<InboxAddress, NoticeError> {
     prune(tx, now)?;
-    let existing: Option<String> = tx
+    let existing: Option<(String, i64)> = tx
         .query_row(
-            "SELECT id FROM agent_inboxes WHERE recipient=?",
+            "SELECT id,expires FROM agent_inboxes WHERE recipient=?",
             [key],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    let id = if let Some(id) = existing {
+    let id = if let Some((id, expires)) = existing {
+        if expires <= now {
+            // An expired inbox can still hold a network lease. Keep the old
+            // address expired until the worker releases that lease.
+            return Err(NoticeError::Busy);
+        }
         id
     } else {
         let count: i64 = tx.query_row("SELECT count(*) FROM agent_inboxes", [], |r| r.get(0))?;
@@ -588,7 +779,12 @@ fn register_in(
         }
         format!("inbox_{}", ulid::Ulid::new())
     };
-    let expires = now.saturating_add(INBOX_TTL_MS);
+    let ttl = if scope == MESSAGE_INBOX_SCOPE {
+        MESSAGE_RETENTION_MS
+    } else {
+        INBOX_TTL_MS
+    };
+    let expires = now.saturating_add(ttl);
     tx.execute(
         "INSERT INTO agent_inboxes(id,recipient,scope,expires) VALUES(?,?,?,?)
         ON CONFLICT(recipient) DO UPDATE SET expires=excluded.expires",
@@ -609,23 +805,8 @@ fn publish_at(
 ) -> Result<PublishReceipt, NoticeError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     prune(&tx, now)?;
-    let inbox_expires: Option<i64> = tx
-        .query_row(
-            "SELECT expires FROM agent_inboxes WHERE id=?",
-            [&input.inbox_id],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(inbox_expires) = inbox_expires else {
-        return Err(NoticeError::NotFound);
-    };
-    let payload = serde_json::to_string(&(
-        input.source.as_str(),
-        input.level,
-        input.message.as_str(),
-        input.ttl_seconds,
-    ))
-    .map_err(|_| NoticeError::Invalid)?;
+    notice_inbox_expiry(&tx, input, now, false)?;
+    let payload = notice_payload(input)?;
     let prior: Option<(String, String)> = tx
         .query_row(
             "SELECT id,payload FROM agent_notices WHERE inbox_id=? AND producer=? AND dedupe_key=?",
@@ -643,15 +824,81 @@ fn publish_at(
             duplicate: true,
         });
     }
-    let total: i64 = tx.query_row("SELECT count(*) FROM agent_notices", [], |r| r.get(0))?;
-    let owned: i64 = tx.query_row(
-        "SELECT count(*) FROM agent_notices WHERE inbox_id=?",
-        [&input.inbox_id],
+    let mut admission = admit_notice_targets(&tx, std::slice::from_ref(&input.inbox_id))?;
+    let receipt = insert_notice_in(&tx, &mut admission, actor, input, now, None)?;
+    tx.commit()?;
+    tracing::debug!(
+        subsystem = "agent_notifications",
+        action = "publish",
+        duplicate = false,
+        "agent notice persisted"
+    );
+    Ok(receipt)
+}
+
+fn notice_inbox_expiry(
+    tx: &Connection,
+    input: &PublishNotice,
+    now: i64,
+    message_reference: bool,
+) -> Result<i64, NoticeError> {
+    tx.query_row(
+        "SELECT expires FROM agent_inboxes WHERE id=?1 AND expires>?2
+         AND (scope<>?3 OR ?4)",
+        params![input.inbox_id, now, MESSAGE_INBOX_SCOPE, message_reference],
         |r| r.get(0),
-    )?;
-    if total >= MAX_PENDING || owned >= MAX_PER_RECIPIENT {
+    )
+    .optional()?
+    .ok_or(NoticeError::NotFound)
+}
+
+fn notice_payload(input: &PublishNotice) -> Result<String, NoticeError> {
+    serde_json::to_string(&(
+        input.source.as_str(),
+        input.level,
+        input.message.as_str(),
+        input.ttl_seconds,
+    ))
+    .map_err(|_| NoticeError::Invalid)
+}
+
+/// Single-use admission for each target within the caller's write transaction.
+pub(super) struct NoticeAdmission(BTreeSet<String>);
+
+pub(super) fn admit_notice_targets(
+    tx: &Connection,
+    inboxes: &[String],
+) -> Result<NoticeAdmission, NoticeError> {
+    let ids: BTreeSet<_> = inboxes.iter().cloned().collect();
+    if ids.len() != inboxes.len() {
+        return Err(NoticeError::Invalid);
+    }
+    let total: i64 = tx.query_row("SELECT count(*) FROM agent_notices", [], |r| r.get(0))?;
+    if total.saturating_add(ids.len() as i64) > MAX_PENDING {
         return Err(NoticeError::Full);
     }
+    let mut owned = tx.prepare("SELECT count(*) FROM agent_notices WHERE inbox_id=?")?;
+    for inbox in &ids {
+        if owned.query_row([inbox], |r| r.get::<_, i64>(0))? >= MAX_PER_RECIPIENT {
+            return Err(NoticeError::Full);
+        }
+    }
+    Ok(NoticeAdmission(ids))
+}
+
+pub(super) fn insert_notice_in(
+    tx: &Connection,
+    admission: &mut NoticeAdmission,
+    actor: &str,
+    input: &PublishNotice,
+    now: i64,
+    message_id: Option<&str>,
+) -> Result<PublishReceipt, NoticeError> {
+    if !admission.0.remove(&input.inbox_id) {
+        return Err(NoticeError::Invalid);
+    }
+    validate_publish_reference(input, message_id)?;
+    let inbox_expires = notice_inbox_expiry(tx, input, now, message_id.is_some())?;
     let id = format!("notice_{}", ulid::Ulid::new());
     let expires = now
         .saturating_add(i64::from(input.ttl_seconds) * 1_000)
@@ -660,19 +907,31 @@ fn publish_at(
         NoticeLevel::Info => "info",
         NoticeLevel::Warning => "warning",
     };
-    tx.execute("INSERT INTO agent_notices(id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires) VALUES(?,?,?,?,?,?,?,?,?,?)",
-        params![id,input.inbox_id,actor,input.dedupe_key,payload,input.source,level,input.message,now,expires])?;
-    tx.commit()?;
-    tracing::debug!(
-        subsystem = "agent_notifications",
-        action = "publish",
-        duplicate = false,
-        "agent notice persisted"
-    );
+    tx.execute(
+        "INSERT INTO agent_notices
+            (id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires,message_id)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        params![id, input.inbox_id, actor, input.dedupe_key, notice_payload(input)?, input.source,
+            level, input.message, now, expires, message_id],
+    )
+    .map_err(|error| notice_write_error(error, message_id.is_some()))?;
+    super::agent_events::enqueue(tx, &id, input, now, expires, message_id)?;
     Ok(PublishReceipt {
         id,
         duplicate: false,
     })
+}
+
+/// An atomic message write that hits the private page budget is a capacity
+/// failure. Keep existing notice and startup diagnostics and error semantics.
+pub(super) fn notice_write_error(error: rusqlite::Error, session_message: bool) -> NoticeError {
+    let full = session_message
+        && matches!(
+            &error,
+            rusqlite::Error::SqliteFailure(code, _) if code.code == rusqlite::ErrorCode::DiskFull
+        );
+    let original = NoticeError::from(error);
+    if full { NoticeError::Full } else { original }
 }
 #[cfg(test)]
 fn acknowledge_at(
@@ -682,13 +941,14 @@ fn acknowledge_at(
     now: i64,
 ) -> Result<Vec<String>, NoticeError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let acknowledged = acknowledge_in(&tx, key, ids, now)?;
+    let acknowledged = acknowledge_in(&tx, key, None, ids, now)?;
     tx.commit()?;
     Ok(acknowledged)
 }
 fn acknowledge_in(
     tx: &Connection,
     key: &str,
+    alternate: Option<&str>,
     ids: &[String],
     now: i64,
 ) -> Result<Vec<String>, NoticeError> {
@@ -697,47 +957,63 @@ fn acknowledge_in(
         // Never reveal whether an unknown/foreign ID exists, and never ACK a notice
         // that this recipient has not been offered. Repeated own ACKs are idempotent.
         if tx.execute(
-            "UPDATE agent_notices SET acknowledged=1 WHERE id=? AND attempts>0 AND expires>?
-            AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient=? AND expires>?)",
-            params![id, now, key, now],
+            "UPDATE agent_notices SET acknowledged=1 WHERE id=?1 AND (attempts>0 OR webhook_offered=1) AND expires>?2
+            AND message_id IS NULL
+            AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient IN (?3,?4) AND expires>?2)",
+            params![id, now, key, alternate],
         )? > 0
             && !acknowledged.contains(id)
         {
+            stop_notice_delivery_in(tx, id)?;
             acknowledged.push(id.clone());
         }
     }
     Ok(acknowledged)
 }
+
+pub(super) fn stop_notice_delivery_in(tx: &Connection, id: &str) -> Result<(), NoticeError> {
+    // Stop retries, but keep a current claim counted until its worker releases
+    // it or it expires. An ACK cannot recall a request already on the wire.
+    tx.execute(
+        "UPDATE agent_event_deliveries SET status='stopped' WHERE notice_id=? AND status='pending'",
+        [id],
+    )?;
+    Ok(())
+}
 fn deliver_at<T>(
     db: &mut Connection,
     key: &str,
+    alternate: Option<&str>,
     now: i64,
+    include_message_refs: bool,
     mut accept: impl FnMut(&NoticeBatch) -> Option<T>,
 ) -> Result<Option<T>, NoticeError> {
-    let inbox: Option<String> = db
-        .query_row(
-            "SELECT id FROM agent_inboxes WHERE recipient=? AND expires>?",
-            params![key, now],
-            |r| r.get(0),
-        )
-        .optional()?;
-    let Some(inbox) = inbox else {
+    let exists = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM agent_inboxes WHERE recipient IN (?1,?2) AND expires>?3)",
+        params![key, alternate, now],
+        |r| r.get::<_, bool>(0),
+    )?;
+    if !exists {
         return Ok(None);
-    };
+    }
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let total: i64 = tx.query_row(
-        "SELECT count(*) FROM agent_notices WHERE inbox_id=? AND acknowledged=0 AND expires>?",
-        params![inbox, now],
+        "SELECT count(*) FROM agent_notices WHERE acknowledged=0 AND expires>?3
+         AND (?4 OR message_id IS NULL)
+         AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient IN (?1,?2) AND expires>?3)",
+        params![key, alternate, now, include_message_refs],
         |r| r.get(0),
     )?;
     let notices = {
         let mut query = tx.prepare(
-            "SELECT id,source,level,message,attempts,expires FROM agent_notices
-            WHERE inbox_id=? AND acknowledged=0 AND expires>? AND next_attempt<=?
+            "SELECT id,source,level,message,attempts,expires,message_id FROM agent_notices
+            WHERE acknowledged=0 AND expires>?3 AND next_attempt<=?3
+            AND (?4 OR message_id IS NULL)
+            AND inbox_id IN (SELECT id FROM agent_inboxes WHERE recipient IN (?1,?2) AND expires>?3)
             ORDER BY next_attempt,created,id LIMIT 3",
         )?;
         query
-            .query_map(params![inbox, now, now], |r| {
+            .query_map(params![key, alternate, now, include_message_refs], |r| {
                 let level: String = r.get(2)?;
                 Ok(CodeModeNotice {
                     id: r.get(0)?,
@@ -748,6 +1024,7 @@ fn deliver_at<T>(
                         NoticeLevel::Info
                     },
                     message: r.get(3)?,
+                    message_id: r.get(6)?,
                     delivery_attempt: r.get::<_, u32>(4)?.saturating_add(1),
                     expires_at_unix_ms: r.get(5)?,
                 })
@@ -788,35 +1065,6 @@ fn deliver_at<T>(
         return Ok(Some(value));
     }
     Ok(None)
-}
-
-const SCHEMA_SQL: &str = "CREATE TABLE agent_inboxes (
-                id TEXT PRIMARY KEY, recipient TEXT NOT NULL UNIQUE,
-                scope TEXT NOT NULL, expires INTEGER NOT NULL);
-            CREATE TABLE agent_notices (
-                id TEXT PRIMARY KEY, inbox_id TEXT NOT NULL REFERENCES agent_inboxes(id) ON DELETE CASCADE,
-                producer TEXT NOT NULL, dedupe_key TEXT NOT NULL, payload TEXT NOT NULL,
-                source TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL,
-                created INTEGER NOT NULL, expires INTEGER NOT NULL,
-                attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
-                acknowledged INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(inbox_id, producer, dedupe_key));
-            CREATE INDEX agent_notices_delivery ON agent_notices(inbox_id, acknowledged, next_attempt, created);
-";
-fn schema_snapshot(db: &Connection) -> Result<Vec<(String, String, String)>, NoticeError> {
-    let mut query = db.prepare(
-        "SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name",
-    )?;
-    Ok(query
-        .query_map([], |row| {
-            let sql: String = row.get(2)?;
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                sql.split_whitespace().collect::<String>(),
-            ))
-        })?
-        .collect::<Result<Vec<_>, _>>()?)
 }
 
 #[cfg(test)]
