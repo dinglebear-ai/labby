@@ -517,7 +517,10 @@ mod mount_tests {
             memory_paths(mounts, "0::/"),
             vec![std::path::PathBuf::from("/sys/fs/cgroup/memory.max")]
         );
-        assert!(memory_paths(mounts, "0::/unrelated/labby").is_empty());
+        assert_eq!(
+            memory_paths(mounts, "0::/unrelated/labby"),
+            Vec::<std::path::PathBuf>::new()
+        );
     }
     #[test]
     fn host_metrics_v1_and_escaped_mounts() {
