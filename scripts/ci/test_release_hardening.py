@@ -762,6 +762,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.assertTrue(any("check-oidc-publisher.sh" in r for r in runs),
                             f"{name} must assert OIDC readiness before publishing")
 
+    def test_oidc_readiness_is_asserted_only_where_npm_is_pinned(self) -> None:
+        # check-oidc-publisher.sh enforces a single npm floor everywhere, and
+        # the runner's bundled npm is below it, so a job that asserts readiness
+        # without pinning first fails its own check.
+        release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
+        for name, job in release["jobs"].items():
+            runs = [step.get("run", "") for step in job.get("steps", [])]
+            checks = [i for i, r in enumerate(runs) if "check-oidc-publisher.sh" in r]
+            pins = [i for i, r in enumerate(runs) if "npm install -g npm@" in r]
+            if not checks and not pins:
+                continue
+            self.assertTrue(checks and pins,
+                            f"{name} must both pin npm and assert OIDC readiness, not one of the two")
+            self.assertLess(min(pins), min(checks),
+                            f"{name} asserts OIDC readiness before pinning an npm that satisfies it")
+
     def test_release_consumer_provenance_check_has_a_token(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         steps = {step.get("name"): step for step in release["jobs"]["release"]["steps"]}

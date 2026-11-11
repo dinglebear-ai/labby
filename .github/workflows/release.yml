@@ -50,6 +50,10 @@ jobs:
           node-version: "lts/*"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
+      # check-oidc-publisher.sh enforces one npm floor everywhere, and the
+      # bundled npm is below it, so preflight pins before asserting readiness.
+      - name: Pin an npm release that publishes over OIDC
+        run: npm install -g npm@11.21.2
       - name: Validate release tag, ancestry, and version lockstep
         env:
           GH_TOKEN: ${{ github.token }}
@@ -459,10 +463,10 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-      - name: Validate npm publication identity
-        run: scripts/ci/check-oidc-publisher.sh
       - name: Pin an npm release that publishes over OIDC
         run: npm install -g npm@11.21.2
+      - name: Validate npm publication identity
+        run: scripts/ci/check-oidc-publisher.sh
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: lab-*
@@ -523,12 +527,13 @@ jobs:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
-      - name: Validate npm publication identity
-        run: scripts/ci/check-oidc-publisher.sh
       # promote-npm-pointer.py shells out to `npm dist-tag`, which only speaks
-      # OIDC from npm 11.21.0 onward. Node 24 bundles 11.19.1, so pin it.
+      # OIDC from npm 11.21.0 onward. Node 24 bundles 11.19.1, so pin first;
+      # the readiness check then verifies the npm that will actually publish.
       - name: Pin an npm release that publishes over OIDC
         run: npm install -g npm@11.21.2
+      - name: Validate npm publication identity
+        run: scripts/ci/check-oidc-publisher.sh
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           pattern: lab-*
