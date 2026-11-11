@@ -553,7 +553,7 @@ channel pointers. Automatic main builds use `incus-dev-SHA` and
 3. The immutable tag triggers candidate work; no maintainer manually publishes
    the draft. Preflight requires canonical stable or dev SemVer, verified source ancestry, and
    exact Cargo/npm/MCP/release-manifest version lockstep. It also checks the
-   required npm/MCP publisher credentials, verifies npm authentication, and
+   required MCP publisher credential, asserts OIDC publication readiness, and
    resolves the published x86_64/macOS N-1 baselines and the ARM64 published
    or source-bootstrap baseline before starting frontend or native builds.
    The advisory desktop bundle starts after preflight in parallel with the

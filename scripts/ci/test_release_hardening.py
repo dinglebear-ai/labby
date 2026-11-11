@@ -210,9 +210,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_release_preflight_checks_baselines_and_credentials_before_builds(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         preflight = str(release["jobs"]["preflight"]["steps"])
-        self.assertIn("NPM_TOKEN_PRESENT", preflight)
         self.assertIn("MCP_PRIVATE_KEY_PRESENT", preflight)
-        self.assertIn("npm whoami", preflight)
+        self.assertIn("scripts/ci/check-oidc-publisher.sh", preflight)
         self.assertIn("resolve-n-minus-one-baseline.py", preflight)
         self.assertIn("resolve_arm64_n_minus_one.py", preflight)
         self.assertIn("preflight", release["jobs"]["frontend-assets"]["needs"])
@@ -726,21 +725,42 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             result = subprocess.run(["awk", program.group(1), str(sums)], text=True, capture_output=True, check=True)
         self.assertEqual("c" * 64, result.stdout.strip())
 
-    def test_dev_preflight_needs_npm_but_only_stable_requires_registry_key(self) -> None:
+    def test_only_stable_preflight_requires_the_registry_key(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
         step = next(step for step in release["jobs"]["preflight"]["steps"]
                     if step.get("name") == "Validate publication credentials before building")
-        for tag, npm, mcp, expected in (("v2.7.0-dev.1", "true", "false", 0),
-                                         ("v2.7.0", "true", "false", 1),
-                                         ("v2.7.0", "true", "true", 0),
-                                         ("v2.7.0-dev.1", "false", "false", 1),
-                                         ("HEAD", "true", "true", 1)):
-            with self.subTest(tag=tag, npm=npm, mcp=mcp):
+        # npm authenticates through OIDC, so no npm secret gates a release any
+        # more. Only the stable channel still needs the MCP registry key.
+        for tag, mcp, expected in (("v2.7.0-dev.1", "false", 0),
+                                    ("v2.7.0-dev.1", "true", 0),
+                                    ("v2.7.0", "false", 1),
+                                    ("v2.7.0", "true", 0),
+                                    ("HEAD", "true", 1)):
+            with self.subTest(tag=tag, mcp=mcp):
                 result = subprocess.run(["bash", "-c", step["run"]], cwd=ROOT,
                                         env=os.environ | {"RELEASE_TAG": tag,
-                                             "NPM_TOKEN_PRESENT": npm, "MCP_PRIVATE_KEY_PRESENT": mcp},
+                                             "MCP_PRIVATE_KEY_PRESENT": mcp},
                                         capture_output=True, text=True)
                 self.assertEqual(expected, int(result.returncode != 0), result.stderr)
+
+    def test_npm_publication_is_tokenless_and_oidc_capable(self) -> None:
+        text = self.text(".github/workflows/release.yml")
+        # A lingering token would silently re-enable token auth and mask a
+        # broken trusted-publisher configuration.
+        self.assertNotIn("NODE_AUTH_TOKEN", text)
+        self.assertNotIn("NPM_TOKEN", text)
+        self.assertNotIn("npm whoami >/dev/null", text)
+        release = yaml.load(text, Loader=yaml.BaseLoader)
+        for name, job in release["jobs"].items():
+            runs = [step.get("run", "") for step in job.get("steps", [])]
+            if not any("npm publish" in r or "promote-npm-pointer.py" in r for r in runs):
+                continue
+            self.assertEqual("write", job.get("permissions", {}).get("id-token"),
+                             f"{name} authenticates to npm but cannot mint an OIDC token")
+            self.assertTrue(any("npm install -g npm@" in r for r in runs),
+                            f"{name} must pin an npm that speaks OIDC")
+            self.assertTrue(any("check-oidc-publisher.sh" in r for r in runs),
+                            f"{name} must assert OIDC readiness before publishing")
 
     def test_release_consumer_provenance_check_has_a_token(self) -> None:
         release = yaml.load(self.text(".github/workflows/release.yml"), Loader=yaml.BaseLoader)
@@ -857,7 +877,8 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
 
     def test_every_npm_publication_is_provenance_attested(self) -> None:
         text = self.text(".github/workflows/release.yml")
-        publishes = [line.strip() for line in text.splitlines() if "npm publish" in line]
+        publishes = [line.strip() for line in text.splitlines()
+                     if "npm publish " in line and not line.strip().startswith("#")]
         self.assertTrue(publishes, "release.yml must publish the npm launcher")
         for line in publishes:
             self.assertIn("--provenance", line, f"npm publish without provenance: {line}")
