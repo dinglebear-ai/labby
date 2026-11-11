@@ -93,7 +93,12 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # with the patch as soon as upstream rmcp publishes the equivalent fix.
 # The Microsandbox source is likewise pinned to its reviewed tar migration.
 # Remove its allowance when a compatible upstream release removes the dependency.
+# The sqlx source is pinned to the unreleased libsqlite3-sys ceiling bump
+# (launchbadge/sqlx#4502) so rusqlite 0.41 can supply patched bundled SQLite
+# for RUSTSEC-2026-0459. Remove with the [patch.crates-io] entry once sqlx
+# publishes a release carrying it.
 allow-git = [
     "https://github.com/dinglebear-ai/rust-sdk",
     "https://github.com/dinglebear-ai/microsandbox",
+    "https://github.com/launchbadge/sqlx",
 ]
