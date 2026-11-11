@@ -1,6 +1,7 @@
 defmodule LabbyConsoleWeb.ConnectionLive do
   @moduledoc "Retry an unavailable gateway while preserving the caller's console session."
   use LabbyConsoleWeb, :live_view
+
   @paths ~w(/overview /gateway /observe /projects /runtime /clients /diagnostics /usage /activity /logs)
 
   def mount(params, _, socket) do
