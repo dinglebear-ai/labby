@@ -8,6 +8,7 @@ import {provisionProviderPrincipals} from './provider-provision.mjs'
 import {startProviderIssuer} from './provider-issuer.mjs'
 import {startMcpServer} from './mcp-server.mjs'
 import {waitForHttp} from './launcher-support.mjs'
+import {writeProviderAccessManifest} from './provider-run-output.mjs'
 import {providerConsoleEnv} from './provider-console-env.mjs'
 
 const root = mkdtempSync(join(tmpdir(), 'labby-provider-run-'))
@@ -161,6 +162,18 @@ url = "http://127.0.0.1:4330/mcp"
   launch('mix', ['run', '--no-start', 'e2e-real/provider-server.exs'], consoleEnv, 'console')
   await waitForHttp('http://127.0.0.1:4328/sign-in', {stage: 'provider-console-ready'})
   record('console-ready')
+  const accessManifest = {
+    binary: receipt.binary, binarySha256: receipt.binarySha256,
+    sourceRevision: receipt.sourceRevision, launcherPid: process.pid,
+    runId: process.env.LABBY_E2E_PROVIDER_RUN_ID,
+    ownerPrincipalId: provisioning.ownerPrincipalId, memberPrincipalId: provisioning.memberPrincipalId,
+    accessActions: provisioning.accessActions,
+    consoleHttpReceipt: consoleEnv.LABBY_E2E_CONSOLE_HTTP_RECEIPT,
+    launcherReceipt: join(root, 'receipt.json'),
+  }
+  writeProviderAccessManifest(process.env, accessManifest)
+  record('access-manifest-ready', {actionCount: provisioning.accessActions.length,
+    publicProvisionRequestStarts: provisioning.requests})
   await waitForHttp('http://127.0.0.1:4328/assets/js/app.js', {stage: 'provider-js-asset'})
   record('asset-ready')
   console.log(`Controlled IdP launcher ready. Private receipts ${root}`)

@@ -17,3 +17,9 @@ if (process.env.LABBY_E2E_BINARY) {
 
 const assets = spawnSync('mix', ['assets.deploy'], {stdio: 'inherit'})
 if (assets.status !== 0) process.exit(assets.status || 1)
+
+console.log('Real E2E: preparing the Mix test build before Node fixtures.')
+const testBuild = spawnSync('mix', ['compile'], {
+  env: {...process.env, MIX_ENV: 'test'}, stdio: 'inherit',
+})
+if (testBuild.status !== 0) process.exit(testBuild.status || 1)

@@ -1,6 +1,7 @@
 import {defineConfig} from '@playwright/test'
 import {randomBytes} from 'node:crypto'
 import {createOwnedProviderTls} from './e2e-real/provider-run-ownership.mjs'
+import {selectProviderOutput} from './e2e-real/provider-run-output.mjs'
 import {privateArtifacts} from './e2e-real/private-artifacts.mjs'
 
 let providerTlsOwner
@@ -18,16 +19,17 @@ if (!/^[A-Za-z0-9+/]{43}=$/.test(process.env.LABBY_E2E_PROVIDER_SPKI || '')) {
 process.env.LABBY_E2E_PROVIDER_EMAIL = 'owner@controlled.invalid'
 process.env.LABBY_E2E_PROVIDER_PASSWORD ||= randomBytes(32).toString('hex')
 process.env.LABBY_E2E_MEMBER_PASSWORD ||= randomBytes(32).toString('hex')
+const providerOutputOwner = selectProviderOutput()
 
 export default defineConfig({
-  metadata: {providerTlsOwner},
+  metadata: {providerTlsOwner, providerOutputOwner},
   testDir: './e2e-real',
-  testMatch: ['provider-login.spec.mjs', 'provider-projects-isolation.spec.mjs'],
+  testMatch: ['provider-login.spec.mjs', 'provider-projects-isolation.spec.mjs', 'provider-access.spec.mjs'],
   workers: 1,
   retries: 0,
   maxFailures: 1,
   timeout: 90000,
-  globalTimeout: 300000,
+  globalTimeout: 600000,
   outputDir: 'test-results/provider',
   globalTeardown: './e2e-real/provider-teardown.mjs',
   use: {

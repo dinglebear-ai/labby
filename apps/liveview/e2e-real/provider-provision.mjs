@@ -15,6 +15,7 @@ export async function provisionProviderPrincipals({issuer, gateway = 'http://127
   let requests = 0
   const sessions = []
   let provisioningFailure
+  let proof
 
   async function call(url, {method = 'GET', body, cookie, csrf, origin} = {}) {
     if (++requests > 60) throw new Error('PROVIDER_PROVISION_REQUEST_BUDGET')
@@ -173,7 +174,18 @@ export async function provisionProviderPrincipals({issuer, gateway = 'http://127
     if (!member.view.projects.some(value => value.id === project)) {
       throw new Error('PROVIDER_MEMBER_PROJECT_NOT_VISIBLE')
     }
-    return {distinctReadyPrincipals: true, wrongIssuerRejected: true, memberProjectVisible: true, requests}
+    // A single real, owner-authenticated capability read. This is admission
+    // metadata for the native Access journeys, not a fabricated action result.
+    const help = await post(owner, '/v1/access/admin', {action: 'help', params: {}})
+    if (help?.service !== 'access' || !Array.isArray(help.actions) || help.actions.length > 64 ||
+        help.actions.some(action => typeof action?.name !== 'string' ||
+          !/^[a-z][a-z0-9_.]{0,127}$/.test(action.name))) {
+      throw new Error('PROVIDER_ACCESS_HELP_INVALID')
+    }
+    proof = {distinctReadyPrincipals: true, wrongIssuerRejected: true, memberProjectVisible: true,
+      ownerPrincipalId: first, memberPrincipalId: second,
+      accessActions: help.actions.map(action => action.name), requests}
+    return proof
   } catch (error) {
     provisioningFailure = error
     throw error
@@ -191,6 +203,7 @@ export async function provisionProviderPrincipals({issuer, gateway = 'http://127
         session.view = null
       }
     }
+    if (proof) proof.requests = requests
     if (cleanupFailed) {
       onReceipt({stage: 'cleanup', code: 'PROVIDER_PROVISION_LOGOUT_UNCONFIRMED'})
       if (!provisioningFailure) throw new Error('PROVIDER_PROVISION_LOGOUT_UNCONFIRMED')

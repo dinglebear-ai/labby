@@ -45,7 +45,8 @@ import normal from ${JSON.stringify(resolve(configName))}
 export default {
   testDir: ${JSON.stringify(root)}, testMatch: 'failure.spec.mjs',
   outputDir: ${JSON.stringify(output)}, workers: 1, retries: 0, timeout: 10000,
-  use: normal.use,
+  use: normal.use, metadata: normal.metadata,
+  globalTeardown: ${JSON.stringify(resolve('e2e-real/provider-teardown.mjs'))},
 }
 `)
     const env = {...process.env, PRIVATE_FAILURE_SECRET: secret,
