@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
   "objective": "Complete native mock parity then embedded OTP delivery and full review/live qualification",
-  "baseline_commit": "583d385f243bf4b3bedd598e6e4300a100514e5c",
-  "baseline_note": "Eleven read-model screens exist; none closes an entire mock area. Historical passes do not close final acceptance.",
+  "baseline_commit": "5cb9dd2f7",
+  "baseline_note": "Sixteen authenticated screens exist. Caller-bound action transport, Projects lifecycle and Access workspace are implemented; 45 of 320 catalog actions are wired across 5 of 20 services. Six areas are partial, twelve are open, none is closed. Historical passes do not prove a later candidate passed.",
   "areas": [
     {
       "area": "overview",
       "mock_route": "/labby/overview",
       "mock_source": "lib/phx_book_web/live/labby_overview_live.ex",
       "mock_sha256": "e581000141675b7ca9d56934da3b2e7be86617b3790d433130165ad8124f6bd7",
-      "state": "open",
+      "state": "partial",
       "reference_workflows": [
         {
           "id": "overview.usage-windows",
@@ -57,14 +57,14 @@
       "contract_services": [
         "gateway"
       ],
-      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+      "coverage_note": "Inventory, 24h usage, drilldowns and refresh implemented; charts, leaders and full dashboard composition open."
     },
     {
       "area": "gateway",
       "mock_route": "/labby/gateway",
       "mock_source": "lib/phx_book_web/live/labby_gateway_live.ex",
       "mock_sha256": "97a78f7ee690462066751cfbab12d7875727e5d41015c44ff2d61838abf0f1c7",
-      "state": "open",
+      "state": "partial",
       "reference_workflows": [
         {
           "id": "gateway.fleet-lenses-and-filters",
@@ -198,14 +198,14 @@
       "contract_services": [
         "gateway"
       ],
-      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+      "coverage_note": "Inventory/search, server details, retained catalog, passive runtime, host runtime, clients and add/update/remove/test with OAuth handoff implemented; start/stop/reload, configuration editor/import and bulk actions open."
     },
     {
       "area": "observe",
       "mock_route": "/labby/observe",
       "mock_source": "lib/phx_book_web/live/labby_workspace_live.ex",
       "mock_sha256": "02deedf192537c5cf12da9432c37ee66dc401e485efe78cc859e0fadd45bc33e",
-      "state": "open",
+      "state": "partial",
       "reference_workflows": [
         {
           "id": "observe.activity-filters-and-pagination",
@@ -240,7 +240,7 @@
         "gateway",
         "server_logs"
       ],
-      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+      "coverage_note": "Observe workspace plus usage/activity/logs with opaque pagination, bounded log polling and positive filters implemented; traces and richer inspectors open."
     },
     {
       "area": "discover",
@@ -542,7 +542,7 @@
       "mock_route": "/labby/projects",
       "mock_source": "lib/phx_book_web/live/labby_projects_live.ex",
       "mock_sha256": "23c9fbc858ddcba1fb37cddd1ddd6a19bb34e91a7fbc1479c1476612aabe52e5",
-      "state": "open",
+      "state": "partial",
       "reference_workflows": [
         {
           "id": "projects.team-filter-list-grid-search",
@@ -609,7 +609,7 @@
         "projects",
         "access"
       ],
-      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+      "coverage_note": "Full list/get/create/update/archive/activate lifecycle with Team membership reads, caller-isolated preferences and uncertain-state reconciliation implemented; remaining mock dialogs open."
     },
     {
       "area": "agents",
@@ -671,7 +671,7 @@
       "mock_route": "/labby/access",
       "mock_source": "lib/phx_book_web/live/labby_access_live.ex",
       "mock_sha256": "d5a151cb6e7f41c29b30e21326fd37694d7fd51ef503c5662560a953f444fa53",
-      "state": "open",
+      "state": "partial",
       "reference_workflows": [
         {
           "id": "access.team-and-project-membership",
@@ -712,7 +712,7 @@
       "contract_services": [
         "access"
       ],
-      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+      "coverage_note": "Team, membership, role, suspend/activate, invitation, project assignment, platform admin and gateway credential mutations implemented with secret redaction; remaining administration journeys and full role matrix open."
     },
     {
       "area": "browser",
@@ -767,7 +767,7 @@
       "mock_route": "/labby/diagnostics",
       "mock_source": "lib/phx_book_web/live/labby_diagnostics_live.ex",
       "mock_sha256": "147f638a0b163afea9d3d6436987bd571d1e98224b4abee871300dfccaa7155e",
-      "state": "open",
+      "state": "partial",
       "reference_workflows": [
         {
           "id": "diagnostics.audit-and-findings",
@@ -802,7 +802,7 @@
         "doctor",
         "lab_admin"
       ],
-      "coverage_note": "Capability inventory is a lead; confirm exact required actions and fields from current Rust source before implementation. Shared workspace event lists span multiple areas."
+      "coverage_note": "Gateway system checks implemented; repairs and setup/audit operations open."
     },
     {
       "area": "setup",
@@ -1709,5 +1709,25 @@
       "open",
       "submit"
     ]
+  },
+  "review_date": "2026-11-10",
+  "wired_contract_surface": {
+    "reads": 21,
+    "mutations": 24,
+    "actions_wired": 45,
+    "actions_total": 320,
+    "services_touched": [
+      "gateway",
+      "projects",
+      "access",
+      "doctor",
+      "server_logs"
+    ],
+    "services_total": 20,
+    "mutations_by_service": {
+      "gateway": 4,
+      "projects": 4,
+      "access": 16
+    }
   }
 }

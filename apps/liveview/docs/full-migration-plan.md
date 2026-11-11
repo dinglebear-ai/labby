@@ -14,6 +14,11 @@ ExUnit, Node tests, Playwright and native OTP releases.
 
 **Spec:** [full-migration-spec.md](full-migration-spec.md)
 
+**Status:** units 0-3 complete at `5cb9dd2f7` (2026-11-10): reference inventory, caller-bound action
+transport, shared mock shell and Projects lifecycle. Unit 4 is partially done - Gateway CRUD/OAuth
+handoff and the Observe workspace landed, while charts, start/stop/reload, configuration editor and
+traces remain. Access (unit 5) landed ahead of sequence. Units 6-11 are untouched.
+
 ## Global Constraints
 
 - Full mock parity and same or better visual quality are mandatory.
@@ -42,9 +47,9 @@ review -> commit. Record exact receipts and open scope in the execution ledger.
 
 ### 0. Reference and coverage inventory
 
-- [ ] Freeze checksummed mock source and enumerate all eighteen areas' workflows.
-- [ ] Map each workflow to current dispatch/dedicated HTTP contracts and tests.
-- [ ] Record live parity, fixture-only coverage and missing behavior separately.
+- [x] Freeze checksummed mock source and enumerate all eighteen areas' workflows.
+- [x] Map each workflow to current dispatch/dedicated HTTP contracts and tests.
+- [x] Record live parity, fixture-only coverage and missing behavior separately.
 
 Files: this plan/spec, `mock-source-manifest.json`, `workflow-coverage.json`.
 
@@ -58,11 +63,11 @@ Exact initial actions: `projects.list/get/create/update/archive/activate` and
 `access.team.list`. Auth and existing read adapters must preserve a valid session
 on dispatch 403 while removing authority on a confirmed session 401.
 
-- [ ] RED: forbidden keeps the session; unauthorized revokes it; disallowed action
+- [x] RED: forbidden keeps the session; unauthorized revokes it; disallowed action
   is never sent; CSRF is forwarded; timeout sends once and reports uncertain write.
-- [ ] Implement transport using the existing per-caller vault and bounded Req path.
-- [ ] GREEN: validate structured Rust envelopes and malformed/oversized failures.
-- [ ] Test exact 32 KiB request/64 KiB response limits, 5-second whole-operation
+- [x] Implement transport using the existing per-caller vault and bounded Req path.
+- [x] GREEN: validate structured Rust envelopes and malformed/oversized failures.
+- [x] Test exact 32 KiB request/64 KiB response limits, 5-second whole-operation
   deadline (12 seconds for host sampling), four-per-session/32-global admission,
   caller death/cancellation and no replay. Preserve bounded kind, context,
   recovery and side effects; malformed/oversized write success is uncertain.
@@ -76,10 +81,10 @@ Shared authenticated mounts own expiry, scope generations and routing/history;
 existing read-model routes remain valid. Caller/Team/Project generation changes
 fence stale results and repeated submissions before domain pages migrate.
 
-- [ ] RED: native desktop/mobile nav, profile menus, keyboard dismissal, collapse,
+- [x] RED: native desktop/mobile nav, profile menus, keyboard dismissal, collapse,
   no sample labels/counts and no unavailable route presented as working.
-- [ ] Port mock-authored shell/styles/icons with production identity and routing.
-- [ ] Live-compare desktop/mobile renders and preserve existing read-model tests.
+- [x] Port mock-authored shell/styles/icons with production identity and routing.
+- [x] Live-compare desktop/mobile renders and preserve existing read-model tests.
 
 ### 3. Projects lifecycle
 
@@ -92,11 +97,11 @@ Workspace selection is a caller-isolated UI preference, not lifecycle activation
 Active-list reconciliation and explicit archived lookup retain only authoritative
 records and refresh permissions before writes.
 
-- [ ] RED: creation validation, Team permission denial, read/update/archive/restore,
+- [x] RED: creation validation, Team permission denial, read/update/archive/restore,
   filter persistence, double-submit fencing and lookup of missing project.
-- [ ] Implement real projections, async operations, safe confirmation/error states.
-- [ ] Live E2E: create/rename/archive/restore, reload persistence and caller isolation.
-- [ ] Pin selection vs restore semantics, archived lookup/reconciliation, stale
+- [x] Implement real projections, async operations, safe confirmation/error states.
+- [x] Live E2E: create/rename/archive/restore, reload persistence and caller isolation.
+- [x] Pin selection vs restore semantics, archived lookup/reconciliation, stale
   permission changes and caller-isolated filter/layout/selection preferences.
 
 ### 4. Overview, Gateway and Observe parity
