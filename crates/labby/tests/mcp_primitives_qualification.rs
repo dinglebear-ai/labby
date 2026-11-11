@@ -16,10 +16,9 @@ use std::time::Duration;
 use primitives::{FixtureMode, PrimitiveFixture, PrimitiveQualification, REQUEST_TIMEOUT};
 use rmcp::model::{
     ArgumentInfo, CallToolRequest, CallToolRequestParams, CallToolResponse, CancelTaskParams,
-    ClientRequest, CompleteRequestParams, CustomRequest, CustomResult, ErrorCode,
-    GetPromptRequestParams, GetTaskParams, PaginatedRequestParams, ReadResourceRequestParams,
-    Reference, ResourceContents, ServerNotification, SubscriptionFilter, TaskStatus,
-    UpdateTaskParams,
+    ClientRequest, CompleteRequestParams, CustomRequest, ErrorCode, GetPromptRequestParams,
+    GetTaskParams, PaginatedRequestParams, ReadResourceRequestParams, Reference, ResourceContents,
+    ServerNotification, SubscriptionFilter, TaskStatus, UpdateTaskParams,
 };
 use rmcp::service::{PeerRequestOptions, ServiceError};
 use serde_json::json;
@@ -223,7 +222,7 @@ async fn q1_resources_prompts_templates_completions_and_collisions_round_trip() 
     }
 
     let unsupported = peer
-        .send_request_as::<CustomResult>(ClientRequest::CustomRequest(CustomRequest::new(
+        .send_request(ClientRequest::CustomRequest(CustomRequest::new(
             "sampling/createMessage",
             Some(json!({})),
         )))
@@ -566,7 +565,7 @@ async fn q1_advanced_lifecycle_capabilities_match_real_method_behavior() {
         "resources/unsubscribe",
     ] {
         let error = peer
-            .send_request_as::<CustomResult>(ClientRequest::CustomRequest(CustomRequest::new(
+            .send_request(ClientRequest::CustomRequest(CustomRequest::new(
                 method,
                 Some(json!({})),
             )))

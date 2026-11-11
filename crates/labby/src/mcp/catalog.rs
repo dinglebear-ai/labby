@@ -230,6 +230,7 @@ impl LabMcpServer {
                     && code_mode_read_scope_allowed(auth),
                 #[cfg(not(feature = "skills"))]
                 skill_library_app_visible: false,
+                session_messages_visible: self.messages_visible(context),
                 oauth_subject: self
                     .route_oauth_subject(oauth_upstream_subject_for_request(
                         auth,

@@ -26,6 +26,7 @@ pub(crate) struct RouteDescriptor {
 pub(crate) enum RequestClass {
     Public,
     Bearer,
+    MessageBridgeProof,
     BrowserSession,
     BootstrapProof,
     OAuthProtocol,
@@ -83,6 +84,10 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
         class: RequestClass::Bearer,
     },
     SecurityInvariant {
+        name: "message-bridge-proof",
+        class: RequestClass::MessageBridgeProof,
+    },
+    SecurityInvariant {
         name: "browser-session",
         class: RequestClass::BrowserSession,
     },
@@ -126,10 +131,13 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 // POST /auth/bearer-session exchange, and the admin-only GET /v1/notifications
 // inbox route and POST /v1/notifications/agent publication, the caller-authenticated
 // GET /v1/stash/folders listing, and
-// local setup handoff minting plus one-shot redemption.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 140;
+// local setup handoff minting plus one-shot redemption and the opt-in
+// local messaging bridge proof.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 141;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "4b2d8fc7e23b60bcb11a406f9d020a0b07971fd38a4e8a1f8e22a82f3ce31cd5";
+    "a98f602eab0fd4162465ced6f0b01c4673948d051352042582be9a021cbe5aec";
+
+const MESSAGE_BRIDGE_PROOF: &str = "/v1/notifications/agent/message-bridge-proof";
 
 impl SecurityInvariant {
     pub(crate) fn validate_descriptor(&self, route: &RouteDescriptor) -> Result<(), String> {
@@ -139,6 +147,7 @@ impl SecurityInvariant {
                 (false, false, false, false, false, false)
             }
             RequestClass::Bearer => (true, false, false, false, false, false),
+            RequestClass::MessageBridgeProof => (true, true, false, false, false, false),
             RequestClass::BrowserSession => {
                 let host = matches!(
                     route.handler_group.as_str(),
@@ -177,6 +186,15 @@ impl SecurityInvariant {
                 "{} security axes mismatch for {} {}: expected {expected:?}, got {actual:?}",
                 self.name, route.method, route.path
             ));
+        }
+        if self.class == RequestClass::MessageBridgeProof
+            && (route.cache_posture != "private, no-store"
+                || route.failure_disclosure != "uniform non-enumerating denial"
+                || route.runtime_condition.is_none())
+        {
+            return Err(
+                "the opt-in bridge proof requires private, non-enumerating responses".into(),
+            );
         }
         Ok(())
     }
@@ -244,7 +262,9 @@ pub(crate) fn route_cases() -> Result<Vec<RouteCase>, String> {
 }
 
 fn classify(route: &RouteDescriptor) -> RequestClass {
-    if route.bootstrap_proof {
+    if route.method == "POST" && route.path == MESSAGE_BRIDGE_PROOF {
+        RequestClass::MessageBridgeProof
+    } else if route.bootstrap_proof {
         RequestClass::BootstrapProof
     } else if route.handler_group == "mcp" || route.handler_group == "protected_mcp" {
         RequestClass::Mcp
@@ -282,6 +302,11 @@ fn feature_is_compiled(feature: &str) -> bool {
 }
 
 fn request_body(route: &RouteDescriptor) -> Option<&'static str> {
+    if route.method == "POST" && route.path == MESSAGE_BRIDGE_PROOF {
+        return Some(
+            r#"{"installation":"unissued","nonce":"unissued","sent_at":0,"mac":"unissued"}"#,
+        );
+    }
     if route.method == "POST" && route.path == "/v1/notifications/agent" {
         return Some(
             r#"{"inbox_id":"inbox_01ARZ3NDEKTSV4RRFFQ69G5FAV","source":"route-matrix","level":"info","message":"Qualification notice","dedupe_key":"route-matrix-event"}"#,

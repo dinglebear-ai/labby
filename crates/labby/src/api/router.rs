@@ -1288,6 +1288,24 @@ pub(crate) fn build_router_with_external_auth(
         route_group = route_group.merge(app_routes);
     }
 
+    #[cfg(feature = "gateway")]
+    if state.agent_messages.is_some() && credential_auth_configured && !external_auth_configured {
+        let proof = crate::api::route_registry::RouteGroup::empty()
+            .route(
+                super::session_messages::descriptor(),
+                post(super::session_messages::prove),
+            )
+            .map_router(|router| {
+                router.route_layer(make_auth_layer(false)).route_layer(
+                    axum::middleware::from_fn_with_state(
+                        state.clone(),
+                        super::session_messages::authenticate_bridge,
+                    ),
+                )
+            });
+        route_group = route_group.merge(proof);
+    }
+
     let declared_descriptors = if integrated_trusted_host {
         crate::api::route_registry::build_integrated_trusted_host_route_descriptors()
     } else {

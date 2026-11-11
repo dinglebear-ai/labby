@@ -191,9 +191,9 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     saw_protocol_activity = true;
 
                     match msg {
-                        CodeModeRunnerOutput::ToolCall { seq, id, params } => {
+                        CodeModeRunnerOutput::ToolCall { seq, id, params, full_result } => {
                             if let Err(error) = handle_tool_call_event(
-                                self, seq, id, params, execution_start, cfg, deadline,
+                                self, seq, id, params, full_result, execution_start, cfg, deadline,
                                 &cancellation, &mut pending_tool_calls, stdin, child,
                                 child_pid, &mut state,
                             ).await {

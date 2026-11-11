@@ -189,6 +189,7 @@ fn snippets_test_fails_when_a_batched_upstream_call_failed() {
         "all_ok": false
     })));
     response.calls.push(labby_codemode::CodeModeExecutedCall {
+        upstream_content: None,
         id: "team-depot::depot.skills.search".into(),
         ok: false,
         elapsed_ms: 0,

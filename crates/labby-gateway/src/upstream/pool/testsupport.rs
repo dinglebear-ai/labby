@@ -202,6 +202,54 @@ pub(super) async fn static_catalog_pool_with_server(
     catalog_pool_with_server(upstream_name, server).await
 }
 
+/// Lets adversarial Skills fixtures emit future hints and malformed entries
+/// through the ordinary SDK result path. Production servers use native hooks;
+/// a typed fixture result would prevent exercising Labby's validation policy.
+struct CustomSkillsFixture<S>(S);
+
+impl<S: ServerHandler> rmcp::Service<RoleServer> for CustomSkillsFixture<S> {
+    async fn handle_request(
+        &self,
+        request: rmcp::model::ClientRequest,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ServerResult, ErrorData> {
+        use rmcp::model::{ClientRequest, ServerResult};
+        let (method, params) = match request {
+            ClientRequest::ListSkillsRequest(request) => (
+                "skills/list",
+                request.params.map(serde_json::to_value).transpose(),
+            ),
+            ClientRequest::GetSkillRequest(request) => {
+                ("skills/get", serde_json::to_value(request.params).map(Some))
+            }
+            request => return rmcp::Service::handle_request(&self.0, request, context).await,
+        };
+        let params = params.map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+        self.0
+            .on_custom_request(CustomRequest::new(method, params), context)
+            .await
+            .map(ServerResult::CustomResult)
+    }
+
+    async fn handle_notification(
+        &self,
+        notification: rmcp::model::ClientNotification,
+        context: rmcp::service::NotificationContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        rmcp::Service::handle_notification(&self.0, notification, context).await
+    }
+
+    fn get_info(&self) -> ServerConfig {
+        self.0.get_info()
+    }
+
+    fn supported_protocol_versions(
+        &self,
+    ) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        self.0.supported_protocol_versions()
+    }
+}
+
 pub(super) async fn catalog_pool_with_server<S>(upstream_name: &str, server: S) -> Arc<UpstreamPool>
 where
     S: ServerHandler,
@@ -221,7 +269,7 @@ where
 {
     let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
     let server_task = tokio::spawn(async move {
-        let running = server
+        let running = CustomSkillsFixture(server)
             .serve(server_transport)
             .await
             .expect("catalog server starts");

@@ -629,6 +629,8 @@ async fn authenticate(
                     };
                     let actor_key =
                         derive_actor_key(layer.actor_key_deriver.as_deref(), &claims.sub);
+                    let durable_grant =
+                        crate::auth_context::VerifiedOAuthGrant::from_claims(auth_state, &claims);
                     let authorized_client_id = AuthorizedClientId(Arc::from(claims.azp.as_str()));
                     let auth = AuthContext {
                         actor_key,
@@ -649,6 +651,9 @@ async fn authenticate(
                     }
                     if let Some(identity) = identity {
                         request.extensions_mut().insert(identity);
+                    }
+                    if let Some(grant) = durable_grant {
+                        request.extensions_mut().insert(grant);
                     }
                     request.extensions_mut().insert(authorized_client_id);
                     request.extensions_mut().insert(auth);

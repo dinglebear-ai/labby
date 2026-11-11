@@ -80,6 +80,10 @@ const SHARED_NON_SERVICES: &[&str] = &[
     "agent_payloads",
     "agent_llm",
     "phoenix_openai",
+    // Events owns notice webhook subscriptions and delivery, with no action handlers.
+    "agent_events",
+    // Durable session identity and messages share the notice store.
+    "agent_messages",
     // Tailcat owns transport pairing/session lifecycle, not an action service.
     "tailcat",
     "helpers",

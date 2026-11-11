@@ -21,7 +21,7 @@ use rmcp::model::{
     GetMeta, JsonRpcMessage, ProgressNotificationParam, ServerNotification, ServerRequest,
     TaskStatusNotificationParams,
 };
-use rmcp::service::{ClientServiceExt, RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{ClientServiceExt, RxJsonRpcMessage, TxJsonRpcMessage};
 #[cfg(unix)]
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientWorker;
@@ -100,7 +100,6 @@ pub(super) struct OrderedRelayNotificationTransport<T> {
     notification_delivery: Option<Arc<RelayNotificationDeliveryState>>,
     next_notification_sequence: u64,
     pending_message: Option<RxJsonRpcMessage<RoleClient>>,
-    pending_raw_message: Option<RawRxJsonRpcMessage<RoleClient>>,
     pending_notification_sequence: u64,
 }
 
@@ -132,7 +131,6 @@ impl<T> OrderedRelayNotificationTransport<T> {
             notification_delivery,
             next_notification_sequence: 0,
             pending_message: None,
-            pending_raw_message: None,
             pending_notification_sequence: 0,
         }
     }
@@ -192,10 +190,6 @@ where
 {
     type Error = T::Error;
 
-    fn preserves_raw_responses() -> bool {
-        T::preserves_raw_responses()
-    }
-
     fn send(
         &mut self,
         item: TxJsonRpcMessage<RoleClient>,
@@ -249,55 +243,6 @@ where
             if self.notifications_completed() < self.next_notification_sequence {
                 self.pending_notification_sequence = self.next_notification_sequence;
                 self.pending_message = Some(message);
-                continue;
-            }
-            return Some(message);
-        }
-    }
-
-    async fn receive_raw(&mut self) -> Option<RawRxJsonRpcMessage<RoleClient>> {
-        loop {
-            if self.pending_raw_message.is_some() {
-                Self::wait_for_notifications_through(
-                    self.notification_delivery.clone(),
-                    self.pending_notification_sequence,
-                )
-                .await;
-                self.pending_notification_sequence = 0;
-                return self.pending_raw_message.take();
-            }
-
-            let mut permit = match self.notification_tx.clone() {
-                Some(sender) => match sender.reserve_owned().await {
-                    Ok(permit) => Some(permit),
-                    Err(_) => {
-                        self.notification_tx = None;
-                        self.notification_delivery = None;
-                        None
-                    }
-                },
-                None => None,
-            };
-            let Some(message) = self.inner.receive_raw().await else {
-                drop(permit);
-                Self::wait_for_notifications_through(
-                    self.notification_delivery.clone(),
-                    self.next_notification_sequence,
-                )
-                .await;
-                return None;
-            };
-            if let Some(notification) = Self::intercepted_notification(&message)
-                && let Some(permit) = permit.take()
-            {
-                self.next_notification_sequence = self.next_notification_sequence.saturating_add(1);
-                permit.send((self.next_notification_sequence, notification));
-                continue;
-            }
-            drop(permit);
-            if self.notifications_completed() < self.next_notification_sequence {
-                self.pending_notification_sequence = self.next_notification_sequence;
-                self.pending_raw_message = Some(message);
                 continue;
             }
             return Some(message);

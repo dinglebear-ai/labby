@@ -267,7 +267,11 @@ pub(super) async fn list_tools(
     })
     .await;
 
-    tools_or_empty_when_unsupported(result)
+    let mut tools = tools_or_empty_when_unsupported(result)?;
+    // Enforce wire bounds first, then omit tools tied to the direct transport.
+    // All pooled, subject-specific and relay catalogs consume this projection.
+    tools.retain(|tool| !crate::upstream::is_transport_local_tool(tool));
+    Ok(tools)
 }
 
 /// The tolerance described on `list_tools`, split out so it can be tested

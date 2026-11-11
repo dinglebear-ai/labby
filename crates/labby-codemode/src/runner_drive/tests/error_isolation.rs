@@ -46,6 +46,7 @@ impl CodeModeHost for FanOutHost {
             "fixture::effect" => {
                 self.effects.fetch_add(1, AtomicOrdering::SeqCst);
                 Ok(ToolCallOutcome {
+                    full_result: None,
                     value: json!({"applied": true}),
                     ui: None,
                 })

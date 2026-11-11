@@ -487,12 +487,15 @@ printf '%s %s\n' "$setup" "$cleanup"
             if "Invoke-WebRequest" in line:
                 self.assertIn("-TimeoutSec", line)
 
-        cargo_deny_download = windows_ci[
-            windows_ci.index("curl --fail", windows_ci.index("Run pinned Cargo Deny")):
-            windows_ci.index("printf '%s  %s", windows_ci.index("Run pinned Cargo Deny"))
-        ]
-        self.assertIn("--connect-timeout", cargo_deny_download)
-        self.assertIn("--max-time", cargo_deny_download)
+        cargo_deny_path = "scripts/ci/install-pinned-cargo-deny.sh"
+        self.assertEqual(windows_ci.count(f'bash {cargo_deny_path} "$tool_dir"'), 2)
+        cargo_deny_installer = self.text(cargo_deny_path)
+        self.assertIn("--connect-timeout", cargo_deny_installer)
+        self.assertIn("--max-time", cargo_deny_installer)
+        self.assertLess(
+            cargo_deny_installer.index("sha256sum --check --strict"),
+            cargo_deny_installer.index("tar -xzf"),
+        )
 
         incus_smoke = self.text("scripts/ci/smoke-incus-image.sh")
         readiness_probes = [

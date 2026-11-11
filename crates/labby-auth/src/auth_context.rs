@@ -102,3 +102,66 @@ mod tests {
         );
     }
 }
+
+/// Server-created consent evidence for a bounded background subscription.
+/// Contains no access or refresh token. It can only be minted from claims
+/// already verified by the HTTP authentication layer.
+#[derive(Clone)]
+pub struct VerifiedOAuthGrant {
+    store: crate::sqlite::SqliteStore,
+    client: String,
+    subject: String,
+    resource: String,
+    scope: String,
+    provider: crate::types::ProviderBinding,
+    family: Arc<tokio::sync::OnceCell<Option<String>>>,
+}
+
+impl VerifiedOAuthGrant {
+    pub(crate) fn from_claims(
+        state: &crate::state::AuthState,
+        claims: &crate::jwt::AccessClaims,
+    ) -> Option<Self> {
+        let provider = state.inbound_provider_binding();
+        if claims.identity_issuer.as_deref() != Some(provider.identity_issuer.as_str()) {
+            return None;
+        }
+        Some(Self {
+            store: state.store.clone(),
+            client: claims.azp.clone(),
+            subject: claims.sub.clone(),
+            resource: claims.aud.clone(),
+            scope: claims.scope.clone(),
+            provider,
+            family: Arc::default(),
+        })
+    }
+
+    /// Recheck the grant, including provider replacement and consent
+    /// revocation, on the same authority tuple that enrolled the subscription.
+    pub async fn is_current(&self) -> Result<bool, crate::error::AuthError> {
+        let lookup = |family| {
+            self.store.current_oauth_grant_family(
+                self.client.clone(),
+                self.subject.clone(),
+                self.resource.clone(),
+                self.scope.clone(),
+                self.provider.clone(),
+                family,
+            )
+        };
+        if let Some(family) = self.family.get() {
+            return match family {
+                Some(family) => Ok(lookup(Some(family.clone())).await?.is_some()),
+                None => Ok(false),
+            };
+        }
+        // Normal rotation preserves the grant that authorized enrollment.
+        // A new consent receives a different grant, even for the same tuple.
+        Ok(self
+            .family
+            .get_or_try_init(|| lookup(None))
+            .await?
+            .is_some())
+    }
+}

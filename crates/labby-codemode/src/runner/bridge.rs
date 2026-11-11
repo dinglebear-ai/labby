@@ -18,7 +18,7 @@ globalThis.__labSnippetMaxDepth = 8;
 globalThis.__labSnippetMaxResolves = 32;
 globalThis.__labSnippetMaxBytes = {snippet_max_bytes};
 {codec}
-globalThis.callTool = (id, params = {{}}) => {{
+globalThis.callTool = (id, params = {{}}, fullResult = false) => {{
   if (typeof id !== "string" || id.trim() === "") {{
     throw new TypeError("callTool id must be a non-empty string");
   }}
@@ -26,7 +26,7 @@ globalThis.callTool = (id, params = {{}}) => {{
     throw new TypeError("callTool params must be a JSON object");
   }}
   return new Promise((resolve, reject) => {{
-    const seq = globalThis.__labEmitToolCall(id, __labEncodeResult(params));
+    const seq = globalThis.__labEmitToolCall(id, __labEncodeResult(params), fullResult === true);
     globalThis.__labPendingToolCalls.set(seq, {{ kind: "tool", resolve, reject }});
   }});
 }};
@@ -228,8 +228,18 @@ pub(super) fn javy_emit_tool_call(args: javy::Args<'_>) -> javy::quickjs::Result
 
     let seq = next_runner_seq(&cx)?;
 
-    runner_emit(CodeModeRunnerOutput::ToolCall { seq, id, params })
-        .map_err(|err| javy_type_error(cx, err))?;
+    let full_result = args
+        .0
+        .get(2)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    runner_emit(CodeModeRunnerOutput::ToolCall {
+        seq,
+        id,
+        params,
+        full_result,
+    })
+    .map_err(|err| javy_type_error(cx, err))?;
     Ok(seq)
 }
 

@@ -52,6 +52,7 @@ async fn step_ordinal_is_contiguous_across_interleaved_tool_calls() {
             _ctx: ExecCtx,
         ) -> Result<ToolCallOutcome, CodeModeCallError> {
             Ok(ToolCallOutcome {
+                full_result: None,
                 value: json!({"ok": true}),
                 ui: None,
             })
@@ -230,6 +231,7 @@ async fn call_ordinal_and_trace_context_align_with_fan_out_response_order() {
                 tokio::time::sleep(Duration::from_millis(75)).await;
             }
             Ok(ToolCallOutcome {
+                full_result: None,
                 value: json!({"id": id}),
                 ui: None,
             })

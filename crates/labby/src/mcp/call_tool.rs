@@ -855,6 +855,9 @@ impl LabMcpServer {
                 transport,
                 identity,
             } => {
+                if request.name.as_ref() == super::session_messages::TOOL_NAME {
+                    return Box::pin(self.call_messages(request, &context)).await;
+                }
                 if is_project_depot_publish_call(&request) {
                     return Box::pin(self.call_tool_response_dispatch_impl(request, context, true))
                         .await;
@@ -877,6 +880,10 @@ impl LabMcpServer {
                     )
                     .await;
             }
+        }
+        #[cfg(feature = "gateway")]
+        if request.name.as_ref() == super::session_messages::TOOL_NAME {
+            return Box::pin(self.call_messages(request, &context)).await;
         }
         let project_owned = false;
         if let Some(response) =

@@ -16,7 +16,7 @@
 //! Downstream -> daemon: tools, resources (including `ui://` mcp-ui
 //! resources -- the bridge has no URI-scheme awareness of its own; it just
 //! forwards `read_resource` verbatim and the daemon does its normal `ui://`
-//! routing on the other end), prompts, `complete`, and
+//! routing on the other end), Skills, skill directories, prompts, `complete`, and
 //! the SEP-2663 task extension (`tasks/get`, `tasks/update`, and
 //! `tasks/cancel`) plus the generic `CustomRequest` escape hatch. MRTR
 //! `input_required` and task responses are forwarded without collapsing
@@ -36,19 +36,22 @@
 //! capabilities required for MRTR, and the bridge uses the one-round helpers
 //! so `input_required` results are returned to the downstream client unchanged.
 
-use std::borrow::Cow;
+use std::{borrow::Cow, future::Future};
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelTaskRequest,
     CancelledNotificationParam, ClientConfig, ClientNotification, ClientRequest, CompleteRequest,
     CompleteRequestParams, CompleteResult, CustomNotification, CustomRequest, CustomResult,
-    DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetTaskParams,
-    GetTaskRequest, GetTaskResult, Implementation, InitializeRequestParams, InitializeResult,
-    ListPromptsRequest, ListPromptsResult, ListResourceTemplatesRequest,
-    ListResourceTemplatesResult, ListResourcesRequest, ListResourcesResult, ListToolsRequest,
-    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ProtocolVersion,
-    ReadResourceRequest, ReadResourceRequestParams, ReadResourceResponse, ServerConfig,
-    ServerNotification, ServerResult, SubscriptionFilter, UpdateTaskParams, UpdateTaskRequest,
+    DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetSkillRequest,
+    GetSkillRequestParams, GetSkillResult, GetTaskParams, GetTaskRequest, GetTaskResult,
+    Implementation, InitializeRequestParams, InitializeResult, ListPromptsRequest,
+    ListPromptsResult, ListResourceTemplatesRequest, ListResourceTemplatesResult,
+    ListResourcesRequest, ListResourcesResult, ListSkillsRequest, ListSkillsResult,
+    ListToolsRequest, ListToolsResult, PaginatedRequestParams, ProgressNotificationParam,
+    ProtocolVersion, ReadResourceDirectoryRequest, ReadResourceDirectoryRequestParams,
+    ReadResourceDirectoryResult, ReadResourceRequest, ReadResourceRequestParams,
+    ReadResourceResponse, ServerConfig, ServerNotification, ServerResult, SubscriptionFilter,
+    UpdateTaskParams, UpdateTaskRequest,
 };
 use rmcp::service::{
     NotificationContext, Peer, PeerRequestOptions, RequestContext, RunningService, ServiceError,
@@ -99,6 +102,12 @@ pub struct BridgeServerHandler {
     _service: Option<RunningService<RoleClient, BridgeClientHandler>>,
     peer: Peer<RoleClient>,
     tool_security_schemes: Option<serde_json::Value>,
+    local_messages: Option<std::sync::Arc<super::session_messages::LocalMessageSession>>,
+    stdio_channel: Option<(
+        std::sync::Arc<super::claude_channel::ChannelSession>,
+        usize,
+        usize,
+    )>,
 }
 
 impl BridgeServerHandler {
@@ -108,7 +117,27 @@ impl BridgeServerHandler {
             _service: Some(service),
             peer,
             tool_security_schemes: None,
+            stdio_channel: None,
+            local_messages: None,
         }
+    }
+
+    pub(crate) fn with_local_messages(
+        mut self,
+        messages: Option<std::sync::Arc<super::session_messages::LocalMessageSession>>,
+    ) -> Self {
+        self.local_messages = messages;
+        self
+    }
+
+    pub(crate) fn with_stdio_channel(
+        mut self,
+        channel: Option<std::sync::Arc<super::claude_channel::ChannelSession>>,
+        max_bytes: usize,
+        max_tokens: usize,
+    ) -> Self {
+        self.stdio_channel = channel.map(|channel| (channel, max_bytes, max_tokens));
+        self
     }
 
     /// Project tools against the authentication policy of the outer proxy.
@@ -126,6 +155,8 @@ impl BridgeServerHandler {
             _service: None,
             peer,
             tool_security_schemes: None,
+            stdio_channel: None,
+            local_messages: None,
         }
     }
 }
@@ -250,6 +281,9 @@ impl BridgeServerHandler {
 
 impl ServerHandler for BridgeServerHandler {
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        if self.stdio_channel.is_some() {
+            return Cow::Borrowed(super::claude_channel::protocol_versions());
+        }
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 
@@ -279,7 +313,7 @@ impl ServerHandler for BridgeServerHandler {
         _context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
         Ok(DiscoverResult::from_server_info(
-            ProtocolVersion::KNOWN_VERSIONS.to_vec(),
+            self.supported_protocol_versions().into_owned(),
             self.get_info(),
         ))
     }
@@ -341,7 +375,8 @@ impl ServerHandler for BridgeServerHandler {
     /// capability subset that could drift from what the daemon truly
     /// supports (e.g. the `extensions` capability mcp-ui widgets need).
     fn get_info(&self) -> ServerConfig {
-        self.peer
+        let mut info = self
+            .peer
             .peer_info()
             .map(|info| {
                 let mut server_info = ServerConfig::new(info.capabilities.clone())
@@ -357,7 +392,29 @@ impl ServerHandler for BridgeServerHandler {
                 server_info.meta = info.meta.clone();
                 server_info
             })
-            .unwrap_or_else(|| ServerConfig::new(Default::default()))
+            .unwrap_or_else(|| ServerConfig::new(Default::default()));
+        // Events webhook registration is a direct HTTP capability, not a
+        // delegated operation on a local or proxy bridge.
+        info.capabilities.events = None;
+        if let Some(meta) = &mut info.meta {
+            meta.remove(super::claude_channel::BRIDGE_BINDING_META);
+        }
+        if let Some((_, _, _)) = &self.stdio_channel {
+            super::claude_channel::ChannelSession::advertise(&mut info.capabilities);
+            super::claude_channel::ChannelSession::add_instructions(
+                &mut info.instructions,
+                self.local_messages.is_some(),
+            );
+        }
+        info
+    }
+
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if context.peer.peer_info().is_some()
+            && let Some((channel, _, _)) = &self.stdio_channel
+        {
+            channel.initialized();
+        }
     }
 
     async fn list_tools(
@@ -365,6 +422,9 @@ impl ServerHandler for BridgeServerHandler {
         request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
+        let first_page = request
+            .as_ref()
+            .is_none_or(|params| params.cursor.is_none());
         let request = request
             .map(ListToolsRequest::with_param)
             .unwrap_or_default();
@@ -377,6 +437,21 @@ impl ServerHandler for BridgeServerHandler {
             .await?
         {
             ServerResult::ListToolsResult(mut result) => {
+                result.tools.retain(|tool| {
+                    tool.name.as_ref() != super::session_messages::TOOL_NAME
+                        && !labby_gateway::upstream::is_transport_local_tool(tool)
+                });
+                if first_page
+                    && self
+                        .local_messages
+                        .as_ref()
+                        .is_some_and(|local| local.visible())
+                {
+                    result.tools.push(
+                        super::permanent_tools::PermanentToolRegistry::new()
+                            .session_messages_tool(),
+                    );
+                }
                 if let Some(schemes) = &self.tool_security_schemes {
                     result.tools = result
                         .tools
@@ -397,9 +472,45 @@ impl ServerHandler for BridgeServerHandler {
 
     async fn call_tool(
         &self,
-        request: CallToolRequestParams,
+        mut request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        if request.name.as_ref() == super::session_messages::TOOL_NAME {
+            let local = self
+                .local_messages
+                .as_ref()
+                .ok_or_else(super::session_messages::hidden)?;
+            let binding = local
+                .authorize()
+                .await
+                .map_err(super::session_messages::tool_error)?;
+            return super::session_messages::execute(&local.store, binding, request).await;
+        }
+        let control = if let Some((channel, max_bytes, max_tokens)) = &self.stdio_channel
+            && matches!(
+                request.name.as_ref(),
+                super::catalog::CODE_MODE_TOOL_NAME
+                    | super::catalog::CODE_MODE_UI_TOOL_NAME
+                    | super::catalog::CODE_MODE_READ_TOOL_NAME
+            )
+            && let Some(args) = &mut request.arguments
+            && (args.contains_key("notification_inbox") || args.contains_key("ack_notifications"))
+        {
+            let mut input = serde_json::Map::new();
+            for key in ["notification_inbox", "ack_notifications"] {
+                if let Some(value) = args.remove(key) {
+                    input.insert(key.to_owned(), value);
+                }
+            }
+            let input = super::call_tool_codemode::notices::NoticeInput::parse(
+                &input,
+                request.name.as_ref() == super::catalog::CODE_MODE_READ_TOOL_NAME,
+            )
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+            Some((channel, input, *max_bytes, *max_tokens))
+        } else {
+            None
+        };
         match self
             .forward_request(
                 ClientRequest::CallToolRequest(CallToolRequest::new(request)),
@@ -408,7 +519,36 @@ impl ServerHandler for BridgeServerHandler {
             )
             .await?
         {
-            ServerResult::CallToolResult(result) => Ok(CallToolResponse::Complete(result)),
+            ServerResult::CallToolResult(mut result) => {
+                // Code Mode adds an execution ID only after admitting the
+                // call. Validation errors must leave local controls untouched.
+                if let Some((channel, input, max_bytes, max_tokens)) = control
+                    && result.structured_content.as_ref().is_some_and(|trace| {
+                        trace.get("kind").and_then(serde_json::Value::as_str)
+                            == Some("code_mode_execute_trace")
+                            && trace
+                                .get("execution_id")
+                                .is_some_and(serde_json::Value::is_string)
+                    })
+                {
+                    match super::call_tool_codemode::notices::prepare_for_recipient(
+                        channel.store.clone(),
+                        Some(channel.recipient.clone()),
+                        None,
+                        input,
+                    )
+                    .await
+                    {
+                        Ok(control) => control.attach(&mut result, max_bytes, max_tokens).await,
+                        Err(error) => tracing::warn!(
+                            subsystem = "agent_notifications",
+                            kind = error.kind(),
+                            "bridge notice controls could not settle"
+                        ),
+                    }
+                }
+                Ok(CallToolResponse::Complete(result))
+            }
             ServerResult::InputRequiredResult(result) => {
                 Ok(CallToolResponse::InputRequired(result))
             }
@@ -594,6 +734,71 @@ impl ServerHandler for BridgeServerHandler {
         }
     }
 
+    fn list_skills(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ListSkillsResult, ErrorData>> + Send {
+        Box::pin(async move {
+            let request = request
+                .map(ListSkillsRequest::with_param)
+                .unwrap_or_default();
+            match self
+                .forward_request(
+                    ClientRequest::ListSkillsRequest(request),
+                    &context,
+                    "list_skills",
+                )
+                .await?
+            {
+                ServerResult::ListSkillsResult(result) => Ok(result),
+                _ => Err(unexpected_response("list_skills")),
+            }
+        })
+    }
+
+    fn get_skill(
+        &self,
+        request: GetSkillRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<GetSkillResult, ErrorData>> + Send {
+        Box::pin(async move {
+            match self
+                .forward_request(
+                    ClientRequest::GetSkillRequest(GetSkillRequest::new(request)),
+                    &context,
+                    "get_skill",
+                )
+                .await?
+            {
+                ServerResult::GetSkillResult(result) => Ok(result),
+                _ => Err(unexpected_response("get_skill")),
+            }
+        })
+    }
+
+    fn read_resource_directory(
+        &self,
+        request: ReadResourceDirectoryRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<ReadResourceDirectoryResult, ErrorData>> + Send {
+        Box::pin(async move {
+            match self
+                .forward_request(
+                    ClientRequest::ReadResourceDirectoryRequest(ReadResourceDirectoryRequest::new(
+                        request,
+                    )),
+                    &context,
+                    "read_resource_directory",
+                )
+                .await?
+            {
+                ServerResult::ListResourcesResult(result) => Ok(result),
+                _ => Err(unexpected_response("read_resource_directory")),
+            }
+        })
+    }
+
     /// Generic escape hatch for any method neither side has typed support
     /// for. Forwarded verbatim so a downstream client and the real daemon
     /// can negotiate a custom method through the bridge transparently.
@@ -602,6 +807,13 @@ impl ServerHandler for BridgeServerHandler {
         request: CustomRequest,
         context: RequestContext<RoleServer>,
     ) -> Result<CustomResult, ErrorData> {
+        if super::agent_events::is_method(&request.method) {
+            return Err(ErrorData::new(
+                rmcp::model::ErrorCode::METHOD_NOT_FOUND,
+                "MCP Events requires a direct HTTP connection",
+                None,
+            ));
+        }
         match self
             .forward_request(
                 ClientRequest::CustomRequest(request),

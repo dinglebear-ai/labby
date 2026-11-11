@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
 use rmcp::RoleClient;
-use rmcp::service::{RawRxJsonRpcMessage, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{Transport, async_rw::AsyncRwTransport};
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
@@ -460,10 +460,6 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
         "labby-diagnostic-child-process".into()
     }
 
-    fn preserves_raw_responses() -> bool {
-        true
-    }
-
     fn send(
         &mut self,
         item: TxJsonRpcMessage<RoleClient>,
@@ -473,14 +469,6 @@ impl Transport<RoleClient> for DiagnosticChildTransport {
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
         let message = self.transport.receive().await;
-        if message.is_none() {
-            self.finish_child("transport_eof", false).await;
-        }
-        message
-    }
-
-    async fn receive_raw(&mut self) -> Option<RawRxJsonRpcMessage<RoleClient>> {
-        let message = self.transport.receive_raw().await;
         if message.is_none() {
             self.finish_child("transport_eof", false).await;
         }
@@ -513,7 +501,7 @@ mod tests {
             tokio::io::sink(),
             DEFAULT_MAX_SKILL_RESPONSE_BYTES,
         );
-        let received = tokio::time::timeout(Duration::from_secs(5), transport.receive_raw())
+        let received = tokio::time::timeout(Duration::from_secs(5), transport.receive())
             .await
             .expect("bounded read")
             .expect("valid frame must not be silently discarded");
@@ -526,7 +514,7 @@ mod tests {
         let max_bytes = payload.len() - 1;
         let mut transport =
             bounded_stdio_transport(std::io::Cursor::new(payload), tokio::io::sink(), max_bytes);
-        let received = tokio::time::timeout(Duration::from_secs(5), transport.receive_raw())
+        let received = tokio::time::timeout(Duration::from_secs(5), transport.receive())
             .await
             .expect("bounded read")
             .expect("exact payload budget includes newline framing");

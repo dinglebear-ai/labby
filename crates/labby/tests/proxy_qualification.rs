@@ -14,12 +14,14 @@ mod primitives;
 use std::time::Duration;
 
 use labby_gateway::upstream::http_client::BodyCappedHttpClient;
-use labby_runtime::skills::wire::{SkillsGetResult, SkillsListResult};
 use primitives::{FixtureMode, PrimitiveClient, PrimitiveFixture};
 use rmcp::RoleClient;
 use rmcp::model::{
-    CallToolRequestParams, ClientRequest, CustomRequest, GetPromptRequestParams, ProtocolVersion,
-    ReadResourceRequestParams, ResourceContents,
+    CallToolRequestParams, GetPromptRequestParams, ProtocolVersion, ReadResourceRequestParams,
+    ResourceContents,
+};
+use rmcp::model::{
+    GetSkillRequestParams, GetSkillResult as SkillsGetResult, ListSkillsResult as SkillsListResult,
 };
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt, RunningService};
 use rmcp::transport::streamable_http_client::{
@@ -256,10 +258,7 @@ async fn q5_multihop_tools_prompts_resources_templates_and_skills_round_trip_onc
     );
 
     let skills: SkillsListResult = client
-        .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/list",
-            Some(json!({})),
-        )))
+        .list_skills(None)
         .await
         .expect("multihop skills/list");
     let skill = skills
@@ -268,10 +267,7 @@ async fn q5_multihop_tools_prompts_resources_templates_and_skills_round_trip_onc
         .find(|skill| skill.uri.starts_with("skill://leaf/skill/labby/"))
         .unwrap_or_else(|| panic!("proxied leaf skill missing: {skills:?}"));
     let fetched: SkillsGetResult = client
-        .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/get",
-            Some(json!({"uri": skill.uri})),
-        )))
+        .get_skill(GetSkillRequestParams::new(skill.uri.clone()))
         .await
         .expect("multihop skills/get");
     assert_eq!(fetched.skill.uri, skill.uri);
@@ -393,10 +389,7 @@ async fn q5_upstream_auth_failure_is_partial_fail_closed_and_redacted() {
         .expect("local partial catalog");
     assert!(tools.tools.iter().any(|tool| tool.name == "doctor"));
     let skills: SkillsListResult = client
-        .send_request_as(ClientRequest::CustomRequest(CustomRequest::new(
-            "skills/list",
-            Some(json!({})),
-        )))
+        .list_skills(None)
         .await
         .expect("local skills survive upstream auth failure");
     assert!(

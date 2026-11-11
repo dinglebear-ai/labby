@@ -24,6 +24,8 @@ mod route_observability;
 
 /// Focused authentication helpers used by the top-level router middleware.
 mod router_middleware;
+#[cfg(feature = "gateway")]
+mod session_messages;
 
 /// Bounded filesystem-backed development mockup handlers.
 mod dev_mockup;

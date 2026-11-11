@@ -1,15 +1,16 @@
 ---
-title: "Code Mode Agent Notifications"
+title: "Agent Notifications"
 created: "2026-10-02"
-updated: "2026-10-03"
+updated: "2026-11-08"
 ---
 
-# Code Mode Agent Notifications
+# Agent Notifications
 
-Labby can append short advisory notices to normal Code Mode MCP responses. This
-is an authenticated pull-through inbox, not a push connection, assistant wake-up,
-or a claim that a human read a message. The JavaScript result and error semantics
-remain intact. Text content and structuredContent carry the same notice fields.
+Labby stores short advisory notices for an authenticated agent inbox. A notice
+can appear on a normal Code Mode response or, when enabled, go out through MCP
+Events or Claude Code Channels. All paths use the same notice ID, producer
+authorization, and separate agent acknowledgment. A notice is never authority
+to act or proof that a human read it.
 
 ## Agent and producer workflow
 
@@ -40,16 +41,166 @@ next ordinary write-capable call. It deduplicates retries and verifies consequen
 claims against live state. Receipt does not imply human reading, task completion,
 or authorization. Foreign/unknown/expired/never-offered IDs cannot be acknowledged.
 
+## Push delivery
+
+### MCP Events over HTTPS
+
+Start the gateway with `labby serve --mcp-events`. The authenticated root HTTP
+MCP route advertises `capabilities.events` on legacy initialization and
+`server/discover`. Default, Unix, stdio, and protected subset routes do not
+offer webhook subscriptions.
+
+`events/list` describes `labby.notification.created`. Subscribe through
+`events/subscribe` with its name, optional exact `arguments.source`, and
+webhook `delivery` (`mode`, `url`, `secret`). The signed HTTPS challenge
+must succeed before activation. Labby derives the inbox from the authenticated
+caller, so subscription arguments cannot select someone else's address.
+Subscribe and unsubscribe require `lab` or `lab:admin`; authenticated read
+authority can list the definition. OAuth requires a current refresh grant for
+the same client, identity, scope, and resource. Product credentials must still
+match live access policy. Browser cookies do not enroll subscriptions.
+
+Use a secret in Standard Webhooks format. Prefix the standard Base64 encoding
+of 24–64 random bytes with `whsec_`. Verify `webhook-signature` against the
+exact request bytes using HMAC-SHA256 over
+`webhook-id.webhook-timestamp.raw-body`, with the decoded bytes as the key.
+The signature header contains one or more `v1,<base64>` signatures. The
+verification POST has `type: "verification"` and a `challenge` string.
+After verifying the signature, return a 2xx JSON response with that same
+`challenge` value. An empty 2xx response produces `challenge_failed`.
+
+Subscriptions apply to future notices. The default lifetime is one hour and
+the granted bounds are one minute to 24 hours. `ttlMs: null` grants 24 hours.
+Refresh with the same identity tuple and a fresh authenticated request.
+The response gives a finite `refreshBefore`. For ordinary notices it also
+returns the producer address in `_meta["ai.dinglebear.labby/inboxId"]`. Use
+that address to publish to the subscription. Use the same event name,
+filter, and URL, without the secret, to unsubscribe. Labby has no replay cursor.
+
+Callbacks must resolve exclusively to public addresses. Labby pins the checked
+addresses for each request, verifies TLS, and disables redirects and ambient
+proxies. Signing keys are encrypted in the private database; keep
+`webhook-encryption.key` with any protected inbox backup. A refresh can replace
+the signing key, with both signatures valid for up to five minutes. Labby
+pauses delivery after restart until an authenticated refresh restores live
+authority. Notice and subscription expiry still apply.
+
+Each event carries the existing notice ID, creation time, and advisory data.
+Transient delivery failures retry up to eight attempts, with one request per
+subscription, four per inbox, and eight across workers. A successful HTTP callback ends webhook
+retries. The notice remains available to its recipient until ACK or expiry.
+An ACK stops pending retries for that notice. See the [ChatGPT MCP Events
+profile](https://developers.openai.com/plugins/build/mcp-events) for the client
+and workspace requirements; local Codex sessions do not use that receiver.
+
+### Claude Code Channels
+
+Configure a local stdio MCP server with command `labby` and arguments
+`["mcp", "--claude-channel"]`. The gateway and Code Mode inbox controls must be
+available. Then opt in to the channel in Claude Code. Follow the current
+[Claude Channels documentation](https://code.claude.com/docs/en/channels) for
+client policy and approval for custom channels. Channel mode negotiates a
+legacy MCP initialization handshake because Claude Code does not register a
+channel on MCP revision `2026-07-28`. Labby does not relay permissions.
+
+After the MCP initialization handshake, Labby registers this connection's inbox
+and sends `notifications/claude/channel` for pending notices. A normal
+`notification_inbox: true` Code Mode call returns the address to share with an
+authorized producer. The publishing API and channel must use the same private
+Labby installation; this also applies when the stdio connection bridges to a
+running daemon. Use an authenticated daemon at a literal loopback IP such as
+`127.0.0.1` or `::1`, with the same private installation as the bridge.
+A new connection gets a new address. The worker ends when the connection closes.
+
+Treat channel content as advisory and deduplicate on `meta.notice_id`.
+Send that ID in `ack_notifications` on a normal write-capable Code Mode call
+after considering it. A successful stdio write does not acknowledge the notice.
+
+These options deliver existing notices. Scheduling scripts, running tools on a
+timer, and watching CI or logs are separate producer features.
+
+## Private session messages
+
+Start an authenticated TCP MCP daemon with `labby serve --agent-messages`, or
+enable messaging on a direct local connection with `labby mcp --agent-messages`.
+On HTTP, configure each logical client session to send its own
+`Labby-Session-Key` header on authenticated root MCP requests, including
+`tools/list`, discovery, message calls, and message subscription operations.
+If `messages` is missing from the tool list, check the header on discovery
+and verify that the daemon started with messaging enabled. Generate 32 random
+bytes and encode them as 64 lowercase hexadecimal characters. Keep the key
+private in the client configuration and reuse it for that session's reconnects.
+Labby assigns a public `session_id` when the connection registers.
+
+Call the `messages` tool with an action and a params object.
+
+| Action | Params | Result |
+| --- | --- | --- |
+| `register` | `{"label":"build monitor"}` | This session's ID and presence |
+| `sessions` | `{}` | The owner's retained session IDs, labels, and presence |
+| `send` | `to`, `body`, `idempotency_key`, optional `summary` | Message ID and the original recipient IDs |
+| `unread` | Optional `limit` from 1 to 32 | Unread summaries and IDs |
+| `read` | `message_id` | The full body, sender ID, original label, and timestamps |
+| `ack` | `message_ids`, up to 32 | IDs acknowledged by this session |
+
+Use `{"kind":"session","session_id":"…"}` for a direct message or
+`{"kind":"all_active"}` to broadcast. Broadcast snapshots the owner's active
+sessions, including the sender. HTTP sessions count as active for five minutes
+after successful messaging activity or subscription refresh. Stdio sessions
+renew a two-minute lease while the connection is live. A clean disconnect
+closes the registration. You can still send directly to a retained HTTP
+session whose activity lease has expired.
+
+Bodies can contain up to 16 KiB of UTF-8. An optional summary is limited to
+160 bytes. Labby keeps each message and its send receipt for 24 hours. Use the
+same idempotency key and payload if the inbox is busy or a send times out. Labby returns the
+original recipient list on replay. A changed payload with the same key is a
+conflict.
+
+Only the addressed session can read or acknowledge a message. Bearer and OAuth
+sessions use their verified owner identity and the private session key. A
+bridged stdio connection requires a daemon at a literal loopback address,
+the same private Labby installation, and a current authenticated bridge proof.
+Standalone stdio uses the installation's local owner group. A standalone
+process holds the installation lock. For multiple concurrent local clients,
+start the authenticated daemon with `labby serve --agent-messages`, then run
+`labby mcp --agent-messages` for each stdio client. Set each bridge's
+`LABBY_SERVER_URL` to the daemon's literal loopback origin, use the same
+`LABBY_HOME`, and configure valid daemon authentication. Reopening stdio
+creates a new session.
+
+For HTTPS push, run `labby serve --agent-messages --mcp-events`. Register
+first, then subscribe to `labby.notification.created` with
+`arguments.session_messages: true` and the same bearer authority and
+`Labby-Session-Key`. Use the same proof for refresh and unsubscribe. For
+Claude Code, configure `["mcp","--agent-messages","--claude-channel"]` and
+follow the client approval process for custom channels. The short advisory
+push carries `data.message_id` over MCP Events or `meta.message_id` over
+Claude Channels. Call `messages.read` for the full body and `messages.ack`
+after handling it. Ordinary Code Mode inbox controls continue to handle
+short notices.
+
+An HTTP client must support the private header on both tool and Events
+requests to use message push. Native ChatGPT Work delivery with that header
+and native Claude Code acceptance require client verification. The direct
+`messages.unread` tool is available to eligible clients without push.
+
 ## Durability, isolation, and recovery
 
 The store is LABBY_HOME/agent-notifications/inbox.sqlite3, opened under the existing
 validated installation root. Its directory is private, the file is privately
 created, and insecure files, symlinks, unsupported schema versions, or corrupt
 SQLite state are refused. Startup disables notices on failure; it never silently
-switches to an ephemeral inbox. Restore a consistent protected backup through the
-normal stopped-daemon maintenance workflow; do not delete or edit the live database
-to hide a storage failure. Notification data may be sensitive and must not be
-included in public diagnostics or shared backups.
+switches to an ephemeral inbox. Schema v3 adds session registrations and
+private message references while preserving earlier notices, subscriptions,
+and delivery leases. The first gateway startup can migrate the inbox even when
+push and messaging are disabled. Before upgrading, stop the daemon and stdio
+processes that own this installation and take a consistent, protected backup of
+the installation. Keep the inbox and its keys together, including `messaging.key`
+if present. For rollback, restore the matching pre-upgrade backup while those
+processes are stopped, then verify the restored inbox on the older binary.
+Restoring the backup discards writes made after that snapshot. Notification data
+belongs in protected backups and redacted diagnostics.
 
 Startup storage diagnostics identify rejected `schema_version`, `application_id`,
 `schema_mismatch`, `integrity_check`, and `foreign_keys` validations through a
@@ -68,8 +219,12 @@ same ID; changed payload is a conflict. Registration refreshes a 30-day address;
 notice TTL is at most 24 hours and cannot outlive the address. Limits are detailed
 in the canonical reference, including global and recipient quotas.
 
-OAuth uses the authenticated actor and authorized client ID. Static bearer and
-product credentials use verified credential fingerprints, not clientInfo or caller
+Existing OAuth Code Mode pull inboxes keep their address and pending notices.
+New OAuth push enrollments use an issuer-bound address derived from the verified
+provider and subject, transport issuer, and authorized client ID. Publish to
+the address returned by `events/subscribe` for push. The same signed OAuth
+identity can pull and ACK ordinary notices at its push address through Code Mode.
+Static bearer and product credentials use verified credential fingerprints, not clientInfo or caller
 supplied IDs. Protected-route identity includes its Team, loadout, and effective authority
 partition as well as the route label; rebinding a route cannot inherit an old
 partition's inbox. Optional hashed conversation metadata narrows routing.
@@ -90,12 +245,15 @@ the script from starting; a later script failure does not undo accepted controls
 Registration and ACK controls on the same call commit atomically. If a full
 response omits their receipt, repeat only the controls with a harmless compact
 script or your next ordinary call. Never replay a mutating script solely to
-recover a receipt.
+recover a receipt. On a stdio bridge, local notice controls settle after the
+daemon returns an admitted Code Mode execution result, including execution
+errors. A daemon validation rejection leaves those local controls untouched.
 
 ## Source ownership
 
-Shared storage, validation, idempotency, and delivery semantics live in
-crates/labby/src/dispatch/codemode_notices.rs. The API and MCP adapters only bind
+The [inbox owner](../../crates/labby/src/dispatch/codemode_notices.rs) owns
+storage, validation, idempotency, and ACKs. [Event dispatch](../../crates/labby/src/dispatch/agent_events.rs)
+owns subscription lifecycle, live authority checks, signing, and retries. The API and MCP adapters only bind
 trusted identities and transport the shared contract. Startup owns durable-store
 initialization; shared route runtime carries it across stateless HTTP requests.
 The MCP schema and description builders own discoverability. Skills are authored

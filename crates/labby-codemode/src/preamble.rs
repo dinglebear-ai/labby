@@ -102,6 +102,7 @@ const CODEMODE_TOP_LEVEL_RESERVED: &[&str] = &[
     "listResources",
     "readResource",
     "readArtifact",
+    "callToolResult",
     "artifactInfo",
     "listArtifacts",
     "getPrompt",
@@ -655,6 +656,9 @@ codemode.readResource = async function(uri) {{
     throw new TypeError("codemode.readResource requires a non-empty URI string");
   }}
   return callTool("__lab_internal::read_resource", {{ uri: uri }});
+}};
+codemode.callToolResult = async function(id, params) {{
+  return callTool(id, params == null ? {{}} : params, true);
 }};
 codemode.readArtifact = async function(artifactId, options) {{
   return callTool("__lab_internal::read_artifact", Object.assign({{}}, options || {{}}, {{ artifact_id: artifactId }}));

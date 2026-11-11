@@ -716,17 +716,18 @@ impl LabMcpServer {
                 await_code_mode_execution(entry).await
             }
             InflightCodeModeRole::Leader(leader) => {
-                let result = broker
-                    .execute_with_trace_context(
-                        code,
-                        caller,
-                        self.code_mode_surface(),
-                        config,
-                        capability_filter,
-                        Some(Arc::<str>::from(execution_id.as_str())),
-                        request_trace_context(&context.extensions),
-                    )
-                    .await;
+                // Keep runner state out of the enclosing MCP dispatch future.
+                // The runner's catalog lookups share the same Tokio worker.
+                let result = Box::pin(broker.execute_with_trace_context(
+                    code,
+                    caller,
+                    self.code_mode_surface(),
+                    config,
+                    capability_filter,
+                    Some(Arc::<str>::from(execution_id.as_str())),
+                    request_trace_context(&context.extensions),
+                ))
+                .await;
                 leader.complete(&result);
                 result
             }
@@ -808,6 +809,7 @@ impl LabMcpServer {
                 });
                 let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
                 result.structured_content = Some(structured);
+                bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
                 notice_control
                     .attach(&mut result, notice_budget.0, notice_budget.1)
                     .await;
@@ -948,6 +950,7 @@ impl LabMcpServer {
             &response,
             self.route_scope.exposes_resources(),
         );
+        bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
         notice_control
             .attach(&mut result, notice_budget.0, notice_budget.1)
             .await;
@@ -999,7 +1002,7 @@ fn code_mode_result(
 }
 
 mod description;
-mod notices;
+pub(super) mod notices;
 
 #[cfg(test)]
 pub(crate) use description::CODE_MODE_DESCRIPTION_MAX_BYTES;
@@ -1010,3 +1013,6 @@ pub(crate) use description::{
 
 #[cfg(test)]
 mod tests;
+
+mod upstream_budget;
+use upstream_budget::bound_upstream_content;

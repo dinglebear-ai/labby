@@ -266,6 +266,7 @@ fn artifact_call(
     (
         seq,
         CodeModeExecutedCall {
+            upstream_content: None,
             id: ARTIFACT_WRITE_CALL_ID.to_string(),
             ok,
             elapsed_ms,

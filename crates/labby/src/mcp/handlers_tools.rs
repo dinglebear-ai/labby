@@ -203,6 +203,11 @@ impl LabMcpServer {
         // The clone cost is only real on ProtectedSubset
         // routes — `Root` is a unit variant.
         let peer_contract = self.peer_contract_for_request(&context);
+        #[cfg(feature = "gateway")]
+        if peer_contract.audience.session_messages_visible {
+            descriptors.push(self.registry.permanent_tools().session_messages_tool());
+            advertised_names.insert(super::session_messages::TOOL_NAME.to_owned());
+        }
         let visibility = peer_contract.code_mode_visibility().await;
         let manager_code_mode_enabled = visibility.exposes_synthetic_tools();
         let process_code_mode_enabled = crate::config::process_code_mode_enabled();
@@ -1244,6 +1249,16 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
                                 "elapsed_ms": { "type": "integer", "minimum": 0 },
                                 "start_ms": { "type": "integer", "minimum": 0 },
                                 "params": {},
+                                "upstream_content": {
+                                    "type":"object",
+                                    "properties": {
+                                        "content": {"type":"array", "items": {"type":"object"}},
+                                        "omitted_blocks": {"type":"integer", "minimum":0},
+                                        "omitted_bytes": {"type":"integer", "minimum":0}
+                                    },
+                                    "required":["omitted_blocks","omitted_bytes"],
+                                    "additionalProperties":false
+                                },
                                 "error_kind": { "type": "string" },
                                 "ui": {
                                     "type": "object",

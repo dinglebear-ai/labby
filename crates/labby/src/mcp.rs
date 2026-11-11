@@ -4,6 +4,8 @@
 
 pub(crate) mod agent_error;
 #[cfg(feature = "gateway")]
+mod agent_events;
+#[cfg(feature = "gateway")]
 pub(crate) mod bound_access;
 #[cfg(feature = "gateway")]
 pub mod bridge;
@@ -16,6 +18,8 @@ pub mod catalog;
 pub(crate) mod catalog_churn;
 pub(crate) mod catalog_coalesce;
 pub(crate) mod catalog_notifications;
+#[cfg(feature = "gateway")]
+pub(crate) mod claude_channel;
 #[cfg(feature = "gateway")]
 pub(crate) mod code_mode_authority;
 pub mod completion;
@@ -33,6 +37,8 @@ pub mod logging;
 pub mod meta;
 pub(crate) mod native_metadata;
 pub(crate) mod native_tasks;
+#[cfg(feature = "gateway")]
+mod notice_identity;
 pub(crate) mod pagination;
 pub(crate) mod peer_contract;
 pub mod peers;
@@ -53,6 +59,8 @@ pub(crate) mod route_scope;
 pub(crate) mod runtime;
 pub mod server;
 pub mod services;
+#[cfg(feature = "gateway")]
+pub(crate) mod session_messages;
 #[cfg(feature = "skills")]
 pub mod skills;
 #[cfg(feature = "skills")]
