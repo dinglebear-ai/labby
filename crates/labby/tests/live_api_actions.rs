@@ -395,10 +395,36 @@ async fn prepare_authority_action(
         if matches!(
             intent.action.as_str(),
             "access.team.member.role.set"
+                | "access.team.member.activate"
                 | "access.team.member.suspend"
                 | "access.team.member.remove"
         ) {
             drop(post_action(client, base, "/v1/access/admin", "access.team.member.add", serde_json::json!({"team_id":team_id.unwrap(),"principal_id":"matrix-principal","role":"member"}), true).await);
+        }
+        if intent.action == "access.team.member.activate" {
+            let (status, body) = post_action(
+                client,
+                base,
+                "/v1/access/admin",
+                "access.team.member.suspend",
+                serde_json::json!({"team_id":team_id.unwrap(),"principal_id":"matrix-principal"}),
+                true,
+            )
+            .await;
+            assert!(
+                status.is_success(),
+                "activation prerequisite failed: {}",
+                String::from_utf8_lossy(&body)
+            );
+        }
+        if intent.action == "access.team_project.unassign" {
+            let (status, body) = post_action(client,base,"/v1/access/admin","access.team_project.assign",
+                serde_json::json!({"team_id":team_id.unwrap(),"project_id":"bootstrap-default","role":"member"}),true).await;
+            assert!(
+                status.is_success(),
+                "unassignment prerequisite failed: {}",
+                String::from_utf8_lossy(&body)
+            );
         }
         if intent.action == "access.team.activate" {
             drop(
@@ -734,6 +760,23 @@ async fn every_api_action_reaches_live_http_or_proves_auth_denial() {
                     let receipt = action_scenarios::snippet_response_data("snippets.receipt", &receipt);
                     assert_eq!(receipt["execution_id"], id, "replay durable state readback");
                 }
+            }
+            if status.is_success() && matches!(intent.action.as_str(), "access.team.member.activate" | "access.team_project.unassign") {
+                let is_member = intent.action == "access.team.member.activate";
+                let inventory_action = if is_member { "access.team.member.list" } else { "access.team_project.list" };
+                let field = if is_member { "members" } else { "assignments" };
+                let id = if is_member { "principal_id" } else { "project_id" };
+                let expected_status = if is_member { "active" } else { "revoked" };
+                assert_eq!(value["status"], expected_status);
+                let (read_status, body) = post_action(&client,&guard.connection().base_url,"/v1/access/admin",
+                    inventory_action,serde_json::json!({"team_id":value["team_id"],"limit":10}),true).await;
+                assert!(read_status.is_success(), "lifecycle readback failed");
+                let inventory: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                let row = inventory[field].as_array().unwrap().iter().find(|row| row[id] == value[id]).expect("persisted lifecycle row");
+                assert_eq!(row["status"], expected_status);
+                assert_eq!(row["role"], value["role"]);
+                let epoch = if is_member { "membership_epoch" } else { "assignment_epoch" };
+                assert_eq!(row[epoch], value[epoch]);
             }
             if status.is_success() {
                 successes.insert(intent.service.clone());

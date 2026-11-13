@@ -23,6 +23,10 @@
 
 use crate::access::{AccessBlockedReason, AccessRuntimeError, AccessSetupReason, AccessStoreError};
 use crate::dispatch::error::ToolError;
+use labby_runtime::agent_error::{
+    AgentErrorOrigin, AgentRecoveryAction, AgentRecoveryAdvice, AgentSameArgumentsRetry,
+    AgentSideEffectRisk,
+};
 
 /// Map a typed access-store failure to the shared surface error envelope.
 ///
@@ -42,6 +46,23 @@ pub(crate) fn map_store_error(
         | E::TeamUnavailable
         | E::ArtifactMirrorUnavailable
         | E::ForeignKeyViolation => denied(),
+        E::InvitationExpiryCommitted => {
+            let denial = denied();
+            ToolError::contract(
+                denial.kind(),
+                denial.user_message(),
+                denial.extra_fields().as_object().cloned().unwrap_or_default(),
+                Some(AgentErrorOrigin::Policy),
+                Some(AgentRecoveryAdvice {
+                    action: AgentRecoveryAction::DoNotRetry,
+                    same_arguments: AgentSameArgumentsRetry::Discouraged,
+                    guidance: "Refresh authorized invitation or Team metadata, or obtain a new invitation."
+                        .into(),
+                    retry_after_ms: None,
+                }),
+                Some(AgentSideEffectRisk::Possible),
+            )
+        }
         E::InvalidTeamInput
         | E::InvalidProjectLoadoutInput
         | E::InvalidBootstrapInput

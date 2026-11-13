@@ -3184,10 +3184,40 @@ where
             .with_ansi(false)
             .without_time(),
     );
+    // tracing-core's single-dispatch fast path registers new callsites against
+    // the emitting thread's subscriber. An unrelated test thread can therefore
+    // cache `never` while this capture is active. Keep a second, inert dispatch
+    // alive so registration considers this capture even from another thread.
+    let _registration_peer = tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
     let tracing_guard = tracing::subscriber::set_default(subscriber);
     let output = build_future().await;
     drop(tracing_guard);
     (output, crate::test_support::captured_logs(&buffer))
+}
+
+/// A callsite first reached by another test thread must remain observable here.
+#[tokio::test(flavor = "current_thread")]
+async fn captured_logs_keep_callsite_interest_after_first_use_on_another_thread() {
+    fn emit_marker(marker: &str) {
+        tracing::info!(marker, "capture callsite registration regression");
+    }
+
+    let ((), logs) = with_captured_logs(|| async {
+        std::thread::spawn(|| emit_marker("outside_capture"))
+            .join()
+            .expect("outside capture thread");
+        emit_marker("inside_capture");
+    })
+    .await;
+
+    assert!(
+        logs.contains("inside_capture"),
+        "first use on another thread disabled the captured callsite: {logs}"
+    );
+    assert!(
+        !logs.contains("outside_capture"),
+        "another thread's events must remain outside this capture: {logs}"
+    );
 }
 
 /// The budget warning line, if any, from captured logs.

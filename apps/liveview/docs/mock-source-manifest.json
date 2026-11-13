@@ -1,0 +1,1260 @@
+{
+  "schema_version": 1,
+  "reference": "phx-book native Labby prototype",
+  "frozen_on": "2026-11-08",
+  "files": [
+    {
+      "path": "lib/aurora/components.ex",
+      "sha256": "19fd797d7f179d8f4e86d59602a9e3681e3781bc2111d17eda4b90a37a0d6c70",
+      "bytes": 20727
+    },
+    {
+      "path": "lib/aurora/oauth.ex",
+      "sha256": "87efef7df16cc116ca2464e8ebbe82a6568d6db09a9f630117d3c7343ca76061",
+      "bytes": 5257
+    },
+    {
+      "path": "lib/phx_book/application.ex",
+      "sha256": "deef4c1516973bc60ec46dffaad25f66a66dadb1ceb252d630c89f2b770eb5df",
+      "bytes": 1020
+    },
+    {
+      "path": "lib/phx_book/labby_access_preview.ex",
+      "sha256": "fd333fbf69cc47dbd20129c930a0b9fa602d4334515fc7ee44ca0dc3eb5927a8",
+      "bytes": 10041
+    },
+    {
+      "path": "lib/phx_book/labby_agents_preview.ex",
+      "sha256": "2b8fd8df2453802ec0d67b8b2e6eb5fe5e1bc51fd5531d7551eef21e6eef70b4",
+      "bytes": 9604
+    },
+    {
+      "path": "lib/phx_book/labby_api_contracts.ex",
+      "sha256": "5d90c0b4cfaaf7dab116ca358609b342fe2ed17c1d9a47a1fbb0a9d2fbdd6649",
+      "bytes": 3217
+    },
+    {
+      "path": "lib/phx_book/labby_artifact_files.ex",
+      "sha256": "f10602277b2e47ea9e6aad831a70ec16089b7e44af6f110661516a6a3c53adcd",
+      "bytes": 3521
+    },
+    {
+      "path": "lib/phx_book/labby_artifact_lifecycle.ex",
+      "sha256": "f10b479563e49f396b666dac511db2280ed537e7ec7007d76b25c6e6dd8de31e",
+      "bytes": 12014
+    },
+    {
+      "path": "lib/phx_book/labby_browser_preview.ex",
+      "sha256": "92763d5d498accde6ac0393fd6fb887c510aab3d92f3908e5134c1ae16f3187b",
+      "bytes": 7729
+    },
+    {
+      "path": "lib/phx_book/labby_creation_catalog.ex",
+      "sha256": "58a5475a7ce46c563042cf5282a92ce3c10770ee9f4fbdc41e5acfb76c512f3e",
+      "bytes": 8356
+    },
+    {
+      "path": "lib/phx_book/labby_depot_actions.ex",
+      "sha256": "29abdbb3060a9af36cc486da042e09b704e75b9ed13b9e71ab294b2626e2afee",
+      "bytes": 6201
+    },
+    {
+      "path": "lib/phx_book/labby_depot_contracts.ex",
+      "sha256": "6de384042be290935e51ab282adf4b9994bab7449a047faa7c7a6b5bc1288ce9",
+      "bytes": 3618
+    },
+    {
+      "path": "lib/phx_book/labby_depot_kinds.ex",
+      "sha256": "bd7b396a22d2cd2c2045620baaf8d69e8c0950b4ff2c0a1223b08e32aeb05c5d",
+      "bytes": 3337
+    },
+    {
+      "path": "lib/phx_book/labby_depot_preview.ex",
+      "sha256": "26a7d964c46e428a8de40db1f05b1b2522afa9a4c4e686deb814ce85a57b43d4",
+      "bytes": 30723
+    },
+    {
+      "path": "lib/phx_book/labby_diagnostics_preview.ex",
+      "sha256": "7bfec1b7f033457ca8cff241e54c9da752573cebbdd619744717c173463d74e4",
+      "bytes": 2715
+    },
+    {
+      "path": "lib/phx_book/labby_draft_recovery.ex",
+      "sha256": "8530e4bb321832ef876e45c26311ceea3d02a07f91e9adc06c2bcf3cbfb3cd9e",
+      "bytes": 2596
+    },
+    {
+      "path": "lib/phx_book/labby_environments_preview.ex",
+      "sha256": "77a2062932fe05cf6c29162e1da9ddb374c932bf2daefd4605b6bc6b122a6b29",
+      "bytes": 10099
+    },
+    {
+      "path": "lib/phx_book/labby_gateway_preview.ex",
+      "sha256": "6e7fd8c9930840e6df973d2ea184adb0dbd40a051c6a4166e1710210ca75627d",
+      "bytes": 22014
+    },
+    {
+      "path": "lib/phx_book/labby_markdown.ex",
+      "sha256": "20106abcbdaaa575fb13266691ef6c98420a6241f024901a8508c69fa49bc55b",
+      "bytes": 4098
+    },
+    {
+      "path": "lib/phx_book/labby_observe_preview.ex",
+      "sha256": "6d1abb7a91e1978b8624857cf23254a6f5261ced7b444a7b7c7e8823ae7fb3ec",
+      "bytes": 11319
+    },
+    {
+      "path": "lib/phx_book/labby_onboarding_preview.ex",
+      "sha256": "af86c3a8801de43997bd9c8eba385037938ed79b75291128c26c569db0ffda78",
+      "bytes": 1842
+    },
+    {
+      "path": "lib/phx_book/labby_overview_data.ex",
+      "sha256": "a32027cced3a7039eb1e696e03368d8845fd06f234bf3de3733853ac647b85f4",
+      "bytes": 13643
+    },
+    {
+      "path": "lib/phx_book/labby_overview_preview.ex",
+      "sha256": "437acff415e6fd73888e741e704286db63c739dd4b482311ae3e98ef3b34aa90",
+      "bytes": 7977
+    },
+    {
+      "path": "lib/phx_book/labby_projects_preview.ex",
+      "sha256": "ea2f4e6cf4aa62ea01f5322b2abdb09cbf0f782626d1b9ba5bed3aac6977d685",
+      "bytes": 9395
+    },
+    {
+      "path": "lib/phx_book/labby_publish_preview.ex",
+      "sha256": "ed390ec930cd566f0c66129a83b26e96c4e6d1f706eaf804982474707f8503a8",
+      "bytes": 6711
+    },
+    {
+      "path": "lib/phx_book/labby_settings_preview.ex",
+      "sha256": "2f848774642c24b119758cb37bbe9877d2ae1658f558dd3165c2a06727c656d9",
+      "bytes": 12702
+    },
+    {
+      "path": "lib/phx_book/labby_setup_preview.ex",
+      "sha256": "dbc9317c16f4546cd875336fbb7015d66ba6ac6767e80196f7c1a0796874997d",
+      "bytes": 15264
+    },
+    {
+      "path": "lib/phx_book/labby_skill_source.ex",
+      "sha256": "6ee726949a21f0b15e1dc0a92fbfc89aa3d29067479b08e3292eeca53da85da5",
+      "bytes": 1507
+    },
+    {
+      "path": "lib/phx_book/labby_stash_preview.ex",
+      "sha256": "594026f5e05bc1cb8ae3403785d59000816274fe7d1fedaa2c573c89295f2a37",
+      "bytes": 22067
+    },
+    {
+      "path": "lib/phx_book/labby_studio_preview.ex",
+      "sha256": "9e3f8e6a9c0e4bbac4fbd4f07c21674707e937e9a9e6aeb4f16a2672c5a19dd5",
+      "bytes": 44870
+    },
+    {
+      "path": "lib/phx_book/labby_tasks_preview.ex",
+      "sha256": "b90c712a9d92bd8fa8b1fad2454c6a4a3ca94bfed0942d379e5eb0013c83f9ae",
+      "bytes": 39906
+    },
+    {
+      "path": "lib/phx_book.ex",
+      "sha256": "f35557b0931c289d28d240142f8e94501a45ecd657c56bdab749d8709c4962ad",
+      "bytes": 251
+    },
+    {
+      "path": "lib/phx_book_web/components/atlas.ex",
+      "sha256": "f57ec7df8035592bcfccf23f55825ddb885b66cc81871d5fceb33b9db5a40fd9",
+      "bytes": 31236
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_catalog.ex",
+      "sha256": "46fe304d03df202d0e12a70f0467cd0c712df4856b3be873dad9409ec359a6df",
+      "bytes": 64556
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_gateway.ex",
+      "sha256": "7a78ca38da97fc082fdfb139ac0b16c1e33a76c1e5ac5a8ec28ca5e054aa3d25",
+      "bytes": 60898
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_labby.ex",
+      "sha256": "20500f37661ff294f5ed241de17cc279fed2604705c57785287d8aa3c5ba78fc",
+      "bytes": 22830
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_navigation.ex",
+      "sha256": "bb0037a67ef1e6bb3c6308f37bc9bded6b8051ec97bfb1c6e2cba3ff7f864e9b",
+      "bytes": 3579
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_observability.ex",
+      "sha256": "d391ea2a97620d0819e373b76eec133afea50abf02c75038435b829ef14726b3",
+      "bytes": 13377
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_overview.ex",
+      "sha256": "894b48dff8403216b9732220cd046540bacea988fa05caac943c7cff529192e8",
+      "bytes": 12444
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_preview.ex",
+      "sha256": "c67d62d6ef7b4441cb9336312362351dc23fcb4f61bbed3c9fe51a28dd517fc5",
+      "bytes": 3473
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_run_inspector.ex",
+      "sha256": "57bbf3881c91aec103708aa24e3d9c5c78e12f65298c98fc54baa29c400abc85",
+      "bytes": 6854
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_server_setup.ex",
+      "sha256": "d8940690247120d78a820472249d99c431ff394d924ac6723b3377154e0ffd41",
+      "bytes": 46333
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_settings.ex",
+      "sha256": "796845da6652a7ec4dee4a4dbe432b417d6a798e193d4a3451e01a6a5d63f163",
+      "bytes": 64944
+    },
+    {
+      "path": "lib/phx_book_web/components/aurora_workspace.ex",
+      "sha256": "280ec0efd349e8b8a3b7bd9692db873b423b17062d7a0cd1b28fc2d82d579c2c",
+      "bytes": 65646
+    },
+    {
+      "path": "lib/phx_book_web/components/core_components.ex",
+      "sha256": "8336525f3a664e711bfab2a621be202c397d9b519892b3821d68784f8ad98f9b",
+      "bytes": 20986
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_action_form.ex",
+      "sha256": "4b4347d8b08930c7e78a494ede4331266684fd7ffa909c682b1193f79b35b45f",
+      "bytes": 4589
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_builder_components.ex",
+      "sha256": "5ca92110e214c8c79dc0eb5319a228205f37225969e36f52dcec5180eb000f37",
+      "bytes": 21954
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_create_components.ex",
+      "sha256": "ff6f7c4ade44f26a1efd263301517b98709147c5965df4d3637057058b2ee444",
+      "bytes": 43617
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_create_wizard.ex",
+      "sha256": "0adbb696de3aa090171fae0d1bba86323feca9b2401bfc1932a9dc75bdfc3433",
+      "bytes": 24039
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_demo.ex",
+      "sha256": "ee810ada8c8bce46c289d17145dc6992c239db313b0db7a7fd6981feea7ae3d4",
+      "bytes": 954
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_env_editor.ex",
+      "sha256": "8ee1ea21415b86d4863614b6f5690db603d0815356f9d779ecbf2560d5b5a0f4",
+      "bytes": 5151
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_file_dialog.ex",
+      "sha256": "147ea419240f617305678d219dddd0581d2e47e60af7f6e91a45d69ad7bdeea2",
+      "bytes": 3622
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_gateway_components.ex",
+      "sha256": "de724a9909544c368bbc97badcf739eecdf00c8ec1fb6cd3007a0f8f31a51985",
+      "bytes": 22102
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_gateway_extras.ex",
+      "sha256": "9f986fd78ca52ebe0c4e12f49c627d531bf8bc2129dd26611a9a524c54488cac",
+      "bytes": 33783
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_gateway_forms.ex",
+      "sha256": "ee77591647cb6d511a9ae31423046ba19b98ef4d44b03c96bbef77c432cbf507",
+      "bytes": 30140
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_gateway_workspace.ex",
+      "sha256": "26cba4d64ed75cf2d30aae3dbd4d87ea3005cadfa13e301a5c06e99440b59f3d",
+      "bytes": 48771
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_log_viewer.ex",
+      "sha256": "3d8cc199831a33ae3de0bd8e3c29e1b052b51ac511243392e5d58f5f193de3f4",
+      "bytes": 3413
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_observe_components.ex",
+      "sha256": "f888c0f3bf5190806a90081441486d1c7c3df3b47880b533238de30af0abf3a5",
+      "bytes": 19903
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_overview_components.ex",
+      "sha256": "825bcf70e931fd67890685e2c5c2fb9be314f2a546c2b05e2e885bcccac35797",
+      "bytes": 54420
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_overview_parity_components.ex",
+      "sha256": "d0a880f588f0d57ef9a377e03d419fb163e3714511e8aaab5748009d66afebe0",
+      "bytes": 14624
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_projects_components.ex",
+      "sha256": "5e0763daac9638a710c4e0a4f6ec1d51e3295666ec32402531acb4580d600423",
+      "bytes": 20976
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_settings_components.ex",
+      "sha256": "954be8187827fa37782ab1d98ddf461adc06be8b03559ecc734fd61a18276586",
+      "bytes": 15994
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_shell_components.ex",
+      "sha256": "4507653b69f10d1bf21ba33a5ac21f0b14ae251770ba9012d24a59e9d5be5305",
+      "bytes": 14913
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_stash_components.ex",
+      "sha256": "c246a7a7ccb3f763dd5bf2c1f1cd19a848db354eb804126f4aa21bf241e3b7e6",
+      "bytes": 34246
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_tasks_components.ex",
+      "sha256": "fa28029ea5acdecda1ab3d26714faddbf87ed0ecf9745a671094edff704e5511",
+      "bytes": 30951
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_ui_components.ex",
+      "sha256": "0e6252f7c2bdbca3848346feca67d378804beec8efe713105d173555177d6d16",
+      "bytes": 3568
+    },
+    {
+      "path": "lib/phx_book_web/components/labby_workspace_components.ex",
+      "sha256": "bb44739c03593ae042d2b24ac2d8bca1c03af550ec30ba1661dcb1e777e6e4f1",
+      "bytes": 46129
+    },
+    {
+      "path": "lib/phx_book_web/components/layouts/root.html.heex",
+      "sha256": "6c17814f076e9737aa6f8944b67920ef5a3ebb81d1c9b6c313bd1729ad7a0aa4",
+      "bytes": 645
+    },
+    {
+      "path": "lib/phx_book_web/components/layouts.ex",
+      "sha256": "0b9521fc56ef1d0b2cd0a4140447149bfc53dd0f09863b5e5f872b2a1072e91d",
+      "bytes": 2506
+    },
+    {
+      "path": "lib/phx_book_web/components/mock_data.ex",
+      "sha256": "bee82bdb77a951e6528b1b0f45c65894230c9c5fc640c469fce0c668af97a943",
+      "bytes": 1708
+    },
+    {
+      "path": "lib/phx_book_web/components/signal.ex",
+      "sha256": "56a638835250c878fde531af2075ad4da23fa97f06afe51a01956e0f9aee2b70",
+      "bytes": 40856
+    },
+    {
+      "path": "lib/phx_book_web/components/storybook_layouts.ex",
+      "sha256": "6a69e70326c0a214d5c55dc5f4d4e398fc45eba272853ccd9404f47d57d45a90",
+      "bytes": 492
+    },
+    {
+      "path": "lib/phx_book_web/components/studio_chrome.ex",
+      "sha256": "186109fc19e294beb285b62a86d3cfe4fe98201f0a18e8f6b812522a81efeea0",
+      "bytes": 7595
+    },
+    {
+      "path": "lib/phx_book_web/components/workbench.ex",
+      "sha256": "9ddd8c44125c8af43c8c6dd19368a404a729f7a09adb18052f3827c90152fed7",
+      "bytes": 45391
+    },
+    {
+      "path": "lib/phx_book_web/components/workbench_collections.ex",
+      "sha256": "889e646d22365c8809fe793879ba19676f6fef040e49285a7cd4038ef44c7e3e",
+      "bytes": 14504
+    },
+    {
+      "path": "lib/phx_book_web/components/workbench_inventory.ex",
+      "sha256": "84722dc7e552a8a39144f5082c544e8b6f19fb8e4e691550090882f158093f6f",
+      "bytes": 14868
+    },
+    {
+      "path": "lib/phx_book_web/controllers/error_html.ex",
+      "sha256": "12a3f046a6b6d9131f230f653228588665c2a604625faf292265bcb3711fa3c8",
+      "bytes": 726
+    },
+    {
+      "path": "lib/phx_book_web/controllers/error_json.ex",
+      "sha256": "6c7b4ad77cf98d5c066597d0fd28779fd851cc7206e9d8b6463bc7b5b5f4f727",
+      "bytes": 623
+    },
+    {
+      "path": "lib/phx_book_web/controllers/page_controller.ex",
+      "sha256": "f030537cac4c38d22a85f313ec1c1775806c35789de4ba646528dbf64ff333a5",
+      "bytes": 146
+    },
+    {
+      "path": "lib/phx_book_web/controllers/page_html/home.html.heex",
+      "sha256": "8a20904c52725a1ca782897143018834b754b8c253cc7ad0dda29b9f3d6091da",
+      "bytes": 13831
+    },
+    {
+      "path": "lib/phx_book_web/controllers/page_html.ex",
+      "sha256": "323251bdb3969e479f73486a59322a5ccd99ed1d9668ef60b31cbab6a5e9f0ad",
+      "bytes": 236
+    },
+    {
+      "path": "lib/phx_book_web/endpoint.ex",
+      "sha256": "61beca40a48401604e2757ae4ef236e07e031ce9ac2df94fb68fb9231f38bce4",
+      "bytes": 1532
+    },
+    {
+      "path": "lib/phx_book_web/live/exploration_live.ex",
+      "sha256": "6600b3a4838b8b158923f4891a755f5043b1a18846faff34eba436ca23d82584",
+      "bytes": 1626
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_access_live.ex",
+      "sha256": "d5a151cb6e7f41c29b30e21326fd37694d7fd51ef503c5662560a953f444fa53",
+      "bytes": 9456
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_agents_live.ex",
+      "sha256": "24f4582203db884b2c775f81b4748641d8157b14f2705303bb116d0d29b09938",
+      "bytes": 13217
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_browser_live.ex",
+      "sha256": "0a628d9450ab79387e89761d8f0805650d02e91240189f86e93ab3fd37fe7a0e",
+      "bytes": 11057
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_creation_live.ex",
+      "sha256": "63f75b4257a0fff77d8933d33f399ad09b837bf8d39ec93b2c8580b6c7bf4bf7",
+      "bytes": 4233
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_depot_live.ex",
+      "sha256": "9ef687289ac5a466428e2c6d791fb932a2082e6456184af6b7e9efc2f6c08a8f",
+      "bytes": 55004
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_diagnostics_live.ex",
+      "sha256": "147f638a0b163afea9d3d6436987bd571d1e98224b4abee871300dfccaa7155e",
+      "bytes": 9471
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_gateway_live.ex",
+      "sha256": "97a78f7ee690462066751cfbab12d7875727e5d41015c44ff2d61838abf0f1c7",
+      "bytes": 54652
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_operations_live.ex",
+      "sha256": "9fa3f9f9f00ce5328931529b2b5b78a00ba3624faeecb0e881936c4a4d293dda",
+      "bytes": 9481
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_overview_live.ex",
+      "sha256": "e581000141675b7ca9d56934da3b2e7be86617b3790d433130165ad8124f6bd7",
+      "bytes": 12943
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_projects_live.ex",
+      "sha256": "23c9fbc858ddcba1fb37cddd1ddd6a19bb34e91a7fbc1479c1476612aabe52e5",
+      "bytes": 2864
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_settings_live.ex",
+      "sha256": "9eba452cd87ade107773c57afd7c6d44dd24386d7cbebd02046c1cf67439e64e",
+      "bytes": 2248
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_setup_live.ex",
+      "sha256": "e1d204d29f26de8f1385e307ea278912651b6f0269d0c5c4bc0ba2692cd9fb8c",
+      "bytes": 10352
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_stash_live.ex",
+      "sha256": "2d8e12eea5d27a868606f59a73740db913dd12a5151f727742fd2e6008adee25",
+      "bytes": 4397
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_tasks_live.ex",
+      "sha256": "502b2bb1afb5075a174a236190165611db94dcb11fb3abb00ef07a110719a7c2",
+      "bytes": 5104
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_tools_live.ex",
+      "sha256": "07980b39a02c703d3d91a1ed479764d8c5485198e91113a5843bd4df14dfda9a",
+      "bytes": 2045
+    },
+    {
+      "path": "lib/phx_book_web/live/labby_workspace_live.ex",
+      "sha256": "02deedf192537c5cf12da9432c37ee66dc401e485efe78cc859e0fadd45bc33e",
+      "bytes": 46908
+    },
+    {
+      "path": "lib/phx_book_web/router.ex",
+      "sha256": "c6a353e0c6d30df22b381164225af792feb3c32aa818a626884f6b493a4df0ff",
+      "bytes": 2806
+    },
+    {
+      "path": "lib/phx_book_web/storybook.ex",
+      "sha256": "242caa1d1220fdad4c0c4961d39b4c1e48904389d3ba976cb7cf72a0ed68dd78",
+      "bytes": 295
+    },
+    {
+      "path": "lib/phx_book_web/telemetry.ex",
+      "sha256": "683fd8603a95fc291b3a786ee1ee8a98a93afe25928ff464e9f12d153322cd8d",
+      "bytes": 2117
+    },
+    {
+      "path": "lib/phx_book_web.ex",
+      "sha256": "e8c3b640a6c0300bf01eaacd0a654bf40d2bf16f31c5890e1fd36412758bd8a9",
+      "bytes": 2378
+    },
+    {
+      "path": "assets/js/app.js",
+      "sha256": "2b5a9d7190c04477cd4598348181c926362110a5fe6dea84c008a85e5fa3c8aa",
+      "bytes": 3676
+    },
+    {
+      "path": "assets/js/labby_create_choices.mjs",
+      "sha256": "b21c757205bd06ff932b4e90ec4ff65eccde449cc86118e1704e7476289b5eb5",
+      "bytes": 922
+    },
+    {
+      "path": "assets/js/labby_editor_tools.mjs",
+      "sha256": "89927f98ed6722b8f0ebbaa1532e384aea5f19f59249943b02cc22dfd0676c24",
+      "bytes": 11288
+    },
+    {
+      "path": "assets/js/labby_editor_tools.test.mjs",
+      "sha256": "426e2a446a9d9e5c61cda957027e697267c449d648f617669364aa9de481d1c6",
+      "bytes": 461
+    },
+    {
+      "path": "assets/js/labby_logs.mjs",
+      "sha256": "e7239c94565638d33cb52be1d286457a5873de1f2300737231bc6baf73f1b067",
+      "bytes": 2144
+    },
+    {
+      "path": "assets/js/labby_menus.mjs",
+      "sha256": "9f22472c481f60092f04b539ffc08d9b2b065ebac724afef42a189ec4f64234e",
+      "bytes": 392
+    },
+    {
+      "path": "assets/js/labby_motion.mjs",
+      "sha256": "e385ff91028f58a3a54979cbdd9d6f7053af3044acab83cea3bc1d2fe55b4979",
+      "bytes": 7376
+    },
+    {
+      "path": "assets/js/labby_syntax.mjs",
+      "sha256": "efd495634ce47009d7c5a703a2856e0657d0960705878bb4b2d984e5ad48bbf0",
+      "bytes": 11446
+    },
+    {
+      "path": "assets/js/storybook.js",
+      "sha256": "17b5807b9807626acda2a550bb37f327590267441b43b81b4317fac1ffa97eab",
+      "bytes": 249
+    },
+    {
+      "path": "storybook/.index.exs",
+      "sha256": "52b72b56ac6b2ff53b539c464eb45c89f8bbad6ff70ccc0f4036a9109a550fa6",
+      "bytes": 111
+    },
+    {
+      "path": "storybook/explorations/.index.exs",
+      "sha256": "a89f43852ff0efa148e1384563d2b64243dbbb2c5246abd9d1b0893e4ae25946",
+      "bytes": 106
+    },
+    {
+      "path": "storybook/explorations/capabilities.story.exs",
+      "sha256": "2b02ced4db853cd6a75a11b6bdbed759d377b89bc09c0bd21705af984b593902",
+      "bytes": 887
+    },
+    {
+      "path": "storybook/explorations/gateway.story.exs",
+      "sha256": "df438e4e4462591f5663028a6ea98a08ee6e0b269a5de99c8aecfa19b5247617",
+      "bytes": 894
+    },
+    {
+      "path": "storybook/explorations/indicators.story.exs",
+      "sha256": "c7f5e1c58c8c6745135b36a70fb44c9cc7a2e8140e66424de06ccda83c65932f",
+      "bytes": 1063
+    },
+    {
+      "path": "storybook/explorations/latency.story.exs",
+      "sha256": "40c8df069fefb81dc85addb45bd2d5de537bc0291e0268963ef69dde150d061a",
+      "bytes": 800
+    },
+    {
+      "path": "storybook/explorations/metrics.story.exs",
+      "sha256": "94a2422fa1f9a1d83cae5c06c6ebc286375b8ee1ce6e379865a41f144d7977db",
+      "bytes": 936
+    },
+    {
+      "path": "storybook/explorations/overview.story.exs",
+      "sha256": "092568d4e59370b60bbd617f05ec4e754eeac798960c3f83db031763c4b9a626",
+      "bytes": 1022
+    },
+    {
+      "path": "storybook/explorations/runtime.story.exs",
+      "sha256": "24d794ffd857b5986a0ff41e757bf187b9c76db11f740111ea5d2621e10b5605",
+      "bytes": 1118
+    },
+    {
+      "path": "test/assets/labby_syntax_test.mjs",
+      "sha256": "71b440241b1f23cff6138df6e67f1dc5b109058e24fa4cd6eb30aea4fcf1909f",
+      "bytes": 1813
+    },
+    {
+      "path": "test/phx_book/labby_artifact_files_test.exs",
+      "sha256": "43d20727ad02b8427fa13534972022573cf8a87eb2f6352241806c69fc75a041",
+      "bytes": 2598
+    },
+    {
+      "path": "test/phx_book/labby_creation_preview_test.exs",
+      "sha256": "672ec45501999721cce428dd7deaa4aa02f4c39b5aa36963653258c4c611255d",
+      "bytes": 14912
+    },
+    {
+      "path": "test/phx_book/labby_depot_contract_coverage_test.exs",
+      "sha256": "8c7cc81165f83a38389d36faf0ef6facfa21f34ae25fb6e418776c141548397d",
+      "bytes": 6794
+    },
+    {
+      "path": "test/phx_book/labby_depot_preview_test.exs",
+      "sha256": "5d207548e17bd38c57463f088b088efddd5478eb742b7fb5d46159dd6a14ea65",
+      "bytes": 5381
+    },
+    {
+      "path": "test/phx_book/labby_draft_recovery_test.exs",
+      "sha256": "388c40dfefbfe35c71530b0fabdc15d0ccf31e16ee93065fc2311e1d48706de7",
+      "bytes": 1612
+    },
+    {
+      "path": "test/phx_book/labby_gateway_preview_test.exs",
+      "sha256": "a831be1572f4feeb2f1d72ed72456c7640ba8778c3a118c68205142c3e665920",
+      "bytes": 1365
+    },
+    {
+      "path": "test/phx_book/labby_markdown_test.exs",
+      "sha256": "cd810a5341a58305147522db0ddf4c56b7c4878270616385297b37e361421567",
+      "bytes": 1312
+    },
+    {
+      "path": "test/phx_book/labby_observe_preview_test.exs",
+      "sha256": "437822817fc6c48a16f38617548e832e9953e76093b0647a8613473c95200abc",
+      "bytes": 7204
+    },
+    {
+      "path": "test/phx_book/labby_onboarding_preview_test.exs",
+      "sha256": "5b94b6f9697bc6da77976d3caad0be932135ac172f4a794c941a96c74f222278",
+      "bytes": 729
+    },
+    {
+      "path": "test/phx_book/labby_overview_data_test.exs",
+      "sha256": "0f845883665b2546fe523f6f0c1244602b98d756f8c5be098e24ce072aca9fce",
+      "bytes": 1852
+    },
+    {
+      "path": "test/phx_book/labby_overview_preview_test.exs",
+      "sha256": "7759ca45a490848f2981f13ed3b1952026f7e7242ac3a513978d03675a00bcf5",
+      "bytes": 1876
+    },
+    {
+      "path": "test/phx_book/labby_publish_preview_test.exs",
+      "sha256": "8ceb4950c209e6f95b8da00fed89d6f59f02c0baa8d1f91659ace6b8b63dca62",
+      "bytes": 3086
+    },
+    {
+      "path": "test/phx_book/labby_route_policy_test.exs",
+      "sha256": "989ccef24def04912b8e9ae5b29adadb90d857233c4114397575d898c9feac25",
+      "bytes": 963
+    },
+    {
+      "path": "test/phx_book/labby_settings_preview_test.exs",
+      "sha256": "5e1e3b536d714e34e05459744bc68df54dd23d63090b5fa516d60e4e03f7e6f7",
+      "bytes": 4782
+    },
+    {
+      "path": "test/phx_book/labby_skill_source_test.exs",
+      "sha256": "b20dbc36dd910f815aa94c7cdb541f2aaa1d4025da13b2c6a7ae4c49e4dc2a07",
+      "bytes": 2076
+    },
+    {
+      "path": "test/phx_book/labby_studio_preview_test.exs",
+      "sha256": "7f1f271d98bf0ff066080588e4d49025fddf7ce9a18f631f514b7f9fd66216b5",
+      "bytes": 5247
+    },
+    {
+      "path": "test/phx_book/labby_tasks_preview_test.exs",
+      "sha256": "05bf60a4107c48f96eb8250dc84a605fd49cafb46ef42342903049542895893e",
+      "bytes": 6214
+    },
+    {
+      "path": "test/phx_book/labby_workspace_refinement_test.exs",
+      "sha256": "60e75b4d63a133c8b0b23d65a7e00cf295e1cda0fbd3182ea346cbccadd2ab6d",
+      "bytes": 4694
+    },
+    {
+      "path": "test/phx_book_web/controllers/error_html_test.exs",
+      "sha256": "4076f888bb22abed39bcd60c8df64c53d9fa7d681b44edb23ab62869dc131219",
+      "bytes": 443
+    },
+    {
+      "path": "test/phx_book_web/controllers/error_json_test.exs",
+      "sha256": "b21b57cd6d18f6212dbcdce65c51c28992777a48adf99c7a85d3bc9e21db2c1a",
+      "bytes": 354
+    },
+    {
+      "path": "test/phx_book_web/controllers/page_controller_test.exs",
+      "sha256": "56df5f73bd9110a3a5b1583cef6c18032cf7b2bcb84e9fef5425f9398460a03e",
+      "bytes": 8317
+    },
+    {
+      "path": "test/phx_book_web/live/aurora_observability_test.exs",
+      "sha256": "0c5e27b538ec21b8ed656e70af8010e285af5cc668ab33b6f5d327757b5220b1",
+      "bytes": 3107
+    },
+    {
+      "path": "test/phx_book_web/live/aurora_preview_scenarios_test.exs",
+      "sha256": "cc6c1b9ea857994a73ea44cb58b6824007be185c502761ea95959edebced3059",
+      "bytes": 4769
+    },
+    {
+      "path": "test/phx_book_web/live/aurora_run_inspector_test.exs",
+      "sha256": "6908374041dc667d53b30a21d5a56e05c061873dd9f9278cca29038017167f35",
+      "bytes": 2469
+    },
+    {
+      "path": "test/phx_book_web/live/aurora_server_setup_test.exs",
+      "sha256": "2449dedc468bec70fc58639fb629f05b92b2447454da8bdb89eb03e3a1b2d8a3",
+      "bytes": 6836
+    },
+    {
+      "path": "test/phx_book_web/live/aurora_workspace_navigation_test.exs",
+      "sha256": "c25876dbd72544949492fb1a5f1972962b45d634cbc8104ef3cd7ea47fefce3a",
+      "bytes": 2635
+    },
+    {
+      "path": "test/phx_book_web/live/labby_access_live_test.exs",
+      "sha256": "98eab1603163add0d604d2cdae28782d83b9f9be6338b9359da336437d401976",
+      "bytes": 2280
+    },
+    {
+      "path": "test/phx_book_web/live/labby_agents_live_test.exs",
+      "sha256": "b24d01a943080a188960bbebbab3ebb72e1b275c4694079603a8f2bb1ef9c9eb",
+      "bytes": 4314
+    },
+    {
+      "path": "test/phx_book_web/live/labby_create_component_test.exs",
+      "sha256": "d3dbfd325f06d0158a52745830bd0f159989e835a1f66bc8da95fc0f5757a915",
+      "bytes": 8810
+    },
+    {
+      "path": "test/phx_book_web/live/labby_create_wizard_test.exs",
+      "sha256": "359290ccbcffd7af0b4488ff157afe2ba6a35dc8a0003b3ab534b9e0423e657f",
+      "bytes": 9912
+    },
+    {
+      "path": "test/phx_book_web/live/labby_creation_live_test.exs",
+      "sha256": "297360b1456252b73e486f8ca651dea860e7c3c4baefba38b733a789fe5b7f84",
+      "bytes": 2805
+    },
+    {
+      "path": "test/phx_book_web/live/labby_depot_create_test.exs",
+      "sha256": "63997592a82f895a0ec33f53207cc3f53126b9e56a5c69b79a7adb1ebdf5bffa",
+      "bytes": 6355
+    },
+    {
+      "path": "test/phx_book_web/live/labby_depot_live_test.exs",
+      "sha256": "7c619611c523a782c3cbe04995a5577d79d264cf42a4178c02d986f59fd70aa3",
+      "bytes": 6741
+    },
+    {
+      "path": "test/phx_book_web/live/labby_env_editor_test.exs",
+      "sha256": "af738d6d8d7384fe6ae459a6ce45ef4988ab29f130e622d1452004d51c6edf54",
+      "bytes": 3184
+    },
+    {
+      "path": "test/phx_book_web/live/labby_environment_browser_test.exs",
+      "sha256": "6773ce618ae24e4ea5dc87e1237bfc90f7c1ff757d9e42ec76ae65d60a170e3d",
+      "bytes": 4475
+    },
+    {
+      "path": "test/phx_book_web/live/labby_gateway_live_test.exs",
+      "sha256": "652225ce29ff5a615634cf146ce8ffc221173850e4186817f4c6ee27d76d4ea0",
+      "bytes": 7823
+    },
+    {
+      "path": "test/phx_book_web/live/labby_gateway_parity_test.exs",
+      "sha256": "6482e5398737032a59996e95fe3761f8c93f5280355fbb6e16f7fa07de864f74",
+      "bytes": 24018
+    },
+    {
+      "path": "test/phx_book_web/live/labby_log_viewer_test.exs",
+      "sha256": "209cc81237145fcc29faf0cd4b11c1e2ee357f8d6cf7d14d80f36b5bccd9028d",
+      "bytes": 1748
+    },
+    {
+      "path": "test/phx_book_web/live/labby_mobile_controls_test.exs",
+      "sha256": "f7949c000ae0a6edcd378aa375be9c5b3b00c3875a9804e7b97907fafecdf252",
+      "bytes": 2811
+    },
+    {
+      "path": "test/phx_book_web/live/labby_onboarding_live_test.exs",
+      "sha256": "d7da78d8ecf6e7a0af544e0ae6f446d47a951f897790c9fcc69f39bcbd2ba006",
+      "bytes": 719
+    },
+    {
+      "path": "test/phx_book_web/live/labby_operations_navigation_test.exs",
+      "sha256": "b0cbd97a5ff05e24fbab580134bc259ba77b327cf191d3de83630d364ae9b897",
+      "bytes": 941
+    },
+    {
+      "path": "test/phx_book_web/live/labby_overview_live_test.exs",
+      "sha256": "7b6a9b63e7d39297f018293b950c45d6e4517734c96d6c00d0b58e8c95056292",
+      "bytes": 4028
+    },
+    {
+      "path": "test/phx_book_web/live/labby_overview_parity_test.exs",
+      "sha256": "b58cc68610ed4c208aa06a8793c95ecc457f294b4d49ee5e787897cbf9add4ec",
+      "bytes": 7177
+    },
+    {
+      "path": "test/phx_book_web/live/labby_overview_storybook_test.exs",
+      "sha256": "1a5a2e3ad16dadefaa7005bfb7899ed9d7eef77a3168dd3de559dac887271dc1",
+      "bytes": 1718
+    },
+    {
+      "path": "test/phx_book_web/live/labby_projects_live_test.exs",
+      "sha256": "b79166e04c56a93bc2a9b8890ed957618dad99801cbb4e1ee827151f67bc3910",
+      "bytes": 7565
+    },
+    {
+      "path": "test/phx_book_web/live/labby_server_management_test.exs",
+      "sha256": "1b299edbf364c1eaeaccb4ce6c936146d34fbf98c817fdfd9352347eebad0226",
+      "bytes": 4218
+    },
+    {
+      "path": "test/phx_book_web/live/labby_server_transactions_test.exs",
+      "sha256": "d2b40110a50958d39b664b9eb10a423aeeacb3f8dfff36839947ca3b2b09509e",
+      "bytes": 6729
+    },
+    {
+      "path": "test/phx_book_web/live/labby_settings_live_test.exs",
+      "sha256": "647b2d92ef2a281559b024d6da929ff14dcfef67555a8c80c2ad0791db7e91df",
+      "bytes": 3855
+    },
+    {
+      "path": "test/phx_book_web/live/labby_setup_diagnostics_test.exs",
+      "sha256": "14ccc44003150f0ebcb230c4f4ce1405724aa20e16d86b0c8910da0abc94bdd6",
+      "bytes": 3618
+    },
+    {
+      "path": "test/phx_book_web/live/labby_skill_editor_test.exs",
+      "sha256": "05dc0918f3585b13177a2727f7bcb60c2b1a49e0899992ad0fd95d51dceee24f",
+      "bytes": 3999
+    },
+    {
+      "path": "test/phx_book_web/live/labby_stash_live_test.exs",
+      "sha256": "f42bc40dcfc0bf465b73d8fbebc8117dcf4ab95e6729d573582de47e9e0f039f",
+      "bytes": 10142
+    },
+    {
+      "path": "test/phx_book_web/live/labby_tasks_live_test.exs",
+      "sha256": "9617041261fca68b098c2c690d911af8086dd64bd2370ccd1340393f06004ae1",
+      "bytes": 5632
+    },
+    {
+      "path": "test/phx_book_web/live/labby_workspace_live_test.exs",
+      "sha256": "f435aa8048846e5d2bd8ca2b0376f47831fd07e9c6fe8bd2c11a721b2f1507f0",
+      "bytes": 11967
+    },
+    {
+      "path": "test/phx_book_web/live/labby_workspace_refinement_test.exs",
+      "sha256": "59b5c78b9c6449b4701d85a9c2397d48ed280523098a6394331c93db917d2d5a",
+      "bytes": 10568
+    },
+    {
+      "path": "test/phx_book_web/live/workbench_collections_test.exs",
+      "sha256": "5e56e814685387a603f7f042a320a6df9970b3aefc5f39b06dbb3c183cef6fbf",
+      "bytes": 14768
+    },
+    {
+      "path": "test/phx_book_web/live/workbench_inventory_test.exs",
+      "sha256": "7afdf975b3c6365f9278ffa7f08ed24baaee9f5f2e6983ab5b26f3960bd1486f",
+      "bytes": 6099
+    },
+    {
+      "path": "test/support/conn_case.ex",
+      "sha256": "0aed7c8a7a86eddea1cbf0914a5aae4ddbfa0e1bdf6346ffe9c1c792368e299b",
+      "bytes": 1065
+    },
+    {
+      "path": "test/test_helper.exs",
+      "sha256": "b086ec47f0c6c7aaeb4cffca5ae5243dd05e0dc96ab761ced93325d5315f4b12",
+      "bytes": 15
+    },
+    {
+      "path": "docs/aurora-source.json",
+      "sha256": "4272171d2088dc98d9612886ab693697dc8d6323953373bb1f901ef47bd8c6b6",
+      "bytes": 1128
+    },
+    {
+      "path": "docs/depot-create-capabilities.md",
+      "sha256": "f7efa077c3503f31f7bcec7fc58acb2bc8523bea5fdcb72368bdaf0e75dcd0b7",
+      "bytes": 8397
+    },
+    {
+      "path": "docs/depot-mock-coverage.md",
+      "sha256": "8211fb4caa225f9052b1238c0faff6cdf1a8c3e0bafb82613d8175c1c15d8f81",
+      "bytes": 5553
+    },
+    {
+      "path": "docs/labby-create-capabilities.md",
+      "sha256": "ae8f2d9a1e08021153a2d7d178ee20b92b42b5bcb191d426551f65ddcd968aa4",
+      "bytes": 7070
+    },
+    {
+      "path": "docs/labby-feature-parity.md",
+      "sha256": "0d0d0e80eefd3fc2036b3bb7c70dab2921af353733974d522df60b06f811b000",
+      "bytes": 4013
+    },
+    {
+      "path": "docs/labby-gateway-parity.md",
+      "sha256": "68f8da84781d180cae023b5afe39b8518ea48edacfc65b97459ad05675a00650",
+      "bytes": 9075
+    },
+    {
+      "path": "docs/labby-overview-api.md",
+      "sha256": "a21115ec8989700cbabf88621c52d107b4aef500f1c3dc10cd7d06bf5f70a30b",
+      "bytes": 21814
+    },
+    {
+      "path": "docs/labby-overview-validation.md",
+      "sha256": "5fff713d6d029f659385f70bc3570780f6955187a3fcca27e8f0ed945ca40241",
+      "bytes": 16986
+    },
+    {
+      "path": "docs/labby-projects-api-parity.md",
+      "sha256": "4959199cc7db6e6ab9a646c8359430822ff19fb14e26bdcc0c5fdb6f3be415a8",
+      "bytes": 8491
+    },
+    {
+      "path": "docs/labby-reinvention.md",
+      "sha256": "3f38374907a19bb00e01582725e20a0df530559250ba0a5009bc496bd1cdf7a4",
+      "bytes": 3956
+    },
+    {
+      "path": "docs/labby-settings-inventory.md",
+      "sha256": "4dd0159a7ac62a2d9a320d992b0e0be881dec98ed2dcb11cc60aca939a1fc82b",
+      "bytes": 5634
+    },
+    {
+      "path": "docs/labby-stash-api-parity.md",
+      "sha256": "9b45f28e2c97049366fd3ec600a5adf3ed51c38ee7848a8817d3cfa7a42482eb",
+      "bytes": 7679
+    },
+    {
+      "path": "docs/labby-tasks-api-parity.md",
+      "sha256": "265244e284c9dfb9b4f9d16cf6685457c00a0085cfd31fc22aa0109d0a92c16f",
+      "bytes": 10861
+    },
+    {
+      "path": "docs/labby-workspace-design.md",
+      "sha256": "d1a808950a4b84967ae02cae0b8820a12d626324dd74e8211b2250d4fb96f998",
+      "bytes": 13763
+    },
+    {
+      "path": "docs/labby-workspace-pages.md",
+      "sha256": "512b68f52c4b3c60ed86f46b24f997878e2eeaca1464bb27955cf2580a9fd935",
+      "bytes": 2840
+    },
+    {
+      "path": "priv/static/assets/css/app.css",
+      "sha256": "fd83619fc1ddeb63b07742ed9688b29f8e32f80927a972e7b2e11e13a4e29545",
+      "bytes": 7153
+    },
+    {
+      "path": "priv/static/assets/css/atlas.css",
+      "sha256": "370dfe15bdf76c3f4e9fbe11e885ac9da8673d8cef876c18243d44b31dcba2bc",
+      "bytes": 28420
+    },
+    {
+      "path": "priv/static/assets/css/aurora-catalog.css",
+      "sha256": "852a58ec3f73eaf35f5a61ea0f1e6252a377c01ad2b34364a2bc9e85cfb73aff",
+      "bytes": 13091
+    },
+    {
+      "path": "priv/static/assets/css/aurora-gateway.css",
+      "sha256": "a8a977a07f4a7c28af451a43bdd8fcad333d2b80275bb069e39ec320d9710290",
+      "bytes": 11070
+    },
+    {
+      "path": "priv/static/assets/css/aurora-heex.css",
+      "sha256": "0701368f62c5bfa4f7fd4478ab6e4400714acc5f49466dc460b95145c9edb8c2",
+      "bytes": 13656
+    },
+    {
+      "path": "priv/static/assets/css/aurora-labby-pages.css",
+      "sha256": "bbad08a5a2b7c870ac9bcea6464864aa7e57f8f20a436f03192b3ce977d61c66",
+      "bytes": 15736
+    },
+    {
+      "path": "priv/static/assets/css/aurora-labby.css",
+      "sha256": "1718149b171f8e13a0966c7c9758658b86876682e6a49b803dbe1d1c9835b98a",
+      "bytes": 163840
+    },
+    {
+      "path": "priv/static/assets/css/aurora-mobile.css",
+      "sha256": "a67ca3452e36977947aac66365e9f56feba9625fb46df545ba4a91901b592a8f",
+      "bytes": 7100
+    },
+    {
+      "path": "priv/static/assets/css/aurora-oauth.css",
+      "sha256": "7280633d473fb0cf1e5bbcf8df843b31e472713ab5ac482482c3a2b7c78dad4f",
+      "bytes": 5018
+    },
+    {
+      "path": "priv/static/assets/css/aurora-overview.css",
+      "sha256": "245aa4f6210278398b99c1825d9517e897753b045712f690857dd0dd014a3be8",
+      "bytes": 6725
+    },
+    {
+      "path": "priv/static/assets/css/aurora-run-inspector.css",
+      "sha256": "d9d5f8700a15ace367c2b2326a0491487df3b899943627510c10d2362782484f",
+      "bytes": 4158
+    },
+    {
+      "path": "priv/static/assets/css/aurora-server-setup.css",
+      "sha256": "7bc047105f9b7f0f777704aef43759d8bb8a139ef8b7c1f57fc1e81c13f26a14",
+      "bytes": 12374
+    },
+    {
+      "path": "priv/static/assets/css/aurora-settings.css",
+      "sha256": "3a84201ec7390ffe1d33c6a4b3e5ad05a44cf602e7431fa431036048c817cf8d",
+      "bytes": 5900
+    },
+    {
+      "path": "priv/static/assets/css/aurora-workspace.css",
+      "sha256": "7e4cf02f9cb2b0ae3a731dc9c647267659a9568d99ff958d9fe4825c63da8b9c",
+      "bytes": 17362
+    },
+    {
+      "path": "priv/static/assets/css/labby-builder.css",
+      "sha256": "b5983260109ab5c3d7de588ce4f6fcd4e93552d5561f914f75f7fa5c212221a2",
+      "bytes": 20259
+    },
+    {
+      "path": "priv/static/assets/css/labby-collections.css",
+      "sha256": "251165ebe86fe9790f5e5c81cbd868408387a175b48fabab093bde5ad9c5f860",
+      "bytes": 21565
+    },
+    {
+      "path": "priv/static/assets/css/labby-control.css",
+      "sha256": "b0bb6f216272f8f4bf19eab30c5df18a6d91e3830a8b51a248976895a96cf48d",
+      "bytes": 79136
+    },
+    {
+      "path": "priv/static/assets/css/labby-controls.css",
+      "sha256": "6c828b4ddb524e3289dac00d9e947c39da22c2c9b409322cb1465a865e85bb35",
+      "bytes": 10195
+    },
+    {
+      "path": "priv/static/assets/css/labby-create-wizard.css",
+      "sha256": "c8f1a9452b665013ca7eb5c8dddb43a76a478e1cfc1d3968a7d07027c5f9516b",
+      "bytes": 10182
+    },
+    {
+      "path": "priv/static/assets/css/labby-create.css",
+      "sha256": "f68b8b46541466878dc58352623f2d6040c6f8e9cb963d3be0e83f1fe57dd6d5",
+      "bytes": 33629
+    },
+    {
+      "path": "priv/static/assets/css/labby-declutter.css",
+      "sha256": "9bf64a0c95c7d3223fa9faec0bf5224a12310f922c94e50f5aed7efd930b213b",
+      "bytes": 5601
+    },
+    {
+      "path": "priv/static/assets/css/labby-discover.css",
+      "sha256": "218d8221eb27eadaab8f7755dbf94b5d9f8999e73a5052ba165078ec4ae3ce94",
+      "bytes": 11944
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway-mobile.css",
+      "sha256": "c064259b39daf6764b4705135cbdfec86d1d634515e67ded41bd5dba8c5366a3",
+      "bytes": 12627
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway-parity.css",
+      "sha256": "084b81947ea55d2486c5fce9cbdea03470a8e2d2535363796196c800022a27e9",
+      "bytes": 49048
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway-workspace.css",
+      "sha256": "5371a6040f79f2e2233ab8c72e188eeb5b0b6a9efe7803acfc5f9a248ad9eec6",
+      "bytes": 25496
+    },
+    {
+      "path": "priv/static/assets/css/labby-gateway.css",
+      "sha256": "cc6e402258f1f205903a57be89439c100355c51444210cfbe748f1ff4eafdf1a",
+      "bytes": 13473
+    },
+    {
+      "path": "priv/static/assets/css/labby-inner-navigation.css",
+      "sha256": "65698522915c486bff823a8d8fa2fccae1e2efff93fd2c123769f4a4f9b94cd0",
+      "bytes": 5181
+    },
+    {
+      "path": "priv/static/assets/css/labby-logs.css",
+      "sha256": "5ed807183c86b5512d7c4bf6d2d22409effecadbc63b49adae06d39bec8cdf4d",
+      "bytes": 7056
+    },
+    {
+      "path": "priv/static/assets/css/labby-mobile.css",
+      "sha256": "087c2d7f840262773e491d94d01c8b28a9186aabee4839b4c78adeace2365f90",
+      "bytes": 20689
+    },
+    {
+      "path": "priv/static/assets/css/labby-motion.css",
+      "sha256": "006e421a0582e0ab4eb6563a4d1383548769fc4b50b7d1218774a07f42430fb9",
+      "bytes": 6189
+    },
+    {
+      "path": "priv/static/assets/css/labby-observe.css",
+      "sha256": "30e2477a6f5bcb155a197c2936aa01005edb147ba1cd79513f4cc53dd25c5203",
+      "bytes": 23170
+    },
+    {
+      "path": "priv/static/assets/css/labby-operations.css",
+      "sha256": "b2ce6f090ef26a30a441b3818aff649bead2bc347d6a6a9141c0b5b228cca114",
+      "bytes": 7088
+    },
+    {
+      "path": "priv/static/assets/css/labby-overview.css",
+      "sha256": "aaffa2ec1a0e3a099cd3770560d2a8b21538a070cabfbbade3c2a05cf0e3e551",
+      "bytes": 65322
+    },
+    {
+      "path": "priv/static/assets/css/labby-projects.css",
+      "sha256": "5f58e6b63da148ce480a2054e7596d6f78761835bef6fb33b20f507e45e05dde",
+      "bytes": 9153
+    },
+    {
+      "path": "priv/static/assets/css/labby-settings.css",
+      "sha256": "a83338f2eb7b9fc98a8b56150fee2f43bde65f4bd3d06dfbe5baa7f68113ecc7",
+      "bytes": 14670
+    },
+    {
+      "path": "priv/static/assets/css/labby-stash.css",
+      "sha256": "1dfa415382b7f6f2abd29e1f8a0f170e3636fdf6db5e6d3f09e1a1d4a9f0a65e",
+      "bytes": 20554
+    },
+    {
+      "path": "priv/static/assets/css/labby-tasks.css",
+      "sha256": "c17301a13a7668c337dbef2fe86402f3c4f152436696a2d5c22797d7ce8a5dbf",
+      "bytes": 12804
+    },
+    {
+      "path": "priv/static/assets/css/labby-ui.css",
+      "sha256": "3a74022d96e32dd4e5b0788d74e300c117892f3be360e1395de3e03d21d18b9a",
+      "bytes": 36632
+    },
+    {
+      "path": "priv/static/assets/css/labby-workspace.css",
+      "sha256": "c44659a009a73a42b00468ae513f7da00616c4e42cbf68663671bdf4ff77da79",
+      "bytes": 41846
+    },
+    {
+      "path": "priv/static/assets/css/signal.css",
+      "sha256": "1230415e0fefa6885d0c245dff7df2739071e64770b6462fcd55985142e48898",
+      "bytes": 34694
+    },
+    {
+      "path": "priv/static/assets/css/studio-scenarios.css",
+      "sha256": "261a09632dd47ff1ba294318868cf076cfa1eca340793bc66af2bdec4cf29784",
+      "bytes": 2600
+    },
+    {
+      "path": "priv/static/assets/css/workbench.css",
+      "sha256": "62d26fe231ae32b315b453134fcf1b747fa7ea890d27a9baa89c0391f50d7c55",
+      "bytes": 63819
+    },
+    {
+      "path": "API_PARITY.md",
+      "sha256": "aef8967aafb2a24986c0029a8874cd08e308b289def2c97c2c8ed58fb427aa1f",
+      "bytes": 8818
+    },
+    {
+      "path": "DESIGN.md",
+      "sha256": "2085ac4d91bd75dd1d406122d855ae2c5e107bf1e6975352ca7a37401d2345da",
+      "bytes": 23993
+    },
+    {
+      "path": "priv/labby_settings_catalog.json",
+      "sha256": "a1e06ebf8049c96ccd2a19c8f192bc8abafe08c1b3d1213ccb5832f6b86844c6",
+      "bytes": 543218
+    },
+    {
+      "path": "priv/labby/settings-write-policy.json",
+      "sha256": "3d56013042f97ecd5d30ad835537aaa468182f6b8b587fddf33bfcc92a5fe4eb",
+      "bytes": 3320
+    },
+    {
+      "path": "priv/labby/action-catalog.json",
+      "sha256": "4b4aab97d1d52af39c36d4b814de2b2aff4389ec3c202360e5d31cf598085bee",
+      "bytes": 353683
+    },
+    {
+      "path": "priv/labby/creation-http-schemas.json",
+      "sha256": "fb8a5b93ba08060e7962fc2faf98ad9d98dcbf0039b3ed771423195253742048",
+      "bytes": 1050
+    },
+    {
+      "path": "priv/labby/depot-operations.json",
+      "sha256": "0ae683e1878842a23bd8cfd051d252becaa644298dd0e3d0b239b3a4a0fe6daf",
+      "bytes": 129632
+    },
+    {
+      "path": "priv/labby/depot-supported-kinds.json",
+      "sha256": "1df90a7d3793441cd89e8741264e4104ea6de1845419b92b91904af2a383b29c",
+      "bytes": 400
+    },
+    {
+      "path": "priv/labby/service-catalog.json",
+      "sha256": "bb05bca4477c01093dc98db37d840ebf87ac33bb4ab090405f16cdad4fffbbef",
+      "bytes": 10322
+    }
+  ],
+  "supplements": [
+    {
+      "captured_on": "2026-11-09T03:09:41.238879+00:00",
+      "paths": [
+        "priv/labby_settings_catalog.json",
+        "priv/labby/settings-write-policy.json"
+      ],
+      "reason": "Referenced Settings catalog and write-policy JSON were omitted from the initial authored-source capture. Their current original-checkout bytes are now frozen.",
+      "qualification": "Settings section-level reference recapture must bind these data files to rendered evidence."
+    },
+    {
+      "captured_on": "2026-11-09T06:27:57.503540+00:00",
+      "paths": [
+        "priv/labby/action-catalog.json",
+        "priv/labby/depot-supported-kinds.json",
+        "priv/labby/creation-http-schemas.json",
+        "priv/labby/service-catalog.json",
+        "priv/labby/depot-operations.json"
+      ],
+      "reason": "Referenced API, creation and Depot JSON resources omitted from the original source capture are now frozen from the original checkout.",
+      "qualification": "Affected reference renders need recapture bound to these resource hashes."
+    }
+  ]
+}

@@ -316,6 +316,76 @@
   },
   {
     "service": "access",
+    "action": "access.team.member.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_team_member_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_access_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "access",
+    "action": "access.team_project.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_team_project_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_access_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "access",
     "action": "access.team.member.add",
     "canonical_action": null,
     "applicable_surfaces": [
@@ -335,6 +405,43 @@
     ],
     "scenario_kind": "stateful_scenario",
     "scenario_id": "stateful_scenario::access::access_team_member_add",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_access_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "principal_id": "$fixture.principal_id",
+        "role": "$fixture.role"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "access",
+    "action": "access.team.member.activate",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::access::access_team_member_activate",
     "minimum_evidence": "cross_surface_parity",
     "api_minimum": "live_state_transition",
     "setup_ref": "disposable-home",
@@ -599,6 +706,42 @@
         "team_id": "$fixture.team_id",
         "project_id": "$fixture.project_id",
         "role": "$fixture.role"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "durable",
+    "scenario_owner": "stateful_workflow_runner"
+  },
+  {
+    "service": "access",
+    "action": "access.team_project.unassign",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "stateful_scenario",
+    "scenario_id": "stateful_scenario::access::access_team_project_unassign",
+    "minimum_evidence": "cross_surface_parity",
+    "api_minimum": "live_state_transition",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_access_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id",
+        "project_id": "$fixture.project_id"
       }
     },
     "required": true,
@@ -2618,6 +2761,74 @@
     "required": true,
     "exclusion_reason": null,
     "persistence_class": "durable",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "access",
+    "action": "access.team_invitation.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_team_invitation_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_access_workflow",
+      "parameters": {
+        "team_id": "$fixture.team_id"
+      }
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
+    "scenario_owner": "surface_action_runner"
+  },
+  {
+    "service": "access",
+    "action": "access.platform_admin.list",
+    "canonical_action": null,
+    "applicable_surfaces": [
+      "mcp",
+      "api"
+    ],
+    "applicable_features": [
+      "all",
+      "api-docs",
+      "base",
+      "default",
+      "fs",
+      "gateway-host",
+      "lab-admin",
+      "no-default",
+      "skills"
+    ],
+    "scenario_kind": "live_invoke",
+    "scenario_id": "live_invoke::access::access_platform_admin_list",
+    "minimum_evidence": "live_success",
+    "api_minimum": "live_success",
+    "setup_ref": "disposable-home",
+    "fixture_params": {
+      "fixture": "isolated_access_workflow",
+      "parameters": {}
+    },
+    "required": true,
+    "exclusion_reason": null,
+    "persistence_class": "none",
     "scenario_owner": "surface_action_runner"
   }
 ]

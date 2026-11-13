@@ -42,6 +42,138 @@
           "returns": "object"
         },
         {
+          "name": "access.team.member.list",
+          "description": "List persisted Team memberships",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_project.list",
+          "description": "List persisted Team Project assignments",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_invitation.list",
+          "description": "List redacted Team invitations and observed acceptance state",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.platform_admin.list",
+          "description": "List persisted organization administrator grants",
+          "destructive": false,
+          "requires_admin": true,
+          "required_scopes": [
+            "lab:admin"
+          ],
+          "params": [
+            {
+              "name": "limit",
+              "ty": "integer",
+              "required": false,
+              "description": "Page size, default 50, range 1 to 100"
+            },
+            {
+              "name": "offset",
+              "ty": "integer",
+              "required": false,
+              "description": "Nonnegative offset, default 0"
+            },
+            {
+              "name": "snapshot_revision",
+              "ty": "integer",
+              "required": false,
+              "description": "Required for nonzero offset, from the first page"
+            }
+          ],
+          "returns": "object"
+        },
+        {
           "name": "access.team.member.add",
           "description": "Add a team member",
           "destructive": false,
@@ -72,6 +204,34 @@
         {
           "name": "access.team.member.role.set",
           "description": "Change a team member role",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "principal_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team.member.activate",
+          "description": "Restore an inactive team member with an explicit role",
           "destructive": false,
           "requires_admin": false,
           "required_scopes": [],
@@ -250,6 +410,28 @@
             },
             {
               "name": "role",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            }
+          ],
+          "returns": "object"
+        },
+        {
+          "name": "access.team_project.unassign",
+          "description": "Revoke a team project assignment",
+          "destructive": false,
+          "requires_admin": false,
+          "required_scopes": [],
+          "params": [
+            {
+              "name": "team_id",
+              "ty": "string",
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "project_id",
               "ty": "string",
               "required": true,
               "description": ""
@@ -3171,7 +3353,7 @@
               "name": "patch",
               "ty": "json",
               "required": true,
-              "description": "Partial gateway update payload. TRUST BOUNDARY: if the patch sets or changes `command` (stdio transport), the gateway will spawn that command as a local subprocess. The command is validated against a spawn allowlist before being persisted, but this remains an admin-level code-execution primitive."
+              "description": "Partial gateway update payload. env, headers, and headers_env replace whole maps: absent or null preserves the current map. An empty object clears it. env and literal header values are write-only and are never returned by GatewayView. Custom Authorization headers are rejected; use bearer_token_env or OAuth. TRUST BOUNDARY: if the patch sets or changes `command` (stdio transport), the gateway will spawn that command as a local subprocess. The command is validated against a spawn allowlist before being persisted, but this remains an admin-level code-execution primitive."
             },
             {
               "name": "bearer_token_value",

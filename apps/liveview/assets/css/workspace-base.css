@@ -1,0 +1,11 @@
+/* Native foundational element rules precede authored component styling.
+   Source: labby-overview.css:6-11 and labby-operations.css:32-33. */
+.labby-overview h1, .labby-overview h2, .labby-overview h3, .labby-overview p { margin: 0; color: inherit; }
+.labby-overview button, .labby-overview input, .labby-overview select, .labby-overview textarea { font: inherit; color: inherit; }
+.labby-overview button { cursor: pointer; }
+.labby-overview button, .labby-overview a { -webkit-tap-highlight-color: transparent; }
+.labby-overview a { color: inherit; text-decoration: none; }
+.labby-overview button:focus-visible, .labby-overview a:focus-visible, .labby-overview input:focus-visible, .labby-overview summary:focus-visible { outline: 2px solid var(--ov-accent); outline-offset: 4px; }
+
+/* Remove native button chrome; individual action and selected styles remain authoritative. */
+:where(.lb-operations-page) button { appearance:none; background:transparent; border:0; color:inherit; font:inherit; cursor:pointer; }

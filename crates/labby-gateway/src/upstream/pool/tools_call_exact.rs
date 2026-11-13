@@ -16,7 +16,7 @@ use tokio::time::Instant;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, ErrorData};
 
 use super::capability_call::bound_upstream_service_error;
-use super::helpers::{estimate_call_tool_response_size, max_response_bytes};
+use super::helpers::max_response_bytes;
 use super::logging::UpstreamRequestLog;
 use super::usage_record::{record_usage_call, record_usage_call_with_response};
 use super::{ToolCatalogGeneration, UpstreamPool};
@@ -746,8 +746,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exact_tool_completed_error_usage_preserves_payload_and_size_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let (pool, _, _) = fixture(None, false).await;
+        let pool = with_usage_store(pool, &store);
+        let generation = pool.published_tool_catalog().await.unwrap().generation();
+        for (index, (is_error, oversized, expected_outcome, expected_count)) in [
+            (Some(true), false, "tool_error", 1),
+            (Some(false), false, "ok", 1),
+            (None, false, "ok", 2),
+            (Some(true), true, "response_too_large", 1),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut expected = CallToolResult::success(vec![ContentBlock::text(if oversized {
+                "x".repeat(super::max_response_bytes() + 1)
+            } else {
+                "retained".to_string()
+            })]);
+            expected.is_error = is_error;
+            let observed = pool
+                .observe_tool_call("alpha", "nested/tool", generation)
+                .await
+                .unwrap();
+            let actual = pool
+                .apply_prepared_tool_exact(PreparedExactToolCall {
+                    observed,
+                    generation,
+                    native_name: "nested/tool".into(),
+                    outcome: PreparedOutcome::Response(expected.clone().into()),
+                    elapsed_ms: 1,
+                    header_recovery: None,
+                })
+                .await;
+            if oversized {
+                assert!(matches!(actual, Err(ExactToolCallError::TooLarge)));
+            } else {
+                let CallToolResponse::Complete(actual) = actual.unwrap() else {
+                    panic!("complete expected")
+                };
+                assert_eq!(actual, expected);
+            }
+            assert!(
+                pool.upstream_tool_health("alpha")
+                    .await
+                    .unwrap()
+                    .is_routable()
+            );
+            assert_eq!(pool.upstream_tool_last_error("alpha").await, None);
+            assert_eq!(
+                wait_for_usage_count(&store, expected_outcome).await,
+                expected_count
+            );
+            assert_eq!(total_usage_count(&store).await, (index + 1) as i64);
+        }
+    }
+
+    #[tokio::test]
     async fn exact_tool_kernel_preserves_non_complete_responses_through_checked_apply() {
         let (pool, _, _) = fixture(None, false).await;
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                .await
+                .unwrap(),
+        );
+        let pool = with_usage_store(pool, &store);
         let generation = pool.published_tool_catalog().await.unwrap().generation();
         let schema = ElicitationSchema::builder()
             .required_property(
@@ -779,7 +849,7 @@ mod tests {
         // The generic pool stores a unit client handler, so rmcp capability
         // negotiation rejects these variants before this kernel. Once a future
         // capable mount accepts them, checked apply preserves the exact value.
-        for expected in responses {
+        for (index, expected) in responses.into_iter().enumerate() {
             {
                 let mut catalog = pool.catalog_write().await;
                 catalog.get_mut("alpha").unwrap().tool_last_error = Some("sentinel".into());
@@ -799,6 +869,7 @@ mod tests {
                 })
                 .await
                 .unwrap();
+            assert_eq!(wait_for_usage_count(&store, "ok").await, (index + 1) as i64);
             match (actual, expected) {
                 (CallToolResponse::Task(actual), CallToolResponse::Task(expected)) => {
                     assert_eq!(
@@ -1772,7 +1843,8 @@ impl UpstreamPool {
         let header_recovery = prepared.header_recovery;
         match prepared.outcome {
             PreparedOutcome::Response(response) => {
-                let response_bytes = estimate_call_tool_response_size(&response);
+                let measurement = super::tools_call::tool_response_measurement(&response);
+                let response_bytes = measurement.bytes;
                 let too_large = response_bytes > max_response_bytes();
                 let elapsed_ms = prepared.elapsed_ms;
                 let applied = self
@@ -1794,7 +1866,7 @@ impl UpstreamPool {
                                 if too_large {
                                     "response_too_large"
                                 } else {
-                                    "ok"
+                                    measurement.usage_outcome
                                 },
                                 elapsed_ms,
                                 Some(response_bytes),

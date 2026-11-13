@@ -84,9 +84,9 @@ use super::entries::{
 };
 use super::helpers::{
     CONNECTION_SHUTDOWN_CONCURRENCY, SUBJECT_CONN_IDLE_TTL, SUBJECT_CONN_MAX_ENTRIES,
-    bare_upstream_prompt_name, estimate_call_tool_response_size, estimate_prompt_response_size,
-    estimate_resource_response_size, max_response_bytes, normalize_resource_result_uri,
-    redact_resource_uri_for_logging, upstream_transport,
+    bare_upstream_prompt_name, estimate_prompt_response_size, estimate_resource_response_size,
+    max_response_bytes, normalize_resource_result_uri, redact_resource_uri_for_logging,
+    upstream_transport,
 };
 use super::http_cancellation::{HttpCancellationSender, build_http_cancellation_sender};
 use super::logging::{
@@ -1385,7 +1385,8 @@ impl UpstreamPool {
                         return Some(Err(super::CapabilityCallError::Protocol { message }));
                     }
                 };
-                let response_size = estimate_call_tool_response_size(&result);
+                let measurement = super::tools_call::tool_response_measurement(&result);
+                let response_size = measurement.bytes;
                 let max_bytes = max_response_bytes();
                 if response_size > max_bytes {
                     // The peer returned a complete response. The gateway's size
@@ -1403,12 +1404,13 @@ impl UpstreamPool {
                     let message = format!(
                         "upstream response too large ({response_size} bytes, max {max_bytes})"
                     );
-                    super::usage_record::record_usage_call(
+                    super::usage_record::record_usage_call_with_response(
                         self,
                         event,
                         caller_subject,
                         "response_too_large",
                         started.elapsed().as_millis(),
+                        Some(response_size),
                     );
                     return Some(Err(super::CapabilityCallError::ResponseTooLarge {
                         message,
@@ -1445,12 +1447,13 @@ impl UpstreamPool {
                             started.elapsed().as_millis(),
                             Some(response_size),
                         );
-                        super::usage_record::record_usage_call(
+                        super::usage_record::record_usage_call_with_response(
                             self,
                             event,
                             caller_subject,
-                            "ok",
+                            measurement.usage_outcome,
                             started.elapsed().as_millis(),
+                            Some(response_size),
                         );
                         Some(Ok(result))
                     }
@@ -4891,6 +4894,211 @@ mod tests {
 
         // Hold the downstream server alive until the relayed call completed.
         drop(gw_server);
+    }
+
+    #[tokio::test]
+    async fn relayed_completed_tool_error_records_usage_and_preserves_peer() {
+        use super::super::entries::healthy_in_process_entry;
+        use std::collections::HashMap;
+
+        for subject in [None, Some("credential-scope")] {
+            #[derive(Clone)]
+            struct FailingUpstream;
+            impl ServerHandler for FailingUpstream {
+                fn get_info(&self) -> ServerConfig {
+                    ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+                }
+                async fn call_tool(
+                    &self,
+                    request: CallToolRequestParams,
+                    _context: RequestContext<RoleServer>,
+                ) -> Result<CallToolResponse, ErrorData> {
+                    let content = if request.name == "oversized" {
+                        "x".repeat(12 * 1024 * 1024)
+                    } else {
+                        "retained".to_string()
+                    };
+                    let mut result = CallToolResult::success(vec![ContentBlock::text(content)]);
+                    result.is_error = match request.name.as_ref() {
+                        "fail" | "oversized" => Some(true),
+                        "absent" => None,
+                        _ => Some(false),
+                    };
+                    result.structured_content = Some(serde_json::json!({"preserved": true}));
+                    Ok(result.into())
+                }
+                async fn list_tools(
+                    &self,
+                    _request: Option<PaginatedRequestParams>,
+                    _context: RequestContext<RoleServer>,
+                ) -> Result<rmcp::model::ListToolsResult, ErrorData> {
+                    Ok(rmcp::model::ListToolsResult::with_all_items(vec![
+                        rmcp::model::Tool::new(
+                            "echo".to_string(),
+                            "echoes".to_string(),
+                            Arc::new(serde_json::Map::new()),
+                        ),
+                    ]))
+                }
+            }
+
+            let directory = tempfile::tempdir().unwrap();
+            let store = Arc::new(
+                crate::usage::UsageStore::open(directory.path().join("usage.db"))
+                    .await
+                    .unwrap(),
+            );
+            let pool = UpstreamPool::new().with_usage_store(Some(Arc::clone(&store)));
+            let config = super::super::testsupport::test_upstream_config(); // name = "test"
+            pool.register_upstream_config_for_tests(&config);
+
+            // Seed the catalog so `record_failure_for` has an entry to mark unhealthy.
+            let name_arc: Arc<str> = Arc::from(config.name.as_str());
+            pool.catalog_write().await.insert(
+                config.name.clone(),
+                healthy_in_process_entry(Arc::clone(&name_arc), HashMap::new()),
+            );
+
+            // Downstream agent + a relay connection to the failing upstream, seeded
+            // under (name, session=1, None) so `call_tool_relayed` takes the fast
+            // path (the test config has no url/command, so a real connect would fail).
+            let (gw_server_transport, agent_transport) =
+                tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+            tokio::spawn(async move {
+                if let Ok(running) = ().serve(agent_transport).await {
+                    running.waiting().await.ok();
+                }
+            });
+            let gw_server = TrivialServer
+                .serve(gw_server_transport)
+                .await
+                .expect("downstream server connects");
+            let downstream = gw_server.peer().clone();
+
+            let (upstream_transport, gw_client_transport) =
+                tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+            tokio::spawn(async move {
+                if let Ok(running) = FailingUpstream.serve(upstream_transport).await {
+                    running.waiting().await.ok();
+                }
+            });
+            let service = RelayClientHandler::new(
+                downstream.clone(),
+                Arc::from(config.name.as_str()),
+                relay_test_capabilities(),
+            )
+            .serve(gw_client_transport)
+            .await
+            .expect("relay client connects");
+            let peer = service.peer().clone();
+            let conn = UpstreamConnection {
+                _client_service: service.into(),
+                _server_task: None,
+                peer: peer.clone(),
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            };
+            pool.relay_connections.write().await.insert(
+                relay_cache_key(&config.name, 1, subject),
+                RelayCachedConnection {
+                    _connection: conn,
+                    peer,
+                    capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
+                    routes: Arc::new(RelayRouteState::default()),
+                    cancellation_sender: None,
+                    last_used: Instant::now(),
+                },
+            );
+
+            for (index, (name, outcome)) in [
+                ("fail", "tool_error"),
+                ("false", "ok"),
+                ("absent", "ok"),
+                ("oversized", "response_too_large"),
+                ("echo", "ok"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let result = pool
+                    .call_tool_relayed(
+                        &config,
+                        subject,
+                        CallToolRequestParams::new(name),
+                        downstream.clone(),
+                        RequestId::Number(1),
+                        CancellationToken::new(),
+                        1,
+                        relay_test_capabilities(),
+                        Some("caller-scope"),
+                        crate::upstream::pool::TaskRouteAuthorization::root(),
+                    )
+                    .await
+                    .expect("cached relay remains available");
+                if name == "oversized" {
+                    assert!(matches!(
+                        result,
+                        Err(
+                            super::super::capability_call::CapabilityCallError::ResponseTooLarge { .. }
+                        )
+                    ));
+                } else {
+                    let completed = match result.unwrap() {
+                        CallToolResponse::Complete(result) => Some(result),
+                        _ => None,
+                    };
+                    let result = completed.expect("complete expected");
+                    assert_eq!(
+                        result.is_error,
+                        match name {
+                            "fail" => Some(true),
+                            "absent" => None,
+                            _ => Some(false),
+                        }
+                    );
+                    assert_eq!(result.content, vec![ContentBlock::text("retained")]);
+                    assert_eq!(
+                        result.structured_content,
+                        Some(serde_json::json!({"preserved": true}))
+                    );
+                }
+                tokio::time::timeout(Duration::from_secs(5), store.drain_pending_writes())
+                    .await
+                    .unwrap();
+                let expected_name = name.to_string();
+                let row = store.with_conn(move |conn| conn.query_row(
+                "SELECT outcome, response_bytes FROM upstream_calls WHERE tool_name = ?1", [expected_name],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+            ).map_err(crate::usage::store::sqlite_error)).await.unwrap();
+                assert_eq!(row.0, outcome);
+                assert!(row.1.is_some_and(|bytes| bytes > 0));
+                let count = store
+                    .with_conn(|conn| {
+                        conn.query_row("SELECT COUNT(*) FROM upstream_calls", [], |row| {
+                            row.get::<_, i64>(0)
+                        })
+                        .map_err(crate::usage::store::sqlite_error)
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(count, (index + 1) as i64);
+                assert!(
+                    pool.upstream_tool_health(&config.name)
+                        .await
+                        .unwrap()
+                        .is_routable()
+                );
+                assert!(
+                    pool.relay_connections
+                        .read()
+                        .await
+                        .contains_key(&relay_cache_key(&config.name, 1, subject))
+                );
+            }
+
+            // Hold the downstream server alive until the relayed call completed.
+            drop(gw_server);
+        }
     }
 
     /// Relayed calls enforce the same response-size cap as the pooled path,

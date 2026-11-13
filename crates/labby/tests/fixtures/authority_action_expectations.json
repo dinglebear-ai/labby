@@ -29,6 +29,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "access:access.platform_admin.list": {
+      "required_capability": "platform.read",
+      "team_member": "deny",
+      "team_admin": "deny",
+      "team_owner": "deny",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "access:access.platform_admin.grant": {
       "required_capability": "platform.manage",
       "team_member": "deny",
@@ -92,6 +101,24 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "access:access.team.member.activate": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team.member.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "access:access.team.member.remove": {
       "required_capability": "membership.manage",
       "team_member": "deny",
@@ -137,6 +164,15 @@
       "personal_no_membership": "deny",
       "platform_admin": "allow"
     },
+    "access:access.team_invitation.list": {
+      "required_capability": "membership.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
     "access:access.team_invitation.create": {
       "required_capability": "membership.manage",
       "team_member": "deny",
@@ -149,6 +185,24 @@
     "access:access.team_project.assign": {
       "required_capability": "scope.manage",
       "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team_project.unassign": {
+      "required_capability": "scope.manage",
+      "team_member": "deny",
+      "team_admin": "allow",
+      "team_owner": "allow",
+      "other_team_member": "deny",
+      "personal_no_membership": "deny",
+      "platform_admin": "allow"
+    },
+    "access:access.team_project.list": {
+      "required_capability": "scope.read",
+      "team_member": "allow",
       "team_admin": "allow",
       "team_owner": "allow",
       "other_team_member": "deny",

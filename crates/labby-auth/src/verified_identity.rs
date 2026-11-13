@@ -24,7 +24,7 @@ pub enum Authenticator {
 }
 
 impl Authenticator {
-    const fn default_transport_issuer(self) -> &'static str {
+    pub(crate) const fn default_transport_issuer(self) -> &'static str {
         match self {
             Self::BrowserSession => "browser-session",
             Self::OauthBearer => "labby-jwt",

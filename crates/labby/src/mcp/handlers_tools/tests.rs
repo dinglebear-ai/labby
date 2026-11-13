@@ -8381,3 +8381,5 @@ async fn tool_and_hash_agree_on_message_visibility() {
     }
     running.cancel().await.unwrap();
 }
+
+mod access_inventory;

@@ -1,3 +1,5 @@
+mod inventory;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(test)]
@@ -897,6 +899,16 @@ impl AccessStore {
         self.with_connection(move |connection| super::team::add_member(connection, &input))
             .await
     }
+    pub(crate) async fn activate_team_member(
+        &self,
+        input: AddTeamMemberInput,
+        request: super::AuthorityRequest,
+    ) -> AccessStoreResult<TeamMembershipSnapshot> {
+        self.with_connection(move |connection| {
+            super::team::activate_member(connection, &input, request)
+        })
+        .await
+    }
     pub(crate) async fn set_team_member_role(
         &self,
         input: AddTeamMemberInput,
@@ -979,6 +991,17 @@ impl AccessStore {
     ) -> AccessStoreResult<TeamProjectAssignmentSnapshot> {
         self.with_connection(move |connection| super::team::assign_team_project(connection, &input))
             .await
+    }
+
+    pub(crate) async fn unassign_team_project(
+        &self,
+        input: super::ManageTeamProjectInput,
+        request: super::AuthorityRequest,
+    ) -> AccessStoreResult<TeamProjectAssignmentSnapshot> {
+        self.with_connection(move |connection| {
+            super::team::unassign_team_project(connection, &input, request)
+        })
+        .await
     }
 
     pub(crate) async fn list_effective_projects(

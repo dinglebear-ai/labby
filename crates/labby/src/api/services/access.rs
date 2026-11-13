@@ -19,7 +19,7 @@ use serde_json::Value;
 use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, error::ApiError, state::AppState};
 use crate::dispatch::access::AccessDispatchContext;
-use crate::dispatch::access_errors::map_runtime_error;
+use crate::dispatch::access::{inventory_store, read_deadline_from_headers};
 use crate::dispatch::error::ToolError;
 
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
@@ -52,6 +52,8 @@ async fn handle(
 ) -> Result<Json<Value>, ApiError> {
     let auth = auth.ok_or_else(identity_required)?.0;
     let identity = identity.ok_or_else(identity_required)?.0;
+    let read_deadline = read_deadline_from_headers(&request.action, &headers)
+        .map_err(|error| ApiError::new(error).with_service_action("access", &request.action))?;
     let ceiling = crate::access::AuthorityCeiling::from_auth_context(&auth);
     let access_runtime = state.access_runtime;
     // The dispatch wrapper borrows the request headers and auth context for
@@ -75,10 +77,7 @@ async fn handle(
             if !csrf_exempt(&action) {
                 super::require_session_csrf(&action, &request_headers, Some(&request_auth))?;
             }
-            let store = access_runtime
-                .store()
-                .await
-                .map_err(|error| map_runtime_error("access", error))?;
+            let store = inventory_store(&access_runtime, read_deadline).await?;
             let installation_id = installation_id.ok_or_else(|| {
                 tracing::warn!(
                     surface = "api",
@@ -87,11 +86,18 @@ async fn handle(
                     kind = "service_unavailable",
                     "installation identity is not bound on this process"
                 );
-                unavailable()
+                if read_deadline.is_some() {
+                    crate::dispatch::access::map_inventory_error(
+                        crate::access::inventory::InventoryError::WorkerUnavailable,
+                    )
+                } else {
+                    unavailable()
+                }
             })?;
             crate::dispatch::access::dispatch(
                 AccessDispatchContext {
                     store,
+                    read_deadline,
                     identity,
                     ceiling,
                     installation_id,
@@ -120,3 +126,6 @@ fn unavailable() -> ToolError {
         message: "access administration is unavailable".to_owned(),
     }
 }
+
+#[cfg(test)]
+mod inventory_tests;

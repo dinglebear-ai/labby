@@ -329,6 +329,31 @@ impl AuthState {
             provider_generation: self.inbound_provider_generation,
         }
     }
+
+    /// Derive browser identity from a stored, authenticated provider session.
+    ///
+    /// The session must have been loaded from the auth store with its provider
+    /// binding. Only this state's selected provider and generation are admitted.
+    /// Project credentials use their separate project-session identity contract.
+    pub fn verified_browser_session_identity(
+        &self,
+        session: &crate::types::ProviderBound<crate::types::BrowserSessionRow>,
+    ) -> Result<crate::VerifiedIdentity, crate::VerifiedIdentityError> {
+        if session.binding != self.inbound_provider_binding()
+            || session.value.project_binding.is_some()
+        {
+            return Err(crate::VerifiedIdentityError::InvalidIdentityProvenance);
+        }
+        let authenticator = crate::Authenticator::BrowserSession;
+        crate::VerifiedIdentity::external_from_allowed_issuers(
+            authenticator,
+            authenticator.default_transport_issuer(),
+            &session.binding.identity_issuer,
+            session.value.subject.clone(),
+            [self.inbound_provider.issuer()],
+        )
+    }
+
     #[must_use]
     #[cfg(test)]
     #[allow(clippy::panic)]
