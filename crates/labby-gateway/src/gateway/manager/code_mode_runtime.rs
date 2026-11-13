@@ -549,7 +549,9 @@ impl GatewayManager {
                 .await;
         }
         let subject_scoped = if let Some(subject) = oauth_subject {
-            let cfg = self.config.read().await;
+            // Release the config lock before awaiting pool work: a writer
+            // queued behind a held read guard stalls every later reader.
+            let cfg = self.config.read().await.clone();
             if has_warm_catalog {
                 self.spawn_code_mode_upstream_connections(
                     Arc::clone(&pool),

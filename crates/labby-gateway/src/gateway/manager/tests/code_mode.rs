@@ -1255,6 +1255,66 @@ async fn warm_public_catalog_bounds_cold_oauth_subject_enumeration() {
 }
 
 #[tokio::test]
+async fn cold_oauth_subject_enumeration_does_not_hold_the_config_lock() {
+    let public = fixture_http_upstream("public");
+    let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
+    let upstreams = vec![public, private.clone()];
+    let (manager, pool) = code_mode_manager_with_upstreams(upstreams.clone()).await;
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            gateway: labby_runtime::gateway_config::GatewayPreferences {
+                auto_reconnect: true,
+                ..Default::default()
+            },
+            code_mode: CodeModeConfig {
+                enabled: true,
+                ..CodeModeConfig::default()
+            },
+            upstream: upstreams,
+            ..GatewayConfig::default()
+        })
+        .await;
+    pool.insert_entry_for_tests("public", healthy_entry_with_tool("public", "ping"))
+        .await;
+    pool.register_upstream_config_for_tests(&private);
+    let lock = pool
+        .subject_connect_lock_for_tests("private", "alice")
+        .await;
+    let guard = lock.lock().await;
+
+    let catalog = tokio::spawn({
+        let manager = manager.clone();
+        async move {
+            manager
+                .code_mode_catalog_tools(true, None, Some("alice"))
+                .await
+        }
+    });
+    // The held subject connection keeps the request in OAuth enumeration for
+    // its one-second budget.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // A writer queued behind a held read guard also stalls every later reader.
+    tokio::time::timeout(Duration::from_millis(250), async {
+        drop(manager.config.write().await);
+        manager.code_mode_config().await
+    })
+    .await
+    .expect("subject enumeration must not hold the gateway config lock");
+    assert!(
+        !catalog.is_finished(),
+        "fixture must keep the request inside subject enumeration"
+    );
+
+    let tools = catalog
+        .await
+        .expect("catalog task completes")
+        .expect("warm public catalog remains available");
+    assert_eq!(tool_ids(&tools), vec!["public::ping"]);
+    drop(guard);
+}
+
+#[tokio::test]
 async fn oauth_warm_up_admission_is_shared_across_subjects() {
     let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
     let (manager, pool) = code_mode_manager_with_upstreams(vec![private.clone()]).await;
