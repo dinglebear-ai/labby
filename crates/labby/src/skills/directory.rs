@@ -206,11 +206,11 @@ mod tests {
         assert_eq!(first.resources.len(), PAGE_SIZE);
         let mut second = params(&root);
         second.cursor = first.next_cursor;
-        assert!(
-            !directory_page(&listing, &second, "owner")
+        assert_ne!(
+            directory_page(&listing, &second, "owner")
                 .unwrap()
-                .resources
-                .is_empty()
+                .resources,
+            Vec::<DirectoryChild>::new()
         );
         assert!(directory_page(&listing, &second, "different-caller").is_err());
         listing.skills[0].resources.as_mut().unwrap()[0]

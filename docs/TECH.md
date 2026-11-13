@@ -14,7 +14,7 @@ For operational deployment details, see [OPERATIONS.md](./OPERATIONS.md).
 The workspace metadata in the root `Cargo.toml` is authoritative:
 
 - Rust edition 2024
-- pinned build toolchain and MSRV: Rust 1.97.1
+- pinned build toolchain and MSRV: Rust 1.99.1
 - Cargo resolver 3
 - workspace version shared by the Rust crates
 - AGPL-3.0-only license

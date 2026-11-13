@@ -1394,7 +1394,10 @@ async fn atomic_route_validation_failure_preserves_private_oauth_spec() {
             serde_json::to_value(cfg.upstream[0].oauth.as_ref()).unwrap(),
             serde_json::to_value(initial.upstream[0].oauth.as_ref()).unwrap()
         );
-        assert!(cfg.protected_mcp_routes.is_empty());
+        assert_eq!(
+            cfg.protected_mcp_routes,
+            Vec::<ProtectedMcpRouteConfig>::new()
+        );
     }
 }
 
@@ -1438,7 +1441,10 @@ async fn atomic_route_reconcile_failure_restores_private_oauth_and_route_state()
             serde_json::to_value(cfg.upstream[0].oauth.as_ref()).unwrap(),
             serde_json::to_value(initial.upstream[0].oauth.as_ref()).unwrap()
         );
-        assert!(cfg.protected_mcp_routes.is_empty());
+        assert_eq!(
+            cfg.protected_mcp_routes,
+            Vec::<ProtectedMcpRouteConfig>::new()
+        );
     }
     assert!(
         manager
@@ -1541,7 +1547,10 @@ async fn atomic_route_save_commits_rename_and_route_then_remove_without_disclosi
     .expect("atomic remove route and clear OAuth");
     let durable = load_gateway_config(&path).expect("durable");
     assert!(durable.upstream[0].oauth.is_none());
-    assert!(durable.protected_mcp_routes.is_empty());
+    assert_eq!(
+        durable.protected_mcp_routes,
+        Vec::<ProtectedMcpRouteConfig>::new()
+    );
     assert!(
         manager
             .resolve_protected_route("mcp.example.com", "/syslog")

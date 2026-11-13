@@ -1457,7 +1457,10 @@ mod tests {
             vec![connection.browser_id.clone()]
         );
         drop(connection);
-        assert!(bridge.connected_browser_ids().unwrap().is_empty());
+        assert_eq!(
+            bridge.connected_browser_ids().unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]

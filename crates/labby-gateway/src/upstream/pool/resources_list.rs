@@ -1764,7 +1764,7 @@ mod tests {
             .expect("previous A connection remains alive");
 
         release.notify_one();
-        assert!(listing.await.expect("listing task").is_empty());
+        assert_eq!(listing.await.expect("listing task"), Vec::<Resource>::new());
         previous_a
             .shutdown("alpha", "test.resource-list.stale")
             .await;
@@ -1853,7 +1853,10 @@ mod tests {
         assert!(reinstalled_previous.is_none());
 
         release.notify_one();
-        assert!(listing.await.expect("listing task").is_empty());
+        assert_eq!(
+            listing.await.expect("listing task"),
+            Vec::<ResourceTemplate>::new()
+        );
         if let Some(replacement_b) = replacement_b {
             replacement_b
                 .shutdown("alpha", "test.resource-template-list.replaced")
@@ -1885,10 +1888,9 @@ mod tests {
             .get_mut("alpha")
             .expect("alpha entry")
             .resource_last_error = Some("sentinel".into());
-        assert!(
-            pool.list_upstream_resource_templates_allowed(None)
-                .await
-                .is_empty()
+        assert_eq!(
+            pool.list_upstream_resource_templates_allowed(None).await,
+            Vec::<ResourceTemplate>::new()
         );
         assert!(
             pool.catalog.read().await["alpha"]
@@ -2235,10 +2237,9 @@ mod tests {
         )
         .await
         .expect("metadata must return a bounded current snapshot");
-        assert!(
-            pool.cached_upstream_resources_allowed(None)
-                .await
-                .is_empty()
+        assert_eq!(
+            pool.cached_upstream_resources_allowed(None).await,
+            Vec::<(String, Resource)>::new()
         );
         release.notify_one();
         tokio::time::timeout(Duration::from_secs(1), async {
@@ -2462,7 +2463,10 @@ mod tests {
             }],
             "the stable operator-facing kind, not a Debug rendering of the enum"
         );
-        assert!(pool.withheld_snapshots("healthy").await.is_empty());
+        assert_eq!(
+            pool.withheld_snapshots("healthy").await,
+            Vec::<WithheldSnapshot>::new()
+        );
         assert!(
             pool.upstream_capability_health("dupes", UpstreamCapability::Resources)
                 .await
@@ -2848,7 +2852,7 @@ mod tests {
             .subject_scoped_resources(std::slice::from_ref(&config), "alice")
             .await;
 
-        assert!(resources.is_empty());
+        assert_eq!(resources, Vec::<Resource>::new());
         assert_eq!(
             resource_calls.load(Ordering::SeqCst),
             0,

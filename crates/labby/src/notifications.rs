@@ -623,7 +623,7 @@ mod tests {
             dedupe_key: "retry".into(),
         };
         assert!(center.push_if_new(record.clone()).await.is_err());
-        assert!(center.list().await.is_empty());
+        assert_eq!(center.list().await, Vec::<NotificationRecord>::new());
         tokio::fs::create_dir(&missing_dir).await.unwrap();
         assert!(center.push_if_new(record).await.unwrap());
         assert_eq!(center.list().await.len(), 1);
@@ -671,7 +671,10 @@ mod tests {
             dedupe_key: matching_key,
         };
         assert!(!center.push_if_new_with_apprise(replay, true).await.unwrap());
-        assert!(center.pending_apprise().await.is_empty());
+        assert_eq!(
+            center.pending_apprise().await,
+            Vec::<NotificationRecord>::new()
+        );
         center
             .advance_source_cursor(
                 "source",
@@ -752,7 +755,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        assert!(reopened.pending_apprise().await.is_empty());
+        assert_eq!(
+            reopened.pending_apprise().await,
+            Vec::<NotificationRecord>::new()
+        );
     }
 
     #[tokio::test]
@@ -879,13 +885,13 @@ mod tests {
             at: wrapped[0]["at"].as_str().unwrap().into(),
         };
         center.advance_source_cursor("source", after).await.unwrap();
-        assert!(
+        assert_eq!(
             unseen_history(
                 "source",
                 &wrapped,
                 center.source_cursor("source").await.as_ref()
-            )
-            .is_empty()
+            ),
+            Vec::<&Value>::new()
         );
     }
 

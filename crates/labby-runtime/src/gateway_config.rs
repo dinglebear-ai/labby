@@ -2885,7 +2885,7 @@ strategy = "dynamic"
         let expected = CodeModeConfig::default();
         assert_eq!(cfg, expected);
         assert!(cfg.enabled);
-        assert!(cfg.trusted_read_only_tools.is_empty());
+        assert_eq!(cfg.trusted_read_only_tools, Vec::<String>::new());
         assert!(!cfg.mcp_ui_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);

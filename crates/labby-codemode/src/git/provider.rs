@@ -604,7 +604,10 @@ wait"#,
             .await
             .unwrap();
         assert_eq!(remotes["ok"], true);
-        assert!(remotes["remotes"].as_array().unwrap().is_empty());
+        assert_eq!(
+            remotes["remotes"].as_array().unwrap().as_slice(),
+            Vec::<Value>::new()
+        );
     }
 
     #[tokio::test]

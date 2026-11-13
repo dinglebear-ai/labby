@@ -170,7 +170,7 @@ async fn google_real_daemon_consumes_bound_state_and_pkce_once_across_restart() 
     let state = query["state"].clone();
     assert_eq!(query["code_challenge_method"], "S256");
     let challenge = query["code_challenge"].clone();
-    assert!(!challenge.is_empty());
+    assert_ne!(challenge, "");
     fixture.expect_exchange(
         CLIENT_ID,
         CLIENT_SECRET,
@@ -271,8 +271,8 @@ async fn authelia_real_daemon_discovers_and_consumes_bound_pkce_state_once() {
     let query = unique_query(&upstream);
     let state = query["state"].clone();
     assert_eq!(query["code_challenge_method"], "S256");
-    assert!(!query["code_challenge"].is_empty());
-    assert!(!query["nonce"].is_empty());
+    assert_ne!(query["code_challenge"], "");
+    assert_ne!(query["nonce"], "");
 
     let wrong_issuer = client
         .get(format!(
@@ -368,7 +368,7 @@ fn actual_provider_rows_are_explicitly_unavailable_without_credentials() {
         else {
             panic!("missing actual-provider credentials cannot qualify {provider}");
         };
-        assert!(!missing.is_empty());
+        assert_ne!(missing, Vec::<&str>::new());
     }
 }
 

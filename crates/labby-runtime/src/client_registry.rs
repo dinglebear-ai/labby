@@ -168,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn default_handle_starts_empty() {
         let handle = ClientRegistryHandle::default();
-        assert!(handle.list().await.is_empty());
+        assert_eq!(handle.list().await, Vec::<ConnectedClient>::new());
     }
 
     #[tokio::test]

@@ -384,7 +384,7 @@ mod tests {
             &[duplicate.clone(), duplicate],
             None,
         );
-        assert!(result.entries.is_empty());
+        assert_eq!(result.entries, Vec::<SkillEntry>::new());
         assert_eq!(result.excluded_count, 2);
         assert_eq!(
             result.excluded_uris,
@@ -410,7 +410,7 @@ mod tests {
             &[first, second],
             None,
         );
-        assert!(result.entries.is_empty());
+        assert_eq!(result.entries, Vec::<SkillEntry>::new());
         assert_eq!(result.excluded_count, 2);
     }
 

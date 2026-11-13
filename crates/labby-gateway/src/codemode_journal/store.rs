@@ -536,7 +536,10 @@ mod tests {
         assert_eq!(got[0].name, "a");
         assert_eq!(got[0].seq_base, 0);
         assert_eq!(got[1].seq_base, 3);
-        assert!(store.load("missing").await.unwrap().is_empty());
+        assert_eq!(
+            store.load("missing").await.unwrap(),
+            Vec::<StepJournalRow>::new()
+        );
     }
 
     #[tokio::test]
@@ -641,7 +644,10 @@ mod tests {
 
         let deleted = store.prune_older_than(100).await.unwrap();
         assert_eq!(deleted, 1);
-        assert!(store.load("e_old").await.unwrap().is_empty());
+        assert_eq!(
+            store.load("e_old").await.unwrap(),
+            Vec::<StepJournalRow>::new()
+        );
         assert_eq!(store.load("e_new").await.unwrap().len(), 1);
     }
 

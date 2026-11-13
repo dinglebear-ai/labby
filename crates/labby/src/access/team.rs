@@ -1698,7 +1698,10 @@ mod tests {
             .suspend_team(owner, "bootstrap-initial-team".into())
             .await
             .unwrap();
-        assert!(store.list_managed_projects(admin).await.unwrap().is_empty());
+        assert_eq!(
+            store.list_managed_projects(admin).await.unwrap(),
+            Vec::<ManagedProjectSnapshot>::new()
+        );
     }
 
     #[tokio::test]
@@ -1836,12 +1839,9 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            store
-                .list_managed_projects(outsider)
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            store.list_managed_projects(outsider).await.unwrap(),
+            Vec::<ManagedProjectSnapshot>::new()
         );
         assert!(matches!(
             store

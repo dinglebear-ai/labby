@@ -240,5 +240,8 @@ async fn explicit_add_can_restore_a_rejected_discovered_source() {
         .unwrap();
     let durable = crate::gateway::config::load_gateway_config(&path).unwrap();
     assert_eq!(durable.upstream.len(), 1);
-    assert!(durable.upstream_import_tombstones.is_empty());
+    assert_eq!(
+        durable.upstream_import_tombstones,
+        Vec::<UpstreamImportTombstone>::new()
+    );
 }

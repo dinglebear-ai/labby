@@ -122,7 +122,7 @@ async fn restart_requires_observed_completion_and_never_replays_an_accepted_oper
     action(&server, "gateway.mcp.restart", json!({"completed":false})).await;
     let output = run(&server, &["server", "restart", "one", "--timeout", "2s"]).await;
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, Vec::<u8>::new());
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["failed"], 1);
     assert_eq!(result["results"][0]["error"]["kind"], "timeout");
@@ -194,7 +194,7 @@ async fn invalid_selection_and_preview_never_mutate_any_server() {
             !output.status.success(),
             "unexpected selection accepted: {args:?}"
         );
-        assert!(mutations(&server).await.is_empty());
+        assert_eq!(mutations(&server).await, Vec::<Value>::new());
     }
     let output = run(&server, &["server", "disable", "--all", "--dry-run"]).await;
     assert!(
@@ -205,5 +205,5 @@ async fn invalid_selection_and_preview_never_mutate_any_server() {
     let preview: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(preview["executed"], false);
     assert_eq!(preview["params"]["targets"].as_array().unwrap().len(), 3);
-    assert!(mutations(&server).await.is_empty());
+    assert_eq!(mutations(&server).await, Vec::<Value>::new());
 }

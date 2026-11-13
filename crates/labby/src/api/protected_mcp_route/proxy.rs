@@ -34,7 +34,7 @@ pub(super) async fn proxy_protected_mcp_route(
     let (mut upstream, upstream_auth_token, upstream_target, exposure_config) =
         match protected_route_upstream_target(state, &route).await {
             Ok(target) => target,
-            Err(response) => return response,
+            Err(response) => return *response,
         };
 
     let mut backend_path = upstream.path().trim_end_matches('/').to_string();
@@ -299,7 +299,7 @@ pub(super) async fn protected_route_upstream_target(
         String,
         Option<crate::config::UpstreamConfig>,
     ),
-    axum::response::Response,
+    Box<axum::response::Response>,
 > {
     let upstream_name = match route.effective_target() {
         ProtectedMcpRouteEffectiveTarget::BackendUrl { url } => {
@@ -329,7 +329,8 @@ pub(super) async fn protected_route_upstream_target(
                 sdk_kind: "bad_gateway".into(),
                 message: "gateway_subset routes must be served by the scoped MCP service".into(),
             })
-            .into_response());
+            .into_response()
+            .into());
         }
     };
 
@@ -344,7 +345,8 @@ pub(super) async fn protected_route_upstream_target(
             sdk_kind: "bad_gateway".into(),
             message: "gateway manager is not available for upstream protected route".into(),
         })
-        .into_response());
+        .into_response()
+        .into());
     };
     let Some(upstream_config) = manager.upstream_config(&upstream_name).await else {
         tracing::warn!(
@@ -357,7 +359,8 @@ pub(super) async fn protected_route_upstream_target(
             sdk_kind: "not_found".into(),
             message: format!("upstream `{upstream_name}` not found for protected MCP route"),
         })
-        .into_response());
+        .into_response()
+        .into());
     };
     if !upstream_config.enabled
         || upstream_config.priority.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
@@ -367,7 +370,8 @@ pub(super) async fn protected_route_upstream_target(
             sdk_kind: "not_found".into(),
             message: format!("upstream `{upstream_name}` is not routable for protected MCP route"),
         })
-        .into_response());
+        .into_response()
+        .into());
     }
     let Some(raw_url) = upstream_config.url.as_deref() else {
         tracing::warn!(
@@ -380,7 +384,8 @@ pub(super) async fn protected_route_upstream_target(
             sdk_kind: "bad_gateway".into(),
             message: format!("upstream `{upstream_name}` does not have an HTTP MCP URL"),
         })
-        .into_response());
+        .into_response()
+        .into());
     };
     let url = reqwest::Url::parse(raw_url).map_err(|error| {
         tracing::warn!(
@@ -410,7 +415,8 @@ pub(super) async fn protected_route_upstream_target(
                 sdk_kind: "oauth_needs_reauth".into(),
                 message: format!("upstream `{upstream_name}` is not connected with OAuth"),
             })
-            .into_response());
+            .into_response()
+            .into());
         };
         let auth_client = oauth_manager
             .build_auth_client(SHARED_GATEWAY_OAUTH_SUBJECT)

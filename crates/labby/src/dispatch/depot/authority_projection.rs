@@ -1543,12 +1543,18 @@ mod tests {
     async fn heartbeats_follow_the_cadence_and_only_after_synchronization() {
         let (_directory, state, sender, store) = fixture().await;
         // Never synchronized: no heartbeat is sent (Depot would reject it).
-        assert!(sender.send_heartbeats(1_000).await.unwrap().is_empty());
+        assert_eq!(
+            sender.send_heartbeats(1_000).await.unwrap(),
+            Vec::<String>::new()
+        );
         assert_eq!(state.lock().unwrap().received.len(), 0);
 
         sender.send_once(1_000).await.unwrap();
         // Freshly acknowledged: not due yet.
-        assert!(sender.send_heartbeats(1_001).await.unwrap().is_empty());
+        assert_eq!(
+            sender.send_heartbeats(1_001).await.unwrap(),
+            Vec::<String>::new()
+        );
         // Simulate the interval elapsing.
         sender.last_ack.lock().unwrap().insert(
             "bootstrap-local".into(),

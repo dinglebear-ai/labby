@@ -44,7 +44,7 @@ use crate::mcp::result_format::{
 use crate::mcp::server::LabMcpServer;
 use crate::mcp::trace_context::request_trace_context;
 
-type SharedCodeModeResult = Result<CodeModeExecutionResponse, CodeModeExecutionError>;
+type SharedCodeModeResult = Result<CodeModeExecutionResponse, Box<CodeModeExecutionError>>;
 
 struct InflightCodeModeExecution {
     leader_execution_id: String,
@@ -185,7 +185,7 @@ impl Drop for CodeModeInflightLeader {
             .entry
             .result
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(error));
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Err(error.into()));
         code_mode_inflight()
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -728,6 +728,9 @@ impl LabMcpServer {
                     request_trace_context(&context.extensions),
                 ))
                 .await;
+                // Box before publishing: complete() shares the aliased
+                // SharedCodeModeResult with every waiter.
+                let result = result.map_err(Box::new);
                 leader.complete(&result);
                 result
             }

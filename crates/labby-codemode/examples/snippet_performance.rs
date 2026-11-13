@@ -201,7 +201,7 @@ async fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Err("each option requires one value".into());
     }
     let mut flags = std::collections::HashSet::new();
-    for option in args.chunks_exact(2) {
+    for option in args.as_chunks::<2>().0 {
         if ![
             "--runner",
             "--samples",

@@ -4257,7 +4257,7 @@ mod tests {
         let migrated = store.library_snapshot().unwrap();
         let record = &migrated.records[&artifact_id];
         assert!(record.materialized);
-        assert!(!record.latest_revision_id.is_empty());
+        assert_ne!(record.latest_revision_id, "");
         assert_eq!(record.latest_revision_files[0].path, "SKILL.md");
     }
 }

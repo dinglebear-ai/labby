@@ -951,7 +951,10 @@ mod tests {
                 .len(),
             8
         );
-        assert!(cache.take_capacity_evictions().is_empty());
+        assert_eq!(
+            cache.take_capacity_evictions(),
+            Vec::<(String, String)>::new()
+        );
     }
 
     #[test]

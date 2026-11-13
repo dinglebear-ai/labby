@@ -772,8 +772,14 @@ mod tests {
         assert_eq!(admins, 0);
         let snapshot = store.session_authority(eli.clone()).await.unwrap();
         assert!(!snapshot.platform_administrator);
-        assert!(snapshot.teams.is_empty());
-        assert!(snapshot.projects.is_empty());
+        assert_eq!(
+            snapshot.teams,
+            Vec::<(String, crate::access::domain::TeamRole, u64, u64)>::new()
+        );
+        assert_eq!(
+            snapshot.projects,
+            Vec::<(String, crate::access::domain::ProjectRole)>::new()
+        );
         let metadata: String = store
             .with_connection(|connection| {
                 connection
@@ -845,7 +851,10 @@ mod tests {
         );
         let snapshot = store.session_authority(owner).await.unwrap();
         assert!(snapshot.platform_administrator);
-        assert!(!snapshot.teams.is_empty());
+        assert_ne!(
+            snapshot.teams,
+            Vec::<(String, crate::access::domain::TeamRole, u64, u64)>::new()
+        );
         assert_eq!(
             store
                 .revoke_allowlisted(identity("never-signed-in"), "fp".into())
@@ -948,7 +957,10 @@ mod tests {
         assert_eq!(membership_rows(&store).await.2, 0);
         let snapshot = store.session_authority(eli).await.unwrap();
         assert!(!snapshot.platform_administrator);
-        assert!(snapshot.teams.is_empty());
+        assert_eq!(
+            snapshot.teams,
+            Vec::<(String, crate::access::domain::TeamRole, u64, u64)>::new()
+        );
         assert_eq!(audit_count(&store, "access.allowlist.provision").await, 1);
     }
 

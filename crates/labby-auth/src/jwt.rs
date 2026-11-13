@@ -312,7 +312,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(claims.aud, "https://lab.example.com");
-        assert!(!claims.jti.is_empty());
+        assert_ne!(claims.jti, "");
         assert!(decode_header(&token).unwrap().kid.is_some());
     }
 

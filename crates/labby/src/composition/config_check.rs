@@ -305,13 +305,19 @@ mod tests {
 
     #[test]
     fn default_config_passes() {
-        assert!(validate_startup_config(&LabConfig::default()).is_empty());
+        assert_eq!(
+            validate_startup_config(&LabConfig::default()),
+            Vec::<ConfigProblem>::new()
+        );
     }
 
     #[test]
     fn missing_config_file_passes_with_defaults() {
         let directory = tempfile::tempdir().unwrap();
-        assert!(check_config_candidates(&[directory.path().join("config.toml")]).is_empty());
+        assert_eq!(
+            check_config_candidates(&[directory.path().join("config.toml")]),
+            Vec::<ConfigProblem>::new()
+        );
     }
 
     #[test]

@@ -54,7 +54,7 @@ async fn daemon_owns_identity_and_preserves_it_across_restart() {
     let first = identity(&client, &base, &token).await;
     let path = guard.root().join("labby-home/installation-id");
     let persisted = std::fs::read(&path).unwrap();
-    assert!(!persisted.is_empty());
+    assert_ne!(persisted, Vec::<u8>::new());
     let expected = format!("labby_{}", hex::encode(Sha256::digest(&persisted)));
     assert_eq!(first["server_id"], expected);
     assert_eq!(first["auth"]["modes"], serde_json::json!(["static_bearer"]));

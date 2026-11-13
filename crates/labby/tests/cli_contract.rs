@@ -291,7 +291,7 @@ fn public_commands_and_aliases_never_contain_hyphens() {
     command.build();
     let mut paths = Vec::new();
     public_commands(&command, "labby", &mut paths);
-    assert!(!paths.is_empty());
+    assert_ne!(paths, Vec::<String>::new());
 }
 
 #[test]
@@ -426,7 +426,7 @@ fn complete_json_help_matches_every_public_command() {
 fn parser_errors_do_not_mistake_global_values_for_commands() {
     let output = invoke(&["--team-id", "audit", "--json", "host", "nonsense"]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_ne!(error["command"], "audit");
     assert_eq!(error["error"]["origin"], "validation");
@@ -945,7 +945,7 @@ fn runtime_json_errors_and_file_logs_preserve_context_without_raw_arguments() {
     .output()
     .unwrap();
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr)
         .expect("exactly one JSON error, not mixed console logs");
     assert_eq!(error["command"], "code run");
@@ -1022,7 +1022,7 @@ fn dry_run_is_json_and_does_not_dispatch_or_open_a_gateway() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, Vec::<u8>::new());
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["dry_run"], true);
     assert_eq!(value["executed"], false);
@@ -1074,7 +1074,7 @@ fn logs_are_bounded_structured_and_redacted_without_a_journal_dependency() {
     assert_eq!(result["entries"].as_array().unwrap().len(), 1);
     assert!(!String::from_utf8_lossy(&output.stdout).contains("unique-log-secret"));
     assert_eq!(result["filters"]["limit"], 1);
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, Vec::<u8>::new());
 }
 
 #[test]
@@ -1085,7 +1085,7 @@ fn leaf_json_help_includes_the_selected_commands_usage_and_options() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, Vec::<u8>::new());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(document["command"], "labby host service restart");
     assert!(
@@ -1104,14 +1104,17 @@ fn leaf_json_help_includes_the_selected_commands_usage_and_options() {
             .as_str()
             .is_some_and(|s| s.contains("--json"))
     );
-    assert!(document["commands"].as_array().unwrap().is_empty());
+    assert_eq!(
+        document["commands"].as_array().unwrap(),
+        &Vec::<serde_json::Value>::new()
+    );
 }
 
 #[test]
 fn downstream_json_argument_does_not_change_parser_error_format() {
     let output = invoke(&["host", "unknown", "--", "--json"]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     assert!(serde_json::from_slice::<serde_json::Value>(&output.stderr).is_err());
     assert!(String::from_utf8_lossy(&output.stderr).contains("unrecognized subcommand"));
 
@@ -1133,7 +1136,7 @@ fn downstream_color_argument_does_not_override_offline_help_style() {
         !output.stdout.contains(&0x1b),
         "forwarded argument enabled ANSI styling"
     );
-    assert!(output.stderr.is_empty());
+    assert_eq!(output.stderr, Vec::<u8>::new());
 }
 
 #[test]
@@ -1236,7 +1239,7 @@ fn offline_help_and_completion_do_not_write_installation_state() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(!output.stdout.is_empty());
+        assert_ne!(output.stdout, Vec::<u8>::new());
         assert_eq!(
             snapshot_tree(home.path()),
             before,
@@ -1310,7 +1313,7 @@ async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal(
     )
     .await;
     assert_eq!(blocked.status.code(), Some(1));
-    assert!(blocked.stdout.is_empty());
+    assert_eq!(blocked.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&blocked.stderr).unwrap();
     assert_eq!(error["error"]["kind"], "confirmation_required");
     assert_eq!(error["error"]["side_effects"], "none_expected");
@@ -1357,7 +1360,7 @@ fn raw_journal_mode_rejects_json_before_starting_any_external_process() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["kind"], "invalid_param");
     assert!(

@@ -364,7 +364,7 @@ mod tests {
             specs: vec![good_fixture_spec("vendor")],
         };
         let reg = OpenApiRegistry::load(cfg, Duration::from_secs(2)).await;
-        assert!(reg.warnings().is_empty());
+        assert_eq!(reg.warnings(), Vec::<String>::new());
         let op = reg.operation("vendor", "getUser").expect("op present");
         assert_eq!(op.method, reqwest::Method::GET);
         assert_eq!(op.path_template, "/users/{id}");

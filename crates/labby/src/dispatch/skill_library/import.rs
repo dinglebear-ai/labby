@@ -2292,7 +2292,7 @@ pinned_addresses = ["8.8.8.8"]
         .unwrap();
         let imports =
             ImportCoordinator::from_host_config_with_env(&config, root.path(), &|_| None).unwrap();
-        assert!(imports.depot_connection_ids().is_empty());
+        assert_eq!(imports.depot_connection_ids(), Vec::<String>::new());
         for id in ["ungranted-pin", "plain-http"] {
             assert!(
                 !root.path().join(id).exists(),

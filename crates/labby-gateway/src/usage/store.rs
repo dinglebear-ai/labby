@@ -2431,7 +2431,10 @@ mod tests {
             .list_calls_with_ingestion_watermark(head())
             .await
             .unwrap();
-        assert!(rows.is_empty());
+        assert_eq!(
+            rows,
+            Vec::<crate::usage::query::UpstreamCallRecordView>::new()
+        );
         assert_eq!(total, None);
         assert_eq!(cursor, None);
         assert_eq!(marker, Some(None));

@@ -67,7 +67,7 @@ async fn retrieval_after_internal_ceiling_rejects_every_promise_with_a_budget_er
     let DriveOutcome::Completed(response) = outcome else {
         panic!("every internal promise must settle")
     };
-    assert!(response.calls.is_empty());
+    assert_eq!(response.calls, Vec::<CodeModeExecutedCall>::new());
     let replies = replies(capture.path());
     assert_eq!(replies.len(), requests.len());
     for (index, reply) in replies.iter().enumerate().skip(MAX_INTERNAL_CALLS_PER_RUN) {
@@ -230,7 +230,7 @@ async fn non_admin_writable_runner_cannot_publish_metadata_path_aliases() {
         panic!("reserved-path errors must be catchable")
     };
     assert_eq!(response.calls.len(), aliases.len());
-    assert!(response.artifacts.is_empty());
+    assert_eq!(response.artifacts, Vec::<CodeModeArtifactReceipt>::new());
     assert!(
         !root.exists(),
         "all aliases reject before mkdir/admission/publication"

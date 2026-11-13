@@ -1252,7 +1252,7 @@ mod tests {
             serde_json::from_slice(&body).unwrap();
         assert_eq!(lease.resource, "https://proxy.example:53147/mcp");
         assert_eq!(lease.scopes, vec!["mcp:read"]);
-        assert!(!lease.id.is_empty());
+        assert_ne!(lease.id, "");
     }
 
     /// T5 (MCP surface): every gateway action that has requires_admin=true is
@@ -1601,7 +1601,7 @@ mod tests {
         assert_eq!(payload.as_array().expect("array").len(), 0);
 
         let migrated = load_gateway_config(&path).expect("load migrated config");
-        assert!(migrated.virtual_servers.is_empty());
+        assert_eq!(migrated.virtual_servers, Vec::<VirtualServerConfig>::new());
         assert_eq!(migrated.quarantined_virtual_servers.len(), 1);
         assert_eq!(migrated.quarantined_virtual_servers[0].id, "stale-service");
     }

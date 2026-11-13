@@ -400,6 +400,16 @@ Upstream transport error:
     }
 }
 
+impl From<ToolError> for Box<CodeModeCallError> {
+    /// `?` applies exactly one [`From`] conversion, so a function returning
+    /// `Result<_, Box<CodeModeCallError>>` cannot reach the impl below via
+    /// `Box`'s blanket conversion. Callers that box this error to keep it out
+    /// of a large `Result` (see `clippy::result_large_err`) need this directly.
+    fn from(error: ToolError) -> Self {
+        Self::new(CodeModeCallError::from(error))
+    }
+}
+
 impl From<ToolError> for CodeModeCallError {
     /// A [`ToolError::Contract`] (from [`CodeModeCallError::into_contract_tool_error`])
     /// round-trips losslessly: its refined `origin`/`recovery`/`side_effects`

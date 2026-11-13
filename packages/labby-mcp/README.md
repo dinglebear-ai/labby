@@ -233,7 +233,7 @@ Use `labby host update --automatic --dry-run` to check without installing.
 
 Prerequisites:
 
-- Rust 1.97.1 or newer. CI/release verifies with Rust 1.97.1.
+- Rust 1.99.1 or newer. CI/release verifies with Rust 1.99.1.
 - `just` for repo commands.
 - `cargo-nextest` for the main test suite.
 - Node.js 22.x and `pnpm 9.15.9` to build the Labby web UI. The repo pins these in

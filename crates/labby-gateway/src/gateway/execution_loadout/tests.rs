@@ -266,7 +266,10 @@ async fn mixed_family_activation_is_atomic_and_cross_principal_access_is_private
         manager.execution_loadout_get(&other, "mixed").await,
         Err(ExecutionLoadoutError::NotFound { .. })
     ));
-    assert!(manager.execution_loadout_list(&other).await.is_empty());
+    assert_eq!(
+        manager.execution_loadout_list(&other).await,
+        Vec::<ExecutionLoadoutSummary>::new()
+    );
 }
 
 #[tokio::test]
@@ -398,7 +401,7 @@ async fn activation_creates_immutable_revision_and_rollback_revises_draft() {
         .execution_loadout_rollback(&caller, "lifecycle", revised.draft_revision, 1)
         .await
         .expect("rollback from immutable revision");
-    assert!(rolled_back.members.is_empty());
+    assert_eq!(rolled_back.members, Vec::<CapabilityRef>::new());
     assert_eq!(rolled_back.draft_revision, 3);
 }
 
@@ -657,13 +660,13 @@ async fn revocation_publication_waits_for_the_durable_activation_commit() {
     resume.wait();
     assert_eq!(activating.await.unwrap().unwrap().revision.revision, 1);
     revoking.await.unwrap().unwrap();
-    assert!(
+    assert_eq!(
         manager
             .execution_loadout_preview(&caller(), "publication-race", "runtime")
             .await
             .unwrap()
-            .effective
-            .is_empty()
+            .effective,
+        Vec::<CapabilityRef>::new()
     );
 }
 

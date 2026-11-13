@@ -1055,7 +1055,7 @@ mod tests {
             Some("replacement")
         );
         std::fs::remove_file(&path).unwrap();
-        assert!(store.list_records().unwrap().is_empty());
+        assert_eq!(store.list_records().unwrap(), Vec::<ArtifactRecord>::new());
     }
 
     #[test]

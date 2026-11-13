@@ -49,7 +49,7 @@ struct CodeModeWarmUpAdmission(Arc<AtomicUsize>);
 impl CodeModeWarmUpAdmission {
     fn try_acquire(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
         active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < limit).then_some(current + 1)
             })
             .ok()

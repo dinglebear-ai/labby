@@ -53,10 +53,10 @@ fn bytes(input: &[u8]) -> [u8; 32] {
         0x1f83d9ab,
         0x5be0cd19,
     ];
-    for chunk in data.chunks_exact(64) {
+    for chunk in data.as_chunks::<64>().0 {
         let mut w = [0u32; 64];
-        for (i, c) in chunk.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes(c.try_into().unwrap());
+        for (i, c) in chunk.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*c);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
@@ -92,7 +92,7 @@ fn bytes(input: &[u8]) -> [u8; 32] {
         }
     }
     let mut out = [0u8; 32];
-    for (c, v) in out.chunks_exact_mut(4).zip(h) {
+    for (c, v) in out.as_chunks_mut::<4>().0.iter_mut().zip(h) {
         c.copy_from_slice(&v.to_be_bytes());
     }
     out

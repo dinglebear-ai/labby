@@ -850,7 +850,7 @@ mod tests {
                 .map(|handle| handle.join().unwrap())
                 .collect::<Vec<_>>()
         });
-        assert!(!identities[0].is_empty());
+        assert_ne!(identities[0], "");
         assert!(identities.iter().all(|identity| identity == &identities[0]));
         assert_eq!(installation_id(&paths).unwrap(), identities[0]);
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
@@ -989,7 +989,7 @@ mod tests {
         let policy = bootstrap_http_client().expect("client policy");
         // Debug output is stable enough to prove construction succeeds, while
         // the two-server async test below proves the no-forward behavior.
-        assert!(!format!("{policy:?}").is_empty());
+        assert_ne!(format!("{policy:?}"), "");
     }
 
     #[tokio::test]

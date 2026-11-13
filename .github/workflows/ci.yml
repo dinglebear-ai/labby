@@ -574,7 +574,7 @@ jobs:
       - name: Install Rust toolchain with rustfmt
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
-          toolchain: "1.97.1"
+          toolchain: "1.99.1"
           components: rustfmt
       - run: cargo fmt --all -- --check
 
@@ -624,7 +624,7 @@ jobs:
         run: python scripts/ci/js_advisory_gate.py
 
   # The former `check` job (cargo check --workspace --all-features --locked)
-  # was strictly subsumed by `msrv`: the toolchain pin (1.97.1) IS the MSRV,
+  # was strictly subsumed by `msrv`: the toolchain pin (1.99.1) IS the MSRV,
   # and msrv additionally checks --all-targets.
   msrv:
     name: MSRV
@@ -644,16 +644,16 @@ jobs:
       - name: Install minimum supported Rust
         uses: ./.github/actions/setup-rust-kache
         with:
-          toolchain: "1.97.1"
+          toolchain: "1.99.1"
       - name: Warm gateway MSRV test target
         # The workspace all-target pass can otherwise compile the large
         # labby-gateway lib-test target alongside Labby's targets and cross
         # the shared runner memory ceiling. Keep the required command below
         # unchanged; this pass only makes its largest test target reusable.
         run: >-
-          cargo +1.97.1 check -p labby-gateway --all-features
+          cargo +1.99.1 check -p labby-gateway --all-features
           --all-targets --locked
-      - run: cargo +1.97.1 check --workspace --all-features --all-targets --locked
+      - run: cargo +1.99.1 check --workspace --all-features --all-targets --locked
 
   codemode-runner-smoke:
     name: Code Mode runner smoke

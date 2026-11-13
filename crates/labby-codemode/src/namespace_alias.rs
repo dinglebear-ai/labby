@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn oversized_names_skip_suggestions_and_are_bounded_for_display() {
         let huge = "x".repeat(1_000_000);
-        assert!(similar_namespaces(&huge, ["xxx"]).is_empty());
+        assert_eq!(similar_namespaces(&huge, ["xxx"]), Vec::<&str>::new());
         let shown = display_name(&huge);
         assert!(shown.len() <= MAX_NAME_BYTES + '…'.len_utf8());
         assert!(shown.ends_with('…'));

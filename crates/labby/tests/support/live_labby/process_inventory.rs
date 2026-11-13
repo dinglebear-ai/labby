@@ -150,10 +150,9 @@ mod tests {
     #[test]
     fn inventory_native_probe_is_bounded_and_parseable() {
         let text = read(Instant::now() + Duration::from_secs(1)).unwrap();
-        assert!(
-            parse_process_group_inventory(i32::MAX, &text)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            parse_process_group_inventory(i32::MAX, &text).unwrap(),
+            Vec::<u32>::new()
         );
         let started = Instant::now();
         let mut sleeper = Command::new("/bin/sleep");

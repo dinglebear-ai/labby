@@ -1261,10 +1261,10 @@ mod tests {
     #[test]
     fn classified_mcp_error_surfaces_structured_kind_not_upstream_error() {
         let error = CapabilityCallError::Mcp {
-            data: rmcp::model::ErrorData::invalid_params(
+            data: Box::new(rmcp::model::ErrorData::invalid_params(
                 "unknown field `since`, expected project, tool, limit",
                 None,
-            ),
+            )),
             message: "upstream call failed: unknown field `since`".to_string(),
         };
 

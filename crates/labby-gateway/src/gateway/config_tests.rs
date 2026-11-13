@@ -959,7 +959,7 @@ fn tombstone_removed_import_records_imported_gateway_deletion() {
     let tombstone = &cfg.upstream_import_tombstones[0];
     assert_eq!(tombstone.name, "b");
     assert_eq!(tombstone.imported_from, sample_import_source());
-    assert!(!tombstone.removed_at.is_empty());
+    assert_ne!(tombstone.removed_at, "");
 }
 
 #[test]
@@ -969,7 +969,10 @@ fn tombstone_removed_import_ignores_manual_gateway_deletion() {
     let removed = remove_upstream(&mut cfg, "b").expect("remove");
     tombstone_removed_import(&mut cfg, &removed);
 
-    assert!(cfg.upstream_import_tombstones.is_empty());
+    assert_eq!(
+        cfg.upstream_import_tombstones,
+        Vec::<UpstreamImportTombstone>::new()
+    );
 }
 
 #[test]
