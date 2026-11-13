@@ -40,9 +40,9 @@ if [ "${TEST_SYMLINK:-}" = yes ]; then ln -s /etc/passwd node_modules/fixture/un
         self.env = {**os.environ, 'PATH': str(self.bin) + os.pathsep + os.environ['PATH']}
         self.version = json.loads((REPO / 'packages/labby-microsandbox/package.json').read_text())['version']
 
-    def stage(self):
+    def stage(self, version=None):
         return subprocess.run(['bash', str(REPO / 'scripts/package-tailcat-release.sh'),
-                               str(self.root / 'dist'), self.version,
+                               str(self.root / 'dist'), version or self.version,
                                'aarch64-apple-darwin', str(self.build)],
                               env=self.env, capture_output=True, text=True, timeout=20)
 
@@ -91,6 +91,23 @@ if [ "${TEST_SYMLINK:-}" = yes ]; then ln -s /etc/passwd node_modules/fixture/un
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(before, (self.root / 'dist/tailcat/manifest.json').read_bytes())
 
+
+    def test_dev_channel_version_passes_argument_validation(self):
+        # Dev tags are X.Y.Z-dev.N (dev_release_pr.DEV). The stamped adapter
+        # version is checked separately, so a mismatch there -- not the
+        # argument guard -- proves the dev version itself was accepted.
+        result = self.stage('2.7.0-dev.4')
+        self.assertNotIn('invalid release arguments', result.stderr)
+        self.assertIn('adapter release version mismatch', result.stderr)
+
+    def test_malformed_versions_are_still_rejected(self):
+        for version in ('2.7.0-dev', '2.7.0-dev.0', '2.7.0-dev.04',
+                        '2.7.0-rc.1', '2.7.0-dev.1+build', 'v2.7.0', '2.7'):
+            with self.subTest(version=version):
+                result = self.stage(version)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('invalid release arguments', result.stderr)
+                self.assertFalse((self.root / 'dist').exists())
 
 if __name__ == '__main__':
     unittest.main()
