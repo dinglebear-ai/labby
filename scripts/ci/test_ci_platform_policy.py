@@ -87,7 +87,7 @@ class CiPlatformPolicyTests(unittest.TestCase):
         for job in ("rust-coverage", "live-e2e-core"):
             self.assertNotIn(job, yaml.safe_load(self.workflow)["jobs"], f"{job} must run independently of CI")
             self.assertNotIn(job, gate, f"{job} remains advisory")
-        for job in ("test", "feature-slices", "test-fork", "clippy"):
+        for job in ("test", "feature-slices", "clippy"):
             self.assertIn(job, gate)
 
 
@@ -148,7 +148,7 @@ class ProductRoutingTests(unittest.TestCase):
         )
 
     def test_fork_product_routing_has_a_classifier_and_test_lane(self) -> None:
-        for files, expected in [(["crates/labby-gateway/src/gateway/dispatch.rs"], "test-fork"), (["apps/web/app/(admin)/gateway/page.tsx"], "gateway-admin-browser")]:
+        for files, expected in [(["crates/labby-gateway/src/gateway/dispatch.rs"], "test"), (["apps/web/app/(admin)/gateway/page.tsx"], "gateway-admin-browser")]:
             with self.subTest(files=files):
                 context = self.context("pull_request", True, files)
                 self.assertTrue(evaluate_condition(self.jobs["changes"].get("if"), context))
@@ -162,7 +162,7 @@ class ProductRoutingTests(unittest.TestCase):
 
     def test_unrouted_product_skip_is_intentional(self) -> None:
         context = self.context("pull_request", False, ["docs/services/ACCESS.md"])
-        result = self.run_aggregate(context, **{"test-fork": "skipped", "test": "skipped"})
+        result = self.run_aggregate(context, test="skipped")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_identity_reader_changes_collect_the_real_python_suite(self) -> None:

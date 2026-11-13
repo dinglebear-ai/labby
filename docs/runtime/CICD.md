@@ -101,8 +101,9 @@ provisioning.
 `ci.yml` starts with a `changes` job that runs `scripts/ci/changed_paths.py`.
 The classifier runs on every event, including fork pull requests, on
 credentialless hosted workers. Category routing controls compile/test jobs;
-fork Rust changes use the required hosted `test-fork` fallback. `ci-gate`
-requires the classifier to succeed and the routed fork product lane to pass.
+fork and same-repository Rust changes run the same sharded hosted `test`
+matrix. `ci-gate` requires the classifier to succeed and every routed `test`
+shard to pass.
 Independent policy, repository-contract, protected-docs and unconditional
 verification workflows also run.
 That classifier maps the changed file list into stable routing categories:

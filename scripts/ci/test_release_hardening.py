@@ -945,7 +945,6 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn('KACHE_S3_ACCESS_KEY: ""', header)
         self.assertIn('KACHE_S3_SECRET_KEY: ""', header)
         self.assertNotIn("secrets.KACHE_S3_", workflow)
-        self.assertIn("github.event_name != 'pull_request'", workflow)
 
     def test_ci_runs_centralized_lifecycle_static_analysis(self) -> None:
         workflow = self.text(".github/workflows/ci.yml")

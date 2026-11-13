@@ -1083,25 +1083,22 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
     let test_job = workflow
         .split("  test:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  test-fork:").next())
+        .and_then(|section| section.split("\n  release-contract:").next())
         .expect("test job");
-    let test_fork_job = workflow
-        .split("  test-fork:\n")
-        .nth(1)
-        .and_then(|section| section.split("\n  test-windows:").next())
-        .expect("test-fork job");
-    for (name, job) in [("test", test_job), ("test-fork", test_fork_job)] {
-        assert!(
-            job.contains("cargo build -p labby --all-features --lib --bins --locked"),
-            "{name} must warm normal Labby/Gateway targets before nextest fan-out"
-        );
-    }
+    assert!(
+        test_job.contains("cargo build -p labby --all-features --lib --bins --locked"),
+        "test must warm normal Labby/Gateway targets before nextest fan-out"
+    );
+    assert!(
+        !workflow.contains("\n  test-fork:\n"),
+        "fork pull requests must run the sharded test job, not a single unsharded job"
+    );
 
     // Read the job env structurally: the rationale comments below mention
     // CARGO_BUILD_JOBS by name, so a substring check would match the very
     // explanation of why it is absent.
     let parsed = ci_workflow_yaml(&workflow);
-    for job in ["feature-slices", "mcp-regressions", "test", "test-fork"] {
+    for job in ["feature-slices", "mcp-regressions", "test"] {
         let env = &parsed["jobs"][job]["env"];
         // These jobs must NOT pin CARGO_BUILD_JOBS. Cargo forwards it to every
         // build script as NUM_JOBS, and aws-lc-sys compiles 414 C and 902
@@ -1384,7 +1381,7 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let test_job = text
         .split("  test:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  test-fork:").next())
+        .and_then(|section| section.split("\n  release-contract:").next())
         .expect("test job");
     assert!(
         test_job.contains("scripts/ci/run-test-shard.sh"),
