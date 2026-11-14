@@ -3084,9 +3084,23 @@ mod tests {
         /// When set, every resources/list blocks until a permit is added.
         resource_gate: Option<Arc<tokio::sync::Semaphore>>,
         resource_lists: Arc<std::sync::atomic::AtomicUsize>,
+        resource_reads: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl ServerHandler for ColdResourceServer {
+        async fn read_resource(
+            &self,
+            request: ReadResourceRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ReadResourceResponse, ErrorData> {
+            self.resource_reads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(
+                ReadResourceResult::new(vec![ResourceContents::text("fixture", request.uri)])
+                    .into(),
+            )
+        }
+
         fn get_info(&self) -> ServerConfig {
             ServerConfig::new(
                 ServerCapabilities::builder()
@@ -3477,6 +3491,130 @@ mod tests {
                     .await
                     .is_none()
             );
+        }
+        upstream_task.abort();
+    }
+
+    #[tokio::test]
+    async fn direct_upstream_reads_enforce_route_and_proxy_resources() {
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
+        };
+        use std::sync::atomic::Ordering;
+        let fixture = ColdResourceServer::default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let shared = fixture.clone();
+        let service = StreamableHttpService::new(
+            move || Ok(shared.clone()),
+            Arc::new(NeverSessionManager::default()),
+            StreamableHttpServerConfig::default()
+                .with_allowed_hosts(vec![address.to_string()])
+                .with_json_response(true),
+        );
+        let upstream_task = tokio::spawn(async move {
+            axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
+                .await
+                .unwrap();
+        });
+        for (route, relay_mode) in [
+            (crate::mcp::route_scope::McpRouteScope::Root, None),
+            (
+                crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "qa",
+                    ["qa-vm-service", "not-exposed"],
+                    std::iter::empty::<&str>(),
+                    false,
+                ),
+                None,
+            ),
+            (
+                crate::mcp::route_scope::McpRouteScope::protected_subset(
+                    "qa",
+                    ["qa-vm-service", "not-exposed"],
+                    std::iter::empty::<&str>(),
+                    false,
+                ),
+                Some("pooled"),
+            ),
+        ] {
+            let restricted = !route.is_root();
+            let configs = ["qa-vm-service", "not-exposed", "outside-route"].map(|name| {
+                let mut env = serde_json::Map::new();
+                if let Some(mode) = relay_mode {
+                    env.insert("MCP_UPSTREAM_RELAY_MODE".into(), json!(mode));
+                }
+                serde_json::from_value::<crate::config::UpstreamConfig>(json!({
+                    "name": name, "enabled": true, "url": format!("http://{address}/mcp"),
+                    "proxy_resources": name != "not-exposed",
+                    "expose_resources": ["qa-vm-service://skill"],
+                    "env": env,
+                }))
+                .unwrap()
+            });
+            let pool = Arc::new(UpstreamPool::new());
+            pool.seed_lazy_upstreams(&configs).await;
+            let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+            runtime.swap(Some(Arc::clone(&pool))).await;
+            let manager = Arc::new(
+                crate::dispatch::gateway::config_store::test_gateway_manager(
+                    std::path::PathBuf::from("config.toml"),
+                    runtime,
+                ),
+            );
+            let mut config = crate::config::LabConfig::default();
+            config.code_mode.enabled = true;
+            config.upstream = configs.into();
+            manager
+                .seed_config_unchecked_for_tests(config.to_gateway_config())
+                .await;
+            let mut server = code_mode_server_with_scope(route).await;
+            server.gateway_manager = Some(manager);
+            let (transport, _client) = tokio::io::duplex(64);
+            let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+                server, transport, None,
+            );
+            // Connect the route's resource upstreams so the pooled branch has a
+            // routable peer for the positive control below.
+            running
+                .service()
+                .list_resources_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+                .await
+                .unwrap();
+            let mut denied = vec!["lab://upstream/not-exposed/qa-vm-service://skill"];
+            if restricted {
+                denied.push("lab://upstream/outside-route/qa-vm-service://skill");
+            }
+            for uri in denied {
+                let before = fixture.resource_reads.load(Ordering::SeqCst);
+                let result = running
+                    .service()
+                    .read_resource_impl(
+                        ReadResourceRequestParams::new(uri),
+                        scoped_context(running.peer().clone(), &["lab:read"]),
+                    )
+                    .await;
+                assert!(result.is_err(), "{uri} must be denied ({relay_mode:?})");
+                assert_eq!(
+                    fixture.resource_reads.load(Ordering::SeqCst),
+                    before,
+                    "{uri} must not reach the upstream ({relay_mode:?})"
+                );
+            }
+            // The allowed upstream is still readable, so the denials above are
+            // the gate and not a broken fixture.
+            let before = fixture.resource_reads.load(Ordering::SeqCst);
+            running
+                .service()
+                .read_resource_impl(
+                    ReadResourceRequestParams::new(
+                        "lab://upstream/qa-vm-service/qa-vm-service://skill",
+                    ),
+                    scoped_context(running.peer().clone(), &["lab:read"]),
+                )
+                .await
+                .unwrap_or_else(|error| panic!("allowed read failed ({relay_mode:?}): {error:?}"));
+            assert_eq!(fixture.resource_reads.load(Ordering::SeqCst), before + 1);
         }
         upstream_task.abort();
     }

@@ -1876,6 +1876,13 @@ impl UpstreamPool {
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
         let original_uri = if let Some(uri) = gateway_uri.strip_prefix(&prefix) {
+            // Same gate as the pooled `lab://upstream/` read: a disabled or
+            // tools-only upstream is never read through a relay connection.
+            if !(config.enabled && config.proxy_resources) {
+                return Some(Err(super::CapabilityCallError::Other {
+                    message: format!("resource is not exposed by upstream `{}`", config.name),
+                }));
+            }
             uri.to_string()
         } else if gateway_uri.starts_with("ui://") {
             gateway_uri.clone()
@@ -2986,7 +2993,11 @@ mod tests {
         C: ClientHandler,
     {
         let pool = UpstreamPool::new();
-        let config = super::super::testsupport::test_upstream_config();
+        let config = UpstreamConfig {
+            // Relayed resource reads require a resource-proxying upstream.
+            proxy_resources: true,
+            ..super::super::testsupport::test_upstream_config()
+        };
         pool.register_upstream_config_for_tests(&config);
 
         let (gateway_transport, agent_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
@@ -3861,7 +3872,11 @@ mod tests {
     #[tokio::test]
     async fn upstream_prompt_and_resource_input_required_are_preserved_for_downstream() {
         let pool = UpstreamPool::new();
-        let config = super::super::testsupport::test_upstream_config();
+        let config = UpstreamConfig {
+            // Relayed resource reads require a resource-proxying upstream.
+            proxy_resources: true,
+            ..super::super::testsupport::test_upstream_config()
+        };
         pool.register_upstream_config_for_tests(&config);
         let capabilities = relay_test_capabilities();
         let session_id = 41;
@@ -4397,7 +4412,11 @@ mod tests {
                 .await
                 .expect("usage store opens"),
         );
-        let config = super::super::testsupport::test_upstream_config();
+        let config = UpstreamConfig {
+            // Relayed resource reads require a resource-proxying upstream.
+            proxy_resources: true,
+            ..super::super::testsupport::test_upstream_config()
+        };
         let downstream = relay_test_downstream().await;
 
         let capabilities = [
