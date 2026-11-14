@@ -27,6 +27,7 @@
 //! reported through `truncated`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmcp::RoleClient;
@@ -127,7 +128,10 @@ pub(super) struct UpstreamSkills {
     /// must not present an owner as unambiguous when a later entry on an
     /// already-received page claims the same resource.
     pub(super) ambiguous_resource_uris: BTreeSet<String>,
-    pub(super) observed_resource_owners: BTreeMap<String, (String, Option<(String, u64)>)>,
+    /// Walk-scoped scratch: first owner and binding seen for each claim.
+    /// Owners are shared, not cloned per claim, so memory stays proportional
+    /// to page bytes; the map is cleared before the snapshot is returned.
+    pub(super) observed_resource_owners: BTreeMap<String, (Arc<str>, Option<(String, u64)>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -217,7 +221,14 @@ fn ingest_page(
     // the response byte ceiling already bounds the page, while full manifest
     // validation remains constrained by `max_candidates` below.
     for entry in &entries {
-        let owner = entry.uri.clone();
+        // An entry whose URI or manifest exceeds the per-skill limits is
+        // rejected by validation below, so it can never own a resource. Skip
+        // it here, before its claims are walked: otherwise one page could pair
+        // a multi-MiB owner URI with every one of thousands of claims.
+        if !within_ownership_scan_limits(entry) {
+            continue;
+        }
+        let owner: Arc<str> = Arc::from(entry.uri.as_str());
         let manifest = entry
             .resources
             .as_ref()
@@ -239,12 +250,15 @@ fn ingest_page(
             {
                 // Nested Skills may publish the same file. Its bytes remain
                 // unambiguous only when every owner's binding is identical.
-                if existing_owner != &owner && (binding.is_none() || *existing_binding != binding) {
+                if !Arc::ptr_eq(existing_owner, &owner)
+                    && existing_owner != &owner
+                    && (binding.is_none() || *existing_binding != binding)
+                {
                     out.ambiguous_resource_uris.insert(claim);
                 }
             } else {
                 out.observed_resource_owners
-                    .insert(claim, (owner.clone(), binding));
+                    .insert(claim, (Arc::clone(&owner), binding));
             }
         }
     }
@@ -282,6 +296,22 @@ fn ingest_page(
         }
     }
     None
+}
+
+/// Whether `entry` is small enough to take part in the ownership pre-scan.
+///
+/// Mirrors the validation limits that would reject it anyway. A URI longer
+/// than four bytes per allowed character cannot fit, so it is rejected on byte
+/// length before any character walk.
+fn within_ownership_scan_limits(entry: &SkillEntry) -> bool {
+    let uri_ok = entry.uri.len() <= limits::MAX_URI_CHARS
+        || (entry.uri.len() <= limits::MAX_URI_CHARS.saturating_mul(4)
+            && entry.uri.chars().count() <= limits::MAX_URI_CHARS);
+    let resources_ok = entry
+        .resources
+        .as_ref()
+        .is_none_or(|resources| resources.len() <= limits::MAX_RESOURCES_PER_SKILL);
+    uri_ok && resources_ok
 }
 
 impl UpstreamPool {
@@ -577,6 +607,9 @@ impl UpstreamPool {
         if unclassified_page && out.cache_scope.as_deref() == Some(CACHE_SCOPE_PUBLIC) {
             out.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_owned());
         }
+        // Only `ambiguous_resource_uris` outlives the walk; do not cache the
+        // per-claim scratch map with the snapshot.
+        out.observed_resource_owners = BTreeMap::new();
         Ok(out)
     }
 
@@ -633,3 +666,7 @@ impl UpstreamPool {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "skills_list_ingest_tests.rs"]
+mod ingest_tests;
