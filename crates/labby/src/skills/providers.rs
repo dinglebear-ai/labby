@@ -184,16 +184,35 @@ impl FirstPartySkillProviders {
         &self,
         local_skills: impl IntoIterator<Item = (local::LocalSkill, ArtifactSkillAccess)>,
     ) -> Self {
+        // Artifact manifest URIs are minted from the skill name alone, so two
+        // owners' records can claim the same URI. Pairing one record's access
+        // policy with another record's bytes would let a caller authorized for
+        // one owner read the other's content. Exclude every claimant of a
+        // shared URI and record a collision for each, so the registry's
+        // `active_skill_collision` guard refuses the projection.
+        let candidates = local_skills.into_iter().collect::<Vec<_>>();
+        let mut claimants = BTreeMap::<String, usize>::new();
+        for (skill, _) in &candidates {
+            *claimants.entry(skill.entry.uri.clone()).or_default() += 1;
+        }
         let mut access_by_manifest = BTreeMap::new();
-        let locals = local_skills
-            .into_iter()
-            .map(|(skill, access)| {
-                access_by_manifest
-                    .entry(skill.entry.uri.clone())
-                    .or_insert(access);
-                skill
-            })
-            .collect::<Vec<_>>();
+        let mut duplicate_rejections = Vec::new();
+        let mut locals = Vec::with_capacity(candidates.len());
+        for (skill, access) in candidates {
+            if claimants.get(&skill.entry.uri).copied().unwrap_or_default() > 1 {
+                tracing::warn!(
+                    skill = %skill.entry.uri,
+                    "excluding Artifact skills from different records that share one manifest URI"
+                );
+                duplicate_rejections.push(CollisionRejection {
+                    skill: skill.entry.uri.clone(),
+                    kind: CollisionKind::ManifestUri,
+                });
+                continue;
+            }
+            access_by_manifest.insert(skill.entry.uri.clone(), access);
+            locals.push(skill);
+        }
         let artifact = SnapshotSkillProvider::operator_local_from(locals);
         let legacy = SnapshotSkillProvider {
             id: self.operator_local.id.clone(),
@@ -209,6 +228,7 @@ impl FirstPartySkillProviders {
             merge_bundled_first(self.bundled.entries(), legacy.entries());
         let (merged, artifact_rejections) = merge_bundled_first(legacy_merged, artifact.entries());
         collision_rejections.extend(artifact_rejections);
+        collision_rejections.extend(duplicate_rejections);
 
         let accepted_artifacts = merged
             .iter()
@@ -808,6 +828,50 @@ mod tests {
                 .is_none()
         );
         assert!(providers.collision_rejections().is_empty());
+    }
+
+    #[test]
+    fn same_named_artifact_skills_from_different_owners_collide_instead_of_merging() {
+        let manifest = "skill://labby/notes/SKILL.md";
+        let record = |description: &str, actor: &str, visibility: SkillVisibility| {
+            let body = format!("---\nname: notes\ndescription: {description}\n---\n");
+            let local = local::LocalSkill {
+                entry: SkillEntry {
+                    uri: manifest.to_owned(),
+                    frontmatter: labby_runtime::skills::parse_skill_md_frontmatter(&body).unwrap(),
+                    resources: Some(vec![SkillResource {
+                        uri: manifest.to_owned(),
+                        digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes())
+                            .to_wire(),
+                        size: body.len() as u64,
+                    }]),
+                    meta: None,
+                },
+                files: BTreeMap::from([(manifest.to_owned(), body)]),
+            };
+            let access = ArtifactSkillAccess {
+                ownership: LibraryOwnership::canonical(
+                    LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+                    LibraryActorId::from_canonical_projection(actor).unwrap(),
+                ),
+                visibility,
+            };
+            (local, access)
+        };
+        // Both input orders: neither record's access may gate the other's bytes.
+        for swap in [false, true] {
+            let mut records = vec![
+                record("shared victim", "victim", SkillVisibility::Tenant),
+                record("private attacker", "attacker", SkillVisibility::Private),
+            ];
+            if swap {
+                records.reverse();
+            }
+            let providers = FirstPartySkillProviders::from_artifact_skills(records);
+            assert_eq!(providers.collision_rejections().len(), 2);
+            assert!(providers.artifact_access(manifest).is_none());
+            assert!(providers.find(manifest).is_none());
+        }
     }
 
     #[test]
