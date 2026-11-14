@@ -220,12 +220,15 @@ impl LabMcpServer {
         #[cfg(feature = "gateway")]
         let auth = auth_context_from_extensions(&context.extensions);
         #[cfg(feature = "gateway")]
-        let (code_mode_app_enabled, mcp_apps_config) =
-            crate::mcp::peer_contract::mcp_app_visibility_snapshot(
-                self.gateway_manager.as_deref(),
-                &self.code_mode_app_state,
-            )
-            .await;
+        let crate::mcp::peer_contract::McpSurfaceVisibility {
+            code_mode_app_enabled,
+            code_mode_read_tool_enabled,
+            mcp_apps: mcp_apps_config,
+        } = crate::mcp::peer_contract::mcp_app_visibility_snapshot(
+            self.gateway_manager.as_deref(),
+            &self.code_mode_app_state,
+        )
+        .await;
         let server_logs_app_visible = {
             #[cfg(feature = "gateway")]
             {
@@ -350,12 +353,7 @@ impl LabMcpServer {
                     matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)),
                     peer_contract.code_mode_upstreams_for_description().await,
                 );
-            if code_mode_read_scope_allowed(auth)
-                && crate::mcp::peer_contract::code_mode_read_tool_enabled(
-                    self.gateway_manager.as_deref(),
-                )
-                .await
-            {
+            if code_mode_read_scope_allowed(auth) && code_mode_read_tool_enabled {
                 descriptors.push(
                     self.registry
                         .permanent_tools()

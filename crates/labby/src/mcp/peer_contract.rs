@@ -134,32 +134,38 @@ pub(crate) async fn mcp_apps_config(
     }
 }
 
-/// Whether the read-only `codemode_read` entry point is advertised and callable.
-///
-/// Manager-less in-process servers keep the default (enabled) surface.
+/// Gateway-wide visibility of Labby-owned surfaces, read from one config version.
 #[cfg(feature = "gateway")]
-pub(crate) async fn code_mode_read_tool_enabled(gateway_manager: Option<&GatewayManager>) -> bool {
-    match gateway_manager {
-        Some(manager) => manager.code_mode_config().await.read_tool_enabled,
-        None => true,
-    }
+pub(crate) struct McpSurfaceVisibility {
+    /// `codemode_ui` and the Code Mode inspector resources.
+    pub(crate) code_mode_app_enabled: bool,
+    /// The read-only `codemode_read` entry point.
+    pub(crate) code_mode_read_tool_enabled: bool,
+    pub(crate) mcp_apps: labby_runtime::gateway_config::McpAppsConfig,
 }
 
-/// Capture one coherent Labby-owned MCP App visibility snapshot for catalog building.
+/// Capture one coherent Labby-owned surface visibility snapshot for catalog building.
+///
+/// Manager-less in-process servers keep `codemode_read` enabled.
 #[cfg(feature = "gateway")]
 pub(crate) async fn mcp_app_visibility_snapshot(
     gateway_manager: Option<&GatewayManager>,
     fallback_code_mode_app_state: &CodeModeAppState,
-) -> (bool, labby_runtime::gateway_config::McpAppsConfig) {
+) -> McpSurfaceVisibility {
     match gateway_manager {
         Some(manager) => {
             let config = manager.current_config().await;
-            (config.code_mode.mcp_ui_enabled, config.mcp_apps)
+            McpSurfaceVisibility {
+                code_mode_app_enabled: config.code_mode.mcp_ui_enabled,
+                code_mode_read_tool_enabled: config.code_mode.read_tool_enabled,
+                mcp_apps: config.mcp_apps,
+            }
         }
-        None => (
-            fallback_code_mode_app_state.is_enabled(),
-            labby_runtime::gateway_config::McpAppsConfig::default(),
-        ),
+        None => McpSurfaceVisibility {
+            code_mode_app_enabled: fallback_code_mode_app_state.is_enabled(),
+            code_mode_read_tool_enabled: true,
+            mcp_apps: labby_runtime::gateway_config::McpAppsConfig::default(),
+        },
     }
 }
 
@@ -558,9 +564,12 @@ impl PeerContract {
         let visibility = self.code_mode_visibility().await;
         let hide_raw_tools = visibility.hides_raw_tools();
         #[cfg(feature = "gateway")]
-        let (code_mode_app_enabled, mcp_apps_config) =
-            mcp_app_visibility_snapshot(self.gateway_manager.as_deref(), &self.code_mode_app_state)
-                .await;
+        let McpSurfaceVisibility {
+            code_mode_app_enabled,
+            code_mode_read_tool_enabled,
+            mcp_apps: mcp_apps_config,
+        } = mcp_app_visibility_snapshot(self.gateway_manager.as_deref(), &self.code_mode_app_state)
+            .await;
         #[cfg(feature = "gateway")]
         if !hide_raw_tools {
             self.ensure_protected_subset_tools().await;
@@ -683,9 +692,7 @@ impl PeerContract {
                 matches!(project_shadow, ProjectDiscoveryShadow::Bound(_)),
                 self.code_mode_upstreams_for_description().await,
             );
-            if self.audience.code_mode_read_allowed
-                && code_mode_read_tool_enabled(self.gateway_manager.as_deref()).await
-            {
+            if self.audience.code_mode_read_allowed && code_mode_read_tool_enabled {
                 let tool = self
                     .registry
                     .permanent_tools()

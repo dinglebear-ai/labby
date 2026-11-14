@@ -389,6 +389,28 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
+    /// `self` with `other`'s advertised-surface fields: which Code Mode entry
+    /// points Labby lists (`mcp_ui_enabled`, `read_tool_enabled`). These are
+    /// transport metadata; they never change how Code Mode executes.
+    fn with_advertised_surface_of(&self, other: &Self) -> Self {
+        Self {
+            mcp_ui_enabled: other.mcp_ui_enabled,
+            read_tool_enabled: other.read_tool_enabled,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the advertised Code Mode entry points differ.
+    pub fn advertised_surface_differs(&self, other: &Self) -> bool {
+        self.with_advertised_surface_of(other) != *self
+    }
+
+    /// Whether anything other than the advertised surface differs, i.e. whether
+    /// the execution runtime (and so the upstream pool) must be rebuilt.
+    pub fn execution_differs(&self, other: &Self) -> bool {
+        self.with_advertised_surface_of(other) != *other
+    }
+
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Matches upstream_request_timeout_ms (1..=300_000). A Code Mode run
@@ -2961,6 +2983,30 @@ strategy = "dynamic"
         assert!(cfg.enabled, "disabling codemode_read leaves codemode on");
         let round_tripped = serde_json::to_value(&cfg).unwrap();
         assert_eq!(round_tripped["read_tool_enabled"], false);
+    }
+
+    #[test]
+    fn advertised_surface_toggles_are_not_execution_changes() {
+        let base = CodeModeConfig::default();
+        for toggled in [
+            CodeModeConfig {
+                read_tool_enabled: false,
+                ..base.clone()
+            },
+            CodeModeConfig {
+                mcp_ui_enabled: !base.mcp_ui_enabled,
+                ..base.clone()
+            },
+        ] {
+            assert!(base.advertised_surface_differs(&toggled));
+            assert!(!base.execution_differs(&toggled));
+        }
+        let slower = CodeModeConfig {
+            timeout_ms: base.timeout_ms + 1,
+            ..base.clone()
+        };
+        assert!(base.execution_differs(&slower));
+        assert!(!base.advertised_surface_differs(&slower));
     }
 
     #[test]

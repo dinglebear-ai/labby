@@ -41,14 +41,7 @@ pub(super) fn run_gateway_code(
                 crate::output::print(&response, format)?;
             }
             GatewayCodeCommand::Status => {
-                let value = dispatch_gateway_action(
-                    manager,
-                    config,
-                    "gateway.code_mode.get".to_string(),
-                    json!({}),
-                )
-                .await?;
-                crate::output::print(&value, format)?;
+                print_code_mode_toggle(manager, config, None, format).await?;
             }
             GatewayCodeCommand::SearchConfig { command } => {
                 let (action, params) = match command {
@@ -91,24 +84,12 @@ pub(super) fn run_gateway_code(
                 crate::output::print(&value["search"], format)?;
             }
             GatewayCodeCommand::Enable => {
-                let value = dispatch_gateway_action(
-                    manager,
-                    config,
-                    "gateway.code_mode.set".to_string(),
-                    json!({ "enabled": true }),
-                )
-                .await?;
-                crate::output::print(&value, format)?;
+                let params = Some(json!({ "enabled": true }));
+                print_code_mode_toggle(manager, config, params, format).await?;
             }
             GatewayCodeCommand::Disable => {
-                let value = dispatch_gateway_action(
-                    manager,
-                    config,
-                    "gateway.code_mode.set".to_string(),
-                    json!({ "enabled": false }),
-                )
-                .await?;
-                crate::output::print(&value, format)?;
+                let params = Some(json!({ "enabled": false }));
+                print_code_mode_toggle(manager, config, params, format).await?;
             }
             GatewayCodeCommand::Ui { command } => {
                 let params = match command {

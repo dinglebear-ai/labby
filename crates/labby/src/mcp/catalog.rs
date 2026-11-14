@@ -308,8 +308,10 @@ impl LabMcpServer {
     /// Whether the operator left the read-only `codemode_read` entry point on.
     #[cfg(feature = "gateway")]
     pub(crate) async fn code_mode_read_tool_enabled_on_mcp(&self) -> bool {
-        crate::mcp::peer_contract::code_mode_read_tool_enabled(self.gateway_manager.as_deref())
-            .await
+        match self.gateway_manager.as_ref() {
+            Some(manager) => manager.code_mode_read_tool_enabled().await,
+            None => true,
+        }
     }
 
     pub(crate) async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {

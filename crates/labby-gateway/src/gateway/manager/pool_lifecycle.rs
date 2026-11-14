@@ -385,9 +385,9 @@ impl GatewayManager {
                 current.code_mode.mcp_ui_enabled,
                 code_mode_namespace_tokens(&current),
                 current.code_mode.enabled != runtime_cfg.code_mode.enabled
-                    || current.code_mode.mcp_ui_enabled != runtime_cfg.code_mode.mcp_ui_enabled
-                    || current.code_mode.read_tool_enabled
-                        != runtime_cfg.code_mode.read_tool_enabled
+                    || current
+                        .code_mode
+                        .advertised_surface_differs(&runtime_cfg.code_mode)
                     || current.mcp_apps != runtime_cfg.mcp_apps
                     || current.virtual_servers != runtime_cfg.virtual_servers
                     || current.protected_mcp_routes != runtime_cfg.protected_mcp_routes,
