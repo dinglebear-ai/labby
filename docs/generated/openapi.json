@@ -9052,6 +9052,9 @@
           "mcp_ui_enabled": {
             "type": "boolean"
           },
+          "read_tool_enabled": {
+            "type": "boolean"
+          },
           "result_shape_policy": {
             "type": "string"
           },

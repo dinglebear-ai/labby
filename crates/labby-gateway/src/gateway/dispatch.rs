@@ -676,6 +676,9 @@ async fn handle_tool_actions(
             if let Some(mcp_ui_enabled) = params.mcp_ui_enabled {
                 next.mcp_ui_enabled = mcp_ui_enabled;
             }
+            if let Some(read_tool_enabled) = params.read_tool_enabled {
+                next.read_tool_enabled = read_tool_enabled;
+            }
             if let Some(trace_params) = params.trace_params {
                 next.trace_params = trace_params;
             }

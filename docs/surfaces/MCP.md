@@ -1,7 +1,7 @@
 ---
 title: "MCP Surface"
 created: "2026-07-30"
-updated: "2026-10-03"
+updated: "2026-11-13"
 ---
 
 # MCP Surface
@@ -147,6 +147,8 @@ provides two text entry points:
   annotated read-only and can discover or invoke only upstream tools whose live
   descriptor explicitly sets `readOnlyHint: true` without a contradictory
   `destructiveHint: true`. Missing or ambiguous annotations fail closed.
+  The operator can remove it with `code_mode.read_tool_enabled = false`; a
+  direct call then fails with `unknown_tool`.
 - `codemode` is the full execution surface for `lab` and `lab:admin`. The
   optional `codemode_ui` tool has the same execution authority and adds the
   Lab-owned trace inspector.

@@ -288,6 +288,12 @@ pub struct CodeModeConfig {
     /// The inspector is opt-in on fresh installs, like the other Labby-owned MCP App UIs.
     #[serde(default)]
     pub mcp_ui_enabled: bool,
+    /// Whether the gateway advertises and accepts the `codemode_read` tool.
+    /// When false, `codemode_read` leaves `tools/list` and direct calls fail as
+    /// disabled; callers need `lab` or `lab:admin` to use `codemode`. Disable it
+    /// on a single-operator gateway that never issues `lab:read`-only tokens.
+    #[serde(default = "default_true")]
+    pub read_tool_enabled: bool,
     /// Whether Code Mode call traces include redacted/capped tool params.
     #[serde(default = "default_code_mode_trace_params")]
     pub trace_params: bool,
@@ -360,6 +366,7 @@ impl Default for CodeModeConfig {
             enabled: true,
             trusted_read_only_tools: Vec::new(),
             mcp_ui_enabled: false,
+            read_tool_enabled: true,
             trace_params: default_code_mode_trace_params(),
             result_shape_policy: CodeModeResultShapePolicy::Off,
             timeout_ms: default_code_mode_timeout_ms(),
@@ -382,6 +389,28 @@ impl Default for CodeModeConfig {
 }
 
 impl CodeModeConfig {
+    /// `self` with `other`'s advertised-surface fields: which Code Mode entry
+    /// points Labby lists (`mcp_ui_enabled`, `read_tool_enabled`). These are
+    /// transport metadata; they never change how Code Mode executes.
+    fn with_advertised_surface_of(&self, other: &Self) -> Self {
+        Self {
+            mcp_ui_enabled: other.mcp_ui_enabled,
+            read_tool_enabled: other.read_tool_enabled,
+            ..self.clone()
+        }
+    }
+
+    /// Whether the advertised Code Mode entry points differ.
+    pub fn advertised_surface_differs(&self, other: &Self) -> bool {
+        self.with_advertised_surface_of(other) != *self
+    }
+
+    /// Whether anything other than the advertised surface differs, i.e. whether
+    /// the execution runtime (and so the upstream pool) must be rebuilt.
+    pub fn execution_differs(&self, other: &Self) -> bool {
+        self.with_advertised_surface_of(other) != *other
+    }
+
     /// Validate Code Mode limits and semantic-search settings.
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Matches upstream_request_timeout_ms (1..=300_000). A Code Mode run
@@ -2887,6 +2916,7 @@ strategy = "dynamic"
         assert!(cfg.enabled);
         assert!(cfg.trusted_read_only_tools.is_empty());
         assert!(!cfg.mcp_ui_enabled);
+        assert!(cfg.read_tool_enabled);
         assert!(cfg.trace_params);
         assert_eq!(cfg.timeout_ms, 30_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
@@ -2944,6 +2974,39 @@ strategy = "dynamic"
         .unwrap();
         assert!(cfg.mcp_ui_enabled);
         assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn code_mode_read_tool_can_be_disabled_in_toml() {
+        let cfg: CodeModeConfig = toml::from_str("read_tool_enabled = false\n").unwrap();
+        assert!(!cfg.read_tool_enabled);
+        assert!(cfg.enabled, "disabling codemode_read leaves codemode on");
+        let round_tripped = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(round_tripped["read_tool_enabled"], false);
+    }
+
+    #[test]
+    fn advertised_surface_toggles_are_not_execution_changes() {
+        let base = CodeModeConfig::default();
+        for toggled in [
+            CodeModeConfig {
+                read_tool_enabled: false,
+                ..base.clone()
+            },
+            CodeModeConfig {
+                mcp_ui_enabled: !base.mcp_ui_enabled,
+                ..base.clone()
+            },
+        ] {
+            assert!(base.advertised_surface_differs(&toggled));
+            assert!(!base.execution_differs(&toggled));
+        }
+        let slower = CodeModeConfig {
+            timeout_ms: base.timeout_ms + 1,
+            ..base.clone()
+        };
+        assert!(base.execution_differs(&slower));
+        assert!(!base.advertised_surface_differs(&slower));
     }
 
     #[test]

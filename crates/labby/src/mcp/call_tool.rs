@@ -1552,6 +1552,21 @@ impl LabMcpServer {
                     );
                     return Ok(error_result_from_envelope(envelope).into());
                 }
+                if service == CODE_MODE_READ_TOOL_NAME
+                    && !self.code_mode_read_tool_enabled_on_mcp().await
+                {
+                    let envelope = build_error_extra(
+                        &service,
+                        "call_tool",
+                        "unknown_tool",
+                        "codemode_read is disabled on this gateway; use codemode, which requires lab or lab:admin",
+                        &serde_json::json!({
+                            "text_tool": CODE_MODE_TOOL_NAME,
+                            "setting": "code_mode.read_tool_enabled",
+                        }),
+                    );
+                    return Ok(error_result_from_envelope(envelope).into());
+                }
                 return self
                     .call_tool_codemode_impl(&service, &args, &context)
                     .await

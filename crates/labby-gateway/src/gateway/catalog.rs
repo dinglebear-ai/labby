@@ -382,6 +382,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Whether the gateway advertises codemode_ui and its MCP App resources",
             },
             ParamSpec {
+                name: "read_tool_enabled",
+                ty: "boolean",
+                required: false,
+                description: "Whether the gateway advertises and accepts the read-only codemode_read tool",
+            },
+            ParamSpec {
                 name: "trace_params",
                 ty: "boolean",
                 required: false,
@@ -2038,6 +2044,7 @@ mod tests {
         for param in [
             "enabled",
             "mcp_ui_enabled",
+            "read_tool_enabled",
             "trace_params",
             "result_shape_policy",
             "timeout_ms",
