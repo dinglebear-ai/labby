@@ -779,6 +779,23 @@ impl CatalogState {
         self.prompt_sources.contains_key(upstream)
     }
 
+    /// Whether `upstream` has a settled prompt listing (rows or a recorded
+    /// failure) for `incarnation`, its current connection.
+    pub(super) fn prompt_snapshot_is_current(
+        &self,
+        upstream: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+    ) -> bool {
+        match self.prompt_sources.get(upstream) {
+            Some(PromptSourceState::Ready(source)) => source.incarnation == incarnation,
+            Some(PromptSourceState::Failed {
+                incarnation: listed,
+                ..
+            }) => *listed == incarnation,
+            None => false,
+        }
+    }
+
     pub(super) fn set_prompt_source(
         &mut self,
         upstream: &str,

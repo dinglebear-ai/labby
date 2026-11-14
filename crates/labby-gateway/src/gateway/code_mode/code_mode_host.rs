@@ -247,10 +247,15 @@ impl GatewayManager {
             entries.insert(descriptor.id.clone(), descriptor);
         }
 
-        for prompt in pool.list_upstream_prompts_allowed(&[], allowed).await {
-            let Some((upstream, native_name)) = prompt.name.split_once('/') else {
-                continue;
-            };
+        // Cache-only as well: a live `prompts/list` fan-out here would put the
+        // slowest upstream's prompt listing on every run (and every sandbox
+        // `search()`), and one upstream stalled on `prompts/list` would time out
+        // proxy generation for every run whose scope includes it.
+        pool.ensure_prompt_snapshots_allowed(allowed).await;
+        for cached in pool.cached_upstream_prompts_allowed(allowed).await {
+            let upstream = cached.upstream_name.as_ref();
+            let native_name = cached.native_name.as_ref();
+            let prompt = &cached.prompt;
             let mut tags = prompt
                 .arguments
                 .as_ref()
@@ -258,7 +263,7 @@ impl GatewayManager {
                 .flatten()
                 .map(|argument| format!("arg:{}", argument.name))
                 .collect::<Vec<_>>();
-            tags.push(format!("prompt:{}", prompt.name));
+            tags.push(format!("prompt:{upstream}/{native_name}"));
             let display_name = prompt.title.as_deref().unwrap_or(native_name);
             let descriptor = CatalogDescriptor::metadata(
                 CodeModeCatalogKind::Prompt,

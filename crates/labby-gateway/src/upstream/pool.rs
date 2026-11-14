@@ -87,6 +87,7 @@ mod prompts_exposure;
 mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
+mod prompts_snapshot;
 mod recovery;
 pub use recovery::UpstreamRestart;
 mod registration;
@@ -181,6 +182,7 @@ pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use prompts_get::ExactPromptCallError;
 pub use prompts_list::ListedUpstreamPrompt;
+pub use prompts_snapshot::CachedUpstreamPrompt;
 pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;
@@ -341,6 +343,8 @@ pub struct UpstreamPool {
     /// Per-upstream single-flight gates. Only registry lookup holds this mutex;
     /// disjoint snapshots never queue behind another upstream's network I/O.
     resource_snapshot_warmup: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
+    /// Per-upstream single-flight gates for cold prompt snapshot warm-up.
+    prompt_snapshot_warmup: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
     /// Upstreams already queued for a background subscription reconcile.
     subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
     /// Cancels queued/in-flight subscription reconcile batches during pool drain.
@@ -677,6 +681,7 @@ impl UpstreamPool {
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
             resource_snapshot_warmup: Arc::new(Mutex::new(HashMap::new())),
+            prompt_snapshot_warmup: Arc::new(Mutex::new(HashMap::new())),
             subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
             subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
