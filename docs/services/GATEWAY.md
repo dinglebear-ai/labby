@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-10-01"
+updated: "2026-11-13"
 ---
 
 # Gateway Management
@@ -365,7 +365,7 @@ exposes bounded synthetic Code Mode entry points:
 | Tool | Purpose | Status |
 |------|---------|------|
 | `codemode` | Run one JavaScript async arrow function in the Code Mode sandbox. Use `codemode.search()` and `codemode.describe()` inside the same execution to discover upstream tools, then call them through generated helpers or `callTool(id, params)`. | Primary |
-| `codemode_read` | Run the same payload with enforced read-only admission. It accepts `lab:read`, `lab`, or `lab:admin` and exposes only tools whose live descriptor is explicitly read-only and non-destructive. | Primary |
+| `codemode_read` | Run the same payload with enforced read-only admission. It accepts `lab:read`, `lab`, or `lab:admin` and exposes only tools whose live descriptor is explicitly read-only and non-destructive. Disable it with `read_tool_enabled = false`. | Primary (default on) |
 | `codemode_ui` | Optional MCP App twin of full-authority `codemode`, enabled by `mcp_ui_enabled`. | Optional |
 
 This keeps the MCP catalog small while still allowing clients to reach every exposed upstream tool.
@@ -377,6 +377,7 @@ Configuration lives at root `[code_mode]` in `config.toml`:
 [code_mode]
 enabled = true
 mcp_ui_enabled = false
+read_tool_enabled = true
 trace_params = true
 result_shape_policy = "off"
 timeout_ms = 30000
@@ -391,7 +392,15 @@ sources = ["personal_labby", "team_depot", "public_depot"]
 kinds = ["tool", "skill", "command", "prompt", "subagent", "snippet"]
 ```
 
-Both lists default to all values shown above. An empty list disables that part
+`read_tool_enabled` controls only the `codemode_read` entry point. Set it to
+`false` on a single-operator gateway that never issues `lab:read`-only tokens:
+`codemode_read` then leaves `tools/list`, a direct call fails with
+`unknown_tool`, and the server instructions point agents at `codemode`. A
+`lab:read`-only caller has no Code Mode entry point while it is off. Toggling
+it publishes immediately and sends `notifications/tools/list_changed` without
+rebuilding upstream connections.
+
+Both search lists default to all values shown above. An empty list disables that part
 of search. Public Depot Skills use its indexed search API, so Code Mode does not
 list the entire public catalog to answer a query. Depot artifact queries also
 include Tools and Snippets when a provider advertises those kinds; providers
@@ -407,6 +416,8 @@ CLI:
 labby code status
 labby code enable
 labby code disable
+labby code read disable   # hide codemode_read; codemode stays available
+labby code read enable
 labby code run --code 'async () => (await codemode.search("GitHub issues")).total'
 labby code catalog status
 labby code catalog set --source personal_labby --source team_depot --kind skill --kind command
@@ -589,7 +600,7 @@ Advertised tools per active mode:
 
 | Mode | Advertised MCP tools |
 |------|---------------------|
-| `[code_mode].enabled = true` | `codemode`, `codemode_read`, optional `codemode_ui`; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
+| `[code_mode].enabled = true` | `codemode`, `codemode_read` (unless `read_tool_enabled = false`), optional `codemode_ui`; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
 | Neither | raw Labby service tools + healthy upstream tools; root peers also receive `mcp_app`, plus eligible enabled admin app tools |
 
 Use `codemode` for gateway Code Mode. Discovery happens inside the sandbox with
@@ -606,7 +617,9 @@ Rules:
 - `code_mode.max_log_bytes` is validated in the range `1..=104857600`
 - `codemode` requires a non-empty `code` string
 - `codemode` and `codemode_ui` require `lab` or `lab:admin`; `codemode_read`
-  also accepts `lab:read` and rechecks explicit live read-only annotations
+  also accepts `lab:read` and rechecks explicit live read-only annotations.
+  `code_mode.read_tool_enabled = false` removes `codemode_read` from listing
+  and rejects direct calls
 - only catalog-admitted in-process actions are callable; caller-bound services
   do not gain a context-free execution path through Code Mode
 - gateway action provenance fields (`origin` and `owner`) are reserved in Code Mode and are overwritten by the broker

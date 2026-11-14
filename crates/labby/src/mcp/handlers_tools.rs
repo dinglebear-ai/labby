@@ -350,7 +350,12 @@ impl LabMcpServer {
                     matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)),
                     peer_contract.code_mode_upstreams_for_description().await,
                 );
-            if code_mode_read_scope_allowed(auth) {
+            if code_mode_read_scope_allowed(auth)
+                && crate::mcp::peer_contract::code_mode_read_tool_enabled(
+                    self.gateway_manager.as_deref(),
+                )
+                .await
+            {
                 descriptors.push(
                     self.registry
                         .permanent_tools()

@@ -402,6 +402,11 @@ pub enum GatewayCodeCommand {
         #[command(subcommand)]
         command: GatewayCodeUiCommand,
     },
+    /// Manage the read-only `codemode_read` MCP tool while keeping `codemode` available.
+    Read {
+        #[command(subcommand)]
+        command: GatewayCodeReadCommand,
+    },
     /// Execute a sandboxed JavaScript snippet that calls the typed
     /// `codemode.<upstream>.<tool>` helpers (or `callTool` directly).
     #[command(name = "run")]
@@ -451,6 +456,16 @@ pub enum GatewayCodeUiCommand {
     /// Enable the explicit Code Mode MCP App UI.
     Enable,
     /// Disable the explicit Code Mode MCP App UI without disabling Code Mode.
+    Disable,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GatewayCodeReadCommand {
+    /// Read whether the `codemode_read` MCP tool is enabled.
+    Status,
+    /// Advertise and accept the `codemode_read` MCP tool.
+    Enable,
+    /// Hide and reject the `codemode_read` MCP tool without disabling Code Mode.
     Disable,
 }
 

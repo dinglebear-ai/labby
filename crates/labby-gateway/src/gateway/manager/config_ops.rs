@@ -591,8 +591,12 @@ impl GatewayManager {
         }
 
         let mcp_ui_changed = old_mcp_ui_enabled != next.mcp_ui_enabled;
+        let read_tool_changed = previous.read_tool_enabled != next.read_tool_enabled;
         let mut previous_runtime = previous.clone();
         previous_runtime.mcp_ui_enabled = next.mcp_ui_enabled;
+        // `codemode_read` advertisement is transport metadata like the UI flag:
+        // toggling it must not rebuild the upstream pool.
+        previous_runtime.read_tool_enabled = next.read_tool_enabled;
         let execution_runtime_changed = previous_runtime != next;
         cfg.code_mode = next.clone();
 
@@ -608,7 +612,7 @@ impl GatewayManager {
         }
 
         self.code_mode_app_state.set_enabled(next.mcp_ui_enabled);
-        if mcp_ui_changed {
+        if mcp_ui_changed || read_tool_changed {
             let notification_source = if origin == Some(SOURCE_MCP_CALL_MCP_APP) {
                 SOURCE_MCP_CALL_MCP_APP
             } else {
@@ -617,7 +621,7 @@ impl GatewayManager {
             self.notify_catalog_changes(
                 &GatewayCatalogDiff {
                     tools_changed: true,
-                    resources_changed: true,
+                    resources_changed: mcp_ui_changed,
                     prompts_changed: false,
                 },
                 notification_source,
@@ -632,6 +636,7 @@ impl GatewayManager {
             previous = old_enabled,
             mcp_ui_enabled = next.mcp_ui_enabled,
             previous_mcp_ui_enabled = old_mcp_ui_enabled,
+            read_tool_enabled = next.read_tool_enabled,
             execution_runtime_changed,
             timeout_ms = next.timeout_ms,
             max_response_bytes = next.max_response_bytes,

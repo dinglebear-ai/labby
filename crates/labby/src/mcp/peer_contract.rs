@@ -134,6 +134,17 @@ pub(crate) async fn mcp_apps_config(
     }
 }
 
+/// Whether the read-only `codemode_read` entry point is advertised and callable.
+///
+/// Manager-less in-process servers keep the default (enabled) surface.
+#[cfg(feature = "gateway")]
+pub(crate) async fn code_mode_read_tool_enabled(gateway_manager: Option<&GatewayManager>) -> bool {
+    match gateway_manager {
+        Some(manager) => manager.code_mode_config().await.read_tool_enabled,
+        None => true,
+    }
+}
+
 /// Capture one coherent Labby-owned MCP App visibility snapshot for catalog building.
 #[cfg(feature = "gateway")]
 pub(crate) async fn mcp_app_visibility_snapshot(
@@ -672,7 +683,9 @@ impl PeerContract {
                 matches!(project_shadow, ProjectDiscoveryShadow::Bound(_)),
                 self.code_mode_upstreams_for_description().await,
             );
-            if self.audience.code_mode_read_allowed {
+            if self.audience.code_mode_read_allowed
+                && code_mode_read_tool_enabled(self.gateway_manager.as_deref()).await
+            {
                 let tool = self
                     .registry
                     .permanent_tools()

@@ -4,8 +4,8 @@ use anyhow::Result;
 use serde_json::json;
 
 use crate::cli::gateway::{
-    GatewayCodeArgs, GatewayCodeCommand, GatewayCodeSearchConfigCommand, GatewayCodeUiCommand,
-    LazyGatewayManager,
+    GatewayCodeArgs, GatewayCodeCommand, GatewayCodeReadCommand, GatewayCodeSearchConfigCommand,
+    GatewayCodeUiCommand, LazyGatewayManager,
 };
 use crate::config::LabConfig;
 use crate::dispatch::gateway::code_mode::{CodeModeBroker, CodeModeCaller, CodeModeSurface};
@@ -116,18 +116,15 @@ pub(super) fn run_gateway_code(
                     GatewayCodeUiCommand::Enable => Some(json!({ "mcp_ui_enabled": true })),
                     GatewayCodeUiCommand::Disable => Some(json!({ "mcp_ui_enabled": false })),
                 };
-                let value = dispatch_gateway_action(
-                    manager,
-                    config,
-                    if params.is_some() {
-                        "gateway.code_mode.set".to_string()
-                    } else {
-                        "gateway.code_mode.get".to_string()
-                    },
-                    params.unwrap_or_else(|| json!({})),
-                )
-                .await?;
-                crate::output::print(&value, format)?;
+                print_code_mode_toggle(manager, config, params, format).await?;
+            }
+            GatewayCodeCommand::Read { command } => {
+                let params = match command {
+                    GatewayCodeReadCommand::Status => None,
+                    GatewayCodeReadCommand::Enable => Some(json!({ "read_tool_enabled": true })),
+                    GatewayCodeReadCommand::Disable => Some(json!({ "read_tool_enabled": false })),
+                };
+                print_code_mode_toggle(manager, config, params, format).await?;
             }
             GatewayCodeCommand::Exec { code, file } => {
                 // The selected daemon owns its configured source limit. The CLI only
@@ -142,6 +139,29 @@ pub(super) fn run_gateway_code(
 
         Ok(ExitCode::SUCCESS)
     })
+}
+
+/// Read Code Mode settings, or patch one toggle and print the resulting config.
+async fn print_code_mode_toggle(
+    manager: &LazyGatewayManager<'_>,
+    config: &LabConfig,
+    params: Option<serde_json::Value>,
+    format: OutputFormat,
+) -> Result<()> {
+    let action = if params.is_some() {
+        "gateway.code_mode.set"
+    } else {
+        "gateway.code_mode.get"
+    };
+    let value = dispatch_gateway_action(
+        manager,
+        config,
+        action.to_string(),
+        params.unwrap_or_else(|| json!({})),
+    )
+    .await?;
+    crate::output::print(&value, format)?;
+    Ok(())
 }
 
 /// Prefer executing against the live daemon's actual `codemode` MCP tool
@@ -306,6 +326,19 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn read_tool_cli_accepts_status_enable_and_disable() {
+        use clap::Parser as _;
+
+        for command in ["status", "enable", "disable"] {
+            assert!(
+                crate::cli::Cli::try_parse_from(["labby", "code", "read", command]).is_ok(),
+                "labby code read {command}"
+            );
+        }
+        assert!(crate::cli::Cli::try_parse_from(["labby", "code", "read", "toggle"]).is_err());
     }
 
     #[test]

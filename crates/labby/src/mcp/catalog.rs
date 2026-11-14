@@ -305,6 +305,13 @@ impl LabMcpServer {
         self.code_mode_app_state.is_enabled()
     }
 
+    /// Whether the operator left the read-only `codemode_read` entry point on.
+    #[cfg(feature = "gateway")]
+    pub(crate) async fn code_mode_read_tool_enabled_on_mcp(&self) -> bool {
+        crate::mcp::peer_contract::code_mode_read_tool_enabled(self.gateway_manager.as_deref())
+            .await
+    }
+
     pub(crate) async fn action_allowed_on_mcp(&self, service: &str, action: &str) -> bool {
         #[cfg(feature = "gateway")]
         {
@@ -477,7 +484,9 @@ impl LabMcpServer {
         let visibility = self.code_mode_visibility().await;
         let mut tools = BTreeSet::new();
         if visibility.exposes_synthetic_tools() {
-            tools.insert(CODE_MODE_READ_TOOL_NAME.to_string());
+            if self.code_mode_read_tool_enabled_on_mcp().await {
+                tools.insert(CODE_MODE_READ_TOOL_NAME.to_string());
+            }
             tools.insert(CODE_MODE_TOOL_NAME.to_string());
             tools.insert(MCP_APP_TOOL_NAME.to_string());
             if self.code_mode_app_enabled_on_mcp().await {

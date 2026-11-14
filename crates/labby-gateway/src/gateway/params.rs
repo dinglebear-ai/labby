@@ -504,6 +504,8 @@ pub(crate) struct CodeModeSetParams {
     #[serde(default)]
     pub mcp_ui_enabled: Option<bool>,
     #[serde(default)]
+    pub read_tool_enabled: Option<bool>,
+    #[serde(default)]
     pub trace_params: Option<bool>,
     #[serde(default)]
     pub result_shape_policy: Option<CodeModeResultShapePolicy>,

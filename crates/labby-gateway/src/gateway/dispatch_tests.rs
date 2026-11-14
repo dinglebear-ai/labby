@@ -1577,6 +1577,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
         json!({
             "enabled": true,
             "mcp_ui_enabled": false,
+            "read_tool_enabled": false,
             "trace_params": false,
             "result_shape_policy": "truncate",
             "timeout_ms": 5000,
@@ -1592,6 +1593,8 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
 
     assert_eq!(value["enabled"], true);
     assert_eq!(value["mcp_ui_enabled"], false);
+    assert_eq!(value["read_tool_enabled"], false);
+    assert!(!manager.code_mode_config().await.read_tool_enabled);
     assert_eq!(value["trace_params"], false);
     assert_eq!(value["result_shape_policy"], "truncate");
     assert_eq!(value["timeout_ms"], 5000);
