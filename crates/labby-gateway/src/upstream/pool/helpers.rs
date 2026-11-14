@@ -484,20 +484,26 @@ pub(super) fn upstream_target_redacted(config: &UpstreamConfig) -> String {
 /// serving what is published. The warm-up keeps running and publishes later.
 pub(super) const COLD_SNAPSHOT_WAIT: Duration = Duration::from_millis(250);
 
-/// Per-upstream single-flight gate for a snapshot warm-up. Only the registry
-/// lookup holds `gates`; disjoint upstreams never queue behind each other.
-pub(super) async fn snapshot_flight(
-    gates: &tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
-    name: &str,
-) -> Arc<tokio::sync::Mutex<()>> {
-    let mut flights = gates.lock().await;
-    flights.retain(|_, value| value.strong_count() > 0);
-    if let Some(flight) = flights.get(name).and_then(std::sync::Weak::upgrade) {
-        return flight;
+/// Per-upstream single-flight gates for a snapshot warm-up. Only the registry
+/// lookup holds the inner lock; disjoint upstreams never queue behind each
+/// other's network I/O.
+#[derive(Default)]
+pub(super) struct SnapshotFlights(
+    tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+);
+
+impl SnapshotFlights {
+    /// The live flight for `name`, created if none is in progress.
+    pub(super) async fn acquire(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut flights = self.0.lock().await;
+        flights.retain(|_, value| value.strong_count() > 0);
+        if let Some(flight) = flights.get(name).and_then(std::sync::Weak::upgrade) {
+            return flight;
+        }
+        let flight = Arc::new(tokio::sync::Mutex::new(()));
+        flights.insert(name.to_string(), Arc::downgrade(&flight));
+        flight
     }
-    let flight = Arc::new(tokio::sync::Mutex::new(()));
-    flights.insert(name.to_string(), Arc::downgrade(&flight));
-    flight
 }
 
 /// Namespace an upstream prompt name with its owning upstream, mirroring how

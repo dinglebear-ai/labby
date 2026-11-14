@@ -339,6 +339,7 @@ fn upstream_classified_error_envelope(
         // classification (including the oauth_needs_reauth refinement).
         CapabilityCallError::Transport { message }
         | CapabilityCallError::Protocol { message }
+        | CapabilityCallError::NotExposed { message }
         | CapabilityCallError::Other { message } => {
             return upstream_transport_error_envelope(service, action, upstream_name, message);
         }

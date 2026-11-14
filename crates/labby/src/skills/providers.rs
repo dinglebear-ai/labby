@@ -140,7 +140,12 @@ pub(crate) struct CollisionRejection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionKind {
+    /// A skill whose manifest URI is already owned earlier in bundled-first
+    /// order (bundled, then legacy operator-local, then Artifact).
     ManifestUri,
+    /// Active Artifact records from different library records (usually
+    /// different owners) that mint the same name-derived manifest URI.
+    ArtifactOwnerConflict,
 }
 
 impl FirstPartySkillProviders {
@@ -191,22 +196,46 @@ impl FirstPartySkillProviders {
         // shared URI and record a collision for each, so the registry's
         // `active_skill_collision` guard refuses the projection.
         let candidates = local_skills.into_iter().collect::<Vec<_>>();
-        let mut claimants = BTreeMap::<String, usize>::new();
-        for (skill, _) in &candidates {
-            *claimants.entry(skill.entry.uri.clone()).or_default() += 1;
+        let mut claimants = BTreeMap::<String, Vec<&ArtifactSkillAccess>>::new();
+        for (skill, access) in &candidates {
+            claimants
+                .entry(skill.entry.uri.clone())
+                .or_default()
+                .push(access);
         }
+        let conflicting = claimants
+            .into_iter()
+            .filter(|(_, owners)| owners.len() > 1)
+            .map(|(uri, owners)| {
+                // Library projection IDs are opaque access-runtime identifiers,
+                // not identity-provider subjects, so they are safe to log and
+                // tell the operator which records to rename or deactivate.
+                let owners = owners
+                    .iter()
+                    .map(|access| {
+                        format!(
+                            "{}/{}",
+                            access.ownership.tenant_id.as_str(),
+                            access.ownership.owner_id.as_str()
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                tracing::warn!(
+                    skill = %uri,
+                    owners = ?owners,
+                    "excluding Artifact skills from different records that share one manifest URI; rename or deactivate all but one"
+                );
+                uri
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let mut access_by_manifest = BTreeMap::new();
         let mut duplicate_rejections = Vec::new();
         let mut locals = Vec::with_capacity(candidates.len());
         for (skill, access) in candidates {
-            if claimants[&skill.entry.uri] > 1 {
-                tracing::warn!(
-                    skill = %skill.entry.uri,
-                    "excluding Artifact skills from different records that share one manifest URI"
-                );
+            if conflicting.contains(&skill.entry.uri) {
                 duplicate_rejections.push(CollisionRejection {
-                    skill: skill.entry.uri.clone(),
-                    kind: CollisionKind::ManifestUri,
+                    skill: skill_name(&skill.entry),
+                    kind: CollisionKind::ArtifactOwnerConflict,
                 });
                 continue;
             }
@@ -385,6 +414,16 @@ fn ensure_deadline(
     } else {
         Ok(())
     }
+}
+
+/// The skill's frontmatter `name`, the same label other collisions record,
+/// falling back to its manifest URI.
+fn skill_name(entry: &labby_runtime::skills::wire::SkillEntry) -> String {
+    entry
+        .frontmatter
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| entry.uri.clone(), str::to_owned)
 }
 
 fn merge_bundled_first(
@@ -869,6 +908,9 @@ mod tests {
             }
             let providers = FirstPartySkillProviders::from_artifact_skills(records);
             assert_eq!(providers.collision_rejections().len(), 2);
+            assert!(providers.collision_rejections().iter().all(|rejection| {
+                rejection.kind == CollisionKind::ArtifactOwnerConflict && rejection.skill == "notes"
+            }));
             assert!(providers.artifact_access(manifest).is_none());
             assert!(providers.find(manifest).is_none());
         }

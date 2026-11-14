@@ -94,7 +94,8 @@ async fn git_workdir(
 }
 
 /// Refuse a git cwd when it, or any ancestor up to the workspace root, has the
-/// on-disk layout of a git directory (`HEAD`, `objects/`, `refs/`).
+/// on-disk layout of a git directory: entries named `HEAD`, `objects`, and
+/// `refs`, of any file type.
 ///
 /// A script can write such a layout with `state.writeFile` because none of its
 /// path segments is `.git`. Git would then discover the directory as an
@@ -109,7 +110,7 @@ async fn reject_implicit_git_directories(
 ) -> Result<(), ToolError> {
     let mut dir = Some(workdir);
     while let Some(current) = dir {
-        if looks_like_git_directory(current).await {
+        if looks_like_git_directory(current).await? {
             return Err(ToolError::Sdk {
                 sdk_kind: "permission_denied".to_string(),
                 message: "git cwd is denied because it or a parent directory has the layout \
@@ -127,13 +128,23 @@ async fn reject_implicit_git_directories(
     Ok(())
 }
 
-async fn looks_like_git_directory(dir: &Path) -> bool {
+/// Whether `dir` holds all of `HEAD`, `objects`, and `refs`. Only a missing
+/// entry counts as absent: an entry that cannot be inspected fails closed
+/// rather than letting the check pass.
+async fn looks_like_git_directory(dir: &Path) -> Result<bool, ToolError> {
     for entry in ["HEAD", "objects", "refs"] {
-        if tokio::fs::symlink_metadata(dir.join(entry)).await.is_err() {
-            return false;
+        match tokio::fs::symlink_metadata(dir.join(entry)).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "permission_denied".to_string(),
+                    message: format!("git cwd is denied because it could not be inspected: {err}"),
+                });
+            }
         }
     }
-    true
+    Ok(true)
 }
 
 async fn ensure_branch_ref_allowed(
@@ -712,7 +723,7 @@ wait"#,
     }
 
     /// Writes, through the `state` provider, an implicit bare repository at
-    /// `x/` whose config makes `git log` run `marker_script` on the host.
+    /// `dir/` whose config makes `git log` run `marker_script` on the host.
     #[cfg(unix)]
     async fn write_hostile_bare_layout(
         workspace: &StateWorkspace,
@@ -788,6 +799,25 @@ wait"#,
         bare
     }
 
+    async fn git_supports_safe_bare_repository() -> bool {
+        let temp = tempfile::tempdir().unwrap();
+        let version = run_git(temp.path(), None, &["--version".to_string()])
+            .await
+            .unwrap();
+        let numbers = version
+            .split_whitespace()
+            .nth(2)
+            .unwrap_or_default()
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect::<Vec<_>>();
+        let (major, minor) = (
+            numbers.first().copied().unwrap_or(0),
+            numbers.get(1).copied().unwrap_or(0),
+        );
+        (major, minor) >= (2, 38)
+    }
+
     #[cfg(unix)]
     fn marker_script(dir: &Path) -> (PathBuf, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
@@ -831,6 +861,12 @@ wait"#,
     #[cfg(unix)]
     #[tokio::test]
     async fn git_fence_refuses_implicit_bare_repository_without_the_layout_check() {
+        // `safe.bareRepository` exists from git 2.38. Older git ignores the
+        // fence (the layout check still refuses the cwd, see the test above).
+        if !git_supports_safe_bare_repository().await {
+            eprintln!("skipping: installed git predates safe.bareRepository (2.38)");
+            return;
+        }
         let outside = tempfile::tempdir().unwrap();
         let (script, marker) = marker_script(outside.path());
         let temp = tempfile::tempdir().unwrap();

@@ -154,6 +154,14 @@ placement, and address-pinning requirements, see
 Operator directory Skills under `$LABBY_HOME/skills` coexist with managed
 Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.
+Artifact Skill URIs derive from the name alone, so same-name Artifact records
+from different owners, in any Project or tenant, collide: a mutation that would
+make a second one active is refused with `active_skill_collision`, and the
+first stays served under its own access policy. The refusal reveals only that
+some active Skill already uses the name. If duplicates are already active (for
+example from an older release), neither is served and the gateway logs the
+conflicting records' owners so an operator can rename or deactivate all but
+one.
 
 The remote control plane extends `artifacts.*` and exposes four supporting
 HTTP-context-only service families (not MCP or in-process Code Mode tools):

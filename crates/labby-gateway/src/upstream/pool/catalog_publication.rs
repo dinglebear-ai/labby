@@ -834,6 +834,71 @@ impl CatalogState {
         self.prompt_sources.insert(upstream.to_string(), source);
     }
 
+    /// Exposed prompts of every routable upstream in `allowed` whose current
+    /// connection has a settled listing, degraded per upstream.
+    ///
+    /// Unlike the published prompt projection, which is all-or-nothing, an
+    /// upstream whose listing was rejected at admission is skipped rather than
+    /// hiding every other upstream's prompts; the fleet item and byte caps
+    /// truncate instead of failing. Returns the routes and the names of the
+    /// upstreams that were skipped or truncated.
+    pub(super) fn degraded_prompt_routes(
+        &self,
+        allowed: Option<&BTreeSet<String>>,
+    ) -> (Vec<PublishedPromptRoute>, Vec<String>) {
+        let mut sources = self.prompt_sources.iter().collect::<Vec<_>>();
+        sources.sort_unstable_by_key(|(upstream, _)| upstream.as_str());
+        let mut routes = Vec::new();
+        let mut skipped = Vec::new();
+        let mut published_bytes = 0usize;
+        for (upstream, source) in sources {
+            if allowed.is_some_and(|allowed| !allowed.contains(upstream)) {
+                continue;
+            }
+            let Some(entry) = self.entries.get(upstream) else {
+                continue;
+            };
+            if !entry.prompt_health.is_routable() {
+                continue;
+            }
+            let PromptSourceState::Ready(source) = source else {
+                skipped.push(upstream.clone());
+                continue;
+            };
+            if self.incarnation(upstream) != Some(source.incarnation) {
+                continue;
+            }
+            let mut prompts = source
+                .prompts
+                .iter()
+                .filter(|prompt| {
+                    super::entries::prompt_exposed(
+                        &entry.prompt_exposure_policy,
+                        upstream,
+                        prompt.name.as_ref(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            prompts.sort_unstable_by_key(|prompt| prompt.name.as_str());
+            for prompt in prompts {
+                let bytes = serde_json::to_vec(prompt).map_or(usize::MAX, |body| body.len());
+                if routes.len() == super::tools::MAX_UPSTREAM_PROMPTS
+                    || published_bytes.saturating_add(bytes) > MAX_RESOURCE_CATALOG_BYTES
+                {
+                    skipped.push(upstream.clone());
+                    return (routes, skipped);
+                }
+                published_bytes += bytes;
+                routes.push(PublishedPromptRoute {
+                    upstream_name: Arc::from(upstream.as_str()),
+                    native_name: Arc::from(prompt.name.as_str()),
+                    prompt: prompt.clone(),
+                });
+            }
+        }
+        (routes, skipped)
+    }
+
     pub(super) fn remove_prompt_source(&mut self, upstream: &str) {
         self.prompt_sources.remove(upstream);
     }

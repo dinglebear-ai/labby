@@ -454,8 +454,9 @@ impl PeerNotifier {
                             // exact named catalog (tools, or the cache-only resources
                             // snapshot) before that upstream's downstream notification is
                             // forwarded, so peers never recompute a visible contract
-                            // against a stale cache. Prompts need no refresh and take the
-                            // same path so one upstream's notifications stay ordered.
+                            // against a stale cache. Prompts take the same path: the
+                            // worker re-lists the cached prompt source Code Mode reads,
+                            // and one upstream's notifications stay ordered.
                             Ok(UpstreamNotificationEvent::ToolListChanged { upstream }) => {
                                 refresher.schedule(&upstream, ListChangedKinds::TOOLS);
                             }

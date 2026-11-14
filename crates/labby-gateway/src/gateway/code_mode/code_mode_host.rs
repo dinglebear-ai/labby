@@ -255,26 +255,9 @@ impl GatewayManager {
             entries.insert(descriptor.id.clone(), descriptor);
         }
 
-        let published_prompts = match pool.published_prompt_catalog().await {
-            Ok(snapshot) => Some(snapshot),
-            Err(error) => {
-                tracing::warn!(
-                    surface = "dispatch",
-                    service = "code_mode",
-                    action = "catalog.prompts",
-                    error = ?error,
-                    "published prompt catalog is unavailable; Code Mode prompt metadata failed open"
-                );
-                None
-            }
-        };
-        for route in published_prompts
-            .iter()
-            .flat_map(|snapshot| snapshot.routes())
-            .filter(|route| {
-                allowed.is_none_or(|allowed| allowed.contains(route.upstream_name.as_ref()))
-            })
-        {
+        // Degrades per upstream: one upstream whose listing was rejected is
+        // skipped rather than hiding every other upstream's prompts.
+        for route in pool.cached_prompt_routes_allowed(allowed).await {
             let upstream = route.upstream_name.as_ref();
             let native_name = route.native_name.as_ref();
             let prompt = &route.prompt;
@@ -606,8 +589,7 @@ impl CodeModeHost for GatewayManager {
                 .allowed_namespaces()
                 .is_none_or(|allowed| allowed.contains(upstream))
             && let Some(config) = self.upstream_config(upstream).await
-            && config.enabled
-            && config.proxy_resources
+            && config.serves_resources()
             && config.oauth.is_none()
         {
             let owner = runtime_owner(caller, surface);
@@ -646,7 +628,7 @@ impl CodeModeHost for GatewayManager {
             if let Some(config) = self.upstream_config(upstream).await
                 && config.oauth.is_some()
             {
-                if !config.enabled || !config.proxy_resources {
+                if !config.serves_resources() {
                     return Err(ToolError::Sdk {
                         sdk_kind: "forbidden".into(),
                         message: format!("resource proxying is disabled for upstream `{upstream}`"),
@@ -2051,6 +2033,8 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
         CapabilityCallError::InputRequiredRoundsExceeded { message } => {
             ("confirmation_required", message.clone())
         }
+        // Gateway configuration or exposure policy, not an upstream fault.
+        CapabilityCallError::NotExposed { message } => ("not_found", message.clone()),
         CapabilityCallError::Other { message } => ("upstream_error", message.clone()),
     }
 }

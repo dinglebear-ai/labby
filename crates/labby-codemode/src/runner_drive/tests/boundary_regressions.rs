@@ -392,3 +392,97 @@ async fn host_rejects_oversized_step_names_without_echoing_or_retaining_them() {
     };
     assert_eq!(error.kind(), "budget_exceeded");
 }
+
+#[test]
+fn reused_pending_sequence_is_a_protocol_fault() {
+    let config = test_config(Duration::from_secs(5));
+    let mut state = DriveState::for_config(&config);
+    state
+        .reserve_pending_params(7, 10)
+        .expect("first reservation");
+    assert!(
+        state.reserve_pending_params(7, 10).is_err(),
+        "a reused seq must not overwrite the pending reservation"
+    );
+    assert_eq!(state.pending_params_bytes(), 10);
+    state.release_pending_params(7);
+    assert_eq!(state.pending_params_bytes(), 0);
+    state
+        .reserve_pending_params(7, 10)
+        .expect("a released seq may be reserved again");
+}
+
+#[tokio::test]
+async fn settled_calls_release_their_pending_params() {
+    // Ten 7 MiB calls exceed the 64 MiB pending budget in total, but each is
+    // settled before the next is issued, so all are admitted.
+    let per_call = 7 * 1024 * 1024;
+    let calls = 10u64;
+    assert!(per_call * calls as usize > crate::protocol::MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN);
+    let capture = tempfile::NamedTempFile::new().expect("capture");
+    let mut script = String::from("IFS= read -r _\n");
+    for seq in 0..calls {
+        script.push_str(&big_tool_call_line(seq, per_call));
+        script.push_str(&format!(
+            "IFS= read -r reply || exit 21\nprintf '%s\\n' \"$reply\" >>\"{}\"\n",
+            capture.path().display()
+        ));
+    }
+    script.push_str("printf '%s\\n' '{\"type\":\"done\"}'\nIFS= read -r _\n");
+    let mut runner = PooledRunner::spawn_stub_script(&script).expect("protocol stub");
+    let host = NoopHost::default();
+    let config = test_config(Duration::from_mins(1));
+    let _outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(
+            &mut runner,
+            &config,
+            tokio::time::Instant::now() + config.timeout,
+        )
+        .await;
+    let wire_replies = replies(capture.path());
+    assert_eq!(wire_replies.len(), calls as usize);
+    for reply in &wire_replies {
+        if let CodeModeRunnerInput::ToolError { error, .. } = reply {
+            assert_ne!(
+                error.kind(),
+                "budget_exceeded",
+                "a settled call must release its pending params"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn rejected_step_names_do_not_consume_the_step_budget() {
+    // More oversized steps than the per-run step budget, then a valid one: the
+    // rejected names were never allocated, so the valid step is still decided.
+    let oversized = "s".repeat(crate::protocol::MAX_STEP_NAME_BYTES + 1);
+    let mut requests: Vec<_> = (0..=256u64)
+        .map(|seq| CodeModeRunnerOutput::StepBegin {
+            seq,
+            name: oversized.clone(),
+        })
+        .collect();
+    requests.push(CodeModeRunnerOutput::StepBegin {
+        seq: 257,
+        name: "valid".into(),
+    });
+    let capture = tempfile::NamedTempFile::new().expect("capture");
+    let mut runner = PooledRunner::spawn_stub_script(&request_script(&requests, capture.path()))
+        .expect("protocol stub");
+    let host = NoopHost::default();
+    let config = test_config(Duration::from_secs(15));
+    let _outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(
+            &mut runner,
+            &config,
+            tokio::time::Instant::now() + config.timeout,
+        )
+        .await;
+    let wire_replies = replies(capture.path());
+    assert_eq!(wire_replies.len(), requests.len());
+    assert!(matches!(
+        wire_replies.last(),
+        Some(CodeModeRunnerInput::StepDecision { seq: 257, .. })
+    ));
+}

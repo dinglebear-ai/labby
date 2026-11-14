@@ -308,7 +308,7 @@ async fn merged_kinds_refresh_both_catalogs_and_forward_one_notification() {
 }
 
 #[tokio::test]
-async fn prompt_list_changed_is_forwarded_without_a_refresh() {
+async fn prompt_list_changed_is_forwarded_without_a_tool_or_resource_refresh() {
     let pool = Arc::new(UpstreamPool::new());
     let server = SubscriptionServer::accepting();
     add_subscription_server(&pool, "leaf", server.clone()).await;
@@ -325,7 +325,7 @@ async fn prompt_list_changed_is_forwarded_without_a_refresh() {
     assert_eq!(
         server.resource_list_calls.load(Ordering::SeqCst),
         resource_baseline,
-        "prompts/list is served live, so no catalog re-list runs"
+        "a prompt list_changed re-lists only prompts"
     );
     assert_eq!(server.tool_list_calls.load(Ordering::SeqCst), tool_baseline);
 }

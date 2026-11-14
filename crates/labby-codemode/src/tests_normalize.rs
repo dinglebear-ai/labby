@@ -540,7 +540,7 @@ fn scoped_caller_read_only_cannot_execute() {
     );
 }
 
-// ── token_estimate_divisor affects truncation (#12b) ─────────────────────
+// ── normalize_user_code prologue split stays bounded (PER-M07-001) ───────
 
 #[test]
 fn normalize_user_code_is_linear_in_export_default_occurrences() {
@@ -556,4 +556,21 @@ fn normalize_user_code_is_linear_in_export_default_occurrences() {
         "normalizing {} bytes took {elapsed:?}",
         code.len()
     );
+}
+
+#[test]
+fn prologue_split_tries_only_the_first_eight_export_default_candidates() {
+    // Eight non-boundary candidates come first, so the ninth, which does follow
+    // a `;`, is never tried and the source is wrapped as loose code instead.
+    let capped = format!(
+        "{}x; export default async () => 1",
+        "a export default ".repeat(8)
+    );
+    assert!(!crate::normalize::normalize_user_code(&capped).contains("return await ("));
+    // Within the cap the same boundary candidate still splits.
+    let within = format!(
+        "{}x; export default async () => 1",
+        "a export default ".repeat(7)
+    );
+    assert!(crate::normalize::normalize_user_code(&within).contains("return await ("));
 }

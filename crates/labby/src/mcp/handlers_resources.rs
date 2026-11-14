@@ -3562,7 +3562,15 @@ mod tests {
                         scoped_context(running.peer().clone(), &["lab:read"]),
                     )
                     .await;
-                assert!(result.is_err(), "{uri} must be denied ({relay_mode:?})");
+                let error = result
+                    .err()
+                    .unwrap_or_else(|| panic!("{uri} must be denied ({relay_mode:?})"));
+                // Reported as an unknown resource: no existence leak, no retry.
+                assert_eq!(
+                    error.code,
+                    rmcp::model::ErrorCode::RESOURCE_NOT_FOUND,
+                    "{uri} ({relay_mode:?}): {error:?}"
+                );
                 assert_eq!(
                     fixture.resource_reads.load(Ordering::SeqCst),
                     before,

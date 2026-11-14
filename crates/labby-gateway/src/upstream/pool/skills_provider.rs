@@ -71,6 +71,11 @@ fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
         }) => SkillProviderError::Provider {
             reason: "input_required_rounds_exceeded".to_owned(),
         },
+        UpstreamSkillsError::Capability(CapabilityCallError::NotExposed { .. }) => {
+            SkillProviderError::Provider {
+                reason: "not_exposed".to_owned(),
+            }
+        }
         UpstreamSkillsError::Capability(CapabilityCallError::Other { .. }) => {
             SkillProviderError::Provider {
                 reason: "upstream_error".to_owned(),

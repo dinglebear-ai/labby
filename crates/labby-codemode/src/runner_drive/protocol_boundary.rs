@@ -35,8 +35,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         drop(id);
         drop(params);
         let rejected = RejectedCall {
-            trace_id: OVERSIZED_TOOL_CALL_ID.into(),
-            tool: None,
+            id: RejectedCallId::Oversized,
             is_internal,
             error,
         };
@@ -54,8 +53,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
             Err(error) => {
                 drop(params);
                 let rejected = RejectedCall {
-                    tool: Some(id.clone()),
-                    trace_id: id,
+                    id: RejectedCallId::Known(id),
                     is_internal,
                     error,
                 };
@@ -109,7 +107,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
 
     // Every branch below enqueues exactly one future for `seq`; its completion
     // releases this reservation.
-    state.reserve_pending_params(seq, params_bytes);
+    state.reserve_pending_params(seq, params_bytes)?;
 
     // Full-result calls cannot enter reserved/local providers or snippet routing.
     // Admit/count first, then reject before any host-visible operation.
@@ -186,10 +184,17 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
 /// A call refused at the boundary, before any host-visible operation: it is
 /// traced (unless internal) and answered with a catchable `ToolError`.
 struct RejectedCall {
-    trace_id: String,
-    tool: Option<String>,
+    id: RejectedCallId,
     is_internal: bool,
     error: CodeModeCallError,
+}
+
+/// How a rejected call is named in its trace row and error.
+enum RejectedCallId {
+    /// The caller's ID was over the byte cap: it is neither traced nor echoed.
+    Oversized,
+    /// A bounded caller ID, traced and attached to the error as its tool.
+    Known(String),
 }
 
 impl RejectedCall {
@@ -202,27 +207,27 @@ impl RejectedCall {
         deadline: tokio::time::Instant,
         state: &mut DriveState,
     ) -> Result<(), CodeModeExecutionError> {
+        let (trace_id, error) = match self.id {
+            RejectedCallId::Oversized => (OVERSIZED_TOOL_CALL_ID.to_string(), self.error),
+            RejectedCallId::Known(id) => (id.clone(), self.error.with_tool(id)),
+        };
         if !self.is_internal {
-            state.reserve_trace_call(seq, &self.trace_id)?;
+            state.reserve_trace_call(seq, &trace_id)?;
             state.record_call((
                 seq,
                 CodeModeExecutedCall {
                     upstream_content: None,
-                    id: self.trace_id,
+                    id: trace_id,
                     ok: false,
                     elapsed_ms: 0,
                     start_ms: None,
                     params: None,
                     params_digest: None,
-                    error_kind: Some(self.error.kind.clone()),
+                    error_kind: Some(error.kind.clone()),
                     ui: None,
                 },
             ))?;
         }
-        let error = match self.tool {
-            Some(tool) => self.error.with_tool(tool),
-            None => self.error,
-        };
         write_runner_input_by_deadline(
             stdin,
             &CodeModeRunnerInput::ToolError {

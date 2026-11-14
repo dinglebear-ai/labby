@@ -61,7 +61,8 @@ pub(super) fn test_upstream_config() -> UpstreamConfig {
 }
 
 /// [`test_upstream_config`] with `proxy_resources` on, for tests that read
-/// resources: every read path refuses an upstream that opted out.
+/// `lab://upstream/` resources, which are refused for an upstream that opted
+/// out.
 pub(super) fn resource_proxying_test_upstream_config() -> UpstreamConfig {
     UpstreamConfig {
         proxy_resources: true,

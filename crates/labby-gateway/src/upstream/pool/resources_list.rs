@@ -442,8 +442,7 @@ impl UpstreamPool {
         let names = self.cold_resource_snapshots(allowed).await.names();
         let mut work = futures::stream::iter(names)
             .map(|name| async move {
-                let flight =
-                    super::helpers::snapshot_flight(&self.resource_snapshot_warmup, &name).await;
+                let flight = self.resource_snapshot_warmup.acquire(&name).await;
                 let _turn = flight.lock().await;
                 let names = BTreeSet::from([name]);
                 let cold = self.cold_resource_snapshots(Some(&names)).await;
@@ -498,13 +497,20 @@ impl UpstreamPool {
         if let Some(task) = warmup.task
             && !warmup.cold.missing.is_empty()
         {
-            drop(
-                tokio::time::timeout(
-                    self.request_timeout.min(super::helpers::COLD_SNAPSHOT_WAIT),
-                    task,
-                )
-                .await,
-            );
+            if let Ok(Err(error)) = tokio::time::timeout(
+                self.request_timeout.min(super::helpers::COLD_SNAPSHOT_WAIT),
+                task,
+            )
+            .await
+            {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "catalog.resources.warm",
+                    error = %error,
+                    "resource snapshot warm-up task failed"
+                );
+            }
         }
     }
 
@@ -1131,6 +1137,7 @@ fn capability_schema_error(upstream: &str, error: &CapabilityCallError) -> ToolE
         CapabilityCallError::Protocol { .. } => "decode_error",
         CapabilityCallError::Cancelled { .. } => "cancelled",
         CapabilityCallError::InputRequiredRoundsExceeded { .. } => "confirmation_required",
+        CapabilityCallError::NotExposed { .. } => "not_found",
         CapabilityCallError::Mcp { .. } | CapabilityCallError::Other { .. } => {
             match classify_upstream_error(&error.to_string()) {
                 kind @ ("auth_failed" | "auth_required") => kind,

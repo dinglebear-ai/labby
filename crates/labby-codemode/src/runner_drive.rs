@@ -308,8 +308,31 @@ impl DriveState {
         self.pending_params.values().sum()
     }
 
-    fn reserve_pending_params(&mut self, seq: u64, bytes: usize) {
-        self.pending_params.insert(seq, bytes);
+    /// Reserve `bytes` for the call at `seq` until its completion releases it.
+    /// A seq that already holds a reservation is a protocol fault: overwriting
+    /// it would let the first completion release the second call's bytes and
+    /// undercount what the run still holds. Ordinary calls are also guarded by
+    /// the trace's seq check, but internal calls are not traced.
+    fn reserve_pending_params(
+        &mut self,
+        seq: u64,
+        bytes: usize,
+    ) -> Result<(), CodeModeExecutionError> {
+        match self.pending_params.entry(seq) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err(CodeModeExecutionError::with_trace(
+                    ToolError::Sdk {
+                        sdk_kind: "internal_error".into(),
+                        message: "Code Mode runner reused a pending protocol sequence".into(),
+                    },
+                    sorted_calls(&self.calls),
+                ))
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(bytes);
+                Ok(())
+            }
+        }
     }
 
     fn release_pending_params(&mut self, seq: u64) {

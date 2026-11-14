@@ -29,8 +29,8 @@ fn resource(uri: String) -> SkillResource {
 
 #[test]
 fn oversized_entry_uri_never_enters_the_ownership_scan() {
-    // A multi-KiB owner URI paired with many distinct claims used to be
-    // cloned once per claim before validation rejected the entry.
+    // An over-long owner URI is rejected by validation, so its many claims
+    // must never reach the scratch map.
     let owner = format!(
         "skill://hostile/{}/SKILL.md",
         "a".repeat(limits::MAX_URI_CHARS)
@@ -116,4 +116,52 @@ fn conflicting_claims_across_owners_are_still_ambiguous() {
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );
     assert!(out.ambiguous_resource_uris.contains("skill://a/shared.md"));
+}
+
+#[test]
+fn every_entry_validation_accepts_takes_part_in_the_ownership_scan() {
+    // The pre-scan must never skip an entry that validation would accept, or a
+    // valid owner's claims could escape ambiguity detection.
+    use labby_runtime::skills::ResourceDigest;
+    let body = "---\nname: brief\ndescription: a test skill\n---\n\n# Body\n";
+    let notes = b"supporting notes";
+    let cases = [
+        ("skill://valid/brief/SKILL.md", 0usize),
+        ("skill://valid/brief/SKILL.md", 1),
+        (
+            "skill://valid/brief/SKILL.md",
+            limits::MAX_RESOURCES_PER_SKILL - 1,
+        ),
+    ];
+    for (uri, supporting) in cases {
+        let mut resources = vec![SkillResource {
+            uri: uri.to_string(),
+            digest: ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
+            size: body.len() as u64,
+        }];
+        for index in 0..supporting {
+            resources.push(SkillResource {
+                uri: format!("skill://valid/brief/notes-{index}.md"),
+                digest: ResourceDigest::of_bytes(notes).to_wire(),
+                size: notes.len() as u64,
+            });
+        }
+        let entry = SkillEntry {
+            uri: uri.to_string(),
+            frontmatter: serde_json::from_value(
+                serde_json::json!({"name": "brief", "description": "a test skill"}),
+            )
+            .expect("frontmatter"),
+            resources: Some(resources),
+            meta: None,
+        };
+        let rejection = validate_skill_entry_detailed(&entry)
+            .err()
+            .map(|rejection| rejection.detail);
+        assert!(
+            rejection.is_none(),
+            "fixture must be valid ({supporting} supporting files): {rejection:?}"
+        );
+        assert!(within_ownership_scan_limits(&entry));
+    }
 }

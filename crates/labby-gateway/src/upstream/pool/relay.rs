@@ -1877,10 +1877,26 @@ impl UpstreamPool {
         let prefix = format!("lab://upstream/{}/", config.name);
         let original_uri = if let Some(uri) = gateway_uri.strip_prefix(&prefix) {
             // Same gate as the pooled `lab://upstream/` read: a disabled or
-            // tools-only upstream is never read through a relay connection.
+            // tools-only upstream's `lab://upstream/` resources are never read
+            // through a relay. Native `ui://` widgets below are not gated here,
+            // so a tools-only upstream's MCP App widgets stay readable.
             if !config.serves_resources() {
-                return Some(Err(super::CapabilityCallError::Other {
-                    message: format!("resource is not exposed by upstream `{}`", config.name),
+                tracing::debug!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "resource.read",
+                    capability = "resources",
+                    upstream = %config.name,
+                    resource_uri = %redact_resource_uri_for_logging(&gateway_uri),
+                    relayed = true,
+                    kind = "resource_proxy_disabled",
+                    "relayed upstream resource read blocked: upstream is disabled or does not proxy resources"
+                );
+                return Some(Err(super::CapabilityCallError::NotExposed {
+                    message: format!(
+                        "resource proxying is disabled for upstream `{}`",
+                        config.name
+                    ),
                 }));
             }
             uri.to_string()
@@ -1912,7 +1928,7 @@ impl UpstreamPool {
                 kind = "resource_not_exposed",
                 "relayed upstream resource read blocked by exposure policy"
             );
-            return Some(Err(super::CapabilityCallError::Other {
+            return Some(Err(super::CapabilityCallError::NotExposed {
                 message: format!("resource is not exposed by upstream `{}`", config.name),
             }));
         }
@@ -3097,6 +3113,82 @@ mod tests {
                 None,
             ))
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct CountingResourceServer {
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl ServerHandler for CountingResourceServer {
+        async fn read_resource(
+            &self,
+            request: ReadResourceRequestParams,
+            _context: RequestContext<RoleServer>,
+        ) -> Result<ReadResourceResponse, ErrorData> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(
+                rmcp::model::ReadResourceResult::new(vec![rmcp::model::ResourceContents::text(
+                    "ok",
+                    request.uri,
+                )])
+                .into(),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn relayed_read_of_a_tools_only_upstream_is_refused_before_dispatch() {
+        let capabilities = relay_test_capabilities();
+        let server = CountingResourceServer::default();
+        let (pool, config, downstream) =
+            cached_relay_pool(server.clone(), (), capabilities.clone()).await;
+        let read = |config: UpstreamConfig| {
+            let pool = &pool;
+            let peer = downstream.peer().clone();
+            let capabilities = capabilities.clone();
+            async move {
+                pool.read_resource_relayed_typed(
+                    &config,
+                    None,
+                    ReadResourceRequestParams::new(format!("lab://upstream/{}/item", config.name)),
+                    peer,
+                    RequestId::Number(1),
+                    CancellationToken::new(),
+                    1,
+                    capabilities,
+                )
+                .await
+                .unwrap()
+            }
+        };
+        // Positive control: the same relay serves a resource-proxying upstream.
+        read(config.clone())
+            .await
+            .expect("resource-proxying upstream reads");
+        assert_eq!(server.reads.load(Ordering::SeqCst), 1);
+
+        for denied in [
+            UpstreamConfig {
+                proxy_resources: false,
+                ..config.clone()
+            },
+            UpstreamConfig {
+                enabled: false,
+                ..config.clone()
+            },
+        ] {
+            let error = read(denied).await.unwrap_err();
+            assert!(
+                matches!(error, super::super::CapabilityCallError::NotExposed { .. }),
+                "{error:?}"
+            );
+        }
+        assert_eq!(
+            server.reads.load(Ordering::SeqCst),
+            1,
+            "a refused relayed read must not reach the upstream"
+        );
     }
 
     #[tokio::test]

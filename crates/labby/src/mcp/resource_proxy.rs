@@ -43,6 +43,16 @@ fn classified_resource_fetch_error(
     error: &CapabilityCallError,
 ) -> (LoggingLevel, &'static str, &'static str, ErrorData) {
     let (kind, summary) = classify_resource_fetch_failure(error);
+    // A policy denial reads as an unknown resource, exactly like the pooled
+    // branch, so it neither reveals that the resource exists nor invites a retry.
+    if matches!(error, CapabilityCallError::NotExposed { .. }) {
+        return (
+            LoggingLevel::Warning,
+            kind,
+            summary,
+            crate::mcp::resource_errors::unknown(uri, false),
+        );
+    }
     let level = match kind {
         "cancelled" | "response_too_large" => LoggingLevel::Warning,
         _ => LoggingLevel::Error,
@@ -313,9 +323,40 @@ impl LabMcpServer {
             .to_string();
         // Enforce the route on the direct read, not only on listing: a caller
         // that knows or guesses a URI must not reach an upstream outside its
-        // route. Both the relay and pooled branches sit behind this gate.
-        let route_allows = self.route_scope.allows_upstream(&upstream_name)
-            && self.route_team_credential_valid(&upstream_name).await;
+        // route. Both the relay and pooled branches sit behind this gate. An
+        // out-of-route upstream reads as an unknown resource (no existence
+        // leak); a Team credential that cannot be validated is reported as
+        // `forbidden`, like the same condition on upstream tool calls.
+        let route_allows = self.route_scope.allows_upstream(&upstream_name);
+        if route_allows && !self.route_team_credential_valid(&upstream_name).await {
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::warn!(
+                surface = "mcp",
+                service = "labby",
+                action = "read_resource",
+                upstream = %upstream_name,
+                resource_uri = redact_resource_uri_for_logging(&uri),
+                elapsed_ms,
+                kind = "credential_unavailable",
+                "upstream resource read denied: route Team credential is unavailable"
+            );
+            self.emit_dispatch_notification(
+                context,
+                "lab",
+                "read_resource",
+                elapsed_ms,
+                DispatchLogOutcome::Failure {
+                    level: LoggingLevel::Warning,
+                    kind: "forbidden".into(),
+                },
+            )
+            .await;
+            return Err(crate::mcp::resource_errors::forbidden(
+                &uri,
+                "Gateway credential is unavailable",
+                &[],
+            ));
+        }
         let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
         let relay_config = if relay_capabilities.is_some() {
             match &self.gateway_manager {
@@ -426,16 +467,29 @@ impl LabMcpServer {
                     .strip_prefix("lab://upstream/")
                     .and_then(|rest| rest.split('/').next())
                     .unwrap_or("unknown");
-                tracing::warn!(
-                    surface = "mcp",
-                    service = "labby",
-                    action = "read_resource",
-                    upstream,
-                    resource_uri = redact_resource_uri_for_logging(&uri),
-                    elapsed_ms,
-                    kind = "not_found",
-                    "upstream not connected for resource"
-                );
+                if route_allows {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = "labby",
+                        action = "read_resource",
+                        upstream,
+                        resource_uri = redact_resource_uri_for_logging(&uri),
+                        elapsed_ms,
+                        kind = "not_found",
+                        "upstream not connected for resource"
+                    );
+                } else {
+                    tracing::info!(
+                        surface = "mcp",
+                        service = "labby",
+                        action = "read_resource",
+                        upstream,
+                        resource_uri = redact_resource_uri_for_logging(&uri),
+                        elapsed_ms,
+                        kind = "route_scope_denied",
+                        "upstream resource read outside the caller's route reported as not found"
+                    );
+                }
                 self.emit_dispatch_notification(
                     context,
                     "lab",
@@ -462,6 +516,22 @@ impl LabMcpServer {
     /// for non-local `ui://` URIs — `ui://lab/code-mode/*` stays on the local
     /// Code Mode app handler. Reverse-lookup + forwarding lives in the pool;
     /// this method stays envelope-only.
+    /// The route's upstreams whose Team credential validates, or `None` when
+    /// the route is not Team-bound and its allowlist applies unchanged.
+    async fn route_upstreams_with_valid_team_credential(
+        &self,
+    ) -> Option<std::collections::BTreeSet<String>> {
+        self.route_scope.team_credential_subject()?;
+        let upstreams = self.route_scope.allowed_upstreams()?;
+        let mut valid = std::collections::BTreeSet::new();
+        for upstream in upstreams {
+            if self.route_team_credential_valid(upstream).await {
+                valid.insert(upstream.clone());
+            }
+        }
+        Some(valid)
+    }
+
     pub(crate) async fn read_upstream_ui_resource_impl(
         &self,
         pool: &Arc<UpstreamPool>,
@@ -550,8 +620,14 @@ impl LabMcpServer {
             route = "upstream_ui",
             "dispatch route selected"
         );
+        // On a Team-bound route, an upstream whose Team credential cannot be
+        // validated must not own the widget, matching the `lab://upstream/` read.
+        let credentialed = self.route_upstreams_with_valid_team_credential().await;
+        let allowed = credentialed
+            .as_ref()
+            .or_else(|| self.route_scope.allowed_upstreams());
         let result = pool
-            .read_upstream_ui_resource_allowed_typed(&uri, self.route_scope.allowed_upstreams())
+            .read_upstream_ui_resource_allowed_typed(&uri, allowed)
             .await;
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {

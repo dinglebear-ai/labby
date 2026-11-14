@@ -132,7 +132,8 @@ pub(super) struct UpstreamSkills {
 
 /// Walk-scoped scratch for [`ingest_page`]: the first owner and binding seen
 /// for each claim. Owners are shared, not cloned per claim, so memory stays
-/// proportional to page bytes. It is never part of the cached snapshot.
+/// proportional to the bytes received across the walk. It is never part of
+/// the cached snapshot.
 type ObservedResourceOwners = BTreeMap<String, (Arc<str>, Option<(String, u64)>)>;
 
 #[derive(Debug, Clone)]
@@ -225,8 +226,8 @@ fn ingest_page(
     for entry in &entries {
         // An entry whose URI or manifest exceeds the per-skill limits is
         // rejected by validation below, so it can never own a resource. Skip
-        // it here, before its claims are walked: otherwise one page could pair
-        // a multi-MiB owner URI with every one of thousands of claims.
+        // it before its claims are walked so an over-long URI or an oversized
+        // manifest cannot fill the scratch map or mark claims ambiguous.
         if !within_ownership_scan_limits(entry) {
             continue;
         }

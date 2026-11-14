@@ -18,8 +18,8 @@ pub(crate) fn check_tool_id_bytes(id: &str) -> Result<(), CodeModeCallError> {
 }
 
 /// `Ok` when `len <= max`; otherwise a `budget_exceeded` error whose message
-/// names only the limit. Callers never pass caller-controlled text here, so a
-/// rejected payload is never echoed in the error contract.
+/// names only the limit. `message` must never format caller-controlled text,
+/// so a rejected payload is never echoed in the error contract.
 fn within_byte_limit(
     len: usize,
     max: usize,
@@ -201,12 +201,15 @@ pub(crate) const MAX_TOOL_PARAMS_BYTES: usize = 8 * 1024 * 1024;
 
 /// Per-run cap on the serialized params held by queued or in-flight host calls.
 /// Without it, `max_calls_per_run` under-cap calls queued behind the
-/// per-upstream semaphore would keep calls x params bytes in gateway memory.
+/// per-upstream semaphore would keep calls x params bytes in host memory.
 pub(crate) const MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN: usize = 64 * 1024 * 1024;
 
 /// UTF-8 byte cap on a `codemode.step` name. The host retains each in-flight
 /// step's name until its result arrives.
 pub(crate) const MAX_STEP_NAME_BYTES: usize = 1024;
+
+// A call admitted under the per-call cap must always fit an empty run.
+const _: () = assert!(MAX_TOOL_PARAMS_BYTES <= MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN);
 
 pub(crate) fn check_tool_params_bytes(len: usize) -> Result<(), CodeModeCallError> {
     within_byte_limit(len, MAX_TOOL_PARAMS_BYTES, || {
@@ -242,8 +245,18 @@ pub(crate) fn admit_tool_params(
     params: &Value,
     pending: usize,
 ) -> Result<usize, CodeModeCallError> {
-    let bytes = serialized_len_within(params, MAX_TOOL_PARAMS_BYTES).unwrap_or(usize::MAX);
-    check_tool_params_bytes(bytes)?;
+    let bytes = match serialized_len_within(params, MAX_TOOL_PARAMS_BYTES) {
+        Ok(bytes) => bytes,
+        Err(SerializedLenError::Exceeded) => {
+            return check_tool_params_bytes(usize::MAX).map(|()| usize::MAX);
+        }
+        Err(SerializedLenError::Encode) => {
+            return Err(CodeModeCallError::new(
+                "internal_error",
+                "callTool params could not be serialized",
+            ));
+        }
+    };
     check_pending_tool_params_bytes(pending, bytes)?;
     Ok(bytes)
 }

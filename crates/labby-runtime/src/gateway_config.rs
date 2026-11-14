@@ -849,10 +849,10 @@ fn is_http_token_byte(byte: u8) -> bool {
 }
 
 impl UpstreamConfig {
-    /// Whether this upstream's resources may be read through the gateway:
-    /// it is enabled and has not opted out with `proxy_resources = false`.
-    /// Every direct-read path (pooled, relay, subject-scoped, Code Mode)
-    /// shares this predicate.
+    /// Config-level precondition for proxying this upstream's resources: it is
+    /// enabled and has not opted out with `proxy_resources = false`. This is
+    /// not the whole read policy: callers must still enforce the route
+    /// allowlist, Team credential, exposure policy, and OAuth subject.
     #[must_use]
     pub fn serves_resources(&self) -> bool {
         self.enabled && self.proxy_resources
