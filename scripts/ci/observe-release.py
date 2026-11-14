@@ -54,7 +54,13 @@ if "incus" in dist:
             checksums = {}
             for line in checksum_list.read_text().splitlines():
                 digest, filename = line.split(maxsplit=1)
+                # sha256sum emits "*name" in binary mode, and the historical
+                # Incus publisher ran it as `sha256sum ./*`, so released
+                # SHA256SUMS files name subjects "./name". Accept exactly one
+                # such prefix; any other path still fails to bind.
                 filename = filename.lstrip("*")
+                if filename.startswith("./"):
+                    filename = filename[2:]
                 if filename in checksums:
                     raise ValueError("duplicate checksum subject")
                 checksums[filename] = digest
