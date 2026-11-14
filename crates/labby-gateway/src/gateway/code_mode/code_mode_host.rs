@@ -224,8 +224,16 @@ impl GatewayManager {
         let allowed = scope.allowed_namespaces();
 
         // Same cache-only contract as the MCP resources/list handler: warm
-        // never-listed peers, then read the snapshot instead of fanning out.
-        pool.ensure_resource_snapshots_allowed(allowed).await;
+        // never-listed peers, then read the snapshots instead of fanning out.
+        // Prompts follow it too: a live `prompts/list` fan-out here would put
+        // the slowest upstream's prompt listing on every run (and every
+        // sandbox `search()`), and one upstream stalled on `prompts/list` would
+        // time out proxy generation for every run whose scope includes it.
+        // The two bounded cold waits are independent, so run them together.
+        tokio::join!(
+            pool.ensure_resource_snapshots_allowed(allowed),
+            pool.ensure_prompt_snapshots_allowed(allowed),
+        );
         for listed in pool
             .cached_upstream_resources_with_provenance_allowed(allowed)
             .await
@@ -247,15 +255,29 @@ impl GatewayManager {
             entries.insert(descriptor.id.clone(), descriptor);
         }
 
-        // Cache-only as well: a live `prompts/list` fan-out here would put the
-        // slowest upstream's prompt listing on every run (and every sandbox
-        // `search()`), and one upstream stalled on `prompts/list` would time out
-        // proxy generation for every run whose scope includes it.
-        pool.ensure_prompt_snapshots_allowed(allowed).await;
-        for cached in pool.cached_upstream_prompts_allowed(allowed).await {
-            let upstream = cached.upstream_name.as_ref();
-            let native_name = cached.native_name.as_ref();
-            let prompt = &cached.prompt;
+        let published_prompts = match pool.published_prompt_catalog().await {
+            Ok(snapshot) => Some(snapshot),
+            Err(error) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "catalog.prompts",
+                    error = ?error,
+                    "published prompt catalog is unavailable; Code Mode prompt metadata failed open"
+                );
+                None
+            }
+        };
+        for route in published_prompts
+            .iter()
+            .flat_map(|snapshot| snapshot.routes())
+            .filter(|route| {
+                allowed.is_none_or(|allowed| allowed.contains(route.upstream_name.as_ref()))
+            })
+        {
+            let upstream = route.upstream_name.as_ref();
+            let native_name = route.native_name.as_ref();
+            let prompt = &route.prompt;
             let mut tags = prompt
                 .arguments
                 .as_ref()

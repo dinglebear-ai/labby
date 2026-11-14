@@ -34,58 +34,36 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         // pending future or echo them in the error's tool/message fields.
         drop(id);
         drop(params);
-        if !is_internal {
-            state.reserve_trace_call(seq, OVERSIZED_TOOL_CALL_ID)?;
-            state.record_call((
-                seq,
-                CodeModeExecutedCall {
-                    upstream_content: None,
-                    id: OVERSIZED_TOOL_CALL_ID.into(),
-                    ok: false,
-                    elapsed_ms: 0,
-                    start_ms: None,
-                    params: None,
-                    params_digest: None,
-                    error_kind: Some(error.kind.clone()),
-                    ui: None,
-                },
-            ))?;
-        }
-        return write_runner_input_by_deadline(
-            stdin,
-            &CodeModeRunnerInput::ToolError {
-                seq,
-                error: Box::new(error),
-            },
-            deadline,
-            child,
-            child_pid,
-            &state.calls,
-        )
-        .await;
+        let rejected = RejectedCall {
+            trace_id: OVERSIZED_TOOL_CALL_ID.into(),
+            tool: None,
+            is_internal,
+            error,
+        };
+        return rejected
+            .write(seq, stdin, child, child_pid, deadline, state)
+            .await;
     }
 
     // Bound params before they enter a pending future: per call, and across
     // every call this run still holds. Drop them before writeback so a
     // rejected payload is neither retained nor echoed.
-    let params_bytes = crate::protocol::serialized_json_len(&params);
-    if let Err(error) = crate::protocol::check_tool_params_bytes(params_bytes).and_then(|()| {
-        crate::protocol::check_pending_tool_params_bytes(state.pending_params_bytes, params_bytes)
-    }) {
-        drop(params);
-        return reject_oversized_params(
-            seq,
-            id,
-            is_internal,
-            error,
-            stdin,
-            child,
-            child_pid,
-            deadline,
-            state,
-        )
-        .await;
-    }
+    let params_bytes =
+        match crate::protocol::admit_tool_params(&params, state.pending_params_bytes()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(params);
+                let rejected = RejectedCall {
+                    tool: Some(id.clone()),
+                    trace_id: id,
+                    is_internal,
+                    error,
+                };
+                return rejected
+                    .write(seq, stdin, child, child_pid, deadline, state)
+                    .await;
+            }
+        };
 
     let call_ordinal = if is_internal {
         None
@@ -205,47 +183,59 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn reject_oversized_params(
-    seq: u64,
-    id: String,
+/// A call refused at the boundary, before any host-visible operation: it is
+/// traced (unless internal) and answered with a catchable `ToolError`.
+struct RejectedCall {
+    trace_id: String,
+    tool: Option<String>,
     is_internal: bool,
     error: CodeModeCallError,
-    stdin: &mut ChildStdin,
-    child: &mut tokio::process::Child,
-    child_pid: Option<u32>,
-    deadline: tokio::time::Instant,
-    state: &mut DriveState,
-) -> Result<(), CodeModeExecutionError> {
-    if !is_internal {
-        state.reserve_trace_call(seq, &id)?;
-        state.record_call((
-            seq,
-            CodeModeExecutedCall {
-                upstream_content: None,
-                id: id.clone(),
-                ok: false,
-                elapsed_ms: 0,
-                start_ms: None,
-                params: None,
-                params_digest: None,
-                error_kind: Some(error.kind.clone()),
-                ui: None,
+}
+
+impl RejectedCall {
+    async fn write(
+        self,
+        seq: u64,
+        stdin: &mut ChildStdin,
+        child: &mut tokio::process::Child,
+        child_pid: Option<u32>,
+        deadline: tokio::time::Instant,
+        state: &mut DriveState,
+    ) -> Result<(), CodeModeExecutionError> {
+        if !self.is_internal {
+            state.reserve_trace_call(seq, &self.trace_id)?;
+            state.record_call((
+                seq,
+                CodeModeExecutedCall {
+                    upstream_content: None,
+                    id: self.trace_id,
+                    ok: false,
+                    elapsed_ms: 0,
+                    start_ms: None,
+                    params: None,
+                    params_digest: None,
+                    error_kind: Some(self.error.kind.clone()),
+                    ui: None,
+                },
+            ))?;
+        }
+        let error = match self.tool {
+            Some(tool) => self.error.with_tool(tool),
+            None => self.error,
+        };
+        write_runner_input_by_deadline(
+            stdin,
+            &CodeModeRunnerInput::ToolError {
+                seq,
+                error: Box::new(error),
             },
-        ))?;
+            deadline,
+            child,
+            child_pid,
+            &state.calls,
+        )
+        .await
     }
-    write_runner_input_by_deadline(
-        stdin,
-        &CodeModeRunnerInput::ToolError {
-            seq,
-            error: Box::new(error.with_tool(id)),
-        },
-        deadline,
-        child,
-        child_pid,
-        &state.calls,
-    )
-    .await
 }
 
 /// Only search/describe have a defined fail-open discovery result. Retrieval

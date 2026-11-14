@@ -12,14 +12,24 @@ use crate::CodeModeCallError;
 pub(crate) const MAX_TOOL_ID_BYTES: usize = 1024;
 
 pub(crate) fn check_tool_id_bytes(id: &str) -> Result<(), CodeModeCallError> {
-    if id.len() <= MAX_TOOL_ID_BYTES {
-        return Ok(());
+    within_byte_limit(id.len(), MAX_TOOL_ID_BYTES, || {
+        format!("callTool id exceeds the {MAX_TOOL_ID_BYTES}-byte UTF-8 limit")
+    })
+}
+
+/// `Ok` when `len <= max`; otherwise a `budget_exceeded` error whose message
+/// names only the limit. Callers never pass caller-controlled text here, so a
+/// rejected payload is never echoed in the error contract.
+fn within_byte_limit(
+    len: usize,
+    max: usize,
+    message: impl FnOnce() -> String,
+) -> Result<(), CodeModeCallError> {
+    if len <= max {
+        Ok(())
+    } else {
+        Err(CodeModeCallError::new("budget_exceeded", message()))
     }
-    // Never include an oversized caller-controlled ID in the error contract.
-    Err(CodeModeCallError::new(
-        "budget_exceeded",
-        format!("callTool id exceeds the {MAX_TOOL_ID_BYTES}-byte UTF-8 limit"),
-    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -199,58 +209,88 @@ pub(crate) const MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN: usize = 64 * 1024 * 1024
 pub(crate) const MAX_STEP_NAME_BYTES: usize = 1024;
 
 pub(crate) fn check_tool_params_bytes(len: usize) -> Result<(), CodeModeCallError> {
-    if len <= MAX_TOOL_PARAMS_BYTES {
-        return Ok(());
-    }
-    // Never echo caller-controlled params in the error contract.
-    Err(CodeModeCallError::new(
-        "budget_exceeded",
-        format!("callTool params exceed the {MAX_TOOL_PARAMS_BYTES}-byte serialized limit"),
-    ))
+    within_byte_limit(len, MAX_TOOL_PARAMS_BYTES, || {
+        format!("callTool params exceed the {MAX_TOOL_PARAMS_BYTES}-byte serialized limit")
+    })
 }
 
 pub(crate) fn check_pending_tool_params_bytes(
     pending: usize,
     len: usize,
 ) -> Result<(), CodeModeCallError> {
-    if pending.saturating_add(len) <= MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN {
-        return Ok(());
-    }
-    Err(CodeModeCallError::new(
-        "budget_exceeded",
-        format!(
-            "pending callTool params exceed the {MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN}-byte per-run limit; await earlier calls before issuing more"
-        ),
-    ))
+    within_byte_limit(
+        pending.saturating_add(len),
+        MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN,
+        || {
+            format!(
+                "pending callTool params exceed the {MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN}-byte per-run limit; await earlier calls before issuing more"
+            )
+        },
+    )
 }
 
 pub(crate) fn check_step_name_bytes(name: &str) -> Result<(), CodeModeCallError> {
-    if name.len() <= MAX_STEP_NAME_BYTES {
-        return Ok(());
-    }
-    // Never echo the oversized name in the error contract.
-    Err(CodeModeCallError::new(
-        "budget_exceeded",
-        format!("codemode.step name exceeds the {MAX_STEP_NAME_BYTES}-byte UTF-8 limit"),
-    ))
+    within_byte_limit(name.len(), MAX_STEP_NAME_BYTES, || {
+        format!("codemode.step name exceeds the {MAX_STEP_NAME_BYTES}-byte UTF-8 limit")
+    })
 }
 
-/// Serialized JSON length of `value`, computed without allocating the text.
-pub(crate) fn serialized_json_len(value: &Value) -> usize {
-    struct Counter(usize);
-    impl io::Write for Counter {
+/// Admit one call's params against the per-call cap and the run's `pending`
+/// params bytes, returning the serialized size to reserve. Measurement stops
+/// at the per-call cap, so an oversized payload is never walked in full.
+pub(crate) fn admit_tool_params(
+    params: &Value,
+    pending: usize,
+) -> Result<usize, CodeModeCallError> {
+    let bytes = serialized_len_within(params, MAX_TOOL_PARAMS_BYTES).unwrap_or(usize::MAX);
+    check_tool_params_bytes(bytes)?;
+    check_pending_tool_params_bytes(pending, bytes)?;
+    Ok(bytes)
+}
+
+/// Why [`serialized_len_within`] could not report a length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SerializedLenError {
+    /// The encoding passed `limit`; counting stopped there.
+    Exceeded,
+    /// The value could not be encoded.
+    Encode,
+}
+
+/// Serialized JSON length of `value`, counted without allocating the text and
+/// abandoned as soon as it passes `limit`.
+pub(crate) fn serialized_len_within(
+    value: &impl Serialize,
+    limit: usize,
+) -> Result<usize, SerializedLenError> {
+    struct ByteCounter {
+        bytes: usize,
+        limit: usize,
+        exceeded: bool,
+    }
+    impl io::Write for ByteCounter {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            self.0 = self.0.saturating_add(buf.len());
+            if buf.len() > self.limit.saturating_sub(self.bytes) {
+                self.exceeded = true;
+                return Err(io::Error::other("serialized byte limit"));
+            }
+            self.bytes += buf.len();
             Ok(buf.len())
         }
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
     }
-    let mut counter = Counter(0);
-    // Writing a `Value` to an infallible sink cannot fail.
-    serde_json::to_writer(&mut counter, value).ok();
-    counter.0
+    let mut counter = ByteCounter {
+        bytes: 0,
+        limit,
+        exceeded: false,
+    };
+    match serde_json::to_writer(&mut counter, value) {
+        Ok(()) => Ok(counter.bytes),
+        Err(_) if counter.exceeded => Err(SerializedLenError::Exceeded),
+        Err(_) => Err(SerializedLenError::Encode),
+    }
 }
 
 // Javy interprets this as the native stack size in bytes. The runtime
@@ -282,12 +322,14 @@ mod id_tests {
     }
 
     #[test]
-    fn serialized_json_len_matches_serde_output() {
+    fn serialized_len_within_matches_serde_output_and_stops_at_the_limit() {
         let value =
             serde_json::json!({"a": "x\"y", "b": [1, 2.5, null, true], "c": {"é": "\u{1}"}});
+        let len = serde_json::to_vec(&value).unwrap().len();
+        assert_eq!(serialized_len_within(&value, len), Ok(len));
         assert_eq!(
-            serialized_json_len(&value),
-            serde_json::to_vec(&value).unwrap().len()
+            serialized_len_within(&value, len - 1),
+            Err(SerializedLenError::Exceeded)
         );
     }
 

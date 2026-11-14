@@ -534,7 +534,7 @@ impl UpstreamPool {
         subject: &str,
         mut params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, CapabilityCallError> {
-        if !config.enabled || !config.proxy_resources {
+        if !config.serves_resources() {
             return Err(CapabilityCallError::Other {
                 message: format!(
                     "resource proxying is disabled for upstream `{}`",

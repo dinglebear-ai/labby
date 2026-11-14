@@ -20,24 +20,22 @@ pub(crate) async fn dispatch_git_method(
 ) -> Result<Value, ToolError> {
     let spec = GitCommandSpec::for_method(method, params)?;
     let workdir = git_workdir(workspace, spec.cwd.as_ref()).await?;
-    let ceiling = git_ceiling_directory(workspace.root_path());
-    let git = GitInvocation {
-        cwd: &workdir,
-        ceiling: ceiling.as_deref(),
-    };
+    // Git must not walk up into the workspace root's parent while discovering
+    // a repository: the root itself may hold one, nothing outside it may.
+    let ceiling = workspace.root_path().parent();
     if let Some(remote) = &spec.remote_preflight {
-        ensure_remote_urls_allowed(git, remote, RemoteUrlMode::Fetch).await?;
+        ensure_remote_urls_allowed(&workdir, ceiling, remote, RemoteUrlMode::Fetch).await?;
     }
     if let Some(remote) = &spec.push_remote_preflight {
-        ensure_remote_urls_allowed(git, remote, RemoteUrlMode::Push).await?;
+        ensure_remote_urls_allowed(&workdir, ceiling, remote, RemoteUrlMode::Push).await?;
     }
     if let Some(branch) = &spec.branch_preflight {
-        ensure_branch_ref_allowed(git, branch).await?;
+        ensure_branch_ref_allowed(&workdir, ceiling, branch).await?;
     }
     if let Some(destination) = &spec.clone_destination {
         ensure_clone_destination_allowed(&workdir, destination).await?;
     }
-    let mut stdout = git.run(&spec.args).await?;
+    let mut stdout = run_git(&workdir, ceiling, &spec.args).await?;
     if matches!(method, "status" | "diff") {
         stdout = scrub_git_reserved_metadata(&stdout);
     }
@@ -138,29 +136,14 @@ async fn looks_like_git_directory(dir: &Path) -> bool {
     true
 }
 
-/// Directory git must not walk up into while discovering a repository: the
-/// parent of the workspace root, so the root itself may hold a repository but
-/// nothing outside the workspace can be discovered.
-fn git_ceiling_directory(workspace_root: &Path) -> Option<PathBuf> {
-    workspace_root.parent().map(Path::to_path_buf)
-}
-
-#[derive(Clone, Copy)]
-struct GitInvocation<'a> {
-    cwd: &'a Path,
-    ceiling: Option<&'a Path>,
-}
-
-impl GitInvocation<'_> {
-    async fn run(self, args: &[String]) -> Result<String, ToolError> {
-        run_git_with_ceiling(self.cwd, self.ceiling, args).await
-    }
-}
-
-async fn ensure_branch_ref_allowed(git: GitInvocation<'_>, branch: &str) -> Result<(), ToolError> {
+async fn ensure_branch_ref_allowed(
+    workdir: &Path,
+    ceiling: Option<&Path>,
+    branch: &str,
+) -> Result<(), ToolError> {
     let mut args = git_base_args(["check-ref-format", "--branch"]);
     args.push(branch.to_string());
-    git.run(&args)
+    run_git(workdir, ceiling, &args)
         .await
         .map(|_| ())
         .map_err(|_| ToolError::InvalidParam {
@@ -241,7 +224,8 @@ enum RemoteUrlMode {
 }
 
 async fn ensure_remote_urls_allowed(
-    git: GitInvocation<'_>,
+    workdir: &Path,
+    ceiling: Option<&Path>,
     remote: &str,
     mode: RemoteUrlMode,
 ) -> Result<(), ToolError> {
@@ -250,19 +234,16 @@ async fn ensure_remote_urls_allowed(
         RemoteUrlMode::Push => git_base_args(["remote", "get-url", "--push", "--all"]),
     };
     args.push(remote.to_string());
-    let urls = git.run(&args).await?;
+    let urls = run_git(workdir, ceiling, &args).await?;
     for url in urls.lines().map(str::trim).filter(|line| !line.is_empty()) {
         validate_remote_url(url, "remote")?;
     }
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) async fn run_git(cwd: &Path, args: &[String]) -> Result<String, ToolError> {
-    run_git_with_ceiling(cwd, None, args).await
-}
-
-async fn run_git_with_ceiling(
+/// Run git in `cwd`. `ceiling`, when set, is exported as
+/// `GIT_CEILING_DIRECTORIES` so repository discovery stops below it.
+pub(crate) async fn run_git(
     cwd: &Path,
     ceiling: Option<&Path>,
     args: &[String],
@@ -765,6 +746,7 @@ wait"#,
         let git_dir = bare.to_string_lossy().to_string();
         let tree = run_git(
             &bare,
+            None,
             &[
                 format!("--git-dir={git_dir}"),
                 "hash-object".into(),
@@ -788,6 +770,7 @@ wait"#,
         .unwrap();
         let commit = run_git(
             &bare,
+            None,
             &[
                 format!("--git-dir={git_dir}"),
                 "hash-object".into(),
@@ -858,7 +841,7 @@ wait"#,
 
         // Run the fenced argv directly, bypassing `reject_implicit_git_directories`,
         // so the git-level fence is proven on its own.
-        let err = run_git(&bare, &git_base_args(["log", "--oneline", "-n", "1"]))
+        let err = run_git(&bare, None, &git_base_args(["log", "--oneline", "-n", "1"]))
             .await
             .unwrap_err();
         assert_eq!(err.kind(), "git_failed");
@@ -869,7 +852,9 @@ wait"#,
     #[tokio::test]
     async fn git_does_not_discover_a_repository_outside_the_workspace() {
         let outer = tempfile::tempdir().unwrap();
-        run_git(outer.path(), &["init".to_string()]).await.unwrap();
+        run_git(outer.path(), None, &["init".to_string()])
+            .await
+            .unwrap();
         let root = outer.path().join("workspace");
         std::fs::create_dir_all(&root).unwrap();
         let workspace = StateWorkspace::new(root, StateWorkspaceLimits::default()).unwrap();
@@ -884,16 +869,20 @@ wait"#,
     #[tokio::test]
     async fn git_v2_can_operate_inside_cloned_child_repo() {
         let source = tempfile::tempdir().unwrap();
-        run_git(source.path(), &["init".to_string()]).await.unwrap();
+        run_git(source.path(), None, &["init".to_string()])
+            .await
+            .unwrap();
         std::fs::write(source.path().join("README.md"), "hi\n").unwrap();
         run_git(
             source.path(),
+            None,
             &["add".to_string(), "--".to_string(), "README.md".to_string()],
         )
         .await
         .unwrap();
         run_git(
             source.path(),
+            None,
             &[
                 "-c".to_string(),
                 "user.name=Lab".to_string(),
@@ -914,6 +903,7 @@ wait"#,
                 .unwrap();
         run_git(
             workspace.root_path(),
+            None,
             &[
                 "clone".to_string(),
                 "--".to_string(),

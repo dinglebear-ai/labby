@@ -182,7 +182,6 @@ pub use notifications::UpstreamNotificationEvent;
 pub use oauth_invalidation::OAuthSessionInvalidation;
 pub(crate) use prompts_get::ExactPromptCallError;
 pub use prompts_list::ListedUpstreamPrompt;
-pub use prompts_snapshot::CachedUpstreamPrompt;
 pub use resources_list::{ListedUpstreamResource, ListedUpstreamResourceTemplate};
 pub(crate) use resources_read::ExactResourceReadError;
 pub(crate) use stdio_stderr::install_upstream_stderr_level_default;

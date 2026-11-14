@@ -3397,61 +3397,87 @@ mod tests {
         task.abort();
     }
 
-    #[tokio::test]
-    async fn cold_resource_listing_discovers_only_allowed_resource_upstreams() {
+    /// Serve `fixture` over streamable HTTP; every session shares its counters.
+    async fn spawn_resource_upstream(
+        fixture: ColdResourceServer,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
         use rmcp::transport::streamable_http_server::{
             StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let service = StreamableHttpService::new(
-            || Ok(ColdResourceServer::default()),
+            move || Ok(fixture.clone()),
             Arc::new(NeverSessionManager::default()),
             StreamableHttpServerConfig::default()
                 .with_allowed_hosts(vec![address.to_string()])
                 .with_json_response(true),
         );
-        let upstream_task = tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
                 .await
                 .unwrap();
         });
+        (address, task)
+    }
+
+    /// A route-scoped server whose gateway has three lazily seeded upstreams at
+    /// `address`: `qa-vm-service`, `outside-route`, and the tools-only
+    /// `not-exposed` (`proxy_resources = false`).
+    async fn resource_route_server(
+        route: crate::mcp::route_scope::McpRouteScope,
+        address: std::net::SocketAddr,
+        env: serde_json::Map<String, Value>,
+    ) -> (LabMcpServer, Arc<UpstreamPool>) {
+        let configs = ["qa-vm-service", "not-exposed", "outside-route"].map(|name| {
+            serde_json::from_value::<crate::config::UpstreamConfig>(json!({
+                "name": name, "enabled": true, "url": format!("http://{address}/mcp"),
+                "proxy_resources": name != "not-exposed",
+                "expose_resources": ["qa-vm-service://skill"],
+                "env": env,
+            }))
+            .unwrap()
+        });
+        let pool = Arc::new(UpstreamPool::new());
+        pool.seed_lazy_upstreams(&configs).await;
+        let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
+        runtime.swap(Some(Arc::clone(&pool))).await;
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                std::path::PathBuf::from("config.toml"),
+                runtime,
+            ),
+        );
+        let mut config = crate::config::LabConfig::default();
+        config.code_mode.enabled = true;
+        config.upstream = configs.into();
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let mut server = code_mode_server_with_scope(route).await;
+        server.gateway_manager = Some(manager);
+        (server, pool)
+    }
+
+    fn qa_route(upstreams: &[&str]) -> crate::mcp::route_scope::McpRouteScope {
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "qa",
+            upstreams.iter().copied(),
+            std::iter::empty::<&str>(),
+            false,
+        )
+    }
+
+    #[tokio::test]
+    async fn cold_resource_listing_discovers_only_allowed_resource_upstreams() {
+        let (address, upstream_task) = spawn_resource_upstream(ColdResourceServer::default()).await;
         for route in [
             crate::mcp::route_scope::McpRouteScope::Root,
-            crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "qa",
-                ["qa-vm-service"],
-                std::iter::empty::<&str>(),
-                false,
-            ),
+            qa_route(&["qa-vm-service"]),
         ] {
             let restricted = !route.is_root();
-            let configs = ["qa-vm-service", "not-exposed", "outside-route"].map(|name| {
-                serde_json::from_value::<crate::config::UpstreamConfig>(json!({
-                    "name": name, "enabled": true, "url": format!("http://{address}/mcp"),
-                    "proxy_resources": name != "not-exposed",
-                    "expose_resources": ["qa-vm-service://skill"]
-                }))
-                .unwrap()
-            });
-            let pool = Arc::new(UpstreamPool::new());
-            pool.seed_lazy_upstreams(&configs).await;
-            let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
-            runtime.swap(Some(Arc::clone(&pool))).await;
-            let manager = Arc::new(
-                crate::dispatch::gateway::config_store::test_gateway_manager(
-                    std::path::PathBuf::from("config.toml"),
-                    runtime,
-                ),
-            );
-            let mut config = crate::config::LabConfig::default();
-            config.code_mode.enabled = true;
-            config.upstream = configs.into();
-            manager
-                .seed_config_unchecked_for_tests(config.to_gateway_config())
-                .await;
-            let mut server = code_mode_server_with_scope(route).await;
-            server.gateway_manager = Some(manager);
+            let (server, pool) =
+                resource_route_server(route, address, serde_json::Map::new()).await;
             let (transport, _client) = tokio::io::duplex(64);
             let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
                 server, transport, None,
@@ -3497,79 +3523,21 @@ mod tests {
 
     #[tokio::test]
     async fn direct_upstream_reads_enforce_route_and_proxy_resources() {
-        use rmcp::transport::streamable_http_server::{
-            StreamableHttpServerConfig, StreamableHttpService, session::never::NeverSessionManager,
-        };
         use std::sync::atomic::Ordering;
         let fixture = ColdResourceServer::default();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let shared = fixture.clone();
-        let service = StreamableHttpService::new(
-            move || Ok(shared.clone()),
-            Arc::new(NeverSessionManager::default()),
-            StreamableHttpServerConfig::default()
-                .with_allowed_hosts(vec![address.to_string()])
-                .with_json_response(true),
-        );
-        let upstream_task = tokio::spawn(async move {
-            axum::serve(listener, axum::Router::new().nest_service("/mcp", service))
-                .await
-                .unwrap();
-        });
+        let (address, upstream_task) = spawn_resource_upstream(fixture.clone()).await;
+        let route_upstreams = ["qa-vm-service", "not-exposed"];
         for (route, relay_mode) in [
             (crate::mcp::route_scope::McpRouteScope::Root, None),
-            (
-                crate::mcp::route_scope::McpRouteScope::protected_subset(
-                    "qa",
-                    ["qa-vm-service", "not-exposed"],
-                    std::iter::empty::<&str>(),
-                    false,
-                ),
-                None,
-            ),
-            (
-                crate::mcp::route_scope::McpRouteScope::protected_subset(
-                    "qa",
-                    ["qa-vm-service", "not-exposed"],
-                    std::iter::empty::<&str>(),
-                    false,
-                ),
-                Some("pooled"),
-            ),
+            (qa_route(&route_upstreams), None),
+            (qa_route(&route_upstreams), Some("pooled")),
         ] {
             let restricted = !route.is_root();
-            let configs = ["qa-vm-service", "not-exposed", "outside-route"].map(|name| {
-                let mut env = serde_json::Map::new();
-                if let Some(mode) = relay_mode {
-                    env.insert("MCP_UPSTREAM_RELAY_MODE".into(), json!(mode));
-                }
-                serde_json::from_value::<crate::config::UpstreamConfig>(json!({
-                    "name": name, "enabled": true, "url": format!("http://{address}/mcp"),
-                    "proxy_resources": name != "not-exposed",
-                    "expose_resources": ["qa-vm-service://skill"],
-                    "env": env,
-                }))
-                .unwrap()
-            });
-            let pool = Arc::new(UpstreamPool::new());
-            pool.seed_lazy_upstreams(&configs).await;
-            let runtime = crate::dispatch::gateway::manager::GatewayRuntimeHandle::default();
-            runtime.swap(Some(Arc::clone(&pool))).await;
-            let manager = Arc::new(
-                crate::dispatch::gateway::config_store::test_gateway_manager(
-                    std::path::PathBuf::from("config.toml"),
-                    runtime,
-                ),
-            );
-            let mut config = crate::config::LabConfig::default();
-            config.code_mode.enabled = true;
-            config.upstream = configs.into();
-            manager
-                .seed_config_unchecked_for_tests(config.to_gateway_config())
-                .await;
-            let mut server = code_mode_server_with_scope(route).await;
-            server.gateway_manager = Some(manager);
+            let mut env = serde_json::Map::new();
+            if let Some(mode) = relay_mode {
+                env.insert("MCP_UPSTREAM_RELAY_MODE".into(), json!(mode));
+            }
+            let (server, _pool) = resource_route_server(route, address, env).await;
             let (transport, _client) = tokio::io::duplex(64);
             let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
                 server, transport, None,

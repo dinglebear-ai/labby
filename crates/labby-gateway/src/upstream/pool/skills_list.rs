@@ -128,11 +128,12 @@ pub(super) struct UpstreamSkills {
     /// must not present an owner as unambiguous when a later entry on an
     /// already-received page claims the same resource.
     pub(super) ambiguous_resource_uris: BTreeSet<String>,
-    /// Walk-scoped scratch: first owner and binding seen for each claim.
-    /// Owners are shared, not cloned per claim, so memory stays proportional
-    /// to page bytes; the map is cleared before the snapshot is returned.
-    pub(super) observed_resource_owners: BTreeMap<String, (Arc<str>, Option<(String, u64)>)>,
 }
+
+/// Walk-scoped scratch for [`ingest_page`]: the first owner and binding seen
+/// for each claim. Owners are shared, not cloned per claim, so memory stays
+/// proportional to page bytes. It is never part of the cached snapshot.
+type ObservedResourceOwners = BTreeMap<String, (Arc<str>, Option<(String, u64)>)>;
 
 #[derive(Debug, Clone)]
 pub(super) struct ExcludedSkill {
@@ -209,6 +210,7 @@ pub(super) fn skills_get_error(error: &ServiceError) -> String {
 fn ingest_page(
     entries: Vec<SkillEntry>,
     out: &mut UpstreamSkills,
+    observed_resource_owners: &mut ObservedResourceOwners,
     max_items: usize,
     max_candidates: usize,
 ) -> Option<SkillIngestCap> {
@@ -245,20 +247,14 @@ fn ingest_page(
                 continue;
             };
             let binding = resource.map(|resource| (resource.digest.clone(), resource.size));
-            if let Some((existing_owner, existing_binding)) =
-                out.observed_resource_owners.get(&claim)
-            {
+            if let Some((existing_owner, existing_binding)) = observed_resource_owners.get(&claim) {
                 // Nested Skills may publish the same file. Its bytes remain
                 // unambiguous only when every owner's binding is identical.
-                if !Arc::ptr_eq(existing_owner, &owner)
-                    && existing_owner != &owner
-                    && (binding.is_none() || *existing_binding != binding)
-                {
+                if existing_owner != &owner && (binding.is_none() || *existing_binding != binding) {
                     out.ambiguous_resource_uris.insert(claim);
                 }
             } else {
-                out.observed_resource_owners
-                    .insert(claim, (Arc::clone(&owner), binding));
+                observed_resource_owners.insert(claim, (Arc::clone(&owner), binding));
             }
         }
     }
@@ -298,20 +294,16 @@ fn ingest_page(
     None
 }
 
-/// Whether `entry` is small enough to take part in the ownership pre-scan.
-///
-/// Mirrors the validation limits that would reject it anyway. A URI longer
-/// than four bytes per allowed character cannot fit, so it is rejected on byte
-/// length before any character walk.
+/// Whether `entry` can take part in the ownership pre-scan: its URI parses
+/// under the canonical skill-URI rules (including the length cap) and its
+/// manifest is within the per-skill entry cap. Validation rejects any other
+/// entry, so it can never own a resource.
 fn within_ownership_scan_limits(entry: &SkillEntry) -> bool {
-    let uri_ok = entry.uri.len() <= limits::MAX_URI_CHARS
-        || (entry.uri.len() <= limits::MAX_URI_CHARS.saturating_mul(4)
-            && entry.uri.chars().count() <= limits::MAX_URI_CHARS);
-    let resources_ok = entry
-        .resources
-        .as_ref()
-        .is_none_or(|resources| resources.len() <= limits::MAX_RESOURCES_PER_SKILL);
-    uri_ok && resources_ok
+    parse_skill_resource_uri(&entry.uri).is_ok()
+        && entry
+            .resources
+            .as_ref()
+            .is_none_or(|resources| resources.len() <= limits::MAX_RESOURCES_PER_SKILL)
 }
 
 impl UpstreamPool {
@@ -469,6 +461,7 @@ impl UpstreamPool {
             max_items
         };
         let mut out = UpstreamSkills::default();
+        let mut observed_resource_owners = ObservedResourceOwners::new();
         let mut cursor: Option<String> = None;
         let mut unclassified_page = false;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
@@ -532,9 +525,13 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            if let Some(cap) =
-                ingest_page(result.skills, &mut out, max_validated_items, max_candidates)
-            {
+            if let Some(cap) = ingest_page(
+                result.skills,
+                &mut out,
+                &mut observed_resource_owners,
+                max_validated_items,
+                max_candidates,
+            ) {
                 out.truncated = true;
                 if max_items == limits::MAX_SKILLS_PER_UPSTREAM {
                     tracing::warn!(
@@ -607,9 +604,6 @@ impl UpstreamPool {
         if unclassified_page && out.cache_scope.as_deref() == Some(CACHE_SCOPE_PUBLIC) {
             out.cache_scope = Some(CACHE_SCOPE_PRIVATE.to_owned());
         }
-        // Only `ambiguous_resource_uris` outlives the walk; do not cache the
-        // per-claim scratch map with the snapshot.
-        out.observed_resource_owners = BTreeMap::new();
         Ok(out)
     }
 

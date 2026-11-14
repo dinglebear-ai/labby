@@ -150,7 +150,7 @@ pub(super) async fn list_resources(
     let config = manager
         .upstream_config(upstream)
         .await
-        .filter(|config| config.enabled && config.proxy_resources)
+        .filter(labby_runtime::gateway_config::UpstreamConfig::serves_resources)
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: "upstream is not available for resource discovery".to_string(),

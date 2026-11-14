@@ -39,13 +39,15 @@ fn oversized_entry_uri_never_enters_the_ownership_scan() {
         .map(|index| resource(format!("skill://hostile/claim-{index}")))
         .collect();
     let mut out = UpstreamSkills::default();
+    let mut owners = ObservedResourceOwners::new();
     ingest_page(
         vec![entry(&owner, claims)],
         &mut out,
+        &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );
-    assert!(out.observed_resource_owners.is_empty());
+    assert!(owners.is_empty());
     assert!(out.skills.is_empty());
     assert_eq!(
         out.excluded.len(),
@@ -60,13 +62,15 @@ fn over_long_resource_manifest_never_enters_the_ownership_scan() {
         .map(|index| resource(format!("skill://wide/file-{index}")))
         .collect();
     let mut out = UpstreamSkills::default();
+    let mut owners = ObservedResourceOwners::new();
     ingest_page(
         vec![entry("skill://wide/SKILL.md", claims)],
         &mut out,
+        &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );
-    assert!(out.observed_resource_owners.is_empty());
+    assert!(owners.is_empty());
     assert_eq!(out.excluded.len(), 1);
 }
 
@@ -76,20 +80,18 @@ fn in_limit_entries_share_one_owner_allocation_across_claims() {
         .map(|index| resource(format!("skill://shared/file-{index}")))
         .collect();
     let mut out = UpstreamSkills::default();
+    let mut owners = ObservedResourceOwners::new();
     ingest_page(
         vec![entry("skill://shared/SKILL.md", claims)],
         &mut out,
+        &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );
-    let owners: Vec<_> = out
-        .observed_resource_owners
-        .values()
-        .map(|(owner, _)| owner)
-        .collect();
-    assert!(owners.len() >= 8);
+    let shared: Vec<_> = owners.values().map(|(owner, _)| owner).collect();
+    assert!(shared.len() >= 8);
     assert!(
-        owners.windows(2).all(|pair| Arc::ptr_eq(pair[0], pair[1])),
+        shared.windows(2).all(|pair| Arc::ptr_eq(pair[0], pair[1])),
         "claims must share the owner, not clone it"
     );
 }
@@ -102,12 +104,14 @@ fn conflicting_claims_across_owners_are_still_ambiguous() {
     let mut second = shared();
     second[0].digest = "sha256:two".to_string();
     let mut out = UpstreamSkills::default();
+    let mut owners = ObservedResourceOwners::new();
     ingest_page(
         vec![
             entry("skill://a/SKILL.md", first),
             entry("skill://a/b/SKILL.md", second),
         ],
         &mut out,
+        &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );

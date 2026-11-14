@@ -2,7 +2,6 @@
 
 use super::*;
 use std::collections::HashMap;
-use std::io::{self, Write};
 use std::ops::Deref;
 
 pub(super) const MAX_HOST_TRACE_ROWS: usize = 4096;
@@ -107,43 +106,13 @@ fn trace_budget_error() -> ToolError {
 
 /// Count serialized row bytes without allocating another complete JSON buffer.
 fn encoded_bytes(call: &CodeModeExecutedCall, limit: usize) -> Result<usize, ToolError> {
-    let mut counter = ByteCounter {
-        bytes: 0,
-        limit,
-        exceeded: false,
-    };
-    if serde_json::to_writer(&mut counter, call).is_err() {
-        return if counter.exceeded {
-            Err(trace_budget_error())
-        } else {
-            Err(ToolError::Sdk {
-                sdk_kind: "internal_error".into(),
-                message: "failed to encode a Code Mode trace row".into(),
-            })
-        };
-    }
-    Ok(counter.bytes)
-}
-
-struct ByteCounter {
-    bytes: usize,
-    limit: usize,
-    exceeded: bool,
-}
-
-impl Write for ByteCounter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() > self.limit.saturating_sub(self.bytes) {
-            self.exceeded = true;
-            return Err(io::Error::other("host trace byte limit"));
-        }
-        self.bytes += buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+    crate::protocol::serialized_len_within(call, limit).map_err(|error| match error {
+        crate::protocol::SerializedLenError::Exceeded => trace_budget_error(),
+        crate::protocol::SerializedLenError::Encode => ToolError::Sdk {
+            sdk_kind: "internal_error".into(),
+            message: "failed to encode a Code Mode trace row".into(),
+        },
+    })
 }
 
 #[cfg(test)]

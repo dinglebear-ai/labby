@@ -317,7 +317,7 @@ impl LabMcpServer {
         let route_allows = self.route_scope.allows_upstream(&upstream_name)
             && self.route_team_credential_valid(&upstream_name).await;
         let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
-        let relay_config = if route_allows && relay_capabilities.is_some() {
+        let relay_config = if relay_capabilities.is_some() {
             match &self.gateway_manager {
                 Some(manager) => manager
                     .upstream_config(&upstream_name)
@@ -325,39 +325,42 @@ impl LabMcpServer {
                     // A tools-only (`proxy_resources = false`) or disabled
                     // upstream must not become readable by URI through the
                     // relay; the pooled branch already refuses both.
-                    .filter(|config| config.enabled && config.proxy_resources)
+                    .filter(UpstreamConfig::serves_resources)
                     .filter(crate::mcp::context::upstream_uses_capability_relay),
                 None => None,
             }
         } else {
             None
         };
-        let result = match (relay_config, relay_capabilities) {
-            _ if !route_allows => None,
-            (Some(config), Some(capabilities)) => {
-                pool.read_resource_relayed_typed(
-                    &config,
-                    None,
-                    request,
-                    context.peer.clone(),
-                    context.id.clone(),
-                    context.ct.clone(),
-                    self.relay_session_id,
-                    capabilities,
-                )
-                .await
+        let result = if !route_allows {
+            None
+        } else {
+            match (relay_config, relay_capabilities) {
+                (Some(config), Some(capabilities)) => {
+                    pool.read_resource_relayed_typed(
+                        &config,
+                        None,
+                        request,
+                        context.peer.clone(),
+                        context.id.clone(),
+                        context.ct.clone(),
+                        self.relay_session_id,
+                        capabilities,
+                    )
+                    .await
+                }
+                _ => match pool
+                    .read_upstream_resource_request_allowed_typed(
+                        request,
+                        self.route_scope.allowed_upstreams(),
+                    )
+                    .await
+                {
+                    Some(Ok(result)) => Some(Ok(result.into())),
+                    Some(Err(error)) => Some(Err(error)),
+                    None => None,
+                },
             }
-            _ => match pool
-                .read_upstream_resource_request_allowed_typed(
-                    request,
-                    self.route_scope.allowed_upstreams(),
-                )
-                .await
-            {
-                Some(Ok(result)) => Some(Ok(result.into())),
-                Some(Err(error)) => Some(Err(error)),
-                None => None,
-            },
         };
         match result {
             Some(Ok(result)) => {

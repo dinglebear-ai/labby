@@ -849,6 +849,15 @@ fn is_http_token_byte(byte: u8) -> bool {
 }
 
 impl UpstreamConfig {
+    /// Whether this upstream's resources may be read through the gateway:
+    /// it is enabled and has not opted out with `proxy_resources = false`.
+    /// Every direct-read path (pooled, relay, subject-scoped, Code Mode)
+    /// shares this predicate.
+    #[must_use]
+    pub fn serves_resources(&self) -> bool {
+        self.enabled && self.proxy_resources
+    }
+
     /// Validate the upstream name and mutually-exclusive auth shapes.
     /// `bearer_token_env` and `oauth` both configured is a config error.
     pub fn validate(&self) -> Result<(), ConfigError> {

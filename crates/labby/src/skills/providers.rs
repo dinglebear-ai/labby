@@ -199,7 +199,7 @@ impl FirstPartySkillProviders {
         let mut duplicate_rejections = Vec::new();
         let mut locals = Vec::with_capacity(candidates.len());
         for (skill, access) in candidates {
-            if claimants.get(&skill.entry.uri).copied().unwrap_or_default() > 1 {
+            if claimants[&skill.entry.uri] > 1 {
                 tracing::warn!(
                     skill = %skill.entry.uri,
                     "excluding Artifact skills from different records that share one manifest URI"
