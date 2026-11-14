@@ -20,19 +20,24 @@ pub(crate) async fn dispatch_git_method(
 ) -> Result<Value, ToolError> {
     let spec = GitCommandSpec::for_method(method, params)?;
     let workdir = git_workdir(workspace, spec.cwd.as_ref()).await?;
+    let ceiling = git_ceiling_directory(workspace.root_path());
+    let git = GitInvocation {
+        cwd: &workdir,
+        ceiling: ceiling.as_deref(),
+    };
     if let Some(remote) = &spec.remote_preflight {
-        ensure_remote_urls_allowed(&workdir, remote, RemoteUrlMode::Fetch).await?;
+        ensure_remote_urls_allowed(git, remote, RemoteUrlMode::Fetch).await?;
     }
     if let Some(remote) = &spec.push_remote_preflight {
-        ensure_remote_urls_allowed(&workdir, remote, RemoteUrlMode::Push).await?;
+        ensure_remote_urls_allowed(git, remote, RemoteUrlMode::Push).await?;
     }
     if let Some(branch) = &spec.branch_preflight {
-        ensure_branch_ref_allowed(&workdir, branch).await?;
+        ensure_branch_ref_allowed(git, branch).await?;
     }
     if let Some(destination) = &spec.clone_destination {
         ensure_clone_destination_allowed(&workdir, destination).await?;
     }
-    let mut stdout = run_git(&workdir, &spec.args).await?;
+    let mut stdout = git.run(&spec.args).await?;
     if matches!(method, "status" | "diff") {
         stdout = scrub_git_reserved_metadata(&stdout);
     }
@@ -60,7 +65,9 @@ async fn git_workdir(
     cwd: Option<&crate::state::path::VirtualPath>,
 ) -> Result<PathBuf, ToolError> {
     let Some(cwd) = cwd else {
-        return Ok(workspace.root_path().clone());
+        let root = workspace.root_path();
+        reject_implicit_git_directories(root, root).await?;
+        return Ok(root.clone());
     };
     let workdir = workspace.root_path().join(cwd.as_str());
     labby_runtime::path_safety::reject_existing_symlink_ancestors(workspace.root_path(), &workdir)?;
@@ -69,7 +76,10 @@ async fn git_workdir(
             sdk_kind: "permission_denied".to_string(),
             message: "git cwd is denied because it is a symlink".to_string(),
         }),
-        Ok(metadata) if metadata.is_dir() => Ok(workdir),
+        Ok(metadata) if metadata.is_dir() => {
+            reject_implicit_git_directories(workspace.root_path(), &workdir).await?;
+            Ok(workdir)
+        }
         Ok(_) => Err(ToolError::InvalidParam {
             message: "git cwd must be a directory".to_string(),
             param: "cwd".to_string(),
@@ -85,10 +95,72 @@ async fn git_workdir(
     }
 }
 
-async fn ensure_branch_ref_allowed(workspace_root: &Path, branch: &str) -> Result<(), ToolError> {
+/// Refuse a git cwd when it, or any ancestor up to the workspace root, has the
+/// on-disk layout of a git directory (`HEAD`, `objects/`, `refs/`).
+///
+/// A script can write such a layout with `state.writeFile` because none of its
+/// path segments is `.git`. Git would then discover the directory as an
+/// implicit bare repository and load its attacker-written `config`, whose
+/// `core.fsmonitor` (among others) runs a host shell command. The
+/// `safe.bareRepository=explicit` fence in [`git_base_args`] already refuses
+/// that discovery; this check keeps the refusal independent of the installed
+/// git version and reports it before git runs at all.
+async fn reject_implicit_git_directories(
+    workspace_root: &Path,
+    workdir: &Path,
+) -> Result<(), ToolError> {
+    let mut dir = Some(workdir);
+    while let Some(current) = dir {
+        if looks_like_git_directory(current).await {
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "git cwd is denied because it or a parent directory has the layout \
+                          of a bare git repository"
+                    .to_string(),
+            });
+        }
+        if current == workspace_root {
+            break;
+        }
+        dir = current
+            .parent()
+            .filter(|parent| parent.starts_with(workspace_root));
+    }
+    Ok(())
+}
+
+async fn looks_like_git_directory(dir: &Path) -> bool {
+    for entry in ["HEAD", "objects", "refs"] {
+        if tokio::fs::symlink_metadata(dir.join(entry)).await.is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Directory git must not walk up into while discovering a repository: the
+/// parent of the workspace root, so the root itself may hold a repository but
+/// nothing outside the workspace can be discovered.
+fn git_ceiling_directory(workspace_root: &Path) -> Option<PathBuf> {
+    workspace_root.parent().map(Path::to_path_buf)
+}
+
+#[derive(Clone, Copy)]
+struct GitInvocation<'a> {
+    cwd: &'a Path,
+    ceiling: Option<&'a Path>,
+}
+
+impl GitInvocation<'_> {
+    async fn run(self, args: &[String]) -> Result<String, ToolError> {
+        run_git_with_ceiling(self.cwd, self.ceiling, args).await
+    }
+}
+
+async fn ensure_branch_ref_allowed(git: GitInvocation<'_>, branch: &str) -> Result<(), ToolError> {
     let mut args = git_base_args(["check-ref-format", "--branch"]);
     args.push(branch.to_string());
-    run_git(workspace_root, &args)
+    git.run(&args)
         .await
         .map(|_| ())
         .map_err(|_| ToolError::InvalidParam {
@@ -169,7 +241,7 @@ enum RemoteUrlMode {
 }
 
 async fn ensure_remote_urls_allowed(
-    workspace_root: &Path,
+    git: GitInvocation<'_>,
     remote: &str,
     mode: RemoteUrlMode,
 ) -> Result<(), ToolError> {
@@ -178,24 +250,37 @@ async fn ensure_remote_urls_allowed(
         RemoteUrlMode::Push => git_base_args(["remote", "get-url", "--push", "--all"]),
     };
     args.push(remote.to_string());
-    let urls = run_git(workspace_root, &args).await?;
+    let urls = git.run(&args).await?;
     for url in urls.lines().map(str::trim).filter(|line| !line.is_empty()) {
         validate_remote_url(url, "remote")?;
     }
     Ok(())
 }
 
-pub(crate) async fn run_git(workspace_root: &Path, args: &[String]) -> Result<String, ToolError> {
+#[cfg(test)]
+pub(crate) async fn run_git(cwd: &Path, args: &[String]) -> Result<String, ToolError> {
+    run_git_with_ceiling(cwd, None, args).await
+}
+
+async fn run_git_with_ceiling(
+    cwd: &Path,
+    ceiling: Option<&Path>,
+    args: &[String],
+) -> Result<String, ToolError> {
     let git = super::executable::git_binary()?;
     let mut command = Command::new(git);
     command
         .args(args)
-        .current_dir(workspace_root)
+        .current_dir(cwd)
         .env_clear()
         .env("PATH", git_search_path())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_CONFIG_GLOBAL", null_device());
+    if let Some(ceiling) = ceiling {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
+    command
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -643,6 +728,157 @@ wait"#,
             .await
             .unwrap_err();
         assert_eq!(err.kind(), "invalid_param");
+    }
+
+    /// Writes, through the `state` provider, an implicit bare repository at
+    /// `x/` whose config makes `git log` run `marker_script` on the host.
+    #[cfg(unix)]
+    async fn write_hostile_bare_layout(
+        workspace: &StateWorkspace,
+        dir: &str,
+        marker_script: &Path,
+    ) -> PathBuf {
+        use crate::state::provider::dispatch_state_method;
+        let bare = workspace.root_path().join(dir);
+        for (path, content) in [
+            (format!("{dir}/HEAD"), "ref: refs/heads/main\n".to_string()),
+            (format!("{dir}/objects/.keep"), String::new()),
+            (format!("{dir}/refs/.keep"), String::new()),
+            (
+                format!("{dir}/config"),
+                format!(
+                    "[core]\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"{script}\"\n\
+                     [log]\n\tshowSignature = true\n[gpg]\n\tprogram = {script}\n",
+                    script = marker_script.display()
+                ),
+            ),
+        ] {
+            dispatch_state_method(
+                workspace,
+                "writeFile",
+                json!({"path": path, "content": content}),
+            )
+            .await
+            .unwrap();
+        }
+        // A signed commit on `main` so `log` consults `gpg.program`.
+        let git_dir = bare.to_string_lossy().to_string();
+        let tree = run_git(
+            &bare,
+            &[
+                format!("--git-dir={git_dir}"),
+                "hash-object".into(),
+                "-t".into(),
+                "tree".into(),
+                "-w".into(),
+                "/dev/null".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        let commit_file = bare.parent().unwrap().join("commit.txt");
+        std::fs::write(
+            &commit_file,
+            format!(
+                "tree {}\nauthor a <a@b> 0 +0000\ncommitter a <a@b> 0 +0000\n\
+                 gpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\nmsg\n",
+                tree.trim()
+            ),
+        )
+        .unwrap();
+        let commit = run_git(
+            &bare,
+            &[
+                format!("--git-dir={git_dir}"),
+                "hash-object".into(),
+                "-t".into(),
+                "commit".into(),
+                "-w".into(),
+                commit_file.to_string_lossy().to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        std::fs::remove_file(&commit_file).unwrap();
+        std::fs::create_dir_all(bare.join("refs/heads")).unwrap();
+        std::fs::write(bare.join("refs/heads/main"), commit).unwrap();
+        bare
+    }
+
+    #[cfg(unix)]
+    fn marker_script(dir: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let marker = dir.join("marker");
+        let script = dir.join("hostile.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script, marker)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_refuses_script_written_bare_repository() {
+        let outside = tempfile::tempdir().unwrap();
+        let (script, marker) = marker_script(outside.path());
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        write_hostile_bare_layout(&workspace, "x", &script).await;
+        std::fs::create_dir_all(workspace.root_path().join("x/sub")).unwrap();
+
+        for (method, cwd) in [
+            ("status", "x"),
+            ("log", "x"),
+            ("diff", "x"),
+            ("log", "x/sub"),
+        ] {
+            let err = dispatch_git_method(&workspace, method, json!({"cwd": cwd}))
+                .await
+                .unwrap_err();
+            assert_eq!(err.kind(), "permission_denied", "{method} in {cwd}: {err}");
+        }
+        assert!(!marker.exists(), "hostile git config ran a host command");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_fence_refuses_implicit_bare_repository_without_the_layout_check() {
+        let outside = tempfile::tempdir().unwrap();
+        let (script, marker) = marker_script(outside.path());
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        let bare = write_hostile_bare_layout(&workspace, "x", &script).await;
+
+        // Run the fenced argv directly, bypassing `reject_implicit_git_directories`,
+        // so the git-level fence is proven on its own.
+        let err = run_git(&bare, &git_base_args(["log", "--oneline", "-n", "1"]))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "git_failed");
+        assert!(err.to_string().contains("safe.bareRepository"), "{err}");
+        assert!(!marker.exists(), "hostile git config ran a host command");
+    }
+
+    #[tokio::test]
+    async fn git_does_not_discover_a_repository_outside_the_workspace() {
+        let outer = tempfile::tempdir().unwrap();
+        run_git(outer.path(), &["init".to_string()]).await.unwrap();
+        let root = outer.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = StateWorkspace::new(root, StateWorkspaceLimits::default()).unwrap();
+
+        let err = dispatch_git_method(&workspace, "status", json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "git_failed");
+        assert!(err.to_string().contains("not a git repository"), "{err}");
     }
 
     #[tokio::test]
