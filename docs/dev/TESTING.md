@@ -322,8 +322,11 @@ Rules:
 
 ## Live End-to-End Qualification
 
-The catalog-driven product suite is separate from MCP protocol conformance. Run
-the bounded hermetic PR tier with:
+The catalog-driven product suite is separate from MCP protocol conformance. CI
+runs the PR tier on every push to main and the nightly tier weekly; pull
+requests do not run it, so dispatch the `Live E2E` workflow on a branch when a
+change needs this evidence before merge. Run the bounded hermetic PR tier
+locally with:
 
 ```bash
 just live-e2e pr 1

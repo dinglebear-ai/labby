@@ -44,16 +44,36 @@ class ConformanceWorkflowTests(unittest.TestCase):
         for step in job["steps"]:
             self.assertNotIn("continue-on-error", step)
 
-    def test_caller_requires_conformance_without_path_or_skip_waiver(self) -> None:
+    def test_caller_requires_conformance_whenever_it_is_routed(self) -> None:
         caller = yaml.load((ROOT / ".github/workflows/ci.yml").read_text(), Loader=yaml.BaseLoader)
         job = caller["jobs"]["verification-conformance"]
         self.assertEqual(job["uses"], "./.github/workflows/verification-conformance.yml")
-        self.assertNotIn("if", job)
         self.assertNotIn("continue-on-error", job)
+        # Pull requests route the lane by its own inputs; main pushes and the
+        # nightly run execute it for every Rust change.
+        self.assertIn("needs.changes.outputs.lifecycle_conformance == 'true'", job["if"])
+        self.assertIn("needs.changes.outputs.extended == 'true'", job["if"])
         gate = caller["jobs"]["ci-gate"]
         self.assertIn("verification-conformance", gate["needs"])
         script = "\n".join(step.get("run", "") for step in gate["steps"])
-        self.assertIn('require_success verification-conformance "${{ needs.verification-conformance.result }}"', script)
+        routed = script.split('if [[ "$LIFECYCLE_ROUTED" == true', 1)[1].split("fi\n", 1)[0]
+        self.assertIn('require_success verification-conformance "${{ needs.verification-conformance.result }}"', routed)
+
+    def test_lifecycle_inputs_route_the_conformance_lane(self) -> None:
+        from scripts.ci.changed_paths import classify
+        for path in (
+            "crates/labby-browser/src/lib.rs",
+            "crates/labby/src/api/browser_session.rs",
+            "crates/labby-gateway/src/gateway.rs",
+            "crates/labby/tests/lifecycle_conformance.rs",
+            "crates/labby/tests/support/conformance_fixture.rs",
+            "tools/verification/crates/verify-core/src/lib.rs",
+            "scripts/ci/validate_conformance_evidence.py",
+            ".github/workflows/verification-conformance.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(classify("pull_request", [path])["lifecycle_conformance"])
+        self.assertFalse(classify("pull_request", ["docs/README.md"])["lifecycle_conformance"])
 
     def test_build_is_separate_from_five_minute_execution(self) -> None:
         steps = self.job()["steps"]

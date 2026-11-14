@@ -30,7 +30,23 @@ OUTPUT_KEYS = [
     "release",
     "unraid",
     "verification",
+    "rust_api",
+    "rust_features",
+    "codemode",
+    "mcp_conformance",
+    "lifecycle_conformance",
+    "installer",
+    "extended",
 ]
+
+# Events that run the extended suites: duplicated or slow lanes that pull
+# requests skip (gateway-only runtime shards, focused MCP regressions, MSRV,
+# feature slices, macOS installers, and the path-routed conformance lanes).
+# Pushes to main and the nightly schedule keep them on the merge path, and
+# a manual dispatch on a branch opts a pull request into the full set.
+EXTENDED_EVENTS = {"schedule", "workflow_dispatch", "push"}
+
+TOOLCHAIN_INPUTS = {"Cargo.lock", "rust-toolchain.toml"}
 
 
 def starts(path: str, *prefixes: str) -> bool:
@@ -92,6 +108,127 @@ def is_js_dependency_input(path: str) -> bool:
         "scripts/ci/js_advisory_gate.py",
         "scripts/ci/test_ci_supply_policy.py",
     }
+
+
+def is_rust_manifest(path: str) -> bool:
+    """Cargo manifests, the toolchain pin, and Cargo configuration."""
+    return (
+        path == "Cargo.toml"
+        or (starts(path, "crates/", "tools/verification/crates/") and path.endswith("/Cargo.toml"))
+        or starts(path, ".cargo/")
+        or path == "rust-toolchain.toml"
+    )
+
+
+def is_rust_api_input(path: str) -> bool:
+    """Rust inputs of rustdoc and the generated catalogs: library, binary,
+    example, and build-script sources plus manifests. Integration tests under
+    `crates/*/tests/` document nothing and generate no catalog entries."""
+    if is_rust_manifest(path) or path in {"Cargo.lock", "Justfile"}:
+        return True
+    if starts(path, "tools/verification/crates/verify-core/", "tools/verification/crates/verify-scenario/"):
+        return "/tests/" not in path
+    if not starts(path, "crates/"):
+        return False
+    parts = path.split("/")
+    return len(parts) >= 3 and (parts[2] in {"src", "examples", "build.rs"})
+
+
+def is_rust_feature_input(path: str) -> bool:
+    """Inputs that change which feature slices compile: manifests and the
+    slice checker. Ordinary source edits are covered nightly and on main."""
+    return is_rust_manifest(path) or path in {
+        "scripts/check-feature-slices.sh",
+        "clippy.toml",
+    }
+
+
+def is_codemode_input(path: str) -> bool:
+    lowered = path.lower()
+    return (
+        starts(path, "crates/labby-codemode/", "crates/labby/src/cli/gateway/code.rs")
+        or (starts(path, "crates/") and ("codemode" in lowered or "code_mode" in lowered))
+        or path in TOOLCHAIN_INPUTS
+        or path in {"Cargo.toml", "crates/labby/Cargo.toml", "crates/labby-codemode/Cargo.toml"}
+    )
+
+
+def is_mcp_conformance_input(path: str) -> bool:
+    """Protocol, authentication, and transport surfaces the dated MCP and auth
+    conformance lanes exercise, plus their pinned evidence inputs."""
+    return (
+        is_auth_conformance_input(path)
+        or is_skills_conformance_input(path)
+        or starts(
+            path,
+            "crates/labby/src/mcp/",
+            "crates/labby/src/mcp.rs",
+            "crates/labby/src/api/",
+            "crates/labby/src/api.rs",
+            "crates/labby/src/cli/serve",
+            "crates/labby-auth/",
+            "crates/labby-runtime/",
+            "crates/labby-gateway/src/upstream/",
+            "crates/labby-gateway/src/upstream.rs",
+            "tools/verification/conformance/",
+            "scripts/ci/mcp",
+            "scripts/ci/test_mcp_",
+            "scripts/ci/openai-auth",
+        )
+        or (starts(path, "crates/labby/tests/") and any(word in path for word in ("mcp", "oauth", "auth", "skills")))
+        or path in TOOLCHAIN_INPUTS
+        or path in {"Cargo.toml", "crates/labby/Cargo.toml"}
+    )
+
+
+def is_lifecycle_conformance_input(path: str) -> bool:
+    """The browser-bridge request lifecycle, the HTTP/WebSocket server that
+    hosts it, the gateway, and the verification model that replays it."""
+    return (
+        starts(
+            path,
+            "crates/labby-browser/",
+            "crates/labby-gateway/",
+            "crates/labby-model/",
+            "crates/labby/src/api/",
+            "crates/labby/src/api.rs",
+            "crates/labby/src/dispatch/browser",
+            "crates/labby/src/cli/serve",
+            "crates/labby/tests/lifecycle_conformance.rs",
+            "crates/labby/tests/support/",
+            "scripts/ci/validate_conformance_evidence.py",
+            "scripts/ci/validate_incident_evidence.py",
+            "scripts/ci/test_conformance_workflow.py",
+            "scripts/ci/test_incident_evidence.py",
+            ".github/workflows/verification-conformance.yml",
+        )
+        # The isolated verifier replays the captured incidents; the MCP
+        # conformance evidence under tools/verification/conformance/ is not
+        # an input of this lane.
+        or (starts(path, "tools/verification/") and not starts(path, "tools/verification/conformance/"))
+        or path in TOOLCHAIN_INPUTS
+        or path in {"Cargo.toml", "crates/labby/Cargo.toml"}
+    )
+
+
+def is_installer_input(path: str) -> bool:
+    """Inputs of the macOS installer, updater, and recovery contracts."""
+    return starts(
+        path,
+        "install.sh",
+        "scripts/install",
+        "scripts/package-tailcat-release.sh",
+        "scripts/sync-npm-release-version.py",
+        "scripts/ci/export-release-attestation-bundles.sh",
+        "scripts/tests/installers.sh",
+        "scripts/tests/release-attestation-bundles.sh",
+        "scripts/tests/tailcat-installers.sh",
+        "scripts/tests/test_tailcat_release.py",
+        "scripts/tests/test_npm_release_version.py",
+        "packages/labby-microsandbox/package.json",
+        "crates/labby/src/self_update",
+        "crates/labby/tests/gateway_auto_reconnect.rs",
+    ) or path == "rust-toolchain.toml"
 
 
 def classify(event: str, paths: list[str]) -> dict[str, bool]:
@@ -289,7 +426,10 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     )
     security = security or rust_sources
     javascript_advisories = any_match(paths, is_js_dependency_input)
-    docs_check = docs_check or rust_sources
+    rust_api = any_match(paths, is_rust_api_input)
+    # Generated catalogs come from library/binary sources and manifests, not
+    # from integration tests, so test-only edits no longer run docs-check.
+    docs_check = docs_check or rust_api
     incus_inputs = any_match(
         paths,
         lambda p: starts(p, ".config/incus/")
@@ -336,6 +476,13 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         "release": release,
         "unraid": unraid,
         "verification": verification,
+        "rust_api": rust_api,
+        "rust_features": any_match(paths, is_rust_feature_input),
+        "codemode": any_match(paths, is_codemode_input),
+        "mcp_conformance": any_match(paths, is_mcp_conformance_input),
+        "lifecycle_conformance": any_match(paths, is_lifecycle_conformance_input),
+        "installer": any_match(paths, is_installer_input),
+        "extended": event in EXTENDED_EVENTS,
     }
 
     if workflow:
