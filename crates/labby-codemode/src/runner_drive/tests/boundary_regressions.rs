@@ -280,3 +280,115 @@ async fn over_ceiling_full_result_internal_calls_reject_without_discovery_fallba
     };
     assert_eq!(error.kind(), "internal_call_budget_exceeded");
 }
+
+/// Shell that emits one `tool_call` line whose `params.x` string is `len` bytes,
+/// generated in the stub so the payload never passes through `sh -c` argv.
+fn big_tool_call_line(seq: u64, len: usize) -> String {
+    format!(
+        "printf '{{\"type\":\"tool_call\",\"seq\":{seq},\"id\":\"fixture::big\",\"params\":{{\"x\":\"'\n\
+         /usr/bin/head -c {len} /dev/zero | /usr/bin/tr '\\000' x\n\
+         printf '\"}}}}\\n'\n"
+    )
+}
+
+#[tokio::test]
+async fn host_rejects_oversized_call_params_before_dispatch() {
+    let capture = tempfile::NamedTempFile::new().expect("capture");
+    let script = format!(
+        "IFS= read -r _\n{}IFS= read -r reply || exit 21\nprintf '%s\\n' \"$reply\" >>\"{}\"\n\
+         printf '%s\\n' '{{\"type\":\"done\"}}'\nIFS= read -r _\n",
+        big_tool_call_line(0, crate::protocol::MAX_TOOL_PARAMS_BYTES),
+        capture.path().display()
+    );
+    let mut runner = PooledRunner::spawn_stub_script(&script).expect("protocol stub");
+    let host = NoopHost::default();
+    let config = test_config(Duration::from_secs(15));
+    let outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(
+            &mut runner,
+            &config,
+            tokio::time::Instant::now() + config.timeout,
+        )
+        .await;
+    let DriveOutcome::Completed(response) = outcome else {
+        panic!("oversized params must be catchable")
+    };
+    let [call] = response.calls.as_slice() else {
+        panic!("one rejected trace row")
+    };
+    assert_eq!(call.error_kind.as_deref(), Some("budget_exceeded"));
+    assert!(call.params.is_none());
+    let wire = std::fs::read_to_string(capture.path()).expect("capture");
+    assert!(wire.len() < 4096, "rejection must not echo the payload");
+    let wire_replies = replies(capture.path());
+    let [CodeModeRunnerInput::ToolError { seq: 0, error }] = wire_replies.as_slice() else {
+        panic!("seq 0 must be rejected")
+    };
+    assert_eq!(error.kind(), "budget_exceeded");
+}
+
+#[tokio::test]
+async fn host_bounds_params_held_by_pending_calls_per_run() {
+    // Each call is under the per-call cap, but the calls never settle (the host
+    // blocks), so admission must stop once the run's pending bytes would exceed
+    // the per-run cap.
+    let per_call = 7 * 1024 * 1024;
+    let admitted = crate::protocol::MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN / (per_call + 64);
+    let capture = tempfile::NamedTempFile::new().expect("capture");
+    let mut script = String::from("IFS= read -r _\n");
+    for seq in 0..=admitted as u64 {
+        script.push_str(&big_tool_call_line(seq, per_call));
+    }
+    script.push_str(&format!(
+        "IFS= read -r reply || exit 21\nprintf '%s\\n' \"$reply\" >>\"{}\"\nexit 0\n",
+        capture.path().display()
+    ));
+    let mut runner = PooledRunner::spawn_stub_script(&script).expect("protocol stub");
+    let host = DelayedToolHost {
+        inner: NoopHost::default(),
+        delay: Duration::from_mins(1),
+    };
+    let config = test_config(Duration::from_mins(1));
+    let _outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(
+            &mut runner,
+            &config,
+            tokio::time::Instant::now() + config.timeout,
+        )
+        .await;
+    let wire_replies = replies(capture.path());
+    let [CodeModeRunnerInput::ToolError { seq, error }] = wire_replies.as_slice() else {
+        panic!("only the over-budget call is answered while earlier calls block")
+    };
+    assert_eq!(*seq, admitted as u64);
+    assert_eq!(error.kind(), "budget_exceeded");
+}
+
+#[tokio::test]
+async fn host_rejects_oversized_step_names_without_echoing_or_retaining_them() {
+    let name = "s".repeat(crate::protocol::MAX_STEP_NAME_BYTES + 1);
+    let requests = [CodeModeRunnerOutput::StepBegin {
+        seq: 0,
+        name: name.clone(),
+    }];
+    let capture = tempfile::NamedTempFile::new().expect("capture");
+    let mut runner = PooledRunner::spawn_stub_script(&request_script(&requests, capture.path()))
+        .expect("protocol stub");
+    let host = NoopHost::default();
+    let config = test_config(Duration::from_secs(5));
+    let outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(
+            &mut runner,
+            &config,
+            tokio::time::Instant::now() + config.timeout,
+        )
+        .await;
+    assert!(matches!(outcome, DriveOutcome::Completed(_)));
+    let wire = std::fs::read_to_string(capture.path()).expect("capture");
+    assert!(!wire.contains(&name));
+    let wire_replies = replies(capture.path());
+    let [CodeModeRunnerInput::ToolError { seq: 0, error }] = wire_replies.as_slice() else {
+        panic!("the oversized step must be rejected")
+    };
+    assert_eq!(error.kind(), "budget_exceeded");
+}

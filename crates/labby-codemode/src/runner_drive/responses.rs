@@ -113,6 +113,7 @@ pub(super) async fn handle_completed_tool_call(
     let Some((seq, id, params, params_digest, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
+    state.release_pending_params(seq);
     // Reserved host-internal pseudo-tool calls never appear in the call
     // trace (`state.calls`) — but their ToolResult/ToolError responses are
     // still written back unconditionally so the sandbox's `callTool(...)`

@@ -65,6 +65,28 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         .await;
     }
 
+    // Bound params before they enter a pending future: per call, and across
+    // every call this run still holds. Drop them before writeback so a
+    // rejected payload is neither retained nor echoed.
+    let params_bytes = crate::protocol::serialized_json_len(&params);
+    if let Err(error) = crate::protocol::check_tool_params_bytes(params_bytes).and_then(|()| {
+        crate::protocol::check_pending_tool_params_bytes(state.pending_params_bytes, params_bytes)
+    }) {
+        drop(params);
+        return reject_oversized_params(
+            seq,
+            id,
+            is_internal,
+            error,
+            stdin,
+            child,
+            child_pid,
+            deadline,
+            state,
+        )
+        .await;
+    }
+
     let call_ordinal = if is_internal {
         None
     } else {
@@ -106,6 +128,10 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         )
         .await;
     }
+
+    // Every branch below enqueues exactly one future for `seq`; its completion
+    // releases this reservation.
+    state.reserve_pending_params(seq, params_bytes);
 
     // Full-result calls cannot enter reserved/local providers or snippet routing.
     // Admit/count first, then reject before any host-visible operation.
@@ -177,6 +203,49 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         Err(error) => enqueue_rejected_tool_call(seq, id, params, error, cfg, pending_tool_calls),
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn reject_oversized_params(
+    seq: u64,
+    id: String,
+    is_internal: bool,
+    error: CodeModeCallError,
+    stdin: &mut ChildStdin,
+    child: &mut tokio::process::Child,
+    child_pid: Option<u32>,
+    deadline: tokio::time::Instant,
+    state: &mut DriveState,
+) -> Result<(), CodeModeExecutionError> {
+    if !is_internal {
+        state.reserve_trace_call(seq, &id)?;
+        state.record_call((
+            seq,
+            CodeModeExecutedCall {
+                upstream_content: None,
+                id: id.clone(),
+                ok: false,
+                elapsed_ms: 0,
+                start_ms: None,
+                params: None,
+                params_digest: None,
+                error_kind: Some(error.kind.clone()),
+                ui: None,
+            },
+        ))?;
+    }
+    write_runner_input_by_deadline(
+        stdin,
+        &CodeModeRunnerInput::ToolError {
+            seq,
+            error: Box::new(error.with_tool(id)),
+        },
+        deadline,
+        child,
+        child_pid,
+        &state.calls,
+    )
+    .await
 }
 
 /// Only search/describe have a defined fail-open discovery result. Retrieval

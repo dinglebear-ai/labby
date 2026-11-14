@@ -182,6 +182,77 @@ thread_local! {
     pub(crate) static RUNNER_STATE: RefCell<Option<CodeModeRunnerState>> = const { RefCell::new(None) };
 }
 
+/// Per-call cap on the serialized size of `callTool` params. Checked by the
+/// native JS bridge before emission and again by the host before the params
+/// enter a pending call, so a compromised runner cannot bypass it. Sized above
+/// the largest local-provider payload (state files default to 1 MiB) with room
+/// for JSON escaping.
+pub(crate) const MAX_TOOL_PARAMS_BYTES: usize = 8 * 1024 * 1024;
+
+/// Per-run cap on the serialized params held by queued or in-flight host calls.
+/// Without it, `max_calls_per_run` under-cap calls queued behind the
+/// per-upstream semaphore would keep calls x params bytes in gateway memory.
+pub(crate) const MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN: usize = 64 * 1024 * 1024;
+
+/// UTF-8 byte cap on a `codemode.step` name. The host retains each in-flight
+/// step's name until its result arrives.
+pub(crate) const MAX_STEP_NAME_BYTES: usize = 1024;
+
+pub(crate) fn check_tool_params_bytes(len: usize) -> Result<(), CodeModeCallError> {
+    if len <= MAX_TOOL_PARAMS_BYTES {
+        return Ok(());
+    }
+    // Never echo caller-controlled params in the error contract.
+    Err(CodeModeCallError::new(
+        "budget_exceeded",
+        format!("callTool params exceed the {MAX_TOOL_PARAMS_BYTES}-byte serialized limit"),
+    ))
+}
+
+pub(crate) fn check_pending_tool_params_bytes(
+    pending: usize,
+    len: usize,
+) -> Result<(), CodeModeCallError> {
+    if pending.saturating_add(len) <= MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN {
+        return Ok(());
+    }
+    Err(CodeModeCallError::new(
+        "budget_exceeded",
+        format!(
+            "pending callTool params exceed the {MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN}-byte per-run limit; await earlier calls before issuing more"
+        ),
+    ))
+}
+
+pub(crate) fn check_step_name_bytes(name: &str) -> Result<(), CodeModeCallError> {
+    if name.len() <= MAX_STEP_NAME_BYTES {
+        return Ok(());
+    }
+    // Never echo the oversized name in the error contract.
+    Err(CodeModeCallError::new(
+        "budget_exceeded",
+        format!("codemode.step name exceeds the {MAX_STEP_NAME_BYTES}-byte UTF-8 limit"),
+    ))
+}
+
+/// Serialized JSON length of `value`, computed without allocating the text.
+pub(crate) fn serialized_json_len(value: &Value) -> usize {
+    struct Counter(usize);
+    impl io::Write for Counter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0 = self.0.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter(0);
+    // Writing a `Value` to an infallible sink cannot fail.
+    serde_json::to_writer(&mut counter, value).ok();
+    counter.0
+}
+
 // Javy interprets this as the native stack size in bytes. The runtime
 // `codemode.*` proxy preamble (one method per tool, ~140+ across the
 // catalog) plus await/Promise machinery needs ample headroom; 256 KiB avoids
@@ -191,6 +262,34 @@ pub(crate) const CODE_MODE_STACK_SIZE_LIMIT: usize = 256 * 1024;
 #[cfg(test)]
 mod id_tests {
     use super::*;
+
+    #[test]
+    fn params_and_step_name_limits_never_echo_rejected_input() {
+        assert!(check_tool_params_bytes(MAX_TOOL_PARAMS_BYTES).is_ok());
+        let error = check_tool_params_bytes(MAX_TOOL_PARAMS_BYTES + 1).expect_err("oversized");
+        assert_eq!(error.kind(), "budget_exceeded");
+
+        assert!(check_pending_tool_params_bytes(0, MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN).is_ok());
+        let error = check_pending_tool_params_bytes(MAX_PENDING_TOOL_PARAMS_BYTES_PER_RUN, 1)
+            .expect_err("over the pending budget");
+        assert_eq!(error.kind(), "budget_exceeded");
+
+        assert!(check_step_name_bytes(&"s".repeat(MAX_STEP_NAME_BYTES)).is_ok());
+        let name = "é".repeat(MAX_STEP_NAME_BYTES / 2 + 1);
+        let error = check_step_name_bytes(&name).expect_err("oversized step name");
+        assert_eq!(error.kind(), "budget_exceeded");
+        assert!(!serde_json::to_string(&error).unwrap().contains(&name));
+    }
+
+    #[test]
+    fn serialized_json_len_matches_serde_output() {
+        let value =
+            serde_json::json!({"a": "x\"y", "b": [1, 2.5, null, true], "c": {"é": "\u{1}"}});
+        assert_eq!(
+            serialized_json_len(&value),
+            serde_json::to_vec(&value).unwrap().len()
+        );
+    }
 
     #[test]
     fn tool_id_limit_counts_utf8_bytes_and_never_echoes_rejected_input() {

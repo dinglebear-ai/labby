@@ -279,6 +279,10 @@ struct DriveState {
     step_ordinals: std::collections::HashMap<u64, (u64, String)>,
     /// Aggregate serialized bytes accepted from `step_result` values.
     step_value_bytes: usize,
+    /// Serialized params bytes held by each queued or in-flight call, by seq.
+    pending_params: std::collections::HashMap<u64, usize>,
+    /// Sum of `pending_params`, bounded per run.
+    pending_params_bytes: usize,
 }
 
 impl DriveState {
@@ -299,6 +303,19 @@ impl DriveState {
         let ordinal = self.next_trace_ordinal;
         self.next_trace_ordinal = self.next_trace_ordinal.saturating_add(1);
         Ok(ordinal)
+    }
+
+    fn reserve_pending_params(&mut self, seq: u64, bytes: usize) {
+        self.pending_params_bytes = self.pending_params_bytes.saturating_add(bytes);
+        if let Some(previous) = self.pending_params.insert(seq, bytes) {
+            self.pending_params_bytes = self.pending_params_bytes.saturating_sub(previous);
+        }
+    }
+
+    fn release_pending_params(&mut self, seq: u64) {
+        if let Some(bytes) = self.pending_params.remove(&seq) {
+            self.pending_params_bytes = self.pending_params_bytes.saturating_sub(bytes);
+        }
     }
 
     fn record_call(
@@ -327,6 +344,8 @@ impl DriveState {
             internal_calls_enqueued: 0,
             calltool_result_max_bytes: calltool_result_max_bytes(),
             result_ack_reserve_observed: false,
+            pending_params: std::collections::HashMap::new(),
+            pending_params_bytes: 0,
             next_step_ordinal: 0,
             step_ordinals: std::collections::HashMap::new(),
             step_value_bytes: 0,
