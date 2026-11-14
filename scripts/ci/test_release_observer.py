@@ -12,7 +12,7 @@ import hashlib
 ROOT = Path(__file__).resolve().parents[2]
 
 class HistoricalObserverTests(unittest.TestCase):
-    def observe(self, historical=False, incus=False, bad_checksum=False, bad_sbom=False, missing_sums=False):
+    def observe(self, historical=False, incus=False, bad_checksum=False, bad_sbom=False, missing_sums=False, sums_prefix=''):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             assets = work / 'assets'
@@ -30,7 +30,7 @@ class HistoricalObserverTests(unittest.TestCase):
             (assets / 'image.spdx.json').write_text(json.dumps({'spdxVersion':'SPDX-2.3','SPDXID':'SPDXRef-DOCUMENT','packages':[]}))
             if incus and not missing_sums:
                 sbom_digest = hashlib.sha256((assets / 'image.spdx.json').read_bytes()).hexdigest()
-                (assets / 'SHA256SUMS').write_text(f"{digest}  image.tar.xz\n{sbom_digest}  image.spdx.json\n")
+                (assets / 'SHA256SUMS').write_text(f"{digest}  {sums_prefix}image.tar.xz\n{sbom_digest}  {sums_prefix}image.spdx.json\n")
                 if bad_sbom:
                     (assets / 'image.spdx.json').write_text(json.dumps({'spdxVersion':'SPDX-2.3','SPDXID':'SPDXRef-DOCUMENT','packages':[{'name':'replaced'}]}))
             (assets / 'surprise.txt').write_text('unexpected')
@@ -56,6 +56,16 @@ class HistoricalObserverTests(unittest.TestCase):
         result,_ = self.observe(incus=True)
         self.assertEqual(result['unexpected_assets'], ['surprise.txt'])
         result,_ = self.observe()
+        self.assertIn('image.spdx.json',result['unexpected_assets'])
+
+    def test_dot_slash_checksum_list_binds_legacy_sbom(self):
+        # Released v1.17.3-v2.3.2 SHA256SUMS name subjects "./image..."; the
+        # reconciler reported their legitimate image.spdx.json as unexpected.
+        result,_ = self.observe(incus=True,sums_prefix='./')
+        self.assertEqual(result['unexpected_assets'], ['surprise.txt'])
+
+    def test_other_checksum_path_prefix_remains_failure(self):
+        result,_ = self.observe(incus=True,sums_prefix='../')
         self.assertIn('image.spdx.json',result['unexpected_assets'])
 
     def test_wrong_checksum_remains_failure(self):
