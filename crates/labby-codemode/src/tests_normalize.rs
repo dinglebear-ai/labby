@@ -541,3 +541,19 @@ fn scoped_caller_read_only_cannot_execute() {
 }
 
 // ── token_estimate_divisor affects truncation (#12b) ─────────────────────
+
+#[test]
+fn normalize_user_code_is_linear_in_export_default_occurrences() {
+    // Every occurrence is in code and none follows `;`/`}`, so each one is a
+    // prologue-split candidate. Unbounded, this input costs O(k*n).
+    let code = "a export default ".repeat(crate::config::MAX_SOURCE_BYTES / 17);
+    let started = std::time::Instant::now();
+    let normalized = crate::normalize::normalize_user_code(&code);
+    let elapsed = started.elapsed();
+    assert!(normalized.starts_with("async () =>"));
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "normalizing {} bytes took {elapsed:?}",
+        code.len()
+    );
+}
