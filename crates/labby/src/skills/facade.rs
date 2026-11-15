@@ -1741,7 +1741,7 @@ mod tests {
         let proxied = unavailable_proxied_skills(2);
         assert_eq!(proxied.unreachable_upstreams, 2);
         assert_eq!(proxied.cache_scope.as_deref(), Some(CACHE_SCOPE_PRIVATE));
-        assert!(proxied.entries.is_empty());
+        assert_eq!(proxied.entries, Vec::<SkillEntry>::new());
     }
 
     #[tokio::test]

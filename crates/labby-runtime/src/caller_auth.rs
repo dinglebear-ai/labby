@@ -181,6 +181,6 @@ mod tests {
             serde_json::from_value(serde_json::json!({})).expect("deserializes");
         assert!(!empty.is_admin());
         assert!(!empty.trusted_local);
-        assert!(empty.scopes.is_empty());
+        assert_eq!(empty.scopes, Vec::<String>::new());
     }
 }

@@ -17,7 +17,10 @@ async fn ownership_survives_clones_and_releases_on_last_drop() {
     assert!(Store::open(&path).await.is_err());
     drop(clone);
     let reopened = Store::open(&path).await.unwrap();
-    assert!(reopened.pending_pairings().await.unwrap().is_empty());
+    assert_eq!(
+        reopened.pending_pairings().await.unwrap(),
+        Vec::<super::PairingRequest>::new()
+    );
     assert!(storage::sidecar(&path, ".lock").is_file());
 }
 

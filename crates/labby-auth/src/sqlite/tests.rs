@@ -3082,7 +3082,10 @@ async fn allowlist_lookup_folds_case_the_same_way_add_does() {
         );
     }
     store.remove_allowed_user("ÜNAL@EXAMPLE.COM").await.unwrap();
-    assert!(store.list_allowed_users().await.unwrap().is_empty());
+    assert_eq!(
+        store.list_allowed_users().await.unwrap(),
+        Vec::<AllowedUserRow>::new()
+    );
 }
 
 #[tokio::test]

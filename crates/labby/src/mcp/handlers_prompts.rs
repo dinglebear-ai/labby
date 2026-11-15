@@ -1030,7 +1030,7 @@ mod tests {
     fn prompt_fetch_failure_classification_uses_variants() {
         for message in ["cancelled", "timed out", "response too large"] {
             let error = CapabilityCallError::Mcp {
-                data: ErrorData::invalid_params(message, None),
+                data: Box::new(ErrorData::invalid_params(message, None)),
                 message: format!("upstream prompt get failed: {message}"),
             };
             let (kind, summary) = classify_prompt_fetch_failure(&error);

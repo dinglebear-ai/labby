@@ -106,12 +106,12 @@ async fn rollback_case(fail_cleanup: bool) {
         )
         .await
         .unwrap_err();
-    assert!(
+    assert_eq!(
         crate::gateway::config::load_gateway_config(&config_path)
             .unwrap()
             .upstream[0]
-            .args
-            .is_empty()
+            .args,
+        Vec::<String>::new()
     );
     let db = rusqlite::Connection::open(&route_path).unwrap();
     let pending: i64 = db

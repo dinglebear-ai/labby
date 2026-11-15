@@ -1322,7 +1322,7 @@ mod tests {
         let http = upstream_fixture(None, &[], Some("https://example.com/mcp"));
         let (command, args) = redacted_stdio_command(&http);
         assert!(command.is_none());
-        assert!(args.is_empty());
+        assert_eq!(args, Vec::<String>::new());
     }
 
     // ── Secret redaction ──────────────────────────────────────────────────────

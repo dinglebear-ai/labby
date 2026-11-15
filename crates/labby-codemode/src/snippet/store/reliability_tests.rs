@@ -149,7 +149,7 @@ fn inline_source_format_preserves_bare_javascript_and_authoritative_frontmatter(
     ] {
         let inline = resolve_inline_snippet("demo", &declared, format).unwrap();
         assert!(inline.inputs["value"].nullable);
-        assert!(inline.tools.unwrap().as_slice().is_empty());
+        assert_eq!(inline.tools.unwrap().as_slice(), Vec::<String>::new());
         let inline = resolve_inline_snippet("demo", &declared, format).unwrap();
         assert_eq!(code_for_snippet(&inline).unwrap(), "async (input) => input");
         assert!(resolve_inline_snippet("other", &declared, format).is_err());

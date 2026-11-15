@@ -1,12 +1,16 @@
 # Toolchain used to BUILD this repo, locally and in CI. Pinned fleet-wide to
-# Rust 1.97.1 by ADR-0001: 1.97.1 is a point release that fixes an LLVM
-# miscompilation present since at least 1.87, so every toolchain below it —
-# including every version this fleet previously pinned — is affected.
+# Rust 1.99.1, the current stable release (2026-10-13).
+#
+# ADR-0001 set this pin at 1.97.1 because that point release fixes an LLVM
+# miscompilation present since at least 1.87, so every toolchain BELOW 1.97.1
+# is affected and must never be selected here. 1.99.1 is above that floor and
+# therefore carries the fix. ADR-0001 and ADR-0024 are recorded outside this
+# repository and still name 1.97.1; update them to match this pin.
 #
 # This is deliberately NOT the same promise as Cargo.toml's `rust-version`.
 # This file says "build with exactly this"; `rust-version` says "refuse to
-# build on anything older". As of ADR-0024 both are 1.97.1, but they remain
-# separate keys and can diverge again.
+# build on anything older". Both are 1.99.1, but they remain separate keys
+# and can diverge again.
 #
 # `components` is self-declared because dtolnay/rust-toolchain only installs
 # components for the toolchain IT pins, not for a rust-toolchain.toml override.
@@ -15,6 +19,6 @@
 # RUSTUP_TOOLCHAIN and OVERRIDES this file. Check `mise env | grep RUSTUP`
 # before trusting the channel below.
 [toolchain]
-channel = "1.97.1"
+channel = "1.99.1"
 components = ["rustfmt", "clippy", "rust-analyzer", "rust-src"]
 profile = "minimal"

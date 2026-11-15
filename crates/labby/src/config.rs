@@ -4278,7 +4278,7 @@ future = "keep"
             resolved.authelia.unwrap().ca_certificate_path,
             Some(PathBuf::from("/etc/labby/authelia-ca.pem"))
         );
-        assert!(resolved.google.client_id.is_empty());
+        assert_eq!(resolved.google.client_id, "");
     }
 
     #[test]
@@ -4387,7 +4387,7 @@ future = "keep"
     #[test]
     fn resolve_auth_defaults_allowed_email_domains_to_empty() {
         let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
-        assert!(resolved.allowed_email_domains.is_empty());
+        assert_eq!(resolved.allowed_email_domains, Vec::<String>::new());
     }
 
     #[test]
@@ -4447,7 +4447,7 @@ future = "keep"
     #[test]
     fn viewer_policy_is_default_off() {
         let resolved = resolve_oauth_fixture(&minimal_oauth_file_config());
-        assert!(resolved.viewer_email_domains.is_empty());
+        assert_eq!(resolved.viewer_email_domains, Vec::<String>::new());
     }
 
     #[test]
@@ -4858,7 +4858,7 @@ root = "/srv/labby-workspace"
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".env");
         let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
-        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.skipped, Vec::<String>::new());
         assert_eq!(outcome.written, 2);
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("EXAMPLE_URL=http://localhost:7878"));
@@ -4882,7 +4882,7 @@ root = "/srv/labby-workspace"
         let path = dir.path().join(".env");
         std::fs::write(&path, "EXAMPLE_API_KEY=oldvalue\n").unwrap();
         let outcome = write_service_creds(&path, &[example_cred()], false).unwrap();
-        assert!(!outcome.skipped.is_empty());
+        assert_ne!(outcome.skipped, Vec::<String>::new());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("oldvalue"));
         assert!(!content.contains("abc123"));
@@ -4894,7 +4894,7 @@ root = "/srv/labby-workspace"
         let path = dir.path().join(".env");
         std::fs::write(&path, "EXAMPLE_API_KEY=oldvalue\n").unwrap();
         let outcome = write_service_creds(&path, &[example_cred()], true).unwrap();
-        assert!(outcome.skipped.is_empty());
+        assert_eq!(outcome.skipped, Vec::<String>::new());
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("abc123"));
         assert!(!content.contains("oldvalue"));

@@ -97,7 +97,7 @@ pub(crate) async fn protected_mcp_route_entry(
     .await
     {
         Ok(authenticated) => authenticated,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if let ProtectedMcpRouteEffectiveTarget::GatewaySubset(target) = route.effective_target() {
         if let Some(project_id) = target.project_id.as_deref() {

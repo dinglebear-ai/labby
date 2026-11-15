@@ -106,7 +106,7 @@ impl SharedCatalogBudget {
 
     fn reserve(&self, bytes: usize) -> Result<(), CatalogPaginationError> {
         self.items
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < self.item_limit).then_some(current + 1)
             })
             .map_err(|_| CatalogPaginationError::ItemLimit {
@@ -114,7 +114,7 @@ impl SharedCatalogBudget {
             })?;
         if self
             .bytes
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 current
                     .checked_add(bytes)
                     .filter(|next| *next <= self.byte_limit)

@@ -1072,7 +1072,7 @@ files:
         assert!(outcome.ok);
         assert!(outcome.dry_run);
         assert!(!outcome.changed);
-        assert!(outcome.executed.is_empty());
+        assert_eq!(outcome.executed, Vec::<String>::new());
     }
 
     #[tokio::test]

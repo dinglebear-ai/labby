@@ -167,10 +167,9 @@ fn notice_production_recipient_boundaries_and_no_foreign_ack() {
     for wrong in variants {
         let wrong = wrong.key().unwrap();
         assert!(take(&mut c, &wrong, 1002).is_none());
-        assert!(
-            acknowledge_at(&mut c, &wrong, std::slice::from_ref(&id), 1002)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            acknowledge_at(&mut c, &wrong, std::slice::from_ref(&id), 1002).unwrap(),
+            Vec::<String>::new()
         );
     }
     assert!(

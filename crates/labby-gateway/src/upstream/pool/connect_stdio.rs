@@ -420,10 +420,9 @@ where
             args.extend([OsString::from("--read-only"), OsString::from(path)]);
         }
     }
-    for path in ["/dev/null"] {
-        if std::path::Path::new(path).exists() {
-            args.extend([OsString::from("--read-write"), OsString::from(path)]);
-        }
+    let path = "/dev/null";
+    if std::path::Path::new(path).exists() {
+        args.extend([OsString::from("--read-write"), OsString::from(path)]);
     }
     let program_path = std::path::Path::new(&command.program);
     if program_path.is_absolute() {
@@ -1181,7 +1180,10 @@ mod conformance_tests {
             vec![PathBuf::from("/key"), PathBuf::from("/hosts")]
         );
         let args = ["--", "host", "-i/remote-key"].map(OsString::from);
-        assert!(sandbox_argument_paths(std::ffi::OsStr::new("ssh"), &args).is_empty());
+        assert_eq!(
+            sandbox_argument_paths(std::ffi::OsStr::new("ssh"), &args),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]
