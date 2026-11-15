@@ -870,17 +870,41 @@ fn optional_pull_request_lanes_route_on_their_own_inputs() {
             &["rust_features", "rust_api", "codemode", "mcp_conformance"],
             &["installer"],
         ),
-        ("crates/labby-codemode/src/lib.rs", &["codemode"], &["mcp_conformance"]),
-        ("crates/labby/src/mcp/handlers_tools.rs", &["mcp_conformance"], &["codemode"]),
-        ("crates/labby-auth/src/lib.rs", &["mcp_conformance"], &["lifecycle_conformance"]),
+        (
+            "crates/labby-codemode/src/lib.rs",
+            &["codemode"],
+            &["mcp_conformance"],
+        ),
+        (
+            "crates/labby/src/mcp/handlers_tools.rs",
+            &["mcp_conformance"],
+            &["codemode"],
+        ),
+        (
+            "crates/labby-auth/src/lib.rs",
+            &["mcp_conformance"],
+            &["lifecycle_conformance"],
+        ),
         (
             "tools/verification/conformance/expected-failures-dated.yaml",
             &["mcp_conformance"],
             &["lifecycle_conformance"],
         ),
-        ("crates/labby-browser/src/lib.rs", &["lifecycle_conformance"], &["mcp_conformance"]),
-        ("crates/labby-gateway/src/lib.rs", &["lifecycle_conformance"], &["installer"]),
-        ("crates/labby/src/self_update.rs", &["installer"], &["lifecycle_conformance"]),
+        (
+            "crates/labby-browser/src/lib.rs",
+            &["lifecycle_conformance"],
+            &["mcp_conformance"],
+        ),
+        (
+            "crates/labby-gateway/src/lib.rs",
+            &["lifecycle_conformance"],
+            &["installer"],
+        ),
+        (
+            "crates/labby/src/self_update.rs",
+            &["installer"],
+            &["lifecycle_conformance"],
+        ),
         ("scripts/install.sh", &["installer"], &["rust_test"]),
     ];
     for (path, enabled, disabled) in cases {
@@ -1474,7 +1498,10 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         .iter()
         .map(|need| need.as_str().expect("need"))
         .collect();
-    assert!(test_needs.contains(&"test-build"), "test shards consume test-build's archive");
+    assert!(
+        test_needs.contains(&"test-build"),
+        "test shards consume test-build's archive"
+    );
     assert!(
         test_job.contains("name: nextest-junit-${{ matrix.shard }}"),
         "every shard must upload its own nextest report"
