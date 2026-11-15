@@ -271,7 +271,7 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.artifact` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`path*: string` | `SnippetArtifactResponse` | mcp, api |
-| `snippets` | `snippets.create` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean`<br>`expected_digest: string` | `SnippetInfo` | cli, mcp, api |
+| `snippets` | `snippets.create` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean`<br>`expected_digest: string`<br>`shadow_builtin: boolean` | `SnippetInfo` | cli, mcp, api |
 | `snippets` | `snippets.exec` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body: string`<br>`source_format: string`<br>`params: object`<br>`expected_preview_fingerprint: string` | `CodeModeExecutionResponse` | cli, mcp, api |
 | `snippets` | `snippets.fixture` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object`<br>`tools: string[]`<br>`check: object`<br>`schemas: object`<br>`results: object`<br>`variant: string` | `SnippetFixtureDraft` | cli, mcp, api |
 | `snippets` | `snippets.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ResolvedSnippet` | cli, mcp, api |

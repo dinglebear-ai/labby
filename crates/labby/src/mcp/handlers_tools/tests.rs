@@ -963,7 +963,12 @@ async fn hidden_add_server_name_is_reserved_from_discovery_but_legacy_call_still
 
     let result = running
         .service()
-        .call_tool_impl(CallToolRequestParams::new(ADD_SERVER_TOOL_NAME), context)
+        // An execute scope: a read-only caller is now refused any upstream tool
+        // that does not declare itself read-only, before routing.
+        .call_tool_impl(
+            CallToolRequestParams::new(ADD_SERVER_TOOL_NAME),
+            scoped_context(running.peer().clone(), &["lab"]),
+        )
         .await
         .expect("upstream Add Server result");
     assert!(result.is_error.unwrap_or(false));
@@ -3509,12 +3514,14 @@ impl ServerHandler for ColdSubsetUpstream {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        // Read-only, so the read-scoped listing below may offer it.
         Ok(rmcp::model::ListToolsResult::with_all_items(vec![
             Tool::new(
                 "cold_subset_tool",
                 "Discovered on the first scoped listing",
                 Arc::new(serde_json::Map::new()),
-            ),
+            )
+            .with_annotations(rmcp::model::ToolAnnotations::new().read_only(true)),
         ]))
     }
 }
@@ -3650,7 +3657,7 @@ async fn raw_oauth_list_tools_preserves_cached_subject_tools() {
 
     let result = running
         .service()
-        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]))
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab"]))
         .await
         .expect("list tools");
 
@@ -8380,4 +8387,196 @@ async fn tool_and_hash_agree_on_message_visibility() {
         assert_eq!(ToolCatalogSnapshot::from_descriptors(&tools), contract);
     }
     running.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn raw_upstream_tools_respect_the_read_execute_ceiling() {
+    let upstream_name: Arc<str> = Arc::from("tools");
+    let writer = fixture_upstream_tool(&upstream_name, "create_issue", None);
+    let mut reader = fixture_upstream_tool(&upstream_name, "list_issues", None);
+    reader.tool.annotations = Some(rmcp::model::ToolAnnotations::new().read_only(true));
+    let pool = Arc::new(UpstreamPool::new());
+    pool.insert_entry_for_test(
+        "tools",
+        fixture_upstream_entry(
+            "tools",
+            HashMap::from([
+                ("create_issue".to_string(), writer),
+                ("list_issues".to_string(), reader),
+            ]),
+        ),
+    )
+    .await;
+    // Code Mode disabled: raw upstream tools are visible and directly callable.
+    let manager = code_mode_manager_with_pool(false, fixture_upstream_config("tools"), pool).await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let names = |scopes: &'static [&'static str]| {
+        let service = running.service();
+        let peer = running.peer().clone();
+        async move {
+            service
+                .list_tools_impl(None, scoped_context(peer, scopes))
+                .await
+                .expect("list tools")
+                .tools
+                .into_iter()
+                .map(|tool| tool.name.to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    let reader_names = names(&["lab:read"]).await;
+    assert!(reader_names.iter().any(|name| name == "list_issues"));
+    assert!(
+        reader_names.iter().all(|name| name != "create_issue"),
+        "a read-only caller must not be offered a tool that may write: {reader_names:?}"
+    );
+    let executor_names = names(&["lab"]).await;
+    assert!(executor_names.iter().any(|name| name == "create_issue"));
+
+    let call = |tool: &'static str, scopes: &'static [&'static str]| {
+        let service = running.service();
+        let peer = running.peer().clone();
+        async move {
+            let result = Box::pin(service.call_tool_impl(
+                CallToolRequestParams::new(tool),
+                scoped_context(peer, scopes),
+            ))
+            .await
+            .expect("call tool result");
+            result.content[0].as_text().expect("text").text.clone()
+        }
+    };
+    let denied = call("create_issue", &["lab:read"]).await;
+    assert!(denied.contains("\"kind\":\"forbidden\""), "{denied}");
+    assert!(
+        denied.contains("\"required_scopes\":[\"lab\",\"lab:admin\"]"),
+        "{denied}"
+    );
+    // The read-only tool and an execute-scoped call pass the ceiling; this
+    // fixture has no live peer, so they fail later at the proxy.
+    let read_only_call = call("list_issues", &["lab:read"]).await;
+    assert!(
+        !read_only_call.contains("\"kind\":\"forbidden\""),
+        "{read_only_call}"
+    );
+    let executor_call = call("create_issue", &["lab"]).await;
+    assert!(
+        !executor_call.contains("\"kind\":\"forbidden\""),
+        "{executor_call}"
+    );
+}
+
+static GATED_DESTRUCTIVE_DISPATCH_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+const ADMIN_DESTRUCTIVE_ACTIONS: &[ActionSpec] = &[ActionSpec {
+    name: "gated.purge",
+    description: "Purge gated state",
+    destructive: true,
+    requires_admin: true,
+    params: &[],
+    returns: "object",
+    output_schema: None,
+}];
+
+fn gated_destructive_counting_dispatch(
+    _action: String,
+    _params: Value,
+) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send>> {
+    GATED_DESTRUCTIVE_DISPATCH_COUNT.fetch_add(1, Ordering::SeqCst);
+    Box::pin(async { Ok(Value::Null) })
+}
+
+fn gated_destructive_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::new();
+    registry.register(RegisteredService {
+        name: "gated",
+        description: "Gated",
+        category: "test",
+        kind: crate::registry::RegisteredServiceKind::BootstrapOperator,
+        status: "available",
+        actions: ADMIN_DESTRUCTIVE_ACTIONS,
+        dispatch: gated_destructive_counting_dispatch,
+    });
+    registry
+}
+
+#[tokio::test]
+async fn destructive_elicitation_yields_to_the_gate_that_denies() {
+    let request = || {
+        CallToolRequestParams::new("gated").with_arguments(serde_json::Map::from_iter([
+            (
+                "action".to_string(),
+                Value::String("gated.purge".to_string()),
+            ),
+            ("params".to_string(), serde_json::json!({})),
+        ]))
+    };
+    let kind_of = |result: rmcp::model::CallToolResult| {
+        let text = result.content[0].as_text().expect("text").text.clone();
+        let envelope: Value = serde_json::from_str(&text).expect("error envelope");
+        envelope["error"]["kind"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // (a) A route that does not expose the service: the route gate answers,
+    // not a confirmation request for an operation the caller can never run.
+    let server = test_server(
+        gated_destructive_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "other-only",
+            std::iter::empty::<&str>(),
+            ["other"],
+            false,
+        ),
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = Box::pin(running.service().call_tool_impl(
+        request(),
+        scoped_context(running.peer().clone(), &["lab:admin"]),
+    ))
+    .await
+    .expect("call tool result");
+    let kind = kind_of(result);
+    assert_ne!(kind, "confirmation_required");
+    assert!(
+        matches!(kind.as_str(), "route_scope_denied" | "not_found"),
+        "{kind}"
+    );
+
+    // (b) A non-admin caller: the admin gate answers with `forbidden`.
+    let server = test_server(
+        gated_destructive_registry(),
+        None,
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let result = Box::pin(
+        running
+            .service()
+            .call_tool_impl(request(), scoped_context(running.peer().clone(), &["lab"])),
+    )
+    .await
+    .expect("call tool result");
+    assert_eq!(kind_of(result), "forbidden");
+    assert_eq!(GATED_DESTRUCTIVE_DISPATCH_COUNT.load(Ordering::SeqCst), 0);
 }

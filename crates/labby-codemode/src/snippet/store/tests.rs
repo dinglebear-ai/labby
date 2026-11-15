@@ -474,3 +474,59 @@ fn merge_snippet_input_rejects_unknown_declared_inputs() {
         .expect_err("unknown input should be rejected");
     assert!(format!("{error}").contains("unknown snippet input"));
 }
+
+#[test]
+fn create_refuses_to_shadow_a_built_in_without_explicit_consent() {
+    let home = tempfile::tempdir().expect("home");
+    let builtins = tempfile::tempdir().expect("builtins");
+    fs::write(
+        builtins.path().join("health.md"),
+        valid_body().replace("name: demo", "name: health"),
+    )
+    .expect("built-in");
+
+    let error = create_user_snippet_guarded(
+        home.path(),
+        builtins.path(),
+        "health",
+        "async () => ({ replaced: true })",
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect_err("shadowing a built-in needs consent");
+    assert_eq!(error.kind(), "confirmation_required");
+    assert!(
+        resolve_snippet(home.path(), builtins.path(), "health")
+            .map(|snippet| snippet.source == SnippetSource::Builtin)
+            .unwrap_or(false),
+        "the built-in still resolves"
+    );
+
+    let created = create_user_snippet_guarded(
+        home.path(),
+        builtins.path(),
+        "health",
+        "async () => ({ replaced: true })",
+        None,
+        false,
+        None,
+        true,
+    )
+    .expect("explicit shadow");
+    assert!(created.shadowed);
+
+    // A name with no built-in needs no consent.
+    create_user_snippet_guarded(
+        home.path(),
+        builtins.path(),
+        "custom",
+        "async () => ({ ok: true })",
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("ordinary create");
+}

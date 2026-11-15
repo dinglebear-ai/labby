@@ -197,8 +197,13 @@ impl LabMcpServer {
                 true,
             )
         };
-        let selected_team_id =
-            optional_header_str(&parts.headers, "x-labby-team-id")?.map(str::to_owned);
+        // Native reads are held to a Team-bound route's Team as well.
+        let selected_team_id = bound_skill_library_context(
+            None,
+            self.route_scope.bound_team_id(),
+            project_id,
+            optional_header_str(&parts.headers, "x-labby-team-id")?,
+        )?;
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
             identity.clone(),
             auth.scopes.clone(),
@@ -266,6 +271,18 @@ impl LabMcpServer {
                     required_scopes: Vec::new(),
                 }
             })?;
+        #[cfg(feature = "gateway")]
+        let bound_project = match crate::mcp::bound_access::project_execution_binding(
+            &context.extensions,
+            std::time::SystemTime::now(),
+        ) {
+            crate::mcp::bound_access::ProjectExecutionBinding::Bound { transport, .. } => {
+                Some(transport.core().route().project_id().to_owned())
+            }
+            _ => None,
+        };
+        #[cfg(not(feature = "gateway"))]
+        let bound_project: Option<String> = None;
         let product_credential_bound = self.product_credential_bound_for_skills(parts, project_id);
         let request_id = optional_header_str(&parts.headers, "x-request-id")?;
         let correlation = super::call_tool::skill_library_callback_correlation(request_id)?;
@@ -274,8 +291,14 @@ impl LabMcpServer {
         } else {
             crate::dispatch::skill_library::auth::SkillLibraryTransport::app_callback(true, true)
         };
-        let selected_team_id =
-            optional_header_str(&parts.headers, "x-labby-team-id")?.map(str::to_owned);
+        // A Project-bound route acts only in its own Project and Team: the
+        // headers may restate them but never redirect the call elsewhere.
+        let selected_team_id = bound_skill_library_context(
+            bound_project.as_deref(),
+            self.route_scope.bound_team_id(),
+            project_id,
+            optional_header_str(&parts.headers, "x-labby-team-id")?,
+        )?;
         let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
             boundary.identity.clone(),
             boundary.scopes.clone(),
@@ -863,6 +886,66 @@ mod serve_tests {
                 .expect("published URI")
                 .upstream_uri_for_origin("gh")
                 .is_none()
+        );
+    }
+}
+
+/// Resolve the Team a Skill Library management call acts in, holding it to the
+/// route: on a Project-bound route the requested Project must be the route's
+/// own, and on a Team-bound route the Team is the route's Team. Headers may
+/// restate either but never redirect the call elsewhere.
+fn bound_skill_library_context(
+    bound_project: Option<&str>,
+    bound_team: Option<&str>,
+    project_id: &str,
+    header_team: Option<&str>,
+) -> Result<Option<String>, ToolError> {
+    let forbidden = |message: &str| ToolError::Forbidden {
+        message: message.to_owned(),
+        required_scopes: Vec::new(),
+    };
+    if bound_project.is_some_and(|bound| bound != project_id) {
+        return Err(forbidden(
+            "Skill Library project context does not match this route's Project",
+        ));
+    }
+    match (bound_team, header_team) {
+        (Some(bound), Some(requested)) if bound != requested => Err(forbidden(
+            "Skill Library Team context does not match this route's Team",
+        )),
+        (Some(bound), _) => Ok(Some(bound.to_owned())),
+        (None, requested) => Ok(requested.map(str::to_owned)),
+    }
+}
+
+#[cfg(test)]
+mod bound_context_tests {
+    use super::bound_skill_library_context;
+
+    #[test]
+    fn a_bound_route_cannot_be_redirected_by_headers() {
+        assert_eq!(
+            bound_skill_library_context(Some("project-b"), None, "project-a", None)
+                .unwrap_err()
+                .kind(),
+            "forbidden"
+        );
+        assert_eq!(
+            bound_skill_library_context(None, Some("team-a"), "project-a", Some("team-b"))
+                .unwrap_err()
+                .kind(),
+            "forbidden"
+        );
+        // The route's Team is injected even when the header omits it.
+        assert_eq!(
+            bound_skill_library_context(Some("project-a"), Some("team-a"), "project-a", None)
+                .unwrap(),
+            Some("team-a".to_owned())
+        );
+        // An unbound route keeps the caller's selection.
+        assert_eq!(
+            bound_skill_library_context(None, None, "project-a", Some("team-x")).unwrap(),
+            Some("team-x".to_owned())
         );
     }
 }

@@ -10885,6 +10885,9 @@
           },
           "name": {
             "type": "string"
+          },
+          "shadow_builtin": {
+            "type": "boolean"
           }
         }
       },

@@ -331,9 +331,31 @@ impl ProductCodeModeArtifactSearchProvider {
             sdk_kind: "storage_error".into(),
             message: format!("list personal artifacts: {error}"),
         })?;
+        // Skill Library records are owner-scoped: the personal Skill source
+        // serves them through `permits_skill_library_record`. A scoped
+        // `lab:admin` token is not a durable platform administrator, so it must
+        // not enumerate other owners' or tenants' private records here. Only a
+        // trusted local operator sees the raw store.
+        let trusted_local = matches!(caller.without_authority(), CodeModeCaller::TrustedLocal);
+        let library_record_ids = if trusted_local {
+            BTreeSet::new()
+        } else {
+            artifacts
+                .library_snapshot()
+                .map_err(|error| ToolError::Sdk {
+                    sdk_kind: "storage_error".into(),
+                    message: format!("read Skill Library state: {error}"),
+                })?
+                .records
+                .into_keys()
+                .collect()
+        };
         let mut buckets = vec![Vec::new(); requested_kinds.len()];
         let normalized_query = query.trim().to_ascii_lowercase();
         for record in records {
+            if library_record_ids.contains(&record.descriptor.id) {
+                continue;
+            }
             if !caller.is_admin()
                 && (record.publication.state != PublicationState::Published
                     || record.publication.visibility != Visibility::Public)
@@ -2510,5 +2532,112 @@ mod tests {
             ["team"]
         );
         assert!(team_provider_ids(&topology, &scoped).await.is_empty());
+    }
+
+    #[test]
+    fn scoped_admin_artifact_search_does_not_enumerate_skill_library_records() {
+        use labby_runtime::artifacts::{
+            ArtifactImportRequest, LibraryActorId, LibraryAuthorization, LibraryGrant,
+            LibraryIdempotency, LibraryMutation, LibraryOwnership, LibraryTenantId,
+            LibraryTimestamp, SkillLibraryRecord, SkillVisibility, canonical_json,
+        };
+        let data = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let import = |namespace: &str, name: &str| {
+            let source = tempfile::tempdir().unwrap();
+            std::fs::write(
+                source.path().join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: notes\n---\nBody\n"),
+            )
+            .unwrap();
+            store
+                .import_local(
+                    ArtifactImportRequest::new("skill", namespace, name),
+                    source.path(),
+                )
+                .unwrap()
+        };
+        // Another tenant's private Skill Library record.
+        let library = import("private", "secret-notes");
+        let owner = LibraryOwnership::canonical(
+            LibraryTenantId::from_canonical_projection("org-b").unwrap(),
+            LibraryActorId::from_canonical_projection("bob").unwrap(),
+        );
+        let now = LibraryTimestamp::parse("2026-11-15T00:00:00Z").unwrap();
+        store
+            .mutate_library(
+                &LibraryAuthorization::from_authorized_access_projection(
+                    owner.tenant_id.clone(),
+                    owner.owner_id.clone(),
+                    LibraryGrant::Owner,
+                ),
+                &owner,
+                0,
+                LibraryIdempotency {
+                    key: "create-secret".into(),
+                    request_digest: canonical_json::digest(&"create-secret").unwrap(),
+                    terminal_audit: None,
+                },
+                LibraryMutation::Create {
+                    record: SkillLibraryRecord {
+                        artifact_id: library.descriptor.id.clone(),
+                        name: "secret-notes".into(),
+                        ownership: owner.clone(),
+                        visibility: SkillVisibility::Private,
+                        archived: false,
+                        active_revision_id: None,
+                        latest_revision_id: library.current_revision_id.clone(),
+                        latest_revision_files: Vec::new(),
+                        search_metadata: Vec::new(),
+                        provenance_provider: None,
+                        materialized: false,
+                        created_at: now.clone(),
+                        updated_at: now.clone(),
+                    },
+                },
+                now,
+            )
+            .unwrap();
+        // A plain (non-library) draft artifact.
+        let draft = import("local", "draft-notes");
+
+        let search = |caller: &CodeModeCaller| {
+            ProductCodeModeArtifactSearchProvider::personal_artifacts(
+                &store,
+                "notes",
+                10,
+                &[CodeModeCatalogKind::Skill],
+                caller,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>()
+        };
+        let library_id = format!("labby::{}", library.descriptor.id);
+        let draft_id = format!("labby::{}", draft.descriptor.id);
+        let scoped = |is_admin: bool| CodeModeCaller::Scoped {
+            capabilities: CodeModeCallerCapabilities {
+                can_read: true,
+                can_execute: true,
+                is_admin,
+                ..Default::default()
+            },
+            sub: Some("alice".into()),
+        };
+
+        let admin = search(&scoped(true));
+        assert!(!admin.contains(&library_id), "{admin:?}");
+        assert!(
+            admin.contains(&draft_id),
+            "scoped admins still see local drafts"
+        );
+        let member = search(&scoped(false));
+        assert!(
+            member.is_empty(),
+            "non-admins see neither drafts nor library records: {member:?}"
+        );
+        let operator = search(&CodeModeCaller::TrustedLocal);
+        assert!(operator.contains(&library_id) && operator.contains(&draft_id));
     }
 }

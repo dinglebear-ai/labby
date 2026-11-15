@@ -12,7 +12,7 @@ use super::catalog::ACTIONS;
 use super::execution::{execute_snippet_outcome, receipt_owner};
 use super::store::{
     builtin_snippet_dir, code_for_snippet, create_promoted_user_snippet,
-    create_user_snippet_checked, list_snippets_with_diagnostics, remove_user_snippet,
+    create_user_snippet_guarded, list_snippets_with_diagnostics, remove_user_snippet,
     resolve_snippet, validate_snippet_body, validate_snippet_name,
 };
 
@@ -24,6 +24,8 @@ struct CreateParams {
     #[serde(default)]
     force: bool,
     expected_digest: Option<String>,
+    #[serde(default)]
+    shadow_builtin: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -249,15 +251,18 @@ async fn dispatch_inner_owned(
         "snippets.create" => {
             let params: CreateParams = parse_params(params)?;
             let home = lab_home();
+            let builtins = builtin_snippet_dir();
             to_json(
                 publication(move || {
-                    create_user_snippet_checked(
+                    create_user_snippet_guarded(
                         &home,
+                        &builtins,
                         &params.name,
                         &params.body,
                         params.description.as_deref(),
                         params.force,
                         params.expected_digest.as_deref(),
+                        params.shadow_builtin,
                     )
                 })
                 .await?,

@@ -2792,16 +2792,19 @@ mod tests {
             ),
         )
         .await
-        .expect("Legacy OAuth subject Tool must reach its existing branch")
+        .expect("Legacy OAuth subject Tool must reach the subject-scoped branch")
         .unwrap();
         let CallToolResponse::Complete(legacy_oauth_response) = legacy_oauth_response else {
             panic!("Legacy OAuth error must remain Complete")
         };
         let legacy_oauth_json = serde_json::to_string(&legacy_oauth_response).unwrap();
+        // A bare-name OAuth tool now runs on the caller's subject relay rather
+        // than the subject-less raw branch; this fixture's subject connect
+        // fails, so the call reports that relay connection.
         assert!(
             legacy_oauth_json.contains("\"kind\":\"upstream_error\"")
                 && legacy_oauth_json.contains("\"upstream\":\"oauth\"")
-                && legacy_oauth_json.contains("upstream is not connected"),
+                && legacy_oauth_json.contains("relayed upstream `oauth` connect failed"),
             "{legacy_oauth_json}"
         );
         assert!(!legacy_oauth_json.contains("private oauth subject failure"));

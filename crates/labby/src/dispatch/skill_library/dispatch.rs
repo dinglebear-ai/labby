@@ -471,6 +471,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             correlation_id,
             Arc::clone(&self.store),
             snapshot.version,
+            snapshot.version,
             LibraryIdempotency {
                 key: idempotency_key,
                 request_digest,
@@ -532,7 +533,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let projection = Arc::clone(&self.projection);
         let preparation_artifact_id = artifact_id.clone();
         let preparation_mutation = mutation.clone();
-        let (ownership, candidate) = self
+        let (ownership, candidate, prepared_from_version) = self
             .blocking
             .run("skill_library_mutation_prepare", move || {
                 let snapshot = preparation_store.library_snapshot()?;
@@ -547,7 +548,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     &snapshot,
                     Some(&preparation_mutation),
                 )?;
-                Ok::<_, ArtifactError>((ownership, candidate))
+                // The candidate generation is derived from this exact version;
+                // the commit refuses to publish it over any later commit.
+                Ok::<_, ArtifactError>((ownership, candidate, snapshot.version))
             })
             .await
             .map_err(map_target_lookup)?;
@@ -569,6 +572,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             correlation_id,
             Arc::clone(&self.store),
             expected_library_version,
+            prepared_from_version,
             LibraryIdempotency {
                 key: idempotency_key,
                 request_digest,
@@ -2122,6 +2126,7 @@ pub(crate) async fn commit_authorized_mutation<G: Send + Sync + 'static>(
     correlation_id: &SkillLibraryCorrelationId,
     store: Arc<ArtifactStore>,
     expected_library_version: u64,
+    prepared_from_version: u64,
     mut idempotency: LibraryIdempotency,
     mutation: LibraryMutation,
     committed_at: LibraryTimestamp,
@@ -2171,10 +2176,11 @@ pub(crate) async fn commit_authorized_mutation<G: Send + Sync + 'static>(
                     faults.as_ref(),
                     || {
                         store
-                            .mutate_library_outcome(
+                            .mutate_library_outcome_prepared(
                                 &authorization,
                                 &ownership,
                                 expected_library_version,
+                                prepared_from_version,
                                 idempotency,
                                 mutation,
                                 committed_at,

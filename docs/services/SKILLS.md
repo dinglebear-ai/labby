@@ -85,7 +85,20 @@ The canonical action catalog is generated from code. The lifecycle groups are:
 Mutation requests carry an `expected_library_version` and a bounded
 `idempotency_key`. Revision-sensitive operations also carry an
 `expected_revision_id`. Stale editors and conflicting replays fail closed rather
-than silently overwriting current state.
+than silently overwriting current state. A mutation commits only when the
+library is still at the version its published generation was prepared from, so
+a racing commit can never be dropped from the served Skill set; a retry of an
+already-committed request still replays its receipt.
+
+Every Artifact action, local or remote, passes one transport gate: scope,
+audience, and product-credential binding to the requested Project. On a
+Project-bound route the requested Project must be the route's own, and on a
+Team-bound route the Team is the route's Team; `x-labby-project-id` and
+`x-labby-team-id` may restate them but never redirect a call. The owned
+`artifacts` and Depot publish tools also honor a loadout that disables Tools.
+`artifacts.transfer_options` performs a server-credentialed exact acquisition,
+so it requires the same write scope and `AssetUse` permission as
+`artifacts.import`.
 
 The MCP App presents these actions through the `artifacts` tool. It is
 a compact conversation card with an expandable, multi-file authoring view. Host

@@ -783,6 +783,13 @@ impl PeerContract {
                 {
                     continue;
                 }
+                // Same read/execute ceiling as the wire listing.
+                if !hide_raw_tools
+                    && !self.audience.code_mode_execute_allowed
+                    && !crate::mcp::context::upstream_tool_is_read_only(&upstream_tool.tool)
+                {
+                    continue;
+                }
                 let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
                     &self.registry,
                     &upstream_tool.upstream_name,
@@ -820,7 +827,9 @@ impl PeerContract {
                 {
                     for tool in tools {
                         let name = tool.name.as_ref();
-                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
+                        if (!self.audience.code_mode_execute_allowed
+                            && !crate::mcp::context::upstream_tool_is_read_only(&tool))
+                            || crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
                             || builtin_names.contains(name)
                             || !advertised_names.insert(name.to_string())
                         {

@@ -59,6 +59,15 @@ pub(crate) async fn dispatch_authorized_action(
                 valid: Vec::new(),
                 hint: None,
             })?;
+        // Remote actions pass the same transport gate as local ones: scope,
+        // audience, and product-credential binding to this Project. Without it
+        // a credential bound to Project A could act under Project B's remote
+        // authority through a header naming B.
+        super::auth::validate_transport_class(
+            &caller,
+            crate::dispatch::artifact_control::operation_is_mutation(operation),
+        )
+        .map_err(super::map_distribution_authorization_error)?;
         let permission = crate::dispatch::artifact_control::operation_permission(operation);
         let authority = crate::dispatch::artifact_control::authorize_authority_context(
             access_runtime,
