@@ -1,5 +1,8 @@
 name: Native Linux ARM64 package smoke
 
+# Pull requests build the native ARM64 archive only when packaging, toolchain,
+# dependency, or native build inputs change. Every merge to main smokes the
+# archive, and the release workflow qualifies ARM64 again before publication.
 on:
   pull_request:
     paths:
@@ -10,17 +13,17 @@ on:
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml
-      - crates/**
-      - .config/**
-      - apps/web/**
-      - docs/**
-      - plugins/**
-      - scripts/**
-      - packages/**
+      - .cargo/**
+      - crates/*/Cargo.toml
+      - crates/*/build.rs
       - install.sh
+      - scripts/install.sh
+  push:
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
-  group: arm64-package-smoke-${{ github.event.pull_request.number }}
+  group: arm64-package-smoke-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -40,12 +43,12 @@ jobs:
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
       - name: Verify exact PR head and native runner
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
@@ -66,7 +69,7 @@ jobs:
           (cd dist && sha256sum lab-aarch64-unknown-linux-gnu.tar.gz > lab-aarch64-unknown-linux-gnu.tar.gz.sha256)
       - name: Verify and smoke extracted package
         env:
-          SOURCE_HEAD: ${{ github.event.pull_request.head.sha }}
+          SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
           archive=dist/lab-aarch64-unknown-linux-gnu.tar.gz
@@ -96,7 +99,7 @@ jobs:
       - name: Upload qualified archive and receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: arm64-package-${{ github.event.pull_request.head.sha }}
+          name: arm64-package-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
             dist/lab-aarch64-unknown-linux-gnu.tar.gz
             dist/lab-aarch64-unknown-linux-gnu.tar.gz.sha256

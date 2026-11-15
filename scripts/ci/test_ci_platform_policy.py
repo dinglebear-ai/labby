@@ -87,8 +87,44 @@ class CiPlatformPolicyTests(unittest.TestCase):
         for job in ("rust-coverage", "live-e2e-core"):
             self.assertNotIn(job, yaml.safe_load(self.workflow)["jobs"], f"{job} must run independently of CI")
             self.assertNotIn(job, gate, f"{job} remains advisory")
-        for job in ("test", "feature-slices", "test-fork", "clippy"):
+        for job in ("test", "feature-slices", "clippy"):
             self.assertIn(job, gate)
+
+
+class MergePathFailureReportTests(unittest.TestCase):
+    """Suites pull requests skip must not fail silently on main or schedule."""
+
+    def setUp(self) -> None:
+        self.workflow = yaml.load(
+            (WORKFLOW_DIR / "merge-path-failures.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+
+    def test_watches_every_merge_path_workflow_by_its_real_name(self) -> None:
+        trigger = self.workflow["on"]["workflow_run"]
+        self.assertEqual(trigger["types"], ["completed"])
+        self.assertEqual(trigger["branches"], ["main"])
+        names = {
+            yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)["name"]
+            for path in WORKFLOW_DIR.glob("*.y*ml")
+        }
+        for watched in ("CI", "Live E2E", "Rust coverage", "Native Linux ARM64 package smoke", "CodeQL"):
+            with self.subTest(workflow=watched):
+                self.assertIn(watched, trigger["workflows"])
+                self.assertIn(watched, names, "a renamed workflow would silently stop being watched")
+        self.assertEqual(set(trigger["workflows"]) - names, set())
+
+    def test_reports_only_push_and_schedule_outcomes_without_checkout(self) -> None:
+        self.assertEqual(self.workflow["permissions"], {"actions": "read", "issues": "write"})
+        job = self.workflow["jobs"]["report"]
+        condition = job["if"]
+        self.assertIn('["push", "schedule"]', condition)
+        self.assertIn('["success", "failure", "timed_out"]', condition)
+        uses = [step.get("uses", "") for step in job["steps"]]
+        self.assertFalse(any(use.startswith("actions/checkout@") for use in uses))
+        script = job["steps"][0]["with"]["script"]
+        self.assertIn("state: 'closed'", script, "a recovered run must close the issue")
+        self.assertIn("merge-path-failure:${run.workflow_id}", script)
 
 
 def evaluate_condition(expression: str | None, context: dict) -> bool:
@@ -148,7 +184,7 @@ class ProductRoutingTests(unittest.TestCase):
         )
 
     def test_fork_product_routing_has_a_classifier_and_test_lane(self) -> None:
-        for files, expected in [(["crates/labby-gateway/src/gateway/dispatch.rs"], "test-fork"), (["apps/web/app/(admin)/gateway/page.tsx"], "gateway-admin-browser")]:
+        for files, expected in [(["crates/labby-gateway/src/gateway/dispatch.rs"], "test"), (["apps/web/app/(admin)/gateway/page.tsx"], "gateway-admin-browser")]:
             with self.subTest(files=files):
                 context = self.context("pull_request", True, files)
                 self.assertTrue(evaluate_condition(self.jobs["changes"].get("if"), context))
@@ -162,7 +198,7 @@ class ProductRoutingTests(unittest.TestCase):
 
     def test_unrouted_product_skip_is_intentional(self) -> None:
         context = self.context("pull_request", False, ["docs/services/ACCESS.md"])
-        result = self.run_aggregate(context, **{"test-fork": "skipped", "test": "skipped"})
+        result = self.run_aggregate(context, test="skipped")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_identity_reader_changes_collect_the_real_python_suite(self) -> None:

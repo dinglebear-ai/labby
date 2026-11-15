@@ -830,6 +830,95 @@ fn scheduled_and_manual_runs_enable_everything() {
 }
 
 #[test]
+fn main_pushes_run_the_extended_suites_but_pull_requests_do_not() {
+    let push = classify("push", &["crates/labby/src/lib.rs"]);
+    assert_eq!(push["extended"], "true");
+    for files in [
+        &["crates/labby/src/lib.rs"][..],
+        &["crates/labby/tests/cli_contract.rs"][..],
+        &["docs/README.md"][..],
+    ] {
+        let out = classify("pull_request", files);
+        assert_eq!(out["extended"], "false", "{files:?}");
+    }
+}
+
+#[test]
+fn optional_pull_request_lanes_route_on_their_own_inputs() {
+    let cases: &[(&str, &[&str], &[&str])] = &[
+        // An ordinary source edit compiles and tests, but skips every lane
+        // that has its own narrower inputs.
+        (
+            "crates/labby/src/dispatch/gateway.rs",
+            &["rust_api"],
+            &[
+                "rust_features",
+                "codemode",
+                "mcp_conformance",
+                "lifecycle_conformance",
+                "installer",
+            ],
+        ),
+        // Integration tests document nothing and generate no catalog entries.
+        (
+            "crates/labby/tests/cli_contract.rs",
+            &[],
+            &["rust_api", "docs_check", "rust_features"],
+        ),
+        (
+            "crates/labby/Cargo.toml",
+            &["rust_features", "rust_api", "codemode", "mcp_conformance"],
+            &["installer"],
+        ),
+        (
+            "crates/labby-codemode/src/lib.rs",
+            &["codemode"],
+            &["mcp_conformance"],
+        ),
+        (
+            "crates/labby/src/mcp/handlers_tools.rs",
+            &["mcp_conformance"],
+            &["codemode"],
+        ),
+        (
+            "crates/labby-auth/src/lib.rs",
+            &["mcp_conformance"],
+            &["lifecycle_conformance"],
+        ),
+        (
+            "tools/verification/conformance/expected-failures-dated.yaml",
+            &["mcp_conformance"],
+            &["lifecycle_conformance"],
+        ),
+        (
+            "crates/labby-browser/src/lib.rs",
+            &["lifecycle_conformance"],
+            &["mcp_conformance"],
+        ),
+        (
+            "crates/labby-gateway/src/lib.rs",
+            &["lifecycle_conformance"],
+            &["installer"],
+        ),
+        (
+            "crates/labby/src/self_update.rs",
+            &["installer"],
+            &["lifecycle_conformance"],
+        ),
+        ("scripts/install.sh", &["installer"], &["rust_test"]),
+    ];
+    for (path, enabled, disabled) in cases {
+        let out = classify("pull_request", &[path]);
+        for key in *enabled {
+            assert_eq!(out[*key], "true", "{path} must enable {key}");
+        }
+        for key in *disabled {
+            assert_eq!(out[*key], "false", "{path} must not enable {key}");
+        }
+    }
+}
+
+#[test]
 fn protected_docs_workflow_is_trusted_and_label_gated() {
     let workflow = fs::read_to_string(repo_root().join(".github/workflows/protected-docs.yml"))
         .expect("read protected docs workflow")
@@ -1080,28 +1169,37 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "the baked Incus binary must prove the compiled Skills surface"
     );
 
-    let test_job = workflow
-        .split("  test:\n")
+    let test_build_job = workflow
+        .split("  test-build:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  test-fork:").next())
-        .expect("test job");
-    let test_fork_job = workflow
-        .split("  test-fork:\n")
-        .nth(1)
-        .and_then(|section| section.split("\n  test-windows:").next())
-        .expect("test-fork job");
-    for (name, job) in [("test", test_job), ("test-fork", test_fork_job)] {
-        assert!(
-            job.contains("cargo build -p labby --all-features --lib --bins --locked"),
-            "{name} must warm normal Labby/Gateway targets before nextest fan-out"
-        );
-    }
+        .and_then(|section| section.split("\n  test:\n").next())
+        .expect("test-build job");
+    let warm = test_build_job
+        .find("cargo build -p labby --all-features --lib --bins --locked")
+        .expect("test-build must warm normal Labby/Gateway targets");
+    let gateway_harness = test_build_job
+        .find("cargo test -p labby-gateway --all-features --lib --no-run --locked")
+        .expect("test-build must link the gateway lib-test harness on its own");
+    let labby_harness = test_build_job
+        .find("cargo test -p labby --all-features --lib --no-run --locked")
+        .expect("test-build must link the Labby lib-test harness on its own");
+    let archive = test_build_job
+        .find("cargo nextest archive --workspace --all-features --locked")
+        .expect("test-build must archive every workspace test target");
+    assert!(
+        warm < gateway_harness && gateway_harness < labby_harness && labby_harness < archive,
+        "test-build must link the largest targets one at a time before the archive pass"
+    );
+    assert!(
+        !workflow.contains("\n  test-fork:\n"),
+        "fork pull requests must run the sharded test job, not a single unsharded job"
+    );
 
     // Read the job env structurally: the rationale comments below mention
     // CARGO_BUILD_JOBS by name, so a substring check would match the very
     // explanation of why it is absent.
     let parsed = ci_workflow_yaml(&workflow);
-    for job in ["feature-slices", "mcp-regressions", "test", "test-fork"] {
+    for job in ["feature-slices", "mcp-regressions", "test-build", "test"] {
         let env = &parsed["jobs"][job]["env"];
         // These jobs must NOT pin CARGO_BUILD_JOBS. Cargo forwards it to every
         // build script as NUM_JOBS, and aws-lc-sys compiles 414 C and 902
@@ -1351,9 +1449,9 @@ fn nextest_ci_isolates_process_harnesses_and_timing_oracles() {
     }
 }
 
-/// Keep long suites parallel and catch the gateway-only runtime suite on pull
-/// requests. The old serial gateway-only run added about 24 minutes after
-/// merge, delaying Release Please and discovering failures too late.
+/// Keep long suites parallel, build the workspace tests once, and keep the
+/// duplicated gateway-only runtime suite on the merge path (main pushes and
+/// the nightly run) while pull requests compile that slice.
 #[test]
 fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let text = ci_workflow_text();
@@ -1384,11 +1482,25 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     let test_job = text
         .split("  test:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  test-fork:").next())
+        .and_then(|section| section.split("\n  doctests:").next())
         .expect("test job");
     assert!(
-        test_job.contains("scripts/ci/run-test-shard.sh"),
-        "test shards must run through the shared shard runner"
+        test_job.contains("scripts/ci/run-test-shard.sh \"$SHARD\" archive"),
+        "test shards must execute the shared archive through the shard runner"
+    );
+    assert!(
+        !test_job.contains("cargo build") && !test_job.contains("--no-run"),
+        "test shards must not compile; test-build owns compilation"
+    );
+    let test_needs: Vec<&str> = workflow["jobs"]["test"]["needs"]
+        .as_array()
+        .expect("test needs")
+        .iter()
+        .map(|need| need.as_str().expect("need"))
+        .collect();
+    assert!(
+        test_needs.contains(&"test-build"),
+        "test shards consume test-build's archive"
     );
     assert!(
         test_job.contains("name: nextest-junit-${{ matrix.shard }}"),
@@ -1403,6 +1515,8 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         "not test(live_labby::) | binary(=live_process_harness)",
         "--exclude labby",
         "cargo test --doc --workspace --all-features --locked",
+        "--extract-to . --extract-overwrite",
+        "--partition \"hash:${index}/${labby_integration_shards}\"",
     ] {
         assert!(
             shard_runner.contains(required),
@@ -1417,19 +1531,27 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         .expect("rustdoc job");
     assert!(
         rustdoc_job.contains("run: just rustdoc\n") && !rustdoc_job.contains("rustdoc-check"),
-        "the blocking Rustdoc job builds docs only; doctests run in the test `crates` shard"
+        "the blocking Rustdoc job builds docs only; doctests run in the `doctests` job"
+    );
+    assert!(
+        text.split("  doctests:\n")
+            .nth(1)
+            .is_some_and(|job| job.contains("scripts/ci/run-test-shard.sh doctests")),
+        "workspace doctests must run in their own required job"
     );
 
     let coverage = fs::read_to_string(repo_root().join(".github/workflows/rust-coverage.yml"))
         .expect("read rust-coverage.yml");
     assert!(
-        coverage.contains("branches: [main]") && !coverage.contains("pull_request:"),
-        "coverage must run separately on main without entering pull-request CI"
+        coverage.contains("schedule:")
+            && !coverage.contains("pull_request:")
+            && !coverage.contains("push:"),
+        "coverage must run on its nightly schedule, outside pull-request and push CI"
     );
     let gateway_slices = text
         .split("  gateway-slice-tests:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .and_then(|section| section.split("\n  gateway-slice-check:").next())
         .expect("gateway-slice-tests job");
     let gateway_shards = workflow["jobs"]["gateway-slice-tests"]["strategy"]["matrix"]["shard"]
         .as_array()
@@ -1455,8 +1577,18 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
     assert!(
         gateway_slices
             .contains("scripts/ci/run-test-shard.sh \"${{ matrix.shard }}\" gateway-only")
-            && !gateway_slices.contains("github.event_name != 'pull_request'"),
-        "the full gateway-only suite must run in required shards on pull requests"
+            && gateway_slices.contains("needs.changes.outputs.extended == 'true'"),
+        "the full gateway-only suite must run in required shards on extended runs"
+    );
+    let gateway_check = text
+        .split("  gateway-slice-check:\n")
+        .nth(1)
+        .and_then(|section| section.split("\n  extracted-crate-slices:").next())
+        .expect("gateway-slice-check job");
+    assert!(
+        gateway_check.contains("needs.changes.outputs.rust_compile == 'true'")
+            && gateway_check.contains("--features gateway,proxy-testkit --all-targets --locked"),
+        "every Rust pull request must still compile every gateway-only target"
     );
     for required in [
         "--no-default-features --features \"gateway,proxy-testkit\" --locked --profile ci",
@@ -1473,18 +1605,18 @@ fn merge_gate_shards_heavy_suites_to_stay_under_ten_minutes() {
         .expect("mcp-conformance declares lanes");
     assert_eq!(
         conformance_lanes.len(),
-        5,
-        "conformance suites must stay fanned out"
+        2,
+        "conformance suites share one setup per lane: `auth` and `protocol`"
     );
     let conformance_job = text
         .split("  mcp-conformance:\n")
         .nth(1)
-        .and_then(|section| section.split("\n  test:").next())
+        .and_then(|section| section.split("\n  test-build:").next())
         .expect("mcp-conformance job");
     for lane in conformance_lanes {
         let lane = lane.as_str().expect("lane name");
         assert!(
-            conformance_job.contains(&format!("if: matrix.lane == '{lane}'")),
+            conformance_job.contains(&format!("matrix.lane == '{lane}'")),
             "conformance lane `{lane}` must own at least one suite step"
         );
     }
@@ -2070,14 +2202,24 @@ fn release_tool_downloads_are_version_and_digest_pinned() {
     assert!(!release.contains("release-image-rollback.sh"));
     assert!(!release.contains("ghcr.io"));
     assert!(release.contains("LABBY_RELEASE_ASSET_DIR: ${{ github.workspace }}"));
-    assert!(release.contains("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}"));
+    // npm authenticates through GitHub OIDC (trusted publishing), so no npm
+    // secret may remain: a lingering token would silently re-enable token auth
+    // and mask a broken trusted-publisher configuration.
+    assert!(!release.contains("NODE_AUTH_TOKEN"));
+    assert!(!release.contains("secrets.NPM_TOKEN"));
     let npm_identity = release
         .find("name: Validate npm publication identity")
         .expect("release must authenticate to npm before publication");
     let artifact_upload = release
         .find("name: Upload qualified assets to draft release")
         .expect("release must upload qualified assets to the draft release");
-    assert!(release.contains("run: npm whoami >/dev/null"));
+    // `npm whoami` cannot survive trusted publishing: with no token there is no
+    // identity to query, so it would fail on a working configuration.
+    assert!(!release.contains("npm whoami >/dev/null"));
+    assert!(release.contains("run: scripts/ci/check-oidc-publisher.sh"));
+    // `npm dist-tag` only speaks OIDC from npm 11.21.0, and Node 24 bundles
+    // 11.19.1, so the pin is what keeps promotion off token auth.
+    assert!(release.contains("npm install -g npm@"));
     assert!(npm_identity < artifact_upload);
 }
 

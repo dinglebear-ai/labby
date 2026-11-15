@@ -156,6 +156,20 @@ json.dump(d,open(p,'w'));print(json.dumps(out) if not isinstance(out,str) else o
         result=self.execute();self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout)['action'],'already-tagged')
 
+    def test_consumed_request_with_extra_files_does_not_wedge_the_channel(self):
+        recorded=self.merge_request()
+        result=self.execute();self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['action'],'tagged')
+        candidate=self.git('rev-parse','v2.6.3-dev.1')
+        self.assertEqual(self.git('rev-parse',candidate+'^'),recorded)
+        # The merged request PR carried unrelated product changes beside the
+        # request file. Its tag is already minted and independently validated, so
+        # every later run must stay usable instead of failing this audit forever.
+        self.state_update(files=[dict(filename='.release-please-dev.json',status='added'),
+                                 dict(filename='crates/labby/src/lib.rs',status='modified')])
+        result=self.execute();self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['action'],'already-tagged')
+
     def test_existing_tag_with_wrong_source_is_never_overwritten(self):
         self.merge_request();self.git('tag','v2.6.3-dev.1',self.source);self.git('push','-q','origin','refs/tags/v2.6.3-dev.1')
         result=self.execute();self.assertNotEqual(result.returncode,0)

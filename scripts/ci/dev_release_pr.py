@@ -83,9 +83,17 @@ class Coordinator:
         self.canonical(pr, BRANCH, merged=True)
         if pr['merge_commit_sha'] != source:
             raise ValueError('merged PR identity changed')
-        files = self.api(f'pulls/{pr["number"]}/files?per_page=100')
-        if len(files) != 1 or files[0]['filename'] != REQUEST or files[0]['status'] not in ('added', 'modified'):
-            raise ValueError('dev request PR must change only the request file')
+        request = self.request(source)
+        # Request purity guards tag creation, so enforce it only while a tag can
+        # still be minted from this request. Once the tag exists the request is
+        # history -- consume() re-validates that tag against its recorded source
+        # -- and re-auditing the merged PR's file list on every later run would
+        # wedge the channel permanently on a historical request that was merged
+        # carrying unrelated changes alongside the request file.
+        if not self.git('ls-remote', 'origin', 'refs/tags/v' + request['version']):
+            files = self.api(f'pulls/{pr["number"]}/files?per_page=100')
+            if len(files) != 1 or files[0]['filename'] != REQUEST or files[0]['status'] not in ('added', 'modified'):
+                raise ValueError('dev request PR must change only the request file')
         head = self.fetch(pr['head']['sha'])
         if head != pr['head']['sha']:
             raise ValueError('PR head identity changed')

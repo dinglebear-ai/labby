@@ -682,12 +682,15 @@ impl LabMcpServer {
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
         #[cfg(feature = "gateway")]
-        let (code_mode_app_enabled, mcp_apps_config) =
-            crate::mcp::peer_contract::mcp_app_visibility_snapshot(
-                self.gateway_manager.as_deref(),
-                &self.code_mode_app_state,
-            )
-            .await;
+        let crate::mcp::peer_contract::McpSurfaceVisibility {
+            code_mode_app_enabled,
+            mcp_apps: mcp_apps_config,
+            ..
+        } = crate::mcp::peer_contract::mcp_app_visibility_snapshot(
+            self.gateway_manager.as_deref(),
+            &self.code_mode_app_state,
+        )
+        .await;
         #[cfg(not(feature = "gateway"))]
         let code_mode_app_enabled = self.code_mode_app_state.is_enabled();
         #[cfg(feature = "gateway")]

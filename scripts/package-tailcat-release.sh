@@ -9,7 +9,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {spawnSync} = require('node:child_process');
 const [repo, dist, version, target, suppliedBuild] = process.argv.slice(2);
-if (!path.isAbsolute(dist) || (suppliedBuild && !path.isAbsolute(suppliedBuild)) || !/^\d+\.\d+\.\d+$/.test(version) || !['x86_64-unknown-linux-gnu','aarch64-unknown-linux-gnu','aarch64-apple-darwin'].includes(target)) throw Error('invalid release arguments');
+if (!path.isAbsolute(dist) || (suppliedBuild && !path.isAbsolute(suppliedBuild)) || !/^\d+\.\d+\.\d+(-dev\.[1-9]\d*)?$/.test(version) || !['x86_64-unknown-linux-gnu','aarch64-unknown-linux-gnu','aarch64-apple-darwin'].includes(target)) throw Error('invalid release arguments');
 const run = (command,args,cwd,timeout) => {
   const result = spawnSync(command,args,{cwd,timeout,stdio:'inherit',env:{...process.env,npm_config_fetch_retries:'2',npm_config_fetch_timeout:'60000'}});
   if (result.error || result.status !== 0) throw Error(`companion command failed: ${command}`);

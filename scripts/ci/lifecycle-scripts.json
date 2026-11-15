@@ -48,6 +48,7 @@
     "scripts/ci/verify-release-provenance.sh",
     "scripts/ci/upload-immutable-release-assets.sh",
     "scripts/ci/verify-and-activate-release.sh",
+    "scripts/ci/check-oidc-publisher.sh",
     "plugins/scripts/check-dozzle-skill",
     "plugins/scripts/check-oauth.sh",
     "plugins/scripts/cleanup-leaked-mcp.sh",

@@ -746,6 +746,9 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         | "code ui status"
         | "code ui enable"
         | "code ui disable"
+        | "code read status"
+        | "code read enable"
+        | "code read disable"
         | "code run"
         | "code hints preview"
         | "code hints apply" => {
