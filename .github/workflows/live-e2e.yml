@@ -1,8 +1,10 @@
 name: Live E2E
 
+# Not a pull-request check: a cold build plus a thirty-minute real-process
+# qualification ran on every pull request. Each merge to main runs the `pr`
+# tier, the weekly schedule runs `nightly`, and a manual dispatch on a branch
+# qualifies a pull request before merge when it needs this evidence early.
 on:
-  pull_request:
-    branches: [main]
   push:
     branches: [main]
   schedule:
