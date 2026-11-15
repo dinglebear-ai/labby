@@ -269,6 +269,8 @@ pub(crate) struct NoticeStore {
     #[cfg(windows)]
     windows_guard: Option<Arc<labby_winjob::fs::SqliteVerificationGuard>>,
     // At most one blocking operation per store can be queued or executing.
+    // Callers wait up to `DB_BUDGET` for it asynchronously (see `admission`);
+    // the wait occupies no blocking thread.
     permit: Arc<Semaphore>,
     published: Arc<tokio::sync::Notify>,
     installation_root: Option<Arc<Path>>,
@@ -412,14 +414,17 @@ impl NoticeStore {
         Ok(store)
     }
 
+    /// Request-path operations. The background Events and presence passes take
+    /// the same single permit for a few milliseconds at a time, so a request
+    /// that arrives during one waits for it instead of failing as `Busy`.
+    /// Only a holder that outlasts the admission budget, such as a worker
+    /// still finishing after its own deadline, reports `Busy`.
     pub(super) async fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        let permit = Arc::clone(&self.permit)
-            .try_acquire_owned()
-            .map_err(|_| NoticeError::Busy)?;
-        self.run_admitted(permit, work, Some(DB_BUDGET)).await
+        self.run_admitted(self.admission().await?, work, Some(DB_BUDGET))
+            .await
     }
 
     /// For the bounded Events and joined session presence workers. A
@@ -429,7 +434,7 @@ impl NoticeStore {
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        self.run_admitted(self.event_permit().await?, work, Some(DB_BUDGET))
+        self.run_admitted(self.admission().await?, work, Some(DB_BUDGET))
             .await
     }
 
@@ -439,11 +444,11 @@ impl NoticeStore {
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        self.run_admitted(self.event_permit().await?, work, None)
-            .await
+        self.run_admitted(self.admission().await?, work, None).await
     }
 
-    async fn event_permit(&self) -> Result<OwnedSemaphorePermit, NoticeError> {
+    /// Wait at most `DB_BUDGET` for the store's single operation permit.
+    async fn admission(&self) -> Result<OwnedSemaphorePermit, NoticeError> {
         tokio::time::timeout(DB_BUDGET, Arc::clone(&self.permit).acquire_owned())
             .await
             .map_err(|_| NoticeError::Busy)?

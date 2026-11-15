@@ -378,6 +378,23 @@ async fn notice_production_default_disabled_and_deadline_keeps_worker_bounded() 
         .unwrap();
 }
 
+/// A background Events or presence pass holds the single permit for a few
+/// milliseconds at a time. A request that arrives during that window must
+/// wait for it rather than report `Busy`; only a holder that outlasts the
+/// admission budget turns into `Busy` (see the tests above).
+#[tokio::test]
+async fn notice_production_request_waits_for_a_momentary_permit_holder() {
+    let store = NoticeStore::memory().unwrap();
+    let held = Arc::clone(&store.permit).acquire_owned().await.unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        drop(held);
+    });
+    let address = store.register(who("alice")).await;
+    release.await.unwrap();
+    assert!(address.is_ok(), "{address:?}");
+}
+
 #[test]
 fn notice_production_missing_schema_and_orphaned_rows_fail_closed() {
     let c = db();
