@@ -14,6 +14,11 @@ const MAX_CONTROL_PLANE_RESPONSE_BYTES: usize = 1024 * 1024;
 // depot.artifacts.list. Keep accepting the previous schema during rollout.
 const ARTIFACTS_LIST_ORIGINAL_FINGERPRINT: &str =
     "b9f0ed3dca904fea6d0f71ac814f14f682cb98c92337ed9ae61d8d5d9b33217a";
+/// Depot before source pagination (16dc14f) served `depot.sources.list` with
+/// an empty input schema. Keep it admitted during mixed-version rollout; the
+/// call Labby sends (`{}`) is valid for both contracts.
+pub const SOURCES_LIST_UNPAGED_FINGERPRINT: &str =
+    "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f";
 
 /// Depot's frozen public operation catalog, captured from the paired Depot
 /// worktree. Tests pin every curated operation's schema and fingerprint to it.
@@ -173,12 +178,10 @@ impl Operation {
 
     const fn expected_schema_fingerprint(self) -> &'static str {
         match self {
-            Self::AcpRegistryList
-            | Self::AuthorityStatus
-            | Self::SourcesList
-            | Self::BundlesList => {
+            Self::AcpRegistryList | Self::AuthorityStatus | Self::BundlesList => {
                 "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f"
             }
+            Self::SourcesList => "854803c02082d25ec5ab03ac1191c420c912c7566434c6e69e7ce7c3183e1753",
             Self::ArtifactsFollow => {
                 "95eacd7404183d82b5cec2ba9580920412a3fe86a9335f2138bcfbe8f2620146"
             }
@@ -269,6 +272,12 @@ impl Operation {
                 self.provider_name(),
                 ARTIFACTS_LIST_ORIGINAL_FINGERPRINT,
             ))
+            || (self == Self::SourcesList
+                && operation_contract_is_compatible(
+                    definition,
+                    self.provider_name(),
+                    SOURCES_LIST_UNPAGED_FINGERPRINT,
+                ))
     }
 }
 
@@ -915,6 +924,33 @@ mod tests {
 
         definition["inputSchema"]["properties"]["kind"]["enum"] = json!(["tool"]);
         assert!(!Operation::ArtifactsList.contract_is_compatible(&definition));
+    }
+
+    #[test]
+    fn sources_list_accepts_only_the_paged_and_unpaged_schemas() {
+        let mut definition = operation_definition(Operation::SourcesList);
+        assert!(
+            definition["inputSchema"]["properties"]
+                .get("cursor")
+                .is_some(),
+            "golden sources.list is the paged contract"
+        );
+        assert!(Operation::SourcesList.contract_is_compatible(&definition));
+
+        definition["inputSchema"] = json!({
+            "additionalProperties": false, "properties": {}, "required": [], "type": "object"
+        });
+        assert_eq!(
+            schema_fingerprint(&definition["inputSchema"]).as_deref(),
+            Some(SOURCES_LIST_UNPAGED_FINGERPRINT)
+        );
+        definition["schemaFingerprint"] = json!(SOURCES_LIST_UNPAGED_FINGERPRINT);
+        assert!(Operation::SourcesList.contract_is_compatible(&definition));
+
+        definition["inputSchema"]["properties"]["limit"] = json!({"type": "integer"});
+        definition["schemaFingerprint"] =
+            json!(schema_fingerprint(&definition["inputSchema"]).unwrap());
+        assert!(!Operation::SourcesList.contract_is_compatible(&definition));
     }
 
     #[test]

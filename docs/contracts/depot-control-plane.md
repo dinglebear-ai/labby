@@ -81,6 +81,17 @@ recomputed against the captured Catalog contract. The current descriptor is the
 reviewed `4932f3630dbe51644951bac43223bb967c0e7237` contract in the golden catalog.
 These release-sidecar identities are provenance labels, not signed build attestations.
 
+`depot.sources.list` likewise admits exactly two input contracts. The golden
+catalog pins the paged contract Depot `16dc14f` serves (fingerprint
+`854803c02082d25ec5ab03ac1191c420c912c7566434c6e69e7ce7c3183e1753`: optional
+`cursor`, `enabled`, `kind`, and `limit`; output adds `nextCursor` and
+`total`). The earlier empty-input contract
+(`d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f`) stays
+admitted for Depots that predate pagination. Both keep the read scope,
+transport, and read-only, non-destructive annotations, and Labby's `{}` request
+is valid against either. Any other `sources.list` schema still rejects the
+catalog.
+
 The SDK checks the served catalog on each call. The generic backend retains a
 compact admitted configure version in its actor-bound, five-minute catalog
 snapshot. When the admitted contract is historical, both paths reject keys absent

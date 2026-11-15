@@ -3954,10 +3954,41 @@
         "readOnlyHint": true
       },
       "contractVersion": 1,
-      "description": "List persisted Depot ingestion sources and refresh state.",
+      "description": "List a bounded page of persisted sources and refresh state. Follow nextCursor until absent.",
       "inputSchema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "cursor": {
+            "description": "Opaque source continuation; restart listing if stale.",
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "enabled": {
+            "description": "Optional enabled-state filter.",
+            "type": "boolean"
+          },
+          "kind": {
+            "description": "Optional source kind filter.",
+            "enum": [
+              "repo",
+              "well_known",
+              "ard_catalog",
+              "marketplace",
+              "mcp",
+              "mcp_registry",
+              "acp_registry"
+            ],
+            "minLength": 1,
+            "type": "string"
+          },
+          "limit": {
+            "description": "Maximum sources per page (default 50; byte budget may shorten a page).",
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
         "required": [],
         "type": "object"
       },
@@ -3965,17 +3996,26 @@
       "outputSchema": {
         "additionalProperties": true,
         "properties": {
+          "nextCursor": {
+            "description": "Canonical nextCursor result field.",
+            "type": "string"
+          },
           "sources": {
             "description": "Canonical sources result field.",
             "type": "array"
+          },
+          "total": {
+            "description": "Canonical total result field.",
+            "type": "integer"
           }
         },
         "required": [
-          "sources"
+          "sources",
+          "total"
         ],
         "type": "object"
       },
-      "schemaFingerprint": "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+      "schemaFingerprint": "854803c02082d25ec5ab03ac1191c420c912c7566434c6e69e7ce7c3183e1753",
       "title": "List sources",
       "requiredScope": "read",
       "transportAvailable": true
