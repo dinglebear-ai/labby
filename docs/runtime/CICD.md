@@ -266,7 +266,14 @@ Rust category, so a documentation-only push to main does not rerun them.
 | Rustdoc and generated docs | Rust library, binary, example, and build-script sources plus manifests (`rust_api`); integration-test-only changes skip both | same routing |
 
 A failure in an extended suite after merge blocks Release Please exactly as
-before, because the main-push CI run is still the one it waits for. To run the
+before, because the main-push CI run is still the one it waits for. The
+`merge-path-failures.yml` workflow makes those failures visible: when a push
+or scheduled run of `CI`, `Live E2E`, `Rust coverage`, the ARM64 package
+smoke, or `CodeQL` fails on main, it opens one issue per workflow (marked
+`<!-- merge-path-failure:<workflow id> -->`), comments on it for each further
+failure, and closes it when a later main-branch run passes. It runs from the
+default branch with `actions: read` and `issues: write`, and never checks out
+code. To run the
 extended set for a pull request before merge, dispatch `CI` on its branch:
 
 ```bash

@@ -1,0 +1,110 @@
+name: Merge-path failure report
+
+# Pull requests skip the extended suites (gateway-only shards, MCP focused
+# regressions, MSRV, slices, macOS installers, conformance outside their own
+# inputs), Live E2E, the Rust CodeQL scan, and most ARM64 smokes. Those run on
+# pushes to main and on schedule instead, so a failure there must not be
+# silent: a red main CI run also blocks Release Please.
+#
+# For each watched workflow this keeps exactly one open issue while its latest
+# main-branch push or scheduled run has failed, adds a comment for each further
+# failure, and closes the issue when a later main-branch run succeeds. It runs
+# from the default branch, never checks out code, and reads only run metadata.
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+      - Live E2E
+      - Rust coverage
+      - Native Linux ARM64 package smoke
+      - CodeQL
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: merge-path-failures-${{ github.event.workflow_run.workflow_id }}
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  report:
+    name: Report main-branch and scheduled failures
+    # Pull-request and manual runs report on their own checks. Cancelled and
+    # skipped runs say nothing about main's health.
+    if: >-
+      ${{
+        contains(fromJSON('["push", "schedule"]'), github.event.workflow_run.event) &&
+        contains(fromJSON('["success", "failure", "timed_out"]'), github.event.workflow_run.conclusion)
+      }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const title = `Main-branch failure: ${run.name}`;
+            const marker = `<!-- merge-path-failure:${run.workflow_id} -->`;
+            const { owner, repo } = context.repo;
+
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner, repo, state: 'open', per_page: 100,
+            });
+            const existing = open.find(
+              (issue) => !issue.pull_request && (issue.body || '').includes(marker),
+            );
+
+            if (run.conclusion === 'success') {
+              if (existing) {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: existing.number,
+                  body: `Recovered: [${run.event} run #${run.run_number}](${run.html_url}) on \`${run.head_sha.slice(0, 9)}\` passed.`,
+                });
+                await github.rest.issues.update({
+                  owner, repo, issue_number: existing.number, state: 'closed', state_reason: 'completed',
+                });
+                core.info(`Closed #${existing.number}`);
+              } else {
+                core.info('Latest main-branch run passed; nothing to report.');
+              }
+              return;
+            }
+
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner, repo, run_id: run.id, filter: 'latest', per_page: 100,
+            });
+            const failed = jobs
+              .filter((job) => ['failure', 'timed_out'].includes(job.conclusion))
+              .map((job) => `- [${job.name}](${job.html_url})`);
+            const summary = [
+              `[${run.event} run #${run.run_number}](${run.html_url}) on \`${run.head_sha.slice(0, 9)}\` concluded \`${run.conclusion}\`.`,
+              '',
+              failed.length ? 'Failed jobs:' : 'No individual job reported a failure; open the run for details.',
+              ...failed,
+            ].join('\n');
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: existing.number, body: summary,
+              });
+              core.info(`Updated #${existing.number}`);
+              return;
+            }
+            const created = await github.rest.issues.create({
+              owner, repo, title,
+              body: [
+                marker,
+                `\`${run.name}\` failed on a push to main or a scheduled run. Pull requests skip`,
+                'part of this workflow, so this may be the first run that executed the failing',
+                'suite. A red CI run on main also blocks Release Please.',
+                '',
+                summary,
+                '',
+                'This issue closes automatically when a later main-branch run of the workflow passes.',
+              ].join('\n'),
+            });
+            core.info(`Opened #${created.data.number}`);

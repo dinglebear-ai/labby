@@ -91,6 +91,42 @@ class CiPlatformPolicyTests(unittest.TestCase):
             self.assertIn(job, gate)
 
 
+class MergePathFailureReportTests(unittest.TestCase):
+    """Suites pull requests skip must not fail silently on main or schedule."""
+
+    def setUp(self) -> None:
+        self.workflow = yaml.load(
+            (WORKFLOW_DIR / "merge-path-failures.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+
+    def test_watches_every_merge_path_workflow_by_its_real_name(self) -> None:
+        trigger = self.workflow["on"]["workflow_run"]
+        self.assertEqual(trigger["types"], ["completed"])
+        self.assertEqual(trigger["branches"], ["main"])
+        names = {
+            yaml.load(path.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)["name"]
+            for path in WORKFLOW_DIR.glob("*.y*ml")
+        }
+        for watched in ("CI", "Live E2E", "Rust coverage", "Native Linux ARM64 package smoke", "CodeQL"):
+            with self.subTest(workflow=watched):
+                self.assertIn(watched, trigger["workflows"])
+                self.assertIn(watched, names, "a renamed workflow would silently stop being watched")
+        self.assertEqual(set(trigger["workflows"]) - names, set())
+
+    def test_reports_only_push_and_schedule_outcomes_without_checkout(self) -> None:
+        self.assertEqual(self.workflow["permissions"], {"actions": "read", "issues": "write"})
+        job = self.workflow["jobs"]["report"]
+        condition = job["if"]
+        self.assertIn('["push", "schedule"]', condition)
+        self.assertIn('["success", "failure", "timed_out"]', condition)
+        uses = [step.get("uses", "") for step in job["steps"]]
+        self.assertFalse(any(use.startswith("actions/checkout@") for use in uses))
+        script = job["steps"][0]["with"]["script"]
+        self.assertIn("state: 'closed'", script, "a recovered run must close the issue")
+        self.assertIn("merge-path-failure:${run.workflow_id}", script)
+
+
 def evaluate_condition(expression: str | None, context: dict) -> bool:
     """Evaluate the comparison/boolean subset used by the routed product jobs."""
     if expression is None:
