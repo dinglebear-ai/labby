@@ -81,6 +81,41 @@ impl NoticeInput {
         }
         Ok(Self { register, ids })
     }
+
+    /// Whether the controls register an inbox, and how many IDs they ACK.
+    /// Diagnostics use these counts; the IDs themselves are never logged.
+    pub(crate) fn shape(&self) -> (bool, usize) {
+        (self.register, self.ids.as_ref().map_or(0, Vec::len))
+    }
+}
+
+/// Mark an admitted result whose notification controls could not settle.
+///
+/// The stdio bridge runs its local controls after the daemon has already run
+/// the script, so a control failure must not turn that result into an error.
+/// It adds a typed `notification_controls` field instead of leaving the client
+/// to infer failure from a missing receipt. `retryable` says whether repeating
+/// only the controls, with the same ACK IDs, can settle them. Like any notice
+/// decoration, it is skipped (and the result left unchanged) when a field
+/// would collide or the response would exceed its budget.
+pub(crate) fn mark_unsettled(
+    result: &mut CallToolResult,
+    error: NoticeError,
+    max_bytes: usize,
+    max_tokens: usize,
+) {
+    let mut fields = Map::new();
+    fields.insert(
+        "notification_controls".into(),
+        serde_json::json!({
+            "status": "unsettled",
+            "kind": error.kind(),
+            "retryable": matches!(error, NoticeError::Busy | NoticeError::Deadline),
+        }),
+    );
+    if let Some(candidate) = decorated(result, &fields, None, max_bytes, max_tokens) {
+        *result = candidate;
+    }
 }
 
 pub(crate) async fn prepare_for_recipient(

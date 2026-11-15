@@ -1559,7 +1559,7 @@ mod tests {
         ))
         .expect("golden fixture parses");
         let cases = fixture["cases"].as_array().expect("cases array");
-        assert!(!cases.is_empty());
+        assert_ne!(cases, &Vec::<Value>::new());
         for case in cases {
             let name = case["name"].as_str().expect("case name");
             let mut canonical = Vec::new();

@@ -973,6 +973,12 @@ fn parse_operation_catalog(
             &expected.schema_fingerprint,
         ) && !(item.name == "depot.sources.configure"
             && labby_apis::artifact_control::sources_configure_contract_is_supported(&definition))
+            && !(item.name == "depot.sources.list"
+                && labby_apis::artifact_control::operation_contract_is_compatible(
+                    &definition,
+                    &item.name,
+                    labby_apis::artifact_control::SOURCES_LIST_UNPAGED_FINGERPRINT,
+                ))
         {
             return Err(DepotError::InvalidCatalog);
         }
@@ -2140,13 +2146,82 @@ mod tests {
                     });
                     "d84326bcc8f676eb186eafb0217411138d6c99c195072e467dcc53f1c240f738"
                 }
+                "depot.sources.list" => {
+                    definition["inputSchema"] = paged_sources_list_input_schema();
+                    "854803c02082d25ec5ab03ac1191c420c912c7566434c6e69e7ce7c3183e1753"
+                }
                 _ => continue,
             };
             definition["schemaFingerprint"] = json!(fingerprint);
             updated += 1;
         }
-        assert_eq!(updated, 4);
+        assert_eq!(updated, 5);
         assert!(parse_operation_catalog(&catalog).is_ok());
+    }
+
+    /// Depot 16dc14f paginated `depot.sources.list`; this is its served input.
+    fn paged_sources_list_input_schema() -> Value {
+        json!({
+            "additionalProperties": false,
+            "properties": {
+                "cursor": {
+                    "description": "Opaque source continuation; restart listing if stale.",
+                    "maxLength": 2048, "minLength": 1, "type": "string"
+                },
+                "enabled": {"description": "Optional enabled-state filter.", "type": "boolean"},
+                "kind": {
+                    "description": "Optional source kind filter.",
+                    "enum": ["repo", "well_known", "ard_catalog", "marketplace", "mcp", "mcp_registry", "acp_registry"],
+                    "minLength": 1, "type": "string"
+                },
+                "limit": {
+                    "description": "Maximum sources per page (default 50; byte budget may shorten a page).",
+                    "maximum": 100, "minimum": 1, "type": "integer"
+                }
+            },
+            "required": [],
+            "type": "object"
+        })
+    }
+
+    #[test]
+    fn operation_catalog_admits_unpaged_sources_list_during_rollout() {
+        // A Depot that predates source pagination must keep the rest of its
+        // catalog available; any other sources.list schema still fails closed.
+        let golden: Value = serde_json::from_str(DEPOT_OPERATIONS_GOLDEN).unwrap();
+        let with_sources_list = |input: Value, fingerprint: &str| {
+            let mut catalog = golden.clone();
+            let definition = catalog["operations"]
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|definition| definition["name"] == "depot.sources.list")
+                .unwrap();
+            definition["inputSchema"] = input;
+            definition["schemaFingerprint"] = json!(fingerprint);
+            catalog
+        };
+
+        let paged = with_sources_list(
+            paged_sources_list_input_schema(),
+            "854803c02082d25ec5ab03ac1191c420c912c7566434c6e69e7ce7c3183e1753",
+        );
+        let unpaged = with_sources_list(
+            json!({"additionalProperties": false, "properties": {}, "required": [], "type": "object"}),
+            "d746974fa9afd5e951f76f9af38954b0ad7f436f2120dc974da65e5ee39f856f",
+        );
+        for catalog in [&paged, &unpaged] {
+            let policy = parse_operation_policy(catalog, "depot.sources.list").unwrap();
+            assert!(policy.read_only && !policy.requires_write && !policy.destructive);
+        }
+
+        let mut altered = paged_sources_list_input_schema();
+        altered["properties"]["limit"]["maximum"] = json!(1000);
+        let fingerprint = labby_apis::artifact_control::schema_fingerprint(&altered).unwrap();
+        assert!(matches!(
+            parse_operation_catalog(&with_sources_list(altered, &fingerprint)),
+            Err(DepotError::InvalidCatalog)
+        ));
     }
 
     #[test]

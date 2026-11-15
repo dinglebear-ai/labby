@@ -682,12 +682,15 @@ impl LabMcpServer {
                 .with_cache_scope(rmcp::model::CacheScope::Private));
         }
         #[cfg(feature = "gateway")]
-        let (code_mode_app_enabled, mcp_apps_config) =
-            crate::mcp::peer_contract::mcp_app_visibility_snapshot(
-                self.gateway_manager.as_deref(),
-                &self.code_mode_app_state,
-            )
-            .await;
+        let crate::mcp::peer_contract::McpSurfaceVisibility {
+            code_mode_app_enabled,
+            mcp_apps: mcp_apps_config,
+            ..
+        } = crate::mcp::peer_contract::mcp_app_visibility_snapshot(
+            self.gateway_manager.as_deref(),
+            &self.code_mode_app_state,
+        )
+        .await;
         #[cfg(not(feature = "gateway"))]
         let code_mode_app_enabled = self.code_mode_app_state.is_enabled();
         #[cfg(feature = "gateway")]
@@ -3234,10 +3237,9 @@ mod tests {
             0,
             "Skills-only peers must not be cold discovered by resources/list"
         );
-        assert!(
-            pool.cached_upstream_resources_allowed(None)
-                .await
-                .is_empty()
+        assert_eq!(
+            pool.cached_upstream_resources_allowed(None).await,
+            Vec::<(String, Resource)>::new()
         );
     }
 
@@ -5336,7 +5338,7 @@ if(rows!==32)throw new Error(`expected exhaustive 32 rows, got ${rows}`);
                 .await
                 .expect("admin read succeeds"),
         );
-        assert!(!ok.contents.is_empty());
+        assert_ne!(ok.contents, Vec::<ResourceContents>::new());
     }
 
     #[tokio::test]

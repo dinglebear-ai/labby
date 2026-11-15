@@ -167,10 +167,9 @@ fn notice_production_recipient_boundaries_and_no_foreign_ack() {
     for wrong in variants {
         let wrong = wrong.key().unwrap();
         assert!(take(&mut c, &wrong, 1002).is_none());
-        assert!(
-            acknowledge_at(&mut c, &wrong, std::slice::from_ref(&id), 1002)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            acknowledge_at(&mut c, &wrong, std::slice::from_ref(&id), 1002).unwrap(),
+            Vec::<String>::new()
         );
     }
     assert!(
@@ -376,6 +375,71 @@ async fn notice_production_default_disabled_and_deadline_keeps_worker_bounded() 
     tokio::task::spawn_blocking(move || finished_rx.recv_timeout(Duration::from_secs(5)).unwrap())
         .await
         .unwrap();
+}
+
+/// A background Events or presence pass usually holds the single permit
+/// briefly. A request that arrives during that window must wait for it rather
+/// than report `Busy`; a holder that outlasts the admission budget still turns
+/// into `Busy` (`notice_production_default_disabled_and_deadline_keeps_worker_bounded`).
+#[tokio::test]
+async fn notice_production_request_waits_for_a_momentary_permit_holder() {
+    let store = NoticeStore::memory().unwrap();
+    let held = Arc::clone(&store.permit).acquire_owned().await.unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        drop(held);
+    });
+    let address = store.register(who("alice")).await;
+    release.await.unwrap();
+    assert!(address.is_ok(), "{address:?}");
+}
+
+/// Waiting for the permit and running the work have separate budgets, so a
+/// request admitted late still gets its whole work window. A shared budget
+/// would turn that queue time into `Deadline`, an outcome-unknown result for
+/// work that had not even started.
+#[tokio::test]
+async fn notice_production_late_admission_keeps_the_full_work_budget() {
+    let store = NoticeStore::memory().unwrap();
+    let held = Arc::clone(&store.permit).acquire_owned().await.unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(135)).await;
+        drop(held);
+    });
+    // 135 + 135 ms exceeds one 250 ms budget but fits two, with margin each.
+    let outcome = store
+        .run(|_| {
+            std::thread::sleep(Duration::from_millis(135));
+            Ok(())
+        })
+        .await;
+    release.await.unwrap();
+    assert_eq!(outcome, Ok(()));
+}
+
+#[tokio::test]
+async fn notice_production_contended_retry_stops_after_its_backoff() {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let outcome: Result<(), _> = retry_contended(|| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        async { Err(NoticeError::Busy) }
+    })
+    .await;
+    assert_eq!(outcome, Err(NoticeError::Busy));
+    assert_eq!(
+        calls.into_inner(),
+        CONTENDED_BACKOFF_MS.len() + 1,
+        "a store that stays busy must still fail the caller"
+    );
+
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let outcome: Result<(), _> = retry_contended(|| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        async { Err(NoticeError::Invalid) }
+    })
+    .await;
+    assert_eq!(outcome, Err(NoticeError::Invalid));
+    assert_eq!(calls.into_inner(), 1, "only contention is retried");
 }
 
 #[test]
@@ -879,4 +943,68 @@ fn typed_message_reference_requires_internal_publish() {
         ),
         Err(NoticeError::NotFound)
     ));
+}
+
+/// Simulates another connection holding the SQLite write lock past the 25 ms
+/// contention bound. The store must fail fast with a retryable `Busy` (or
+/// `Deadline` on a loaded runner), and a caller that follows the contract
+/// (same dedupe key, with backoff) must get through once the lock is released.
+#[tokio::test]
+async fn notice_production_contended_handle_retries_through_a_held_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = NoticeStore::open_at(dir.path()).unwrap();
+    let inbox = store.register(who("alice")).await.unwrap();
+    let path = dir.path().join("agent-notifications/inbox.sqlite3");
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let mut connection = Connection::open(path).unwrap();
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .unwrap();
+        locked_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        tx.commit().unwrap();
+    });
+    tokio::task::spawn_blocking(move || locked_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .await
+        .unwrap();
+
+    let input = message(&inbox.id, "contended");
+    // A loaded runner can also exhaust the 250 ms operation budget first; both
+    // outcomes are the typed, retryable contention family.
+    let contended = store.publish(producer(), input.clone()).await.unwrap_err();
+    assert!(
+        matches!(contended, NoticeError::Busy | NoticeError::Deadline),
+        "a lock held past the contention bound must be retryable, got {contended:?}"
+    );
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let retrying = {
+        let (store, input, attempts) = (store.clone(), input.clone(), Arc::clone(&attempts));
+        tokio::spawn(async move {
+            retry_contended(|| {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                store.publish(producer(), input.clone())
+            })
+            .await
+        })
+    };
+    // Release only once a retry has started, so the test proves one happened.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while attempts.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    release_tx.send(()).unwrap();
+    let receipt = retrying.await.unwrap().unwrap();
+    tokio::task::spawn_blocking(move || holder.join().unwrap())
+        .await
+        .unwrap();
+    let again = store.publish(producer(), input).await.unwrap();
+    assert_eq!(
+        again.id, receipt.id,
+        "the retry reused the dedupe key, so the notice was published once"
+    );
 }

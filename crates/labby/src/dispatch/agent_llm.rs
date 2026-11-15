@@ -290,7 +290,7 @@ mod tests {
         assert_eq!(user, "Summarize this.");
         // An empty run still gets a user turn so the provider has a request.
         let (_, user) = render_messages("agent-1", 7, "Be concise.", "  ");
-        assert!(!user.trim().is_empty());
+        assert_ne!(user.trim(), "");
     }
 
     struct FixedAuthority(AuthorityEpochVector);

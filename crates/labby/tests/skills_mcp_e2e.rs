@@ -357,7 +357,7 @@ async fn skills_http_list_cursor_reads_second_page_on_same_session() {
             .list_skills(pagination(Some(cursor)))
             .await
             .expect("second page on same session");
-        assert!(!second.skills.is_empty());
+        assert_ne!(second.skills, Vec::<rmcp::model::Skill>::new());
         assert!(second.next_cursor.is_none());
         let first_uris = first
             .skills

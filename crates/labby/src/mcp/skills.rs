@@ -811,7 +811,10 @@ mod serve_tests {
     async fn every_first_party_manifest_file_verifies_against_served_bytes() {
         let registry = SkillRegistryContext::first_party_only();
         let listing = list_visible_skills(&registry).await;
-        assert!(!listing.skills.is_empty());
+        assert_ne!(
+            listing.skills,
+            Vec::<labby_runtime::skills::wire::SkillEntry>::new()
+        );
         for entry in &listing.skills {
             for resource in entry.resources.as_ref().expect("manifest") {
                 let file = crate::skills::facade::read_visible_skill_file(&registry, &resource.uri)

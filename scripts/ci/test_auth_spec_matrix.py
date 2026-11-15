@@ -392,10 +392,10 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
         self.assertIn("python3 scripts/ci/refresh_mcp_auth_denominator.py --check", workflow)
 
     def test_coverage_workflow_keeps_meaningful_auth_floor(self) -> None:
-        # Coverage remains a push/main signal without delaying the CI workflow
-        # that release-please consumes.
+        # Coverage is a nightly signal that never delays the CI workflow
+        # release-please consumes.
         coverage = (ROOT / ".github/workflows/rust-coverage.yml").read_text()
-        self.assertIn("branches: [main]", coverage)
+        self.assertIn("schedule:", coverage)
         self.assertNotIn("pull_request:", coverage)
         self.assertIn("--critical-minimum 30", coverage)
         self.assertIn("--critical crates/labby-auth/src/", coverage)

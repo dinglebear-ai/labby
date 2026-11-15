@@ -130,7 +130,10 @@ async fn observed_scope_upgrade_uses_subject_bound_persisted_pkce_and_callback()
         .complete_authorization_callback("alice", "code", &csrf)
         .await
         .unwrap();
-    assert!(manager.required_scope_upgrade("alice").is_empty());
+    assert_eq!(
+        manager.required_scope_upgrade("alice"),
+        Vec::<String>::new()
+    );
     assert!(
         manager
             .complete_authorization_callback("alice", "code", &csrf)
@@ -248,12 +251,18 @@ async fn scope_challenge_registry_bounds_subjects_and_permission_input() {
         .collect::<Vec<_>>()
         .join(" ");
     manager.record_scope_challenge("alice", &too_many);
-    assert!(manager.required_scope_upgrade("alice").is_empty());
+    assert_eq!(
+        manager.required_scope_upgrade("alice"),
+        Vec::<String>::new()
+    );
     for index in 0..MAX_SUBJECTS {
         manager.record_scope_challenge(&format!("subject{index}"), "read");
     }
     manager.record_scope_challenge("overflow", "admin");
-    assert!(manager.required_scope_upgrade("overflow").is_empty());
+    assert_eq!(
+        manager.required_scope_upgrade("overflow"),
+        Vec::<String>::new()
+    );
 }
 
 struct PausedState {
@@ -396,7 +405,10 @@ async fn scope_handoff_survives_status_pruning() {
             .scope_challenge_transfer_for_callback("alice", &csrf)
             .expect("the partial grant retains this callback's remaining challenge");
         cache.advance_subject_epoch("scoped", "alice");
-        assert!(manager.required_scope_upgrade("alice").is_empty());
+        assert_eq!(
+            manager.required_scope_upgrade("alice"),
+            Vec::<String>::new()
+        );
         manager.rebind_scope_challenge_after_callback(
             transfer,
             cache.lifecycle_epoch_for("scoped", "alice"),
@@ -462,7 +474,10 @@ async fn omitted_token_scope_uses_the_requested_grant_for_scope_completion() {
         .complete_authorization_callback("alice", "code", &query(&begin.authorization_url, "state"))
         .await
         .unwrap();
-    assert!(manager.required_scope_upgrade("alice").is_empty());
+    assert_eq!(
+        manager.required_scope_upgrade("alice"),
+        Vec::<String>::new()
+    );
     let row = manager.credential_row("alice").await.unwrap().unwrap();
     let granted = serde_json::from_str::<Vec<String>>(&row.granted_scopes_json).unwrap();
     assert!(

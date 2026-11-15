@@ -49,7 +49,7 @@ struct CodeModeWarmUpAdmission(Arc<AtomicUsize>);
 impl CodeModeWarmUpAdmission {
     fn try_acquire(active: &Arc<AtomicUsize>, limit: usize) -> Option<Self> {
         active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 (current < limit).then_some(current + 1)
             })
             .ok()
@@ -262,6 +262,11 @@ impl GatewayManager {
 
     pub async fn code_mode_enabled(&self) -> bool {
         self.config.read().await.code_mode.enabled
+    }
+
+    /// Whether the read-only `codemode_read` entry point is advertised and callable.
+    pub async fn code_mode_read_tool_enabled(&self) -> bool {
+        self.config.read().await.code_mode.read_tool_enabled
     }
 
     /// Ensure the upstream pool is warm and every enabled upstream has its tool

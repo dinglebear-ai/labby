@@ -2618,17 +2618,18 @@ impl IncusTargetJob {
                     remaining.as_secs().max(1),
                     Some(cancelled),
                 )?;
-                Ok(target_ssh_destination(target))
             }
             Self::Verify { options } => {
                 let mut options = options.clone();
                 options.timeout_seconds = remaining.as_secs().max(1);
                 verify_container_target(&options, target, Some(cancelled))?;
-                Ok(target_ssh_destination(target))
             }
+            // Returns directly: the fixture supplies its own destination, so it
+            // does not share the trailing expression the other arms hoist.
             #[cfg(test)]
-            Self::Fixture(fixture) => fixture.execute(target, remaining, cancelled),
+            Self::Fixture(fixture) => return fixture.execute(target, remaining, cancelled),
         }
+        Ok(target_ssh_destination(target))
     }
 }
 

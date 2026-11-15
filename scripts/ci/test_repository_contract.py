@@ -35,7 +35,11 @@ class InstructionIndexTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.git("init", "-q")
         self.scope(self.root)
+        self.toolchain("1.99.1")
         self.git("add", ".")
+
+    def toolchain(self, channel: str) -> None:
+        (self.root / "rust-toolchain.toml").write_text(f'[toolchain]\nchannel = "{channel}"\n')
 
     def git(self, *args: str) -> str:
         return subprocess.check_output(["git", "-C", str(self.root), *args], text=True)
@@ -140,6 +144,43 @@ class InstructionIndexTests(unittest.TestCase):
         failures, replaced = MODULE.evaluate(self.root, fleet, "rust", False)
         self.assertTrue(failures)
         self.assertEqual(replaced, 0)
+
+    def test_fleet_exact_pin_is_replaced_by_the_toolchain_floor(self) -> None:
+        pinned = Finding("toolchain-pinned", "rust-toolchain.toml", MODULE.FLEET_TOOLCHAIN_MESSAGE)
+        fleet = Mock()
+        fleet.check.return_value = [pinned]
+        self.assertEqual(MODULE.evaluate(self.root, fleet, "rust", False), ([], 1))
+
+    def test_channel_below_the_floor_is_rejected(self) -> None:
+        self.toolchain("1.96.0")
+        fleet = Mock()
+        fleet.check.return_value = [
+            Finding("toolchain-pinned", "rust-toolchain.toml", MODULE.FLEET_TOOLCHAIN_MESSAGE)
+        ]
+        failures, replaced = MODULE.evaluate(self.root, fleet, "rust", False)
+        self.assertEqual(failures, ["toolchain-floor: rust-toolchain.toml: channel must not be below 1.97.1"])
+        self.assertEqual(replaced, 1)
+
+    def test_floating_or_partial_channel_is_rejected(self) -> None:
+        for channel in ("stable", "1.99", "nightly-2026-11-01"):
+            with self.subTest(channel=channel):
+                self.toolchain(channel)
+                self.assertEqual(
+                    MODULE.check_toolchain_floor(self.root),
+                    ["rust-toolchain.toml: channel must be an exact x.y.z release"],
+                )
+
+    def test_missing_toolchain_file_is_rejected(self) -> None:
+        (self.root / "rust-toolchain.toml").unlink()
+        self.assertEqual(
+            MODULE.check_toolchain_floor(self.root), ["rust-toolchain.toml: must be readable TOML"]
+        )
+
+    def test_other_toolchain_findings_are_not_suppressed(self) -> None:
+        components = Finding("toolchain-pinned", "rust-toolchain.toml", "missing components: clippy")
+        fleet = Mock()
+        fleet.check.return_value = [components]
+        self.assertEqual(MODULE.evaluate(self.root, fleet, "rust", False), ([components.render()], 0))
 
     def test_unknown_checker_is_rejected_before_execution(self) -> None:
         script = self.root / "unexpected.py"

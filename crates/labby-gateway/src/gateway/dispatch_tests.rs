@@ -69,7 +69,7 @@ fn skills_operator_projection_preserves_candidate_count_and_rejection_detail() {
     let projection = project_operator_skills(&operator);
 
     assert_eq!(projection.discovered_count, 2);
-    assert!(projection.skills.is_empty());
+    assert_eq!(projection.skills, Vec::<Value>::new());
     assert_eq!(projection.rejected[0]["reason"], "invalid_frontmatter");
     assert_eq!(
         projection.rejected[0]["detail"],
@@ -1577,6 +1577,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
         json!({
             "enabled": true,
             "mcp_ui_enabled": false,
+            "read_tool_enabled": false,
             "trace_params": false,
             "result_shape_policy": "truncate",
             "timeout_ms": 5000,
@@ -1592,6 +1593,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
 
     assert_eq!(value["enabled"], true);
     assert_eq!(value["mcp_ui_enabled"], false);
+    assert_eq!(value["read_tool_enabled"], false);
     assert_eq!(value["trace_params"], false);
     assert_eq!(value["result_shape_policy"], "truncate");
     assert_eq!(value["timeout_ms"], 5000);
@@ -2254,7 +2256,10 @@ async fn protected_gateway_subset_stage_actions_persist_without_hot_mounting() {
     let desired = dispatch_with_manager(&manager, "gateway.protected_route.list_state", json!({}))
         .await
         .expect("route state after staged removal");
-    assert!(desired.as_array().expect("state array").is_empty());
+    assert_eq!(
+        desired.as_array().expect("state array"),
+        &Vec::<serde_json::Value>::new()
+    );
 }
 
 #[tokio::test]
@@ -5103,7 +5108,10 @@ async fn gateway_import_dry_run_returns_plan_without_mutating_config() {
     .await
     .unwrap();
 
-    assert!(result["imported"].as_array().unwrap().is_empty());
+    assert_eq!(
+        result["imported"].as_array().unwrap(),
+        &Vec::<serde_json::Value>::new()
+    );
     assert_eq!(result["planned"][0]["name"], "fixture");
     assert_eq!(result["planned"][0]["transport"], "stdio");
     assert!(!result.to_string().contains("secret"));

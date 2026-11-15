@@ -761,8 +761,8 @@ mod tests {
             .authorize_skill_library(member, "member-project".to_owned(), Permission::AssetUse)
             .await
             .unwrap();
-        assert!(suspended.team_ids.is_empty());
-        assert!(suspended.team_management_ids.is_empty());
+        assert_eq!(suspended.team_ids, Vec::<String>::new());
+        assert_eq!(suspended.team_management_ids, Vec::<String>::new());
     }
 
     #[tokio::test]
