@@ -1,7 +1,7 @@
 ---
 title: "Documentation Maintenance"
 created: "2026-09-27"
-updated: "2026-10-20"
+updated: "2026-11-15"
 ---
 
 # Documentation Maintenance
@@ -228,8 +228,9 @@ feature, or platform leakage before committing them.
 
 The repository-contract job also requires `title`, `created`, and `updated`
 frontmatter on maintained topic documents. Its AGENTS-first adapter keeps all
-other checks from the immutable fleet implementation and replaces only the
-legacy reverse-direction symlink rule with strict Git-index validation. See
+other checks from the immutable fleet implementation. It replaces only the
+legacy reverse-direction symlink rule, with strict Git-index validation, and
+the fleet's exact 1.97.1 toolchain pin, with a 1.97.1 floor. See
 [CI/CD](../runtime/CICD.md) for the adapter and required aggregate contract.
 
 `scripts/check-product-docs.py` inventories tracked and nonignored new paths

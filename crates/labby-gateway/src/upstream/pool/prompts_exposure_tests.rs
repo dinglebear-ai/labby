@@ -286,7 +286,7 @@ async fn subject_scoped_prompts_honor_initialize_and_skip_unadvertised_capabilit
         .subject_scoped_prompts(std::slice::from_ref(&config), "alice", &[])
         .await;
 
-    assert!(prompts.is_empty());
+    assert_eq!(prompts, Vec::<rmcp::model::Prompt>::new());
     assert_eq!(
         prompt_calls.load(Ordering::SeqCst),
         0,
@@ -432,6 +432,6 @@ async fn subject_prompt_listing_waits_for_global_catalog_fanout_permit() {
         .subject_scoped_prompts_until(std::slice::from_ref(&config), "alice", &[], deadline_at)
         .await;
 
-    assert!(prompts.is_empty());
+    assert_eq!(prompts, Vec::<rmcp::model::Prompt>::new());
     drop(held);
 }

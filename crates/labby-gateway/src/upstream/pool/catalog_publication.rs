@@ -100,7 +100,7 @@ pub(super) fn is_ui_resource_uri(uri: &str) -> bool {
 fn next_generation() -> ToolCatalogGeneration {
     ToolCatalogGeneration(
         NEXT_TOOL_CATALOG_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .expect("tool catalog generation exhausted"),
@@ -110,7 +110,7 @@ fn next_generation() -> ToolCatalogGeneration {
 fn next_resource_generation() -> ResourceCatalogGeneration {
     ResourceCatalogGeneration(
         NEXT_RESOURCE_CATALOG_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .expect("resource catalog generation exhausted"),
@@ -120,7 +120,7 @@ fn next_resource_generation() -> ResourceCatalogGeneration {
 fn next_resource_template_generation() -> ResourceTemplateCatalogGeneration {
     ResourceTemplateCatalogGeneration(
         NEXT_RESOURCE_TEMPLATE_CATALOG_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .expect("resource template catalog generation exhausted"),
@@ -130,7 +130,7 @@ fn next_resource_template_generation() -> ResourceTemplateCatalogGeneration {
 fn next_prompt_generation() -> PromptCatalogGeneration {
     PromptCatalogGeneration(
         NEXT_PROMPT_CATALOG_GENERATION
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .expect("prompt catalog generation exhausted"),
@@ -2662,7 +2662,10 @@ mod tests {
                 .all(|route| route.upstream_name.as_ref() != "alpha")
         );
         assert_eq!(published.routes().len(), 8);
-        assert!(state.withheld_snapshots("gamma").is_empty());
+        assert_eq!(
+            state.withheld_snapshots("gamma"),
+            Vec::<WithheldSnapshot>::new()
+        );
     }
 
     #[test]

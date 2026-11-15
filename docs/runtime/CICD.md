@@ -1,7 +1,7 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-11-13"
+updated: "2026-11-15"
 ---
 
 # CI/CD
@@ -149,7 +149,11 @@ replaces those with strict Git-index checks requiring regular nonempty UTF-8
 exactly `AGENTS.md`. Private instruction files must not be tracked. This is the
 explicit AGENTS-first policy, not a skipped check or an alternate checkout:
 unknown diagnostics, other fleet failures, malformed index entries, and a
-changed upstream checker all fail. The job runs the adapter regression suite
+changed upstream checker all fail. The adapter likewise replaces the fleet's
+exact `channel must equal "1.97.1"` finding with a local toolchain floor:
+`rust-toolchain.toml` must name an exact `x.y.z` release no lower than 1.97.1,
+the ADR-0001 LLVM miscompilation floor. Other toolchain findings, such as
+missing components, still fail. The job runs the adapter regression suite
 before validation, and the `Repository Contract` aggregate still requires the
 contract job to succeed.
 
@@ -300,7 +304,7 @@ jobs when their changed-path category is enabled:
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
-| MSRV | `rust_features`, or `extended` with `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked`; the pin is the MSRV, so on ordinary pull requests Clippy's all-target passes compile the same code with the same compiler |
+| MSRV | `rust_features`, or `extended` with `rust_compile` | `cargo +1.99.1 check --workspace --all-features --all-targets --locked`; the pin is the MSRV, so on ordinary pull requests Clippy's all-target passes compile the same code with the same compiler |
 | Feature slices | `rust_features`, or `extended` with `rust_compile` | required by `ci-gate` when routed; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
 | Gateway-only compile | `rust_compile` | required by `ci-gate`; `cargo check -p labby --no-default-features --features gateway,proxy-testkit --all-targets --locked` after a product-only warm-up |
 | Gateway-only runtime suite | `extended` with `rust_compile` | required by `ci-gate` when routed; four unit partitions and five integration-target shards cover the `gateway,proxy-testkit` suite in parallel; shared embedded harness tests run once in their dedicated target |

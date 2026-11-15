@@ -778,7 +778,10 @@ async fn loadout_resource_catalog_excludes_only_the_rejected_upstream() {
         }],
         "the stable operator-facing kind, not a Debug rendering of the enum"
     );
-    assert!(pool.withheld_snapshots("alpha").await.is_empty());
+    assert_eq!(
+        pool.withheld_snapshots("alpha").await,
+        Vec::<WithheldSnapshot>::new()
+    );
 }
 
 #[tokio::test]
@@ -2069,29 +2072,29 @@ async fn loadout_service_catalog_publishes_direct_services_and_hides_disabled_al
             ..Default::default()
         })
         .await;
-    assert!(
+    assert_eq!(
         manager
             .published_loadout_service_catalog_snapshot("hidden")
             .await
             .expect("hidden")
-            .services()
-            .is_empty()
+            .services(),
+        Vec::<crate::gateway::manager::publication::PublishedLoadoutService>::new()
     );
-    assert!(
+    assert_eq!(
         manager
             .published_loadout_service_catalog_snapshot("disabled")
             .await
             .expect("disabled")
-            .services()
-            .is_empty()
+            .services(),
+        Vec::<crate::gateway::manager::publication::PublishedLoadoutService>::new()
     );
-    assert!(
+    assert_eq!(
         manager
             .published_loadout_service_catalog_snapshot("surface-off")
             .await
             .expect("surface off")
-            .services()
-            .is_empty()
+            .services(),
+        Vec::<crate::gateway::manager::publication::PublishedLoadoutService>::new()
     );
     let direct = manager
         .published_loadout_service_catalog_snapshot("absent")
@@ -2341,12 +2344,12 @@ fn empty_service_registry_publishes_an_empty_catalog() {
         dir.path().join("config.toml"),
         GatewayRuntimeHandle::default(),
     );
-    assert!(
+    assert_eq!(
         manager
             .published_service_registry_snapshot()
             .expect("empty catalog")
-            .services()
-            .is_empty()
+            .services(),
+        Vec::<crate::gateway::service_registry::PublishedService>::new()
     );
 }
 

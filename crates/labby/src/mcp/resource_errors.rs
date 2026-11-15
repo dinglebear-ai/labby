@@ -170,7 +170,7 @@ mod tests {
         use crate::dispatch::upstream::pool::CapabilityCallError;
         for message in ["cancelled", "timed out", "response too large"] {
             let error = CapabilityCallError::Mcp {
-                data: ErrorData::invalid_params(message, None),
+                data: Box::new(ErrorData::invalid_params(message, None)),
                 message: format!("upstream resource read failed: {message}"),
             };
             let (kind, summary) = classify_fetch_failure(&error);

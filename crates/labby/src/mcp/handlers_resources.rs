@@ -3237,10 +3237,9 @@ mod tests {
             0,
             "Skills-only peers must not be cold discovered by resources/list"
         );
-        assert!(
-            pool.cached_upstream_resources_allowed(None)
-                .await
-                .is_empty()
+        assert_eq!(
+            pool.cached_upstream_resources_allowed(None).await,
+            Vec::<(String, Resource)>::new()
         );
     }
 
@@ -5339,7 +5338,7 @@ if(rows!==32)throw new Error(`expected exhaustive 32 rows, got ${rows}`);
                 .await
                 .expect("admin read succeeds"),
         );
-        assert!(!ok.contents.is_empty());
+        assert_ne!(ok.contents, Vec::<ResourceContents>::new());
     }
 
     #[tokio::test]

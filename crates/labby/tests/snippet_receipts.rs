@@ -316,7 +316,7 @@ fn run_receipt_contract(home: &Path) {
         assert_eq!(dispatch_scoped(&reopened,"snippets.artifact",json!({"execution_id":id,"path":"../journal.db"}),Some(alice.clone())).await.unwrap_err().kind(),"artifact_unavailable");
         let own_history=call(&reopened,"snippets.history",json!({"name":"artifact-demo"}),&alice).await;
         assert_eq!(own_history["receipts"].as_array().unwrap().len(),1);
-        assert!(call(&reopened,"snippets.history",json!({"name":"artifact-demo"}),&scoped("bob")).await["receipts"].as_array().unwrap().is_empty());
+        assert_eq!(call(&reopened,"snippets.history",json!({"name":"artifact-demo"}),&scoped("bob")).await["receipts"].as_array().unwrap(), &Vec::<Value>::new());
         drop(reopened);
     });
     drop(runtime);

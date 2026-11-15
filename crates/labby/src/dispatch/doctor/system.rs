@@ -2013,8 +2013,8 @@ mod auth_tests {
             .build_from_sources([("LABBY_AUTH_MODE".into(), "bearer".into())])
             .unwrap();
         assert!(bearer.inbound_provider.is_none());
-        assert!(bearer.google.client_id.is_empty());
-        assert!(bearer.google.client_secret.is_empty());
+        assert_eq!(bearer.google.client_id, "");
+        assert_eq!(bearer.google.client_secret, "");
         assert!(bearer.authelia.is_none());
         let finding = |config: &labby_auth::config::AuthConfig| {
             run_auth_checks_with_config(Some(config))

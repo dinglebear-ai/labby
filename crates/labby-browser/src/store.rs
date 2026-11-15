@@ -1865,7 +1865,10 @@ mod tests {
                 .revoked_at
                 .is_some()
         );
-        assert!(reopened.pending_pairings().unwrap().is_empty());
+        assert_eq!(
+            reopened.pending_pairings().unwrap(),
+            Vec::<PairingRequest>::new()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

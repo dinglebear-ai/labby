@@ -1667,7 +1667,7 @@ mod tests {
             InboundProviderKind::Authelia
         );
         assert!(cfg.token_encryption_key.is_some());
-        assert!(cfg.google.client_id.is_empty());
+        assert_eq!(cfg.google.client_id, "");
     }
 
     #[test]

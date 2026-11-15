@@ -648,7 +648,7 @@ mod tests {
             super::default_oauth_theme(),
         )
         .unwrap();
-        assert!(output.is_empty());
+        assert_eq!(output, Vec::<u8>::new());
     }
 
     #[tokio::test]

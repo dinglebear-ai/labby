@@ -181,7 +181,10 @@ mod team_scope_tests {
             referenced_upstreams("gateway.protected_route.stage_add", &malformed),
             ["only", "x"]
         );
-        assert!(referenced_upstreams("gateway.add", &json!({"spec": {"name": "n"}})).is_empty());
+        assert_eq!(
+            referenced_upstreams("gateway.add", &json!({"spec": {"name": "n"}})),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]
