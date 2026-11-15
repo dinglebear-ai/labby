@@ -127,7 +127,7 @@ impl UpstreamPool {
     }
 
     /// Start a detached warm-up for never-listed prompt snapshots in `allowed`
-    /// and wait at most [`COLD_SNAPSHOT_WAIT`] for it. The task always runs to
+    /// and wait at most the 250 ms `COLD_SNAPSHOT_WAIT` for it. The task always runs to
     /// completion so a short caller wait never cuts a listing short of
     /// publishing its rows or recording its failure.
     pub async fn ensure_prompt_snapshots_allowed(

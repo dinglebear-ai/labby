@@ -456,20 +456,30 @@ async fn settled_calls_release_their_pending_params() {
 async fn rejected_step_names_do_not_consume_the_step_budget() {
     // More oversized steps than the per-run step budget, then a valid one: the
     // rejected names were never allocated, so the valid step is still decided.
-    let oversized = "s".repeat(crate::protocol::MAX_STEP_NAME_BYTES + 1);
-    let mut requests: Vec<_> = (0..=256u64)
-        .map(|seq| CodeModeRunnerOutput::StepBegin {
-            seq,
-            name: oversized.clone(),
-        })
-        .collect();
-    requests.push(CodeModeRunnerOutput::StepBegin {
-        seq: 257,
-        name: "valid".into(),
-    });
+    // Built inside the stub: ~260 KiB of names in one `sh -c` argument would
+    // exceed Linux's 128 KiB per-argument limit.
+    let oversized_len = crate::protocol::MAX_STEP_NAME_BYTES + 1;
+    let rejected = 257u64;
     let capture = tempfile::NamedTempFile::new().expect("capture");
-    let mut runner = PooledRunner::spawn_stub_script(&request_script(&requests, capture.path()))
-        .expect("protocol stub");
+    let script = format!(
+        r#"IFS= read -r _
+name=$(/usr/bin/head -c {oversized_len} /dev/zero | /usr/bin/tr '\000' s)
+i=0
+while [ "$i" -lt {rejected} ]; do
+  printf '{{"type":"step_begin","seq":%d,"name":"%s"}}\n' "$i" "$name"
+  IFS= read -r reply || exit 21
+  printf '%s\n' "$reply" >>"{capture}"
+  i=$((i+1))
+done
+printf '{{"type":"step_begin","seq":%d,"name":"valid"}}\n' {rejected}
+IFS= read -r reply || exit 21
+printf '%s\n' "$reply" >>"{capture}"
+printf '%s\n' '{{"type":"done"}}'
+IFS= read -r _
+"#,
+        capture = capture.path().display()
+    );
+    let mut runner = PooledRunner::spawn_stub_script(&script).expect("protocol stub");
     let host = NoopHost::default();
     let config = test_config(Duration::from_secs(15));
     let _outcome = CodeModeBroker::new(Some(&host))
@@ -480,9 +490,14 @@ async fn rejected_step_names_do_not_consume_the_step_budget() {
         )
         .await;
     let wire_replies = replies(capture.path());
-    assert_eq!(wire_replies.len(), requests.len());
+    assert_eq!(wire_replies.len(), rejected as usize + 1);
+    assert!(
+        wire_replies[..rejected as usize]
+            .iter()
+            .all(|reply| matches!(reply, CodeModeRunnerInput::ToolError { .. }))
+    );
     assert!(matches!(
         wire_replies.last(),
-        Some(CodeModeRunnerInput::StepDecision { seq: 257, .. })
+        Some(CodeModeRunnerInput::StepDecision { seq, .. }) if *seq == rejected
     ));
 }
