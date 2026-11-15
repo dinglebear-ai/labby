@@ -1,7 +1,7 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-11-13"
+updated: "2026-11-15"
 ---
 
 # CI/CD
@@ -149,7 +149,11 @@ replaces those with strict Git-index checks requiring regular nonempty UTF-8
 exactly `AGENTS.md`. Private instruction files must not be tracked. This is the
 explicit AGENTS-first policy, not a skipped check or an alternate checkout:
 unknown diagnostics, other fleet failures, malformed index entries, and a
-changed upstream checker all fail. The job runs the adapter regression suite
+changed upstream checker all fail. The adapter likewise replaces the fleet's
+exact `channel must equal "1.97.1"` finding with a local toolchain floor:
+`rust-toolchain.toml` must name an exact `x.y.z` release no lower than 1.97.1,
+the ADR-0001 LLVM miscompilation floor. Other toolchain findings, such as
+missing components, still fail. The job runs the adapter regression suite
 before validation, and the `Repository Contract` aggregate still requires the
 contract job to succeed.
 
