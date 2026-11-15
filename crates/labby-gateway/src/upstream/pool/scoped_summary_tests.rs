@@ -191,10 +191,10 @@ async fn observation_distinguishes_unknown_empty_and_private_catalogs() {
             .len(),
         91
     );
-    assert!(
+    assert_eq!(
         pool.cached_subject_tool_inventory(&config, Some("bob"))
-            .await
-            .is_empty()
+            .await,
+        Vec::<crate::upstream::types::UpstreamToolExposureRow>::new()
     );
 }
 

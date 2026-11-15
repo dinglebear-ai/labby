@@ -303,7 +303,7 @@ pub(crate) fn assert_log_secret_absent(root: &Path, secrets: &[&str]) -> Result<
 
 pub(crate) fn assert_secret_absent(body: &[u8], secrets: &[&str]) {
     for (index, secret) in secrets.iter().enumerate() {
-        assert!(!secret.is_empty());
+        assert_ne!(*secret, "");
         assert!(
             !body
                 .windows(secret.len())

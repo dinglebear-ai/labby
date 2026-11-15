@@ -122,3 +122,44 @@ fn notice_production_control_schema_and_empty_inbox() {
             .is_err()
     );
 }
+#[test]
+fn notice_production_unsettled_bridge_controls_are_typed_not_an_error() {
+    let schema =
+        Value::Object((*crate::mcp::handlers_tools::code_mode_trace_output_schema()).clone());
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for (error, kind, retryable) in [
+        (NoticeError::Busy, "rate_limited", true),
+        (NoticeError::Deadline, "timeout", true),
+        (NoticeError::Forbidden, "forbidden", false),
+    ] {
+        let mut marked = result(false);
+        mark_unsettled(&mut marked, error, 24_576, 6000);
+        let expected = json!({"status":"unsettled","kind":kind,"retryable":retryable});
+        let structured = marked.structured_content.as_ref().unwrap();
+        assert_eq!(structured["notification_controls"], expected);
+        let text: Value = serde_json::from_str(&marked.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(text["notification_controls"], expected);
+        assert_eq!(
+            text["result"],
+            json!({"ok":true}),
+            "the script result is kept"
+        );
+        assert_ne!(
+            marked.is_error,
+            Some(true),
+            "a control failure is not a script error"
+        );
+        validator.validate(structured).unwrap();
+    }
+
+    // Like any decoration, it never replaces a colliding field or breaks the budget.
+    let mut colliding = result(false);
+    colliding.structured_content.as_mut().unwrap()["notification_controls"] = json!("script");
+    let before = serde_json::to_value(&colliding).unwrap();
+    mark_unsettled(&mut colliding, NoticeError::Busy, 24_576, 6000);
+    assert_eq!(serde_json::to_value(&colliding).unwrap(), before);
+    let mut tight = result(false);
+    let before = serde_json::to_value(&tight).unwrap();
+    mark_unsettled(&mut tight, NoticeError::Busy, 1, 6000);
+    assert_eq!(serde_json::to_value(&tight).unwrap(), before);
+}

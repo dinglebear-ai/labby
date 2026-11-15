@@ -1230,6 +1230,11 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
             "notifications_remaining": { "type": "integer", "minimum": 0 },
             "notifications_are_advisory": { "const": true },
             "acknowledged_notifications": { "type": "array", "maxItems": 32, "items": { "type": "string" } },
+            "notification_controls": { "type": "object", "properties": {
+                "status": { "const": "unsettled" },
+                "kind": { "type": "string", "enum": ["invalid_param", "forbidden", "not_found", "conflict", "rate_limited", "unavailable", "timeout"] },
+                "retryable": { "type": "boolean" }
+            }, "required": ["status", "kind", "retryable"], "additionalProperties": false },
             "notification_inbox": { "type": "object", "properties": {
                 "id": { "type": "string", "pattern": "^inbox_[0-9A-HJKMNP-TV-Z]{26}$" },
                 "scope": { "type": "string", "enum": ["authenticated_client", "authenticated_credential", "conversation_routing", "stdio_connection"] },

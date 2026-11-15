@@ -40,7 +40,7 @@ pub(super) enum ConnectionCatalogBindingError {
 pub(super) fn next_connection_incarnation()
 -> Result<ConnectionIncarnation, ConnectionIncarnationExhausted> {
     NEXT_CONNECTION_INCARNATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
         })
         .ok()
@@ -541,7 +541,7 @@ mod tests {
         let counter = AtomicU64::new(u64::MAX);
         assert!(
             counter
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     value.checked_add(1)
                 })
                 .is_err()

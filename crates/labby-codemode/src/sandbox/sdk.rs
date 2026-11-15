@@ -244,7 +244,10 @@ mod tests {
             .expect("Code Mode execution");
         let serialized = serde_json::to_value(response).expect("response");
         println!("LIVE_RECEIPT={serialized}");
-        assert!(!serialized["calls"].as_array().expect("calls").is_empty());
+        assert_ne!(
+            serialized["calls"].as_array().expect("calls").as_slice(),
+            Vec::<Value>::new()
+        );
         let result = &serialized["result"];
         assert_eq!(result["cleanup_confirmed"], true);
         assert_eq!(result["exit_code"], 0);

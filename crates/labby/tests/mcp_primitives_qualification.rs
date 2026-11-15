@@ -738,7 +738,7 @@ async fn task_route_survives_real_gateway_process_restart() {
         .expect("restart cancel");
     assert_eq!(fixture.task_updates(), 1);
     assert_eq!(fixture.task_cancellations(), 1);
-    assert!(qualification.finish().await.failures.is_empty());
+    assert_eq!(qualification.finish().await.failures, Vec::<String>::new());
     assert_eq!(
         fixture.tool_calls(),
         1,
@@ -795,6 +795,6 @@ async fn task_input_and_terminal_result_survive_restart_without_replaying_work()
     let wire = serde_json::to_value(task).expect("terminal state");
     assert_eq!(wire["result"]["content"][0]["text"], "input accepted");
     assert_eq!(fixture.tool_calls(), 1);
-    assert!(runner.finish().await.failures.is_empty());
+    assert_eq!(runner.finish().await.failures, Vec::<String>::new());
     fixture.finish().await.expect("fixture cleanup");
 }

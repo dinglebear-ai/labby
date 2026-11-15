@@ -1229,7 +1229,7 @@ mod tests {
             .await
             .expect_err("connect should fail");
 
-        assert!(!err.to_string().is_empty());
+        assert_ne!(err.to_string(), "");
         let last_error = pool
             .upstream_tool_last_error("broken")
             .await
@@ -1321,7 +1321,10 @@ mod tests {
         )])));
         pool.replace_catalog_tools(&alpha, vec![ui_tool], None)
             .await;
-        assert!(pool.cached_upstream_resource_uris().await.is_empty());
+        assert_eq!(
+            pool.cached_upstream_resource_uris().await,
+            Vec::<(String, Vec<String>)>::new()
+        );
 
         pool.ensure_tools_for_upstream(&alpha, None, None)
             .await

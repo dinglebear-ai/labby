@@ -4443,13 +4443,9 @@ pub mod tests {
             let base_state = test_auth_state_with_mock_google().await;
 
             // Confirm no extra rows exist.
-            assert!(
-                base_state
-                    .store
-                    .list_allowed_users()
-                    .await
-                    .unwrap()
-                    .is_empty()
+            assert_eq!(
+                base_state.store.list_allowed_users().await.unwrap(),
+                Vec::<crate::types::AllowedUserRow>::new()
             );
 
             // Seed browser-login state.

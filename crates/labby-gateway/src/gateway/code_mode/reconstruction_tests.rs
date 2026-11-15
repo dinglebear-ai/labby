@@ -177,17 +177,20 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
     );
     assert!(durable[0].name.len() <= 4_096);
     assert!(!durable[0].value.contains("sk-abcdefghij0123456789extra"));
-    assert!(
+    assert_eq!(
         manager_b
             .step_journal()
             .expect("journal configured")
             .load("unflushed")
             .await
-            .expect("load unflushed execution")
-            .is_empty()
+            .expect("load unflushed execution"),
+        Vec::<crate::codemode_journal::StepJournalRow>::new()
     );
 
-    assert!(manager_b.code_mode_history_snapshot().await.is_empty());
+    assert_eq!(
+        manager_b.code_mode_history_snapshot().await,
+        Vec::<CodeModeHistoryEntry>::new()
+    );
     let source_error = manager_b
         .resolve_code_mode_source("durable", &source_lookup())
         .await

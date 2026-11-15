@@ -77,7 +77,7 @@ pub(super) async fn authenticate_protected_route_request(
     auth_state: Option<&labby_auth::state::AuthState>,
     product_adapter: Option<&crate::access::AccessCredentialAdapter>,
     actor_key_deriver: Option<&crate::observability::activity::ActorKeyDeriver>,
-) -> Result<AuthenticatedProtectedRoute, axum::response::Response> {
+) -> Result<AuthenticatedProtectedRoute, Box<axum::response::Response>> {
     let resource = route.public_resource();
     let auth_header = request
         .headers()
@@ -96,7 +96,8 @@ pub(super) async fn authenticate_protected_route_request(
             "missing bearer token",
             &route_resource_metadata_url(route),
             &route.scopes,
-        ));
+        )
+        .into());
     };
     match select_product_credential(&token) {
         ProductCredentialSelection::Malformed(_) => {
@@ -104,7 +105,8 @@ pub(super) async fn authenticate_protected_route_request(
                 "invalid bearer token",
                 &route_resource_metadata_url(route),
                 &route.scopes,
-            ));
+            )
+            .into());
         }
         ProductCredentialSelection::Parsed(credential) => {
             let Some(adapter) = product_adapter else {
@@ -112,7 +114,8 @@ pub(super) async fn authenticate_protected_route_request(
                     "invalid bearer token",
                     &route_resource_metadata_url(route),
                     &route.scopes,
-                ));
+                )
+                .into());
             };
             let effective_target = route.effective_target();
             let (project_id, loadout_id) = match &effective_target {
@@ -124,7 +127,8 @@ pub(super) async fn authenticate_protected_route_request(
                         "invalid bearer token",
                         &route_resource_metadata_url(route),
                         &route.scopes,
-                    ));
+                    )
+                    .into());
                 }
             };
             let verified = adapter
@@ -206,7 +210,8 @@ pub(super) async fn authenticate_protected_route_request(
             "oauth auth state is not configured",
             &route_resource_metadata_url(route),
             &route.scopes,
-        ));
+        )
+        .into());
     };
     let Some(expected_issuer) = auth_state
         .config
@@ -223,7 +228,8 @@ pub(super) async fn authenticate_protected_route_request(
             "server misconfigured: LABBY_PUBLIC_URL required for JWT validation",
             &route_resource_metadata_url(route),
             &route.scopes,
-        ));
+        )
+        .into());
     };
     let claims = auth_state
         .signing_keys
@@ -276,7 +282,7 @@ pub(super) async fn authenticate_protected_route_request(
         response
             .headers_mut()
             .insert(header::WWW_AUTHENTICATE, value);
-        return Err(response);
+        return Err(response.into());
     }
     let subject_id = labby_auth::util::fingerprint(&claims.sub);
     let issuer = claims.iss.clone();

@@ -548,7 +548,10 @@ Use actual returned IDs, not the illustrative placeholders. The result contains
 expired, or never-offered notice IDs are not acknowledged and reveal no ownership.
 At most 32 IDs are accepted. Failed control validation prevents script execution.
 Registration/ACKs may commit before a later script error: the error does not undo
-them. Do not infer failure solely from a missing receipt. To recover a control
+them. Do not infer failure solely from a missing receipt. Through a stdio bridge,
+a result with `notification_controls.status` of `unsettled` means the controls
+did not settle; when its `retryable` is true, repeat only the controls with the
+same ACK IDs. To recover a control
 receipt, repeat only the notification controls on your next ordinary call or with
 a new harmless compact script such as `async () => null`. Keep the same ACK IDs.
 Never replay a mutating script solely to recover a notification receipt: the

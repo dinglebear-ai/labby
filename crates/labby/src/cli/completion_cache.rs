@@ -415,7 +415,7 @@ mod tests {
     fn static_completion_uses_command_graph_and_never_guesses_past_argument_boundaries() {
         assert!(query(&["ho".into()]).contains(&"host".into()));
         assert!(query(&["host".into(), "ser".into()]).contains(&"service".into()));
-        assert!(query(&["--".into(), "ho".into()]).is_empty());
+        assert_eq!(query(&["--".into(), "ho".into()]), Vec::<String>::new());
         assert!(query(&["host".into(), "--color".into(), "p".into()]).contains(&"plain".into()));
     }
 }

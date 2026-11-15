@@ -208,7 +208,10 @@ async fn a_signal_arriving_mid_refresh_runs_a_second_pass() {
         2,
         "the mid-refresh signal earns its own re-list"
     );
-    assert!(drain_forwards(&mut forwarded).is_empty());
+    assert_eq!(
+        drain_forwards(&mut forwarded),
+        Vec::<(String, ListChangedKinds)>::new()
+    );
 }
 
 #[tokio::test]
@@ -236,7 +239,10 @@ async fn a_failed_resource_relist_still_forwards_exactly_once() {
         "stale rows are withheld after a failed re-list"
     );
     expect_workers_drain(&refresher).await;
-    assert!(drain_forwards(&mut forwarded).is_empty());
+    assert_eq!(
+        drain_forwards(&mut forwarded),
+        Vec::<(String, ListChangedKinds)>::new()
+    );
 }
 
 #[tokio::test]
@@ -259,7 +265,10 @@ async fn a_failed_tool_relist_still_forwards_exactly_once() {
         "the failing re-list was actually attempted"
     );
     expect_workers_drain(&refresher).await;
-    assert!(drain_forwards(&mut forwarded).is_empty());
+    assert_eq!(
+        drain_forwards(&mut forwarded),
+        Vec::<(String, ListChangedKinds)>::new()
+    );
 }
 
 #[tokio::test]
@@ -304,7 +313,10 @@ async fn merged_kinds_refresh_both_catalogs_and_forward_one_notification() {
         .collect::<Vec<_>>();
     assert_eq!(tool_names, ["added_after_list_changed"]);
     expect_workers_drain(&refresher).await;
-    assert!(drain_forwards(&mut forwarded).is_empty());
+    assert_eq!(
+        drain_forwards(&mut forwarded),
+        Vec::<(String, ListChangedKinds)>::new()
+    );
 }
 
 #[tokio::test]
