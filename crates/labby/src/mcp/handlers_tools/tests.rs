@@ -4640,6 +4640,15 @@ async fn read_scope_lists_and_routes_only_codemode_read() {
     assert!(!names.contains(&CODE_MODE_TOOL_NAME));
     assert!(!names.contains(&CODE_MODE_UI_TOOL_NAME));
     assert!(names.contains(&MCP_APP_TOOL_NAME));
+    let instructions = running
+        .service()
+        .get_info()
+        .instructions
+        .expect("instructions");
+    assert!(
+        instructions.contains("Use codemode_read for inspection"),
+        "codemode_read is on by default and the instructions say so"
+    );
 
     let result = running
         .service()
@@ -8380,4 +8389,89 @@ async fn tool_and_hash_agree_on_message_visibility() {
         assert_eq!(ToolCatalogSnapshot::from_descriptors(&tools), contract);
     }
     running.cancel().await.unwrap();
+}
+
+async fn code_mode_manager_without_read_tool()
+-> Arc<crate::dispatch::gateway::manager::GatewayManager> {
+    let manager = code_mode_manager(true).await;
+    let mut config = manager.current_config().await;
+    config.code_mode.read_tool_enabled = false;
+    manager.seed_config_unchecked_for_tests(config).await;
+    manager
+}
+
+#[tokio::test]
+async fn disabled_read_tool_is_hidden_from_listing_and_contract_and_rejected_on_call() {
+    let server = test_server(
+        completion_test_registry(),
+        Some(code_mode_manager_without_read_tool().await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+        crate::mcp::logging::LoggingLevel::Emergency,
+    );
+    let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let peer = running.peer().clone();
+
+    let context = scoped_context(peer.clone(), &["lab:admin"]);
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    let listed = running
+        .service()
+        .list_tools_impl(None, context)
+        .await
+        .expect("admin tools");
+    assert_eq!(
+        listed.tools, contract,
+        "wire discovery and notification descriptors must agree"
+    );
+    let names = listed
+        .tools
+        .iter()
+        .map(|tool| tool.name.as_ref())
+        .collect::<Vec<_>>();
+    assert!(names.contains(&CODE_MODE_TOOL_NAME), "{names:?}");
+    assert!(!names.contains(&CODE_MODE_READ_TOOL_NAME), "{names:?}");
+
+    let read_only = running
+        .service()
+        .list_tools_impl(None, scoped_context(peer.clone(), &["lab:read"]))
+        .await
+        .expect("read-scope tools");
+    assert!(
+        read_only
+            .tools
+            .iter()
+            .all(|tool| tool.name != CODE_MODE_READ_TOOL_NAME && tool.name != CODE_MODE_TOOL_NAME),
+        "a lab:read caller has no Code Mode entry point while codemode_read is disabled"
+    );
+
+    let instructions = running
+        .service()
+        .get_info()
+        .instructions
+        .expect("instructions");
+    assert!(!instructions.contains("codemode_read"), "{instructions}");
+
+    let call = running
+        .service()
+        .call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_READ_TOOL_NAME).with_arguments(
+                serde_json::json!({ "code": "async () => 1" })
+                    .as_object()
+                    .expect("object")
+                    .clone(),
+            ),
+            scoped_context(peer, &["lab:admin"]),
+        )
+        .await
+        .expect("disabled codemode_read call result");
+    assert!(call.is_error.unwrap_or(false));
+    let text = call.content[0].as_text().expect("text").text.as_str();
+    assert!(text.contains("unknown_tool"), "{text}");
+    assert!(text.contains("code_mode.read_tool_enabled"), "{text}");
 }

@@ -1,7 +1,7 @@
 ---
 title: "Code Mode"
 created: "2026-07-30"
-updated: "2026-10-20"
+updated: "2026-11-13"
 ---
 
 # Code Mode
@@ -39,6 +39,10 @@ Code Mode has two text MCP entry points with the same input shape:
   MCP descriptor explicitly sets `readOnlyHint: true` and
   `destructiveHint: false`. An absent annotation or a descriptor with only
   `destructiveHint: false` is not proof that a tool is read-only.
+  `[code_mode] read_tool_enabled = false` (or `labby code read disable`)
+  removes this entry point: it leaves `tools/list` and the peer contract hash,
+  direct calls fail with `unknown_tool`, and `lab:read`-only callers lose Code
+  Mode. Use it on a single-operator gateway that never issues `lab:read` tokens.
 
 The catalog checks the standard MCP annotations during discovery. The call path
 checks the current live descriptor again immediately before dispatch. A changed
@@ -990,7 +994,8 @@ enforced capability restriction, not a pause/confirm gate.
 
 - `lab` or `lab:admin` can use `codemode`.
 - `lab` or `lab:admin` can use `codemode_ui` when the app surface is enabled.
-- `lab:read`, `lab`, or `lab:admin` can use `codemode_read`.
+- `lab:read`, `lab`, or `lab:admin` can use `codemode_read` while
+  `code_mode.read_tool_enabled` is true (the default).
 
 Non-admin callers retain their exact verified OAuth subject when Code Mode
 discovers or calls upstream capabilities. A missing, empty, or whitespace-only
