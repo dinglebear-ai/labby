@@ -353,7 +353,9 @@ jobs:
   macos-installer:
     name: macOS installer behavioral contracts
     runs-on: macos-15
-    timeout-minutes: 30
+    # Warm runs take about 20 minutes. A toolchain or lockfile change rebuilds
+    # cold and exceeds 30, and a timed-out run saves no cache to warm the next.
+    timeout-minutes: 45
     needs: changes
     # macOS runners are the scarcest hosted pool. Pull requests run this lane
     # only when installer, updater, or recovery inputs change; main pushes and
