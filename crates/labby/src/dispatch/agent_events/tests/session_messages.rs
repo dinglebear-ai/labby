@@ -246,7 +246,10 @@ async fn late_subscription_commit_keeps_current_authority() {
         let store = NoticeStore::open_at(root.path()).unwrap();
         store
             .run_event(move |db| {
-                db.busy_timeout(Duration::from_secs(1))?;
+                // Outlasts the 250 ms work deadline plus the next request's
+                // 250 ms admission wait, so the blocked write is still waiting
+                // for this lock when the test commits it.
+                db.busy_timeout(Duration::from_secs(3))?;
                 if rollback {
                     db.execute_batch(
                         "CREATE TRIGGER forced_rejection BEFORE INSERT ON agent_event_subscriptions
@@ -430,10 +433,12 @@ async fn message_session_over_real_http_and_https() {
 
     let root = tempfile::tempdir().unwrap();
     let store = NoticeStore::open_at(root.path()).unwrap();
-    let events_store = NoticeStore::open_at(root.path()).unwrap();
     let (sender, callback, secret, mut received, https) = webhook::tests::receiver(2).await;
+    // Production gives Events a clone of the request store (`serve`), so the
+    // worker and HTTP requests share one permit rather than contend for SQLite
+    // locks across separate handles.
     let events = Arc::new(AgentEvents::new(
-        events_store,
+        store.clone(),
         load_key(&STANDARD.encode([b't'; 32])).unwrap(),
         Arc::new(sender),
     ));

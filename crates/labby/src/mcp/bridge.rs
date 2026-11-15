@@ -531,6 +531,7 @@ impl ServerHandler for BridgeServerHandler {
                                 .is_some_and(serde_json::Value::is_string)
                     })
                 {
+                    let (register, ack_count) = input.shape();
                     match super::call_tool_codemode::notices::prepare_for_recipient(
                         channel.store.clone(),
                         Some(channel.recipient.clone()),
@@ -540,11 +541,24 @@ impl ServerHandler for BridgeServerHandler {
                     .await
                     {
                         Ok(control) => control.attach(&mut result, max_bytes, max_tokens).await,
-                        Err(error) => tracing::warn!(
-                            subsystem = "agent_notifications",
-                            kind = error.kind(),
-                            "bridge notice controls could not settle"
-                        ),
+                        Err(error) => {
+                            tracing::warn!(
+                                subsystem = "agent_notifications",
+                                operation = "bridge_controls",
+                                kind = error.kind(),
+                                register,
+                                ack_count,
+                                "bridge notice controls could not settle"
+                            );
+                            // The script already ran on the daemon; report the
+                            // control failure as a typed field, not an error.
+                            super::call_tool_codemode::notices::mark_unsettled(
+                                &mut result,
+                                error,
+                                max_bytes,
+                                max_tokens,
+                            );
+                        }
                     }
                 }
                 Ok(CallToolResponse::Complete(result))
