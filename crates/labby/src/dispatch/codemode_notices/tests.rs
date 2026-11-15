@@ -378,10 +378,10 @@ async fn notice_production_default_disabled_and_deadline_keeps_worker_bounded() 
         .unwrap();
 }
 
-/// A background Events or presence pass holds the single permit for a few
-/// milliseconds at a time. A request that arrives during that window must
-/// wait for it rather than report `Busy`; only a holder that outlasts the
-/// admission budget turns into `Busy` (see the tests above).
+/// A background Events or presence pass usually holds the single permit
+/// briefly. A request that arrives during that window must wait for it rather
+/// than report `Busy`; a holder that outlasts the admission budget still turns
+/// into `Busy` (`notice_production_default_disabled_and_deadline_keeps_worker_bounded`).
 #[tokio::test]
 async fn notice_production_request_waits_for_a_momentary_permit_holder() {
     let store = NoticeStore::memory().unwrap();
@@ -393,6 +393,53 @@ async fn notice_production_request_waits_for_a_momentary_permit_holder() {
     let address = store.register(who("alice")).await;
     release.await.unwrap();
     assert!(address.is_ok(), "{address:?}");
+}
+
+/// Waiting for the permit and running the work have separate budgets, so a
+/// request admitted late still gets its whole work window. A shared budget
+/// would turn that queue time into `Deadline`, an outcome-unknown result for
+/// work that had not even started.
+#[tokio::test]
+async fn notice_production_late_admission_keeps_the_full_work_budget() {
+    let store = NoticeStore::memory().unwrap();
+    let held = Arc::clone(&store.permit).acquire_owned().await.unwrap();
+    let release = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        drop(held);
+    });
+    let outcome = store
+        .run(|_| {
+            std::thread::sleep(Duration::from_millis(150));
+            Ok(())
+        })
+        .await;
+    release.await.unwrap();
+    assert_eq!(outcome, Ok(()));
+}
+
+#[tokio::test]
+async fn notice_production_contended_retry_stops_after_its_backoff() {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let outcome: Result<(), _> = retry_contended(|| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        async { Err(NoticeError::Busy) }
+    })
+    .await;
+    assert_eq!(outcome, Err(NoticeError::Busy));
+    assert_eq!(
+        calls.into_inner(),
+        CONTENDED_BACKOFF_MS.len() + 1,
+        "a store that stays busy must still fail the caller"
+    );
+
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let outcome: Result<(), _> = retry_contended(|| {
+        calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        async { Err(NoticeError::Invalid) }
+    })
+    .await;
+    assert_eq!(outcome, Err(NoticeError::Invalid));
+    assert_eq!(calls.into_inner(), 1, "only contention is retried");
 }
 
 #[test]
@@ -898,10 +945,10 @@ fn typed_message_reference_requires_internal_publish() {
     ));
 }
 
-/// What CI's slow Linux disks look like to a second store handle: another
-/// connection holds the SQLite write lock past the 25 ms contention bound. The
-/// store must report a typed, retryable `Busy` rather than wait, and a caller
-/// that follows the contract (same dedupe key, with backoff) must get through.
+/// Simulates another connection holding the SQLite write lock past the 25 ms
+/// contention bound. The store must fail fast with a retryable `Busy` (or
+/// `Deadline` on a loaded runner), and a caller that follows the contract
+/// (same dedupe key, with backoff) must get through once the lock is released.
 #[tokio::test]
 async fn notice_production_contended_handle_retries_through_a_held_write_lock() {
     let dir = tempfile::tempdir().unwrap();
@@ -931,14 +978,25 @@ async fn notice_production_contended_handle_retries_through_a_held_write_lock() 
         matches!(contended, NoticeError::Busy | NoticeError::Deadline),
         "a lock held past the contention bound must be retryable, got {contended:?}"
     );
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let retrying = {
-        let store = store.clone();
-        let input = input.clone();
-        tokio::spawn(
-            async move { retry_contended(|| store.publish(producer(), input.clone())).await },
-        )
+        let (store, input, attempts) = (store.clone(), input.clone(), Arc::clone(&attempts));
+        tokio::spawn(async move {
+            retry_contended(|| {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                store.publish(producer(), input.clone())
+            })
+            .await
+        })
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Release only once a retry has started, so the test proves one happened.
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while attempts.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
     release_tx.send(()).unwrap();
     let receipt = retrying.await.unwrap().unwrap();
     tokio::task::spawn_blocking(move || holder.join().unwrap())

@@ -430,10 +430,12 @@ async fn message_session_over_real_http_and_https() {
 
     let root = tempfile::tempdir().unwrap();
     let store = NoticeStore::open_at(root.path()).unwrap();
-    let events_store = NoticeStore::open_at(root.path()).unwrap();
     let (sender, callback, secret, mut received, https) = webhook::tests::receiver(2).await;
+    // Production gives Events a clone of the request store (`serve`), so the
+    // worker and HTTP requests share one permit rather than contend for SQLite
+    // locks across separate handles.
     let events = Arc::new(AgentEvents::new(
-        events_store,
+        store.clone(),
         load_key(&STANDARD.encode([b't'; 32])).unwrap(),
         Arc::new(sender),
     ));

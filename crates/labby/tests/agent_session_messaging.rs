@@ -144,7 +144,10 @@ async fn message_rpc_with_retry(
 /// The notice store bounds SQLite lock waits to 25 ms and each operation to
 /// 250 ms, and documents `rate_limited`/`timeout` as retryable. On a loaded
 /// runner with slow fsync, contention can outlast a few short retries, so the
-/// fixture backs off the way the contract tells real callers to.
+/// fixture retries with backoff as the contract tells real callers to. The
+/// schedule is the fixture's own; it twins the lib's `CONTENDED_BACKOFF_MS`,
+/// which an integration crate cannot see. `receipt_missing` is a kind the
+/// fixture assigns itself, not a store error.
 const RETRY_BACKOFF_MS: [u64; 6] = [30, 60, 120, 240, 480, 500];
 
 async fn retry_notice_request<T>(
@@ -193,7 +196,7 @@ async fn message_fixture_retries_timeout_with_identical_arguments() {
 #[tokio::test]
 async fn message_fixture_backs_off_through_sustained_contention() {
     // Five busy replies in a row outlasted the old three short retries; the
-    // contract's backoff keeps resending the identical request until it lands.
+    // fixture's backoff keeps resending the identical request until it lands.
     let params = json!({
         "to":{"kind":"all_active"},"body":"fixture","idempotency_key":"contended-request"
     });
@@ -217,6 +220,23 @@ async fn message_fixture_backs_off_through_sustained_contention() {
     assert!(
         started.elapsed() >= Duration::from_millis(backoff),
         "retries must back off rather than hammer a contended store"
+    );
+}
+
+#[tokio::test]
+async fn message_fixture_stops_retrying_a_store_that_stays_busy() {
+    let params = json!({"to":{"kind":"all_active"},"body":"fixture","idempotency_key":"busy"});
+    let mut sends = 0;
+    let result = message_rpc_with_retry("send", params, async |_| {
+        sends += 1;
+        json!({"error":{"code":-32000,"message":"message store busy","data":{"kind":"rate_limited"}}})
+    })
+    .await;
+    assert_eq!(result["error"]["data"]["kind"], "rate_limited", "{result}");
+    assert_eq!(
+        sends,
+        RETRY_BACKOFF_MS.len() + 1,
+        "a store that stays busy must still fail the test"
     );
 }
 
@@ -537,14 +557,12 @@ async fn session_messages_live_http_and_stdio() {
             "name":"codemode","arguments":{"code":"return 1", "ack_notifications":[old_id]}
         }),
         async |request| claude.rpc("tools/call", request).await,
-        |reply| match reply["error"]["data"]["kind"].as_str() {
-            Some(kind) => Some(kind),
-            None if reply["result"]["structuredContent"]["acknowledged_notifications"]
-                .is_null() =>
-            {
-                Some("receipt_missing")
-            }
-            None => None,
+        |reply| {
+            reply["error"]["data"]["kind"].as_str().or_else(|| {
+                let content = &reply["result"]["structuredContent"];
+                (content.is_object() && content["acknowledged_notifications"].is_null())
+                    .then_some("receipt_missing")
+            })
         },
     )
     .await;
