@@ -1547,6 +1547,10 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "json",
                 required: true,
                 description: "Partial gateway update payload. \
+                    env, headers, and headers_env replace whole maps: absent or null preserves \
+                    the current map. An empty object clears it. env and literal header values \
+                    are write-only and are never returned by GatewayView. Custom Authorization \
+                    headers are rejected; use bearer_token_env or OAuth. \
                     TRUST BOUNDARY: if the patch sets or changes `command` (stdio transport), \
                     the gateway will spawn that command as a local subprocess. The command is \
                     validated against a spawn allowlist before being persisted, but this \

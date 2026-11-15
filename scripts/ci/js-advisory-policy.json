@@ -3,6 +3,11 @@
   "minimum_severity": "high",
   "workspaces": [
     {
+      "manifest": "apps/liveview/package.json",
+      "lockfile": "apps/liveview/package-lock.json",
+      "manager": "npm"
+    },
+    {
       "manifest": "apps/chrome/package.json",
       "lockfile": "apps/chrome/package-lock.json",
       "manager": "npm"

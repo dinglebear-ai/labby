@@ -121,7 +121,10 @@ fn static_browser_session(
 async fn load_browser_session(
     auth_state: &labby_auth::state::AuthState,
     headers: &HeaderMap,
-) -> Result<Option<labby_auth::types::BrowserSessionRow>, labby_auth::error::AuthError> {
+) -> Result<
+    Option<labby_auth::types::ProviderBound<labby_auth::types::BrowserSessionRow>>,
+    labby_auth::error::AuthError,
+> {
     let has_cookie_header = headers.contains_key(header::COOKIE);
     let browser_session_cookie = session_cookie(headers, auth_state);
     let has_browser_session_cookie = browser_session_cookie.is_some();
@@ -135,8 +138,14 @@ async fn load_browser_session(
         return Ok(None);
     };
 
-    match auth_state.store.find_browser_session(&session_id).await {
+    match auth_state
+        .store
+        .find_bound_browser_session(&session_id)
+        .await
+    {
         Ok(session) => {
+            let session =
+                session.filter(|session| session.binding == auth_state.inbound_provider_binding());
             tracing::info!(
                 has_cookie_header,
                 has_browser_session_cookie,
@@ -391,14 +400,11 @@ fn scopes_grant_admin(scopes: &[String]) -> bool {
 /// through the anonymous cookie fallback.
 fn oauth_browser_session_identity(
     auth_state: &labby_auth::state::AuthState,
-    session: &labby_auth::types::BrowserSessionRow,
+    session: &labby_auth::types::ProviderBound<labby_auth::types::BrowserSessionRow>,
 ) -> Result<labby_auth::VerifiedIdentity, ToolError> {
-    labby_auth::VerifiedIdentity::external(
-        labby_auth::Authenticator::BrowserSession,
-        &auth_state.inbound_provider_binding().identity_issuer,
-        session.subject.clone(),
-    )
-    .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))
+    auth_state
+        .verified_browser_session_identity(session)
+        .map_err(|_| ToolError::internal_message("authenticated identity is invalid"))
 }
 
 /// Identity for a project-bound browser session.
@@ -1227,11 +1233,12 @@ pub async fn auth_session(
     };
 
     match load_browser_session(auth_state, &headers).await {
-        Ok(Some(session)) => {
-            let actor_key = actor_key_for_session(&state, &session);
+        Ok(Some(bound_session)) => {
+            let session = &bound_session.value;
+            let actor_key = actor_key_for_session(&state, session);
             let outcome = async {
-                let identity = oauth_browser_session_identity(auth_state, &session)?;
-                let caller = oauth_cookie_caller(auth_state, &session, identity);
+                let identity = oauth_browser_session_identity(auth_state, &bound_session)?;
+                let caller = oauth_cookie_caller(auth_state, session, identity);
                 let view = SessionView {
                     login_available,
                     bearer_login_available: bearer_login_advertised(&state, &headers),
@@ -1464,6 +1471,9 @@ async fn auth_logout_inner(State(state): State<AppState>, headers: HeaderMap) ->
     );
     response
 }
+
+#[cfg(test)]
+mod provider_identity_tests;
 
 #[cfg(test)]
 mod tests {

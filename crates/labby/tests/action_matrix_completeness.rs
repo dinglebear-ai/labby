@@ -153,8 +153,11 @@ fn every_registered_action_has_an_authority_classification() {
             }
             assert_eq!(
                 action.requires_admin,
-                action.required_capability.as_deref() == Some("platform.manage"),
-                "{}: requires_admin must track the platform.manage capability",
+                matches!(
+                    action.required_capability.as_deref(),
+                    Some("platform.read" | "platform.manage")
+                ),
+                "{}: requires_admin must track platform-scoped capabilities",
                 action.key()
             );
         }
@@ -199,11 +202,13 @@ fn every_registered_action_has_an_authority_classification() {
                         },
                     )
                 });
+            // An installation read still requires platform authority.
             let member_class = personal_owner_allowed
-                || matches!(
-                    classification.operation,
-                    OperationClass::Discover | OperationClass::Read | OperationClass::Operate
-                );
+                || (classification.owners != [OwnerKind::Installation]
+                    && matches!(
+                        classification.operation,
+                        OperationClass::Discover | OperationClass::Read | OperationClass::Operate
+                    ));
             assert_eq!(
                 *allowed,
                 member_class,

@@ -2178,6 +2178,8 @@ impl LabMcpServer {
             } else if matches!(action.as_str(), "help" | "schema") {
                 (entry.dispatch)(action.clone(), params).await
             } else if service == "access" {
+                let read_deadline = crate::dispatch::access::inventory_action(&action)
+                    .then(crate::access::inventory::AccessReadDeadline::server);
                 let auth = auth_context_from_extensions(&context.extensions);
                 let identity =
                     crate::mcp::context::verified_identity_from_extensions(&context.extensions)
@@ -2189,7 +2191,12 @@ impl LabMcpServer {
                     Some(identity) => {
                         // Store lifecycle failures are typed outages, never
                         // authorization decisions.
-                        match self.access_runtime.store().await {
+                        match crate::dispatch::access::inventory_store(
+                            &self.access_runtime,
+                            read_deadline,
+                        )
+                        .await
+                        {
                             Ok(store) => match self.caller_ceiling(auth) {
                                 Some(ceiling) => {
                                     // A route-bound grant pins administration
@@ -2219,16 +2226,23 @@ impl LabMcpServer {
                                             kind = "service_unavailable",
                                             "installation identity is not bound on this process"
                                         );
-                                        Err(ToolError::Sdk {
+                                        if crate::dispatch::access::inventory_action(&action) {
+                                            Err(crate::dispatch::access::map_inventory_error(
+                                                crate::access::inventory::InventoryError::WorkerUnavailable,
+                                            ))
+                                        } else {
+                                            Err(ToolError::Sdk {
                                                 sdk_kind: "service_unavailable".to_owned(),
                                                 message:
                                                     "installation-bound access administration is unavailable"
                                                         .to_owned(),
                                             })
+                                        }
                                     } else {
                                         crate::dispatch::access::dispatch(
                                             crate::dispatch::access::AccessDispatchContext {
                                                 store,
+                                                read_deadline,
                                                 identity,
                                                 ceiling,
                                                 installation_id,
@@ -2248,9 +2262,7 @@ impl LabMcpServer {
                                     required_scopes: Vec::new(),
                                 }),
                             },
-                            Err(error) => Err(crate::dispatch::access_errors::map_runtime_error(
-                                "access", error,
-                            )),
+                            Err(error) => Err(error),
                         }
                     }
                     None => Err(ToolError::Forbidden {
@@ -2555,12 +2567,15 @@ impl LabMcpServer {
             } else {
                 (entry.dispatch)(action.clone(), params).await
             };
-            // Preserve the response-fence contract through the legacy formatter,
-            // while still recording and notifying completion of the executed action.
-            let authority_error_envelope = result
+            // Preserve refined Access errors and the gateway response fence
+            // while still recording and notifying completion of the action.
+            let contract_error_envelope = result
                 .as_ref()
                 .err()
-                .filter(|error| service == "gateway" && error.kind() == "authority_changed")
+                .filter(|error| {
+                    (service == "gateway" && error.kind() == "authority_changed")
+                        || (service == "access" && matches!(error, ToolError::Contract { .. }))
+                })
                 .map(|error| tool_error_envelope(&service, &action, error));
             let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
             let elapsed_ms = start.elapsed().as_millis();
@@ -2574,7 +2589,7 @@ impl LabMcpServer {
                 actor_key,
                 input_tokens,
             );
-            if let Some(envelope) = authority_error_envelope {
+            if let Some(envelope) = contract_error_envelope {
                 result = error_result_from_envelope(envelope);
             }
             self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)

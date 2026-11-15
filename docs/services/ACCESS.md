@@ -36,9 +36,9 @@ table here. In summary:
 | Group | Actions | Required capability |
 | --- | --- | --- |
 | Platform administration | `access.platform_admin.grant`, `access.platform_admin.revoke`, `access.team.create` | `platform.manage`; `requires_admin` (`lab:admin`) |
-| Team membership | `access.team.member.add`, `.remove`, `.role.set`, `.suspend`; `access.team.suspend`, `access.team.activate`; `access.team_invitation.create` | `membership.manage` |
+| Team membership | `access.team.member.add`, `.remove`, `.role.set`, `.suspend`, `.activate`; `access.team.suspend`, `access.team.activate`; `access.team_invitation.create` | `membership.manage` |
 | Invitation accept | `access.team_invitation.accept` | `scope.operate` |
-| Team resources | `access.team_project.assign`, `access.gateway_credential.bind`, `access.gateway_credential.revoke` | `scope.manage` |
+| Team resources | `access.team_project.assign`, `access.team_project.unassign`, `access.gateway_credential.bind`, `access.gateway_credential.revoke` | `scope.manage` |
 | Reads | `access.team.list`, `access.project.effective.list`, `access.gateway_credential.list` | caller projection / `scope.read` |
 
 Surfaces: the `access` MCP tool and `POST /v1/access/admin`, both with the
@@ -79,6 +79,41 @@ Access actions use the canonical agent error envelope
   Project Loadout assignment, or conflicting owner bootstrap state.
 - `service_unavailable`: the access store is missing, uninitialized, locked,
   read-only, corrupt, insecure, newer than this binary, or busy.
+
+## Restore membership and remove assignments
+
+`access.team.member.activate` requires `team_id`, `principal_id`, and `role`.
+The target Principal must be active in the caller's organization and have a
+suspended or revoked membership. The action restores active state and the
+requested role together, preserves membership history, and advances the row
+and Team membership epochs. A previous or requested owner role requires Team
+owner or platform administrator authority. Active and missing memberships
+return the same fixed denial as unavailable targets.
+
+A revoked `bootstrap-initial-team` membership blocks this general restoration
+action. Allowlist removal uses that row to retain the admission decision.
+Restoring admission requires a separate reviewed lifecycle workflow. Ordinary
+Team restoration preserves default-Project memberships, identity links, and
+platform administrator grants in their current states.
+
+`access.team_project.unassign` requires `team_id` and `project_id`. The caller
+must currently manage both the Team and the active Project in the same
+organization. The action retains the assignment with `status=revoked` and
+advances its assignment epoch and the Project policy epoch. The response
+contains `team_id`, `project_id`, `role`, `status`, and `assignment_epoch`.
+Direct Project memberships and Project lifecycle stay intact.
+
+A caller can remove the final assignment that supplies their own Project
+management authority. Fresh reads then resolve the remaining access. Reassigning
+can require a retained direct Project owner or a platform administrator. The
+existing assign action reactivates the retained row and advances its epoch.
+
+Each operation commits its state, global revision, audit event, and authority
+projection outbox entry in one transaction. Repeated activation or unassignment
+can return a denial after the first call succeeds. After a lost response, read
+the bounded roster or assignment inventory before another explicit submission.
+An outbox commit establishes durable delivery work. Consumer delivery requires
+its own receipt.
 
 ## Onboard a teammate ("No access yet")
 
@@ -263,11 +298,11 @@ Situations and what to do:
 - **The access store is damaged.** Restore `access.db` from a WAL-consistent
   backup ([MIGRATION.md](../access-control/MIGRATION.md#backup-and-restore),
   [disaster recovery](../runtime/DISASTER_RECOVERY.md)).
-- **The owner's Team membership was suspended.** The catalog has no
-  reactivate-member action. `access.team.member.role.set` changes only the role
-  and leaves suspension in place; `.add` rejects an existing membership row.
-  Use an explicitly reviewed access-store recovery workflow. Do not assume
-  another platform administrator can reactivate it through these actions.
+- **The owner's Team membership was suspended.** An authorized Team owner or
+  platform administrator can call `access.team.member.activate` with the Team,
+  Principal, and destination role. Role changes preserve suspension, and member
+  addition rejects an existing membership row. Revoked Initial Team admission
+  requires its separate admission-recovery workflow.
 
 Do not delete `access.db` to "reset" access. The runtime then reports setup
 required and projects only transport authority, and every Team, membership,

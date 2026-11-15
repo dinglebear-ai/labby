@@ -13,8 +13,8 @@ use labby_runtime::gateway_config::UpstreamConfig;
 use super::super::types::UpstreamCapability;
 use super::UpstreamPool;
 use super::capability_call::{
-    CapabilityCallError, bounded_service_error_text, timed_capability_call,
-    timed_capability_call_str, timed_capability_call_with_timeout,
+    CapabilityCallError, CapabilityResponseMeasurement, bounded_service_error_text,
+    timed_capability_call, timed_capability_call_str, timed_capability_call_with_timeout,
 };
 use super::catalog_pagination;
 use super::entries::resolve_request_exposure_policy;
@@ -24,6 +24,30 @@ use super::helpers::{
 use super::logging::{UpstreamRequestLog, log_upstream_request_error, log_upstream_request_start};
 use super::tool_call_cancel::{call_tool_cancel_aware, call_tool_once_cancel_aware};
 use super::tools::MAX_UPSTREAM_TOOLS;
+
+pub(super) fn tool_result_measurement(result: &CallToolResult) -> CapabilityResponseMeasurement {
+    CapabilityResponseMeasurement {
+        bytes: estimate_response_size(result),
+        usage_outcome: if result.is_error == Some(true) {
+            "tool_error"
+        } else {
+            "ok"
+        },
+    }
+}
+
+pub(super) fn tool_response_measurement(
+    response: &CallToolResponse,
+) -> CapabilityResponseMeasurement {
+    let usage_outcome = match response {
+        CallToolResponse::Complete(result) if result.is_error == Some(true) => "tool_error",
+        _ => "ok",
+    };
+    CapabilityResponseMeasurement {
+        bytes: estimate_call_tool_response_size(response),
+        usage_outcome,
+    }
+}
 
 /// Fail-closed `expose_tools` check for the OAuth subject-scoped call paths.
 ///
@@ -314,7 +338,7 @@ impl UpstreamPool {
             event,
             start,
             call_tool_once_with_header_recovery_cancel_aware(self, &peer, &config.name, params),
-            estimate_call_tool_response_size,
+            tool_response_measurement,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
             format!("upstream call timed out after {timeout_ms}ms"),
@@ -354,7 +378,7 @@ impl UpstreamPool {
             event,
             start,
             call_tool_with_header_recovery(self, &peer, &config.name, params),
-            estimate_response_size,
+            tool_result_measurement,
             Some(subject),
             |error| format!("upstream call failed: {error}"),
             format!("upstream call timed out after {timeout_ms}ms"),
@@ -411,7 +435,7 @@ impl UpstreamPool {
             event,
             start,
             call_tool_with_header_recovery(self, &peer, &config.name, params),
-            estimate_response_size,
+            tool_result_measurement,
             Some(subject),
             |e| format!("upstream call failed: {e}"),
             format!("upstream call timed out after {timeout_ms}ms"),
@@ -465,7 +489,7 @@ impl UpstreamPool {
                 event,
                 start,
                 call_tool_with_header_recovery(self, &peer, upstream_name, params),
-                estimate_response_size,
+                tool_result_measurement,
                 None,
                 |e| format!("upstream call failed: {e}"),
                 format!("upstream call timed out after {timeout_ms}ms"),
@@ -513,7 +537,7 @@ impl UpstreamPool {
                     upstream_name,
                     params,
                 ),
-                estimate_call_tool_response_size,
+                tool_response_measurement,
                 None,
                 |error| format!("upstream call failed: {error}"),
                 format!("upstream call timed out after {timeout_ms}ms"),
@@ -1276,6 +1300,184 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// Completed failures preserve payload and cached peers while usage counts execution errors.
+    #[tokio::test]
+    async fn completed_tool_error_records_failed_usage_and_preserves_peer() {
+        use crate::usage::UsageStore;
+
+        struct EchoServer;
+        impl ServerHandler for EchoServer {
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            }
+            async fn list_tools(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<ListToolsResult, ErrorData> {
+                Ok(ListToolsResult::with_all_items(vec![
+                    rmcp::model::Tool::new("echo", "echo tool", Arc::new(serde_json::Map::new())),
+                ]))
+            }
+            async fn call_tool(
+                &self,
+                params: CallToolRequestParams,
+                _: rmcp::service::RequestContext<RoleServer>,
+            ) -> Result<CallToolResponse, ErrorData> {
+                let mut result = CallToolResult::success(vec![ContentBlock::text("retained")]);
+                result.is_error = match params.name.as_ref() {
+                    "fail" => Some(true),
+                    "echo" => Some(false),
+                    _ => None,
+                };
+                result.structured_content = Some(serde_json::json!({"preserved": true}));
+                Ok(result.into())
+            }
+        }
+
+        let upstream_name = "usage-upstream";
+        let (server_transport, client_transport) = tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let server_task = tokio::spawn(async move {
+            let running = EchoServer
+                .serve(server_transport)
+                .await
+                .expect("server starts");
+            running.waiting().await.ok();
+        });
+        let client_service: rmcp::service::RunningService<RoleClient, ()> =
+            ().serve(client_transport).await.expect("client starts");
+        let peer = client_service.peer().clone();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(UsageStore::open(dir.path().join("usage.db")).await.unwrap());
+        let pool = Arc::new(UpstreamPool::new().with_usage_store(Some(Arc::clone(&store))));
+        let upstream_name_arc: Arc<str> = Arc::from(upstream_name);
+        pool.catalog_write().await.insert(
+            upstream_name.to_string(),
+            healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
+        );
+        pool.connections.write().await.insert(
+            upstream_name.to_string(),
+            UpstreamConnection {
+                _client_service: client_service.into(),
+                _server_task: Some(server_task),
+                peer,
+                runtime: UpstreamRuntimeMetadata::default(),
+                incarnation: None,
+            },
+        );
+
+        for (name, expected) in [
+            ("fail", Some(true)),
+            ("echo", Some(false)),
+            ("absent", None),
+        ] {
+            let result = pool
+                .call_tool(upstream_name, CallToolRequestParams::new(name))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.is_error, expected);
+            assert_eq!(
+                result.structured_content,
+                Some(serde_json::json!({"preserved": true}))
+            );
+            assert_eq!(result.content, vec![ContentBlock::text("retained")]);
+            let response = pool
+                .call_tool_once_classified(upstream_name, CallToolRequestParams::new(name), None)
+                .await
+                .unwrap()
+                .unwrap();
+            let CallToolResponse::Complete(once_result) = response else {
+                panic!("completed response expected")
+            };
+            assert_eq!(once_result, result);
+            assert!(
+                pool.upstream_tool_health(upstream_name)
+                    .await
+                    .unwrap()
+                    .is_routable()
+            );
+            assert_eq!(pool.upstream_tool_last_error(upstream_name).await, None);
+        }
+        let subject = "usage-subject";
+        let connection = pool
+            .connections
+            .write()
+            .await
+            .remove(upstream_name)
+            .unwrap();
+        pool.subject_connections.write().await.insert(
+            (upstream_name.to_string(), subject.to_string()),
+            SubjectScopedConnection {
+                optional_catalogs: Default::default(),
+                peer: connection.peer.clone(),
+                _connection: connection,
+                tools: vec![].into(),
+                last_used: Instant::now(),
+            },
+        );
+        let mut config = test_upstream_config();
+        config.name = upstream_name.to_string();
+        pool.register_upstream_config_for_tests(&config);
+        let response = pool
+            .subject_scoped_call_tool_once_classified(
+                &config,
+                subject,
+                CallToolRequestParams::new("fail"),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            response,
+            CallToolResponse::Complete(CallToolResult {
+                is_error: Some(true),
+                ..
+            })
+        ));
+        for name in ["echo", "absent"] {
+            let result = pool
+                .subject_scoped_call_tool_classified(
+                    &config,
+                    subject,
+                    CallToolRequestParams::new(name),
+                )
+                .await
+                .unwrap();
+            assert_ne!(result.is_error, Some(true));
+        }
+        assert!(
+            pool.subject_connections
+                .read()
+                .await
+                .contains_key(&(upstream_name.to_string(), subject.to_string()))
+        );
+        assert!(pool.connections.read().await.is_empty());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            store.drain_pending_writes(),
+        )
+        .await
+        .unwrap();
+        let rows = store.with_conn(|conn| {
+            let mut statement = conn.prepare("SELECT outcome, subject_scoped, response_bytes FROM upstream_calls ORDER BY id").map_err(crate::usage::store::sqlite_error)?;
+            statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?, row.get::<_, i64>(2)?)))
+                .map_err(crate::usage::store::sqlite_error)?.collect::<Result<Vec<_>, _>>().map_err(crate::usage::store::sqlite_error)
+        }).await.unwrap();
+        assert_eq!(rows.len(), 9);
+        assert_eq!(rows.iter().filter(|row| row.0 == "tool_error").count(), 3);
+        assert_eq!(rows.iter().filter(|row| row.0 == "ok").count(), 6);
+        assert_eq!(rows.iter().filter(|row| row.1).count(), 3);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.1 && row.0 == "tool_error")
+                .count(),
+            1
+        );
+        assert!(rows.iter().all(|row| row.2 > 0));
     }
 
     /// End-to-end proof that the write semaphore actually bounds writes: with

@@ -1,0 +1,109 @@
+import {loadedLevelsMatch} from './loaded-log-levels.mjs'
+import {test, expect} from '@playwright/test'
+import {signIn, readyCatalog, callRealTool, gatewayAction} from './mcp-support.mjs'
+
+// Owned real harness only. One browser, < 100 requests including bounded catalog refresh and follow and a 120s deadline.
+// No mocked product responses. The parent runs this after its source review.
+test('native Observe inspects actual calls and bounded logs with pause export and mobile layouts', async ({page}, info) => {
+  test.setTimeout(120000)
+  await readyCatalog()
+  const success = await callRealTool('echo', {text: 'observe native retained success'})
+  expect(success.isError).not.toBe(true)
+  const failure = await callRealTool('fail', {})
+  expect(failure.isError).toBe(true)
+  const now = Math.floor(Date.now() / 1000)
+  const actual = await gatewayAction('gateway.usage.calls', {since_unix: now - 3600, until_unix: now + 1, upstream: 'real-e2e-mcp', limit: 25})
+  expect(actual.calls.some(row => row.outcome === 'ok')).toBe(true)
+  expect(actual.calls.some(row => row.outcome === 'tool_error')).toBe(true)
+  await signIn(page)
+  await page.goto('/observe')
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  await page.getByLabel('Server', {exact: true}).fill('real-e2e-mcp')
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  const row = actual.calls[0]
+  const inspect = page.locator(`#observe-inspect-${row.id}`)
+  await expect(inspect).toBeVisible()
+  await inspect.click()
+  await expect(page.locator('#observe-inspector')).toContainText(row.tool)
+  await expect(page.locator('#observe-inspector')).toContainText('unavailable in the current backend contract')
+  await page.keyboard.press('Escape')
+  await expect(page.locator('#observe-inspector')).toHaveCount(0)
+  await expect(inspect).toBeFocused()
+  const outcome = page.getByRole('combobox', {name: 'Outcome', exact: true})
+  await expect(outcome).toBeVisible()
+  await outcome.selectOption('tool_error')
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  const failedRow = actual.calls.find(row => row.outcome === 'tool_error')
+  await expect(page.locator(`#observe-inspect-${failedRow.id}`)).toBeVisible()
+  await expect(page.locator('.ob-outcome').first()).toBeVisible()
+  await expect(page.locator('.ob-outcome:not([data-outcome="tool_error"])')).toHaveCount(0)
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  await outcome.selectOption('')
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  const successRow = actual.calls.find(row => row.outcome === 'ok')
+  await expect(page.locator(`#observe-inspect-${successRow.id}`)).toBeVisible()
+  await page.locator('#observe-tab-traces').click()
+  await expect(page.locator('#observe-trace-contract')).toContainText('backend trace contract')
+  await page.locator('#observe-tab-logs').click()
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  await expect(page.locator('#observe-error')).toHaveCount(0)
+  await page.locator('#observe-resume').click()
+  await expect(page.locator('#observe-pause')).toBeVisible()
+  await page.locator('#observe-pause').click()
+  await expect(page.locator('#observe-resume')).toBeVisible()
+  await expect(page.locator('#observe-main')).toContainText('Follow paused')
+  const level = page.getByRole('combobox', {name: 'Level', exact: true})
+  await expect(level).toBeVisible()
+  const loadedLevels = page.locator('.ob-logs .ob-level')
+  await expect(loadedLevels.first()).toBeVisible()
+  const observedLevel = (await loadedLevels.first().textContent()).trim()
+  expect(['TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR']).toContain(observedLevel)
+  await level.selectOption(observedLevel)
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  await expect.poll(async () => loadedLevelsMatch(await loadedLevels.allTextContents(), observedLevel)).toBe(true)
+  await expect(page.locator('#observe-export')).toBeEnabled()
+
+  // A completed tool_error does not guarantee a process log at ERROR level.
+  // Use the same bounded Rust query as the UI to distinguish rows from an empty snapshot.
+  const reference = await page.request.post('http://127.0.0.1:4299/v1/server_logs', {
+    headers: {authorization: `Bearer ${process.env.LABBY_E2E_CREDENTIAL}`},
+    data: {action: 'server_logs.query', params: {level: 'ERROR', limit: 200, max_scan_bytes: 32768, stop_after_limit: true}},
+    timeout: 15000,
+  })
+  expect(reference.ok()).toBe(true)
+  const errors = await reference.json()
+  expect(errors.kind).toBe('server_logs')
+  expect(Array.isArray(errors.entries)).toBe(true)
+  expect(errors.entries.every(row => row.level === 'ERROR')).toBe(true)
+  await level.selectOption('ERROR')
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  if (errors.entries.length > 0) {
+    await expect.poll(async () => loadedLevelsMatch(await loadedLevels.allTextContents(), 'ERROR')).toBe(true)
+  } else {
+    await expect(page.locator('.ob-empty')).toHaveText('No retained records match these filters.')
+    await expect(loadedLevels).toHaveCount(0)
+    await expect(page.locator('#observe-result-count')).toHaveText('0 loaded records')
+  }
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  await expect(page.locator('#observe-error')).toHaveCount(0)
+  await expect(level).toBeVisible()
+  await level.selectOption('')
+  await page.getByRole('button', {name: 'Apply filters', exact: true}).click()
+  await expect(page.locator('#observe-export')).toBeEnabled()
+  await expect(page.locator('.ob-logs li').first()).toBeVisible()
+  const download = page.waitForEvent('download')
+  await page.locator('#observe-export').click()
+  const artifact = await download
+  expect(artifact.suggestedFilename()).toBe('labby-observe-loaded-snapshot.json')
+  await artifact.saveAs(info.outputPath(artifact.suggestedFilename()))
+  const key = await page.locator('#observe-main').getAttribute('data-preference-key')
+  const prefs = await page.evaluate(key => JSON.parse(localStorage.getItem(`labby:observe:${key}:v1`) || '{}'), key)
+  expect(Object.keys(prefs).sort()).toEqual(['tab', 'window'])
+  for (const width of [1440, 740, 320]) {
+    await page.setViewportSize({width, height: 900})
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({path: info.outputPath(`observe-native-${width}.png`), fullPage: true})
+  }
+})

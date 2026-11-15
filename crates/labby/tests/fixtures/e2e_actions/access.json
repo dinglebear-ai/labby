@@ -35,6 +35,16 @@
     },
     "access.gateway_credential.revoke": {
       "team_id": "bootstrap-initial-team"
-    }
+    },
+    "access.team.member.list": {
+      "team_id": "bootstrap-initial-team"
+    },
+    "access.team_project.list": {
+      "team_id": "bootstrap-initial-team"
+    },
+    "access.team_invitation.list": {
+      "team_id": "bootstrap-initial-team"
+    },
+    "access.platform_admin.list": {}
   }
 }

@@ -10,19 +10,25 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `access` | `access.gateway_credential.list` | false | false | false |  | `resource_capability` | `scope.read` | `platform` | `team_id*: string` | `object` | mcp, api |
 | `access` | `access.gateway_credential.revoke` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`upstream_name*: string` | `object` | mcp, api |
 | `access` | `access.platform_admin.grant` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `principal_id*: string` | `object` | mcp, api |
+| `access` | `access.platform_admin.list` | false | false | true | lab:admin | `resource_capability` | `platform.read` | `platform` | `limit: integer`<br>`offset: integer`<br>`snapshot_revision: integer` | `object` | mcp, api |
 | `access` | `access.platform_admin.revoke` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `principal_id*: string` | `object` | mcp, api |
 | `access` | `access.project.effective.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api |
 | `access` | `access.team.activate` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string` | `object` | mcp, api |
 | `access` | `access.team.create` | false | false | true | lab:admin | `resource_capability` | `platform.manage` | `platform` | `team_id*: string`<br>`name*: string` | `object` | mcp, api |
 | `access` | `access.team.list` | false | false | false |  | `caller_membership_projection` | `-` | `-` |  | `object` | mcp, api |
+| `access` | `access.team.member.activate` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `access.team.member.add` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
+| `access` | `access.team.member.list` | false | false | false |  | `resource_capability` | `scope.read` | `platform` | `team_id*: string`<br>`limit: integer`<br>`offset: integer`<br>`snapshot_revision: integer` | `object` | mcp, api |
 | `access` | `access.team.member.remove` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
 | `access` | `access.team.member.role.set` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string` | `object` | mcp, api |
 | `access` | `access.team.member.suspend` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string` | `object` | mcp, api |
 | `access` | `access.team.suspend` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string` | `object` | mcp, api |
 | `access` | `access.team_invitation.accept` | false | false | false |  | `resource_capability` | `scope.operate` | `platform` | `token*: string` | `object` | mcp, api |
 | `access` | `access.team_invitation.create` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`principal_id*: string`<br>`role*: string`<br>`token*: string`<br>`ttl_seconds*: integer` | `object` | mcp, api |
+| `access` | `access.team_invitation.list` | false | false | false |  | `resource_capability` | `membership.manage` | `platform` | `team_id*: string`<br>`limit: integer`<br>`offset: integer`<br>`snapshot_revision: integer` | `object` | mcp, api |
 | `access` | `access.team_project.assign` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`project_id*: string`<br>`role*: string` | `object` | mcp, api |
+| `access` | `access.team_project.list` | false | false | false |  | `resource_capability` | `scope.read` | `platform` | `team_id*: string`<br>`limit: integer`<br>`offset: integer`<br>`snapshot_revision: integer` | `object` | mcp, api |
+| `access` | `access.team_project.unassign` | false | false | false |  | `resource_capability` | `scope.manage` | `platform` | `team_id*: string`<br>`project_id*: string` | `object` | mcp, api |
 | `access` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `access` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `agents` | `agents.create` | false | false | false |  | `resource_capability` | `scope.create` | `agent` | `agent_id*: string`<br>`owner_kind*: string`<br>`owner_id*: string`<br>`instructions*: string`<br>`model: string`<br>`content_digest: string`<br>`repository_digest: string`<br>`image_digest: string`<br>`harness_digest: string`<br>`loadout_digest: string`<br>`catalog_generation: string` | `object` | mcp, api |

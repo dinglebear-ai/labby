@@ -57,3 +57,20 @@ pub(crate) async fn fixture() -> (tempfile::TempDir, AccessStore, VerifiedIdenti
         .unwrap();
     (directory, store, owner)
 }
+
+/// Seed and coordinate real store fixtures without widening production access
+/// to the store's general connection executor.
+pub(crate) async fn with_connection<T, F>(
+    store: &AccessStore,
+    operation: F,
+) -> Result<T, super::AccessStoreError>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut rusqlite::Connection) -> Result<T, super::AccessStoreError> + Send + 'static,
+{
+    store.with_connection(operation).await
+}
+
+pub(crate) fn sqlite_error(error: rusqlite::Error) -> super::AccessStoreError {
+    super::store::map_sqlite_error(error)
+}

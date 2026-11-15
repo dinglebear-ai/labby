@@ -1,0 +1,67 @@
+.observe-main { max-width: 1600px; margin: 0 auto; padding: 28px 24px 96px; color: var(--text, #dce9f1); }
+.observe-main .ob-heading, .observe-main .ob-title, .observe-main .ob-summary, .observe-main .ob-tabs, .observe-main .ob-footer, .observe-main .ob-results-heading { display: flex; align-items: center; gap: 12px; }
+.observe-main .ob-heading, .observe-main .ob-results-heading { justify-content: space-between; }
+.observe-main h1 { font-size: 28px; font-weight: 650; margin: 0; letter-spacing: -.04em; }
+.observe-main .ob-heading p { color: #a8becc; margin: 2px 0 0; font-size: 13px; }
+.observe-main .ob-page-glyph { display: grid; place-items: center; width: 36px; height: 36px; color: #1ecaff; background: #123446; border: 1px solid #21607c; border-radius: 7px; }
+.observe-main svg { width: 16px; height: 16px; flex-shrink: 0; }
+.observe-main button, .observe-main input, .observe-main select { font: inherit; font-size: 13px; color: inherit; background: #0a1c27; border: 1px solid #224455; border-radius: 6px; padding: 9px 12px; min-height: 38px; }
+.observe-main button { cursor: pointer; display: inline-flex; align-items: center; gap: 8px; }
+.observe-main button:hover { background: #173443; }
+.observe-main button:disabled { opacity: .5; cursor: default; }
+.observe-main :focus-visible { outline: 2px solid #26c7ff; outline-offset: 3px; }
+.observe-main .ob-summary { margin: 18px 0 14px; flex-wrap: wrap; font-size: 12px; color: #a8becc; }
+.observe-main .ob-panel { background: #102531; border: 1px solid #234454; border-radius: 10px; overflow: hidden; }
+.observe-main .ob-tabs { background: #0b1c26; border-bottom: 1px solid #234454; gap: 4px; flex-wrap: wrap; padding: 0 14px; }
+.observe-main .ob-tabs button { border: 0; background: transparent; border-radius: 0; padding: 13px; border-bottom: 2px solid transparent; }
+.observe-main .ob-tabs button[aria-current="page"] { background: #293342; border-bottom-color: #f2a0c4; }
+.observe-main .ob-tabs svg, .observe-main .ob-table svg { color: #20c6ff; }
+.observe-main .ob-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; padding: 14px; background: #10232f; border-bottom: 1px solid #234454; }
+.observe-main label { display: flex; flex-direction: column; gap: 4px; color: #a8becc; font-size: 12px; min-width: 0; }
+.observe-main input { width: 100%; min-width: 0; }
+.observe-main .ob-search { flex: 1 1 220px; }
+.observe-main .ob-results-heading { padding: 12px 16px; font-size: 11px; color: #b8cbd6; }
+.observe-main .ob-table { width: 100%; border-collapse: collapse; font-size: 12px; text-align: left; }
+.observe-main .ob-table th { color: #a8becc; font-size: 11px; font-weight: 400; padding: 10px 14px; }
+.observe-main .ob-table td { padding: 16px 14px; border-top: 1px solid #234454; overflow-wrap: anywhere; }
+.observe-main .ob-table td:first-child { width: 34%; }
+.observe-main .ob-table td button { background: none; border: 0; padding: 0; text-align: left; width: 100%; }
+.observe-main .ob-table strong { display: block; font-weight: 600; }
+.observe-main .ob-table small { display: block; color: #a8becc; padding-top: 8px; font-size: 11px; }
+.observe-main .ob-outcome[data-outcome="ok"] { color: #77d4c4; }
+.observe-main .ob-outcome:not([data-outcome="ok"]) { color: #ecc47d; }
+.observe-main .ob-footer { flex-wrap: wrap; padding: 14px 16px; border-top: 1px solid #234454; color: #a8becc; font-size: 11px; }
+.observe-main .ob-footer > span { margin-right: auto; }
+.observe-main .ob-notice, .observe-main .ob-empty { padding: 18px 16px; font-size: 13px; color: #b8cbd6; overflow-wrap: anywhere; }
+.observe-main .ob-logs { list-style: none; padding: 0; margin: 0; }
+.observe-main .ob-logs li { border-top: 1px solid #234454; }
+.observe-main .ob-logs button { width: 100%; display: grid; grid-template-columns: 160px 70px 1fr; border: 0; border-radius: 0; background: transparent; text-align: left; font-size: 11px; }
+.observe-main .ob-logs pre { grid-column: 1 / -1; white-space: pre-wrap; overflow-wrap: anywhere; margin: 6px 0; color: #dce9f1; }
+.observe-main .ob-level { color: #ecc47d; }
+.observe-main .ob-inspector { position: fixed; z-index: 70; right: 0; top: 52px; bottom: 0; width: min(500px, 100%); background: #0d202c; border-left: 1px solid #355260; box-shadow: -18px 0 60px #0008; overflow-y: auto; padding: 24px; }
+.observe-main .ob-inspector header { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.observe-main .ob-inspector h2 { font-size: 19px; }
+.observe-main .ob-inspector dl > div { padding: 12px 0; border-bottom: 1px solid #234454; }
+.observe-main .ob-inspector dt { color: #a8becc; font-size: 12px; }
+.observe-main .ob-inspector dd { margin: 6px 0 0; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.observe-main .ob-inspector p { color: #a8becc; font-size: 12px; margin-top: 20px; }
+.observe-main .ob-inspector a { color: #24c9ff; display: block; padding-top: 18px; }
+@media (max-width: 800px) {
+ .observe-main { padding: 22px 12px 104px; }
+ .observe-main h1 { font-size: 24px; }
+ .observe-main .ob-page-glyph, .observe-main .ob-heading p { display: none; }
+ .observe-main .ob-table thead { display: none; }
+ .observe-main .ob-table, .observe-main .ob-table tbody { display: block; }
+ .observe-main .ob-table tr { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid #234454; padding: 16px 12px; gap: 12px; }
+ .observe-main .ob-table td { display: block; border: 0; padding: 0; width: auto !important; }
+ .observe-main .ob-table td:first-child { grid-column: 1 / -1; padding-bottom: 8px; }
+ .observe-main .ob-table td:nth-child(4), .observe-main .ob-table td:nth-child(5), .observe-main .ob-table td:nth-child(6) { text-align: right; }
+ .observe-main .ob-table td:nth-child(2) { grid-row: 2; }
+ .observe-main .ob-table td:nth-child(3) { grid-row: 3; }
+ .observe-main .ob-table td:nth-child(4) { grid-row: 1; grid-column: 2; align-self: start; pointer-events: none; }
+ .observe-main .ob-table td:first-child button { padding-right: 70px; }
+ .observe-main .ob-logs button { grid-template-columns: 1fr 1fr; }
+ .observe-main .ob-logs pre { grid-column: 1 / -1; }
+ .observe-main .ob-inspector { top: 0; padding: 20px 16px 92px; }
+}
+@media (max-width: 420px) { .observe-main .ob-heading button span { display: none; } .observe-main .ob-filters > label { flex: 1 1 100%; } .observe-main .ob-footer button { width: 100%; justify-content: center; } }

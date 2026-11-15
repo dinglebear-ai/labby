@@ -391,6 +391,22 @@ pub(super) fn service_error_affects_connection_health(error: &rmcp::ServiceError
     !matches!(error, rmcp::ServiceError::McpError(_))
 }
 
+/// Size and telemetry classification of a valid completed RPC response.
+/// Connection health and wire payload remain independent of execution outcome.
+pub(super) struct CapabilityResponseMeasurement {
+    pub bytes: usize,
+    pub usage_outcome: &'static str,
+}
+
+impl From<usize> for CapabilityResponseMeasurement {
+    fn from(bytes: usize) -> Self {
+        Self {
+            bytes,
+            usage_outcome: "ok",
+        }
+    }
+}
+
 /// Execute `rpc_future` under the pool's request timeout, enforce the
 /// response-size cap (using `size_fn`), and emit structured log events.
 ///
@@ -413,7 +429,7 @@ pub(super) fn service_error_affects_connection_health(error: &rmcp::ServiceError
 ///
 /// Returns `Ok(R)` on success and a typed `CapabilityCallError` on failure.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn timed_capability_call<R, Fut, SizeFn>(
+pub(super) async fn timed_capability_call<R, Fut, SizeFn, Measurement>(
     pool: &UpstreamPool,
     upstream_name: &str,
     capability: UpstreamCapability,
@@ -427,7 +443,8 @@ pub(super) async fn timed_capability_call<R, Fut, SizeFn>(
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
-    SizeFn: Fn(&R) -> usize,
+    SizeFn: Fn(&R) -> Measurement,
+    Measurement: Into<CapabilityResponseMeasurement>,
 {
     timed_capability_call_with_timeout(
         pool,
@@ -449,7 +466,7 @@ where
 /// Variant of [`timed_capability_call`] for surfaces with a stricter local
 /// budget than the general upstream request timeout.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn>(
+pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn, Measurement>(
     pool: &UpstreamPool,
     request_timeout: Duration,
     upstream_name: &str,
@@ -465,7 +482,8 @@ pub(super) async fn timed_capability_call_with_timeout<R, Fut, SizeFn>(
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
-    SizeFn: Fn(&R) -> usize,
+    SizeFn: Fn(&R) -> Measurement,
+    Measurement: Into<CapabilityResponseMeasurement>,
 {
     // Keep the generic RPC future off Tokio's worker stack. This wrapper is
     // instantiated for every capability and can otherwise make connection
@@ -492,7 +510,7 @@ where
 /// Task admission retains the usual budget and telemetry, while distinguishing
 /// a timeout before enqueue from a dispatched upstream request timing out.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn timed_task_call<R, Fut, SizeFn>(
+pub(super) async fn timed_task_call<R, Fut, SizeFn, Measurement>(
     pool: &UpstreamPool,
     request_timeout: Duration,
     upstream_name: &str,
@@ -509,7 +527,8 @@ pub(super) async fn timed_task_call<R, Fut, SizeFn>(
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
-    SizeFn: Fn(&R) -> usize,
+    SizeFn: Fn(&R) -> Measurement,
+    Measurement: Into<CapabilityResponseMeasurement>,
 {
     Box::pin(timed_capability_call_with_timeout_and_limit(
         pool,
@@ -534,7 +553,7 @@ where
 /// SEP-2640 resource reads, whose base64 wire representation requires more
 /// headroom than ordinary upstream calls while retaining a 16 MiB raw limit.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn timed_capability_call_with_response_limit<R, Fut, SizeFn>(
+pub(super) async fn timed_capability_call_with_response_limit<R, Fut, SizeFn, Measurement>(
     pool: &UpstreamPool,
     upstream_name: &str,
     capability: UpstreamCapability,
@@ -549,7 +568,8 @@ pub(super) async fn timed_capability_call_with_response_limit<R, Fut, SizeFn>(
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
-    SizeFn: Fn(&R) -> usize,
+    SizeFn: Fn(&R) -> Measurement,
+    Measurement: Into<CapabilityResponseMeasurement>,
 {
     // Match the ordinary-capability path above: Skills payloads make this
     // instantiation especially large in debug builds.
@@ -573,7 +593,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn timed_capability_call_with_timeout_and_limit<R, Fut, SizeFn>(
+async fn timed_capability_call_with_timeout_and_limit<R, Fut, SizeFn, Measurement>(
     pool: &UpstreamPool,
     request_timeout: Duration,
     upstream_name: &str,
@@ -591,7 +611,8 @@ async fn timed_capability_call_with_timeout_and_limit<R, Fut, SizeFn>(
 ) -> Result<R, CapabilityCallError>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
-    SizeFn: Fn(&R) -> usize,
+    SizeFn: Fn(&R) -> Measurement,
+    Measurement: Into<CapabilityResponseMeasurement>,
 {
     // Enforce one wall-clock budget across peer acquisition, bulkhead wait, and
     // the RPC itself. Waiting for a permit must not extend the configured
@@ -715,7 +736,8 @@ where
     }
     match outcome {
         RawCallOutcome::Ok(result) => {
-            let response_size = size_fn(&result);
+            let measurement = size_fn(&result).into();
+            let response_size = measurement.bytes;
             let max_bytes = response_limit;
             if response_size > max_bytes {
                 // The peer returned a complete, valid response. Rejecting it at
@@ -748,12 +770,20 @@ where
             if subject.is_none() {
                 pool.record_success_for(upstream_name, capability).await;
             }
+            // Finish logs describe RPC completion. Usage classifies tool execution.
             log_upstream_request_finish(event, start.elapsed().as_millis(), Some(response_size));
+            if measurement.usage_outcome == "tool_error" {
+                tracing::info!(
+                    upstream = upstream_name,
+                    outcome = "tool_error",
+                    "upstream tool execution completed with an error"
+                );
+            }
             record_usage_call_with_response(
                 pool,
                 event,
                 subject,
-                "ok",
+                measurement.usage_outcome,
                 start.elapsed().as_millis(),
                 Some(response_size),
             );
@@ -860,7 +890,7 @@ where
 /// consumers that need the failure *class* (Code Mode does) must call
 /// [`timed_capability_call`] directly instead of stringifying.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn timed_capability_call_str<R, Fut, SizeFn>(
+pub(super) async fn timed_capability_call_str<R, Fut, SizeFn, Measurement>(
     pool: &UpstreamPool,
     upstream_name: &str,
     capability: UpstreamCapability,
@@ -874,7 +904,8 @@ pub(super) async fn timed_capability_call_str<R, Fut, SizeFn>(
 ) -> Result<R, String>
 where
     Fut: Future<Output = Result<R, rmcp::ServiceError>>,
-    SizeFn: Fn(&R) -> usize,
+    SizeFn: Fn(&R) -> Measurement,
+    Measurement: Into<CapabilityResponseMeasurement>,
 {
     timed_capability_call(
         pool,

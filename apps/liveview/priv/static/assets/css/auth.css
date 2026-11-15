@@ -1,0 +1,128 @@
+/* Authored static stylesheet, served and digested with the existing app.css. */
+.labby-auth-page { color-scheme: dark; }
+#console-integration.labby-auth {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  max-width: none;
+  margin: 0;
+  padding: 48px 24px;
+}
+.labby-auth .labby-auth-frame { width: min(100%, 456px); }
+.labby-auth .labby-auth-brand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 32px;
+  font: 800 32px/1.1 Manrope, sans-serif;
+  letter-spacing: -.05em;
+  color: var(--aurora-text-primary);
+}
+.labby-auth-brand svg { width: 40px; height: 40px; }
+.labby-auth-wordmark-suffix { color: var(--aurora-accent-pink); }
+.labby-auth .labby-auth-panel {
+  margin: 0;
+  padding: 32px;
+  border: 1px solid var(--aurora-border-strong);
+  border-radius: 22px;
+  background: var(--aurora-panel-strong);
+  box-shadow: 0 20px 38px rgb(0 0 0 / 26%), inset 0 1px 0 rgb(255 255 255 / 5%);
+}
+.labby-auth-header { margin-bottom: 28px; }
+.labby-auth h1 {
+  margin: 0 0 10px;
+  font: 800 34px/1.18 Manrope, sans-serif;
+  letter-spacing: -.04em;
+  text-wrap: balance;
+}
+.labby-auth p { margin: 0; color: var(--aurora-text-muted); }
+.labby-auth .labby-auth-header p { font-size: 14px; }
+.labby-auth :is(button, [data-provider-link]) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 16px;
+  border: 1px solid var(--aurora-border-strong);
+  border-radius: 8px;
+  background: var(--aurora-control-surface);
+  color: var(--aurora-text-primary);
+  font: 600 14px/1.45 Inter, sans-serif;
+  text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 160ms, border-color 160ms;
+}
+.labby-auth [hidden] { display: none; }
+.labby-auth button.labby-auth-primary,
+.labby-auth [data-provider-link] {
+  border-color: var(--aurora-accent-primary);
+  background: var(--aurora-accent-primary);
+  color: var(--aurora-accent-foreground);
+}
+.labby-auth button.labby-auth-primary:hover,
+.labby-auth [data-provider-link]:hover { background: var(--aurora-accent-strong); }
+.labby-auth button.labby-auth-secondary:hover,
+.labby-auth [data-provider-cancel]:hover { background: var(--aurora-hover-bg); border-color: var(--aurora-accent-strong); }
+.labby-auth :is(button, a, input):focus-visible {
+  outline: 2px solid var(--aurora-accent-strong);
+  outline-offset: 4px;
+  box-shadow: none;
+}
+.labby-auth button:disabled { cursor: wait; opacity: .65; }
+.labby-auth .labby-auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 24px 0;
+  color: var(--aurora-text-muted);
+  font-size: 12px;
+}
+.labby-auth-divider::before,
+.labby-auth-divider::after { content: ""; flex: 1; border-top: 1px solid var(--aurora-border-strong); }
+.labby-auth .labby-auth-form { display: grid; gap: 10px; margin: 0; }
+.labby-auth-form label { color: var(--aurora-text-primary); font-size: 13px; font-weight: 600; }
+.labby-auth #credential {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 12px;
+  border: 1px solid var(--aurora-border-strong);
+  border-radius: 8px;
+  background: var(--aurora-control-surface);
+  color: var(--aurora-text-primary);
+  font: 16px/1.45 Inter, sans-serif;
+}
+.labby-auth #credential:hover { border-color: var(--aurora-text-muted); }
+.labby-auth #credential-help { font-size: 12px; line-height: 1.6; }
+.labby-auth-form button { margin-top: 10px; }
+.labby-auth [data-provider-status] { padding: 0; font-size: 13px; overflow-wrap: anywhere; }
+.labby-auth [data-provider-status]:not(:empty) { margin-top: 12px; }
+.labby-auth :is([data-provider-link], [data-provider-cancel]) { margin-top: 12px; }
+.labby-auth .labby-auth-error {
+  margin: 0 0 24px;
+  padding: 12px 16px;
+  border: 1px solid var(--aurora-error);
+  border-radius: 8px;
+  background: var(--aurora-control-surface);
+  color: var(--aurora-text-primary);
+  font-size: 13px;
+}
+@media (max-width: 480px) {
+  #console-integration.labby-auth { padding: 32px 16px; }
+  .labby-auth .labby-auth-panel { padding: 24px; }
+  .labby-auth .labby-auth-brand { margin-bottom: 24px; }
+}
+@media (max-height: 650px) {
+  #console-integration.labby-auth { place-items: start center; padding-top: 24px; padding-bottom: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .labby-auth :is(button, [data-provider-link]) { transition: none; }
+}
+@media (forced-colors: active) {
+  .labby-auth :is(button, a, input):focus-visible { outline-color: Highlight; }
+  .labby-auth button:disabled { opacity: 1; color: GrayText; }
+}

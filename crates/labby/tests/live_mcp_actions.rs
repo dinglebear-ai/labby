@@ -90,6 +90,13 @@ fn mcp_transition_params(intent: &action_matrix::CaseIntent) -> serde_json::Valu
         }
         "setup:draft.commit" | "setup:finalize" => params = serde_json::json!({"force":true}),
         "projects:projects.update" => params["name"] = serde_json::json!("matrix-project-updated"),
+        "access:access.team.member.activate" => {
+            params = serde_json::json!({"team_id":"matrix-restore","principal_id":"matrix-restore-principal","role":"admin"})
+        }
+        "access:access.team_project.unassign" => {
+            params =
+                serde_json::json!({"team_id":"matrix-unassign","project_id":"bootstrap-default"})
+        }
         _ => {}
     }
     params
@@ -668,6 +675,43 @@ async fn assert_mcp_transition_readback(
             );
             true
         }
+        "access:access.team.member.activate" | "access:access.team_project.unassign" => {
+            let params = mcp_transition_params(intent);
+            let member = intent.action == "access.team.member.activate";
+            let action = if member {
+                "access.team.member.list"
+            } else {
+                "access.team_project.list"
+            };
+            let field = if member { "members" } else { "assignments" };
+            let id = if member { "principal_id" } else { "project_id" };
+            let status = if member { "active" } else { "revoked" };
+            let mutation = mcp_action_data(mutation_text, "access", &intent.action);
+            assert_eq!(mutation["status"], status);
+            let (ok, text) = read(
+                "access",
+                action,
+                serde_json::json!({"team_id":params["team_id"],"limit":10}),
+            )
+            .await;
+            assert!(ok, "{text}");
+            let inventory = mcp_action_data(&text, "access", action);
+            let row = inventory[field]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row[id] == params[id])
+                .expect("persisted lifecycle row");
+            assert_eq!(row["status"], status);
+            assert_eq!(row["role"], mutation["role"]);
+            let epoch = if member {
+                "membership_epoch"
+            } else {
+                "assignment_epoch"
+            };
+            assert_eq!(row[epoch], mutation[epoch]);
+            true
+        }
         "access:access.team_project.assign" => {
             let params = mcp_transition_params(intent);
             let mutation = mcp_action_data(mutation_text, "access", "access.team_project.assign");
@@ -761,6 +805,39 @@ async fn bind_harness_team_upstream(runner: &BuiltinMcpRunner, upstream: &str, i
 }
 
 async fn prepare_mcp_transition(runner: &BuiltinMcpRunner, intent: &action_matrix::CaseIntent) {
+    if matches!(
+        intent.action.as_str(),
+        "access.team.member.activate" | "access.team_project.unassign"
+    ) {
+        let params = mcp_transition_params(intent);
+        let created = runner
+            .call(
+                "access",
+                "access.team.create",
+                serde_json::json!({"team_id":params["team_id"],"name":"Owned lifecycle matrix"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(created.is_error, Some(true), "{}", result_text(&created));
+        if intent.action == "access.team.member.activate" {
+            {
+                let connection =
+                    rusqlite::Connection::open(runner.owned_labby_home().join("access.db"))
+                        .unwrap();
+                connection.execute("INSERT INTO principals(principal_id,organization_id,kind,status,created_at,updated_at) VALUES('matrix-restore-principal','bootstrap-local','user','active',1,1)",[]).unwrap();
+            }
+            for action in ["access.team.member.add", "access.team.member.suspend"] {
+                let result=runner.call("access",action,serde_json::json!({"team_id":params["team_id"],"principal_id":params["principal_id"],"role":"member"}).as_object().unwrap().clone()).await.unwrap();
+                assert_ne!(result.is_error, Some(true), "{}", result_text(&result));
+            }
+        } else {
+            let result=runner.call("access","access.team_project.assign",serde_json::json!({"team_id":params["team_id"],"project_id":params["project_id"],"role":"admin"}).as_object().unwrap().clone()).await.unwrap();
+            assert_ne!(result.is_error, Some(true), "{}", result_text(&result));
+        }
+    }
     if intent.key() == "access:access.team_project.assign" {
         let mut params = mcp_transition_params(intent);
         assert_eq!(params["role"], "member");
@@ -1386,6 +1463,12 @@ async fn every_http_feasible_surface_action_reaches_live_dispatch() {
             action_scenarios::assert_snippet_receipt_case(&intent.action, &value);
         }
         let succeeded = result.is_error != Some(true);
+        if matches!(
+            intent.action.as_str(),
+            "access.team.member.activate" | "access.team_project.unassign"
+        ) {
+            assert!(succeeded, "owned lifecycle transition must succeed: {text}");
+        }
         let transition_observed = succeeded
             && matches!(
                 intent.scenario_kind,

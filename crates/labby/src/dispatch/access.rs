@@ -1,5 +1,10 @@
 //! Shared multi-user administration dispatch.
 
+mod inventory;
+pub(crate) use inventory::{
+    inventory_action, inventory_store, map_error as map_inventory_error, read_deadline_from_headers,
+};
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use labby_auth::VerifiedIdentity;
@@ -34,6 +39,10 @@ macro_rules! access_actions {
                 &[string("team_id"), string("name")],
             ),
             action("access.team.list", "List the caller's teams", &[]),
+            action("access.team.member.list", "List persisted Team memberships", inventory::PARAMS),
+            action("access.team_project.list", "List persisted Team Project assignments", inventory::PARAMS),
+            action("access.team_invitation.list", "List redacted Team invitations and observed acceptance state", inventory::PARAMS),
+            admin_action("access.platform_admin.list", "List persisted organization administrator grants", inventory::PAGING_PARAMS),
             action(
                 "access.team.member.add",
                 "Add a team member",
@@ -42,6 +51,11 @@ macro_rules! access_actions {
             action(
                 "access.team.member.role.set",
                 "Change a team member role",
+                &[string("team_id"), string("principal_id"), string("role")],
+            ),
+            action(
+                "access.team.member.activate",
+                "Restore an inactive team member with an explicit role",
                 &[string("team_id"), string("principal_id"), string("role")],
             ),
             action(
@@ -84,6 +98,11 @@ macro_rules! access_actions {
                 "access.team_project.assign",
                 "Assign a team to a project",
                 &[string("team_id"), string("project_id"), string("role")],
+            ),
+            action(
+                "access.team_project.unassign",
+                "Revoke a team project assignment",
+                &[string("team_id"), string("project_id")],
             ),
             action(
                 "access.project.effective.list",
@@ -143,18 +162,24 @@ pub(crate) fn required_capability(action: &str) -> Option<Capability> {
         "access.team.create" | "access.platform_admin.grant" | "access.platform_admin.revoke" => {
             Capability::PlatformManage
         }
+        "access.platform_admin.list" => Capability::PlatformRead,
         "access.team_invitation.accept" => Capability::ScopeOperate,
-        "access.gateway_credential.list" => Capability::ScopeRead,
+        "access.gateway_credential.list"
+        | "access.team.member.list"
+        | "access.team_project.list" => Capability::ScopeRead,
         "access.gateway_credential.bind"
         | "access.gateway_credential.revoke"
-        | "access.team_project.assign" => Capability::ScopeManage,
+        | "access.team_project.assign"
+        | "access.team_project.unassign" => Capability::ScopeManage,
         "access.team.member.add"
+        | "access.team.member.activate"
         | "access.team.member.role.set"
         | "access.team.member.suspend"
         | "access.team.member.remove"
         | "access.team.suspend"
         | "access.team.activate"
-        | "access.team_invitation.create" => Capability::MembershipManage,
+        | "access.team_invitation.create"
+        | "access.team_invitation.list" => Capability::MembershipManage,
         _ => return None,
     })
 }
@@ -191,7 +216,7 @@ const fn action(
     }
 }
 /// Installation-scoped administration: the shared evaluator demands
-/// `platform.manage`, so the transport ceiling must carry `lab:admin`.
+/// a platform capability, so the transport ceiling must carry `lab:admin`.
 const fn admin_action(
     name: &'static str,
     description: &'static str,
@@ -211,6 +236,7 @@ const fn admin_action(
 #[derive(Clone)]
 pub(crate) struct AccessDispatchContext {
     pub(crate) store: crate::access::AccessStore,
+    pub(crate) read_deadline: Option<crate::access::inventory::AccessReadDeadline>,
     pub(crate) identity: VerifiedIdentity,
     pub(crate) ceiling: AuthorityCeiling,
     pub(crate) installation_id: String,
@@ -237,9 +263,19 @@ pub(crate) async fn dispatch(
         return Err(unknown_action(action_name));
     }
 
+    if inventory_action(action_name) {
+        return inventory::dispatch(context, action_name, params).await;
+    }
+
     // Filtered list operations derive visibility inside AccessStore. Every mutation is
     // additionally checked through the exact evaluator.
-    if action_name != "access.team.list" && action_name != "access.project.effective.list" {
+    if !matches!(
+        action_name,
+        "access.team.list"
+            | "access.project.effective.list"
+            | "access.team.member.activate"
+            | "access.team_project.unassign"
+    ) {
         authorize_administration(&context, action_name, &params).await?;
     }
 
@@ -290,6 +326,23 @@ pub(crate) async fn dispatch(
                         .map_err(map_access_error)?,
                 )
             }
+        }
+        "access.team.member.activate" => {
+            let request = administration_authority_request(&context, action_name, &params).await?;
+            let input = AddTeamMemberInput::new(
+                context.identity,
+                required_string(&params, "team_id")?,
+                required_string(&params, "principal_id")?,
+                team_role(&params)?,
+            )
+            .map_err(map_access_error)?;
+            membership_json(
+                context
+                    .store
+                    .activate_team_member(input, request)
+                    .await
+                    .map_err(map_access_error)?,
+            )
         }
         "access.team.member.suspend" | "access.team.member.remove" => {
             let input = TeamMembershipInput::new(
@@ -357,6 +410,22 @@ pub(crate) async fn dispatch(
                 .await
                 .map_err(map_access_error)?;
             json!({"team_id": value.team_id, "project_id": value.project_id, "role": project_role_name(value.role), "assignment_epoch": value.assignment_epoch})
+        }
+        "access.team_project.unassign" => {
+            let request = administration_authority_request(&context, action_name, &params).await?;
+            let input = crate::access::ManageTeamProjectInput::new(
+                context.identity,
+                required_string(&params, "team_id")?,
+                required_string(&params, "project_id")?,
+                None,
+            )
+            .map_err(map_access_error)?;
+            let value = context
+                .store
+                .unassign_team_project(input, request)
+                .await
+                .map_err(map_access_error)?;
+            json!({"team_id":value.team_id,"project_id":value.project_id,"role":project_role_name(value.role),"status":value.status,"assignment_epoch":value.assignment_epoch})
         }
         "access.project.effective.list" => {
             let values = context
@@ -688,11 +757,34 @@ pub async fn dispatch_unbound(action: &str, params: Value) -> Result<Value, Tool
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn inventory_dispatch_reads_actual_store() {
+        let (_directory, store, identity) = crate::access::test_support::fixture().await;
+        let ceiling = AuthorityCeiling::durable_execution();
+        for action in ["access.team.member.list", "access.team_project.list"] {
+            let result = dispatch(
+                AccessDispatchContext {
+                    store: store.clone(),
+                    identity: identity.clone(),
+                    ceiling: ceiling.clone(),
+                    read_deadline: None,
+                    installation_id: "local-installation".into(),
+                    #[cfg(feature = "gateway")]
+                    gateway_manager: None,
+                },
+                action,
+                json!({"team_id":"bootstrap-initial-team"}),
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+
     #[test]
     fn catalog_registers_only_canonical_access_actions() {
         assert_eq!(
             ACTIONS.len(),
-            if cfg!(feature = "gateway") { 17 } else { 14 }
+            if cfg!(feature = "gateway") { 23 } else { 20 }
         );
         assert!(ACTIONS.iter().all(|spec| spec.name.starts_with("access.")));
         assert!(ACTIONS.iter().all(|spec| !spec.destructive));
@@ -769,3 +861,6 @@ mod tests {
         assert_eq!(error.kind(), "forbidden");
     }
 }
+
+#[cfg(test)]
+mod lifecycle_tests;

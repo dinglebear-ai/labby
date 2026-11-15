@@ -98,6 +98,7 @@ const SHARED_NON_SERVICES: &[&str] = &[
 /// added service is forced through review (an unlisted service dir triggers a
 /// failure in `services_list_is_current`).
 const KNOWN_SERVICES: &[&str] = &[
+    "access",
     "agents",
     "browser",
     "dev_containers",

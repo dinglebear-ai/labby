@@ -208,6 +208,22 @@ pub(crate) fn authorize_action_in_transaction(
     transaction: &Transaction<'_>,
     request: AuthorityRequest,
 ) -> AccessStoreResult<AuthorityLease> {
+    authorize_action_with_principal(transaction, request, None)
+}
+
+pub(super) fn authorize_action_for_principal(
+    transaction: &Transaction<'_>,
+    request: AuthorityRequest,
+    principal: &super::read::ResolvedPrincipal,
+) -> AccessStoreResult<AuthorityLease> {
+    authorize_action_with_principal(transaction, request, Some(principal))
+}
+
+fn authorize_action_with_principal(
+    transaction: &Transaction<'_>,
+    request: AuthorityRequest,
+    principal: Option<&super::read::ResolvedPrincipal>,
+) -> AccessStoreResult<AuthorityLease> {
     let AuthorityRequest {
         identity,
         action_schema_version,
@@ -236,8 +252,15 @@ pub(crate) fn authorize_action_in_transaction(
         return Err(AccessStoreError::NotAuthorized);
     }
 
+    let resolved_principal;
+    let principal = if let Some(principal) = principal {
+        principal
+    } else {
+        resolved_principal = resolve_principal(transaction, &identity).map_err(collapse_denial)?;
+        &resolved_principal
+    };
     let owner = resource.owner().clone();
-    let resolved = resolve_authority(transaction, &identity, &owner, capability)?;
+    let resolved = resolve_authority_for_principal(transaction, principal, &owner, capability)?;
 
     // Contract violations here mean the durable vocabulary or the trusted
     // registry produced something the runtime types refuse (an invalid
@@ -394,6 +417,15 @@ fn resolve_authority(
     capability: Capability,
 ) -> AccessStoreResult<ResolvedAuthority> {
     let principal = resolve_principal(transaction, identity).map_err(collapse_denial)?;
+    resolve_authority_for_principal(transaction, &principal, owner, capability)
+}
+
+fn resolve_authority_for_principal(
+    transaction: &Transaction<'_>,
+    principal: &super::read::ResolvedPrincipal,
+    owner: &OwnerScope,
+    capability: Capability,
+) -> AccessStoreResult<ResolvedAuthority> {
     let is_platform_admin: bool = transaction
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM platform_administrators
@@ -583,7 +615,7 @@ fn resolve_authority(
     })
     .map_err(|_| AccessStoreError::MalformedVocabulary)?;
     Ok(ResolvedAuthority {
-        principal_id: principal.id,
+        principal_id: principal.id.clone(),
         capability,
         epochs,
     })

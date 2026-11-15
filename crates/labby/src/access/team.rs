@@ -242,6 +242,7 @@ pub(crate) struct TeamProjectAssignmentSnapshot {
     pub(crate) project_id: String,
     pub(crate) role: ProjectRole,
     pub(crate) assignment_epoch: u64,
+    pub(crate) status: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
@@ -534,7 +535,9 @@ pub(super) fn set_member_role(
         Some(input.role),
         None,
         "access.team_member.role",
+        None,
     )
+    .map(|_| ())
 }
 
 pub(super) fn suspend_member(
@@ -549,7 +552,9 @@ pub(super) fn suspend_member(
         None,
         Some("suspended"),
         "access.team_member.suspend",
+        None,
     )
+    .map(|_| ())
 }
 
 pub(super) fn remove_member(
@@ -564,6 +569,25 @@ pub(super) fn remove_member(
         None,
         Some("revoked"),
         "access.team_member.remove",
+        None,
+    )
+    .map(|_| ())
+}
+
+pub(super) fn activate_member(
+    connection: &mut Connection,
+    input: &AddTeamMemberInput,
+    request: super::AuthorityRequest,
+) -> AccessStoreResult<TeamMembershipSnapshot> {
+    mutate_member(
+        connection,
+        &input.actor,
+        &input.team_id,
+        &input.principal_id,
+        Some(input.role),
+        Some("active"),
+        "access.team_member.activate",
+        Some(request),
     )
 }
 
@@ -575,8 +599,12 @@ fn mutate_member(
     role: Option<TeamRole>,
     status: Option<&str>,
     action: &str,
-) -> AccessStoreResult<()> {
+    request: Option<super::AuthorityRequest>,
+) -> AccessStoreResult<TeamMembershipSnapshot> {
     let tx = immediate(connection)?;
+    if let Some(request) = request {
+        super::authority::authorize_action_in_transaction(&tx, request)?;
+    }
     let actor = resolve_principal(&tx, identity)?;
     require_team_manager(&tx, &actor.id, &actor.organization_id, team_id)?;
     let current_owner: bool = tx.query_row(
@@ -585,6 +613,24 @@ fn mutate_member(
     ).map_err(map_sqlite_error)?;
     if current_owner || role == Some(TeamRole::Owner) {
         require_team_owner(&tx, &actor.id, &actor.organization_id, team_id)?;
+    }
+    if status == Some("active") {
+        require_principal_in_organization(&tx, principal_id, &actor.organization_id)?;
+        // Allowlist revocation deliberately fences automatic Initial Team admission.
+        // Restoring that admission requires its lifecycle coordinator.
+        let restorable: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM team_memberships
+             WHERE organization_id=?1 AND team_id=?2 AND principal_id=?3
+               AND status IN ('suspended','revoked')
+               AND NOT(team_id='bootstrap-initial-team' AND status='revoked'))",
+                params![actor.organization_id, team_id, principal_id],
+                |row| row.get(0),
+            )
+            .map_err(map_sqlite_error)?;
+        if !restorable {
+            return Err(AccessStoreError::TeamUnavailable);
+        }
     }
     protect_last_owner(
         &tx,
@@ -596,6 +642,13 @@ fn mutate_member(
     )?;
     let now = unix_now()?;
     let changed=match (role,status) {
+        (Some(role), Some("active")) => tx.execute(
+            "UPDATE team_memberships SET role=?1,status='active',
+             membership_epoch=membership_epoch+1,updated_at=?2,revoked_at=NULL
+             WHERE organization_id=?3 AND team_id=?4 AND principal_id=?5
+               AND status IN ('suspended','revoked')",
+            params![role.as_persisted(), now, actor.organization_id, team_id, principal_id],
+        ),
         (Some(role),None)=>tx.execute("UPDATE team_memberships SET role=?1,membership_epoch=membership_epoch+1,updated_at=?2 WHERE organization_id=?3 AND team_id=?4 AND principal_id=?5 AND status!='revoked' AND role!=?1",params![role.as_persisted(),now,actor.organization_id,team_id,principal_id]),
         (None,Some("revoked"))=>tx.execute("UPDATE team_memberships SET status='revoked',membership_epoch=membership_epoch+1,updated_at=?1,revoked_at=?1 WHERE organization_id=?2 AND team_id=?3 AND principal_id=?4 AND status!='revoked'",params![now,actor.organization_id,team_id,principal_id]),
         (None,Some(value))=>tx.execute("UPDATE team_memberships SET status=?1,membership_epoch=membership_epoch+1,updated_at=?2,revoked_at=NULL WHERE organization_id=?3 AND team_id=?4 AND principal_id=?5 AND status!=?1 AND status!='revoked'",params![value,now,actor.organization_id,team_id,principal_id]),
@@ -618,7 +671,31 @@ fn mutate_member(
         team_epoch,
         "team_manage",
     )?;
-    tx.commit().map_err(map_sqlite_error)
+    let membership = tx
+        .query_row(
+            "SELECT role,status,membership_epoch FROM team_memberships
+         WHERE organization_id=?1 AND team_id=?2 AND principal_id=?3",
+            params![actor.organization_id, team_id, principal_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .map_err(map_sqlite_error)?;
+    let result = TeamMembershipSnapshot {
+        organization_id: actor.organization_id,
+        team_id: team_id.to_owned(),
+        principal_id: principal_id.to_owned(),
+        role: TeamRole::from_persisted(&membership.0)
+            .ok_or(AccessStoreError::MalformedVocabulary)?,
+        status: membership.1,
+        membership_epoch: epoch(membership.2)?,
+    };
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(result)
 }
 
 pub(super) fn grant_platform_admin(
@@ -742,18 +819,35 @@ fn accept_invitation_at(
     else {
         return Err(AccessStoreError::TeamUnavailable);
     };
-    if expires_at <= now {
-        tx.execute(
-            "UPDATE team_invitations SET status='expired',updated_at=?1
-             WHERE invitation_digest=?2 AND status='pending'",
-            params![now, digest.as_slice()],
-        )
-        .map_err(map_sqlite_error)?;
-        tx.commit().map_err(map_sqlite_error)?;
-        return Err(AccessStoreError::TeamUnavailable);
-    }
     if organization_id != principal.organization_id || invited_principal_id != principal.id {
         return Err(AccessStoreError::NotAuthorized);
+    }
+    if expires_at <= now {
+        let changed = tx
+            .execute(
+                "UPDATE team_invitations SET status='expired',updated_at=?1
+                 WHERE invitation_digest=?2 AND status='pending'",
+                params![now, digest.as_slice()],
+            )
+            .map_err(map_sqlite_error)?;
+        if changed != 1 {
+            return Err(AccessStoreError::TeamUnavailable);
+        }
+        let revision = advance_global_revision(&tx, now)?;
+        audit(
+            &tx,
+            revision,
+            now,
+            &principal.id,
+            &organization_id,
+            "access.team_invitation.expire",
+            "team",
+            &team_id,
+            epoch(issued_epoch)?,
+            "invitation_expired",
+        )?;
+        tx.commit().map_err(map_sqlite_error)?;
+        return Err(AccessStoreError::InvitationExpiryCommitted);
     }
     let current_epoch: i64 = tx
         .query_row(
@@ -900,7 +994,84 @@ pub(super) fn assign_team_project(
         project_id: input.project_id.clone(),
         role: input.role,
         assignment_epoch: epoch(assignment_epoch)?,
+        status: "active".into(),
     })
+}
+
+pub(super) fn unassign_team_project(
+    connection: &mut Connection,
+    input: &ManageTeamProjectInput,
+    request: super::AuthorityRequest,
+) -> AccessStoreResult<TeamProjectAssignmentSnapshot> {
+    let tx = immediate(connection)?;
+    super::authority::authorize_action_in_transaction(&tx, request)?;
+    let actor = resolve_principal(&tx, &input.actor)?;
+    require_team_manager(&tx, &actor.id, &actor.organization_id, &input.team_id)?;
+    // Resolve authority before revoking a grant that may itself authorize this caller.
+    require_project_manager(
+        &tx,
+        &actor.id,
+        &actor.organization_id,
+        &input.project_id,
+        None,
+    )?;
+    let assignment = tx
+        .query_row(
+            "SELECT a.role,a.assignment_epoch FROM team_project_assignments a
+         JOIN projects p ON p.organization_id=a.organization_id AND p.project_id=a.project_id
+         WHERE a.organization_id=?1 AND a.team_id=?2 AND a.project_id=?3
+           AND a.status='active' AND p.status='active'",
+            params![actor.organization_id, input.team_id, input.project_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(map_sqlite_error)?
+        .ok_or(AccessStoreError::TeamUnavailable)?;
+    let role =
+        ProjectRole::from_persisted(&assignment.0).ok_or(AccessStoreError::MalformedVocabulary)?;
+    let now = unix_now()?;
+    tx.execute(
+        "UPDATE team_project_assignments SET status='revoked',revoked_at=?1,updated_at=?1,
+           assignment_epoch=assignment_epoch+1
+         WHERE organization_id=?2 AND team_id=?3 AND project_id=?4 AND status='active'",
+        params![now, actor.organization_id, input.team_id, input.project_id],
+    )
+    .map_err(map_sqlite_error)?;
+    tx.execute(
+        "UPDATE projects SET project_policy_epoch=project_policy_epoch+1,updated_at=?1
+         WHERE organization_id=?2 AND project_id=?3",
+        params![now, actor.organization_id, input.project_id],
+    )
+    .map_err(map_sqlite_error)?;
+    let assignment_epoch = epoch(
+        assignment
+            .1
+            .checked_add(1)
+            .ok_or(AccessStoreError::MalformedVocabulary)?,
+    )?;
+    let revision = advance_global_revision(&tx, now)?;
+    audit(
+        &tx,
+        revision,
+        now,
+        &actor.id,
+        &actor.organization_id,
+        "access.team_project.unassign",
+        "team_project",
+        &format!("{}\0{}", input.team_id, input.project_id),
+        assignment_epoch,
+        "team_manage",
+    )?;
+    let result = TeamProjectAssignmentSnapshot {
+        organization_id: actor.organization_id,
+        team_id: input.team_id.clone(),
+        project_id: input.project_id.clone(),
+        role,
+        status: "revoked".into(),
+        assignment_epoch,
+    };
+    tx.commit().map_err(map_sqlite_error)?;
+    Ok(result)
 }
 
 pub(super) fn create_managed_project(
@@ -1275,7 +1446,7 @@ fn require_platform_admin(tx: &Transaction<'_>, principal_id: &str) -> AccessSto
 fn is_platform_admin(tx: &Transaction<'_>, principal_id: &str) -> AccessStoreResult<bool> {
     tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')",[principal_id],|r|r.get(0)).map_err(map_sqlite_error)
 }
-fn require_team_manager(
+pub(super) fn require_team_manager(
     tx: &Transaction<'_>,
     principal_id: &str,
     organization_id: &str,
@@ -1291,7 +1462,7 @@ fn require_team_manager(
         Err(AccessStoreError::NotAuthorized)
     }
 }
-fn require_team_member(
+pub(super) fn require_team_member(
     tx: &Transaction<'_>,
     principal_id: &str,
     organization_id: &str,
@@ -1428,7 +1599,7 @@ fn immediate(connection: &mut Connection) -> AccessStoreResult<Transaction<'_>> 
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(map_sqlite_error)
 }
-fn unix_now() -> AccessStoreResult<i64> {
+pub(super) fn unix_now() -> AccessStoreResult<i64> {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
@@ -2031,6 +2202,331 @@ mod tests {
         ));
     }
 
+    async fn expiry_fixture() -> (tempfile::TempDir, AccessStore, TeamInvitationSnapshot) {
+        let (directory, store, owner) = store().await;
+        seed_principal(&store, "expiry-invitee", "expiry-invitee").await;
+        seed_principal(&store, "expiry-other", "expiry-other").await;
+        let invitation = store
+            .create_team_invitation(
+                CreateTeamInvitationInput::new(
+                    owner,
+                    "bootstrap-initial-team",
+                    "expiry-invitee",
+                    TeamRole::Member,
+                    [41; 32],
+                    60,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        (directory, store, invitation)
+    }
+
+    #[test]
+    fn invitation_expiry_preserves_token_and_ttl_validation() {
+        for ttl in [1, 604_800] {
+            assert!(
+                CreateTeamInvitationInput::new(
+                    identity("owner"),
+                    "bootstrap-initial-team",
+                    "invitee",
+                    TeamRole::Member,
+                    [41; 32],
+                    ttl
+                )
+                .is_ok()
+            );
+        }
+        for ttl in [0, -1, 604_801, i64::MAX] {
+            assert!(
+                CreateTeamInvitationInput::new(
+                    identity("owner"),
+                    "bootstrap-initial-team",
+                    "invitee",
+                    TeamRole::Member,
+                    [41; 32],
+                    ttl
+                )
+                .is_err()
+            );
+        }
+        assert!(AcceptTeamInvitationInput::new(identity("invitee"), [0; 32]).is_err());
+    }
+
+    async fn expiry_state(store: &AccessStore) -> (String, i64, i64, i64, i64, i64) {
+        store
+            .with_connection(|connection| {
+                connection
+                    .query_row(
+                        "SELECT status,updated_at,
+                (SELECT global_revision FROM access_metadata WHERE singleton=1),
+                (SELECT count(*) FROM access_audit),
+                (SELECT count(*) FROM authority_projection_outbox),
+                (SELECT count(*) FROM team_memberships WHERE principal_id='expiry-invitee')
+             FROM team_invitations",
+                        [],
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                                row.get(5)?,
+                            ))
+                        },
+                    )
+                    .map_err(map_sqlite_error)
+            })
+            .await
+            .unwrap()
+    }
+
+    async fn expire_as(
+        store: &AccessStore,
+        subject: &str,
+        now: i64,
+    ) -> AccessStoreResult<TeamMembershipSnapshot> {
+        let input = AcceptTeamInvitationInput::new(identity(subject), [41; 32]).unwrap();
+        store
+            .with_connection(move |connection| accept_invitation_at(connection, &input, now))
+            .await
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_wrong_principal_has_zero_effects() {
+        let (_directory, store, invitation) = expiry_fixture().await;
+        let before = expiry_state(&store).await;
+        assert!(
+            expire_as(&store, "expiry-other", invitation.expires_at)
+                .await
+                .is_err()
+        );
+        assert_eq!(expiry_state(&store).await, before);
+        store.with_connection(|connection| {
+            connection.execute("UPDATE principal_links SET issuer='https://foreign.example' WHERE principal_id='expiry-invitee'", []).map_err(map_sqlite_error)?;
+            Ok(())
+        }).await.unwrap();
+        assert!(matches!(
+            expire_as(&store, "expiry-invitee", invitation.expires_at).await,
+            Err(AccessStoreError::IdentityUnavailable)
+        ));
+        assert_eq!(expiry_state(&store).await, before);
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_commits_revision_audit_outbox_once() {
+        let (_directory, store, invitation) = expiry_fixture().await;
+        let before = expiry_state(&store).await;
+        let error = expire_as(&store, "expiry-invitee", invitation.expires_at)
+            .await
+            .unwrap_err();
+        let mapped = crate::dispatch::access_errors::map_store_error("access", error, || {
+            crate::dispatch::error::ToolError::Forbidden {
+                message: "access administration is not authorized".into(),
+                required_scopes: vec![],
+            }
+        })
+        .to_agent_value();
+        assert_eq!(mapped["side_effects"], "possible");
+        let after = expiry_state(&store).await;
+        assert_eq!(
+            after,
+            (
+                "expired".into(),
+                invitation.expires_at,
+                before.2 + 1,
+                before.3 + 1,
+                before.4 + 1,
+                0
+            )
+        );
+        let audit = store.with_connection(|connection| connection.query_row(
+            "SELECT actor_principal_id,action,target_kind,target_fingerprint,policy_epoch,metadata_json
+             FROM access_audit WHERE action='access.team_invitation.expire'", [],
+            |row| Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,String>(2)?,row.get::<_,String>(3)?,row.get::<_,i64>(4)?,row.get::<_,String>(5)?)),
+        ).map_err(map_sqlite_error)).await.unwrap();
+        assert_eq!(
+            audit,
+            (
+                "expiry-invitee".into(),
+                "access.team_invitation.expire".into(),
+                "team".into(),
+                "bootstrap-initial-team".into(),
+                1,
+                "{}".into()
+            )
+        );
+        let repeated = expire_as(&store, "expiry-invitee", invitation.expires_at + 1)
+            .await
+            .unwrap_err();
+        assert!(matches!(repeated, AccessStoreError::TeamUnavailable));
+        assert_eq!(expiry_state(&store).await, after);
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_failure_rolls_back_update_revision_audit_and_outbox() {
+        for trigger in [
+            "CREATE TEMP TRIGGER fail_expiry BEFORE UPDATE ON team_invitations WHEN NEW.status='expired' BEGIN SELECT RAISE(ABORT,'forced'); END;",
+            "CREATE TEMP TRIGGER fail_expiry BEFORE UPDATE ON access_metadata BEGIN SELECT RAISE(ABORT,'forced'); END;",
+            "CREATE TEMP TRIGGER fail_expiry BEFORE INSERT ON access_audit WHEN NEW.action='access.team_invitation.expire' BEGIN SELECT RAISE(ABORT,'forced'); END;",
+            "CREATE TEMP TRIGGER fail_expiry BEFORE INSERT ON authority_projection_outbox BEGIN SELECT RAISE(ABORT,'forced'); END;",
+        ] {
+            let (_directory, store, invitation) = expiry_fixture().await;
+            store
+                .with_connection(move |connection| {
+                    connection.execute_batch(trigger).map_err(map_sqlite_error)
+                })
+                .await
+                .unwrap();
+            let before = expiry_state(&store).await;
+            assert!(
+                expire_as(&store, "expiry-invitee", invitation.expires_at)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(expiry_state(&store).await, before, "{trigger}");
+        }
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_concurrent_connections_commit_exactly_once() {
+        let (directory, store, invitation) = expiry_fixture().await;
+        let second = AccessStore::open_existing_current(directory.path().join("access.db"))
+            .await
+            .unwrap();
+        let before = expiry_state(&store).await;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let attempt = |store: AccessStore, barrier: std::sync::Arc<std::sync::Barrier>| async move {
+            store
+                .with_connection(move |connection| {
+                    barrier.wait();
+                    accept_invitation_at(
+                        connection,
+                        &AcceptTeamInvitationInput::new(identity("expiry-invitee"), [41; 32])?,
+                        invitation.expires_at,
+                    )
+                })
+                .await
+                .unwrap_err()
+        };
+        let errors: [AccessStoreError; 2] = tokio::join!(
+            attempt(store.clone(), barrier.clone()),
+            attempt(second, barrier)
+        )
+        .into();
+        let risks: Vec<_> = errors
+            .into_iter()
+            .map(|error| {
+                crate::dispatch::access_errors::map_store_error("access", error, || {
+                    crate::dispatch::error::ToolError::Forbidden {
+                        message: "access denied".into(),
+                        required_scopes: vec![],
+                    }
+                })
+                .to_agent_value()["side_effects"]
+                    .clone()
+            })
+            .collect();
+        assert_eq!(risks.iter().filter(|risk| **risk == "possible").count(), 1);
+        assert_eq!(
+            risks
+                .iter()
+                .filter(|risk| **risk == "none_expected")
+                .count(),
+            1
+        );
+        assert_eq!(
+            expiry_state(&store).await,
+            (
+                "expired".into(),
+                invitation.expires_at,
+                before.2 + 1,
+                before.3 + 1,
+                before.4 + 1,
+                0
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_foreign_organization_unknown_and_revoked_have_zero_effects() {
+        let (_directory, store, invitation) = expiry_fixture().await;
+        store.with_connection(|connection| connection.execute_batch(
+            "INSERT INTO organizations(organization_id,name,status,policy_epoch,created_at,updated_at) VALUES('foreign','Foreign','active',1,0,0);
+             UPDATE principals SET organization_id='foreign' WHERE principal_id='expiry-other';"
+        ).map_err(map_sqlite_error)).await.unwrap();
+        let before = expiry_state(&store).await;
+        assert!(matches!(
+            expire_as(&store, "expiry-other", invitation.expires_at).await,
+            Err(AccessStoreError::NotAuthorized)
+        ));
+        let unknown = AcceptTeamInvitationInput::new(identity("expiry-invitee"), [99; 32]).unwrap();
+        assert!(matches!(
+            store
+                .with_connection(move |connection| accept_invitation_at(
+                    connection,
+                    &unknown,
+                    invitation.expires_at
+                ))
+                .await,
+            Err(AccessStoreError::TeamUnavailable)
+        ));
+        assert_eq!(expiry_state(&store).await, before);
+        store
+            .with_connection(|connection| {
+                connection
+                    .execute(
+                        "UPDATE team_invitations SET status='revoked',revoked_at=expires_at",
+                        [],
+                    )
+                    .map_err(map_sqlite_error)?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let revoked = expiry_state(&store).await;
+        assert!(matches!(
+            expire_as(&store, "expiry-invitee", invitation.expires_at).await,
+            Err(AccessStoreError::TeamUnavailable)
+        ));
+        assert_eq!(expiry_state(&store).await, revoked);
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_accepts_before_boundary_without_duplicate_membership() {
+        let (_directory, store, invitation) = expiry_fixture().await;
+        let accepted = expire_as(&store, "expiry-invitee", invitation.expires_at - 1)
+            .await
+            .unwrap();
+        assert_eq!(accepted.status, "active");
+        let after = expiry_state(&store).await;
+        assert_eq!(after.0, "accepted");
+        assert_eq!(after.5, 1);
+        assert!(
+            expire_as(&store, "expiry-invitee", invitation.expires_at)
+                .await
+                .is_err()
+        );
+        assert_eq!(expiry_state(&store).await, after);
+    }
+
+    #[tokio::test]
+    async fn invitation_expiry_active_team_check_remains_required_before_acceptance() {
+        let (_directory, store, invitation) = expiry_fixture().await;
+        store.with_connection(|connection| {
+            connection.execute("UPDATE groups SET status='suspended' WHERE group_id='bootstrap-initial-team'", []).map_err(map_sqlite_error)?;
+            Ok(())
+        }).await.unwrap();
+        let before = expiry_state(&store).await;
+        assert!(matches!(
+            expire_as(&store, "expiry-invitee", invitation.expires_at - 1).await,
+            Err(AccessStoreError::TeamUnavailable)
+        ));
+        assert_eq!(expiry_state(&store).await, before);
+    }
+
     #[tokio::test]
     async fn invitation_rejects_wrong_identity_expiry_and_stale_team_epoch() {
         let (_directory, store, owner) = store().await;
@@ -2083,7 +2579,7 @@ mod tests {
                     )
                 })
                 .await,
-            Err(AccessStoreError::TeamUnavailable)
+            Err(AccessStoreError::InvitationExpiryCommitted)
         ));
 
         let stale = [9_u8; 32];

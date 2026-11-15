@@ -14,7 +14,7 @@ pub struct UpstreamCallRecord {
     /// Inbound redacted actor tag for new records; legacy rows retain their original meaning.
     pub actor: String,
     pub attribution: Option<labby_runtime::usage_actor::UsageAttribution>,
-    /// `"ok"` | `"upstream_error"` | `"timeout"` | `"response_too_large"` | `"upstream_connect_error"`.
+    /// `"ok"` | `"tool_error"` | `"upstream_error"` | `"timeout"` | `"response_too_large"` | `"upstream_connect_error"`.
     pub outcome: String,
     pub elapsed_ms: i64,
     pub response_bytes: Option<i64>,

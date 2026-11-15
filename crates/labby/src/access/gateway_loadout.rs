@@ -359,6 +359,7 @@ fn map_access_error(error: AccessStoreError) -> GatewayLoadoutAssignmentError {
         | AccessStoreError::InvalidBootstrapInput
         | AccessStoreError::InvalidTeamInput
         | AccessStoreError::TeamUnavailable
+        | AccessStoreError::InvitationExpiryCommitted
         | AccessStoreError::TeamCredentialBindingUnavailable
         | AccessStoreError::ProjectionWatermarkRegressed
         | AccessStoreError::LastActiveTeamOwner

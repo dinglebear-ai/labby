@@ -1,0 +1,80 @@
+name: LiveView Console
+# Advisory integration signal; the existing required CI aggregate is unchanged.
+on:
+  pull_request:
+    paths:
+      - 'apps/liveview/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'Justfile'
+      - '.github/workflows/liveview-console.yml'
+  workflow_dispatch:
+concurrency:
+  group: liveview-console-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  console:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/liveview
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236
+        with:
+          otp-version: '28'
+          elixir-version: '1.19.5'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - name: Install Just
+        run: sudo apt-get update && sudo apt-get install -y just
+      - run: mix deps.get --check-locked
+      - name: Check authored formatting
+        run: mix format --check-formatted
+      - name: LiveView regression tests
+        working-directory: .
+        run: just liveview-test
+      - run: mix assets.deploy
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Controlled fixture browser checks
+        working-directory: .
+        run: just liveview-browser-fixtures
+
+  real-backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/liveview
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
+        with:
+          persist-credentials: false
+      - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236
+        with:
+          otp-version: '28'
+          elixir-version: '1.19.5'
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '22'
+      - uses: ./.github/actions/setup-rust-kache
+      - name: Install native build prerequisites
+        run: sudo apt-get update && sudo apt-get install -y libclang-dev libssl-dev pkg-config cmake
+      - name: Install Just
+        run: sudo apt-get update && sudo apt-get install -y just
+      - run: mix deps.get --check-locked
+      - run: mix assets.deploy
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build current Labby and run real backend browser journey
+        working-directory: .
+        run: just liveview-e2e
