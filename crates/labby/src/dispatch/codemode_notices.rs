@@ -1072,5 +1072,33 @@ fn deliver_at<T>(
     Ok(None)
 }
 
+/// Retry a store call the way the documented contention contract tells every
+/// caller to: `Busy` and `Deadline` are retryable outcomes, so repeat the same
+/// arguments (same dedupe key or ACK IDs) with exponential backoff.
+///
+/// Tests that drive a store as an ordinary producer or ACK client use this,
+/// because contention on a slow disk is expected behavior, not a test failure.
+/// The store's own fail-fast limits stay unchanged.
+#[cfg(test)]
+pub(crate) async fn retry_contended<T, Fut>(
+    mut operation: impl FnMut() -> Fut,
+) -> Result<T, NoticeError>
+where
+    Fut: Future<Output = Result<T, NoticeError>>,
+{
+    // 30 + 60 + 120 + 240 + 480 + 500 ms: about 1.4 s of backoff in total.
+    let mut delay = Duration::from_millis(30);
+    for _ in 0..6 {
+        match operation().await {
+            Err(NoticeError::Busy | NoticeError::Deadline) => {
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_millis(500));
+            }
+            outcome => return outcome,
+        }
+    }
+    operation().await
+}
+
 #[cfg(test)]
 mod tests;

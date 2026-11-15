@@ -897,3 +897,56 @@ fn typed_message_reference_requires_internal_publish() {
         Err(NoticeError::NotFound)
     ));
 }
+
+/// What CI's slow Linux disks look like to a second store handle: another
+/// connection holds the SQLite write lock past the 25 ms contention bound. The
+/// store must report a typed, retryable `Busy` rather than wait, and a caller
+/// that follows the contract (same dedupe key, with backoff) must get through.
+#[tokio::test]
+async fn notice_production_contended_handle_retries_through_a_held_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = NoticeStore::open_at(dir.path()).unwrap();
+    let inbox = store.register(who("alice")).await.unwrap();
+    let path = dir.path().join("agent-notifications/inbox.sqlite3");
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        let mut connection = Connection::open(path).unwrap();
+        let tx = connection
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .unwrap();
+        locked_tx.send(()).unwrap();
+        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        tx.commit().unwrap();
+    });
+    tokio::task::spawn_blocking(move || locked_rx.recv_timeout(Duration::from_secs(5)).unwrap())
+        .await
+        .unwrap();
+
+    let input = message(&inbox.id, "contended");
+    // A loaded runner can also exhaust the 250 ms operation budget first; both
+    // outcomes are the typed, retryable contention family.
+    let contended = store.publish(producer(), input.clone()).await.unwrap_err();
+    assert!(
+        matches!(contended, NoticeError::Busy | NoticeError::Deadline),
+        "a lock held past the contention bound must be retryable, got {contended:?}"
+    );
+    let retrying = {
+        let store = store.clone();
+        let input = input.clone();
+        tokio::spawn(
+            async move { retry_contended(|| store.publish(producer(), input.clone())).await },
+        )
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    release_tx.send(()).unwrap();
+    let receipt = retrying.await.unwrap().unwrap();
+    tokio::task::spawn_blocking(move || holder.join().unwrap())
+        .await
+        .unwrap();
+    let again = store.publish(producer(), input).await.unwrap();
+    assert_eq!(
+        again.id, receipt.id,
+        "the retry reused the dedupe key, so the notice was published once"
+    );
+}

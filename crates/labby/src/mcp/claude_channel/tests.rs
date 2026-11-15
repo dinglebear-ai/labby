@@ -1,5 +1,5 @@
 use super::*;
-use crate::dispatch::codemode_notices::{NoticeProducer, PublishNotice};
+use crate::dispatch::codemode_notices::{NoticeProducer, PublishNotice, retry_contended};
 use crate::mcp::server::LabMcpServer;
 use rmcp::ServiceExt as _;
 use serde_json::{Value, json};
@@ -140,28 +140,31 @@ async fn opted_in_stdio_pushes_notice_only_to_its_own_connection() {
     initialized(&mut second).await;
 
     // A separate durable handle publishes; the stdio worker must see it
-    // without an in-process wakeup or any tools/call.
-    let inbox = producer_store
-        .register(channel.recipient.clone())
+    // without an in-process wakeup or any tools/call. That handle contends with
+    // both stdio workers for the SQLite file, so it retries Busy/Deadline with
+    // the same arguments as the store contract requires of any caller.
+    let inbox = retry_contended(|| producer_store.register(channel.recipient.clone()))
         .await
         .unwrap();
-    let receipt = producer_store
-        .publish(
+    let notice = PublishNotice {
+        inbox_id: inbox.id,
+        source: "ci".into(),
+        level: NoticeLevel::Warning,
+        message: "Build finished.".into(),
+        dedupe_key: "build-1".into(),
+        ttl_seconds: 3_600,
+    };
+    let receipt = retry_contended(|| {
+        producer_store.publish(
             NoticeProducer {
                 actor: "fixture".into(),
                 admin: true,
             },
-            PublishNotice {
-                inbox_id: inbox.id,
-                source: "ci".into(),
-                level: NoticeLevel::Warning,
-                message: "Build finished.".into(),
-                dedupe_key: "build-1".into(),
-                ttl_seconds: 3_600,
-            },
+            notice.clone(),
         )
-        .await
-        .unwrap();
+    })
+    .await
+    .unwrap();
     let premature = tokio::time::timeout(Duration::from_millis(100), read(&mut first)).await;
     assert!(
         premature.is_err(),
@@ -192,14 +195,15 @@ async fn opted_in_stdio_pushes_notice_only_to_its_own_connection() {
             .is_err()
     );
 
-    let (_, ack) = producer_store
-        .controls(
+    let (_, ack) = retry_contended(|| {
+        producer_store.controls(
             channel.recipient.clone(),
             false,
             Some(vec![receipt.id.clone()]),
         )
-        .await
-        .unwrap();
+    })
+    .await
+    .unwrap();
     assert_eq!(ack, Some(vec![receipt.id]));
     drop(first);
     drop(second);

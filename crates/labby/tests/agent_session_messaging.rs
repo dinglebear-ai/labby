@@ -139,22 +139,30 @@ async fn message_rpc_with_retry(
     .await
 }
 
+/// Backoff between attempts of one contended request: about 1.4 s in total.
+///
+/// The notice store bounds SQLite lock waits to 25 ms and each operation to
+/// 250 ms, and documents `rate_limited`/`timeout` as retryable. On a loaded
+/// runner with slow fsync, contention can outlast a few short retries, so the
+/// fixture backs off the way the contract tells real callers to.
+const RETRY_BACKOFF_MS: [u64; 6] = [30, 60, 120, 240, 480, 500];
+
 async fn retry_notice_request<T>(
     label: &str,
     request: Value,
     mut send: impl AsyncFnMut(Value) -> T,
     retry_kind: impl Fn(&T) -> Option<&str>,
 ) -> T {
-    for _ in 0..3 {
+    for delay in RETRY_BACKOFF_MS {
         let reply = send(request.clone()).await;
         match retry_kind(&reply) {
-            Some(kind @ ("rate_limited" | "timeout")) => {
+            Some(kind @ ("rate_limited" | "timeout" | "receipt_missing")) => {
                 eprintln!("{label} returned {kind}, retrying the same request");
             }
             _ => return reply,
         }
         // A timeout can outlive the write, so preserve the idempotency or dedupe key.
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(delay)).await;
     }
     send(request).await
 }
@@ -180,6 +188,36 @@ async fn message_fixture_retries_timeout_with_identical_arguments() {
     );
     let expected = arguments("send", params);
     assert_eq!(requests, [expected.clone(), expected]);
+}
+
+#[tokio::test]
+async fn message_fixture_backs_off_through_sustained_contention() {
+    // Five busy replies in a row outlasted the old three short retries; the
+    // contract's backoff keeps resending the identical request until it lands.
+    let params = json!({
+        "to":{"kind":"all_active"},"body":"fixture","idempotency_key":"contended-request"
+    });
+    let mut requests = Vec::new();
+    let started = std::time::Instant::now();
+    let result = message_rpc_with_retry("send", params.clone(), async |request| {
+        requests.push(request);
+        if requests.len() <= 5 {
+            json!({"error":{"code":-32000,"message":"message store busy","data":{"kind":"rate_limited"}}})
+        } else {
+            json!({"result":{"structuredContent":{"duplicate":false}}})
+        }
+    })
+    .await;
+    assert_eq!(
+        result["result"]["structuredContent"]["duplicate"], false,
+        "{result}"
+    );
+    assert_eq!(requests, vec![arguments("send", params); 6]);
+    let backoff: u64 = RETRY_BACKOFF_MS[..5].iter().sum();
+    assert!(
+        started.elapsed() >= Duration::from_millis(backoff),
+        "retries must back off rather than hammer a contended store"
+    );
 }
 
 #[tokio::test]
@@ -489,14 +527,27 @@ async fn session_messages_live_http_and_stdio() {
         !acknowledged,
         "a rejected daemon request must not consume the ACK"
     );
-    let accepted = claude
-        .rpc(
-            "tools/call",
-            json!({
-                "name":"codemode","arguments":{"code":"return 1", "ack_notifications":[old_id]}
-            }),
-        )
-        .await;
+    // Bridge-local controls settle after the daemon result; under contention
+    // they can miss their budget, and the response then omits the receipt. The
+    // contract says to repeat only the controls with a harmless script, which
+    // `return 1` already is, and repeating an own ACK is idempotent.
+    let accepted = retry_notice_request(
+        "codemode ACK controls",
+        json!({
+            "name":"codemode","arguments":{"code":"return 1", "ack_notifications":[old_id]}
+        }),
+        async |request| claude.rpc("tools/call", request).await,
+        |reply| match reply["error"]["data"]["kind"].as_str() {
+            Some(kind) => Some(kind),
+            None if reply["result"]["structuredContent"]["acknowledged_notifications"]
+                .is_null() =>
+            {
+                Some("receipt_missing")
+            }
+            None => None,
+        },
+    )
+    .await;
     assert_eq!(
         reply(&accepted)["acknowledged_notifications"],
         json!([old_id])
