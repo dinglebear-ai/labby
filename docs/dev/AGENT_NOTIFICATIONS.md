@@ -1,7 +1,7 @@
 ---
 title: "Agent Notifications"
 created: "2026-10-02"
-updated: "2026-11-08"
+updated: "2026-11-15"
 ---
 
 # Agent Notifications
@@ -234,8 +234,11 @@ connection identity; reconnects must register again rather than inheriting mail.
 
 Each store admits at most one queued/executing blocking database operation. SQLite
 request lock contention is bounded to 25 ms; startup allows up to one second
-per SQLite lock acquisition. Each request store operation waits at most 250 ms.
-A call with controls and delivery can wait for two store operations. A
+per SQLite lock acquisition. Each request store operation waits at most 250 ms
+for the store's single operation permit, then at most 250 ms for its database
+work. A timeout while waiting is `rate_limited` (the work never ran); a timeout
+during the work is `timeout`. A call with controls and delivery can wait for
+two store operations, about one second in the worst case. A
 deadline does not undo a committed or still-running write. Retain the original
 idempotency key or ACK IDs, inspect the typed error and live state, then retry with
 backoff. Do not retry authorization, unsupported-schema, or changed-payload
@@ -248,6 +251,12 @@ script or your next ordinary call. Never replay a mutating script solely to
 recover a receipt. On a stdio bridge, local notice controls settle after the
 daemon returns an admitted Code Mode execution result, including execution
 errors. A daemon validation rejection leaves those local controls untouched.
+Because the script has already run, a bridge control that cannot settle does not
+fail the call. The result instead carries `notification_controls` with
+`status: "unsettled"`, the typed `kind`, and `retryable`, which is true for
+`rate_limited` and `timeout`. When it is true, repeat only the controls with
+the same ACK IDs. The field is omitted, like any receipt, when it would collide
+with a script field or exceed the response budget.
 
 ## Source ownership
 

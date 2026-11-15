@@ -485,7 +485,12 @@ async fn concurrent_retry_has_one_receipt_across_independent_connections() {
         assert_ne!(left["duplicate"], right["duplicate"]);
         assert_eq!(left["message_id"], right["message_id"]);
     } else {
-        assert!(matches!(left, Err(NoticeError::Busy)) || matches!(right, Err(NoticeError::Busy)));
+        // Separate handles contend for the SQLite lock; either retryable
+        // contention outcome is acceptable for the losing call.
+        let contended = |side: &Result<_, NoticeError>| {
+            matches!(side, Err(NoticeError::Busy | NoticeError::Deadline))
+        };
+        assert!(contended(&left) || contended(&right));
     }
     let replay = first.message_request(a, request()).await.unwrap();
     assert_eq!(replay["duplicate"], true);

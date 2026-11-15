@@ -269,6 +269,9 @@ pub(crate) struct NoticeStore {
     #[cfg(windows)]
     windows_guard: Option<Arc<labby_winjob::fs::SqliteVerificationGuard>>,
     // At most one blocking operation per store can be queued or executing.
+    // Callers wait up to `DB_BUDGET` for it asynchronously (see `admission`);
+    // the wait occupies no blocking thread. Clones share the permit;
+    // separately opened handles to the same file do not.
     permit: Arc<Semaphore>,
     published: Arc<tokio::sync::Notify>,
     installation_root: Option<Arc<Path>>,
@@ -412,38 +415,47 @@ impl NoticeStore {
         Ok(store)
     }
 
+    /// Bounded store operations. A call waits at most `DB_BUDGET` for the
+    /// single permit, then gives the admitted work its own `DB_BUDGET`. Keeping
+    /// the budgets separate means `Busy` always says nothing committed, while
+    /// `Deadline` is reserved for work that started and may still commit.
+    ///
+    /// Background passes usually hold the permit briefly, so a request that
+    /// arrives during one waits instead of failing. It reports `Busy` when the
+    /// permit stays held past the admission budget (for example a worker
+    /// finishing after its own deadline, or a settled pass on a slow disk) or
+    /// when SQLite stays locked past its 25 ms bound.
     pub(super) async fn run<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        let permit = Arc::clone(&self.permit)
-            .try_acquire_owned()
-            .map_err(|_| NoticeError::Busy)?;
-        self.run_admitted(permit, work, Some(DB_BUDGET)).await
+        let admitted = self.admission().await?;
+        self.run_admitted(admitted, work, Some(DB_BUDGET)).await
     }
 
-    /// For the bounded Events and joined session presence workers. A
-    /// delivery must wait for the polling pass that claimed it to finish
-    /// using the connection, rather than release and reclaim the same row.
+    /// Alias of `run` for the Events and joined session presence workers. A
+    /// delivery waits for the polling pass that claimed it to release the
+    /// connection, rather than reclaim the same row.
     pub(super) async fn run_event<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        self.run_admitted(self.event_permit().await?, work, Some(DB_BUDGET))
-            .await
+        self.run(work).await
     }
 
     /// The delivery worker owns the result of an admitted claim, offer, or settlement.
     /// Waiting for that result prevents a detached commit from losing its owner.
+    /// Admission waits at most `DB_BUDGET`; the work itself has no deadline.
     pub(super) async fn run_event_settled<T: Send + 'static>(
         &self,
         work: impl FnOnce(&mut Connection) -> Result<T, NoticeError> + Send + 'static,
     ) -> Result<T, NoticeError> {
-        self.run_admitted(self.event_permit().await?, work, None)
-            .await
+        let admitted = self.admission().await?;
+        self.run_admitted(admitted, work, None).await
     }
 
-    async fn event_permit(&self) -> Result<OwnedSemaphorePermit, NoticeError> {
+    /// Wait at most `DB_BUDGET` for the store's single operation permit.
+    async fn admission(&self) -> Result<OwnedSemaphorePermit, NoticeError> {
         tokio::time::timeout(DB_BUDGET, Arc::clone(&self.permit).acquire_owned())
             .await
             .map_err(|_| NoticeError::Busy)?
@@ -485,7 +497,17 @@ impl NoticeStore {
                 .map_err(|_| NoticeError::Deadline)?,
             None => worker.await,
         }
-        .map_err(|_| NoticeError::Unavailable)?
+        .map_err(|error| {
+            // A panic otherwise reads as a storage outage; name it once here.
+            if error.is_panic() {
+                tracing::error!(
+                    subsystem = "agent_notifications",
+                    operation = "store_worker",
+                    "notification store operation panicked"
+                );
+            }
+            NoticeError::Unavailable
+        })?
     }
 
     pub(crate) async fn controls(
@@ -1065,6 +1087,38 @@ fn deliver_at<T>(
         return Ok(Some(value));
     }
     Ok(None)
+}
+
+/// Backoff between attempts of one contended store call: about 1.4 s in total.
+/// `tests/agent_session_messaging.rs` keeps a twin `RETRY_BACKOFF_MS`, because
+/// an integration test crate cannot see `cfg(test)` items.
+#[cfg(test)]
+pub(crate) const CONTENDED_BACKOFF_MS: [u64; 6] = [30, 60, 120, 240, 480, 500];
+
+/// Retry a store call the way the documented contention contract tells every
+/// caller to: `Busy` and `Deadline` are retryable outcomes, so repeat the same
+/// arguments (same dedupe key or ACK IDs) with backoff.
+///
+/// Tests that drive a separate store handle, standing in for another process
+/// on the same file, use this: contention on a slow disk is expected behavior,
+/// not a test failure. The store's own fail-fast limits stay unchanged.
+#[cfg(test)]
+pub(crate) async fn retry_contended<T, Fut>(
+    mut operation: impl FnMut() -> Fut,
+) -> Result<T, NoticeError>
+where
+    Fut: Future<Output = Result<T, NoticeError>>,
+{
+    for delay in CONTENDED_BACKOFF_MS {
+        match operation().await {
+            Err(error @ (NoticeError::Busy | NoticeError::Deadline)) => {
+                eprintln!("store call returned {error:?}, retrying the same arguments");
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
+            outcome => return outcome,
+        }
+    }
+    operation().await
 }
 
 #[cfg(test)]
