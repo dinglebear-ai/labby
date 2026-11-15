@@ -3556,6 +3556,6 @@ mod tests {
                 .bytes,
             eli_content.as_bytes()
         );
-        assert!(generation.providers.collision_rejections().is_empty());
+        assert_eq!(generation.providers.collision_rejections().len(), 0);
     }
 }

@@ -48,7 +48,7 @@ fn oversized_entry_uri_never_enters_the_ownership_scan() {
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );
     assert!(owners.is_empty());
-    assert!(out.skills.is_empty());
+    assert_eq!(out.skills.len(), 0);
     assert_eq!(
         out.excluded.len(),
         1,
