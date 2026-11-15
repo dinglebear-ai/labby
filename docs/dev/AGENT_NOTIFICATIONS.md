@@ -251,6 +251,12 @@ script or your next ordinary call. Never replay a mutating script solely to
 recover a receipt. On a stdio bridge, local notice controls settle after the
 daemon returns an admitted Code Mode execution result, including execution
 errors. A daemon validation rejection leaves those local controls untouched.
+Because the script has already run, a bridge control that cannot settle does not
+fail the call. The result instead carries `notification_controls` with
+`status: "unsettled"`, the typed `kind`, and `retryable`, which is true for
+`rate_limited` and `timeout`. When it is true, repeat only the controls with
+the same ACK IDs. The field is omitted, like any receipt, when it would collide
+with a script field or exceed the response budget.
 
 ## Source ownership
 

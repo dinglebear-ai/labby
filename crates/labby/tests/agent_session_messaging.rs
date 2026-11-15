@@ -146,8 +146,7 @@ async fn message_rpc_with_retry(
 /// runner with slow fsync, contention can outlast a few short retries, so the
 /// fixture retries with backoff as the contract tells real callers to. The
 /// schedule is the fixture's own; it twins the lib's `CONTENDED_BACKOFF_MS`,
-/// which an integration crate cannot see. `receipt_missing` is a kind the
-/// fixture assigns itself, not a store error.
+/// which an integration crate cannot see.
 const RETRY_BACKOFF_MS: [u64; 6] = [30, 60, 120, 240, 480, 500];
 
 async fn retry_notice_request<T>(
@@ -159,7 +158,7 @@ async fn retry_notice_request<T>(
     for delay in RETRY_BACKOFF_MS {
         let reply = send(request.clone()).await;
         match retry_kind(&reply) {
-            Some(kind @ ("rate_limited" | "timeout" | "receipt_missing")) => {
+            Some(kind @ ("rate_limited" | "timeout")) => {
                 eprintln!("{label} returned {kind}, retrying the same request");
             }
             _ => return reply,
@@ -548,8 +547,9 @@ async fn session_messages_live_http_and_stdio() {
         "a rejected daemon request must not consume the ACK"
     );
     // Bridge-local controls settle after the daemon result; under contention
-    // they can miss their budget, and the response then omits the receipt. The
-    // contract says to repeat only the controls with a harmless script, which
+    // they can miss their budget, and the result then reports
+    // `notification_controls` as unsettled with a retryable kind. The contract
+    // says to repeat only the controls with a harmless script, which
     // `return 1` already is, and repeating an own ACK is idempotent.
     let accepted = retry_notice_request(
         "codemode ACK controls",
@@ -559,9 +559,7 @@ async fn session_messages_live_http_and_stdio() {
         async |request| claude.rpc("tools/call", request).await,
         |reply| {
             reply["error"]["data"]["kind"].as_str().or_else(|| {
-                let content = &reply["result"]["structuredContent"];
-                (content.is_object() && content["acknowledged_notifications"].is_null())
-                    .then_some("receipt_missing")
+                reply["result"]["structuredContent"]["notification_controls"]["kind"].as_str()
             })
         },
     )
