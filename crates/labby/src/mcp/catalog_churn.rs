@@ -92,10 +92,9 @@ impl Drop for InFlightToolCall {
         // `fetch_update` rather than `fetch_sub` so a double-drop bug can never
         // wrap the gauge to `usize::MAX` and make every later notification look
         // like it landed mid-call.
-        let _ =
-            IN_FLIGHT_TOOL_CALLS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_sub(1))
-            });
+        let _ = IN_FLIGHT_TOOL_CALLS.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            Some(current.saturating_sub(1))
+        });
     }
 }
 

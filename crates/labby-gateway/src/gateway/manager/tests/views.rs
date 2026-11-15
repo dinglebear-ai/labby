@@ -10,7 +10,10 @@ async fn clients_is_empty_without_a_wired_client_registry() {
     let path = dir.path().join("config.toml");
     let manager = GatewayManager::new(path, GatewayRuntimeHandle::default());
 
-    assert!(manager.clients().await.expect("clients").is_empty());
+    assert_eq!(
+        manager.clients().await.expect("clients"),
+        Vec::<crate::gateway::types::GatewayClientView>::new()
+    );
 }
 
 #[tokio::test]

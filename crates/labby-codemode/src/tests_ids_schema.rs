@@ -106,7 +106,7 @@ fn snippet_catalog_entry_projects_to_codemode_run() {
     assert_eq!(entry.id, "snippet::repo-summary");
     assert_eq!(entry.namespace, "snippet");
     assert!(entry.signature.contains("codemode.run"));
-    assert!(entry.dts.is_empty());
+    assert_eq!(entry.dts, "");
     assert_eq!(entry.safety, None);
     assert!(
         serde_json::to_value(&entry)

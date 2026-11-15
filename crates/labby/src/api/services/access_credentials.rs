@@ -182,7 +182,7 @@ async fn issue(
     .await
     {
         Ok(generation) => generation,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let input = IssueCredentialInput {
         actor_credential_id: source.credential_id,
@@ -247,7 +247,7 @@ async fn self_introspect(
     .await
     {
         Ok(generation) => generation,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match state
         .access_runtime
@@ -320,7 +320,7 @@ async fn revoke(
     .await
     {
         Ok(generation) => generation,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match state
         .access_runtime
@@ -375,7 +375,7 @@ async fn durable_generation(
     event_kind: &'static str,
     target: [u8; 32],
     generation: u64,
-) -> Result<i64, Response> {
+) -> Result<i64, Box<Response>> {
     match credential_generation_sql(generation) {
         Ok(generation) => Ok(generation),
         Err(error) => {
@@ -385,7 +385,7 @@ async fn durable_generation(
                 "credential integrity violation"
             );
             audit_denial(state, event_kind, "generation_out_of_range", target).await;
-            Err(unavailable())
+            Err(unavailable().into())
         }
     }
 }

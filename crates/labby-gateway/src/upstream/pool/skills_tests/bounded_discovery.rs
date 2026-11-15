@@ -66,7 +66,10 @@ async fn cached_query_search_rechecks_exposure_policy() {
     let narrowed =
         super::super::SepSkillProvider::new(pool, skills_config("up", Some(vec!["visible"])), None);
     let result = narrowed.search("hidden", 1).await.unwrap();
-    assert!(result.skills.is_empty());
+    assert_eq!(
+        result.skills,
+        Vec::<labby_runtime::skills::provider::SkillProviderEntry>::new()
+    );
     assert!(!result.incomplete);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
@@ -171,7 +174,10 @@ async fn bounded_discovery_limits_invalid_candidate_work() {
     let pool = catalog_pool_with_server("up", server).await;
     let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
     let result = provider.discover(&preview(1)).await.unwrap();
-    assert!(result.skills.is_empty());
+    assert_eq!(
+        result.skills,
+        Vec::<labby_runtime::skills::provider::SkillProviderEntry>::new()
+    );
     assert!(result.truncated);
     assert_eq!(
         result.excluded_count, 4,
@@ -504,7 +510,10 @@ async fn bounded_discovery_honors_proxy_opt_in() {
     config.proxy_skills = false;
     let provider = super::super::SepSkillProvider::new(pool, config, None);
     let result = provider.discover(&preview(1)).await.unwrap();
-    assert!(result.skills.is_empty());
+    assert_eq!(
+        result.skills,
+        Vec::<labby_runtime::skills::provider::SkillProviderEntry>::new()
+    );
     assert!(!result.truncated);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
 }

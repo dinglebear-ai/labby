@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn ignores_match_blocks_for_literal_aliases() {
         let raw = "Match user root\n    ForwardAgent no\n";
-        assert!(parse_ssh_config(raw).is_empty());
+        assert_eq!(parse_ssh_config(raw), Vec::<SshHostTarget>::new());
     }
 
     #[test]

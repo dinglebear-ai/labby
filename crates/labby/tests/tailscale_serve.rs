@@ -347,7 +347,7 @@ async fn funnel_refuses_non_oauth_before_calling_tailscale() {
                 .contains("requires OAuth")
         );
     }
-    assert!(fake.invocations().is_empty());
+    assert_eq!(fake.invocations(), "");
 }
 
 #[cfg(unix)]

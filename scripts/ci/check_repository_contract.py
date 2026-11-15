@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the pinned fleet contract with Labby's AGENTS-first index policy."""
+"""Run the pinned fleet contract with Labby's AGENTS-first index and toolchain policies."""
 
 from __future__ import annotations
 
@@ -7,8 +7,10 @@ import argparse
 import hashlib
 import importlib.util
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import sys
+import tomllib
 from types import ModuleType
 
 # The adapter is reviewed against this exact implementation. A fleet upgrade
@@ -27,6 +29,11 @@ LEGACY_MESSAGES = {
     "missing tracked symlink to CLAUDE.md",
     "must be index mode 120000 targeting CLAUDE.md",
 }
+# The pinned fleet checker requires exactly 1.97.1. Labby follows newer stable
+# releases, so this one finding is replaced by a stricter local rule: an exact
+# point release at or above ADR-0001's LLVM miscompilation floor.
+FLEET_TOOLCHAIN_MESSAGE = 'channel must equal "1.97.1"'
+TOOLCHAIN_FLOOR = (1, 97, 1)
 
 
 def git(repo: Path, *args: str) -> bytes:
@@ -85,6 +92,22 @@ def check_instruction_index(repo: Path) -> list[str]:
     return failures
 
 
+def check_toolchain_floor(repo: Path) -> list[str]:
+    """Require an exact x.y.z channel that is not below the ADR-0001 floor."""
+    try:
+        data = tomllib.loads((repo / "rust-toolchain.toml").read_text("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return ["rust-toolchain.toml: must be readable TOML"]
+    channel = data.get("toolchain", {}).get("channel")
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", channel) if isinstance(channel, str) else None
+    if match is None:
+        return ["rust-toolchain.toml: channel must be an exact x.y.z release"]
+    if tuple(int(part) for part in match.groups()) < TOOLCHAIN_FLOOR:
+        floor = ".".join(str(part) for part in TOOLCHAIN_FLOOR)
+        return [f"rust-toolchain.toml: channel must not be below {floor}"]
+    return []
+
+
 def load_fleet(path: Path) -> ModuleType:
     """Reject unknown implementations before executing the imported checker."""
     if hashlib.sha256(path.read_bytes()).hexdigest() != FLEET_SHA256:
@@ -111,11 +134,18 @@ def evaluate(repo: Path, fleet: ModuleType, profile: str, allow_arm64: bool) -> 
             and PurePosixPath(finding.path).name in {"AGENTS.md", "GEMINI.md"}
             and finding.message in LEGACY_MESSAGES
         )
-        if legacy:
+        toolchain = (
+            finding.check == "toolchain-pinned"
+            and finding.path == "rust-toolchain.toml"
+            and finding.message == FLEET_TOOLCHAIN_MESSAGE
+        )
+        if legacy or toolchain:
             replaced += 1
         else:
             failures.append(finding.render())
     failures.extend("instruction-index: " + message for message in check_instruction_index(repo))
+    if profile == "rust":
+        failures.extend("toolchain-floor: " + message for message in check_toolchain_floor(repo))
     return failures, replaced
 
 
@@ -133,7 +163,7 @@ def main() -> int:
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         print(f"repository contract failed: {error}", file=sys.stderr)
         return 1
-    print(f"AGENTS-first policy: replaced {replaced} legacy direction findings with strict Git-index validation")
+    print(f"Labby policy: replaced {replaced} fleet findings with strict Git-index and toolchain-floor validation")
     for failure in failures:
         print(failure, file=sys.stderr)
     if failures:

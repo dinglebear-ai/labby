@@ -51,7 +51,7 @@ details there and keep this file focused on rules for editing `.github/`.
   Changes below `docs/sessions/` or `docs/superpowers/` require the
   maintainer-applied `protected-docs-approved` label.
 - Preserve the MSRV command exactly:
-  `cargo +1.97.1 check --workspace --all-features --all-targets --locked`.
+  `cargo +1.99.1 check --workspace --all-features --all-targets --locked`.
 
 ## Workflow routing
 

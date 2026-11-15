@@ -83,7 +83,7 @@ pub(crate) fn code_mode_runtime_counters() -> CodeModeRuntimeCounters {
 }
 
 fn increment_saturating_counter(counter: &AtomicU64) -> u64 {
-    match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+    match counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
         Some(value.saturating_add(1))
     }) {
         Ok(previous) | Err(previous) => previous.saturating_add(1),

@@ -232,13 +232,12 @@ impl Manager {
                 tokio::time::timeout(Duration::from_secs(8), session.stop())
                     .await
                     .map_err(|_| PairingError)?;
-                Ok(())
             }
             Slot::Starting(cancel) => {
                 cancel.cancel();
-                Ok(())
             }
         }
+        Ok(())
     }
 }
 impl Drop for Manager {
@@ -361,7 +360,7 @@ pub(crate) mod tests {
                 .await
                 .is_err()
         );
-        assert!(manager.status().unwrap().is_empty());
+        assert_eq!(manager.status().unwrap(), Vec::<(String, &str)>::new());
     }
     #[tokio::test]
     async fn disabled_oauth_refuses_native_control_owner() {
@@ -406,6 +405,6 @@ pub(crate) mod tests {
             Reservation::acquire(manager.sessions.clone(), "starting".into()).unwrap();
         manager.stop("starting").await.unwrap();
         assert!(reservation.cancel.is_cancelled());
-        assert!(manager.status().unwrap().is_empty());
+        assert_eq!(manager.status().unwrap(), Vec::<(String, &str)>::new());
     }
 }

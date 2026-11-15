@@ -437,7 +437,7 @@ deployment_id = "catalog-depot"
             grants(&[("cp.example.com", "10.1.0.8")]),
             &no_env,
         );
-        assert!(ids(&one_host).is_empty());
+        assert_eq!(ids(&one_host), Vec::<&str>::new());
         assert_eq!(
             one_host.rejected,
             [RejectedArtifactSource {
@@ -493,7 +493,7 @@ deployment_id = "catalog-depot"
             NetworkPolicy::default(),
             &no_env,
         );
-        assert!(ids(&verdict).is_empty());
+        assert_eq!(ids(&verdict), Vec::<&str>::new());
         assert!(matches!(
             verdict.rejected[0].reason,
             SourceRejection::PinnedAddresses {
@@ -523,7 +523,7 @@ deployment_id = "catalog-depot"
             NetworkPolicy::default(),
             &no_env,
         );
-        assert!(ids(&verdict).is_empty());
+        assert_eq!(ids(&verdict), Vec::<&str>::new());
         assert_eq!(
             verdict.rejected,
             [RejectedArtifactSource {
@@ -607,7 +607,7 @@ deployment_id = "catalog-depot"
         };
         let verdict = admit_host_sources(&artifacts, &depot, &no_env);
         assert!(verdict.policy.is_none());
-        assert!(ids(&verdict).is_empty());
+        assert_eq!(ids(&verdict), Vec::<&str>::new());
         assert_eq!(verdict.rejected[0].reason, SourceRejection::HostPolicy);
     }
 

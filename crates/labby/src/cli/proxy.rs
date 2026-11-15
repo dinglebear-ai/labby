@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn proxy_accepts_no_command_for_config_discovery() {
         let args = parse(["proxy"]);
-        assert!(args.command.is_empty());
+        assert_eq!(args.command, Vec::<OsString>::new());
         assert!(args.mcp_json.is_none());
     }
 
@@ -876,7 +876,7 @@ mod tests {
         );
         assert!(preferences.validate().is_ok());
         let first_run = parse(["proxy", "--funnel"]);
-        assert!(first_run.command.is_empty());
+        assert_eq!(first_run.command, Vec::<OsString>::new());
         assert_eq!(
             first_run.resolve_preferences(&LabConfig::default()).auth,
             crate::proxy::config::ProxyAuthMode::Oauth

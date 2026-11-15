@@ -543,7 +543,7 @@ mod tests {
         }"#;
         let report = PublicRelayRegistryStore::parse_standalone_registry(raw)
             .expect("object registry should parse");
-        assert!(report.accepted.is_empty());
+        assert_eq!(report.accepted, Vec::<String>::new());
         assert_eq!(report.quarantined.len(), 1);
         assert_eq!(report.quarantined[0].machine_id, "devhost");
     }
@@ -609,7 +609,7 @@ mod tests {
         let report =
             PublicRelayRegistryStore::parse_standalone_registry(raw).expect("registry parses");
 
-        assert!(report.accepted.is_empty());
+        assert_eq!(report.accepted, Vec::<String>::new());
         assert_eq!(report.quarantined.len(), 1);
         assert_eq!(report.quarantined[0].machine_id, "bad/machine");
     }

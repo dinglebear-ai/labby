@@ -2171,13 +2171,13 @@ mod tests {
     fn provider_protocol_schema_is_populated_and_validated() {
         let fields = settings_fields();
         for field in &fields {
-            assert!(!field.label.trim().is_empty());
-            assert!(!field.description.trim().is_empty());
+            assert_ne!(field.label.trim(), "");
+            assert_ne!(field.description.trim(), "");
             if field.control == SettingsControl::Enum {
-                assert!(!field.options.is_empty());
+                assert_ne!(field.options, Vec::<SettingsOption>::new());
                 for option in &field.options {
-                    assert!(!option.label.trim().is_empty());
-                    assert!(!option.value.is_empty());
+                    assert_ne!(option.label.trim(), "");
+                    assert_ne!(option.value, "");
                 }
             }
         }

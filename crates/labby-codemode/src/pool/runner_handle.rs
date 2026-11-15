@@ -598,7 +598,7 @@ mod tests {
         let captured = buffer.take_since_and_clear(mark).await;
 
         assert_eq!(captured, ["during-one", "during-two"]);
-        assert!(buffer.state.lock().await.lines.is_empty());
+        assert_eq!(buffer.state.lock().await.lines, Vec::<String>::new());
     }
 
     #[tokio::test]
@@ -613,7 +613,7 @@ mod tests {
 
         buffer.clear().await;
 
-        assert!(buffer.state.lock().await.lines.is_empty());
+        assert_eq!(buffer.state.lock().await.lines, Vec::<String>::new());
     }
 
     #[tokio::test]
@@ -629,7 +629,7 @@ mod tests {
         buffer.clear().await;
 
         let state = buffer.state.lock().await;
-        assert!(state.lines.is_empty());
+        assert_eq!(state.lines, Vec::<String>::new());
         assert_eq!(state.total_bytes, 0);
         assert!(!state.capped);
     }

@@ -829,7 +829,7 @@ where
         return Err(BoundAccessContextError::Unavailable);
     }
     let id = NEXT_CONTEXT_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
         .map(BoundAccessContextId)
@@ -2174,7 +2174,7 @@ mod tests {
             Some(identity.clone()),
         )
         .await;
-        assert!(unavailable_result.tools.is_empty());
+        assert_eq!(unavailable_result.tools, Vec::<rmcp::model::Tool>::new());
         assert!(unavailable_result.next_cursor.is_none());
         assert_ne!(
             serde_json::to_value(&legacy_result).unwrap(),
@@ -2690,7 +2690,7 @@ mod tests {
             )
             .await
             .expect("expired Project binding fails closed without revealing rows");
-        assert!(expired.tools.is_empty());
+        assert_eq!(expired.tools, Vec::<rmcp::model::Tool>::new());
         assert!(expired.next_cursor.is_none());
         assert_eq!(expired.ttl_ms, Some(0));
         assert_eq!(expired.cache_scope, Some(rmcp::model::CacheScope::Private));

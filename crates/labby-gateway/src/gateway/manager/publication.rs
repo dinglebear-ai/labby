@@ -30,7 +30,7 @@ const PUBLICATION_ATTEMPTS: usize = 3;
 
 pub(super) fn next_runtime_config_generation() -> u64 {
     NEXT_RUNTIME_CONFIG_GENERATION
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
             generation.checked_add(1)
         })
         .expect("gateway runtime-config generation exhausted")

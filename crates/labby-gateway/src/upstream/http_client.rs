@@ -1269,7 +1269,7 @@ mod tests {
             Err(StreamableHttpError::InsufficientScope(_))
         ));
         assert_eq!(manager.required_scope_upgrade("alice"), vec!["files:write"]);
-        assert!(manager.required_scope_upgrade("bob").is_empty());
+        assert_eq!(manager.required_scope_upgrade("bob"), Vec::<String>::new());
         let consent = manager.begin_authorization("alice").await.unwrap();
         let url = url::Url::parse(&consent.authorization_url).unwrap();
         let query = url.query_pairs().collect::<HashMap<_, _>>();
@@ -1293,7 +1293,10 @@ mod tests {
             let _writer = cache.invalidation_barrier().write_owned().await;
             cache.advance_subject_epoch("scoped", "alice");
         }
-        assert!(manager.required_scope_upgrade("alice").is_empty());
+        assert_eq!(
+            manager.required_scope_upgrade("alice"),
+            Vec::<String>::new()
+        );
         let _result = client
             .post_message(
                 format!("{}/mcp", server.uri()).into(),
@@ -1303,7 +1306,10 @@ mod tests {
                 HashMap::new(),
             )
             .await;
-        assert!(manager.required_scope_upgrade("alice").is_empty());
+        assert_eq!(
+            manager.required_scope_upgrade("alice"),
+            Vec::<String>::new()
+        );
     }
 
     #[tokio::test]

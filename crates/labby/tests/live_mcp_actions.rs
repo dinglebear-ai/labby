@@ -1053,8 +1053,8 @@ fn every_mcp_visible_classification_has_one_bounded_execution_plan() {
             ScenarioKind::ExcludedWithReason => "reviewed_exclusion",
         };
         assert!(plans.insert(intent.key(), disposition).is_none());
-        assert!(!intent.scenario_id.is_empty());
-        assert!(!intent.fixture_params.fixture.is_empty());
+        assert_ne!(intent.scenario_id, "");
+        assert_ne!(intent.fixture_params.fixture, "");
     }
     assert_eq!(plans.len(), case_count);
 }

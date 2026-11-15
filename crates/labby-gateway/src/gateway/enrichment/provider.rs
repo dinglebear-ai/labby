@@ -394,10 +394,9 @@ fn allow_provider_env(provider: GatewayEnrichmentProvider, command: &mut Command
             }
         }
         GatewayEnrichmentProvider::Codex => {
-            for key in ["OPENAI_API_KEY"] {
-                if let Ok(value) = std::env::var(key) {
-                    command.env(key, value);
-                }
+            let key = "OPENAI_API_KEY";
+            if let Ok(value) = std::env::var(key) {
+                command.env(key, value);
             }
         }
         GatewayEnrichmentProvider::Deterministic => {}

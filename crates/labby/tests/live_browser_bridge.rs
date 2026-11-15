@@ -532,7 +532,7 @@ async fn pairing_creation_is_rate_limited_per_client() {
         None | Some(Err(_) | Ok(tokio_tungstenite::tungstenite::Message::Close(_))) => {}
         Some(Ok(message)) => panic!("rate-limited pairing unexpectedly received {message:?}"),
     }
-    assert!(guard.finish().await.failures.is_empty());
+    assert_eq!(guard.finish().await.failures, Vec::<String>::new());
 }
 
 #[tokio::test]
@@ -589,7 +589,7 @@ async fn global_socket_admission_is_bounded_across_trusted_client_buckets() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     drop(sockets);
-    assert!(guard.finish().await.failures.is_empty());
+    assert_eq!(guard.finish().await.failures, Vec::<String>::new());
 }
 
 #[tokio::test]
@@ -645,5 +645,5 @@ async fn idle_socket_admission_is_bounded_per_client_and_released_after_disconne
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     drop(sockets);
-    assert!(guard.finish().await.failures.is_empty());
+    assert_eq!(guard.finish().await.failures, Vec::<String>::new());
 }

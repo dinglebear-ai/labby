@@ -433,13 +433,15 @@ impl CodeModeHost for GatewayManager {
                 .call_personal_oauth_from_code_mode(
                     id, upstream, tool, params, caller, surface, scope,
                 )
-                .await;
+                .await
+                .map_err(|error| *error);
         }
 
         if upstream == crate::core_provider::CORE_PROVIDER_NAMESPACE {
             return self
                 .call_core_provider(tool, params, caller, surface, scope, ctx)
-                .await;
+                .await
+                .map_err(|error| *error);
         }
         let upstream = self.canonical_code_mode_upstream(upstream, scope).await?;
         let upstream = upstream.as_str();
@@ -1142,7 +1144,7 @@ impl GatewayManager {
         caller: &CodeModeCaller,
         surface: CodeModeSurface,
         scope: &ToolScope,
-    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+    ) -> Result<ToolCallOutcome, Box<CodeModeCallError>> {
         let denied = || {
             CodeModeCallError::new(
                 "forbidden",
@@ -1157,7 +1159,7 @@ impl GatewayManager {
             || scope.is_read_only()
             || !scope.allows(upstream, tool)
         {
-            return Err(denied());
+            return Err(Box::new(denied()));
         }
         let token = caller.authority_token().ok_or_else(denied)?;
         let provider = self
@@ -1179,11 +1181,10 @@ impl GatewayManager {
                     .iter()
                     .any(|action| action.name() == "gateway.oauth.authorize")
         }) {
-            return Err(CodeModeCallError::new(
-                "not_found",
-                "Personal OAuth action is unavailable",
-            )
-            .with_tool(id.to_string()));
+            return Err(Box::new(
+                CodeModeCallError::new("not_found", "Personal OAuth action is unavailable")
+                    .with_tool(id.to_string()),
+            ));
         }
         let data = provider.authorize(self, token, params).await?;
         Ok(ToolCallOutcome {
@@ -1206,7 +1207,7 @@ impl GatewayManager {
         surface: CodeModeSurface,
         scope: &ToolScope,
         ctx: labby_codemode::ExecCtx,
-    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+    ) -> Result<ToolCallOutcome, Box<CodeModeCallError>> {
         let provider = self
             .core_provider_client
             .as_ref()
@@ -1405,7 +1406,7 @@ impl GatewayManager {
             None,
         )
         .await
-        .map_err(CodeModeCallError::into_tool_error)
+        .map_err(|error| CodeModeCallError::into_tool_error(*error))
     }
 
     pub(crate) async fn execute_upstream_tool_checked(
@@ -1469,7 +1470,7 @@ impl GatewayManager {
             correlation,
         )
         .await
-        .map_err(CodeModeCallError::into_contract_tool_error)
+        .map_err(|error| CodeModeCallError::into_contract_tool_error(*error))
     }
 
     async fn execute_upstream_tool_checked_inner(
@@ -1486,7 +1487,7 @@ impl GatewayManager {
         destructive_denial_kind: &'static str,
         trace_context: Option<&TraceContext>,
         correlation: Option<&LabbyTraceCorrelation>,
-    ) -> Result<CheckedToolCallOutcome, CodeModeCallError> {
+    ) -> Result<CheckedToolCallOutcome, Box<CodeModeCallError>> {
         let id = format!("{upstream}::{tool}");
         let arguments =
             upstream_arguments(upstream, tool, params).map_err(CodeModeCallError::from)?;
@@ -1501,7 +1502,8 @@ impl GatewayManager {
             )
             .with_tool(id)
             .with_origin(CodeModeErrorOrigin::Policy)
-            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+            .into());
         }
         let previewed_tool = self
             .resolve_code_mode_upstream_tool(upstream, tool, Some(owner), oauth_subject)
@@ -1511,7 +1513,7 @@ impl GatewayManager {
             CapabilityContract::execution_hash_from_upstream_tool(&previewed_tool)
                 .map_err(CodeModeCallError::from)?;
         if previewed_contract_hash != expected_contract_hash {
-            return Err(contract_changed_call_error(&id));
+            return Err(contract_changed_call_error(&id).into());
         }
         if previewed_tool.destructive && !destructive_allowed {
             return Err(CodeModeCallError::new(
@@ -1520,7 +1522,8 @@ impl GatewayManager {
             )
             .with_tool(id.clone())
             .with_origin(CodeModeErrorOrigin::Policy)
-            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+            .into());
         }
         self.ensure_upstream_tool_runtime_ready(upstream, Some(owner), oauth_subject)
             .await
@@ -1533,7 +1536,8 @@ impl GatewayManager {
             )
             .with_tool(id)
             .with_origin(CodeModeErrorOrigin::UpstreamTransport)
-            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+            .into());
         };
         if !config.code_mode.enabled {
             return Err(CodeModeCallError::new(
@@ -1542,7 +1546,8 @@ impl GatewayManager {
             )
             .with_tool(id)
             .with_origin(CodeModeErrorOrigin::Discovery)
-            .with_side_effects(CodeModeSideEffectRisk::NoneExpected));
+            .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+            .into());
         }
         let upstream_config = config
             .upstream
@@ -1662,7 +1667,7 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         caller_auth: Option<PropagatedCallerAuth>,
         caller_scope: Option<PropagatedCallerUpstreamScope>,
-    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+    ) -> Result<ToolCallOutcome, Box<CodeModeCallError>> {
         let id = format!("{upstream}::{tool}");
         let mut upstream_params = CallToolRequestParams::new(tool.to_string());
         upstream_params.arguments = Some(arguments);
@@ -1708,7 +1713,7 @@ impl GatewayManager {
         tool: &str,
         safety: CodeModeToolSafetyHints,
         call_result: Option<Result<CallToolResult, CapabilityCallError>>,
-    ) -> Result<ToolCallOutcome, CodeModeCallError> {
+    ) -> Result<ToolCallOutcome, Box<CodeModeCallError>> {
         let id = format!("{upstream}::{tool}");
         match call_result {
             Some(Ok(result)) => {
@@ -1718,7 +1723,7 @@ impl GatewayManager {
                 // outcome or payload representation.
                 pool.record_success(upstream).await;
                 if result.is_error == Some(true) {
-                    return Err(completed_tool_error(&id, &result, safety));
+                    return Err(completed_tool_error(&id, &result, safety).into());
                 }
                 let ui = extract_ui_link(&result);
                 if let Some(ui) = ui.as_ref() {
@@ -1760,12 +1765,13 @@ impl GatewayManager {
                     _ => {
                         CodeModeCallError::upstream_transport_classified(id, kind, message, safety)
                     }
-                })
+                }
+                .into())
             }
             None => {
                 pool.record_failure(upstream, format!("upstream `{upstream}` is not connected"))
                     .await;
-                Err(upstream_not_connected_call_error(&id))
+                Err(upstream_not_connected_call_error(&id).into())
             }
         }
     }
@@ -2458,7 +2464,7 @@ mod tests {
                 &ToolScope::default(),
             )
             .await;
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<CatalogDescriptor>::new());
     }
 
     struct StallingSkillProvider;
@@ -2522,7 +2528,7 @@ mod tests {
         .await
         .expect("Skill metadata timeout must not consume the Code Mode request deadline");
 
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::<CatalogDescriptor>::new());
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
@@ -2958,13 +2964,9 @@ mod tests {
             .await
             .unwrap();
         // Buffered only — nothing on disk yet (proves no I/O on the record path).
-        assert!(
-            mgr.step_journal()
-                .unwrap()
-                .load("exec_t1")
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            mgr.step_journal().unwrap().load("exec_t1").await.unwrap(),
+            Vec::<crate::codemode_journal::StepJournalRow>::new()
         );
         // Flush at the run boundary stamps owner identity and persists.
         mgr.flush_step_journal(
@@ -3177,14 +3179,14 @@ mod tests {
     #[test]
     fn mcp_error_data_payload_is_preserved_and_redacted() {
         let err = CapabilityCallError::Mcp {
-            data: ErrorData::invalid_params(
+            data: Box::new(ErrorData::invalid_params(
                 "invalid arguments",
                 Some(serde_json::json!({
                     "param": "query",
                     "valid": ["movie.search", "movie.get"],
                     "token": "sk-abcdefghij0123456789extra"
                 })),
-            ),
+            )),
             message: "upstream call failed: invalid arguments".to_string(),
         };
 
@@ -3208,7 +3210,11 @@ mod tests {
     #[test]
     fn unmapped_mcp_error_kind_includes_numeric_json_rpc_code() {
         let err = CapabilityCallError::Mcp {
-            data: ErrorData::new(ErrorCode(-32000), "implementation defined failure", None),
+            data: Box::new(ErrorData::new(
+                ErrorCode(-32000),
+                "implementation defined failure",
+                None,
+            )),
             message: "upstream call failed".to_string(),
         };
 

@@ -1714,10 +1714,9 @@ mod tests {
             .collect::<Vec<_>>();
         let started = tokio::time::Instant::now();
 
-        assert!(
-            pool.subject_scoped_tools(&configs, "alice")
-                .await
-                .is_empty()
+        assert_eq!(
+            pool.subject_scoped_tools(&configs, "alice").await,
+            Vec::<(String, Vec<rmcp::model::Tool>)>::new()
         );
         assert!(started.elapsed() < Duration::from_millis(100));
     }
@@ -1873,13 +1872,13 @@ mod tests {
                 .await
                 .is_empty()
         );
-        assert!(
+        assert_eq!(
             pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
                 .await
                 .into_iter()
                 .map(|tool| tool.tool.name.to_string())
-                .collect::<Vec<_>>()
-                .is_empty()
+                .collect::<Vec<_>>(),
+            Vec::<String>::new()
         );
     }
 
@@ -1905,13 +1904,13 @@ mod tests {
                 .await
                 .is_empty()
         );
-        assert!(
+        assert_eq!(
             pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
                 .await
                 .into_iter()
                 .map(|tool| tool.tool.name.to_string())
-                .collect::<Vec<_>>()
-                .is_empty()
+                .collect::<Vec<_>>(),
+            Vec::<String>::new()
         );
     }
 
@@ -1940,13 +1939,13 @@ mod tests {
                 .is_empty(),
             "an ambiguous app tool name must not advertise an arbitrary upstream descriptor"
         );
-        assert!(
+        assert_eq!(
             pool.cached_mcp_app_tools_allowed(None, &[], None, MAX_UPSTREAM_TOOLS)
                 .await
                 .into_iter()
                 .map(|tool| tool.tool.name.to_string())
-                .collect::<Vec<_>>()
-                .is_empty()
+                .collect::<Vec<_>>(),
+            Vec::<String>::new()
         );
     }
 
