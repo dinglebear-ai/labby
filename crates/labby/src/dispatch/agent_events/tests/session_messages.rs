@@ -246,7 +246,10 @@ async fn late_subscription_commit_keeps_current_authority() {
         let store = NoticeStore::open_at(root.path()).unwrap();
         store
             .run_event(move |db| {
-                db.busy_timeout(Duration::from_secs(1))?;
+                // Outlasts the 250 ms work deadline plus the next request's
+                // 250 ms admission wait, so the blocked write is still waiting
+                // for this lock when the test commits it.
+                db.busy_timeout(Duration::from_secs(3))?;
                 if rollback {
                     db.execute_batch(
                         "CREATE TRIGGER forced_rejection BEFORE INSERT ON agent_event_subscriptions

@@ -404,12 +404,13 @@ async fn notice_production_late_admission_keeps_the_full_work_budget() {
     let store = NoticeStore::memory().unwrap();
     let held = Arc::clone(&store.permit).acquire_owned().await.unwrap();
     let release = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(135)).await;
         drop(held);
     });
+    // 135 + 135 ms exceeds one 250 ms budget but fits two, with margin each.
     let outcome = store
         .run(|_| {
-            std::thread::sleep(Duration::from_millis(150));
+            std::thread::sleep(Duration::from_millis(135));
             Ok(())
         })
         .await;

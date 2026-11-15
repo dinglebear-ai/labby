@@ -417,7 +417,7 @@ impl NoticeStore {
 
     /// Bounded store operations. A call waits at most `DB_BUDGET` for the
     /// single permit, then gives the admitted work its own `DB_BUDGET`. Keeping
-    /// the budgets separate means `Busy` always says the work never ran, while
+    /// the budgets separate means `Busy` always says nothing committed, while
     /// `Deadline` is reserved for work that started and may still commit.
     ///
     /// Background passes usually hold the permit briefly, so a request that
