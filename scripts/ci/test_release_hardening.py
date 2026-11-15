@@ -69,17 +69,22 @@ def resolve_arm_baseline(releases: list, merged: list[str], candidate: str = "v2
 class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_pr_arm64_smoke_uses_exact_head_and_cannot_publish(self):
         workflow = yaml.load((ROOT / '.github/workflows/arm64-package-smoke.yml').read_text(), Loader=yaml.BaseLoader)
-        self.assertEqual(['pull_request'], list(workflow['on']))
+        # Pull requests smoke ARM64 only for packaging, toolchain, dependency,
+        # and native-build inputs; every merge to main smokes it regardless.
+        self.assertEqual(['pull_request', 'push', 'workflow_dispatch'], list(workflow['on']))
+        self.assertEqual(['main'], workflow['on']['push']['branches'])
         paths = set(workflow['on']['pull_request']['paths'])
-        for build_input in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'crates/**', '.config/**', 'apps/web/**', 'docs/**', 'plugins/**', '.github/actions/build-gateway-admin/**'):
+        for build_input in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'crates/*/Cargo.toml', 'crates/*/build.rs', '.github/actions/build-gateway-admin/**', '.github/actions/setup-rust-kache/**', '.github/workflows/release.yml'):
             self.assertIn(build_input, paths)
+        for broad in ('crates/**', 'docs/**', 'plugins/**', 'scripts/**'):
+            self.assertNotIn(broad, paths)
         self.assertEqual({'contents': 'read'}, workflow['permissions'])
         job = workflow['jobs']['package-smoke']
         self.assertEqual('ubuntu-24.04-arm', job['runs-on'])
         steps = job['steps']
         checkout = steps[0]
-        self.assertEqual('${{ github.event.pull_request.head.repo.full_name }}', checkout['with']['repository'])
-        self.assertEqual('${{ github.event.pull_request.head.sha }}', checkout['with']['ref'])
+        self.assertEqual('${{ github.event.pull_request.head.repo.full_name || github.repository }}', checkout['with']['repository'])
+        self.assertEqual('${{ github.event.pull_request.head.sha || github.sha }}', checkout['with']['ref'])
         self.assertEqual('false', checkout['with']['persist-credentials'])
         run_steps = '\n'.join(step.get('run', '') for step in steps)
         self.assertIn('test "$(uname -m)" = aarch64', run_steps)

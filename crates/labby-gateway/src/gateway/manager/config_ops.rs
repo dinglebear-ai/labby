@@ -591,9 +591,8 @@ impl GatewayManager {
         }
 
         let mcp_ui_changed = old_mcp_ui_enabled != next.mcp_ui_enabled;
-        let mut previous_runtime = previous.clone();
-        previous_runtime.mcp_ui_enabled = next.mcp_ui_enabled;
-        let execution_runtime_changed = previous_runtime != next;
+        let advertised_surface_changed = previous.advertised_surface_differs(&next);
+        let execution_runtime_changed = previous.execution_differs(&next);
         cfg.code_mode = next.clone();
 
         if execution_runtime_changed {
@@ -602,13 +601,14 @@ impl GatewayManager {
             self.commit_config_and_reload(_mutation_guard, durable_previous, cfg, origin, owner)
                 .await?;
         } else {
-            // UI visibility is transport metadata, not an upstream-pool input. A
-            // UI-only toggle must never cold-connect or rebuild gateway upstreams.
+            // Entry-point visibility is transport metadata, not an upstream-pool
+            // input. A visibility-only toggle must never cold-connect or rebuild
+            // gateway upstreams.
             self.persist_config_owned(_mutation_guard, cfg).await?;
         }
 
         self.code_mode_app_state.set_enabled(next.mcp_ui_enabled);
-        if mcp_ui_changed {
+        if advertised_surface_changed {
             let notification_source = if origin == Some(SOURCE_MCP_CALL_MCP_APP) {
                 SOURCE_MCP_CALL_MCP_APP
             } else {
@@ -617,7 +617,7 @@ impl GatewayManager {
             self.notify_catalog_changes(
                 &GatewayCatalogDiff {
                     tools_changed: true,
-                    resources_changed: true,
+                    resources_changed: mcp_ui_changed,
                     prompts_changed: false,
                 },
                 notification_source,
@@ -632,6 +632,7 @@ impl GatewayManager {
             previous = old_enabled,
             mcp_ui_enabled = next.mcp_ui_enabled,
             previous_mcp_ui_enabled = old_mcp_ui_enabled,
+            read_tool_enabled = next.read_tool_enabled,
             execution_runtime_changed,
             timeout_ms = next.timeout_ms,
             max_response_bytes = next.max_response_bytes,

@@ -426,7 +426,11 @@ harness; a durable event-store deployment would be a separate mode.
 
 ## CI and Maintenance
 
-The `MCP 2026-07-28 conformance` job is part of `ci-gate`. JavaScript
+The `MCP 2026-07-28 conformance` job is part of `ci-gate`. It runs as two
+lanes, `auth` and `protocol`, on pull requests that change MCP, auth,
+transport, Runtime, upstream, or pinned conformance inputs, and on every main
+push and nightly run that changes Rust (see
+[CI/CD: pull-request scope](../runtime/CICD.md#pull-request-scope-and-extended-suites)). JavaScript
 dependency installation is serialized before scenarios start. The production
 rmcp dependency and upstream fixture remain explicit pins even when they match;
 adopt version changes together only after reviewing the dated fixture baseline,

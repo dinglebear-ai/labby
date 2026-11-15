@@ -3,12 +3,17 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
+/// Stack for the runtime thread and every tokio worker. Debug builds of the
+/// Code Mode call path (MCP dispatch → runner → upstream fan-out → result
+/// shaping) need about 2 MiB on their own, which is tokio's default worker
+/// stack, so a serve-mode request could abort the daemon with a stack overflow.
 const CLI_STACK_SIZE: usize = 8 * 1024 * 1024;
 const RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 fn run() -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .thread_stack_size(CLI_STACK_SIZE)
         .build()
     {
         Ok(runtime) => runtime,

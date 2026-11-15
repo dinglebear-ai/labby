@@ -4021,6 +4021,7 @@ Commands:
   enable    Enable the gateway codemode MCP surface
   disable   Disable the gateway codemode MCP surface
   ui        Manage the explicit Code Mode MCP App UI while keeping text execution available
+  read      Manage the read-only `codemode_read` MCP tool while keeping `codemode` available
   run       Execute a sandboxed JavaScript snippet that calls the typed `codemode.<upstream>.<tool>` helpers (or `callTool` directly)
   hints     Preview and approve upstream metadata hints
 
@@ -4529,6 +4530,167 @@ Options:
 Disable the explicit Code Mode MCP App UI without disabling Code Mode
 
 Usage: labby code ui disable [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code read`
+
+```text
+Manage the read-only `codemode_read` MCP tool while keeping `codemode` available
+
+Usage: labby code read [OPTIONS] <COMMAND>
+
+Commands:
+  status   Read whether the `codemode_read` MCP tool is enabled
+  enable   Advertise and accept the `codemode_read` MCP tool
+  disable  Hide and reject the `codemode_read` MCP tool without disabling Code Mode
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code read status`
+
+```text
+Read whether the `codemode_read` MCP tool is enabled
+
+Usage: labby code read status [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code read enable`
+
+```text
+Advertise and accept the `codemode_read` MCP tool
+
+Usage: labby code read enable [OPTIONS]
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby code read disable`
+
+```text
+Hide and reject the `codemode_read` MCP tool without disabling Code Mode
+
+Usage: labby code read disable [OPTIONS]
 
 Options:
       --json

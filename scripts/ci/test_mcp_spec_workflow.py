@@ -51,7 +51,7 @@ class McpSpecWorkflowTests(unittest.TestCase):
 
     def test_receipts_and_coverage_gaps_are_always_retained(self) -> None:
         upload = self.step("Preserve specification coverage gaps")
-        self.assertEqual(upload["if"], "always()")
+        self.assertEqual(upload["if"], "${{ always() && matrix.lane == 'protocol' }}")
         self.assertEqual(upload["with"]["name"], "mcp-spec-compliance")
         self.assertEqual(upload["with"]["path"], "target/mcp-spec-compliance")
         self.assertEqual(upload["with"]["if-no-files-found"], "warn")

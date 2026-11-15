@@ -1920,6 +1920,12 @@
               "description": "Whether the gateway advertises codemode_ui and its MCP App resources"
             },
             {
+              "name": "read_tool_enabled",
+              "ty": "boolean",
+              "required": false,
+              "description": "Whether the gateway advertises and accepts the read-only codemode_read tool"
+            },
+            {
               "name": "trace_params",
               "ty": "boolean",
               "required": false,

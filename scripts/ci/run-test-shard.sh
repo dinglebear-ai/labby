@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Run one target-selecting shard of the workspace or gateway-only test suite.
+# Run one shard of the workspace or gateway-only test suite.
 #
-# Shards select a small Cargo target set first: nextest compiles every selected
-# target before applying test filters, so a hash partition over the whole
-# workspace would still link all of `crates/labby/tests` on every runner. The
-# integration shards apply one additional filter only to de-duplicate shared
-# support-harness tests after the target set is bounded.
+# `archive` (CI's all-features suite) executes a prebuilt nextest archive from
+# NEXTEST_ARCHIVE and compiles nothing, so every shard can hash-partition the
+# whole test set. It extracts into the checkout so compile-time paths such as
+# CARGO_BIN_EXE_* and CARGO_MANIFEST_DIR stay valid.
+#
+# The compiling suites (`all-features`, `gateway-only`) select a small Cargo
+# target set first: nextest compiles every selected target before applying
+# test filters, so a hash partition over the whole workspace would still link
+# all of `crates/labby/tests` on every runner.
+#
+# Every integration selection de-duplicates the shared support-harness tests:
+# `support/live_labby.rs` is embedded into many integration binaries, so its
+# internal harness tests run only in the dedicated live_process_harness target.
 set -euo pipefail
 
 shard="${1:-}"
@@ -13,12 +21,65 @@ suite="${2:-all-features}"
 labby_integration_shards=5
 unit_shards=4
 
+harness_dedup='not test(live_labby::) | binary(=live_process_harness)'
+
 usage() {
-  echo "usage: $0 <unit-1..${unit_shards}|labby-int-1..${labby_integration_shards}|crates> [all-features|gateway-only]" >&2
+  echo "usage: $0 <unit-1..${unit_shards}|labby-int-1..${labby_integration_shards}|crates|migrations> [all-features|gateway-only|archive]" >&2
+  echo "       $0 doctests" >&2
   exit 64
 }
 
+shard_index() {
+  local index="$1" count="$2"
+  case "$index" in
+    ''|*[!0-9]*) usage ;;
+  esac
+  if [ "$index" -lt 1 ] || [ "$index" -gt "$count" ]; then
+    usage
+  fi
+  printf '%s\n' "$index"
+}
+
 [ -n "$shard" ] || usage
+
+if [ "$shard" = doctests ]; then
+  # Rustdoc's strict doc build gates separately; this executes the examples.
+  RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings" \
+    cargo test --doc --workspace --all-features --locked
+  exit 0
+fi
+
+if [ "$suite" = archive ]; then
+  archive="${NEXTEST_ARCHIVE:-}"
+  [ -f "$archive" ] || { echo "NEXTEST_ARCHIVE must name the nextest archive file (got '${archive}')" >&2; exit 64; }
+  run_archive() {
+    cargo nextest run --archive-file "$archive" --workspace-remap . \
+      --extract-to . --extract-overwrite --profile ci "$@"
+  }
+  case "$shard" in
+    unit-*)
+      index="$(shard_index "${shard#unit-}" "$unit_shards")"
+      run_archive -E 'kind(lib) | kind(proc-macro) | kind(bin)' \
+        --partition "hash:${index}/${unit_shards}"
+      ;;
+    labby-int-*)
+      index="$(shard_index "${shard#labby-int-}" "$labby_integration_shards")"
+      run_archive -E "package(labby) & kind(test) & (${harness_dedup})" \
+        --partition "hash:${index}/${labby_integration_shards}"
+      ;;
+    crates)
+      run_archive -E 'not package(labby) & kind(test)'
+      ;;
+    migrations)
+      run_archive -E 'package(labby) & kind(lib) & test(access::migrations::)'
+      ;;
+    *)
+      usage
+      ;;
+  esac
+  exit 0
+fi
+
 case "$suite" in
   all-features)
     common=(--all-features --locked --profile ci)
@@ -72,16 +133,12 @@ case "$shard" in
     # shared tests only in the dedicated live_process_harness target; every
     # binary's actual product tests still run normally. This removes duplicate
     # process supervisors and keeps the shard fast without weakening coverage.
-    cargo nextest run -p labby "${common[@]}" "${targets[@]}" \
-      -E 'not test(live_labby::) | binary(=live_process_harness)'
+    cargo nextest run -p labby "${common[@]}" "${targets[@]}" -E "$harness_dedup"
     ;;
   crates)
     [ "$suite" = all-features ] || usage
-    # Integration tests of the extracted crates, then the workspace doctests
-    # that used to run inside the blocking Rustdoc job.
+    # Integration tests of the extracted crates. Doctests are `doctests`.
     cargo nextest run --workspace --exclude labby "${common[@]}" --test '*'
-    RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings" \
-      cargo test --doc --workspace --all-features --locked
     ;;
   *)
     usage
