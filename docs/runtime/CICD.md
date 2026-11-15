@@ -1,12 +1,12 @@
 ---
 title: "CI/CD"
 created: "2026-07-30"
-updated: "2026-10-25"
+updated: "2026-11-13"
 ---
 
 # CI/CD
 
-Last updated: 2026-10-25
+Last updated: 2026-11-13
 
 This document is the authoritative contract for CI, release, and artifact delivery in Labby. All pipeline implementations must conform to this spec.
 
@@ -67,7 +67,12 @@ the original execution status. The separate `verification-report.yml` PR-comment
 publisher is opt-in, disabled by default, fork-excluding and does not execute
 checkout code with its write token. No current caller enables publication.
 
-The unconditional `verification-conformance.yml` call is required by `ci-gate`.
+The `verification-conformance.yml` call is required by `ci-gate` whenever it
+is routed: on pull requests that change its `lifecycle_conformance` inputs
+(the browser bridge, the HTTP/WebSocket API, `labby-gateway`, `labby-model`,
+the conformance test and fixtures, its validators, or the verification
+toolkit outside `tools/verification/conformance/`), and on every main push
+and nightly run that changes Rust.
 It builds the real product, lifecycle test target, and isolated verifier under
 a separate 20-minute cap, then runs the controlled HTTP/WebSocket/owned-audit
 conformance suite under a five-minute process timeout with five-second kill
@@ -241,6 +246,46 @@ The rmcp dependency is constrained by exact version and immutable Git revision
 in Cargo metadata, so the ordinary manifest, lockfile, security, and conformance checks cover SDK
 changes without a copied vendor tree or a separate vendor-approval workflow.
 
+## Pull-request scope and extended suites
+
+Pull requests run the checks that catch most regressions at the lowest cost.
+Duplicated or slow suites run on the merge path instead. The `extended` routing
+key is `true` for pushes to main, the nightly schedule, and manual dispatch,
+and `false` for pull requests. Extended Rust jobs also require their ordinary
+Rust category, so a documentation-only push to main does not rerun them.
+
+| Suite | Pull request | Main push, nightly, dispatch |
+|-------|--------------|-----------------------------|
+| Gateway-only runtime shards | `gateway-slice-check` compiles every gateway-only target | full nine-shard suite |
+| MCP focused regressions | covered by the `test` shards that already contain every filter | named six-shard regression run |
+| Feature and extracted-crate slices, MSRV | only when a Cargo manifest, `.cargo/`, `clippy.toml`, the toolchain pin, or the slice script changes (`rust_features`) | every Rust change |
+| macOS installer contracts | only for installer, updater, and recovery inputs (`installer`) | every Rust change |
+| MCP conformance (`auth`, `protocol`) | only for MCP, auth, transport, Runtime, upstream, and pinned evidence inputs (`mcp_conformance`) | every Rust change |
+| Lifecycle implementation conformance | only for `lifecycle_conformance` inputs | every Rust change |
+| Code Mode runner smoke | only for Code Mode sources (`codemode`) | every Rust change |
+| Rustdoc and generated docs | Rust library, binary, example, and build-script sources plus manifests (`rust_api`); integration-test-only changes skip both | same routing |
+
+A failure in an extended suite after merge blocks Release Please exactly as
+before, because the main-push CI run is still the one it waits for. The
+`merge-path-failures.yml` workflow makes those failures visible: when a push
+or scheduled run of `CI`, `Live E2E`, `Rust coverage`, the ARM64 package
+smoke, or `CodeQL` fails on main, it opens one issue per workflow (marked
+`<!-- merge-path-failure:<workflow id> -->`), comments on it for each further
+failure, and closes it when a later main-branch run passes. It runs from the
+default branch with `actions: read` and `issues: write`, and never checks out
+code. To run the
+extended set for a pull request before merge, dispatch `CI` on its branch:
+
+```bash
+gh workflow run ci.yml --ref <branch>
+```
+
+Dispatched runs enable every routing category and report their checks on the
+branch head commit.
+
+Live E2E, the ARM64 package smoke, Rust coverage, and the Rust CodeQL scan
+are separate workflows with the same split: see the table below.
+
 ## CI Checks
 
 Every push and pull request must pass `ci-gate`, which covers the following
@@ -255,23 +300,28 @@ jobs when their changed-path category is enabled:
 | Gateway Admin browser tests | `web` | frozen install, pinned Playwright Chromium provisioning, and `pnpm test:browser`; explicitly aggregated by `ci-gate` |
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
-| MSRV | `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked` |
-| Feature slices | `rust_compile` | required by `ci-gate`; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
-| Gateway-only runtime suite | `rust_compile` | required by `ci-gate` on pull requests and main; four unit partitions and five integration-target shards cover the `gateway,proxy-testkit` suite in parallel, replacing the 24-minute serial main-only rerun; shared embedded harness tests run once in their dedicated target |
-| Extracted crate slices | `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
-| Generated docs freshness | `docs_check` | `just docs-check` |
+| MSRV | `rust_features`, or `extended` with `rust_compile` | `cargo +1.97.1 check --workspace --all-features --all-targets --locked`; the pin is the MSRV, so on ordinary pull requests Clippy's all-target passes compile the same code with the same compiler |
+| Feature slices | `rust_features`, or `extended` with `rust_compile` | required by `ci-gate` when routed; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
+| Gateway-only compile | `rust_compile` | required by `ci-gate`; `cargo check -p labby --no-default-features --features gateway,proxy-testkit --all-targets --locked` after a product-only warm-up |
+| Gateway-only runtime suite | `extended` with `rust_compile` | required by `ci-gate` when routed; four unit partitions and five integration-target shards cover the `gateway,proxy-testkit` suite in parallel; shared embedded harness tests run once in their dedicated target |
+| Extracted crate slices | `rust_features`, or `extended` with `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
+| Generated docs freshness | `docs_check` (documentation paths or `rust_api`) | `just docs-check` |
+| Rustdoc | `rust_api` | strict `just rustdoc` build; doctests run in the `doctests` job |
 | Format | `rust_compile` | `cargo fmt --all -- --check` |
 | Lint | `rust_compile` | warm `labby` lib/bins first (which warms normal gateway dependencies), lint extracted workspace all-targets, then run `cargo clippy -p labby --all-features --all-targets --locked -- -D warnings` at unchanged Cargo concurrency |
 | Deny | `security` | `cargo deny check` |
 | JavaScript advisories | `javascript_advisories` | lockfile-aware `npm audit`/`pnpm audit` across every committed JavaScript dependency graph, with a checked, expiring exception policy |
 | Labby desktop shell | `desktop` | frozen install and static loader build |
 | Labby desktop Tauri | `desktop` | required Linux tests and independent lockfile audit |
-| Live E2E | separate pull-request, push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; same-repository PRs run this signal and fork PRs do not run untrusted product code |
-| Rust coverage | separate push-to-main, weekly, or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures while the main CI run can finish and trigger Release Please without waiting for a second full workspace suite |
-| Tests (Linux) | `rust_test` | required by `ci-gate`; warm normal `labby` lib/bins first, then run sharded `cargo nextest` across the workspace with all features on GitHub-hosted `ubuntu-24.04` |
+| Live E2E | separate push-to-main, weekly, or manual workflow | hermetic browser/product shards and evidence uploads run beside required CI; pull requests do not run it, and a manual dispatch on a branch qualifies one before merge |
+| Rust coverage | separate nightly or manual workflow | LCOV run with project and critical auth/gateway/dispatch/config floors; its own workflow reports failures without delaying the main CI run that triggers Release Please |
+| CodeQL | separate advanced-setup workflow | `actions`, `go`, `javascript-typescript`, and `python` on every pull request and main push; `rust` on main pushes, weekly, and manual dispatch only. Default setup must stay disabled because GitHub rejects advanced-setup uploads while it is enabled |
+| Test archive | `rust_test` | required by `ci-gate`; `test-build` warms normal `labby` lib/bins, links the gateway and Labby lib-test harnesses one at a time, then `cargo nextest archive --workspace --all-features` and uploads the archive |
+| Tests (Linux) | `rust_test` | required by `ci-gate`; ten shards download the archive and run `scripts/ci/run-test-shard.sh <shard> archive` without compiling: four hash partitions of every lib/bin harness, five hash partitions of `crates/labby/tests`, and the extracted crates' integration tests. The archive is extracted into the checkout so compile-time `CARGO_BIN_EXE_*` paths stay valid |
+| Workspace doctests | `rust_test` | required by `ci-gate`; `scripts/ci/run-test-shard.sh doctests` |
 | Tests (Linux fork PR fallback) | fork PRs with `rust_test` | credentialless all-feature workspace nextest; `changes` runs on every event, and `ci-gate` requires this job when a fork PR routes Rust tests |
-| macOS updater lifecycle | `workflow`, `release`, or `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
-| MCP conformance | `rust_test` or `workflow` | Labby's revision-pinned rmcp authenticated boundary, frozen `2026-07-28` requirements, expanded official suites, legacy transport checks, native Skills server/client scenarios, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
+| macOS updater lifecycle | `installer`, or `extended` with `rust_test` | shell installer contracts plus focused Rust self-update and gateway recovery tests on the native macOS runner; required by `ci-gate` |
+| MCP conformance | `mcp_conformance`, or `extended` with `rust_test` | two lanes, `auth` (Labby auth core, MCP authorization, OpenAI authentication) and `protocol` (specification oracles, dated suites); each suite keeps running when another suite in its lane fails. Covers Labby's revision-pinned rmcp authenticated boundary, frozen `2026-07-28` requirements, expanded official suites, legacy transport checks, native Skills server/client scenarios, and the checked MCP/OpenAI auth denominator in `tools/verification/conformance/auth-requirements.json` |
 | MCP upstream drift | weekly/manual separate workflow | compares pinned MCP spec and rmcp commits, maps upstream changes to Labby code and required tests, and opens or updates one actionable issue |
 | Release metadata contract | `release` or `workflow` | required by `ci-gate`; version and Rust toolchain lockstep plus executable release hardening and seeded N-1 fixture permission tests before tagging; release builds do not run in PR CI |
 | Incus source contract | `incus` | runs ShellCheck and validates the Incus supply manifest, image-definition pins, install guidance, and rolling-pointer contract; image-changing PRs also run the separate image build and smoke workflow |
@@ -285,7 +335,8 @@ Incus image smoke installs a candidate CLI after launch and proves its Skills
 surface works in the container.
 The standalone Skills job runs the `skills::` test filter, covering shared
 registry/provider behavior as well as MCP adapters without gateway support.
-The focused MCP job also runs `skills_mcp_e2e` cases prefixed `skills_`:
+The `test` shards run every `skills_mcp_e2e` case on pull requests, and the
+extended focused MCP job runs the cases prefixed `skills_` by name:
 real Labby processes serve and federate native Skills over HTTP and stdio,
 using legacy initialization and modern discovery. The HTTP cases exercise
 the production body-capped client, including its OAuth wrapper. A controlled
@@ -299,10 +350,11 @@ that disabled Skills proxying and restrictive allowlists block both native
 skill lookup and direct resource reads without hiding the gateway's own skill.
 
 Clippy runs with `-D warnings` — zero warnings are permitted. Feature-slice,
-Clippy, Linux test, and focused MCP regression jobs keep job-wide
-`CARGO_BUILD_JOBS` unset. Linux workspace and gateway-only shard execution
-steps explicitly use `2` for unit shards and `4` for other shards after normal
-target warm-up. The root manifest selects the `ring` TLS provider;
+Clippy, test-archive, and focused MCP regression jobs keep job-wide
+`CARGO_BUILD_JOBS` unset. Gateway-only shard execution steps explicitly use
+`2` for unit shards and `4` for other shards after normal target warm-up. The
+test archive links the two largest lib-test harnesses in separate warm-up steps
+before the archive pass instead of throttling Cargo. The root manifest selects the `ring` TLS provider;
 the former `aws-lc-sys` build is not the current rationale for the policy.
 
 The frontend build is required because the Rust binary embeds the exported
@@ -348,8 +400,9 @@ land the required code/tests and the baseline update together.
 
 - **Provider:** GitHub Actions
 - **Manual runs:** `CI` supports `workflow_dispatch`
-- **Scheduled runs:** `CI` runs weekly on Monday at 09:23 UTC to keep
-  dependency/advisory visibility fresh even when no PR is active
+- **Scheduled runs:** `CI` runs nightly at 09:23 UTC with every routing
+  category, including the extended suites, so dependency/advisory visibility
+  stays fresh and every duplicated suite runs at least daily
 - **Job split:**
   - `changes` classifies paths first and exports category booleans, forcing any gated key the trusted base-branch classifier cannot emit to `true`
   - Frontend assets build once when required, then Rust compile/lint/test jobs download the exported `apps/web/out` artifact
@@ -365,15 +418,16 @@ The pinned fleet policy and repository contract set `allow-arm64: true` for
 Labby. This removes the former fleet-wide ARM64 token rejection while keeping
 the shared workflows' default x86_64-only for callers that do not opt in. The
 release matrix builds Linux ARM64 natively on `ubuntu-24.04-arm`.
-The path-filtered `arm64-package-smoke.yml` pull-request workflow checks out
-the exact PR head on the same native runner, builds the frontend and release
+The `arm64-package-smoke.yml` workflow checks out the exact pull-request head
+(or the pushed main commit) on the same native runner, builds the frontend and release
 binary, verifies the archive checksum and contents, and executes the extracted
 binary's Code Mode and Skill CLI smoke. It retains the archive, checksum, and a
 source-head/digest receipt for seven days. This qualification has read-only
 repository permissions and never publishes a tag, release, or package.
-Its trigger includes Rust manifests and crates, embedded configuration,
-Gateway Admin, embedded docs and plugins, package assets, scripts, and the
-native build actions.
+Pull requests trigger it only for packaging, toolchain, dependency, and native
+build inputs: the workflow itself, `release.yml`, the native build actions,
+Cargo manifests and the lockfile, `.cargo/`, crate build scripts, and the
+installers. Every push to main and every manual dispatch runs it.
 
 ## GitHub-hosted runners
 
@@ -762,7 +816,7 @@ inspected without scraping logs.
 
 `deny.toml` keeps unmaintained advisory checks enabled. Any ignored advisory
 must include a dependency-path comment and should be removed once the upstream
-dependency path is gone. The weekly scheduled CI run keeps those exceptions
+dependency path is gone. The nightly scheduled CI run keeps those exceptions
 visible even if no pull request touches dependency policy.
 
 Both CI workspaces use the same [pinned Cargo Deny installer](../../scripts/ci/install-pinned-cargo-deny.sh).
@@ -771,7 +825,7 @@ the same archive. It verifies the pinned SHA-256 before extracting either downlo
 
 ## JavaScript Advisories
 
-`scripts/ci/js-advisory-policy.json` is the exhaustive ownership inventory for committed npm and pnpm manifests and lockfiles. `scripts/ci/js_advisory_gate.py` fails when a dependency file has no owner, has multiple owners, an audit cannot produce usable results, or a high/critical advisory is present. Any exception must record the advisory ID, a non-empty rationale, and an ISO date expiry; expired or malformed exceptions fail before network scanning. Pull requests changing any JavaScript manifest or lockfile route to this required job, and the weekly CI schedule scans all graphs even without a dependency change.
+`scripts/ci/js-advisory-policy.json` is the exhaustive ownership inventory for committed npm and pnpm manifests and lockfiles. `scripts/ci/js_advisory_gate.py` fails when a dependency file has no owner, has multiple owners, an audit cannot produce usable results, or a high/critical advisory is present. Any exception must record the advisory ID, a non-empty rationale, and an ISO date expiry; expired or malformed exceptions fail before network scanning. Pull requests changing any JavaScript manifest or lockfile route to this required job, and the nightly CI schedule scans all graphs even without a dependency change.
 
 ## Size Policy
 
