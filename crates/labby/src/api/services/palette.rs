@@ -963,6 +963,7 @@ mod tests {
     #[cfg(feature = "proxy-testkit")]
     fn test_upstream_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

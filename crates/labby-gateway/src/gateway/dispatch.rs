@@ -987,6 +987,7 @@ async fn handle_gateway_actions(
                     manager.add_scoped_with_route(
                         params.spec,
                         params.bearer_token_value,
+                        params.secret_env_values,
                         params.origin.as_deref(),
                         params.owner.map(Into::into),
                         enrichment_scope,
@@ -1005,6 +1006,7 @@ async fn handle_gateway_actions(
                         &params.name,
                         params.patch,
                         params.bearer_token_value,
+                        params.secret_env_values,
                         params.origin.as_deref(),
                         params.owner.map(Into::into),
                         params.protected_route,

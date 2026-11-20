@@ -42,6 +42,19 @@ impl GatewayManager {
             .persist_gateway_bearer_token(env_name, &auth_header)
             .await
     }
+
+    /// Write one secret stdio env value verbatim. The store's credential write
+    /// is value-agnostic; only bearer tokens are normalized to a header.
+    pub(super) async fn persist_gateway_secret_env_value(
+        &self,
+        env_name: &str,
+        value: &str,
+    ) -> Result<(), ToolError> {
+        validate_bearer_token_env_name(env_name)?;
+        self.store
+            .persist_gateway_bearer_token(env_name, value)
+            .await
+    }
 }
 
 fn snapshot_gateway_bearer_token_from_path(

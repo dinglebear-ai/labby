@@ -52,6 +52,7 @@ fn sample_config() -> GatewayConfig {
     GatewayConfig {
         upstream: vec![
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -78,6 +79,7 @@ fn sample_config() -> GatewayConfig {
                 priority: 1.0,
             },
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -308,6 +310,7 @@ url = "https://old.example.com/mcp"
     insert_upstream(
         &mut cfg,
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: false,
@@ -381,6 +384,7 @@ fn insert_upstream_adds_new_gateway_entry() {
     insert_upstream(
         &mut cfg,
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -985,6 +989,7 @@ fn insert_upstream_clears_matching_import_tombstone() {
     insert_upstream(
         &mut cfg,
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: false,
@@ -1037,6 +1042,7 @@ fn insert_upstream_clears_import_tombstone_by_source_identity_after_rename() {
     insert_upstream(
         &mut cfg,
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: false,
@@ -1080,6 +1086,7 @@ fn insert_upstream_keeps_same_name_tombstone_from_different_source() {
     insert_upstream(
         &mut cfg,
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: false,
@@ -1235,6 +1242,7 @@ fn insert_upstream_rejects_duplicate_names() {
     let err = insert_upstream(
         &mut cfg,
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1272,6 +1280,7 @@ fn write_gateway_config_rejects_both_url_and_command() {
     let path = dir.path().join("config.toml");
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1310,6 +1319,7 @@ fn write_gateway_config_rejects_missing_transport_selector() {
     let path = dir.path().join("config.toml");
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1349,6 +1359,7 @@ fn write_gateway_config_reports_socket_path_for_invalid_unix_transport() {
     let path = dir.path().join("config.toml");
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1392,6 +1403,7 @@ fn write_gateway_config_reports_headers_for_invalid_authorization_header() {
     headers.insert("Authorization".to_string(), "Bearer raw".to_string());
     let cfg = GatewayConfig {
         upstream: vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1432,6 +1444,7 @@ fn insert_upstream_rejects_non_http_scheme() {
     let err = insert_upstream(
         &mut GatewayConfig::default(),
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1468,6 +1481,7 @@ fn insert_upstream_rejects_bind_all_address() {
     let err = insert_upstream(
         &mut GatewayConfig::default(),
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1504,6 +1518,7 @@ fn insert_upstream_rejects_raw_bearer_token_values_in_bearer_token_env() {
     let err = insert_upstream(
         &mut GatewayConfig::default(),
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1541,6 +1556,7 @@ fn insert_upstream_rejects_name_over_128_chars() {
     let err = insert_upstream(
         &mut GatewayConfig::default(),
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1577,6 +1593,7 @@ fn insert_upstream_rejects_invalid_chars_in_name() {
     let err = insert_upstream(
         &mut GatewayConfig::default(),
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1614,6 +1631,7 @@ fn insert_upstream_rejects_bidi_override_in_name() {
     let err = insert_upstream(
         &mut GatewayConfig::default(),
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1659,6 +1677,7 @@ fn insert_upstream_accepts_valid_names() {
         insert_upstream(
             &mut cfg,
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -1765,6 +1784,7 @@ fn stdio_upstream(command: &str, args: &[&str], env_pairs: &[(&str, &str)]) -> U
         env.insert((*k).to_string(), (*v).to_string());
     }
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,

@@ -38,7 +38,8 @@ use super::{UpstreamClientService, UpstreamConnection};
 static LEGACY_STDIO_LIFECYCLE: OnceLock<RwLock<HashSet<String>>> = OnceLock::new();
 static SANDBOX_INSTANCE: AtomicU64 = AtomicU64::new(0);
 
-const STDIO_ENV_ALLOWLIST: &[&str] = &[
+/// Parent environment names forwarded to every stdio child.
+pub(crate) const STDIO_ENV_ALLOWLIST: &[&str] = &[
     "LABBY_STDIO_SANDBOX_BACKEND",
     "PATH",
     "HOME",
@@ -116,8 +117,9 @@ fn remember_legacy_stdio_lifecycle(key: String) {
 /// - **`env_clear` + allowlist (S1):** the child process is started with a
 ///   scrubbed environment (`cmd.env_clear()`). Only vars in `STDIO_ENV_ALLOWLIST`
 ///   (runtime essentials: PATH, HOME, TZ, SSL roots, …) are forwarded; the
-///   upstream's declared `env` map and the optional bearer-token var are then
-///   layered on top. `LABBY_*` secrets and every other ambient labby env var are
+///   upstream's declared `env` map, the optional bearer-token var, and the
+///   `secret_env` values (resolved from the credential file) are then layered
+///   on top. Only variable names are logged. `LABBY_*` secrets and every other ambient labby env var are
 ///   excluded.
 ///
 /// - **Spawn-guard allowlist (S6 — accepted residual):** `validate_stdio_command`
@@ -136,7 +138,33 @@ pub(super) async fn connect_stdio_upstream<H: ClientHandler + Clone>(
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    let env = stdio_environment(config, None)?;
+    connect_stdio_upstream_with_dotenv(
+        command,
+        args,
+        config,
+        None,
+        runtime_origin,
+        runtime_owner,
+        handler,
+        notification_interceptor,
+    )
+    .await
+}
+
+/// [`connect_stdio_upstream`] with an explicit credential file; `None` selects
+/// the installation `.env`.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn connect_stdio_upstream_with_dotenv<H: ClientHandler + Clone>(
+    command: &str,
+    args: &[String],
+    config: &UpstreamConfig,
+    dotenv_path: Option<&std::path::Path>,
+    runtime_origin: Option<&str>,
+    runtime_owner: Option<&UpstreamRuntimeOwner>,
+    handler: H,
+    notification_interceptor: Option<RelayNotificationInterceptor>,
+) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
+    let env = stdio_environment(config, dotenv_path)?;
     let command_spec = StdioCommandSpec {
         program: OsString::from(command),
         args: args.iter().map(OsString::from).collect(),
@@ -168,6 +196,12 @@ fn stdio_environment(
         )?;
         env.push((OsString::from(env_name), OsString::from(token)));
     }
+    // Secret values come last; config validation keeps their names disjoint
+    // from `env` and `bearer_token_env`.
+    env.extend(super::stdio_secret_env::secret_environment(
+        config,
+        dotenv_path,
+    )?);
     Ok(env)
 }
 

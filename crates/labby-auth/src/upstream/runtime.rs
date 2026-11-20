@@ -187,6 +187,7 @@ mod tests {
 
     fn test_oauth_upstream(credential: UpstreamOauthCredentialSource) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

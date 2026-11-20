@@ -90,6 +90,7 @@ async fn manager_get_preserves_bearer_token_env_reference() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -132,6 +133,7 @@ async fn manager_get_redacts_sensitive_stdio_arguments() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -180,6 +182,7 @@ async fn manager_get_redacts_sensitive_stdio_arguments() {
 #[tokio::test]
 async fn server_view_redacts_sensitive_target_url_components() {
     let upstream = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -217,6 +220,7 @@ async fn server_view_redacts_sensitive_target_url_components() {
 #[tokio::test]
 async fn server_view_redacts_invalid_target_urls() {
     let upstream = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -254,6 +258,7 @@ async fn server_view_redacts_invalid_target_urls() {
 #[tokio::test]
 async fn server_view_redacts_stdio_env_targets() {
     let upstream = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,

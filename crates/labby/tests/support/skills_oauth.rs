@@ -116,6 +116,7 @@ async fn oauth_roundtrip() {
         .unwrap();
     let key = load_key(&base64::engine::general_purpose::STANDARD.encode([0u8; 32])).unwrap();
     let upstream = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         name: "skills-oauth".into(),

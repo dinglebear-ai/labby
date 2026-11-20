@@ -650,6 +650,15 @@ pub struct UpstreamConfig {
     /// external config files into Lab config.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Secret stdio environment: child environment variable names mapped to
+    /// the credential variable that holds each value in the selected
+    /// installation's `.env` file (or an explicit process override).
+    ///
+    /// Values resolve at spawn time and are never persisted in configuration
+    /// or returned by reads. Write them with `gateway.add`/`gateway.update`
+    /// `secret_env_values`, or `labby server add|set --env NAME` (stdin).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_env: BTreeMap<String, String>,
     /// Whether to proxy resources from this upstream. Defaults to true.
     #[serde(default = "default_true")]
     pub proxy_resources: bool,

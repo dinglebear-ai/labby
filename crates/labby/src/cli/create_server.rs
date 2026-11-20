@@ -78,6 +78,10 @@ fn invocation(args: &GatewayAddArgs) -> String {
             serde_json::to_string(headers_env).expect("string map"),
         ]);
     }
+    for name in &args.env {
+        // Names only: each value is read from standard input at replay.
+        words.extend(["--env".to_owned(), name.clone()]);
+    }
     for (key, flag) in [("args", "--arg"), ("expose_skills", "--expose-skill")] {
         if let Some(values) = safe[key].as_array() {
             for value in values.iter().filter_map(serde_json::Value::as_str) {
@@ -198,6 +202,7 @@ mod tests {
             args: vec![],
             bearer_token_env: None,
             headers_env: None,
+            env: Vec::new(),
             proxy_resources: true,
             proxy_skills: false,
             expose_skills: vec![],
