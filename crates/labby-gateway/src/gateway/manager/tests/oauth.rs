@@ -182,7 +182,7 @@ fn config_with(upstream: UpstreamConfig) -> GatewayConfig {
 async fn reload_with_non_oauth_edit_keeps_manager_usable_for_connect() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (manager, cache, _managers) = reconcile_fixture(&dir).await;
-    let original = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    let original = fixture_oauth_upstream("tracker", "https://tracker.example.com/mcp");
     manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
     cache
         .scope_challenge_handler(&original, "alice")
@@ -190,9 +190,9 @@ async fn reload_with_non_oauth_edit_keeps_manager_usable_for_connect() {
 
     let mut edited = original.clone();
     edited.proxy_resources = !edited.proxy_resources;
-    edited.expose_tools = Some(vec!["list_issues".into()]);
-    edited.bearer_token_env = Some("LINEAR_TOKEN".into());
-    edited.display_name = Some("Linear".into());
+    edited.expose_tools = Some(vec!["search".into()]);
+    edited.bearer_token_env = Some("TRACKER_TOKEN".into());
+    edited.display_name = Some("Tracker".into());
     manager.reconcile_upstream_oauth_managers(&config_with(edited.clone()));
 
     cache
@@ -207,12 +207,12 @@ async fn reload_with_non_oauth_edit_keeps_manager_usable_for_connect() {
 async fn readded_oauth_upstream_with_different_defaults_is_usable_for_connect() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (manager, cache, managers) = reconcile_fixture(&dir).await;
-    let mut original = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    let mut original = fixture_oauth_upstream("tracker", "https://tracker.example.com/mcp");
     original.enabled = false;
     original.proxy_prompts = true;
     manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
 
-    let readded = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    let readded = fixture_oauth_upstream("tracker", "https://tracker.example.com/mcp");
     // Re-add observed only as the final config of a single reload.
     manager.reconcile_upstream_oauth_managers(&config_with(readded.clone()));
     cache
@@ -221,7 +221,7 @@ async fn readded_oauth_upstream_with_different_defaults_is_usable_for_connect() 
 
     // Re-add observed as a separate remove and add.
     manager.reconcile_upstream_oauth_managers(&GatewayConfig::default());
-    assert!(!managers.contains_key("linear"));
+    assert!(!managers.contains_key("tracker"));
     manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
     cache
         .scope_challenge_handler(&original, "alice")
@@ -234,9 +234,9 @@ async fn readded_oauth_upstream_with_different_defaults_is_usable_for_connect() 
 async fn reload_with_oauth_authority_change_rejects_superseded_config() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (manager, cache, managers) = reconcile_fixture(&dir).await;
-    let original = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    let original = fixture_oauth_upstream("tracker", "https://tracker.example.com/mcp");
 
-    let moved = fixture_oauth_upstream("linear", "https://linear-v2.example.com/mcp");
+    let moved = fixture_oauth_upstream("tracker", "https://tracker-v2.example.com/mcp");
     let mut rescoped = original.clone();
     rescoped.oauth.as_mut().expect("oauth").scopes = Some(vec!["admin".into()]);
 
@@ -244,7 +244,7 @@ async fn reload_with_oauth_authority_change_rejects_superseded_config() {
         manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
         manager.reconcile_upstream_oauth_managers(&config_with(changed.clone()));
         {
-            let registered = managers.get("linear").expect("oauth manager");
+            let registered = managers.get("tracker").expect("oauth manager");
             let registered = registered.upstream_config();
             assert_eq!(
                 (&registered.url, &registered.oauth),
