@@ -949,6 +949,16 @@ pub fn settings_fields() -> Vec<SettingsFieldSpec> {
         ),
         number_editable(
             "advanced",
+            "code_mode.max_programmatic_response_bytes",
+            "Code Mode programmatic response ceiling",
+            "Largest response, in bytes, that a program (not an agent) may request for one Code Mode call through MCP request metadata. 0 turns requests off.",
+            SettingsApplyMode::Partial,
+            0,
+            4_194_304,
+            Some("1048576"),
+        ),
+        number_editable(
+            "advanced",
             "code_mode.token_estimate_divisor",
             "Token estimate divisor",
             "Number of response bytes counted as one estimated token. Lower values estimate more tokens and reach the response limit sooner.",

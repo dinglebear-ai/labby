@@ -637,6 +637,7 @@ impl GatewayManager {
             timeout_ms = next.timeout_ms,
             max_response_bytes = next.max_response_bytes,
             max_response_tokens = next.max_response_tokens,
+            max_programmatic_response_bytes = next.max_programmatic_response_bytes,
             "gateway mode changed"
         );
         Ok(self.code_mode_config().await)

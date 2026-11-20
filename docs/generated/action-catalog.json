@@ -5155,6 +5155,12 @@
         "description": "Approximate maximum response tokens"
       },
       {
+        "name": "max_programmatic_response_bytes",
+        "ty": "integer",
+        "required": false,
+        "description": "Largest response budget a programmatic MCP client may request through tools/call _meta; 0 disables requests"
+      },
+      {
         "name": "token_estimate_divisor",
         "ty": "integer",
         "required": false,
