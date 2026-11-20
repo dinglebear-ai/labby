@@ -435,3 +435,53 @@ async fn subject_prompt_listing_waits_for_global_catalog_fanout_permit() {
     assert_eq!(prompts, Vec::<rmcp::model::Prompt>::new());
     drop(held);
 }
+
+/// A subject listing must not await `subject_connections` while one of its own
+/// pending acquisitions has already been granted that lock. tokio's RwLock hands
+/// a released lock to the next queued waiter without polling it, so a loop body
+/// that awaits the lock while a sibling future sits unpolled waits forever and
+/// wedges the lock for every other caller.
+#[tokio::test]
+async fn subject_prompt_listing_does_not_wait_on_a_granted_sibling_acquisition() {
+    let pool = UpstreamPool::new();
+    let mut configs = Vec::new();
+    for name in ["oauth-a", "oauth-b"] {
+        let config = oauth_upstream_config(name, None);
+        pool.install_test_subject_server_for_upstream(
+            &config,
+            "alice",
+            ToolsOnlyPromptProbeServer {
+                prompt_calls: Arc::new(AtomicUsize::new(0)),
+            },
+        )
+        .await;
+        pool.register_upstream_config_for_tests(&config);
+        configs.push(config);
+    }
+
+    // Queue both acquisitions behind a reader so they are granted one after
+    // another once it is released.
+    let reader = pool.subject_connections.read().await;
+    let listing = tokio::spawn({
+        let pool = pool.clone();
+        async move {
+            let deadline_at = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+            pool.subject_scoped_prompts_until(&configs, "alice", &[], deadline_at)
+                .await
+        }
+    });
+    for _ in 0..32 {
+        tokio::task::yield_now().await;
+    }
+    drop(reader);
+
+    let prompts = tokio::time::timeout(std::time::Duration::from_secs(5), listing)
+        .await
+        .expect("subject prompt listing must not deadlock on subject_connections")
+        .expect("listing task");
+    assert_eq!(prompts, Vec::<rmcp::model::Prompt>::new());
+    assert!(
+        pool.subject_connections.try_write().is_ok(),
+        "subject_connections must be free after the listing returns"
+    );
+}

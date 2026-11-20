@@ -225,7 +225,7 @@ impl UpstreamPool {
         builtin_names: &[&str],
         deadline_at: tokio::time::Instant,
     ) -> Vec<Prompt> {
-        let mut futures = FuturesUnordered::new();
+        let futures = FuturesUnordered::new();
         for config in configs
             .iter()
             .filter(|config| config.enabled && config.proxy_prompts && config.oauth.is_some())
@@ -281,8 +281,14 @@ impl UpstreamPool {
             });
         }
 
+        // Finish every acquisition before the loop awaits anything. tokio's
+        // RwLock grants `subject_connections` to a queued member without
+        // polling it, so awaiting that lock below while a member is still
+        // pending would wait on our own unpolled future forever. Members are
+        // bounded by `deadline_at`, so collecting them is bounded too.
+        let results: Vec<_> = futures.collect().await;
         let mut upstream_prompts = Vec::new();
-        while let Some((name, policy, result)) = futures.next().await {
+        for (name, policy, result) in results {
             let Some(result) = result else {
                 continue;
             };
@@ -404,7 +410,8 @@ impl UpstreamPool {
         subject: &str,
         prompt_name: &str,
     ) -> Option<String> {
-        let mut futures = FuturesUnordered::new();
+        let deadline_at = tokio::time::Instant::now() + self.request_timeout;
+        let futures = FuturesUnordered::new();
         for config in configs
             .iter()
             .filter(|config| config.enabled && config.proxy_prompts && config.oauth.is_some())
@@ -418,16 +425,31 @@ impl UpstreamPool {
                     &config.name,
                     config.expose_prompts.clone(),
                 );
-                let _fanout_permit = match pool.acquire_catalog_fanout_permit().await {
-                    Ok(permit) => permit,
-                    Err(_) => return (config.name.clone(), policy, target_prompt, None),
+                let _fanout_permit = match tokio::time::timeout_at(
+                    deadline_at,
+                    pool.acquire_catalog_fanout_permit(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(_)) | Err(_) => {
+                        return (config.name.clone(), policy, target_prompt, None);
+                    }
                 };
-                let result = pool.acquire_subject_peer(&config, &subject).await;
-                (config.name.clone(), policy, target_prompt, Some(result))
+                let result = tokio::time::timeout_at(
+                    deadline_at,
+                    pool.acquire_subject_peer(&config, &subject),
+                )
+                .await
+                .ok();
+                (config.name.clone(), policy, target_prompt, result)
             });
         }
 
-        while let Some((name, policy, target_prompt, result)) = futures.next().await {
+        // Same rule as `subject_scoped_prompts_until`: never await a lock the
+        // pending members also take. Collect the bounded acquisitions first.
+        let results: Vec<_> = futures.collect().await;
+        for (name, policy, target_prompt, result) in results {
             let Some(result) = result else {
                 continue;
             };
