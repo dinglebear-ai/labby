@@ -409,7 +409,7 @@ semantics:
 | `bash scripts/ci/openai-auth-conformance.sh` | all `OAI-AUTH-*` groups | Execute the optimized exact-test aggregate plus the backup/restore drill. |
 | `bash scripts/ci/openai-auth-conformance.sh OAI-AUTH-NNN` | one exact verification group | Execute that group's exact tests; unknown IDs fail. |
 
-The 34 `OAI-CLAUSE-*` entries in
+The 36 `OAI-CLAUSE-*` entries in
 `tools/verification/conformance/openai-auth-normative.json` record reviewed source clauses and applicability. Applicable clauses map to
 the 11 executable `OAI-AUTH-*` groups, so a clause ID is not accepted by the
 OpenAI execution script. These auth runners have no Just wrappers. The OpenAI shell runner supports listing and exact or
