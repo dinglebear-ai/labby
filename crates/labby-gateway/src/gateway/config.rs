@@ -842,6 +842,7 @@ fn validate_protected_route_loadout_references(cfg: &GatewayConfig) -> Result<()
 pub fn validate_code_mode(
     code_mode: &labby_runtime::gateway_config::CodeModeConfig,
 ) -> Result<(), ToolError> {
+    use labby_runtime::gateway_config::ConfigError::InvalidCodeModeMaxProgrammaticResponseBytes as ProgrammaticBytes;
     code_mode.validate().map_err(|e| match e {
         labby_runtime::gateway_config::ConfigError::InvalidCodeModeTimeout { .. } => {
             ToolError::InvalidParam {
@@ -861,6 +862,10 @@ pub fn validate_code_mode(
                 param: "code_mode.max_response_tokens".to_string(),
             }
         }
+        ProgrammaticBytes { .. } => ToolError::InvalidParam {
+            message: e.to_string(),
+            param: "code_mode.max_programmatic_response_bytes".to_string(),
+        },
         labby_runtime::gateway_config::ConfigError::InvalidSemanticSearchBlendWeight { .. } => {
             ToolError::InvalidParam {
                 message: e.to_string(),

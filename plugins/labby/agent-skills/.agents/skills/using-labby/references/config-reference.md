@@ -42,10 +42,16 @@ timeout_ms = 30000
 max_source_bytes = 1048576
 max_response_bytes = 24576
 max_response_tokens = 6000
+max_programmatic_response_bytes = 1048576   # 0 disables; else 1024..=4194304
 token_estimate_divisor = 4
 max_log_entries = 1000
 max_log_bytes = 65536
 ```
+
+`max_programmatic_response_bytes` caps the larger per-call budget an MCP client
+program may request through `tools/call` `_meta`
+(`ai.dinglebear.labby/responseBudget`). Tool arguments cannot request it, so
+agents keep `max_response_bytes`.
 
 `gateway.code_mode.set` does not accept `max_source_bytes`; edit it through the
 typed admin `settings.config.update` surface or the configuration file. The

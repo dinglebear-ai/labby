@@ -2787,6 +2787,9 @@ pub(crate) fn config_json_value_for_path(cfg: &LabConfig, path: &str) -> serde_j
         "code_mode.max_source_bytes" => serde_json::json!(cfg.code_mode.max_source_bytes),
         "code_mode.max_response_bytes" => serde_json::json!(cfg.code_mode.max_response_bytes),
         "code_mode.max_response_tokens" => serde_json::json!(cfg.code_mode.max_response_tokens),
+        "code_mode.max_programmatic_response_bytes" => {
+            serde_json::json!(cfg.code_mode.max_programmatic_response_bytes)
+        }
         "code_mode.token_estimate_divisor" => {
             serde_json::json!(cfg.code_mode.token_estimate_divisor)
         }

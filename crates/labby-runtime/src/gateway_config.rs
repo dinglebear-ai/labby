@@ -65,6 +65,10 @@ fn default_code_mode_max_response_bytes() -> usize {
     24 * 1024
 }
 
+fn default_code_mode_max_programmatic_response_bytes() -> usize {
+    crate::code_mode_response_budget::DEFAULT_MAX_PROGRAMMATIC_RESPONSE_BYTES
+}
+
 fn default_code_mode_max_response_tokens() -> usize {
     6_000
 }
@@ -313,6 +317,13 @@ pub struct CodeModeConfig {
     /// Approximate maximum response tokens returned by codemode.
     #[serde(default = "default_code_mode_max_response_tokens")]
     pub max_response_tokens: usize,
+    /// Largest response budget a programmatic MCP client may request for one
+    /// call through `_meta["ai.dinglebear.labby/responseBudget"]`. Requests
+    /// travel in protocol metadata, not tool arguments, so agents stay on
+    /// `max_response_bytes`. `0` disables requests. See
+    /// [`crate::code_mode_response_budget`].
+    #[serde(default = "default_code_mode_max_programmatic_response_bytes")]
+    pub max_programmatic_response_bytes: usize,
     /// Token estimation divisor. bytes/4 is intentionally conservative (real
     /// tokenization ≈ 1 token/3 bytes for JSON). Lower = more conservative =
     /// fewer tools per execution.
@@ -373,6 +384,7 @@ impl Default for CodeModeConfig {
             max_source_bytes: default_code_mode_max_source_bytes(),
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),
+            max_programmatic_response_bytes: default_code_mode_max_programmatic_response_bytes(),
             token_estimate_divisor: default_token_estimate_divisor(),
             max_log_entries: default_max_log_entries(),
             max_log_bytes: default_max_log_bytes(),
@@ -434,6 +446,15 @@ impl CodeModeConfig {
         if !(256..=256_000).contains(&self.max_response_tokens) {
             return Err(ConfigError::InvalidCodeModeMaxResponseTokens {
                 value: self.max_response_tokens,
+            });
+        }
+        if self.max_programmatic_response_bytes != 0
+            && !(crate::code_mode_response_budget::MIN_REQUESTED_RESPONSE_BYTES
+                ..=crate::code_mode_response_budget::MAX_PROGRAMMATIC_RESPONSE_BYTES_CEILING)
+                .contains(&self.max_programmatic_response_bytes)
+        {
+            return Err(ConfigError::InvalidCodeModeMaxProgrammaticResponseBytes {
+                value: self.max_programmatic_response_bytes,
             });
         }
         if !(1..=64).contains(&self.token_estimate_divisor) {
@@ -1739,6 +1760,14 @@ pub enum ConfigError {
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
     /// Code Mode response byte cap falls outside the supported range.
     InvalidCodeModeMaxResponseBytes {
+        /// Rejected byte limit.
+        value: usize,
+    },
+    #[error(
+        "gateway code_mode.max_programmatic_response_bytes={value} is invalid — expected 0 (disabled) or 1024..=4194304"
+    )]
+    /// Programmatic response-budget ceiling falls outside the supported range.
+    InvalidCodeModeMaxProgrammaticResponseBytes {
         /// Rejected byte limit.
         value: usize,
     },

@@ -522,6 +522,8 @@ pub(crate) struct CodeModeSetParams {
     #[serde(default)]
     pub max_response_tokens: Option<usize>,
     #[serde(default)]
+    pub max_programmatic_response_bytes: Option<usize>,
+    #[serde(default)]
     pub token_estimate_divisor: Option<u32>,
     #[serde(default)]
     pub max_log_entries: Option<usize>,

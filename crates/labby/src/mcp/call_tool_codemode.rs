@@ -497,6 +497,30 @@ impl LabMcpServer {
             return Ok(error_result_from_envelope(envelope));
         }
         let config = manager.code_mode_config().await;
+        // A programmatic client may request a larger envelope through request
+        // `_meta` (never tool arguments); agents keep the configured budget.
+        let response_budget = match response_budget::resolve(&config, &context.meta) {
+            Ok(budget) => budget,
+            Err(error) => {
+                tracing::warn!(
+                    surface = "mcp",
+                    service = CODE_MODE_SERVICE,
+                    code_mode_tool = %service,
+                    action = "call_tool.response_budget",
+                    subject,
+                    actor_key,
+                    kind = "invalid_param",
+                    error = %error,
+                    "gateway codemode rejected response budget request"
+                );
+                return Ok(response_budget::error_result(service, &config, &error));
+            }
+        };
+        let config = if response_budget.requested {
+            config.with_response_budget(response_budget)
+        } else {
+            config
+        };
         let notice_budget = (config.max_response_bytes, config.max_response_tokens);
         let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
         let code = match code_arg(args, max_source_bytes) {
@@ -551,6 +575,8 @@ impl LabMcpServer {
             agent_kind = "agent",
             code_hash = %code_hash,
             input_tokens,
+            response_budget_requested = response_budget.requested,
+            max_response_bytes = response_budget.max_response_bytes,
             "gateway codemode start"
         );
 
@@ -697,7 +723,7 @@ impl LabMcpServer {
             &capability_filter_fingerprint,
             &code_hash,
             &caller,
-        );
+        ) + &response_budget::dedup_suffix(response_budget);
         let broker_result = match begin_code_mode_execution(dedup_key, execution_id.clone()) {
             InflightCodeModeRole::Follower(entry) => {
                 tracing::info!(
@@ -953,6 +979,7 @@ impl LabMcpServer {
             &response,
             self.route_scope.exposes_resources(),
         );
+        response_budget::echo(&mut result, response_budget);
         bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
         notice_control
             .attach(&mut result, notice_budget.0, notice_budget.1)
@@ -1017,5 +1044,6 @@ pub(crate) use description::{
 #[cfg(test)]
 mod tests;
 
+mod response_budget;
 mod upstream_budget;
 use upstream_budget::bound_upstream_content;

@@ -694,6 +694,9 @@ async fn handle_tool_actions(
             if let Some(max_response_tokens) = params.max_response_tokens {
                 next.max_response_tokens = max_response_tokens;
             }
+            if let Some(max_programmatic_response_bytes) = params.max_programmatic_response_bytes {
+                next.max_programmatic_response_bytes = max_programmatic_response_bytes;
+            }
             if let Some(token_estimate_divisor) = params.token_estimate_divisor {
                 next.token_estimate_divisor = token_estimate_divisor;
             }

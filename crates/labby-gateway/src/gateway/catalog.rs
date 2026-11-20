@@ -418,6 +418,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Approximate maximum response tokens",
             },
             ParamSpec {
+                name: "max_programmatic_response_bytes",
+                ty: "integer",
+                required: false,
+                description: "Largest response budget a programmatic MCP client may request through tools/call _meta; 0 disables requests",
+            },
+            ParamSpec {
                 name: "token_estimate_divisor",
                 ty: "integer",
                 required: false,
@@ -2062,6 +2068,7 @@ mod tests {
             "timeout_ms",
             "max_response_bytes",
             "max_response_tokens",
+            "max_programmatic_response_bytes",
             "token_estimate_divisor",
             "max_log_entries",
             "max_log_bytes",
