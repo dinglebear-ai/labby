@@ -383,7 +383,7 @@ Common error kinds:
 | `route_scope_denied` | The protected route scope does not allow that upstream/tool. |
 | `forbidden` / `permission_denied` | Caller lacks permission; destructive tools require execute-capable Code Mode callers. |
 | `path_traversal` | Fix the workspace/artifact path. |
-| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Reduce fan-out, workspace writes, or split the work. |
+| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Reduce fan-out, workspace writes, or split the work. Keep each `callTool` params object under 8 MiB serialized and await earlier calls so pending params stay under 64 MiB per run; keep `codemode.step` names under 1,024 bytes. |
 | `result_too_large` / `artifact_too_large` | Reduce the upstream payload or write large data to a smaller artifact. |
 | `queue_saturated` | Labby's local per-upstream concurrency gate is saturated — not an upstream rate limit. Retry after a short delay or reduce parallel `callTool` fan-out. |
 | `response_too_large` | The gateway capped an oversized upstream response; narrow the query or paginate. Distinct from `result_too_large`/`artifact_too_large`, which cap Code Mode's own result/artifact output. |

@@ -119,6 +119,7 @@ pub(crate) fn classify_fetch_failure(
         ),
         CapabilityCallError::Timeout { .. } => ("timeout", "read timed out"),
         CapabilityCallError::Cancelled { .. } => ("cancelled", "read was cancelled"),
+        CapabilityCallError::NotExposed { .. } => ("not_found", "is not exposed"),
         _ => ("upstream_error", "could not be fetched"),
     }
 }

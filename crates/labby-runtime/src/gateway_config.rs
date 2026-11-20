@@ -908,6 +908,15 @@ fn is_http_token_byte(byte: u8) -> bool {
 }
 
 impl UpstreamConfig {
+    /// Config-level precondition for proxying this upstream's resources: it is
+    /// enabled and has not opted out with `proxy_resources = false`. This is
+    /// not the whole read policy: callers must still enforce the route
+    /// allowlist, Team credential, exposure policy, and OAuth subject.
+    #[must_use]
+    pub fn serves_resources(&self) -> bool {
+        self.enabled && self.proxy_resources
+    }
+
     /// Validate the upstream name and mutually-exclusive auth shapes.
     /// `bearer_token_env` and `oauth` both configured is a config error.
     pub fn validate(&self) -> Result<(), ConfigError> {

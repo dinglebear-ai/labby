@@ -62,6 +62,8 @@ pub fn normalize_user_code(code: &str) -> String {
     wrap_loose_code_as_async_arrow(code)
 }
 
+const MAX_PROLOGUE_EXPORT_CANDIDATES: usize = 8;
+
 /// Split `{prologue} export default {value}` into the prologue and the
 /// default-export value, but only when `export default` appears at a statement
 /// boundary after a non-empty prologue (the prologue ends at a `;` or `}`).
@@ -73,9 +75,15 @@ pub fn normalize_user_code(code: &str) -> String {
 /// here (see `normalize_user_code` and the `..._inside_a_string` test). The
 /// start-anchored `export default` case is also handled earlier, so this only
 /// fires when a real prologue precedes an otherwise-unparseable arrow default.
+///
+/// Each candidate rescans its whole prefix for comments, so only the first
+/// [`MAX_PROLOGUE_EXPORT_CANDIDATES`] in-code occurrences are tried. Valid
+/// source has at most one default export; without this bound, caller input
+/// made of many `export default ` occurrences costs O(k*n) on a runtime worker
+/// before the execution deadline exists.
 fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
     const NEEDLE: &str = "export default ";
-    for idx in export_default_indices(code, NEEDLE) {
+    for idx in export_default_indices(code, NEEDLE).take(MAX_PROLOGUE_EXPORT_CANDIDATES) {
         let before = code[..idx].trim_end();
         // A real statement terminator wins as-is. Only when `before` does not
         // already end at a boundary do we retry after stripping a trailing

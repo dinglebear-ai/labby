@@ -1498,6 +1498,34 @@ impl ArtifactStore {
         mutation: LibraryMutation,
         committed_at: LibraryTimestamp,
     ) -> Result<LibraryMutationOutcome, ArtifactError> {
+        self.mutate_library_outcome_prepared(
+            authorization,
+            target_ownership,
+            expected_version,
+            expected_version,
+            idempotency,
+            mutation,
+            committed_at,
+        )
+    }
+
+    /// [`Self::mutate_library_outcome`] for a caller that built derived state
+    /// (such as the published generation) from the snapshot at
+    /// `prepared_from_version`. After an identical request's receipt is
+    /// replayed, the commit succeeds only when the library is still at that
+    /// version as well as at `expected_version`, so derived state built from an
+    /// older snapshot can never be published over an intervening commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mutate_library_outcome_prepared(
+        &self,
+        authorization: &LibraryAuthorization,
+        target_ownership: &LibraryOwnership,
+        expected_version: u64,
+        prepared_from_version: u64,
+        idempotency: LibraryIdempotency,
+        mutation: LibraryMutation,
+        committed_at: LibraryTimestamp,
+    ) -> Result<LibraryMutationOutcome, ArtifactError> {
         target_ownership.validate()?;
         authorization.validate_for(target_ownership)?;
         validate_id(mutation.artifact_id(), "artifact_id")?;
@@ -1546,7 +1574,7 @@ impl ArtifactStore {
             return Err(ArtifactError::Conflict("library_version_changed"));
         }
         let mut state = prevalidated;
-        if state.version != expected_version {
+        if state.version != expected_version || state.version != prepared_from_version {
             return Err(ArtifactError::Conflict("library_version_changed"));
         }
         apply_mutation(&mut state, authorization, target_ownership, mutation)?;
@@ -3202,6 +3230,88 @@ mod tests {
             )
             .unwrap();
         (artifact_id, revision_id)
+    }
+
+    #[test]
+    fn prepared_mutation_refuses_a_candidate_built_before_an_intervening_commit() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let owner = ownership("org-a", "alice");
+        let (artifact, revision) = add_skill(&store, &source, "team-a", "demo", &owner, 0);
+        let activate = |key: &str| {
+            (
+                idem(key),
+                LibraryMutation::Activate {
+                    artifact_id: artifact.clone(),
+                    revision_id: revision.clone(),
+                    updated_at: ts("2026-08-26T00:01:00Z"),
+                },
+            )
+        };
+        // Another actor's commit moves the library from 1 to 2.
+        let (key, mutation) = activate("activate");
+        store
+            .mutate_library_outcome_prepared(
+                &owner_auth(&owner),
+                &owner,
+                1,
+                1,
+                key,
+                mutation,
+                ts("2026-08-26T00:01:00Z"),
+            )
+            .unwrap();
+
+        // A request that names version 2 but whose derived state was prepared
+        // from version 1 must not commit: it would publish over the commit.
+        let archive = LibraryMutation::Archive {
+            artifact_id: artifact.clone(),
+            updated_at: ts("2026-08-26T00:02:00Z"),
+        };
+        assert!(matches!(
+            store.mutate_library_outcome_prepared(
+                &owner_auth(&owner),
+                &owner,
+                2,
+                1,
+                idem("archive"),
+                archive.clone(),
+                ts("2026-08-26T00:02:00Z"),
+            ),
+            Err(ArtifactError::Conflict("library_version_changed"))
+        ));
+        assert_eq!(store.library_snapshot().unwrap().version, 2);
+
+        // A replay of the committed request still returns its receipt, even
+        // though its prepared version is now stale.
+        let (key, mutation) = activate("activate");
+        assert!(matches!(
+            store.mutate_library_outcome_prepared(
+                &owner_auth(&owner),
+                &owner,
+                1,
+                1,
+                key,
+                mutation,
+                ts("2026-08-26T00:01:00Z"),
+            ),
+            Ok(LibraryMutationOutcome::Replayed(..))
+        ));
+
+        // Prepared from the current version, the same request commits.
+        store
+            .mutate_library_outcome_prepared(
+                &owner_auth(&owner),
+                &owner,
+                2,
+                2,
+                idem("archive"),
+                archive,
+                ts("2026-08-26T00:02:00Z"),
+            )
+            .unwrap();
+        assert_eq!(store.library_snapshot().unwrap().version, 3);
     }
 
     #[test]

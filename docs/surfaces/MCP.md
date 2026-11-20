@@ -213,6 +213,17 @@ upstreams fail closed and are omitted rather than binding an arbitrary owner.
 
 `lab:read` catalogs omit destructive upstream app tools/callbacks; invoking a
 known destructive app tool requires `lab` or `lab:admin` before any elicitation.
+When raw upstream tools are visible (Code Mode disabled, or a route whose
+loadout hides Code Mode), a caller without `lab` or `lab:admin` is listed and
+may call only tools whose own annotations declare `readOnlyHint: true` and not
+`destructiveHint: true`; any other direct `tools/call` is `forbidden` before it
+reaches the upstream. This is the same read/execute ceiling `codemode_read`
+applies.
+
+A destructive built-in action is elicited only when the route exposes its
+service and the caller's scope would let it run; otherwise the route-scope or
+admin gate answers with `route_scope_denied` or `forbidden` instead of asking a
+human to confirm an operation that cannot proceed.
 OAuth app tools and their native `ui://` reads remain bound to the authenticated
 subject's cached connection, and a subject-scoped resource denial is terminal
 rather than falling back to a global connection. These passthrough rules are

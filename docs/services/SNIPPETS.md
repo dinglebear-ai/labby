@@ -38,7 +38,7 @@ still cannot use nested snippet resolution to widen their authority.
 
 ## Administrative Actions
 
-Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Promotion and removal are destructive actions.
+Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Creation, promotion, and removal are destructive actions: a create installs code that later runs by name, and with `force` it overwrites a user snippet.
 
 The native MCP `snippets` router remains visible when Code Mode is enabled.
 Use its `help` and `schema` actions to discover the shared operation catalog,
@@ -47,7 +47,7 @@ the CLI's snippet operations without a local shell or SSH connection. Native
 calls preserve the original caller and route authority; privileged operations
 still require `lab:admin`.
 
-Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a promoted user snippet may replace a built-in name.
+Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a created or promoted user snippet may replace a built-in name: `snippets.create` and `snippets.promote` refuse a built-in name with `confirmation_required` unless `shadow_builtin: true` is passed (`labby snippet add --shadow-builtin` on the CLI).
 
 ## Selected-Daemon CLI Execution
 

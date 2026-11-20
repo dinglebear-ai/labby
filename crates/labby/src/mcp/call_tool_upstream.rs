@@ -44,6 +44,7 @@ use tracing::Instrument as _;
 
 use crate::mcp::context::{
     auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
+    tool_execute_scope_allowed, upstream_tool_allowed_for_scope,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::canonical_kind;
@@ -339,6 +340,7 @@ fn upstream_classified_error_envelope(
         // classification (including the oauth_needs_reauth refinement).
         CapabilityCallError::Transport { message }
         | CapabilityCallError::Protocol { message }
+        | CapabilityCallError::NotExposed { message }
         | CapabilityCallError::Other { message } => {
             return upstream_transport_error_envelope(service, action, upstream_name, message);
         }
@@ -382,6 +384,46 @@ impl LabMcpServer {
             actor_key,
             context,
         ))
+    }
+
+    /// Deny a direct upstream tool call that exceeds a read-only caller's
+    /// ceiling, with the same `forbidden` shape as the other scope gates.
+    async fn read_only_ceiling_denial(
+        &self,
+        service: &str,
+        upstream_name: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> CallToolResponse {
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::warn!(
+            surface = "mcp",
+            service,
+            action = "call_tool",
+            upstream = %upstream_name,
+            elapsed_ms,
+            kind = "forbidden",
+            "upstream tool call denied: caller lacks an execute scope and the tool is not read-only"
+        );
+        self.emit_dispatch_notification(
+            context,
+            service,
+            "call_tool",
+            elapsed_ms,
+            DispatchLogOutcome::Failure {
+                level: LoggingLevel::Warning,
+                kind: "forbidden".into(),
+            },
+        )
+        .await;
+        error_result_from_envelope(build_error_extra(
+            service,
+            "call_tool",
+            "forbidden",
+            "this upstream tool is not read-only; it requires one of scopes: lab, lab:admin",
+            &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+        ))
+        .into()
     }
 
     /// Upstream-proxy tail. Reached by fall-through from `call_tool_impl`
@@ -442,19 +484,11 @@ impl LabMcpServer {
             auth_context_from_extensions(&context.extensions),
             self.request_subject(context),
         ));
-        let pre_resolved_upstream = resolved_upstream_tool
-            .as_ref()
-            .map(|resolved| resolved.upstream_name.clone());
         let route_scoped_oauth_configs = self.route_scoped_oauth_upstream_configs().await;
-        let pre_resolved_oauth_config: Option<UpstreamConfig> = raw_oauth_subject
-            .as_ref()
-            .and(pre_resolved_upstream.as_ref())
-            .and_then(|upstream_name| {
-                route_scoped_oauth_configs
-                    .iter()
-                    .find(|config| config.name == *upstream_name && config.oauth.is_some())
-                    .cloned()
-            });
+        // A widget-gate pre-resolution has already applied the MCP App scope
+        // policy (render entries open for readers, destructive callbacks need
+        // an execute scope). Only a raw bare-name call takes the ceiling below.
+        let widget_resolved = resolved_upstream_tool.is_some();
         let raw_resolved = if let Some(resolved) = resolved_upstream_tool {
             Some(Ok((resolved.upstream_name, resolved.tool, resolved.route)))
         } else if let Some(manager) = &self.gateway_manager {
@@ -477,6 +511,36 @@ impl LabMcpServer {
             .and_then(|resolved| resolved.as_ref().ok())
             .map(|(_, tool, _)| safety_hints_from_annotations(tool.tool.annotations.as_ref()))
             .unwrap_or_default();
+        // An OAuth upstream's tool must run on the caller's subject connection,
+        // whether it was pre-resolved (widget callback) or found by its bare
+        // name above: the raw branch has no subject, so it would fail closed
+        // with a misleading transport error.
+        let pre_resolved_oauth_config: Option<UpstreamConfig> = raw_oauth_subject
+            .as_ref()
+            .and(
+                raw_resolved
+                    .as_ref()
+                    .and_then(|resolved| resolved.as_ref().ok())
+                    .map(|(upstream_name, _, _)| upstream_name),
+            )
+            .and_then(|upstream_name| {
+                route_scoped_oauth_configs
+                    .iter()
+                    .find(|config| config.name == *upstream_name && config.oauth.is_some())
+                    .cloned()
+            });
+        // The read/execute ceiling applies to direct calls, not only to the
+        // listing: a caller without an execute scope may only run tools that
+        // declare themselves read-only.
+        let caller_auth = auth_context_from_extensions(&context.extensions);
+        if !widget_resolved
+            && let Some(Ok((upstream_name, resolved_tool, _))) = &raw_resolved
+            && !upstream_tool_allowed_for_scope(caller_auth, &resolved_tool.tool)
+        {
+            return Ok(self
+                .read_only_ceiling_denial(service, upstream_name, start, context)
+                .await);
+        }
         if let Some(Err(err)) = &raw_resolved
             && !matches!(err.kind(), "unknown_tool" | "not_found")
         {
@@ -862,6 +926,16 @@ impl LabMcpServer {
                 }
             }
 
+            if !widget_resolved
+                && owner.is_some()
+                && !tool_execute_scope_allowed(caller_auth)
+                && !(safety.read_only_hint == Some(true) && safety.destructive_hint != Some(true))
+            {
+                let upstream_name = owner.clone().unwrap_or_default();
+                return Ok(self
+                    .read_only_ceiling_denial(service, &upstream_name, start, context)
+                    .await);
+            }
             if let Some(upstream_name) = owner
                 && let Some(config) = pre_resolved_oauth_config.or_else(|| {
                     route_scoped_oauth_configs

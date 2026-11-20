@@ -371,6 +371,25 @@ pub(crate) fn tool_execute_scope_allowed(auth: Option<&AuthContext>) -> bool {
     })
 }
 
+/// Whether an upstream tool's own annotations declare it read-only and not
+/// destructive. Absent annotations are not read-only: an unannotated tool may
+/// write.
+pub(crate) fn upstream_tool_is_read_only(tool: &rmcp::model::Tool) -> bool {
+    tool.annotations.as_ref().is_some_and(|annotations| {
+        annotations.read_only_hint == Some(true) && annotations.destructive_hint != Some(true)
+    })
+}
+
+/// The read/execute ceiling for a raw upstream tool: a caller without an
+/// execute scope (`lab`/`lab:admin`) may only list and call tools that declare
+/// themselves read-only, the same rule `codemode_read` applies.
+pub(crate) fn upstream_tool_allowed_for_scope(
+    auth: Option<&AuthContext>,
+    tool: &rmcp::model::Tool,
+) -> bool {
+    tool_execute_scope_allowed(auth) || upstream_tool_is_read_only(tool)
+}
+
 /// Returns `true` when the caller is allowed to read Code Mode resources.
 ///
 /// Code Mode app resources require at least `lab:read`; executable Code Mode

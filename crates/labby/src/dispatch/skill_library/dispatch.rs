@@ -471,6 +471,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             correlation_id,
             Arc::clone(&self.store),
             snapshot.version,
+            snapshot.version,
             LibraryIdempotency {
                 key: idempotency_key,
                 request_digest,
@@ -532,7 +533,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let projection = Arc::clone(&self.projection);
         let preparation_artifact_id = artifact_id.clone();
         let preparation_mutation = mutation.clone();
-        let (ownership, candidate) = self
+        let (ownership, candidate, prepared_from_version) = self
             .blocking
             .run("skill_library_mutation_prepare", move || {
                 let snapshot = preparation_store.library_snapshot()?;
@@ -547,7 +548,9 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     &snapshot,
                     Some(&preparation_mutation),
                 )?;
-                Ok::<_, ArtifactError>((ownership, candidate))
+                // The candidate generation is derived from this exact version;
+                // the commit refuses to publish it over any later commit.
+                Ok::<_, ArtifactError>((ownership, candidate, snapshot.version))
             })
             .await
             .map_err(map_target_lookup)?;
@@ -569,6 +572,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             correlation_id,
             Arc::clone(&self.store),
             expected_library_version,
+            prepared_from_version,
             LibraryIdempotency {
                 key: idempotency_key,
                 request_digest,
@@ -2122,6 +2126,7 @@ pub(crate) async fn commit_authorized_mutation<G: Send + Sync + 'static>(
     correlation_id: &SkillLibraryCorrelationId,
     store: Arc<ArtifactStore>,
     expected_library_version: u64,
+    prepared_from_version: u64,
     mut idempotency: LibraryIdempotency,
     mutation: LibraryMutation,
     committed_at: LibraryTimestamp,
@@ -2171,10 +2176,11 @@ pub(crate) async fn commit_authorized_mutation<G: Send + Sync + 'static>(
                     faults.as_ref(),
                     || {
                         store
-                            .mutate_library_outcome(
+                            .mutate_library_outcome_prepared(
                                 &authorization,
                                 &ownership,
                                 expected_library_version,
+                                prepared_from_version,
                                 idempotency,
                                 mutation,
                                 committed_at,
@@ -3398,5 +3404,158 @@ mod tests {
             coordinator.health(),
             PublicationHealth::Ready { library_version: 2 }
         );
+    }
+
+    #[tokio::test]
+    async fn activating_a_second_owners_same_named_skill_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let access_path = root.path().join("access.db");
+        let access_store = AccessStore::open(access_path.clone()).await.unwrap();
+        let identity = |subject| {
+            VerifiedIdentity::external(
+                Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                subject,
+            )
+            .unwrap()
+        };
+        let eli = identity("eli");
+        let pujit = identity("pujit");
+        access_store
+            .bootstrap_owner(BootstrapOwnerInput::new(eli.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        access_store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES
+                   ('pujit-principal','bootstrap-local','user','active','Pujit',2,2);
+                 INSERT INTO principal_links VALUES
+                   ('pujit-link','pujit-principal','external','https://accounts.google.com','pujit',NULL,'active',1,1,2,2);
+                 INSERT INTO project_memberships VALUES
+                   ('pujit-membership','bootstrap-local','bootstrap-default','pujit-principal','member','active','bootstrap-owner',2,2);",
+            )
+            .await
+            .unwrap();
+        drop(access_store);
+        let runtime = AccessRuntime::initialize(access_path.clone()).await;
+        let store = Arc::new(ArtifactStore::new(root.path().join("artifacts")).unwrap());
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection::default());
+        let initial = projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let publication = Arc::new(ActivationCoordinator::new(initial, 0));
+        let service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(
+                2,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(10),
+            )
+            .unwrap(),
+            Arc::clone(&publication),
+            Arc::clone(&projection),
+        );
+        let latest_revision = |artifact_id: &str| {
+            store
+                .get(artifact_id)
+                .unwrap()
+                .revision_ids
+                .last()
+                .unwrap()
+                .clone()
+        };
+        let eli_content = "---\nname: notes\ndescription: Eli's shared notes\n---\nEli.\n";
+        let eli_notes = acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "artifacts.create",
+            json!({
+                "name": "notes",
+                "visibility": "shared",
+                "files": [{"path": "SKILL.md", "content": eli_content}],
+                "expected_library_version": 0,
+                "idempotency_key": "eli-create-notes"
+            }),
+            "eli-create-notes",
+        )
+        .await
+        .unwrap();
+        let eli_id = eli_notes["artifact_id"].as_str().unwrap().to_owned();
+        acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "artifacts.activate",
+            json!({
+                "artifact_id": eli_id,
+                "expected_revision_id": latest_revision(&eli_id),
+                "expected_library_version": 1,
+                "idempotency_key": "eli-activate-notes"
+            }),
+            "eli-activate-notes",
+        )
+        .await
+        .unwrap();
+
+        let pujit_notes = acceptance_dispatch(
+            &service,
+            &runtime,
+            &pujit,
+            "artifacts.create",
+            json!({
+                "name": "notes",
+                "files": [{"path": "SKILL.md", "content": "---\nname: notes\ndescription: Pujit's private notes\n---\nPujit.\n"}],
+                "expected_library_version": 2,
+                "idempotency_key": "pujit-create-notes"
+            }),
+            "pujit-create-notes",
+        )
+        .await
+        .unwrap();
+        let pujit_id = pujit_notes["artifact_id"].as_str().unwrap().to_owned();
+        let refused = acceptance_dispatch(
+            &service,
+            &runtime,
+            &pujit,
+            "artifacts.activate",
+            json!({
+                "artifact_id": pujit_id,
+                "expected_revision_id": latest_revision(&pujit_id),
+                "expected_library_version": 3,
+                "idempotency_key": "pujit-activate-notes"
+            }),
+            "pujit-activate-notes",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("active_skill_collision"),
+            "{refused:?}"
+        );
+
+        // Eli's skill keeps serving its own bytes under its own policy.
+        let generation = publication.generation();
+        let entry = generation
+            .providers
+            .find("skill://labby/notes/SKILL.md")
+            .expect("the first owner's skill stays published");
+        assert_eq!(
+            generation
+                .providers
+                .read(entry, "skill://labby/notes/SKILL.md", 64 * 1024)
+                .await
+                .unwrap()
+                .bytes,
+            eli_content.as_bytes()
+        );
+        assert_eq!(generation.providers.collision_rejections().len(), 0);
     }
 }

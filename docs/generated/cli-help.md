@@ -5150,6 +5150,9 @@ Options:
       --no-input
           Never prompt for missing input or confirmation
 
+      --shadow-builtin
+          Allow a user snippet whose name matches a built-in snippet, so it resolves in place of the built-in
+
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 

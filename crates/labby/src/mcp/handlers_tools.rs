@@ -37,10 +37,10 @@ use crate::mcp::catalog::{
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
 use crate::mcp::context::request_openai_session_fingerprint;
-#[cfg(feature = "gateway")]
-use crate::mcp::context::tool_execute_scope_allowed;
 #[cfg(any(feature = "gateway", feature = "skills"))]
 use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
+#[cfg(feature = "gateway")]
+use crate::mcp::context::{tool_execute_scope_allowed, upstream_tool_allowed_for_scope};
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
@@ -502,6 +502,9 @@ impl LabMcpServer {
                 if hide_raw_tools && !tool_execute_scope_allowed(auth) && ut.destructive {
                     continue;
                 }
+                if !hide_raw_tools && !upstream_tool_allowed_for_scope(auth, &ut.tool) {
+                    continue;
+                }
                 let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
                     &self.registry,
                     &ut.upstream_name,
@@ -551,9 +554,11 @@ impl LabMcpServer {
                 {
                     for ut in upstream_tools {
                         let tool_name = ut.name.as_ref();
-                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(
-                            tool_name,
-                        ) || builtin_names.contains(tool_name)
+                        if !upstream_tool_allowed_for_scope(auth, &ut)
+                            || crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(
+                                tool_name,
+                            )
+                            || builtin_names.contains(tool_name)
                             || !advertised_names.insert(tool_name.to_string())
                         {
                             continue;

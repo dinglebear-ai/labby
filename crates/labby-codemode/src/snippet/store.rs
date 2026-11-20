@@ -218,6 +218,49 @@ pub fn create_user_snippet_checked(
     })
 }
 
+/// Refuse a user snippet name that matches a built-in unless the caller asked
+/// to shadow it, so a user file can never silently resolve in place of a
+/// trusted built-in. Returns whether the name shadows a built-in.
+fn check_builtin_shadowing(
+    builtin_dir: &Path,
+    name: &str,
+    shadow_builtin: bool,
+) -> Result<bool, ToolError> {
+    let shadows_builtin = find_snippet_file(builtin_dir, name).is_some();
+    if shadows_builtin && !shadow_builtin {
+        return Err(ToolError::Sdk {
+            sdk_kind: "confirmation_required".to_string(),
+            message: format!(
+                "snippet `{name}` matches a built-in snippet; pass shadow_builtin:true to create a user override"
+            ),
+        });
+    }
+    Ok(shadows_builtin)
+}
+
+/// [`create_user_snippet_checked`] that also enforces the built-in shadowing
+/// policy, for caller-facing create surfaces.
+#[allow(clippy::too_many_arguments)]
+pub fn create_user_snippet_guarded(
+    lab_home: &Path,
+    builtin_dir: &Path,
+    name: &str,
+    body: &str,
+    description: Option<&str>,
+    force: bool,
+    expected_digest: Option<&str>,
+    shadow_builtin: bool,
+) -> Result<SnippetInfo, ToolError> {
+    validate_snippet_name(name)?;
+    let shadows_builtin = check_builtin_shadowing(builtin_dir, name, shadow_builtin)?;
+    let info =
+        create_user_snippet_checked(lab_home, name, body, description, force, expected_digest)?;
+    Ok(SnippetInfo {
+        shadowed: shadows_builtin,
+        ..info
+    })
+}
+
 /// Create a user snippet from promoted execution source, enforcing built-in shadowing policy.
 pub fn create_promoted_user_snippet(
     lab_home: &Path,
@@ -230,15 +273,7 @@ pub fn create_promoted_user_snippet(
 ) -> Result<SnippetInfo, ToolError> {
     validate_snippet_name(name)?;
     validate_snippet_code(code)?;
-    let shadows_builtin = find_snippet_file(builtin_dir, name).is_some();
-    if shadows_builtin && !shadow_builtin {
-        return Err(ToolError::Sdk {
-            sdk_kind: "confirmation_required".to_string(),
-            message: format!(
-                "snippet `{name}` matches a built-in snippet; pass shadow_builtin:true to create a user override"
-            ),
-        });
-    }
+    let shadows_builtin = check_builtin_shadowing(builtin_dir, name, shadow_builtin)?;
     let info = create_user_snippet(lab_home, name, code, description, force)?;
     Ok(SnippetInfo {
         shadowed: shadows_builtin,

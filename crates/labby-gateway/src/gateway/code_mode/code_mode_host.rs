@@ -224,8 +224,16 @@ impl GatewayManager {
         let allowed = scope.allowed_namespaces();
 
         // Same cache-only contract as the MCP resources/list handler: warm
-        // never-listed peers, then read the snapshot instead of fanning out.
-        pool.ensure_resource_snapshots_allowed(allowed).await;
+        // never-listed peers, then read the snapshots instead of fanning out.
+        // Prompts follow it too: a live `prompts/list` fan-out here would put
+        // the slowest upstream's prompt listing on every run (and every
+        // sandbox `search()`), and one upstream stalled on `prompts/list` would
+        // time out proxy generation for every run whose scope includes it.
+        // The two bounded cold waits are independent, so run them together.
+        tokio::join!(
+            pool.ensure_resource_snapshots_allowed(allowed),
+            pool.ensure_prompt_snapshots_allowed(allowed),
+        );
         for listed in pool
             .cached_upstream_resources_with_provenance_allowed(allowed)
             .await
@@ -247,10 +255,12 @@ impl GatewayManager {
             entries.insert(descriptor.id.clone(), descriptor);
         }
 
-        for prompt in pool.list_upstream_prompts_allowed(&[], allowed).await {
-            let Some((upstream, native_name)) = prompt.name.split_once('/') else {
-                continue;
-            };
+        // Degrades per upstream: one upstream whose listing was rejected is
+        // skipped rather than hiding every other upstream's prompts.
+        for route in pool.cached_prompt_routes_allowed(allowed).await {
+            let upstream = route.upstream_name.as_ref();
+            let native_name = route.native_name.as_ref();
+            let prompt = &route.prompt;
             let mut tags = prompt
                 .arguments
                 .as_ref()
@@ -258,7 +268,7 @@ impl GatewayManager {
                 .flatten()
                 .map(|argument| format!("arg:{}", argument.name))
                 .collect::<Vec<_>>();
-            tags.push(format!("prompt:{}", prompt.name));
+            tags.push(format!("prompt:{upstream}/{native_name}"));
             let display_name = prompt.title.as_deref().unwrap_or(native_name);
             let descriptor = CatalogDescriptor::metadata(
                 CodeModeCatalogKind::Prompt,
@@ -581,8 +591,7 @@ impl CodeModeHost for GatewayManager {
                 .allowed_namespaces()
                 .is_none_or(|allowed| allowed.contains(upstream))
             && let Some(config) = self.upstream_config(upstream).await
-            && config.enabled
-            && config.proxy_resources
+            && config.serves_resources()
             && config.oauth.is_none()
         {
             let owner = runtime_owner(caller, surface);
@@ -621,7 +630,7 @@ impl CodeModeHost for GatewayManager {
             if let Some(config) = self.upstream_config(upstream).await
                 && config.oauth.is_some()
             {
-                if !config.enabled || !config.proxy_resources {
+                if !config.serves_resources() {
                     return Err(ToolError::Sdk {
                         sdk_kind: "forbidden".into(),
                         message: format!("resource proxying is disabled for upstream `{upstream}`"),
@@ -2030,6 +2039,8 @@ fn code_mode_capability_error_info(error: &CapabilityCallError) -> (&'static str
         CapabilityCallError::InputRequiredRoundsExceeded { message } => {
             ("confirmation_required", message.clone())
         }
+        // Gateway configuration or exposure policy, not an upstream fault.
+        CapabilityCallError::NotExposed { message } => ("not_found", message.clone()),
         CapabilityCallError::Other { message } => ("upstream_error", message.clone()),
     }
 }

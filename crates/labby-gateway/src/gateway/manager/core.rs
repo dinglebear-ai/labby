@@ -792,6 +792,7 @@ impl GatewayManager {
             }
             CapabilityCallError::ResponseTooLarge { .. } => PublishedResourceReadError::TooLarge,
             CapabilityCallError::Cancelled { .. } => PublishedResourceReadError::Cancelled,
+            CapabilityCallError::NotExposed { .. } => PublishedResourceReadError::Unavailable,
             CapabilityCallError::Mcp { .. }
             | CapabilityCallError::Transport { .. }
             | CapabilityCallError::Protocol { .. }

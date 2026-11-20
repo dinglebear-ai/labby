@@ -9773,7 +9773,7 @@
     "service": "snippets",
     "action": "snippets.create",
     "description": "Create a user snippet under LABBY_HOME/snippets",
-    "destructive": false,
+    "destructive": true,
     "requires_admin": true,
     "required_scopes": [
       "lab:admin"
@@ -9811,6 +9811,12 @@
         "ty": "string",
         "required": false,
         "description": "Reject a stale edit unless the current user snippet has this content_digest"
+      },
+      {
+        "name": "shadow_builtin",
+        "ty": "boolean",
+        "required": false,
+        "description": "Allow creating a user snippet that shadows a built-in snippet"
       }
     ],
     "returns": "SnippetInfo",

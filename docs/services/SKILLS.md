@@ -85,7 +85,20 @@ The canonical action catalog is generated from code. The lifecycle groups are:
 Mutation requests carry an `expected_library_version` and a bounded
 `idempotency_key`. Revision-sensitive operations also carry an
 `expected_revision_id`. Stale editors and conflicting replays fail closed rather
-than silently overwriting current state.
+than silently overwriting current state. A mutation commits only when the
+library is still at the version its published generation was prepared from, so
+a racing commit can never be dropped from the served Skill set; a retry of an
+already-committed request still replays its receipt.
+
+Every Artifact action, local or remote, passes one transport gate: scope,
+audience, and product-credential binding to the requested Project. On a
+Project-bound route the requested Project must be the route's own, and on a
+Team-bound route the Team is the route's Team; `x-labby-project-id` and
+`x-labby-team-id` may restate them but never redirect a call. The owned
+`artifacts` and Depot publish tools also honor a loadout that disables Tools.
+`artifacts.transfer_options` performs a server-credentialed exact acquisition,
+so it requires the same write scope and `AssetUse` permission as
+`artifacts.import`.
 
 The MCP App presents these actions through the `artifacts` tool. It is
 a compact conversation card with an expandable, multi-file authoring view. Host
@@ -154,6 +167,14 @@ placement, and address-pinning requirements, see
 Operator directory Skills under `$LABBY_HOME/skills` coexist with managed
 Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.
+Artifact Skill URIs derive from the name alone, so same-name Artifact records
+from different owners, in any Project or tenant, collide: a mutation that would
+make a second one active is refused with `active_skill_collision`, and the
+first stays served under its own access policy. The refusal reveals only that
+some active Skill already uses the name. If duplicates are already active (for
+example from an older release), neither is served and the gateway logs the
+conflicting records' owners so an operator can rename or deactivate all but
+one.
 
 The remote control plane extends `artifacts.*` and exposes four supporting
 HTTP-context-only service families (not MCP or in-process Code Mode tools):

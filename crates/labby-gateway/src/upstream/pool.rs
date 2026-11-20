@@ -88,6 +88,7 @@ mod prompts_exposure;
 mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
+mod prompts_snapshot;
 mod recovery;
 mod stdio_secret_env;
 #[cfg(all(test, unix))]
@@ -344,7 +345,15 @@ pub struct UpstreamPool {
     subscription_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
     /// Per-upstream single-flight gates. Only registry lookup holds this mutex;
     /// disjoint snapshots never queue behind another upstream's network I/O.
-    resource_snapshot_warmup: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
+    resource_snapshot_warmup: Arc<helpers::SnapshotFlights>,
+    /// Per-upstream single-flight gates for cold prompt snapshot warm-up.
+    prompt_snapshot_warmup: Arc<helpers::SnapshotFlights>,
+    /// Last failed prompt warm-up per upstream, keyed to the connection it ran
+    /// on. A failed listing leaves no prompt source, so without this an
+    /// upstream whose `prompts/list` keeps failing would be re-listed, and
+    /// waited on, by every Code Mode run until its breaker opens.
+    prompt_warmup_failures:
+        Arc<std::sync::Mutex<HashMap<String, (incarnation::ConnectionIncarnation, Instant)>>>,
     /// Upstreams already queued for a background subscription reconcile.
     subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
     /// Cancels queued/in-flight subscription reconcile batches during pool drain.
@@ -680,7 +689,9 @@ impl UpstreamPool {
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
-            resource_snapshot_warmup: Arc::new(Mutex::new(HashMap::new())),
+            resource_snapshot_warmup: Arc::default(),
+            prompt_snapshot_warmup: Arc::default(),
+            prompt_warmup_failures: Arc::default(),
             subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
             subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),

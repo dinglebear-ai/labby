@@ -281,7 +281,7 @@ items.
 | Per-run cwd isolation | A direct-process runner has a long-lived host `TempDir`; a Microsandbox runner creates its own guest-local `TempDir`. On each `Start`, `runner.rs::reset_execution_jail` attempts to remove the previous jail and enter a fresh subdirectory. Failures are non-fatal and can leave filesystem state behind in the isolated runner directory. This is defense-in-depth, not a hard containment boundary. |
 | Artifact path containment | Enforced: `artifacts.rs` rejects any traversal/absolute component up front (`reject_path_traversal`), normalizes `\`→`/`, joins lexically under the per-run artifact store root, then walks the destination's ancestors with `symlink_metadata` (`reject_existing_symlink_ancestors`) to reject any existing symlink in the path. (Lexical + lstat-walk containment — it deliberately does **not** call `std::fs::canonicalize`.) |
 | Artifact size cap | Enforced: 8 MiB default (`LABBY_CODE_MODE_ARTIFACT_MAX_MIB`) |
-| Tool call budget | Enforced in `runner_drive.rs`: 512 ordinary calls per run by default, configurable up to 2,048 via `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` or the host-installed `max_calls_per_run` fallback. Excess calls reject as `call_budget_exceeded`. Reserved internal calls have a separate ceiling of 32. Explicit and automatic artifact writes share a hard 64 MiB / 256-file per-run payload budget and serialized store-byte admission. |
+| Tool call budget | Enforced in `runner_drive.rs`: 512 ordinary calls per run by default, configurable up to 2,048 via `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` or the host-installed `max_calls_per_run` fallback. Excess calls reject as `call_budget_exceeded`. Reserved internal calls have a separate ceiling of 32. Explicit and automatic artifact writes share a hard 64 MiB / 256-file per-run payload budget and serialized store-byte admission. Param/step-name caps: [README](README.md#limits-and-platform-requirements). |
 
 **Writing tests that assert on env isolation:** `env_clear()` has landed, so a
 test asserting the runner child has a minimal/empty environment reflects real
@@ -310,7 +310,7 @@ env_clear lands" comment — that state is in the past.
 | `preamble.rs` | Injects the `callTool` bridge stub and catalog proxy into the JS environment. |
 | `protocol.rs` | Wire types for all parent↔runner messages (serialization-stable). |
 | `schema.rs` | JSON Schema helpers for tool description injection. |
-| `normalize.rs` | Result normalization after runner returns. |
+| `normalize.rs` | Normalizes caller source before the run. |
 | `shape.rs` | Result shape metadata helpers. |
 | `truncate.rs` | Output size limiting before returning to caller. |
 | `trace.rs` | Execution span helpers (`tracing`). |

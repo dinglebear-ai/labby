@@ -835,7 +835,7 @@ pub(crate) fn operation_permission(operation: Operation) -> crate::access::Permi
 
 /// Reads and exact-use never gate on the managed projection; everything else
 /// changes Depot state and must wait for a live acknowledged projection.
-fn operation_is_mutation(operation: Operation) -> bool {
+pub(crate) fn operation_is_mutation(operation: Operation) -> bool {
     !matches!(operation_authority(operation).0, "scope.read" | "scope.use")
 }
 

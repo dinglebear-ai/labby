@@ -246,6 +246,15 @@ pub(crate) fn git_base_args<const N: usize>(tail: [&str; N]) -> Vec<String> {
         "protocol.file.allow=never".to_string(),
         "-c".to_string(),
         "protocol.ext.allow=never".to_string(),
+        // Never discover a bare repository implicitly: a script can write a
+        // `HEAD`/`objects`/`refs`/`config` layout without a `.git` segment, and
+        // git would load that attacker-written config.
+        "-c".to_string(),
+        "safe.bareRepository=explicit".to_string(),
+        // Repository config may name an fsmonitor hook, which git runs through
+        // the shell during index refresh.
+        "-c".to_string(),
+        "core.fsmonitor=false".to_string(),
     ];
     args.extend(tail.into_iter().map(str::to_string));
     args
@@ -445,6 +454,10 @@ mod tests {
                 "protocol.file.allow=never",
                 "-c",
                 "protocol.ext.allow=never",
+                "-c",
+                "safe.bareRepository=explicit",
+                "-c",
+                "core.fsmonitor=false",
                 "status",
                 "--short",
                 "--",

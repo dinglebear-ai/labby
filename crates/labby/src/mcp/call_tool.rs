@@ -8,10 +8,13 @@
 //! `impl LabMcpServer` method. The `ServerHandler` trait impl in
 //! `server.rs` keeps a one-line delegator.
 //!
-//! Preserves the exact early-return ordering (codemode → visibility → action →
-//! code_mode-hidden → admin-scope → elicitation → builtin → upstream tail). The
-//! codemode and upstream branches live in
-//! `call_tool_codemode.rs` / `call_tool_upstream.rs`. No behavior change.
+//! Early-return ordering: loadout route-scope denial → destructive elicitation
+//! → codemode → visibility → action → code_mode-hidden → admin-scope →
+//! builtin → upstream tail. Elicitation runs before the later gates, so
+//! `tool_request_is_destructive` reports a builtin action as destructive only
+//! when the route and the caller's scope would let it run; otherwise the
+//! denying gate answers with the real cause. The codemode and upstream
+//! branches live in `call_tool_codemode.rs` / `call_tool_upstream.rs`.
 
 #[cfg(feature = "gateway")]
 use std::time::SystemTime;
@@ -858,6 +861,19 @@ impl LabMcpServer {
                 if request.name.as_ref() == super::session_messages::TOOL_NAME {
                     return Box::pin(self.call_messages(request, &context)).await;
                 }
+                // The owned shims honor the route's loadout like every other
+                // direct tool call: a loadout that disables Tools disables them.
+                #[cfg(feature = "skills")]
+                let owned_shim = is_project_depot_publish_call(&request)
+                    || is_project_artifact_management_call(&request);
+                #[cfg(not(feature = "skills"))]
+                let owned_shim = is_project_depot_publish_call(&request);
+                if owned_shim
+                    && let Some(response) =
+                        self.direct_tool_route_scope_denial(&context, request.name.as_ref())
+                {
+                    return Ok(response);
+                }
                 if is_project_depot_publish_call(&request) {
                     return Box::pin(self.call_tool_response_dispatch_impl(request, context, true))
                         .await;
@@ -886,13 +902,16 @@ impl LabMcpServer {
             return Box::pin(self.call_messages(request, &context)).await;
         }
         let project_owned = false;
-        if let Some(response) =
-            Box::pin(self.destructive_confirmation_response(&request, &context)).await
+        // A gate that would deny the call answers before any human is asked to
+        // confirm it: elicitation runs after the route-scope denial here, and
+        // `tool_request_is_destructive` yields to the route and admin gates.
+        #[cfg(feature = "gateway")]
+        if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
         {
             return Ok(response);
         }
-        #[cfg(feature = "gateway")]
-        if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
+        if let Some(response) =
+            Box::pin(self.destructive_confirmation_response(&request, &context)).await
         {
             return Ok(response);
         }
@@ -2841,16 +2860,31 @@ impl LabMcpServer {
             .and_then(Value::as_str)
             .unwrap_or("");
 
+        let caller = resolve_caller_authorization(
+            auth_context_from_extensions(&context.extensions),
+            self.absent_auth_trust(),
+            propagated_caller_auth(request.meta.as_ref()),
+        );
+        // A destructive action the caller can never run is not elicited: the
+        // route-scope or admin gate in dispatch answers it with the real cause
+        // instead of asking a human to approve an impossible operation.
+        let destructive_and_permitted = |entry: &crate::registry::RegisteredService,
+                                         action: &str| {
+            entry
+                .actions
+                .iter()
+                .any(|candidate| candidate.name == action && candidate.destructive)
+                && self.route_scope.allows_service(&entry.name)
+                && tool_execute_builtin_action_allowed(entry, action, &caller)
+        };
+
         if let Some(entry) = self
             .registry
             .services()
             .iter()
             .find(|entry| entry.name == service)
         {
-            return entry
-                .actions
-                .iter()
-                .any(|candidate| candidate.name == action && candidate.destructive);
+            return destructive_and_permitted(entry, action);
         }
 
         #[cfg(feature = "gateway")]
@@ -2866,11 +2900,7 @@ impl LabMcpServer {
                         .services()
                         .iter()
                         .find(|entry| entry.name == "gateway")
-                        .is_some_and(|entry| {
-                            entry.actions.iter().any(|candidate| {
-                                candidate.name == gateway_action && candidate.destructive
-                            })
-                        })
+                        .is_some_and(|entry| destructive_and_permitted(entry, gateway_action))
                 });
             }
 
@@ -2885,11 +2915,7 @@ impl LabMcpServer {
                         .services()
                         .iter()
                         .find(|entry| entry.name == "setup")
-                        .is_some_and(|entry| {
-                            entry.actions.iter().any(|candidate| {
-                                candidate.name == setup_action && candidate.destructive
-                            })
-                        })
+                        .is_some_and(|entry| destructive_and_permitted(entry, setup_action))
                 });
             }
 

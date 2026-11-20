@@ -27,6 +27,7 @@
 //! reported through `truncated`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmcp::RoleClient;
@@ -127,8 +128,13 @@ pub(super) struct UpstreamSkills {
     /// must not present an owner as unambiguous when a later entry on an
     /// already-received page claims the same resource.
     pub(super) ambiguous_resource_uris: BTreeSet<String>,
-    pub(super) observed_resource_owners: BTreeMap<String, (String, Option<(String, u64)>)>,
 }
+
+/// Walk-scoped scratch for [`ingest_page`]: the first owner and binding seen
+/// for each claim. Owners are shared, not cloned per claim, so memory stays
+/// proportional to the bytes received across the walk. It is never part of
+/// the cached snapshot.
+type ObservedResourceOwners = BTreeMap<String, (Arc<str>, Option<(String, u64)>)>;
 
 #[derive(Debug, Clone)]
 pub(super) struct ExcludedSkill {
@@ -205,6 +211,7 @@ pub(super) fn skills_get_error(error: &ServiceError) -> String {
 fn ingest_page(
     entries: Vec<SkillEntry>,
     out: &mut UpstreamSkills,
+    observed_resource_owners: &mut ObservedResourceOwners,
     max_items: usize,
     max_candidates: usize,
 ) -> Option<SkillIngestCap> {
@@ -217,7 +224,14 @@ fn ingest_page(
     // the response byte ceiling already bounds the page, while full manifest
     // validation remains constrained by `max_candidates` below.
     for entry in &entries {
-        let owner = entry.uri.clone();
+        // An entry whose URI or manifest exceeds the per-skill limits is
+        // rejected by validation below, so it can never own a resource. Skip
+        // it before its claims are walked so an over-long URI or an oversized
+        // manifest cannot fill the scratch map or mark claims ambiguous.
+        if !within_ownership_scan_limits(entry) {
+            continue;
+        }
+        let owner: Arc<str> = Arc::from(entry.uri.as_str());
         let manifest = entry
             .resources
             .as_ref()
@@ -234,17 +248,14 @@ fn ingest_page(
                 continue;
             };
             let binding = resource.map(|resource| (resource.digest.clone(), resource.size));
-            if let Some((existing_owner, existing_binding)) =
-                out.observed_resource_owners.get(&claim)
-            {
+            if let Some((existing_owner, existing_binding)) = observed_resource_owners.get(&claim) {
                 // Nested Skills may publish the same file. Its bytes remain
                 // unambiguous only when every owner's binding is identical.
                 if existing_owner != &owner && (binding.is_none() || *existing_binding != binding) {
                     out.ambiguous_resource_uris.insert(claim);
                 }
             } else {
-                out.observed_resource_owners
-                    .insert(claim, (owner.clone(), binding));
+                observed_resource_owners.insert(claim, (Arc::clone(&owner), binding));
             }
         }
     }
@@ -282,6 +293,18 @@ fn ingest_page(
         }
     }
     None
+}
+
+/// Whether `entry` can take part in the ownership pre-scan: its URI parses
+/// under the canonical skill-URI rules (including the length cap) and its
+/// manifest is within the per-skill entry cap. Validation rejects any other
+/// entry, so it can never own a resource.
+fn within_ownership_scan_limits(entry: &SkillEntry) -> bool {
+    parse_skill_resource_uri(&entry.uri).is_ok()
+        && entry
+            .resources
+            .as_ref()
+            .is_none_or(|resources| resources.len() <= limits::MAX_RESOURCES_PER_SKILL)
 }
 
 impl UpstreamPool {
@@ -439,6 +462,7 @@ impl UpstreamPool {
             max_items
         };
         let mut out = UpstreamSkills::default();
+        let mut observed_resource_owners = ObservedResourceOwners::new();
         let mut cursor: Option<String> = None;
         let mut unclassified_page = false;
         let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
@@ -502,9 +526,13 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            if let Some(cap) =
-                ingest_page(result.skills, &mut out, max_validated_items, max_candidates)
-            {
+            if let Some(cap) = ingest_page(
+                result.skills,
+                &mut out,
+                &mut observed_resource_owners,
+                max_validated_items,
+                max_candidates,
+            ) {
                 out.truncated = true;
                 if max_items == limits::MAX_SKILLS_PER_UPSTREAM {
                     tracing::warn!(
@@ -633,3 +661,7 @@ impl UpstreamPool {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "skills_list_ingest_tests.rs"]
+mod ingest_tests;

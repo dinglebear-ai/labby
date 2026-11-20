@@ -16,13 +16,13 @@
 //! Within a single upstream, events are deliberately serialized: its worker
 //! handles one batch at a time. So an event arriving while that upstream's own
 //! re-list is running waits for the in-flight refresh plus one coalescing
-//! window, not merely the window. That bound applies to prompts too, which
-//! need no refresh of their own (`prompts/list` is served live) but still
-//! travel through the worker to stay ordered with the rest of that upstream's
-//! notifications. Cross-upstream isolation — the property this module exists
+//! window, not merely the window. That bound applies to prompts too: their
+//! cached source (read by Code Mode) is re-listed here like the other
+//! catalogs, so the downstream notification is forwarded only after it is
+//! current. Cross-upstream isolation — the property this module exists
 //! for — is unaffected: no upstream ever waits on another's refresh.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -265,8 +265,8 @@ async fn run_worker(
 
 impl UpstreamPool {
     /// Run the refreshes one exact upstream needs after reporting the given
-    /// `list_changed` kinds. Tool and resource re-lists run concurrently;
-    /// prompts need no refresh because `prompts/list` is served live.
+    /// `list_changed` kinds. Tool, resource, and prompt re-lists run
+    /// concurrently.
     ///
     /// A resource refresh that does not publish a snapshot is logged, not
     /// surfaced: the failed re-list removed the cached source, so what peers
@@ -286,6 +286,25 @@ impl UpstreamPool {
                 );
             }
         };
-        tokio::join!(tools, resources);
+        let prompts = async {
+            if kinds.prompts {
+                self.refresh_prompts_after_list_changed(upstream).await;
+            }
+        };
+        tokio::join!(tools, resources, prompts);
+    }
+
+    /// Re-list one upstream's prompts so the cached prompt source (served to
+    /// Code Mode) follows `prompts/list_changed`. Bounded by the shared catalog
+    /// listing budget; a failed listing removes the source rather than keeping
+    /// stale rows.
+    async fn refresh_prompts_after_list_changed(&self, upstream: &str) {
+        let allowed = BTreeSet::from([upstream.to_string()]);
+        let deadline_at = tokio::time::Instant::now()
+            + super::resources_list::catalog_listing_timeout(self.request_timeout);
+        drop(
+            self.list_upstream_prompts_allowed_until(&[], Some(&allowed), deadline_at)
+                .await,
+        );
     }
 }

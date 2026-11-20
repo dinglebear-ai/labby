@@ -61,6 +61,16 @@ pub(super) fn test_upstream_config() -> UpstreamConfig {
     }
 }
 
+/// [`test_upstream_config`] with `proxy_resources` on, for tests that read
+/// `lab://upstream/` resources, which are refused for an upstream that opted
+/// out.
+pub(super) fn resource_proxying_test_upstream_config() -> UpstreamConfig {
+    UpstreamConfig {
+        proxy_resources: true,
+        ..test_upstream_config()
+    }
+}
+
 pub(super) fn named_test_upstream_config(name: &str) -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,

@@ -534,8 +534,8 @@ impl UpstreamPool {
         subject: &str,
         mut params: ReadResourceRequestParams,
     ) -> Result<ReadResourceResult, CapabilityCallError> {
-        if !config.enabled || !config.proxy_resources {
-            return Err(CapabilityCallError::Other {
+        if !config.serves_resources() {
+            return Err(CapabilityCallError::NotExposed {
                 message: format!(
                     "resource proxying is disabled for upstream `{}`",
                     config.name
@@ -575,7 +575,7 @@ impl UpstreamPool {
                 kind = "resource_not_exposed",
                 "upstream resource read blocked by exposure policy"
             );
-            return Err(CapabilityCallError::Other {
+            return Err(CapabilityCallError::NotExposed {
                 message: format!("resource is not exposed by upstream `{}`", config.name),
             });
         }

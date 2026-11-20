@@ -179,6 +179,16 @@ The live catalog currently projects Tools, Snippets, exposed MCP Resources,
 exposed MCP Prompts, and caller-visible Agent Skills. Agent entries remain
 reserved for a later adapter.
 
+Resource and Prompt entries come from the gateway's cached snapshots, not a
+live `resources/list` or `prompts/list` fan-out per run or per `search()`. An
+upstream that has never been listed on its current connection gets a
+single-flight warm-up, and the run waits at most 250 ms for it. Prompt
+snapshots are re-listed on connect, on `prompts/list_changed`, and whenever a
+client calls MCP `prompts/list`; a failed warm-up is not retried for one
+minute. Prompt metadata degrades per upstream: an upstream whose listing was
+rejected is omitted without hiding other upstreams' prompts. OAuth
+subject-scoped prompts are still discovered live for the caller's subject.
+
 Resource, Prompt, and Skill descriptors are metadata-only catalog entries: they
 never become callable Tools and do not acquire Tool schemas. Progressive
 disclosure uses explicit retrieval APIs instead. Resource helpers point to
@@ -287,7 +297,15 @@ Remote git URLs must be explicit `https://github.com/...` URLs without embedded
 credentials. Labby does not inject hidden credentials or host git config into
 Code Mode. Use `cwd` to run git commands inside a workspace-relative child repo,
 for example after cloning into `directory: "repo"`. Clones are shallow
-(`--depth 1`). V2 does not expose `fetch`, `pull`, or `push`; those remote
+(`--depth 1`).
+
+Git runs with `safe.bareRepository=explicit` and `core.fsmonitor=false`, and
+with `GIT_CEILING_DIRECTORIES` set to the parent of the workspace root, so
+repository discovery never leaves the workspace. A `cwd` whose ancestors up to
+the workspace root contain `HEAD`, `objects`, and `refs` is refused with
+`permission_denied` before git runs: such a directory is an implicit bare
+repository whose config could run host commands. Git 2.38 or newer enforces
+the `safe.bareRepository` fence; the layout refusal applies on any version. V2 does not expose `fetch`, `pull`, or `push`; those remote
 mutation methods are deferred until Code Mode has an explicit transaction and
 credential model for them.
 
@@ -772,7 +790,12 @@ have a separate 32-call ceiling; snippet resolution is limited to 32 resolutions
 and 1 MiB total resolved source per execution.
 
 Tool IDs are limited to 1,024 UTF-8 bytes at both runner and host boundaries.
-Oversized IDs reject before dispatch without retaining the supplied ID. The host
+Oversized IDs reject before dispatch without retaining the supplied ID.
+Serialized `callTool` params are limited to 8 MiB per call, checked by the
+runner bridge and again by the host, and queued or in-flight calls may hold at
+most 64 MiB of params per run; await earlier calls before issuing more.
+`codemode.step` names are limited to 1,024 UTF-8 bytes. Each of these rejects
+with a catchable `budget_exceeded` before dispatch and never echoes the payload. The host
 trace is bounded to 4,096 rows and 4 MiB of serialized call records, including
 artifact writes and rejected calls. Exhaustion returns `trace_budget_exceeded`
 with the retained partial trace and cancels pending work. This host allocation
@@ -999,7 +1022,7 @@ Canonical error kinds:
 | `route_scope_denied` | Terminal | Protected-route policy denied the upstream/tool. |
 | `forbidden` / `permission_denied` | Terminal | Caller lacks permission, including destructive tool execution permission. |
 | `path_traversal` | Terminal | Path-safety checks rejected a workspace or artifact path. |
-| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, or call fan-out budget was exceeded. |
+| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, call fan-out, `callTool` params (8 MiB per call / 64 MiB pending per run), or step-name (1,024 bytes) budget was exceeded. |
 | `trace_budget_exceeded` | Reduce work and verify outcomes | Host call-record count or serialized byte capacity was exhausted; the execution stops with its retained partial trace. Pending work is canceled and prior mutations may have completed. |
 | `internal_call_budget_exceeded` | Retry with fewer internal operations | The internal Resource, Artifact, Prompt or Skill operation ceiling was exhausted before that operation dispatched. |
 | `result_too_large` / `artifact_too_large` | Retry with smaller output | Returned value or artifact exceeded configured caps. |

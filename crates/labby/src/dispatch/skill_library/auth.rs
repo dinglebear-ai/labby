@@ -124,6 +124,13 @@ impl SkillLibraryAction {
     }
 }
 
+/// Whether an action acquires artifact bytes with a source credential, and so
+/// needs the write scope set `artifacts.import` needs. Every distribution
+/// action does, including the otherwise read-classified `transfer_options`.
+const fn acquires_bytes(action: SkillLibraryAction) -> bool {
+    action.is_mutation() || matches!(action, SkillLibraryAction::TransferOptions)
+}
+
 fn distribution_action_allowed(
     action: SkillLibraryAction,
     grants: ArtifactDistributionGrants,
@@ -492,7 +499,10 @@ pub(crate) async fn authorize_distribution_at_boundary(
     }
     let surface = caller.transport.surface;
     let audit_sink = skill_library_audit_sink();
-    validate_transport(caller, action).inspect_err(|_| {
+    // `transfer_options` performs a full exact acquisition with the source's
+    // server-held credential, so it needs the same write scope set as
+    // `artifacts.import` even though it changes no library state.
+    validate_transport_class(caller, acquires_bytes(action)).inspect_err(|_| {
         audit_sink.record(SkillLibraryAuditEvent::new(
             correlation_id.clone(),
             target_id,
@@ -574,6 +584,29 @@ async fn authorize_distribution_identity_at_boundary(
         ));
         SkillLibraryAuthorizationError::Unavailable
     })?;
+    // Pin, follow, and fork are gated by their distribution grants below;
+    // `transfer_options` has no grant of its own, so it takes the exact-use
+    // permission `artifacts.import` requires before any byte acquisition.
+    if matches!(action, SkillLibraryAction::TransferOptions)
+        && store
+            .authorize_skill_library(
+                identity.clone(),
+                project_id.to_owned(),
+                Permission::AssetUse,
+            )
+            .await
+            .is_err()
+    {
+        audit_sink.record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::AccessSnapshot,
+        ));
+        return Err(SkillLibraryAuthorizationError::Denied);
+    }
     let snapshot = store
         .artifact_distribution_authority(identity, project_id.to_owned(), selected_team_id)
         .await
@@ -1136,8 +1169,17 @@ fn validate_transport(
     caller: &SkillLibraryCaller,
     action: SkillLibraryAction,
 ) -> Result<(), SkillLibraryAuthorizationError> {
+    validate_transport_class(caller, action.is_mutation())
+}
+
+/// The scope, audience, and product-credential-binding gate shared by every
+/// Artifact action, local or remote. `mutation` selects the write scope set.
+pub(crate) fn validate_transport_class(
+    caller: &SkillLibraryCaller,
+    mutation: bool,
+) -> Result<(), SkillLibraryAuthorizationError> {
     let identity_transport = caller.identity.authenticator();
-    let scope_allowed = if action.is_mutation() {
+    let scope_allowed = if mutation {
         caller
             .scopes
             .iter()
@@ -1152,7 +1194,7 @@ fn validate_transport(
         SkillLibrarySurface::ApiCookie => {
             identity_transport == Authenticator::BrowserSession
                 && caller.transport.same_origin
-                && (!action.is_mutation() || caller.transport.csrf_verified)
+                && (!mutation || caller.transport.csrf_verified)
         }
         SkillLibrarySurface::ApiBearer
         | SkillLibrarySurface::Mcp
@@ -2120,6 +2162,38 @@ mod tests {
                 SkillLibraryAction::Activate,
                 SkillLibraryTarget::SharedActive,
             ),
+            Err(SkillLibraryAuthorizationError::Denied)
+        );
+    }
+
+    #[test]
+    fn remote_and_byte_acquiring_actions_share_the_transport_gate() {
+        // A product credential that is not bound to the requested Project is
+        // refused for remote reads and writes alike, exactly as for local ones.
+        let unbound_product = SkillLibraryCaller::new(
+            VerifiedIdentity::local_credential(Authenticator::ProductCredential, "product:a")
+                .unwrap(),
+            ["lab:read".to_string(), "lab".to_string()],
+            SkillLibraryTransport::app_callback(true, true),
+        );
+        for mutation in [false, true] {
+            assert_eq!(
+                validate_transport_class(&unbound_product, mutation),
+                Err(SkillLibraryAuthorizationError::Denied)
+            );
+        }
+
+        // `transfer_options` acquires bytes, so a read-only token cannot run it
+        // even though it changes no library state.
+        let reader = SkillLibraryCaller::new(
+            local("reader"),
+            ["lab:read".to_string()],
+            SkillLibraryTransport::bearer(SkillLibrarySurface::Mcp, true),
+        );
+        assert!(validate_transport_class(&reader, false).is_ok());
+        assert!(acquires_bytes(SkillLibraryAction::TransferOptions));
+        assert_eq!(
+            validate_transport_class(&reader, acquires_bytes(SkillLibraryAction::TransferOptions)),
             Err(SkillLibraryAuthorizationError::Denied)
         );
     }

@@ -210,7 +210,7 @@ before host tool dispatch. Their methods cannot route to a same-named upstream.
 | Provider | Boundary and prerequisites |
 | --- | --- |
 | `state` | Unscoped admin/trusted local authority; virtual paths and quotas within the host's Code Mode workspace. Shares the local-provider lock with `git`. |
-| `git` | Same authority and workspace; invokes the host Git executable with constrained commands, paths, and remote policy. Requires Git on the host. |
+| `git` | Same authority and workspace; invokes the host Git executable with constrained commands, paths, and remote policy. Refuses implicit bare repositories (`safe.bareRepository=explicit`, `core.fsmonitor=false`, discovery ceiling at the workspace root's parent, and a pre-run refusal of a cwd whose ancestors hold `HEAD`, `objects`, and `refs`). Requires Git on the host; 2.38 or newer enforces the `safe.bareRepository` fence. |
 | `openapi` | Uses `labby-openapi` registry and hardened HTTPS client outside that lock. Static/no-auth operations require unscoped admin/trusted authority. Subject-scoped OAuth operations can admit authenticated, unscoped execution callers with a verified subject; the host resolves credentials after the sandbox boundary. |
 | `sandbox` | Unscoped admin/trusted authority plus the optional `microsandbox-sdk` feature and operator-owned `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON`. Runs disposable workloads through the local SDK, outside the state/Git lock. Without the feature, dispatch reports `not_available`. |
 
@@ -236,8 +236,9 @@ product enables this crate feature through `codemode-microsandbox` in its
 | Source / JS heap / native stack | 1 MiB source ceiling; 64 MiB heap and 256 KiB stack per fresh runtime. |
 | Wall time | `CodeModeConfig.timeout_ms` defaults to 30 seconds; validated range is 1–300,000 ms. Response/settlement reserves share that deadline. |
 | Calls / one tool result | 512 ordinary calls, configurable up to 2,048; excess calls reject as `call_budget_exceeded`. One tool result defaults to 8 MiB before truncation. |
+| `callTool` params | 8 MiB serialized per call (checked by the bridge and again by the host) and 64 MiB held by queued or in-flight calls per run; both reject as `budget_exceeded` without echoing the payload. |
 | Internal bridges / snippet resolution | 32 internal requests; 32 snippet resolutions and 1 MiB total resolved source per run, plus recursion/depth checks. |
-| Step records | 256 steps, 256 KiB per serialized value, and 8 MiB of values per run. |
+| Step records | 256 steps, step names of at most 1,024 UTF-8 bytes, 256 KiB per serialized value, and 8 MiB of values per run. |
 | Response / logs | 24 KiB and approximately 6,000 response tokens; 1,000 log entries and 64 KiB logs. |
 | Artifact content / retention | 8 MiB per artifact; retention targets 200 run directories and 4,096 MiB total store. Pruning is best-effort and excludes active runs. |
 

@@ -68,6 +68,23 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
+    if let Err(error) = crate::protocol::check_step_name_bytes(&name) {
+        // Reject before `allocate_step` retains the name, and never echo it.
+        drop(name);
+        let reply = CodeModeRunnerInput::ToolError {
+            seq,
+            error: Box::new(error.with_tool("code_mode::step".to_string())),
+        };
+        return write_runner_input_by_deadline(
+            stdin,
+            &reply,
+            deadline,
+            child,
+            child_pid,
+            &state.calls,
+        )
+        .await;
+    }
     let step_ordinal = match state.allocate_step(seq, name.clone()) {
         Ok(ordinal) => ordinal,
         Err(error) => {
