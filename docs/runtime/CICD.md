@@ -545,6 +545,10 @@ core changes or that tag has already been reserved.
 
 Merge the dev PR to approve that source snapshot. After the merged request passes
 main CI, the coordinator invokes the same immutable preparation described below.
+Before it mints the tag, the coordinator checks the merge commit against its first
+parent and requires that only `.release-please-dev.json` reached main. It does not
+trust the pull request file list, which GitHub derives from the base recorded when a
+long-lived request PR opened.
 The approved source remains frozen even if main advances while CI runs. The tag
 triggers the existing **Release** workflow and all normal qualification gates.
 Merging the request alone does not produce another dev PR; a subsequent product
