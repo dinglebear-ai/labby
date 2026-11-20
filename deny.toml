@@ -16,6 +16,13 @@ ignore = [
     #         reaches this crate; the advisory still applies to test-only signing.
     # re-review: remove when rsa ships a fix or the test fixtures migrate.
     { id = "RUSTSEC-2023-0071", reason = "Dev-only synthetic OAuth signing fixtures; no normal dependency path. Production JWT crypto uses AWS-LC, and access tokens use Ed25519. Test-only signing remains affected until upstream fixes RSA or fixtures migrate." },
+    # owner: jmagar (approved 2026-11-20)
+    # path: transitive only; Labby has no direct chrono dependency.
+    # reason: informational maintenance notice for all versions, not a reported
+    #         vulnerability, and no patched release exists. Several core
+    #         dependencies still require chrono.
+    # re-review: remove when those dependencies migrate to a maintained crate.
+    { id = "RUSTSEC-2026-0543", reason = "Informational unmaintained notice for chrono (all versions, no vulnerability, no patched release); reached only transitively through core dependencies; remove when they migrate" },
 ]
 
 [licenses]

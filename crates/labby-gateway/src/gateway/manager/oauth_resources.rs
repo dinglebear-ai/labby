@@ -10,10 +10,6 @@ use labby_runtime::gateway_config::{GatewayConfig, UpstreamConfig};
 
 use super::GatewayManager;
 
-fn upstream_oauth_manager_matches(existing: &UpstreamConfig, desired: &UpstreamConfig) -> bool {
-    existing.name == desired.name && existing.url == desired.url && existing.oauth == desired.oauth
-}
-
 impl GatewayManager {
     /// Poll `gateway.oauth.status` until the given upstream is authenticated
     /// for `subject`, or until `timeout` elapses (Q-H3).
@@ -99,9 +95,11 @@ impl GatewayManager {
         };
 
         for (name, upstream) in oauth_upstreams {
-            let should_replace = managers.get(name).is_none_or(|existing| {
-                !upstream_oauth_manager_matches(existing.upstream_config(), upstream)
-            });
+            // Same predicate as connect-time scope binding, so a retained
+            // manager is always one the connection path accepts.
+            let should_replace = managers
+                .get(name)
+                .is_none_or(|existing| !existing.serves_oauth_authority(upstream));
             if !should_replace {
                 continue;
             }

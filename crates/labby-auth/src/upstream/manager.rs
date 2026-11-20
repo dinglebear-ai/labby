@@ -250,6 +250,26 @@ impl UpstreamOauthManager {
         &self.upstream
     }
 
+    /// Whether `config` names the OAuth authority this manager was built for.
+    ///
+    /// The authority is the upstream name (credential and state key), its URL
+    /// (protected resource and metadata discovery origin), and its `oauth`
+    /// settings (mode, registration, scopes, credential source, endpoint
+    /// origins). The manager reads no other `UpstreamConfig` field, so edits
+    /// such as `enabled`, exposure filters, proxy toggles, headers, or
+    /// `bearer_token_env` leave the authority unchanged.
+    ///
+    /// Gateway reload replaces a manager exactly when this returns false, and
+    /// connect-time scope binding refuses a config for which it returns false.
+    /// Both must use this predicate: if they diverge, a retained manager is
+    /// refused at connect and discovery fails until the daemon restarts.
+    #[must_use]
+    pub fn serves_oauth_authority(&self, config: &UpstreamConfig) -> bool {
+        self.upstream.name == config.name
+            && self.upstream.url == config.url
+            && self.upstream.oauth == config.oauth
+    }
+
     #[must_use]
     pub fn credential_source_label(&self) -> &'static str {
         match self.upstream.oauth.as_ref().map(|oauth| &oauth.credential) {
