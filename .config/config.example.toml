@@ -204,6 +204,9 @@
 # max_source_bytes = 1048576                # valid range: 1024..=1048576  (JavaScript source)
 # max_response_bytes = 24576                # valid range: 1024..=1048576
 # max_response_tokens = 6000                # valid range: 256..=256000
+# max_programmatic_response_bytes = 1048576 # 0 disables; else 1024..=4194304. Ceiling for a
+#                                           # program's per-call `_meta` budget request; agents
+#                                           # stay on max_response_bytes (docs/dev/CODE_MODE.md)
 # token_estimate_divisor = 4                # valid range: 1..=64  (lower is more conservative)
 # max_log_entries = 1000                    # valid range: 1..=100000
 # max_log_bytes = 65536                     # valid range: 1..=104857600

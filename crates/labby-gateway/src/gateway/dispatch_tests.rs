@@ -1583,6 +1583,7 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
             "timeout_ms": 5000,
             "max_response_bytes": 4096,
             "max_response_tokens": 1024,
+            "max_programmatic_response_bytes": 262_144,
             "token_estimate_divisor": 2,
             "max_log_entries": 10,
             "max_log_bytes": 2048
@@ -1599,9 +1600,42 @@ async fn gateway_code_mode_set_accepts_all_public_config_fields() {
     assert_eq!(value["timeout_ms"], 5000);
     assert_eq!(value["max_response_bytes"], 4096);
     assert_eq!(value["max_response_tokens"], 1024);
+    assert_eq!(value["max_programmatic_response_bytes"], 262_144);
     assert_eq!(value["token_estimate_divisor"], 2);
     assert_eq!(value["max_log_entries"], 10);
     assert_eq!(value["max_log_bytes"], 2048);
+}
+
+#[tokio::test]
+async fn gateway_code_mode_set_rejects_out_of_range_programmatic_ceiling() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    );
+    let error = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({ "max_programmatic_response_bytes": 64 * 1024 * 1024 }),
+    )
+    .await
+    .expect_err("above the 4 MiB ceiling");
+    assert!(
+        matches!(
+            error,
+            ToolError::InvalidParam { ref param, .. }
+                if param == "code_mode.max_programmatic_response_bytes"
+        ),
+        "{error:?}"
+    );
+    let value = dispatch_with_manager(
+        &manager,
+        "gateway.code_mode.set",
+        json!({ "max_programmatic_response_bytes": 0 }),
+    )
+    .await
+    .expect("0 disables requests");
+    assert_eq!(value["max_programmatic_response_bytes"], 0);
 }
 
 #[tokio::test]

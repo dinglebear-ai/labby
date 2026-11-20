@@ -26,6 +26,8 @@ pub mod catalog_notify;
 pub mod client_registry;
 /// Shared runtime state for the optional Code Mode MCP App surface.
 pub mod code_mode_app;
+/// Caller-requested Code Mode response budgets for programmatic MCP clients.
+pub mod code_mode_response_budget;
 /// Dev Container admission and lifecycle validation without host execution.
 pub mod dev_container;
 /// Pluggable, recoverable Dev Container image build effects.
