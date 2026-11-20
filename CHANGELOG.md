@@ -118,6 +118,24 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 - Relicense Dinglebear-owned original work under AGPL-3.0-only and document separate commercial licensing; third-party material retains its original terms.
 
+## [2.8.0](https://github.com/dinglebear-ai/labby/compare/v2.7.0...v2.8.0) (2026-11-20)
+
+
+### Added
+
+* **codemode:** let programmatic clients request a larger response budget ([#929](https://github.com/dinglebear-ai/labby/issues/929)) ([15cc220](https://github.com/dinglebear-ai/labby/commit/15cc22078f28a28332601ed2b933937e51c98f44))
+* **codemode:** let the operator disable codemode_read ([#916](https://github.com/dinglebear-ai/labby/issues/916)) ([ad542fa](https://github.com/dinglebear-ai/labby/commit/ad542fa82bda8d8c46bb33c0da30f720b70ffb7c))
+* **gateway:** set stdio secret env values from stdin ([#930](https://github.com/dinglebear-ai/labby/issues/930)) ([b3b8805](https://github.com/dinglebear-ai/labby/commit/b3b880547715fdc7fe0fa4798506a6d8f749492d))
+
+
+### Fixed
+
+* **depot:** admit the paged depot.sources.list contract ([#921](https://github.com/dinglebear-ai/labby/issues/921)) ([4dfe927](https://github.com/dinglebear-ai/labby/commit/4dfe927c1c569dc7878925a6c796dd1e9f2c5a60))
+* **notices:** stop store contention from failing notice and session tests ([#918](https://github.com/dinglebear-ai/labby/issues/918)) ([2ea8204](https://github.com/dinglebear-ai/labby/commit/2ea82044f73de1ae8b5e8d6b431d9b8d31c243e4))
+* **oauth:** keep reload and connect on one OAuth authority check ([#927](https://github.com/dinglebear-ai/labby/issues/927)) ([e37d962](https://github.com/dinglebear-ai/labby/commit/e37d9627fdbb73cbae24ee5ea43109d7e6506f9e))
+* **release:** audit the dev request by what its merge landed on main ([#934](https://github.com/dinglebear-ai/labby/issues/934)) ([cfdf923](https://github.com/dinglebear-ai/labby/commit/cfdf92377571a56f8c126acc3b2b65971985a2b1))
+* **release:** bind ./-prefixed SHA256SUMS entries in the release observer ([#915](https://github.com/dinglebear-ai/labby/issues/915)) ([a7d3389](https://github.com/dinglebear-ai/labby/commit/a7d338986d23f8c738e55206d2d9743c83693cf2))
+
 ## [2.7.0](https://github.com/dinglebear-ai/labby/compare/v2.6.2...v2.7.0) (2026-11-13)
 
 
