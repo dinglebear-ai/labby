@@ -130,10 +130,14 @@ json.dump(d,open(p,'w'));print(json.dumps(out) if not isinstance(out,str) else o
 
     def test_merged_request_requires_only_reviewed_file_and_same_repo(self):
         previous=self.initial_request()
+        # The reviewed branch smuggles a product file beside the request, so the
+        # merge lands it on main even though the PR file list claims purity.
+        self.git('checkout','-q',previous);(self.repo/'foreign').write_text('product\n')
+        self.git('add','foreign');self.git('commit','-qm','foreign');previous=self.git('rev-parse','HEAD')
         self.git('checkout','-q','main');self.git('merge','--no-ff','-m','merge request',previous)
         self.source=self.git('rev-parse','HEAD');self.git('push','-q','origin','main')
         merged=self.pr(previous,merged_at='2026-10-27T00:00:00Z',merge_commit_sha=self.source)
-        self.state_update(source=self.source,merged=[merged],detail=merged,files=[dict(filename='foreign',status='added')])
+        self.state_update(source=self.source,merged=[merged],detail=merged,files=[dict(filename='.release-please-dev.json',status='added')])
         result=self.execute();self.assertNotEqual(result.returncode,0);self.assertIn('only the request file',result.stderr)
         merged['head']['repo']['full_name']='foreign/labby'
         self.state_update(detail=merged,files=[dict(filename='.release-please-dev.json',status='added')])
@@ -169,6 +173,33 @@ json.dump(d,open(p,'w'));print(json.dumps(out) if not isinstance(out,str) else o
                                  dict(filename='crates/labby/src/lib.rs',status='modified')])
         result=self.execute();self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout)['action'],'already-tagged')
+
+    def squash_request(self, *extra):
+        head=self.initial_request();recorded=self.source
+        self.git('checkout','-q','main');self.git('merge','--squash','-q',head)
+        for name in extra:
+            (self.repo/name).parent.mkdir(parents=True,exist_ok=True);(self.repo/name).write_text('product\n');self.git('add',name)
+        self.git('commit','-qm','chore(release): request v2.6.3-dev.1 (#3)')
+        self.source=self.git('rev-parse','HEAD');self.git('push','-q','origin','main')
+        merged=self.pr(head,merged_at='2026-10-27T00:00:00Z',merge_commit_sha=self.source)
+        # A long-lived request branch keeps GitHub's recorded base from when it
+        # opened, so its PR file list also counts every main change since then.
+        stale=[dict(filename='.release-please-dev.json',status='modified')]+[
+            dict(filename=f'crates/labby/src/stale_{n}.rs',status='modified') for n in range(99)]
+        self.state_update(source=self.source,merged=[merged],detail=merged,closed=[merged],prs=[],files=stale)
+        return recorded
+
+    def test_squash_merged_request_is_audited_by_what_landed_on_main(self):
+        recorded=self.squash_request()
+        result=self.execute();self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['action'],'tagged')
+        self.assertEqual(self.git('rev-parse','v2.6.3-dev.1^'),recorded)
+
+    def test_squash_merged_request_with_product_change_is_rejected(self):
+        self.squash_request('crates/labby/src/lib.rs')
+        result=self.execute();self.assertNotEqual(result.returncode,0)
+        self.assertIn('only the request file',result.stderr)
+        self.assertNotIn('v2.6.3-dev.1',self.git('tag','--list'))
 
     def test_existing_tag_with_wrong_source_is_never_overwritten(self):
         self.merge_request();self.git('tag','v2.6.3-dev.1',self.source);self.git('push','-q','origin','refs/tags/v2.6.3-dev.1')

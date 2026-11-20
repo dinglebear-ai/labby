@@ -90,9 +90,16 @@ class Coordinator:
         # -- and re-auditing the merged PR's file list on every later run would
         # wedge the channel permanently on a historical request that was merged
         # carrying unrelated changes alongside the request file.
+        #
+        # Audit what the merge actually landed on main: the merge commit against
+        # its first parent. That is the same comparison for squash, rebase, and
+        # merge-commit merges. The PR file list is not used: GitHub computes it
+        # from the base recorded when a long-lived request PR opened, so a
+        # request branch refreshed across many main changes lists all of them
+        # even when its squash merge changes only the request file.
         if not self.git('ls-remote', 'origin', 'refs/tags/v' + request['version']):
-            files = self.api(f'pulls/{pr["number"]}/files?per_page=100')
-            if len(files) != 1 or files[0]['filename'] != REQUEST or files[0]['status'] not in ('added', 'modified'):
+            landed = self.git('diff-tree', '-r', '--no-renames', '--name-status', f'{source}^1', source)
+            if landed not in (f'A\t{REQUEST}', f'M\t{REQUEST}'):
                 raise ValueError('dev request PR must change only the request file')
         head = self.fetch(pr['head']['sha'])
         if head != pr['head']['sha']:
