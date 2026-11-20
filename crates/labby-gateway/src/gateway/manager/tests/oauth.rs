@@ -148,6 +148,123 @@ async fn reload_replaces_changed_upstream_oauth_manager_and_evicts_cache() {
     );
 }
 
+async fn reconcile_fixture(
+    dir: &tempfile::TempDir,
+) -> (
+    GatewayManager,
+    OauthClientCache,
+    Arc<dashmap::DashMap<String, UpstreamOauthManager>>,
+) {
+    let (sqlite, key, redirect_uri) = fixture_oauth_resources(dir).await;
+    let managers = Arc::new(dashmap::DashMap::new());
+    let cache = OauthClientCache::new(Arc::clone(&managers));
+    let manager = GatewayManager::new(
+        dir.path().join("config.toml"),
+        GatewayRuntimeHandle::default(),
+    )
+    .with_upstream_oauth_managers(Arc::clone(&managers))
+    .with_oauth_client_cache(cache.clone())
+    .with_oauth_resources(sqlite, key, redirect_uri);
+    (manager, cache, managers)
+}
+
+fn config_with(upstream: UpstreamConfig) -> GatewayConfig {
+    GatewayConfig {
+        upstream: vec![upstream],
+        ..GatewayConfig::default()
+    }
+}
+
+/// Connect-time scope binding must agree with reload reconciliation: an edit
+/// that leaves the OAuth authority (name, url, oauth) unchanged keeps the
+/// registered manager, so discovery for the edited config must not be refused.
+#[tokio::test]
+async fn reload_with_non_oauth_edit_keeps_manager_usable_for_connect() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (manager, cache, _managers) = reconcile_fixture(&dir).await;
+    let original = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
+    cache
+        .scope_challenge_handler(&original, "alice")
+        .expect("registered config binds its scope handler");
+
+    let mut edited = original.clone();
+    edited.proxy_resources = !edited.proxy_resources;
+    edited.expose_tools = Some(vec!["list_issues".into()]);
+    edited.bearer_token_env = Some("LINEAR_TOKEN".into());
+    edited.display_name = Some("Linear".into());
+    manager.reconcile_upstream_oauth_managers(&config_with(edited.clone()));
+
+    cache
+        .scope_challenge_handler(&edited, "alice")
+        .expect("a non-OAuth edit must not leave discovery needing reauthorization");
+}
+
+/// Removing an upstream and adding it back under the same name, url and OAuth
+/// settings but different non-OAuth defaults must leave it discoverable, both
+/// when the reload sees the removal and when it only sees the final config.
+#[tokio::test]
+async fn readded_oauth_upstream_with_different_defaults_is_usable_for_connect() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (manager, cache, managers) = reconcile_fixture(&dir).await;
+    let mut original = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    original.enabled = false;
+    original.proxy_prompts = true;
+    manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
+
+    let readded = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+    // Re-add observed only as the final config of a single reload.
+    manager.reconcile_upstream_oauth_managers(&config_with(readded.clone()));
+    cache
+        .scope_challenge_handler(&readded, "alice")
+        .expect("re-added upstream must not require reauthorization");
+
+    // Re-add observed as a separate remove and add.
+    manager.reconcile_upstream_oauth_managers(&GatewayConfig::default());
+    assert!(!managers.contains_key("linear"));
+    manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
+    cache
+        .scope_challenge_handler(&original, "alice")
+        .expect("re-added upstream must not require reauthorization");
+}
+
+/// A real OAuth authority change still replaces the manager, and a connection
+/// still holding the superseded config cannot bind to the replacement.
+#[tokio::test]
+async fn reload_with_oauth_authority_change_rejects_superseded_config() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (manager, cache, managers) = reconcile_fixture(&dir).await;
+    let original = fixture_oauth_upstream("linear", "https://linear.example.com/mcp");
+
+    let moved = fixture_oauth_upstream("linear", "https://linear-v2.example.com/mcp");
+    let mut rescoped = original.clone();
+    rescoped.oauth.as_mut().expect("oauth").scopes = Some(vec!["admin".into()]);
+
+    for changed in [moved, rescoped] {
+        manager.reconcile_upstream_oauth_managers(&config_with(original.clone()));
+        manager.reconcile_upstream_oauth_managers(&config_with(changed.clone()));
+        {
+            let registered = managers.get("linear").expect("oauth manager");
+            let registered = registered.upstream_config();
+            assert_eq!(
+                (&registered.url, &registered.oauth),
+                (&changed.url, &changed.oauth),
+                "an OAuth authority change must replace the manager"
+            );
+        }
+        cache
+            .scope_challenge_handler(&changed, "alice")
+            .expect("the replacement manager serves the new authority");
+        assert!(
+            matches!(
+                cache.scope_challenge_handler(&original, "alice"),
+                Err(labby_auth::upstream::types::OauthError::NeedsReauth(_))
+            ),
+            "a superseded OAuth authority must not bind to the replacement manager"
+        );
+    }
+}
+
 #[tokio::test]
 async fn cancelled_oauth_clear_finishes_client_and_status_invalidation() {
     let dir = tempfile::tempdir().unwrap();
