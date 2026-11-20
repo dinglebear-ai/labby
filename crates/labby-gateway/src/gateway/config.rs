@@ -1196,7 +1196,7 @@ fn invalid_transport_param(reason: &str) -> &'static str {
     }
 }
 
-fn validate_upstream(
+pub(crate) fn validate_upstream(
     upstream: &UpstreamConfig,
     prefs: &GatewayPreferences,
 ) -> Result<(), ToolError> {
@@ -1243,6 +1243,8 @@ fn validate_upstream(
         }
     })?;
 
+    validate_secret_env_mapping(upstream)?;
+
     match (&upstream.url, &upstream.command) {
         (Some(_), Some(_)) => Err(ToolError::InvalidParam {
             message: "gateway must not set both `url` and `command`".to_string(),
@@ -1256,6 +1258,75 @@ fn validate_upstream(
         (None, Some(command)) => {
             validate_stdio_upstream(command, &upstream.args, &upstream.env, prefs)
         }
+    }
+}
+
+/// Validate the names in `secret_env`. Values live in the credential file and
+/// are validated where they are written.
+fn validate_secret_env_mapping(upstream: &UpstreamConfig) -> Result<(), ToolError> {
+    use crate::security::stdio_secret_env::{
+        MAX_SECRET_ENV_ENTRIES, validate_secret_env_credential_name, validate_secret_env_name,
+    };
+
+    if upstream.secret_env.is_empty() {
+        return Ok(());
+    }
+    let invalid = |message: String| ToolError::InvalidParam {
+        message,
+        param: "secret_env".to_string(),
+    };
+    if upstream.command.is_none() {
+        return Err(invalid(
+            "secret env values apply only to stdio upstreams; set `command`".to_string(),
+        ));
+    }
+    if upstream.secret_env.len() > MAX_SECRET_ENV_ENTRIES {
+        return Err(invalid(format!(
+            "an upstream may hold at most {MAX_SECRET_ENV_ENTRIES} secret env values"
+        )));
+    }
+    for (child, credential) in &upstream.secret_env {
+        validate_secret_env_name(child)?;
+        if upstream.env.contains_key(child) {
+            return Err(invalid(format!(
+                "`{child}` is set in both `env` and `secret_env`"
+            )));
+        }
+        if upstream.bearer_token_env.as_deref() == Some(child.as_str()) {
+            return Err(invalid(format!(
+                "`{child}` is already this upstream's bearer_token_env variable"
+            )));
+        }
+        validate_secret_env_credential_name(child, credential)?;
+    }
+    Ok(())
+}
+
+/// Default credential-file key for secret env var `child` of upstream `name`.
+pub(crate) fn default_secret_env_credential_name(name: &str, child: &str) -> String {
+    format!("LABBY_GW_{}_ENV_{child}", normalized_env_segment(name))
+}
+
+fn normalized_env_segment(name: &str) -> String {
+    let normalized = name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    if normalized.is_empty() {
+        "GATEWAY".to_string()
+    } else {
+        normalized
     }
 }
 
@@ -1316,28 +1387,7 @@ pub(crate) fn validate_bearer_token_env_name(value: &str) -> Result<(), ToolErro
 }
 
 pub(crate) fn default_gateway_bearer_env_name(name: &str) -> String {
-    let normalized = name
-        .trim()
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .split('_')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join("_");
-
-    let inner = if normalized.is_empty() {
-        "GATEWAY".to_string()
-    } else {
-        normalized
-    };
-    format!("LABBY_GW_{inner}_AUTH_HEADER")
+    format!("LABBY_GW_{}_AUTH_HEADER", normalized_env_segment(name))
 }
 
 fn looks_like_raw_bearer_token(value: &str) -> bool {

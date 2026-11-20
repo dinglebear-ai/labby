@@ -2329,6 +2329,7 @@ mod tests {
         .await;
 
         let upstream = UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

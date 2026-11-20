@@ -4501,6 +4501,7 @@ mod tests {
         );
         let config = crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 name: "axon".to_string(),
@@ -5870,6 +5871,7 @@ mod tests {
     fn protected_named_upstream_config(backend_url: &str) -> crate::config::LabConfig {
         crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 name: "restricted".to_string(),

@@ -9015,6 +9015,9 @@
           "protected_route": {
             "type": "object"
           },
+          "secret_env_values": {
+            "type": "object"
+          },
           "spec": {
             "type": "string"
           }
@@ -9804,6 +9807,9 @@
             "type": "string"
           },
           "protected_route": {
+            "type": "object"
+          },
+          "secret_env_values": {
             "type": "object"
           }
         }

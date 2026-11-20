@@ -1761,6 +1761,7 @@ mod tests {
         let manager = test_manager();
         manager
             .replace_config_for_tests(vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,

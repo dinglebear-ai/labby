@@ -5,3 +5,4 @@
 
 pub mod spawn_guard;
 pub mod ssrf;
+pub mod stdio_secret_env;

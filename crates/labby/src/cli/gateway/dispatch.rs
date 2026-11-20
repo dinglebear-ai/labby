@@ -424,36 +424,44 @@ pub(super) async fn dispatch_command(
                 }
                 GatewayCommand::Add(args) => {
                     dry_run = args.dry_run;
-                    (
-                        "gateway.add".to_string(),
-                        json!({
-                            "origin": cli_origin,
-                            "owner": cli_owner,
-                            "spec": {
-                                "name": args.name,
-                                "url": args.url,
-                                "command": args.command,
-                                "args": args.args,
-                                "bearer_token_env": args.bearer_token_env,
-                                "headers_env": args.headers_env.unwrap_or_default(),
-                                "proxy_resources": args.proxy_resources,
-                                "proxy_skills": args.proxy_skills,
-                                "expose_skills": if args.expose_skills.is_empty() { None } else { Some(args.expose_skills) },
-                            }
-                        }),
-                    )
+                    let secret_env_values =
+                        super::secret_env_input::read_secret_env_values(&args.env)?;
+                    let mut params = json!({
+                        "origin": cli_origin,
+                        "owner": cli_owner,
+                        "spec": {
+                            "name": args.name,
+                            "url": args.url,
+                            "command": args.command,
+                            "args": args.args,
+                            "bearer_token_env": args.bearer_token_env,
+                            "headers_env": args.headers_env.unwrap_or_default(),
+                            "proxy_resources": args.proxy_resources,
+                            "proxy_skills": args.proxy_skills,
+                            "expose_skills": if args.expose_skills.is_empty() { None } else { Some(args.expose_skills) },
+                        }
+                    });
+                    super::secret_env_input::insert_secret_env_values(
+                        &mut params,
+                        secret_env_values,
+                    );
+                    ("gateway.add".to_string(), params)
                 }
                 GatewayCommand::Update(args) => {
                     let name = args.name.clone();
-                    (
-                        "gateway.update".to_string(),
-                        json!({
-                            "name": name,
-                            "origin": cli_origin,
-                            "owner": cli_owner,
-                            "patch": update_patch_from_args(args)
-                        }),
-                    )
+                    let secret_env_values =
+                        super::secret_env_input::read_secret_env_values(&args.env)?;
+                    let mut params = json!({
+                        "name": name,
+                        "origin": cli_origin,
+                        "owner": cli_owner,
+                        "patch": update_patch_from_args(args)
+                    });
+                    super::secret_env_input::insert_secret_env_values(
+                        &mut params,
+                        secret_env_values,
+                    );
+                    ("gateway.update".to_string(), params)
                 }
                 GatewayCommand::Remove(args) => (
                     "gateway.remove".to_string(),
@@ -718,6 +726,7 @@ pub(super) async fn dispatch_command(
             };
 
             if dry_run {
+                let params = super::secret_env_input::redact_secret_env_values(params);
                 crate::cli::helpers::print_dry_run("gateway", &action, &params, format)?;
                 return Ok(ExitCode::SUCCESS);
             }

@@ -129,6 +129,7 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
     let gateway = manager
         .add(
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,

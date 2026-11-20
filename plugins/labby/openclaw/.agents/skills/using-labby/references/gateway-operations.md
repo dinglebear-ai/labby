@@ -62,6 +62,24 @@ example, not a built-in Labby variable.
 When a public HTTP/SSE upstream requires no auth, omit `bearer_token_env` and
 OAuth config. Labby supports no-auth HTTP upstreams.
 
+A stdio server that reads an API key or token from its environment takes the
+value through `--env NAME`, which reads one value per line from standard input
+in flag order. Never put the value in argv, a plain `env` entry, or a log:
+
+```bash
+printf '%s\n' "$FIGMA_TOKEN" | labby server add figma --command npx \
+  --arg=-y --arg figma-developer-mcp --arg=--stdio --env FIGMA_API_KEY --json
+printf '%s\n' "$NEW_TOKEN" | labby server set figma --env FIGMA_API_KEY --json
+```
+
+Labby stores each value write-only in `$LABBY_HOME/.env` and keeps only the
+names in `secret_env`; reads list names, never values. `set` replaces or adds
+the named values and keeps other env entries. A terminal on stdin, a line-count
+mismatch, an empty or oversized value, and reserved names (`PATH`, `HOME`,
+`TMPDIR`, `LD_*`, `LABBY_*`, sandbox grants) are refused before any write. Pass
+hyphenated arguments as `--arg=-y`. API and MCP callers use the write-only
+`secret_env_values` object on `gateway.add`/`gateway.update`.
+
 ## Updating And Removing Upstreams
 
 ```bash

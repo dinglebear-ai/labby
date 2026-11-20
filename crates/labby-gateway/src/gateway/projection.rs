@@ -40,6 +40,7 @@ pub(super) fn config_view(
         command,
         args,
         bearer_token_env: upstream.bearer_token_env.clone(),
+        secret_env: upstream.secret_env.keys().cloned().collect(),
         oauth_enabled: upstream.oauth.is_some(),
         proxy_resources: upstream.proxy_resources,
         proxy_prompts: upstream.proxy_prompts,
@@ -1118,6 +1119,7 @@ mod tests {
 
     fn upstream_fixture(command: Option<&str>, args: &[&str], url: Option<&str>) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

@@ -2053,6 +2053,7 @@ mod url_tests {
             sqlite,
             key,
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -2129,6 +2130,7 @@ mod url_tests {
             sqlite.clone(),
             key.clone(),
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -2256,6 +2258,7 @@ mod url_tests {
                 sqlite.clone(),
                 key.clone(),
                 UpstreamConfig {
+                    secret_env: Default::default(),
                     enabled: true,
                     name: name.to_string(),
                     display_name: None,

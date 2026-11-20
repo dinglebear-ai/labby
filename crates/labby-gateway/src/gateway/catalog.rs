@@ -1538,6 +1538,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 description: "Write-only: raw bearer token to store securely. Never returned on reads. If bearer_token_env is omitted from the spec, a default env var name is derived from the gateway name.",
             },
             ParamSpec {
+                name: "secret_env_values",
+                ty: "object",
+                required: false,
+                description: "Write-only: secret stdio env values keyed by child variable name (^[A-Z][A-Z0-9_]*$; launcher, sandbox, loader, and LABBY_* names are refused). Stored in the credential file, referenced by name from the upstream's secret_env, and never returned on reads. Stdio upstreams only; each value is non-empty, single-line, and at most 16384 bytes; at most 32 per upstream. Replaces a plain env entry of the same name in the spec.",
+            },
+            ParamSpec {
                 name: "protected_route",
                 ty: "object",
                 required: false,
@@ -1569,6 +1575,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: false,
                 description: "Write-only: raw bearer token to store securely. Never returned on reads. Requires bearer_token_env in patch or existing config.",
+            },
+            ParamSpec {
+                name: "secret_env_values",
+                ty: "object",
+                required: false,
+                description: "Write-only: secret stdio env values keyed by child variable name (^[A-Z][A-Z0-9_]*$; launcher, sandbox, loader, and LABBY_* names are refused). Stored in the credential file, referenced by name from the upstream's secret_env, and never returned on reads. Stdio upstreams only; each value is non-empty, single-line, and at most 16384 bytes; at most 32 per upstream. Adds or replaces the named values and keeps every other env entry; a plain env entry with the same name becomes secret.",
             },
             ParamSpec {
                 name: "protected_route",

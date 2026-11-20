@@ -1526,6 +1526,7 @@ async fn atomic_gateway_save_dispatch_rejects_route_strings_before_effects() {
 
 fn oauth_upstream_fixture(name: &str, enabled: bool) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled,
@@ -1930,6 +1931,7 @@ async fn gateway_list_returns_array() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1978,6 +1980,7 @@ async fn gateway_client_config_get_returns_http_and_stdio_configs() {
     manager
         .replace_config_for_tests(vec![
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -2004,6 +2007,7 @@ async fn gateway_client_config_get_returns_http_and_stdio_configs() {
                 priority: 1.0,
             },
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -2739,6 +2743,7 @@ async fn gateway_server_get_returns_custom_gateway_row() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -2789,6 +2794,7 @@ async fn gateway_list_and_mcp_runtime_are_snapshot_only_until_status_refresh() {
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -2894,6 +2900,7 @@ async fn gateway_status_catalog_refresh_reprobes_healthy_upstream_tool_growth() 
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -3121,6 +3128,7 @@ async fn fleet_catalog_refresh_continues_after_response_timeout() {
     let manager = GatewayManager::new(dir.path().join("config.toml"), runtime.clone());
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -3185,6 +3193,7 @@ async fn gateway_list_surfaces_cached_custom_gateway_summary_counts() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -3734,6 +3743,7 @@ async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {
     manager
         .replace_config_for_tests(vec![
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -3760,6 +3770,7 @@ async fn gateway_test_spec_stdio_executes_command_and_name_routes_to_config() {
                 priority: 1.0,
             },
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -4038,6 +4049,7 @@ async fn only_reload_promises_to_pick_up_changed_bearer_token_env_vars() {
     let manager = test_manager();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -4108,6 +4120,7 @@ async fn gateway_mcp_cleanup_dispatch_returns_cleanup_payload() {
     let script_path = script.to_string_lossy().into_owned();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -4198,6 +4211,7 @@ async fn gateway_mcp_disable_with_cleanup_returns_gateway_and_cleanup_payload() 
     let script_path = script.to_string_lossy().into_owned();
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -4859,6 +4873,7 @@ fn make_discovered_http(name: &str) -> DiscoveredServer {
     DiscoveredServer {
         name: name.to_string(),
         spec: UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             name: name.to_string(),
@@ -4894,6 +4909,7 @@ fn make_discovered_stdio(name: &str, command: &str) -> DiscoveredServer {
     DiscoveredServer {
         name: name.to_string(),
         spec: UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             name: name.to_string(),
@@ -5199,6 +5215,7 @@ async fn gateway_dispatch_schema_missing_param_without_manager() {
 }
 fn upstream_fixture(name: &str, url: Option<String>, command: Option<String>) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         name: name.to_string(),

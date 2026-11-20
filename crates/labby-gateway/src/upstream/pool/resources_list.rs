@@ -1413,6 +1413,7 @@ mod tests {
 
     fn oauth_schema_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

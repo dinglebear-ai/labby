@@ -1275,6 +1275,7 @@ mod tests {
         .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry()));
         let config = || GatewayConfig {
             upstream: vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,

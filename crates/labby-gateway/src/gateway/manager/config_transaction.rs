@@ -13,6 +13,7 @@ use tokio::sync::oneshot;
 use crate::gateway::config::load_gateway_config;
 use crate::upstream::types::UpstreamRuntimeOwner;
 
+use super::secret_env::CredentialWrites;
 use super::{ConfigMutationGuard, GatewayManager};
 
 fn credential_changed_upstreams(
@@ -30,6 +31,7 @@ fn credential_changed_upstreams(
                 .bearer_token_env
                 .iter()
                 .chain(upstream.headers_env.values())
+                .chain(upstream.secret_env.values())
                 .any(|name| {
                     labby_runtime::helpers::environment_names_equal_with_case(
                         name,
@@ -42,17 +44,26 @@ fn credential_changed_upstreams(
         .collect()
 }
 
-/// Custom-header credentials can change the upstream identity independently of
-/// its bearer token. Until retained-task authority includes their value digest,
-/// conservatively revoke tasks on managed writes to any referenced header key.
+/// Custom-header and secret stdio env credentials can change the upstream
+/// identity independently of its bearer token. Until retained-task authority
+/// includes their value digest, conservatively revoke tasks on managed writes
+/// to any referenced key.
 fn header_credential_requires_task_revocation(
     upstream: &labby_runtime::gateway_config::UpstreamConfig,
     env_name: &str,
     case_insensitive: bool,
 ) -> bool {
-    upstream.headers_env.values().any(|name| {
-        labby_runtime::helpers::environment_names_equal_with_case(name, env_name, case_insensitive)
-    })
+    upstream
+        .headers_env
+        .values()
+        .chain(upstream.secret_env.values())
+        .any(|name| {
+            labby_runtime::helpers::environment_names_equal_with_case(
+                name,
+                env_name,
+                case_insensitive,
+            )
+        })
 }
 
 /// Longest a caller waits for the gateway configuration-mutation lease before
@@ -331,7 +342,7 @@ impl GatewayManager {
             candidate,
             origin,
             owner,
-            None,
+            CredentialWrites::default(),
         )
         .await
     }
@@ -343,7 +354,7 @@ impl GatewayManager {
         candidate: GatewayConfig,
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
-        credential: Option<(String, String)>,
+        credentials: CredentialWrites,
     ) -> Result<crate::gateway::types::GatewayCatalogDiff, ToolError> {
         let manager = self.clone();
         let origin = origin.map(str::to_owned);
@@ -354,7 +365,7 @@ impl GatewayManager {
             // acquire either the process-local or cross-process lease.
             let _mutation_guard = mutation_guard;
             manager
-                .commit_config_and_reload_owned(previous, candidate, origin, owner, credential)
+                .commit_config_and_reload_owned(previous, candidate, origin, owner, credentials)
                 .await
         })
         .await
@@ -369,56 +380,79 @@ impl GatewayManager {
         candidate: GatewayConfig,
         origin: Option<String>,
         owner: Option<UpstreamRuntimeOwner>,
-        credential: Option<(String, String)>,
+        credentials: CredentialWrites,
     ) -> Result<crate::gateway::types::GatewayCatalogDiff, ToolError> {
         let previous_revision = config_revision(&previous)?;
         let candidate_revision = config_revision(&candidate)?;
         self.backup_config_before_commit(&previous_revision).await?;
-        let previous_token = match credential.as_ref() {
+        let credential = credentials.bearer.as_ref();
+        let previous_token = match credential {
             Some((env_name, _)) => self.snapshot_gateway_bearer_token(env_name).await?,
             None => None,
         };
-        let credentials_changed = credential.as_ref().map_or_else(Vec::new, |(env_name, _)| {
+        let mut previous_raw = Vec::with_capacity(credentials.raw.len());
+        for (env_name, _) in &credentials.raw {
+            previous_raw.push(self.snapshot_gateway_bearer_token(env_name).await?);
+        }
+        let bearer_changed = credential.map_or_else(Vec::new, |(env_name, _)| {
             credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
         });
+        let mut credentials_changed = bearer_changed.clone();
+        for (env_name, _) in &credentials.raw {
+            for name in credential_changed_upstreams(&previous, &candidate, env_name, cfg!(windows))
+            {
+                if !credentials_changed.contains(&name) {
+                    credentials_changed.push(name);
+                }
+            }
+        }
         // Persisted file bytes are not necessarily the winning authority:
         // normalized-equivalent bearer values and genuine process overrides
         // preserve durable tasks while forcing touched transports to reconnect.
         // Header references revoke conservatively: bearer equality alone cannot
         // prove their authority is unchanged.
         let pool = self.current_pool_sync();
-        let credential_authority_changed =
-            credential
-                .as_ref()
-                .map_or_else(Vec::new, |(updated_env_name, token_value)| {
-                    let file_value = super::persist::normalize_gateway_bearer_token(token_value);
-                    let path = self.store.env_path();
-                    previous
-                        .upstream
-                        .iter()
-                        .filter(|old| credentials_changed.contains(&old.name))
-                        .filter(|old| {
-                            if header_credential_requires_task_revocation(
-                                old,
-                                updated_env_name,
-                                cfg!(windows),
-                            ) {
-                                return true;
-                            }
-                            let token = old.bearer_token_env.as_deref().and_then(|env_name| {
-                                crate::upstream::auth::configured_bearer_token_after_file_update(
-                                    env_name,
-                                    &path,
-                                    &file_value,
-                                )
-                            });
-                            pool.as_ref().is_none_or(|pool| {
-                                !pool.task_bearer_authority_matches_token(&old.name, token)
-                            })
+        let mut credential_authority_changed =
+            credential.map_or_else(Vec::new, |(updated_env_name, token_value)| {
+                let file_value = super::persist::normalize_gateway_bearer_token(token_value);
+                let path = self.store.env_path();
+                previous
+                    .upstream
+                    .iter()
+                    .filter(|old| bearer_changed.contains(&old.name))
+                    .filter(|old| {
+                        if header_credential_requires_task_revocation(
+                            old,
+                            updated_env_name,
+                            cfg!(windows),
+                        ) {
+                            return true;
+                        }
+                        let token = old.bearer_token_env.as_deref().and_then(|env_name| {
+                            crate::upstream::auth::configured_bearer_token_after_file_update(
+                                env_name,
+                                &path,
+                                &file_value,
+                            )
+                        });
+                        pool.as_ref().is_none_or(|pool| {
+                            !pool.task_bearer_authority_matches_token(&old.name, token)
                         })
-                        .map(|old| old.name.clone())
-                        .collect::<Vec<_>>()
-                });
+                    })
+                    .map(|old| old.name.clone())
+                    .collect::<Vec<_>>()
+            });
+        // Secret stdio env values carry no retained-task authority digest, so
+        // any managed write to one revokes the tasks of upstreams that use it.
+        for (env_name, _) in &credentials.raw {
+            for old in previous.upstream.iter().filter(|old| {
+                header_credential_requires_task_revocation(old, env_name, cfg!(windows))
+            }) {
+                if !credential_authority_changed.contains(&old.name) {
+                    credential_authority_changed.push(old.name.clone());
+                }
+            }
+        }
         // Durable task revocation precedes publishing either credentials or
         // configuration. Its pending intent fences registrations until reconcile.
         let task_revocations = previous
@@ -443,8 +477,12 @@ impl GatewayManager {
                 .map_err(ToolError::internal_message)?;
         }
         let commit_result: Result<crate::gateway::types::GatewayCatalogDiff, ToolError> = async {
-            if let Some((env_name, token_value)) = credential.as_ref() {
+            if let Some((env_name, token_value)) = credential {
                 self.persist_gateway_bearer_token(env_name, token_value)
+                    .await?;
+            }
+            for (env_name, value) in &credentials.raw {
+                self.persist_gateway_secret_env_value(env_name, value)
                     .await?;
             }
             self.write_config_file(&candidate).await?;
@@ -491,7 +529,7 @@ impl GatewayManager {
                 );
                 // Restore only this credential key, preserving unrelated host
                 // writes, before rebuilding any peer from the prior config.
-                if let Some((env_name, _)) = credential.as_ref()
+                if let Some((env_name, _)) = credential
                     && let Err(rollback_error) = self
                         .store
                         .restore_gateway_bearer_token(env_name, previous_token.as_deref())
@@ -500,6 +538,19 @@ impl GatewayManager {
                     return Err(ToolError::internal_message(format!(
                         "gateway reconcile failed ({commit_error}); credential rollback failed ({rollback_error})"
                     )));
+                }
+                for ((env_name, _), previous_value) in
+                    credentials.raw.iter().zip(&previous_raw).rev()
+                {
+                    if let Err(rollback_error) = self
+                        .store
+                        .restore_gateway_bearer_token(env_name, previous_value.as_deref())
+                        .await
+                    {
+                        return Err(ToolError::internal_message(format!(
+                            "gateway reconcile failed ({commit_error}); credential rollback failed ({rollback_error})"
+                        )));
+                    }
                 }
                 if let Err(rollback_error) = self.write_config_file(&previous).await {
                     tracing::error!(

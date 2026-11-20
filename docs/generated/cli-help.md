@@ -2196,9 +2196,17 @@ Options:
       --context <CONTEXT>
           Select a saved destination for a daemon-backed command. Never falls back locally
 
+      --env <NAME>
+          Secret stdio environment variable to set (repeat for multiple).
+
+          Each `--env NAME` reads its value from standard input, one value per line in flag order (LF or CRLF; final newline optional). Values never come from the command line, are never echoed, and are stored write-only in the gateway credential file. A terminal on stdin is refused.
+
       --proxy-resources <PROXY_RESOURCES>
           [default: true]
           [possible values: true, false]
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
 
       --proxy-skills <PROXY_SKILLS>
           Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
@@ -2208,14 +2216,11 @@ Options:
           [default: false]
           [possible values: true, false]
 
-      --server <SERVER>
-          Explicit Labby server URL; uses credentials bound to that destination
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --expose-skill <EXPOSE_SKILLS>
           Initial skill-name exposure allowlist. Repeat for multiple patterns
-
-      --team-id <TEAM_ID>
-          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
 
       --dry-run
           Preview the proposed configuration without contacting or changing a gateway
@@ -2293,6 +2298,11 @@ Options:
       --clear-headers-env
           Clear all environment-backed custom HTTP headers
 
+      --env <NAME>
+          Secret stdio environment variable to set (repeat for multiple).
+
+          Each `--env NAME` reads its value from standard input, one value per line in flag order (LF or CRLF; final newline optional). Values never come from the command line, are never echoed, and are stored write-only in the gateway credential file. A terminal on stdin is refused. Adds or replaces the named values and keeps every other env entry.
+
       --proxy-resources <PROXY_RESOURCES>
           [possible values: true, false]
 
@@ -2308,7 +2318,7 @@ Options:
           Clear the skill-name allowlist and expose all validated Skills
 
   -h, --help
-          Print help
+          Print help (see a summary with '-h')
 ```
 
 ## `labby server remove`

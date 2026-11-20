@@ -570,6 +570,7 @@ fn stdio_upstream(
     env: BTreeMap<String, String>,
 ) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         name: name.to_string(),
@@ -599,6 +600,7 @@ fn stdio_upstream(
 
 fn http_upstream(name: &str, url: String, bearer_token_env: &str) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         name: name.to_string(),

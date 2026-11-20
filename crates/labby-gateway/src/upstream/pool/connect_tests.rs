@@ -894,6 +894,7 @@ async fn http_upstream_does_not_downgrade_generic_server_failures() {
 
 fn oauth_http_config() -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
