@@ -56,17 +56,27 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
     def test_openai_review_preserves_ids_and_binds_lifetime_and_challenge_evidence(self) -> None:
         data = json.loads(OPENAI_NORMATIVE.read_text())
         self.assertEqual([row["id"] for row in data["requirements"]], [
-            f"OAI-CLAUSE-{number:03}" for number in range(1, 36)
+            f"OAI-CLAUSE-{number:03}" for number in range(1, 37)
         ])
         rows = {row["id"]: row for row in data["requirements"]}
-        self.assertEqual(data["captured_at"], "2026-11-13")
+        self.assertEqual(data["captured_at"], "2026-11-20")
         self.assertEqual(data["source_sha256"],
-                         "50702dd0b01d9bf92ca8470a9785570cddd0291fff8680737d5a4bc85a471b81")
+                         "feba34ce471b1d7e5eda8d960deca016dacd4a332560d7254bb7b8451f2d5142")
         self.assertEqual(rows["OAI-CLAUSE-020"]["verification_ids"],
                          ["OAI-AUTH-002", "OAI-AUTH-003"])
         self.assertEqual(rows["OAI-CLAUSE-035"]["verification_ids"], ["OAI-AUTH-009"])
         self.assertIn("no client secret", rows["OAI-CLAUSE-035"]["disposition"])
         harness = (ROOT / "scripts/ci/openai-auth-conformance.sh").read_text()
+        self.assertEqual(rows["OAI-CLAUSE-036"]["verification_ids"],
+                         ["OAI-AUTH-001", "OAI-AUTH-007"])
+        for group, selector in [
+            ("OAI-AUTH-001", "metadata::tests::protected_resource_metadata_names_the_exact_metadata_issuer"),
+            ("OAI-AUTH-007", "api::router::tests::protected_resource_metadata_names_the_exact_authorization_server_issuer"),
+        ]:
+            with self.subTest(group=group):
+                section = harness.split(f"    {group})", 1)[1].split("      ;;", 1)[0]
+                self.assertIn(selector, section)
+                self.assertIn(f"| test(={selector})", harness)
         selector = "sqlite::extracted_tests::registered_client_survives_reopen_and_token_cleanup"
         requirement = harness.split("    OAI-AUTH-009)", 1)[1].split("      ;;", 1)[0]
         self.assertIn(f"run_test labby-auth {selector}", requirement)

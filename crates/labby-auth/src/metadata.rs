@@ -36,7 +36,7 @@ pub async fn authorization_server_metadata(
         token_auth_methods.push("client_secret_basic".to_string());
     }
     Json(AuthorizationServerMetadata {
-        issuer: base.clone(),
+        issuer: authorization_server_issuer(&state),
         authorization_endpoint: format!(
             "{base}{}",
             route_path(&state, crate::routes::AuthRouteId::Authorize)
@@ -97,7 +97,6 @@ pub async fn authorization_server_metadata(
 pub async fn protected_resource_metadata(
     State(state): State<AuthState>,
 ) -> Json<ProtectedResourceMetadata> {
-    let base = public_base_url(&state);
     let scopes_supported = state
         .config
         .scopes_supported
@@ -107,7 +106,7 @@ pub async fn protected_resource_metadata(
         .collect();
     Json(ProtectedResourceMetadata {
         resource: canonical_resource_url(&state),
-        authorization_servers: vec![base],
+        authorization_servers: vec![authorization_server_issuer(&state)],
         scopes_supported,
         bearer_methods_supported: vec!["header".to_string()],
     })
@@ -115,6 +114,18 @@ pub async fn protected_resource_metadata(
 
 pub async fn jwks(State(state): State<AuthState>) -> Json<crate::jwt::JwksDocument> {
     Json(state.signing_keys.jwks().clone())
+}
+
+/// The exact authorization-server issuer identifier.
+///
+/// Authorization-server metadata publishes it as `issuer`, authorization
+/// responses return it as `iss`, and every protected resource metadata
+/// document must list it in `authorization_servers`. Clients compare these by
+/// exact string, so every publisher must call this helper rather than derive
+/// the value from `public_url` itself.
+#[must_use]
+pub fn authorization_server_issuer(state: &AuthState) -> String {
+    public_base_url(state)
 }
 
 pub(crate) fn public_base_url(state: &AuthState) -> String {
@@ -321,6 +332,58 @@ mod tests {
             "root discovery must lead with the least-privilege read scope"
         );
         assert!(json["resource"].as_str().unwrap().starts_with("https://"));
+    }
+
+    /// OpenAI hosts compare the metadata `issuer` with the protected resource
+    /// `authorization_servers` entry by exact string, without normalizing
+    /// trailing slashes, paths, ports or case. Read both published documents.
+    #[tokio::test]
+    async fn protected_resource_metadata_names_the_exact_metadata_issuer() {
+        use crate::authorize::tests::test_auth_state_with_config;
+        use crate::config::AuthConfig;
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = AuthConfig {
+            mode: crate::config::AuthMode::OAuth,
+            public_url: Some(url::Url::parse("https://Lab.Example.com:8443/gateway/").unwrap()),
+            sqlite_path: dir.path().join("auth.db"),
+            key_path: dir.path().join("auth.pem"),
+            admin_emails: vec!["admin@example.com".into()],
+            google: crate::config::GoogleConfig {
+                client_id: "id".into(),
+                client_secret: "secret".into(),
+                callback_url: None,
+                callback_path: "/auth/google/callback".into(),
+                scopes: vec!["openid".into(), "email".into()],
+            },
+            token_encryption_key: Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "metadata-test-provider-key",
+            )),
+            ..AuthConfig::default()
+        };
+        let app = router(test_auth_state_with_config(config).await);
+        let mut documents = Vec::new();
+        for uri in [
+            "/.well-known/oauth-authorization-server",
+            "/.well-known/oauth-protected-resource",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            documents.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+        }
+        let issuer = documents[0]["issuer"].as_str().expect("issuer");
+        assert_eq!(
+            documents[1]["authorization_servers"],
+            serde_json::json!([issuer]),
+            "protected resource metadata must name the exact metadata issuer"
+        );
     }
 
     #[tokio::test]
