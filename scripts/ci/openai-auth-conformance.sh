@@ -23,6 +23,7 @@ run_requirement() {
   case "$1" in
     OAI-AUTH-001)
       run_test labby-auth metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri
+      run_test labby-auth metadata::tests::protected_resource_metadata_names_the_exact_metadata_issuer
       ;;
     OAI-AUTH-002)
       run_test labby mcp::permanent_tools::tests::builtin_service_tool_advertises_security_schemes_extension
@@ -64,6 +65,7 @@ run_requirement() {
       ;;
     OAI-AUTH-007)
       run_test labby api::router::tests::protected_mcp_route_metadata_uses_host_and_path_resource
+      run_test labby api::router::tests::protected_resource_metadata_names_the_exact_authorization_server_issuer
       ;;
     OAI-AUTH-008)
       run_test labby api::router::tests::oauth_mode_missing_token_returns_www_authenticate_metadata_hint
@@ -110,6 +112,7 @@ fi
 # CI runs one exact nextest expression so the product/auth graph is built once.
 # Individual requirement IDs above remain independently reproducible.
 readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_canonical_mcp_resource_uri)
+| test(=metadata::tests::protected_resource_metadata_names_the_exact_metadata_issuer)
 | test(=config::tests::resolve_auth_uses_curated_client_redirects_by_default)
 | test(=authorize::tests::https_redirects_still_require_the_allowlist)
 | test(=metadata::tests::authorization_server_metadata_exposes_lab_endpoints)
@@ -142,6 +145,7 @@ readonly EXACT_TESTS='test(=metadata::tests::protected_resource_metadata_uses_ca
 | test(=mcp::result_format::tests::auth_errors_carry_mcp_reauthentication_metadata)
 | test(=mcp::result_format::tests::forbidden_and_non_auth_errors_publish_only_applicable_challenges)
 | test(=api::router::tests::protected_mcp_route_metadata_uses_host_and_path_resource)
+| test(=api::router::tests::protected_resource_metadata_names_the_exact_authorization_server_issuer)
 | test(=api::router::tests::oauth_mode_missing_token_returns_www_authenticate_metadata_hint)
 | test(=api::router::tests::protected_mcp_route_unauthorized_header_points_to_route_metadata)
 | test(=api::router::tests::protected_mcp_route_insufficient_scope_returns_rfc_9728_challenge)

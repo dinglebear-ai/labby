@@ -36,7 +36,7 @@ pub(super) fn append_authorization_response_issuer(state: &AuthState, redirect: 
     if !state.config.codex_issuer_compatibility {
         redirect
             .query_pairs_mut()
-            .append_pair("iss", &crate::metadata::public_base_url(state));
+            .append_pair("iss", &crate::metadata::authorization_server_issuer(state));
     }
 }
 
