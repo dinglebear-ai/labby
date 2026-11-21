@@ -25,6 +25,7 @@ struct NamedUpstream {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum AdapterRegistration {
     Cli { manifest_path: PathBuf },
+    Openapi(crate::openapi_registration::OpenApiRegistration),
 }
 
 fn invalid(message: impl Into<String>) -> ToolError {
@@ -52,6 +53,12 @@ pub(crate) async fn normalize(
     }
     let (command, args) = match request.adapter {
         AdapterRegistration::Cli { manifest_path } => cli_command(manifest_path).await?,
+        AdapterRegistration::Openapi(registration) => {
+            tokio::task::spawn_blocking(move || crate::openapi_registration::command(registration))
+                .await
+                .map_err(|_| invalid("could not validate the OpenAPI MCP registration"))?
+                .map_err(|error| invalid(error.to_string()))?
+        }
     };
     let config = manager.current_config().await.gateway;
     if config.disable_spawn_guard || !config.extra_stdio_commands.contains(&command) {
