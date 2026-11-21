@@ -29,6 +29,7 @@ Commands:
   state        Migrate, export, verify, or restore durable installation state offline
   serve        Run the Labby HTTP runtime in the foreground
   mcp          Run the Labby stdio MCP transport. stdout contains protocol bytes only
+  cli          Serve explicitly configured CLI tools over standard MCP stdio
   proxy        Proxy a stdio upstream to Streamable HTTP
   completions  Generate shell completions offline from the same command tree
 
@@ -8895,6 +8896,90 @@ Options:
 
       --log-level <LOG_LEVEL>
           Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby cli`
+
+```text
+Serve explicitly configured CLI tools over standard MCP stdio
+
+Usage: labby cli [OPTIONS] <COMMAND>
+
+Commands:
+  serve  Launch a standalone MCP server from an approved CLI tool manifest
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
+
+  -q, --quiet
+          Suppress console logs, but always report command errors
+
+      --no-input
+          Never prompt for missing input or confirmation
+
+      --context <CONTEXT>
+          Select a saved destination for a daemon-backed command. Never falls back locally
+
+      --server <SERVER>
+          Explicit Labby server URL; uses credentials bound to that destination
+
+      --team-id <TEAM_ID>
+          Select the Team authority context for team-scoped actions (sent as the x-labby-team-id header to the Labby daemon)
+
+  -h, --help
+          Print help
+```
+
+## `labby cli serve`
+
+```text
+Launch a standalone MCP server from an approved CLI tool manifest
+
+Usage: labby cli serve [OPTIONS] --manifest <MANIFEST>
+
+Options:
+      --json
+          Emit machine-readable JSON. Diagnostics never enter stdout
+
+      --manifest <MANIFEST>
+          Absolute path of a trusted local TOML manifest
+
+      --color <COLOR>
+          Control human-readable CLI styling
+
+          [default: auto]
+          [possible values: auto, plain, color]
+
+  -v, --verbose...
+          Include diagnostic events on stderr. Repeat for trace-level detail
 
   -q, --quiet
           Suppress console logs, but always report command errors

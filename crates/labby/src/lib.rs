@@ -32,6 +32,8 @@ pub(crate) mod app_manifest;
 pub mod catalog;
 #[allow(unreachable_pub)]
 pub mod cli;
+#[cfg(target_os = "linux")]
+mod cli_mcp;
 pub(crate) mod composition;
 pub mod config;
 pub(crate) mod desktop_install;
