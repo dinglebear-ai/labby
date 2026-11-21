@@ -14,6 +14,9 @@ pub struct OperationDescriptor {
     pub method: reqwest::Method,
     /// Path template, e.g. `/users/{id}`.
     pub path_template: String,
+    /// Standalone MCP metadata; not used by direct Code Mode dispatch.
+    #[cfg(feature = "standalone-mcp")]
+    pub(crate) mcp: Option<crate::mcp_schema::McpDescriptor>,
 }
 
 const HTTP_METHOD_KEYS: &[&str] = &[
@@ -66,10 +69,14 @@ pub fn convert_spec(
                 continue; // deny-by-default
             }
             let method = parse_method(label, operation_id, method_key);
+            #[cfg(feature = "standalone-mcp")]
+            let mcp = crate::mcp_schema::describe(&method, path_template, path_item, operation);
             out.push(OperationDescriptor {
                 operation_id: operation_id.to_string(),
                 method,
                 path_template: path_template.clone(),
+                #[cfg(feature = "standalone-mcp")]
+                mcp,
             });
         }
     }

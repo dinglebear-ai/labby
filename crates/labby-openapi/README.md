@@ -180,3 +180,53 @@ uses the real guarded path and requires working public DNS/HTTPS:
 ```bash
 cargo nextest run -p labby-openapi --run-ignored ignored-only -E 'test(petstore)'
 ```
+
+## Serve OpenAPI as a regular MCP upstream
+
+The opt-in standalone binary speaks MCP over stdio, independently of the
+Labby daemon and the `openapi.call` Code Mode provider. Build it from this
+workspace with the pinned Rust toolchain:
+
+```bash
+cargo build --locked --release -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp
+```
+
+Configure any standard MCP client to launch the built executable. Pass an
+explicit API base URL, either `--spec-path` (a JSON file) or `--spec-url` (a
+public HTTPS JSON document), and an `--allow-operation` argument for each
+reviewed raw `operationId`. The server lists only those operations and refuses
+startup if any cannot be represented unambiguously. GET and HEAD operations
+are the default; also pass `--allow-write` to admit a selected write operation.
+The MCP server advertises Tools, not Resources, Prompts, or Skills. All logging
+and startup diagnostics go to stderr; stdout is reserved for the protocol.
+
+For a Labby daemon, register the executable as an ordinary stdio upstream.
+Use the exact installed executable path in `[gateway].extra_stdio_commands`
+if required by the spawn guard. Keep the guard enabled; follow the
+[stdio filesystem boundary](../../docs/services/UPSTREAM.md#configuration) for
+local spec files. The command and paths are on the gateway host, not the client:
+
+```bash
+labby server add vendor-api --command /opt/labby/bin/labby-openapi-mcp \
+  --arg=--spec-url --arg=https://api.vendor.example/openapi.json \
+  --arg=--base-url --arg=https://api.vendor.example \
+  --arg=--allow-operation --arg=getUser
+labby server test vendor-api --json
+labby code search getUser
+```
+
+A server-scoped Bearer token or header API key can be read from a named
+child environment variable (`--bearer-token-env` or `--api-key-env`, with an
+optional `--api-key-header`). Supply the secret through the launcher's
+protected environment, not argv or the spec. A shared static credential
+applies to every admitted caller; use the ordinary upstream exposure rules
+to limit who can call that server. The standalone server does not implement
+per-subject OAuth, and does not change the existing Code Mode OAuth behavior.
+
+The first release supports inline scalar path/query parameters and flat
+JSON object request bodies with scalar fields. It does not resolve `$ref`,
+load YAML, send caller-specified header or cookie parameters, or combine query
+parameters with a JSON write body. Unsupported required inputs prevent
+exposure. It preserves the existing HTTPS, DNS/address, redirect, path scope,
+response-budget and credential boundaries. This binary is built on demand;
+it is not yet added to Labby's release bundles.

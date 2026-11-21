@@ -24,7 +24,14 @@ fn registry_from_handle(label: &str, op: OperationHandle) -> OpenApiRegistry {
     let mut operations = HashMap::new();
     operations.insert(op.operation_id.clone(), op);
     let mut inner = HashMap::new();
-    inner.insert(label.to_string(), SpecEntry { operations });
+    inner.insert(
+        label.to_string(),
+        SpecEntry {
+            operations,
+            #[cfg(feature = "standalone-mcp")]
+            mcp: Default::default(),
+        },
+    );
     OpenApiRegistry::from_map_for_test(inner)
 }
 

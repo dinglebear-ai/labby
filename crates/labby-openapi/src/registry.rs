@@ -39,6 +39,8 @@ pub struct OperationHandle {
 pub struct SpecEntry {
     /// operationId → handle.
     pub operations: HashMap<String, OperationHandle>,
+    #[cfg(feature = "standalone-mcp")]
+    pub(crate) mcp: crate::mcp_schema::Tools,
 }
 
 /// Cheap-to-clone (`Arc`-backed) per-label registry.
@@ -145,6 +147,19 @@ impl OpenApiRegistry {
         })
     }
 
+    /// Return standalone MCP metadata for a uniquely named operation the native
+    /// dispatcher can represent. Missing/ambiguous descriptors stay unexposed.
+    #[cfg(feature = "standalone-mcp")]
+    #[must_use]
+    pub fn mcp_tool(
+        &self,
+        label: &str,
+        id: &str,
+    ) -> Option<(&str, &serde_json::Map<String, serde_json::Value>)> {
+        let descriptor = self.inner.get(label)?.mcp.get(id)?.as_ref()?;
+        Some((&descriptor.description, &descriptor.input))
+    }
+
     /// Look up one operation. Unknown label → `UnknownInstance`; unknown op →
     /// `UnknownOperation`.
     ///
@@ -175,6 +190,20 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<(SpecEntry, Vec<String
         crate::convert::convert_spec(&spec.label, &spec_json, &spec.allowed_operations)?;
     let converted = descriptors.len();
     let mut operations = HashMap::new();
+    #[cfg(feature = "standalone-mcp")]
+    let mut mcp = crate::mcp_schema::Tools::new();
+    #[cfg(feature = "standalone-mcp")]
+    for descriptor in &descriptors {
+        use std::collections::hash_map::Entry;
+        match mcp.entry(descriptor.operation_id.clone()) {
+            Entry::Vacant(entry) => {
+                entry.insert(descriptor.mcp.clone());
+            }
+            Entry::Occupied(mut entry) => {
+                entry.insert(None);
+            }
+        }
+    }
     for d in descriptors.into_iter().take(MAX_OPERATIONS_PER_SPEC) {
         operations.insert(
             d.operation_id.clone(),
@@ -219,7 +248,14 @@ async fn load_one_spec(spec: OpenApiSpecConfig) -> Result<(SpecEntry, Vec<String
             "openapi spec loaded but no operations matched the allowlist"
         );
     }
-    Ok((SpecEntry { operations }, warnings))
+    Ok((
+        SpecEntry {
+            operations,
+            #[cfg(feature = "standalone-mcp")]
+            mcp,
+        },
+        warnings,
+    ))
 }
 
 /// Fetch a spec document, capped at `MAX_SPEC_BYTES` before parse. A remote

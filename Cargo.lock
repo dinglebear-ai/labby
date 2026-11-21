@@ -3311,11 +3311,13 @@ dependencies = [
 name = "labby-openapi"
 version = "2.7.0"
 dependencies = [
+ "clap",
  "futures",
  "labby-primitives",
  "labby-runtime",
  "percent-encoding",
  "reqwest",
+ "rmcp",
  "rustix",
  "rustls",
  "serde",
