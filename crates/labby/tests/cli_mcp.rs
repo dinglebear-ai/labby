@@ -205,7 +205,7 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
         let status = created.status();
         let body = created.text().await?;
         assert!(status.is_success(), "HTTP {status}: {body}");
-        assert!(body.contains("Approved CLI"), "{body}");
+        assert!(std::fs::read_to_string(labby_home.join("config.toml"))?.contains("Approved CLI"));
         let response = http
             .post(format!("{url}/v1/gateway"))
             .bearer_auth(TOKEN)
