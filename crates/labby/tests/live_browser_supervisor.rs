@@ -60,6 +60,103 @@ fn app_dir() -> PathBuf {
 
 #[tokio::test]
 async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
+    supervise_live_browser(None).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guided_add_server_adapters_complete_real_browser_canaries() {
+    if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
+        return;
+    }
+    let fixtures = GuidedAdapterFixtures::new();
+    supervise_live_browser(Some(&fixtures)).await;
+}
+
+struct GuidedAdapterFixtures {
+    // The fixture root must outlive the daemon and its stdio children.
+    root: tempfile::TempDir,
+    manifest: PathBuf,
+    spec: PathBuf,
+    labby: PathBuf,
+    openapi: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl GuidedAdapterFixtures {
+    fn new() -> Self {
+        // The CLI manifest guard rejects group/other-writable ancestors. Use
+        // the owned checkout, not /tmp, for these non-secret source fixtures.
+        let root = tempfile::Builder::new()
+            .prefix(".guided-adapter-fixture-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("private adapter fixture directory in the checkout");
+        let manifest = root.path().join("cli.toml");
+        fs::write(
+            &manifest,
+            r#"
+[[tools]]
+name = "fixture_greeting"
+description = "Return a deterministic fixture greeting."
+executable = "/usr/bin/printf"
+args = ["%s"]
+read_only = true
+
+[tools.choices]
+world = ["Labby CLI browser canary"]
+"#,
+        )
+        .expect("write owned CLI manifest");
+        let spec = root.path().join("openapi.json");
+        fs::write(
+            &spec,
+            serde_json::to_vec(&json!({
+                "openapi": "3.1.0",
+                "info": { "title": "Labby Browser Canary", "version": "1.0.0" },
+                "paths": {
+                    "/items/{itemId}": {
+                        "get": {
+                            "operationId": "getFixtureItem",
+                            "parameters": [{
+                                "name": "itemId", "in": "path", "required": true,
+                                "schema": { "type": "string" }
+                            }],
+                            "responses": { "200": { "description": "OK" } }
+                        }
+                    },
+                    "/unselected": {
+                        "get": {
+                            "operationId": "notSelected",
+                            "responses": { "200": { "description": "OK" } }
+                        }
+                    }
+                }
+            }))
+            .expect("serialize OpenAPI fixture"),
+        )
+        .expect("write owned OpenAPI spec");
+        let cargo_labby = PathBuf::from(env!("CARGO_BIN_EXE_labby"));
+        let labby = std::env::var_os("LABBY_E2E_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cargo_labby.clone())
+            .canonicalize()
+            .expect("actual fixture Labby executable");
+        let openapi = std::env::var_os("LABBY_E2E_OPENAPI_MCP_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cargo_labby.with_file_name("labby-openapi-mcp"))
+            .canonicalize()
+            .expect("build the standalone adapter: cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked");
+        Self {
+            root,
+            manifest,
+            spec,
+            labby,
+            openapi,
+        }
+    }
+}
+
+async fn supervise_live_browser(adapters: Option<&GuidedAdapterFixtures>) {
     if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
         return;
     }
@@ -74,7 +171,7 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         "prebuilt index.html missing"
     );
 
-    let config = format!(
+    let mut config = format!(
         "{}\n[[loadouts]]\nname = \"team:{}:production\"\nupstreams = []\nservices = [\"gateway\"]\n\n[web]\nassets_dir = {}\n",
         policy(&["lab:read", "lab", "lab:admin"]).replacen(
             "services = [\"gateway\"]",
@@ -87,19 +184,43 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
     // Credential verification fences the Loadout policy fingerprint. Install
     // Snippets before issuing the browser credential, rather than expanding
     // its bound policy after bootstrap and invalidating the credential.
-    let mut identity = LiveIdentity::bootstrap_with_policy_and_scopes(
-        "live-browser@labby.invalid",
-        &config,
-        &["lab:read", "lab", "lab:admin"],
-    )
-    .await
+    let scopes = &["lab:read", "lab", "lab:admin"];
+    let mut identity = if let Some(adapters) = adapters {
+        config.push_str(&format!(
+            "\n[gateway]\nextra_stdio_commands = {}\n",
+            serde_json::to_string(&[&adapters.labby, &adapters.openapi])
+                .expect("serialize exact adapter executable allowlist"),
+        ));
+        let root = adapters.root.path().to_str().expect("UTF-8 fixture root");
+        LiveIdentity::bootstrap_with_policy_scopes_and_env(
+            "guided-adapters-browser@labby.invalid",
+            &config,
+            scopes,
+            &[
+                ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
+                ("LABBY_OPENAPI_SPEC_ROOT", root),
+                (
+                    "LABBY_OPENAPI_MCP_BIN",
+                    adapters.openapi.to_str().expect("UTF-8 adapter path"),
+                ),
+            ],
+        )
+        .await
+    } else {
+        LiveIdentity::bootstrap_with_policy_and_scopes(
+            "live-browser@labby.invalid",
+            &config,
+            scopes,
+        )
+        .await
+    }
     .expect("public identity bootstrap with final browser policy");
     identity
         .create_session()
         .await
         .expect("real browser session");
     #[cfg(target_os = "linux")]
-    {
+    if adapters.is_none() {
         identity
             .provision_stash_recipient("browser-stash-recipient", "Browser Stash Recipient")
             .await
@@ -188,7 +309,11 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
             "--test",
             "--test-concurrency=1",
             "--experimental-strip-types",
-            "lib/browser/live-backend.browser.test.ts",
+            if adapters.is_some() {
+                "lib/browser/live-adapters.browser.test.ts"
+            } else {
+                "lib/browser/live-backend.browser.test.ts"
+            },
         ])
         .current_dir(&app_dir)
         .env_clear()
@@ -206,6 +331,11 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(adapters) = adapters {
+        command
+            .env("LABBY_LIVE_BROWSER_ADAPTER_MANIFEST", &adapters.manifest)
+            .env("LABBY_LIVE_BROWSER_ADAPTER_SPEC", &adapters.spec);
+    }
     for key in ["LABBY_E2E_HELPER_REGISTRY", "LABBY_E2E_GROUP_TOKEN"] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -239,13 +369,22 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
     let stdout = stdout_task.await.expect("stdout reader");
     let stderr = stderr_task.await.expect("stderr reader");
     let progress = fs::read(&browser_progress).unwrap_or_default();
+    let progress_text = String::from_utf8_lossy(&progress);
+    let canaries_ran = adapters.is_none()
+        || ["guided-cli-completed", "guided-openapi-completed"]
+            .iter()
+            .all(|marker| progress_text.lines().filter(|line| line == marker).count() == 1);
     let browser_failure = match (status, stdout, stderr, progress.len() <= OUTPUT_LIMIT) {
-        (Ok(status), Ok(_), Ok(_), true) if status.success() => None,
+        (Ok(status), Ok(_), Ok(_), true) if status.success() && canaries_ran => {
+            if adapters.is_some() {
+                eprint!("{progress_text}");
+            }
+            None
+        }
         (status, stdout, stderr, progress_ok) => Some(format!(
-            "Playwright failed: status={status:?}; stdout={}; stderr={}; progress={}; progress_ok={progress_ok}",
+            "Playwright failed: status={status:?}; stdout={}; stderr={}; progress={progress_text}; progress_ok={progress_ok}; canaries_ran={canaries_ran}",
             String::from_utf8_lossy(&stdout.unwrap_or_default()),
             String::from_utf8_lossy(&stderr.unwrap_or_default()),
-            String::from_utf8_lossy(&progress),
         )),
     };
     fs::write(&browser_stdout, browser_failure.as_deref().unwrap_or(""))

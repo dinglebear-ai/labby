@@ -128,6 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p labby --all-features --bin labby --locked
+          cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked
           cargo test -p labby --all-features --locked --no-run \
             --test action_matrix_completeness \
             --test live_http_routes --test live_cli_actions --test live_api_actions \

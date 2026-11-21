@@ -64,6 +64,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         build = next(step for step in steps if step.get("name") == "Precompile product and live E2E test targets")
         self.assertLess(steps.index(install), steps.index(build))
         self.assertIn("--test live_browser_supervisor", build["run"])
+        self.assertIn(
+            "cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked",
+            build["run"],
+        )
         self.assertIn("LABBY_LIVE_BROWSER_RUN=1", harness)
 
     def test_policy_rejects_unreviewed_download_artifact_revisions(self):

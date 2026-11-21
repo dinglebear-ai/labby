@@ -338,7 +338,13 @@ required Windows Job Object tests. The Unix checks do not replace those tests
 or make them advisory.
 
 The PR tier includes the one-worker native live browser lane, including snippet
-replay, retained history, and exact artifact downloads. `nightly` adds fault
+replay, retained history, and exact artifact downloads. On Linux it also runs
+both guided Add Server canaries using the real stdio executables. Each saves an
+upstream, inspects native discovery, invokes its tool through authenticated Code
+Mode, and verifies the server after a page reload. The CLI fixture returns a
+fixed greeting. The OpenAPI fixture verifies adapter rejection of an empty path
+parameter before DNS; the adapter's loopback unit suite separately covers a
+successful HTTP response. No public network is needed for the canaries. `nightly` adds fault
 qualification and the mobile browser checks. `collision` runs two isolated
 copies of the stateful HTTP/CLI/API shard, and `repeat10` executes the hermetic
 PR tier ten times with seeds 1 through 10.
