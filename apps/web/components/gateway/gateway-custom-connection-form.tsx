@@ -1,13 +1,13 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
-import { CheckCircle2, ChevronRight, Globe2, Loader2, Settings2, TerminalSquare } from 'lucide-react'
+import { Braces, CheckCircle2, ChevronRight, Globe2, Loader2, Settings2, TerminalSquare } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
-import type { TransportType } from '@/lib/types/gateway'
+import type { GatewayRegistrationAdapter, TransportType } from '@/lib/types/gateway'
 import { cn } from '@/lib/utils'
 import { gatewayAction } from '@/lib/api/gateway-client'
 import { selectedSshStdioHost, sshStdioCommand } from '@/lib/ssh-stdio-command'
@@ -15,9 +15,22 @@ import { selectedSshStdioHost, sshStdioCommand } from '@/lib/ssh-stdio-command'
 const inputClassName =
   'border-aurora-border-strong bg-aurora-page-bg/80 shadow-[var(--aurora-highlight-medium)] placeholder:text-aurora-text-muted/70 hover:border-aurora-accent-primary/35 focus-visible:bg-aurora-control-surface'
 
+type ConnectionKind = 'http' | 'stdio' | GatewayRegistrationAdapter['kind']
+
+const connectionOptions: Record<ConnectionKind, { label: string; description: string; icon: typeof Globe2 }> = {
+  http: { label: 'HTTP', description: 'Remote MCP endpoint.', icon: Globe2 },
+  stdio: { label: 'stdio', description: 'Local process launched over stdin/stdout.', icon: TerminalSquare },
+  cli: { label: 'CLI', description: 'Expose approved CLI commands as MCP tools.', icon: TerminalSquare },
+  openapi: { label: 'OpenAPI', description: 'Expose selected API operations as MCP tools.', icon: Braces },
+}
+
 interface GatewayCustomConnectionFormProps {
+  adapterKind: GatewayRegistrationAdapter['kind'] | null
+  onConnectionChange: (kind: ConnectionKind) => void
+  adapterFields?: ReactNode
+  allowAdapters: boolean
+  saving: boolean
   transport: TransportType
-  onTransportChange: (transport: TransportType) => void
   name: string
   onNameChange: (name: string) => void
   displayName: string
@@ -36,10 +49,13 @@ interface GatewayCustomConnectionFormProps {
 
 export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormProps) {
   const {
-    transport, onTransportChange, name, onNameChange, displayName, onDisplayNameChange, url, onUrlChange,
+    transport, adapterKind, onConnectionChange, adapterFields, allowAdapters, saving, name, onNameChange, displayName, onDisplayNameChange, url, onUrlChange,
     command, onCommandChange, envText, onEnvTextChange, envCount, errors,
     isProbing, oauthDiscovered,
   } = props
+  const connection = adapterKind ?? (transport === 'stdio' ? 'stdio' : 'http')
+  const CurrentIcon = connectionOptions[connection].icon
+  const options: ConnectionKind[] = allowAdapters ? ['http', 'stdio', 'cli', 'openapi'] : ['http', 'stdio']
   const [sshHosts, setSshHosts] = useState<string[]>([])
   const [sshHost, setSshHost] = useState('local')
   const [manualCommand, setManualCommand] = useState('')
@@ -47,7 +63,7 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
   const [sshHostsError, setSshHostsError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (transport !== 'stdio') return
+    if (connection !== 'stdio') return
     const controller = new AbortController()
     gatewayAction<string[]>('gateway.ssh_hosts.list', {}, controller.signal)
       .then((hosts) => {
@@ -59,7 +75,7 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
         setSshHostsError(error instanceof Error ? error.message : 'SSH hosts could not be loaded')
       })
     return () => controller.abort()
-  }, [transport])
+  }, [connection])
 
   useEffect(() => {
     if (sshHost !== 'local') return
@@ -89,34 +105,39 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="space-y-1">
           <p className="flex items-center gap-2 text-[13px] font-semibold text-aurora-text-primary">
-            {transport === 'http' ? <Globe2 className="size-4 text-aurora-accent-primary" /> : <TerminalSquare className="size-4 text-aurora-accent-primary" />}
+            <CurrentIcon className="size-4 text-aurora-accent-primary" />
             Connection
           </p>
           <p className="text-[12px] leading-5 text-aurora-text-muted">
-            {transport === 'http' ? 'Remote MCP endpoint.' : 'Local process launched over stdin/stdout.'}
+            {connectionOptions[connection].description}
           </p>
         </div>
         <RadioGroup
-          value={transport}
-          onValueChange={(value) => onTransportChange(value as TransportType)}
-          className="grid grid-cols-2 overflow-hidden rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium p-1"
+          aria-label="Connection type"
+          value={connection}
+          onValueChange={(value) => onConnectionChange(value as ConnectionKind)}
+          disabled={saving}
+          className={cn('grid grid-cols-2 overflow-hidden rounded-aurora-1 border border-aurora-border-default bg-aurora-panel-medium p-1', allowAdapters && 'sm:grid-cols-4')}
         >
-          {(['http', 'stdio'] as const).map((value) => (
+          {options.map((value) => {
+            const Icon = connectionOptions[value].icon
+            return (
             <label
               key={value}
               className={cn(
-                'flex h-8 cursor-pointer items-center justify-center gap-2 rounded-aurora-1 px-3 text-[12px] font-semibold transition-[background-color,color,box-shadow]',
-                transport === value
+                'flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-aurora-1 px-2 text-[12px] font-semibold transition-[background-color,color,box-shadow] focus-within:ring-2 focus-within:ring-aurora-accent-primary/34',
+                connection === value
                   ? 'bg-aurora-accent-primary/12 text-aurora-text-primary shadow-aurora-active-glow'
                   : 'text-aurora-text-muted hover:text-aurora-text-primary',
               )}
               htmlFor={`transport-${value}`}
             >
               <RadioGroupItem value={value} id={`transport-${value}`} className="sr-only" />
-              {value === 'http' ? <Globe2 className="size-3.5" /> : <TerminalSquare className="size-3.5" />}
-              {value === 'http' ? 'HTTP' : 'stdio'}
+              <Icon className="size-3.5" aria-hidden="true" />
+              {connectionOptions[value].label}
             </label>
-          ))}
+            )
+          })}
         </RadioGroup>
       </div>
 
@@ -133,6 +154,7 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
           {errors.name ? <p className="text-sm text-destructive">{errors.name}</p> : <FieldDescription>Stable identifier used in tool names and routes. Lowercase letters, digits, hyphens. Filled from the display name or host.</FieldDescription>}
         </Field>
 
+        {adapterKind ? adapterFields : <>
         {transport === 'http' ? (
           <Field>
             <FieldLabel htmlFor="url">URL</FieldLabel>
@@ -193,6 +215,7 @@ export function GatewayCustomConnectionForm(props: GatewayCustomConnectionFormPr
             </p>
           </div>
         </details>
+        </>}
       </div>
     </div>
   )

@@ -725,6 +725,15 @@ export function gatewayInputToSpec(input: CreateGatewayInput) {
 }
 
 export function buildGatewayCreatePayload(input: CreateGatewayInput) {
+  if (input.adapter) {
+    return {
+      spec: {
+        name: input.name,
+        ...(input.display_name?.trim() ? { display_name: input.display_name.trim() } : {}),
+      },
+      adapter: input.adapter,
+    }
+  }
   const spec = gatewayInputToSpec({
     ...input,
     config: {

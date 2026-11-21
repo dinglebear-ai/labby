@@ -1466,3 +1466,90 @@ for (const projectedUrl of ['https://example.com/mcp?token=%5BREDACTED%5D', 'htt
     } finally { await view.unmount(); globalThis.fetch = originalFetch }
   })
 }
+
+test('CLI Add Server sends the approved host manifest and runs the registered gateway test', async () => {
+  const window = installGatewayDialogDom()
+  const { buildGatewayCreatePayload } = await import('@/lib/server/gateway-adapter')
+  const originalFetch = globalThis.fetch
+  const actions: Array<{ action: string; params: Record<string, unknown> }> = []
+  const saved: unknown[] = []
+  globalThis.fetch = (async (input, init) => {
+    if (String(input) === '/v1/gateway' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as typeof actions[number]
+      actions.push(body)
+      if (body.action === 'gateway.test') return jsonResponse({ connected: true, healthy: true, discovered_tool_count: 1 })
+      if (body.action === 'gateway.get') return jsonResponse({ config: { name: 'cli-fixture' } })
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+  try {
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      saved.push(buildGatewayCreatePayload(input as CreateGatewayInput))
+    })
+    try {
+      await act(async () => { document.querySelector<HTMLElement>('#transport-cli')?.click() })
+      assert.equal(document.querySelector('#url'), null)
+      assert.equal(document.querySelector('#command'), null)
+      assert.equal(document.querySelector('#protected-public-path'), null)
+      assert.match(document.body.textContent ?? '', /does not upload a file/)
+      const add = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Add server')
+      assert.ok(add?.disabled)
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#name')!, 'cli-fixture')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#display_name')!, 'CLI fixture')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-manifest-path')!, 'relative.toml')
+      assert.equal(add.disabled, true)
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-manifest-path')!, '/srv/labby/cli/status.toml')
+      assert.equal(add.disabled, false)
+      await clickSave()
+      await waitFor(() => assert.ok(actions.some(action => action.action === 'gateway.test')))
+      assert.deepEqual(saved, [{
+        spec: { name: 'cli-fixture', display_name: 'CLI fixture' },
+        adapter: { kind: 'cli', manifest_path: '/srv/labby/cli/status.toml' },
+      }])
+      assert.deepEqual(actions.find(action => action.action === 'gateway.test')?.params, { name: 'cli-fixture', confirm: true })
+    } finally { await view.unmount() }
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('OpenAPI Add Server keeps the form after a rejected registration and excludes duplicate operations', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  const probes: string[] = []
+  let input: CreateGatewayInput | undefined
+  globalThis.fetch = (async (resource, init) => {
+    if (String(resource) === '/v1/gateway' && init?.method === 'POST') {
+      const request = JSON.parse(String(init.body)) as { action: string }
+      if (request.action === 'gateway.test') probes.push(request.action)
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+  try {
+    const view = await renderOpenGatewayDialog(null, async (next) => {
+      input = next as CreateGatewayInput
+      throw new Error('The gateway host could not open this specification')
+    })
+    try {
+      await act(async () => { document.querySelector<HTMLElement>('#transport-openapi')?.click() })
+      assert.equal(document.querySelector('#url'), null)
+      assert.equal(document.querySelector('#adapter-allow-write')?.getAttribute('aria-checked'), 'false')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#name')!, 'catalog')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-spec-path')!, '/srv/labby/catalog.json')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-base-url')!, 'https://api.example.com')
+      await setTextareaValue(window, document.querySelector<HTMLTextAreaElement>('#adapter-operations')!, 'listItems, listItems')
+      const add = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Add server')
+      assert.ok(add?.disabled)
+      await clickSave()
+      assert.equal(input, undefined)
+      await setTextareaValue(window, document.querySelector<HTMLTextAreaElement>('#adapter-operations')!, 'listItems\ngetItem')
+      assert.equal(add.disabled, false)
+      await clickSave()
+      await waitFor(() => assert.match(document.querySelector('[role="alert"]')?.textContent ?? '', /could not open this specification/))
+      assert.deepEqual(input?.adapter, {
+        kind: 'openapi', spec_path: '/srv/labby/catalog.json', base_url: 'https://api.example.com',
+        allowed_operations: ['listItems', 'getItem'],
+      })
+      assert.equal(document.querySelector<HTMLInputElement>('#adapter-spec-path')?.value, '/srv/labby/catalog.json')
+      assert.deepEqual(probes, [])
+    } finally { await view.unmount() }
+  } finally { globalThis.fetch = originalFetch }
+})
