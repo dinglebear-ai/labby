@@ -20,7 +20,9 @@ type AdapterKind = 'cli' | 'openapi'
 const manifest = process.env.LABBY_LIVE_BROWSER_ADAPTER_MANIFEST
 const spec = process.env.LABBY_LIVE_BROWSER_ADAPTER_SPEC
 const liveEnabled = Boolean(process.env.LABBY_LIVE_BROWSER_DESCRIPTOR)
-const apiBase = 'https://adapter-canary.invalid/catalog'
+// Explicit manual coverage only. Ordinary CI uses the offline negative case.
+const petstore = process.env.LABBY_LIVE_BROWSER_OPENAPI_PETSTORE === '1'
+const apiBase = petstore ? 'https://petstore3.swagger.io/api/v3' : 'https://adapter-canary.invalid/catalog'
 
 async function serverIsVisible(page: Page, displayName: string) {
   await page.waitForFunction(
@@ -162,14 +164,14 @@ async function assertPersistedSchema(
   if (kind === 'cli') {
     assert.equal(persisted.body.config.command, 'labby::guided-cli')
   } else {
-    assert.ok(persisted.body.config.command?.endsWith('/labby-openapi-mcp'))
+    assert.equal(persisted.body.config.command, 'labby::guided-openapi')
   }
   const catalog = await action('gateway', 'gateway.schema', { name: id })
   assert.equal(catalog.status, 200)
   assert.equal(catalog.body.name, id)
   assert.deepEqual(catalog.body.tools.map(({ name }: { name: string }) => name), [tool])
   const input = catalog.body.tools[0].input_schema
-  const parameter = kind === 'cli' ? 'choice' : 'itemId'
+  const parameter = kind === 'cli' ? 'choice' : petstore ? 'status' : 'itemId'
   assert.equal(input.type, 'object')
   assert.deepEqual(input.required, [parameter])
   assert.equal(input.properties[parameter].type, 'string')
@@ -181,7 +183,7 @@ async function exerciseCodeMode(
   id: string,
   tool: string,
   args: object,
-  expected: RegExp,
+  expected: RegExp | null,
   callSucceeded: boolean,
 ) {
   const qualifiedTool = id + '::' + tool
@@ -194,7 +196,11 @@ async function exerciseCodeMode(
     '  const search = await codemode.search({ query: ' + JSON.stringify(tool) + ', kinds: ["tool"] });',
     '  const hit = search.results.find(hit => hit.id === ' + JSON.stringify(qualifiedTool) + ');',
     '  if (!hit) throw new Error("new upstream missing from Code Mode search");',
-    '  try { return { found: hit.id, output: await callTool(hit.id, ' + JSON.stringify(args) + ') }; }',
+    expected === null
+      ? '  try { const rows = (await codemode.callToolResult(hit.id, ' + JSON.stringify(args)
+        + ')).structuredContent.result; return { found: hit.id, output: { count: rows.length,'
+        + ' matches: Array.isArray(rows) && rows.every(row => row.id != null && row.status === "available") } }; }'
+      : '  try { return { found: hit.id, output: await callTool(hit.id, ' + JSON.stringify(args) + ') }; }',
     '  catch (error) { return { found: hit.id, error: String(error.message || error) }; }',
     '}', fence, '',
   ].join('\n')
@@ -208,7 +214,12 @@ async function exerciseCodeMode(
       { id: qualifiedTool, ok: callSucceeded },
     ])
     assert.equal(executed.body.result.found, qualifiedTool)
-    assert.match(callSucceeded ? JSON.stringify(executed.body.result.output) : executed.body.result.error, expected)
+    if (expected === null) {
+      assert.ok(Number.isInteger(executed.body.result.output.count) && executed.body.result.output.count > 0)
+      assert.equal(executed.body.result.output.matches, true)
+    } else {
+      assert.match(callSucceeded ? JSON.stringify(executed.body.result.output) : executed.body.result.error, expected)
+    }
   } finally {
     assert.equal((await action('snippets', 'snippets.remove', { name })).status, 200)
   }
@@ -253,9 +264,10 @@ test('guided Add Server adapters in the real Gateway Admin', {
             // This proves the real adapter was invoked while deterministically
             // stopping before DNS or network. Dispatch round trip is exercised
             // by labby-openapi's happy_path_calls_allowed_operation wiremock test.
-            kind: 'openapi', id: 'guided-openapi-browser', label: 'Browser OpenAPI fixture', tool: 'getFixtureItem',
-            args: { itemId: '' },
-            expected: /operation .getFixtureItem. path parameter .itemId. is missing or invalid/,
+            kind: 'openapi', id: 'guided-openapi-browser', label: 'Browser OpenAPI fixture',
+            tool: petstore ? 'findPetsByStatus' : 'getFixtureItem',
+            args: petstore ? { status: 'available' } : { itemId: '' },
+            expected: petstore ? null : /operation .getFixtureItem. path parameter .itemId. is missing or invalid/,
           },
         ] as const
         for (const canary of canaries) {
@@ -263,7 +275,7 @@ test('guided Add Server adapters in the real Gateway Admin', {
             await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
             const action = await registerThroughUi(page, canary.kind, canary.id, canary.label, canary.tool, () => csrf)
             await assertPersistedSchema(action, canary.kind, canary.id, canary.tool)
-            await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli')
+            await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli' || petstore)
             registered.push({ canary, action })
           })
         }
@@ -279,7 +291,7 @@ test('guided Add Server adapters in the real Gateway Admin', {
         for (const { canary, action } of registered) {
           await serverIsVisible(page, canary.label)
           await assertPersistedSchema(action, canary.kind, canary.id, canary.tool)
-          await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli')
+          await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli' || petstore)
           appendFileSync(progress, 'guided-' + canary.kind + '-completed\n', { mode: 0o600 })
         }
         assertCanaryFree(await page.locator('body').innerText(), await readScanSecrets(descriptor, signal), 'adapter canary DOM')

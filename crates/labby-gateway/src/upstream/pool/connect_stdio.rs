@@ -164,12 +164,12 @@ pub(super) async fn connect_stdio_upstream_with_dotenv<H: ClientHandler + Clone>
     handler: H,
     notification_interceptor: Option<RelayNotificationInterceptor>,
 ) -> anyhow::Result<(UpstreamConnection<H>, Vec<rmcp::model::Tool>)> {
-    let guided = command == crate::security::guided_cli::SELECTOR;
+    let guided = crate::security::guided_stdio::GuidedStdio::from_command(command);
     // Managed launches must re-check loaded configuration before resolving
     // credentials or constructing the spawn. The selector is never executed.
-    let (program, env, lifecycle) = if guided {
+    let (program, env, lifecycle) = if let Some(adapter) = guided {
         (
-            crate::security::guided_cli::prepare_upstream(config, args)?.into_os_string(),
+            adapter.prepare(config, args)?.into_os_string(),
             Vec::new(),
             UpstreamLifecycle::Initialize,
         )
@@ -192,7 +192,13 @@ pub(super) async fn connect_stdio_upstream_with_dotenv<H: ClientHandler + Clone>
         runtime_owner: runtime_owner.cloned(),
         lifecycle,
     };
-    connect_stdio_command(command_spec, handler, !guided, notification_interceptor).await
+    connect_stdio_command(
+        command_spec,
+        handler,
+        guided.is_none(),
+        notification_interceptor,
+    )
+    .await
 }
 
 fn stdio_environment(

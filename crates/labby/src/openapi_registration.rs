@@ -1,20 +1,11 @@
 //! Adapter from Add Server's typed OpenAPI form to an ordinary stdio upstream.
 
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
+use labby_gateway::security::guided_openapi::{HostPaths, SELECTOR};
 use labby_openapi::registry::preflight_mcp_path;
 use serde::Deserialize;
-
-const BIN_ENV: &str = "LABBY_OPENAPI_MCP_BIN";
-const ROOT_ENV: &str = "LABBY_OPENAPI_SPEC_ROOT";
-#[cfg(windows)]
-const BINARY_NAME: &str = "labby-openapi-mcp.exe";
-#[cfg(not(windows))]
-const BINARY_NAME: &str = "labby-openapi-mcp";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,43 +18,11 @@ pub(crate) struct OpenApiRegistration {
 }
 
 pub(crate) fn command(input: OpenApiRegistration) -> Result<(String, Vec<String>)> {
-    let binary =
-        env::var_os(BIN_ENV).context("OpenAPI Add Server requires LABBY_OPENAPI_MCP_BIN")?;
-    let spec_root =
-        env::var_os(ROOT_ENV).context("OpenAPI Add Server requires LABBY_OPENAPI_SPEC_ROOT")?;
-    build_command(input, Path::new(&binary), Path::new(&spec_root))
+    build_command(input, &HostPaths::from_env()?)
 }
 
-fn build_command(
-    input: OpenApiRegistration,
-    binary: &Path,
-    spec_root: &Path,
-) -> Result<(String, Vec<String>)> {
-    ensure!(
-        binary.is_absolute() && spec_root.is_absolute(),
-        "the OpenAPI MCP executable and spec root must be absolute gateway-host paths"
-    );
-    let binary = fs::canonicalize(binary).context("the OpenAPI MCP executable does not exist")?;
-    ensure!(
-        binary.is_file() && binary.file_name().is_some_and(|name| name == BINARY_NAME),
-        "the OpenAPI MCP executable must resolve to a regular {BINARY_NAME} file"
-    );
-    let spec_root = fs::canonicalize(spec_root).context("the OpenAPI spec root does not exist")?;
-    ensure!(
-        spec_root.is_dir(),
-        "the OpenAPI spec root must be a directory"
-    );
-    ensure!(
-        input.spec_path.is_absolute(),
-        "the OpenAPI spec path must be an absolute gateway-host path"
-    );
-    let spec = fs::canonicalize(input.spec_path).context("the OpenAPI spec file does not exist")?;
-    ensure!(
-        spec.starts_with(&spec_root)
-            && spec.is_file()
-            && spec.extension().is_some_and(|ext| ext == "json"),
-        "the OpenAPI spec must be a regular .json file inside the approved spec directory"
-    );
+fn build_command(input: OpenApiRegistration, paths: &HostPaths) -> Result<(String, Vec<String>)> {
+    let spec = paths.canonical_spec(&input.spec_path)?;
 
     let base_url =
         labby_primitives::ssrf::parse_validated_https_url(&input.base_url).map_err(|_| {
@@ -73,9 +32,6 @@ fn build_command(
         })?;
     preflight_mcp_path(&spec, &input.allowed_operations, input.allow_write)?;
 
-    let command = binary
-        .to_str()
-        .context("the executable path must be UTF-8")?;
     let spec = spec.to_str().context("the spec path must be UTF-8")?;
     let mut args = vec![
         // The stdio sandbox discovers host paths as individual argv tokens.
@@ -92,12 +48,22 @@ fn build_command(
     if input.allow_write {
         args.push("--allow-write".into());
     }
-    Ok((command.to_owned(), args))
+    Ok((SELECTOR.into(), args))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use super::*;
+
+    fn fixture_command(
+        input: OpenApiRegistration,
+        binary: &Path,
+        root: &Path,
+    ) -> Result<(String, Vec<String>)> {
+        build_command(input, &HostPaths::new(binary, root)?)
+    }
 
     const FIXTURE_SPEC: &str = r#"{
         "openapi": "3.0.0",
@@ -114,7 +80,7 @@ mod tests {
     }"#;
 
     fn fixture(dir: &Path) -> (OpenApiRegistration, PathBuf, PathBuf) {
-        let binary = dir.join(BINARY_NAME);
+        let binary = dir.join(format!("labby-openapi-mcp{}", std::env::consts::EXE_SUFFIX));
         let spec_root = dir.join("specs");
         fs::write(&binary, b"not executed in these tests").unwrap();
         fs::create_dir(&spec_root).unwrap();
@@ -138,8 +104,8 @@ mod tests {
         let (mut input, binary, root) = fixture(dir.path());
         input.allow_write = true;
         let expected_path = fs::canonicalize(&input.spec_path).unwrap();
-        let (command, args) = build_command(input, &binary, &root).unwrap();
-        assert_eq!(Path::new(&command), fs::canonicalize(binary).unwrap());
+        let (command, args) = fixture_command(input, &binary, &root).unwrap();
+        assert_eq!(command, SELECTOR);
         assert_eq!(
             args,
             [
@@ -164,8 +130,8 @@ mod tests {
         input.allowed_operations = vec!["listItems".into(), "catalog.get-one".into()];
         let canonical = fs::canonicalize(spaced_spec).unwrap();
         let path_arg = canonical.to_str().unwrap().to_owned();
-        let (command, args) = build_command(input, &binary, &root).unwrap();
-        assert_eq!(Path::new(&command), fs::canonicalize(binary).unwrap());
+        let (command, args) = fixture_command(input, &binary, &root).unwrap();
+        assert_eq!(command, SELECTOR);
         assert_eq!(
             args,
             [
@@ -207,7 +173,7 @@ mod tests {
             let (mut input, binary, root) = fixture(dir.path());
             input.allowed_operations = ids;
             assert!(
-                build_command(input, &binary, &root)
+                fixture_command(input, &binary, &root)
                     .unwrap_err()
                     .to_string()
                     .starts_with(expected_message)
@@ -233,7 +199,7 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({"openapi": "3.0.0", "paths": paths})).unwrap(),
         )
         .unwrap();
-        let (_, args) = build_command(input, &binary, &root).unwrap();
+        let (_, args) = fixture_command(input, &binary, &root).unwrap();
         assert_eq!(args.len(), 203);
         assert_eq!(args[202], format!("--allow-operation={}", "x".repeat(128)));
     }
@@ -243,7 +209,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (mut input, binary, root) = fixture(dir.path());
         input.allowed_operations = vec!["listItems".into(), "listItems".into()];
-        assert!(build_command(input, &binary, &root).is_err());
+        assert!(fixture_command(input, &binary, &root).is_err());
         for url in [
             "http://api.example.com",
             "https://127.0.0.1",
@@ -255,7 +221,7 @@ mod tests {
                 allowed_operations: vec!["listItems".into()],
                 allow_write: false,
             };
-            assert!(build_command(input, &binary, &root).is_err());
+            assert!(fixture_command(input, &binary, &root).is_err());
         }
     }
 
@@ -270,7 +236,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let (mut input, binary, root) = fixture(dir.path());
             input.allowed_operations = vec![operation.into()];
-            let error = build_command(input, &binary, &root).unwrap_err();
+            let error = fixture_command(input, &binary, &root).unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
         }
     }
@@ -281,7 +247,7 @@ mod tests {
         let (mut input, binary, root) = fixture(dir.path());
         input.allowed_operations = vec!["listItems".into()];
         fs::write(&input.spec_path, b"not JSON; private document content").unwrap();
-        let error = build_command(input, &binary, &root)
+        let error = fixture_command(input, &binary, &root)
             .unwrap_err()
             .to_string();
         assert!(error.contains("failed to parse"), "{error}");
@@ -296,18 +262,10 @@ mod tests {
             .unwrap()
             .set_len(4 * 1024 * 1024 + 1)
             .unwrap();
-        let error = build_command(input, &binary, &root)
+        let error = fixture_command(input, &binary, &root)
             .unwrap_err()
             .to_string();
         assert!(error.contains("exceeds the size cap"), "{error}");
-    }
-
-    #[test]
-    fn uses_the_platform_executable_name() {
-        assert_eq!(
-            BINARY_NAME,
-            format!("labby-openapi-mcp{}", env::consts::EXE_SUFFIX)
-        );
     }
 
     #[cfg(unix)]
@@ -319,7 +277,7 @@ mod tests {
         fs::write(&outside, b"{}").unwrap();
         fs::remove_file(&input.spec_path).unwrap();
         std::os::unix::fs::symlink(outside, &input.spec_path).unwrap();
-        assert!(build_command(input, &binary, &root).is_err());
+        assert!(fixture_command(input, &binary, &root).is_err());
     }
 
     #[test]

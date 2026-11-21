@@ -51,6 +51,11 @@ pub(crate) async fn normalize(
             "confirm the adapter registration before adding the server",
         ));
     }
+    if manager.current_config().await.gateway.disable_spawn_guard {
+        return Err(invalid(
+            "guided adapters require the stdio spawn guard to be enabled",
+        ));
+    }
     let (command, args) = match request.adapter {
         AdapterRegistration::Cli { manifest_path } => cli_command(manifest_path).await?,
         AdapterRegistration::Openapi(registration) => {
@@ -60,19 +65,6 @@ pub(crate) async fn normalize(
                 .map_err(|error| invalid(error.to_string()))?
         }
     };
-    let config = manager.current_config().await.gateway;
-    if config.disable_spawn_guard {
-        return Err(invalid(
-            "guided adapters require the stdio spawn guard to be enabled",
-        ));
-    }
-    if command != labby_gateway::security::guided_cli::SELECTOR
-        && !config.extra_stdio_commands.contains(&command)
-    {
-        return Err(invalid(
-            "the host operator must explicitly allow the adapter executable's exact path with the stdio spawn guard enabled",
-        ));
-    }
     Ok(json!({
         "spec": {
             "name": request.spec.name,

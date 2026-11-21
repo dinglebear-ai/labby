@@ -220,11 +220,13 @@ labby code search getUser
 ### Add Server screen
 
 For the guided OpenAPI form, the gateway operator sets
-`LABBY_OPENAPI_MCP_BIN` to the absolute path of the installed executable
-and adds its canonical path to `[gateway].extra_stdio_commands`. Set
-`LABBY_OPENAPI_SPEC_ROOT` to an absolute, operator-managed directory that is
-not writable by gateway clients. The spec and its parent directories must
-remain under operator control while the upstream is configured.
+`LABBY_OPENAPI_MCP_BIN` to the canonical absolute path of the installed
+executable. Set `LABBY_OPENAPI_SPEC_ROOT` to an absolute, operator-managed
+directory that is not writable by gateway clients. The spec and its parent
+directories must remain under operator control while the upstream is
+configured. Keep the stdio spawn guard enabled. The guided flow uses a
+restricted launcher, so do not add the binary to `[gateway].extra_stdio_commands`
+just to enable the form.
 
 In Add Server, select OpenAPI and enter the name, an existing absolute
 gateway-host JSON spec path under that directory, the public HTTPS API base

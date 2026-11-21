@@ -80,25 +80,19 @@ async fn guided_openapi_rest_denies_non_admin_and_unapproved_spawn() {
         },
     });
 
-    // Each case isolates one prerequisite: exact path allowlisting or an
-    // enabled guard. The disabled guard affects only its disposable daemon.
-    for (guard_disabled, allow_adapter) in [(false, false), (true, true)] {
-        let commands = if allow_adapter {
-            vec![&fixture.openapi]
-        } else {
-            Vec::new()
-        };
+    // Omit only host provisioning in the first case. In the second case
+    // provisioning is valid but the guard is disabled in the disposable daemon.
+    for guard_disabled in [false, true] {
         let scopes = live_identity::AUTHORITY_SCOPES;
         let config = format!(
-            "{}\n[gateway]\ndisable_spawn_guard = {guard_disabled}\nextra_stdio_commands = {}\n",
+            "{}\n[gateway]\ndisable_spawn_guard = {guard_disabled}\n",
             policy(scopes),
-            serde_json::to_string(&commands).expect("serialize the exact executable allowlist"),
         );
         let identity = LiveIdentity::bootstrap_with_policy_scopes_and_env(
             "adapter-denial-owner@labby.invalid",
             &config,
             scopes,
-            &env,
+            if guard_disabled { &env } else { &env[..1] },
         )
         .await
         .expect("boot an isolated installation and grant its owner");
@@ -140,6 +134,33 @@ async fn guided_openapi_rest_denies_non_admin_and_unapproved_spawn() {
                 fs::read(&persisted).expect("read gateway configuration") == before,
                 "a non-admin must not persist the adapter"
             );
+
+            let response = client
+                .post(format!("{}/v1/gateway", identity.base()))
+                .bearer_auth(identity.credential_for_request())
+                .json(&json!({
+                    "action": "gateway.add",
+                    "params": {"spec": {"name": "raw-openapi", "command": fixture.openapi}},
+                }))
+                .send()
+                .await
+                .expect("attempt raw stdio without a broad approval");
+            let status = response.status();
+            let error: serde_json::Value = response.json().await.expect("raw spawn denial");
+            assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+            assert_eq!(error["kind"], "invalid_param", "{error}");
+            assert_eq!(error["param"], "command", "{error}");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("not in the allowed list"),
+                "{error}"
+            );
+            assert!(
+                fs::read(&persisted).expect("read gateway configuration") == before,
+                "a refused raw command must not persist"
+            );
         }
 
         let response = add(identity.credential_for_request())
@@ -156,7 +177,7 @@ async fn guided_openapi_rest_denies_non_admin_and_unapproved_spawn() {
             if guard_disabled {
                 "guided adapters require the stdio spawn guard to be enabled"
             } else {
-                "the host operator must explicitly allow the adapter executable's exact path with the stdio spawn guard enabled"
+                "OpenAPI Add Server requires LABBY_OPENAPI_MCP_BIN"
             },
             "guard_disabled={guard_disabled}: {error}"
         );
@@ -286,6 +307,16 @@ world = ["Labby CLI browser canary"]
                             "responses": { "200": { "description": "OK" } }
                         }
                     },
+                    "/pet/findByStatus": {
+                        "get": {
+                            "operationId": "findPetsByStatus",
+                            "parameters": [{
+                                "name": "status", "in": "query", "required": true,
+                                "schema": { "type": "string" }
+                            }],
+                            "responses": { "200": { "description": "JSON results" } }
+                        }
+                    },
                     "/unselected": {
                         "get": {
                             "operationId": "notSelected",
@@ -327,7 +358,7 @@ async fn supervise_live_browser(adapters: Option<&GuidedAdapterFixtures>) {
         "prebuilt index.html missing"
     );
 
-    let mut config = format!(
+    let config = format!(
         "{}\n[[loadouts]]\nname = \"team:{}:production\"\nupstreams = []\nservices = [\"gateway\"]\n\n[web]\nassets_dir = {}\n",
         policy(&["lab:read", "lab", "lab:admin"]).replacen(
             "services = [\"gateway\"]",
@@ -342,11 +373,6 @@ async fn supervise_live_browser(adapters: Option<&GuidedAdapterFixtures>) {
     // its bound policy after bootstrap and invalidating the credential.
     let scopes = &["lab:read", "lab", "lab:admin"];
     let mut identity = if let Some(adapters) = adapters {
-        config.push_str(&format!(
-            "\n[gateway]\nextra_stdio_commands = {}\n",
-            serde_json::to_string(&[&adapters.openapi])
-                .expect("serialize exact adapter executable allowlist"),
-        ));
         let root = adapters.root.path().to_str().expect("UTF-8 fixture root");
         let mut daemon_env = vec![
             ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
@@ -497,6 +523,11 @@ async fn supervise_live_browser(adapters: Option<&GuidedAdapterFixtures>) {
         command
             .env("LABBY_LIVE_BROWSER_ADAPTER_MANIFEST", &adapters.manifest)
             .env("LABBY_LIVE_BROWSER_ADAPTER_SPEC", &adapters.spec);
+        if std::env::var_os("LABBY_LIVE_BROWSER_OPENAPI_PETSTORE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            command.env("LABBY_LIVE_BROWSER_OPENAPI_PETSTORE", "1");
+        }
     }
     for key in ["LABBY_E2E_HELPER_REGISTRY", "LABBY_E2E_GROUP_TOKEN"] {
         if let Some(value) = std::env::var_os(key) {

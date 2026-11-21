@@ -1255,18 +1255,19 @@ pub(crate) fn validate_upstream(
             param: "url".to_string(),
         }),
         (Some(url), None) => validate_gateway_url(url),
-        (None, Some(command)) if command == crate::security::guided_cli::SELECTOR => {
+        (None, Some(command)) => {
+            let Some(adapter) = crate::security::guided_stdio::GuidedStdio::from_command(command)
+            else {
+                return validate_stdio_upstream(command, &upstream.args, &upstream.env, prefs);
+            };
             if prefs.disable_spawn_guard {
                 return Err(ToolError::InvalidParam {
                     message: "guided adapters require the stdio spawn guard to be enabled".into(),
                     param: "command".into(),
                 });
             }
-            crate::security::guided_cli::prepare_upstream(upstream, &upstream.args)?;
+            adapter.prepare(upstream, &upstream.args)?;
             Ok(())
-        }
-        (None, Some(command)) => {
-            validate_stdio_upstream(command, &upstream.args, &upstream.env, prefs)
         }
     }
 }

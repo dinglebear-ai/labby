@@ -1,7 +1,7 @@
 //! Restricted spawn selector for the Linux guided CLI MCP adapter.
 use std::path::PathBuf;
 
-use labby_runtime::{error::ToolError, gateway_config::UpstreamConfig};
+use labby_runtime::error::ToolError;
 
 /// Persisted selector, not a program name. Never pass it to PATH lookup.
 pub const SELECTOR: &str = "labby::guided-cli";
@@ -11,28 +11,6 @@ fn invalid(message: &str) -> ToolError {
         message: message.into(),
         param: "command".into(),
     }
-}
-
-fn validate_launch_shape(config: &UpstreamConfig) -> Result<(), ToolError> {
-    if !config.env.is_empty()
-        || !config.secret_env.is_empty()
-        || config.bearer_token_env.is_some()
-        || config.lifecycle.is_some()
-    {
-        return Err(invalid(
-            "guided CLI upstreams do not accept environment, credentials, or lifecycle overrides",
-        ));
-    }
-    Ok(())
-}
-
-/// Check the exact launch shape again for loaded and reconnecting upstreams.
-pub(crate) fn prepare_upstream(
-    config: &UpstreamConfig,
-    args: &[String],
-) -> Result<PathBuf, ToolError> {
-    validate_launch_shape(config)?;
-    prepare(args)
 }
 
 /// Resolve the only executable this selector can launch after checking its
@@ -133,28 +111,6 @@ fn validate_manifest(root: &std::path::Path, manifest: &std::path::Path) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rejects_runtime_overrides_before_resolving_the_manifest() {
-        for overrides in [
-            serde_json::json!({"env": {"FIXTURE_OPTION": "fixture"}}),
-            serde_json::json!({"secret_env": {"FIXTURE_OPTION": "LABBY_FIXTURE_CREDENTIAL"}}),
-            serde_json::json!({"bearer_token_env": "FIXTURE_TOKEN"}),
-            serde_json::json!({"lifecycle": "auto"}),
-        ] {
-            let mut spec = serde_json::json!({"name": "fixture", "command": SELECTOR});
-            spec.as_object_mut()
-                .unwrap()
-                .extend(overrides.as_object().unwrap().clone());
-            let config: UpstreamConfig = serde_json::from_value(spec).unwrap();
-            assert!(
-                prepare_upstream(&config, &config.args)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("overrides")
-            );
-        }
-    }
 
     #[cfg(target_os = "linux")]
     #[test]

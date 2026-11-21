@@ -344,9 +344,14 @@ server-side rejection and retry of a missing source, saves its upstream, and
 asserts the discovered schema and authenticated Code Mode search and invocation.
 After a real daemon restart and page reload, both must still pass discovery and
 invocation. The CLI fixture returns a fixed greeting. The OpenAPI fixture
-verifies adapter rejection of an empty path
-parameter before DNS; the adapter's loopback unit suite separately covers a
-successful HTTP response. No public network is needed for the canaries. `nightly` adds fault
+verifies adapter rejection of an empty path parameter before DNS; the
+adapter's loopback suite separately covers a successful HTTP response. The
+automatic canaries do not need public network access. For a manual positive
+browser check, set `LABBY_LIVE_BROWSER_OPENAPI_PETSTORE=1` on the local
+`live_browser_supervisor` invocation (with the same built binaries and browser
+assets). It sends a read-only GET to the public Swagger Petstore before and
+after daemon restart and verifies the structured Code Mode response. It sends no
+credentials or user data. `nightly` adds fault
 qualification and the mobile browser checks. `collision` runs two isolated
 copies of the stateful HTTP/CLI/API shard, and `repeat10` executes the hermetic
 PR tier ten times with seeds 1 through 10.
