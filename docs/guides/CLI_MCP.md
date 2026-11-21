@@ -48,8 +48,16 @@ guard or allow all paths with the same filename.
 extra_stdio_commands = ["/usr/local/bin/labby"]
 ```
 
-Then use Add Server with that command and these four arguments: `cli`, `serve`,
-`--manifest`, and the absolute manifest path. The equivalent CLI is:
+For the browser's **Add Server → Add CLI** flow, set
+`LABBY_CLI_MCP_MANIFEST_ROOT` in the gateway process environment to a trusted,
+absolute, canonical host directory, for example `/var/lib/labby-upstreams`.
+The runtime account needs read and directory-traversal access. Enter the
+absolute manifest path in that directory. This is a host path, not a browser
+file or upload. An installation administrator can save the server using the
+normal gateway workflow; the UI cannot add an allowlist entry or override
+the spawn guard, command, environment, or capabilities.
+
+The equivalent manual registration from the CLI is:
 
 ```bash
 labby server add my-cli --command /usr/local/bin/labby \

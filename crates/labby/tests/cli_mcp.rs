@@ -98,7 +98,8 @@ mod live_labby;
 #[tokio::test]
 async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
     const TOKEN: &str = "cli-mcp-qualification-disposable-token";
-    let (_dir, manifest) = manifest_fixture()?;
+    let (manifest_root, manifest) = manifest_fixture()?;
+    let outside_manifest = manifest_fixture()?;
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_labby")).canonicalize()?;
     let config = format!(
         "[code_mode]\nenabled = true\n\n[gateway]\nextra_stdio_commands = [{}]\n",
@@ -149,6 +150,7 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
     let gateway = live_labby::LiveLabbyBuilder::new()
         .existing_root(installation.path())
         .env("LABBY_MCP_HTTP_TOKEN", TOKEN)
+        .env("LABBY_CLI_MCP_MANIFEST_ROOT", manifest_root.path())
         .config(config)
         .start()
         .await
@@ -165,33 +167,45 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
                 .kill_on_drop(true);
             command
         };
-        let add = cli_child(&[
-            "server",
-            "add",
-            "cli-presets",
-            "--command",
-            binary
-                .to_str()
-                .context("fixture binary path is not UTF-8")?,
-            "--arg",
-            "cli",
-            "--arg",
-            "serve",
-            "--arg=--manifest",
-            "--arg",
-            manifest
-                .to_str()
-                .context("fixture manifest path is not UTF-8")?,
-            "--json",
-        ])
-        .output()
-        .await?;
-        assert!(
-            add.status.success(),
-            "{}",
-            String::from_utf8_lossy(&add.stderr)
-        );
         let http = reqwest::Client::builder().no_proxy().build()?;
+        let registration = |params: Value| {
+            http.post(format!("{url}/v1/gateway")).json(&json!({
+                "action": "gateway.add",
+                "params": params
+            }))
+        };
+        let params = json!({
+            "spec": {"name": "cli-presets", "display_name": "Approved CLI"},
+            "adapter": {"kind": "cli", "manifest_path": manifest},
+            "confirm": true
+        });
+        let unauthenticated = registration(params.clone()).send().await?;
+        assert!(matches!(unauthenticated.status().as_u16(), 401 | 403));
+        let authorized = |params: Value| {
+            registration(params).bearer_auth(TOKEN).header(
+                "x-labby-team-id",
+                live_labby::LiveLabbyGuard::HARNESS_TEAM_ID,
+            )
+        };
+        for (pointer, replacement) in [
+            ("/confirm", json!(false)),
+            ("/adapter/manifest_path", json!(outside_manifest.1)),
+            (
+                "/spec",
+                json!({"name": "injected", "command": "/usr/bin/printf"}),
+            ),
+        ] {
+            let mut bad = params.clone();
+            *bad.pointer_mut(pointer)
+                .context("bad fixture JSON pointer")? = replacement;
+            let refused = authorized(bad).send().await?;
+            assert_eq!(refused.status().as_u16(), 400, "{}", refused.text().await?);
+        }
+        let created = authorized(params).send().await?;
+        let status = created.status();
+        let body = created.text().await?;
+        assert!(status.is_success(), "HTTP {status}: {body}");
+        assert!(body.contains("Approved CLI"), "{body}");
         let response = http
             .post(format!("{url}/v1/gateway"))
             .bearer_auth(TOKEN)

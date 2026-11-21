@@ -275,6 +275,40 @@ fn load_manifest(path: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
+/// Prepare the normal stdio command for a host-provisioned Add CLI manifest.
+#[cfg(feature = "gateway")]
+pub(crate) fn registration_command(path: &Path) -> Result<(String, Vec<String>)> {
+    let root = std::env::var_os("LABBY_CLI_MCP_MANIFEST_ROOT")
+        .map(PathBuf::from)
+        .context("Add CLI requires LABBY_CLI_MCP_MANIFEST_ROOT on the Labby host")?;
+    ensure!(
+        root.is_absolute()
+            && root.parent().is_some()
+            && root.canonicalize().ok().as_ref() == Some(&root)
+            && checked_ancestor_directories(&root.join("manifest"))
+            && path.starts_with(&root)
+            && path != root,
+        "the manifest must be inside the trusted operator-configured Add CLI manifest directory"
+    );
+    load_manifest(path)?;
+    let command = std::env::current_exe()?.canonicalize()?;
+    checked_executable(&command)?;
+    Ok((
+        command
+            .to_str()
+            .context("the Labby command path must be UTF-8")?
+            .into(),
+        vec![
+            "cli".into(),
+            "serve".into(),
+            "--manifest".into(),
+            path.to_str()
+                .context("the manifest path must be UTF-8")?
+                .into(),
+        ],
+    ))
+}
+
 struct ProcessGroup(Pid);
 
 impl Drop for ProcessGroup {
