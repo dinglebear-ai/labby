@@ -1515,7 +1515,7 @@ test('OpenAPI Add Server keeps the form after a rejected registration and exclud
   const window = installGatewayDialogDom()
   const originalFetch = globalThis.fetch
   const probes: string[] = []
-  let input: CreateGatewayInput | undefined
+  const calls: CreateGatewayInput[] = []
   globalThis.fetch = (async (resource, init) => {
     if (String(resource) === '/v1/gateway' && init?.method === 'POST') {
       const request = JSON.parse(String(init.body)) as { action: string }
@@ -1525,7 +1525,7 @@ test('OpenAPI Add Server keeps the form after a rejected registration and exclud
   }) as typeof fetch
   try {
     const view = await renderOpenGatewayDialog(null, async (next) => {
-      input = next as CreateGatewayInput
+      calls.push(next as CreateGatewayInput)
       throw new Error('The gateway host could not open this specification')
     })
     try {
@@ -1539,12 +1539,12 @@ test('OpenAPI Add Server keeps the form after a rejected registration and exclud
       const add = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Add server')
       assert.ok(add?.disabled)
       await clickSave()
-      assert.equal(input, undefined)
+      assert.equal(calls.length, 0)
       await setTextareaValue(window, document.querySelector<HTMLTextAreaElement>('#adapter-operations')!, 'listItems\ngetItem')
       assert.equal(add.disabled, false)
       await clickSave()
       await waitFor(() => assert.match(document.querySelector('[role="alert"]')?.textContent ?? '', /could not open this specification/))
-      assert.deepEqual(input?.adapter, {
+      assert.deepEqual(calls[0]?.adapter, {
         kind: 'openapi', spec_path: '/srv/labby/catalog.json', base_url: 'https://api.example.com',
         allowed_operations: ['listItems', 'getItem'],
       })
