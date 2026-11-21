@@ -199,7 +199,7 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             *bad.pointer_mut(pointer)
                 .context("bad fixture JSON pointer")? = replacement;
             let refused = authorized(bad).send().await?;
-            assert_eq!(refused.status().as_u16(), 400, "{}", refused.text().await?);
+            assert_eq!(refused.status().as_u16(), 422, "{}", refused.text().await?);
         }
         let created = authorized(params).send().await?;
         let status = created.status();
