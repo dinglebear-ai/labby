@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { appendFileSync } from 'node:fs'
+import { access, writeFile } from 'node:fs/promises'
+import { setTimeout } from 'node:timers/promises'
 import test from 'node:test'
 
 import { chromium, type Page } from 'playwright'
@@ -58,10 +60,47 @@ async function registerThroughUi(page: Page, kind: AdapterKind, id: string, disp
     const body = response.request().postDataJSON()
     return body?.action === name && (body.params?.name === id || body.params?.spec?.name === id)
   }, { timeout: 15_000 })
-  const [created, tested, discovered] = await Promise.all([
-    waitAction('gateway.add'), waitAction('gateway.test'), waitAction('gateway.discovered_tools'), add.click(),
-  ])
-  assert.equal(created.status(), 200, 'guided Add Server must commit a normal upstream')
+  // A plausible but nonexistent host file passes local form validation.
+  // The real server must refuse it without closing the dialog or probing.
+  const sourceField = dialog.getByLabel(kind === 'cli'
+    ? 'Manifest path on the gateway host'
+    : 'Specification path on the gateway host', { exact: true })
+  const source = kind === 'cli' ? manifest! : spec!
+  const missingSource = source.replace(/(\.[^.]+)$/, '-missing$1')
+  let prematureTests = 0
+  const observeProbe = (request: import('playwright').Request) => {
+    if (request.method() !== 'POST' || new URL(request.url()).pathname !== '/v1/gateway') return
+    const body = request.postDataJSON()
+    if (body?.action === 'gateway.test' && body.params?.name === id) prematureTests++
+  }
+  page.on('request', observeProbe)
+  try {
+    await sourceField.fill(missingSource)
+    const [denied] = await Promise.all([waitAction('gateway.add'), add.click()])
+    assert.equal(denied.status(), 422, 'the server must reject the missing local source')
+    const rejection = await denied.json()
+    assert.equal(rejection.kind, 'invalid_param')
+    await dialog.getByRole('alert').waitFor({ state: 'visible', timeout: 10_000 })
+    assert.equal(await sourceField.inputValue(), missingSource)
+    assert.equal(prematureTests, 0)
+  } finally {
+    page.off('request', observeProbe)
+  }
+
+  await sourceField.fill(source)
+  // Capture followups now, but report a rejected add immediately instead of
+  // masking the first failure behind a discovery timeout.
+  const followups = Promise.all([waitAction('gateway.test'), waitAction('gateway.discovered_tools')])
+    .then(([tested, discovered]) => ({ tested, discovered }), error => ({ error }))
+  const [created] = await Promise.all([waitAction('gateway.add'), add.click()])
+  if (created.status() !== 200) {
+    const body = await created.json().catch(() => ({}))
+    assert.fail('guided ' + kind + ' Add Server rejected valid input (HTTP ' + created.status()
+      + '): ' + (body.kind ?? 'unknown') + ' ' + (body.message ?? ''))
+  }
+  const followup = await followups
+  if ('error' in followup) throw followup.error
+  const { tested, discovered } = followup
   assert.deepEqual(created.request().postDataJSON().params, {
     spec: { name: id, display_name: displayName },
     confirm: true,
@@ -98,8 +137,34 @@ async function registerThroughUi(page: Page, kind: AdapterKind, id: string, disp
     }, { service, action, params, scopeHeaders })
 }
 
+type BrowserAction = Awaited<ReturnType<typeof registerThroughUi>>
+
+async function assertPersistedSchema(
+  action: BrowserAction,
+  kind: AdapterKind,
+  id: string,
+  tool: string,
+  command: string,
+) {
+  const persisted = await action('gateway', 'gateway.get', { name: id })
+  assert.equal(persisted.status, 200)
+  assert.equal(persisted.body.config.name, id)
+  assert.equal(persisted.body.config.url ?? null, null)
+  assert.ok(persisted.body.config.command?.endsWith(command))
+  const catalog = await action('gateway', 'gateway.schema', { name: id })
+  assert.equal(catalog.status, 200)
+  assert.equal(catalog.body.name, id)
+  assert.deepEqual(catalog.body.tools.map(({ name }: { name: string }) => name), [tool])
+  const input = catalog.body.tools[0].input_schema
+  const parameter = kind === 'cli' ? 'choice' : 'itemId'
+  assert.equal(input.type, 'object')
+  assert.deepEqual(input.required, [parameter])
+  assert.equal(input.properties[parameter].type, 'string')
+  if (kind === 'cli') assert.deepEqual(input.properties.choice.enum, ['world'])
+}
+
 async function exerciseCodeMode(
-  action: Awaited<ReturnType<typeof registerThroughUi>>,
+  action: BrowserAction,
   id: string,
   tool: string,
   args: object,
@@ -113,8 +178,11 @@ async function exerciseCodeMode(
     '---', 'name: ' + name, 'description: Disposable guided adapter Code Mode canary',
     'tools:', '  - ' + JSON.stringify(qualifiedTool), '---', fence + 'js',
     'async () => {',
-    '  try { return await callTool(' + JSON.stringify(qualifiedTool) + ', ' + JSON.stringify(args) + '); }',
-    '  catch (error) { return { error: String(error.message || error) }; }',
+    '  const search = await codemode.search({ query: ' + JSON.stringify(tool) + ', kinds: ["tool"] });',
+    '  const hit = search.results.find(hit => hit.id === ' + JSON.stringify(qualifiedTool) + ');',
+    '  if (!hit) throw new Error("new upstream missing from Code Mode search");',
+    '  try { return { found: hit.id, output: await callTool(hit.id, ' + JSON.stringify(args) + ') }; }',
+    '  catch (error) { return { found: hit.id, error: String(error.message || error) }; }',
     '}', fence, '',
   ].join('\n')
   assert.equal((await action('snippets', 'snippets.create', { name, body })).status, 200)
@@ -126,7 +194,8 @@ async function exerciseCodeMode(
     assert.deepEqual(executed.body.calls.map(({ id, ok }: { id: string; ok: boolean }) => ({ id, ok })), [
       { id: qualifiedTool, ok: callSucceeded },
     ])
-    assert.match(JSON.stringify(executed.body.result), expected)
+    assert.equal(executed.body.result.found, qualifiedTool)
+    assert.match(callSucceeded ? JSON.stringify(executed.body.result.output) : executed.body.result.error, expected)
   } finally {
     assert.equal((await action('snippets', 'snippets.remove', { name })).status, 200)
   }
@@ -165,7 +234,8 @@ test('guided Add Server adapters in the real Gateway Admin', {
         return route.continue({ headers: { ...headers, 'x-csrf-token': csrf } })
       })
       try {
-        for (const canary of [
+        const registered: Array<{ canary: (typeof canaries)[number]; action: BrowserAction }> = []
+        const canaries = [
           {
             kind: 'cli', id: 'guided-cli-browser', label: 'Browser CLI fixture', tool: 'fixture_greeting',
             command: '/labby', args: { choice: 'world' }, expected: /Labby CLI browser canary/,
@@ -179,20 +249,30 @@ test('guided Add Server adapters in the real Gateway Admin', {
             command: '/labby-openapi-mcp', args: { itemId: '' },
             expected: /operation .getFixtureItem. path parameter .itemId. is missing or invalid/,
           },
-        ] as const) {
+        ] as const
+        for (const canary of canaries) {
           await t.test(canary.kind + ' saves, discovers, and invokes its real MCP adapter', async () => {
             await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
             const action = await registerThroughUi(page, canary.kind, canary.id, canary.label, canary.tool)
-            const persisted = await action('gateway', 'gateway.get', { name: canary.id })
-            assert.equal(persisted.status, 200)
-            assert.equal(persisted.body.config.name, canary.id)
-            assert.equal(persisted.body.config.url ?? null, null)
-            assert.ok(persisted.body.config.command?.endsWith(canary.command))
+            await assertPersistedSchema(action, canary.kind, canary.id, canary.tool, canary.command)
             await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli')
-            await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 })
-            await serverIsVisible(page, canary.label)
-            appendFileSync(progress, 'guided-' + canary.kind + '-completed\n', { mode: 0o600 })
+            registered.push({ canary, action })
           })
+        }
+        assert.equal(registered.length, canaries.length, 'both registrations must finish before restart')
+        // The Rust supervisor owns the disposable process and exact restart.
+        await writeFile(descriptor.restart_request_path, 'restart\n', { mode: 0o600, flag: 'wx' })
+        const deadline = Date.now() + 30_000
+        while (!await access(descriptor.restart_complete_path).then(() => true, () => false)) {
+          assert.ok(Date.now() < deadline, 'disposable gateway did not complete its restart')
+          await setTimeout(100, undefined, { signal })
+        }
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 })
+        for (const { canary, action } of registered) {
+          await serverIsVisible(page, canary.label)
+          await assertPersistedSchema(action, canary.kind, canary.id, canary.tool, canary.command)
+          await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli')
+          appendFileSync(progress, 'guided-' + canary.kind + '-completed\n', { mode: 0o600 })
         }
         assertCanaryFree(await page.locator('body').innerText(), await readScanSecrets(descriptor, signal), 'adapter canary DOM')
       } finally {

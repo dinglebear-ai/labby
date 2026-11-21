@@ -5,22 +5,32 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use rmcp::ClientServiceExt as _;
-use rmcp::model::{CallToolRequestParams, ProtocolVersion};
-use rmcp::service::ClientLifecycleMode;
+use rmcp::model::{CallToolRequestParams, CallToolResult, ErrorCode, ProtocolVersion};
+use rmcp::service::{ClientLifecycleMode, ServiceError};
 use rmcp::transport::TokioChildProcess;
 use serde_json::{Map, Value, json};
 use tokio::process::Command;
 
+const HELLO_OUTPUT: &str = "approved: [Hello world]";
+const LITERAL_OUTPUT: &str = "approved: [--not-an-option 100%]";
 const HELLO_MANIFEST: &str = r#"
 [[tools]]
 name = "hello"
 description = "Say hello with an approved CLI"
 executable = "/usr/bin/printf"
-args = ["%s"]
+args = ["%s: [%s]", "approved"]
 read_only = true
 
 [tools.choices]
 world = ["Hello world"]
+literal = ["--not-an-option 100%"]
+
+[[tools]]
+name = "fixed"
+description = "Print a fixed string with no caller arguments"
+executable = "/usr/bin/printf"
+args = ["%s", "fixed preset"]
+read_only = true
 "#;
 
 fn manifest_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
@@ -34,6 +44,24 @@ fn manifest_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
 
 fn hello_arguments(value: &str) -> Map<String, Value> {
     Map::from_iter([("choice".to_owned(), json!(value))])
+}
+
+fn hello_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {"choice": {"type": "string", "enum": ["literal", "world"]}},
+        "required": ["choice"],
+        "additionalProperties": false,
+    })
+}
+
+fn assert_text_result(result: &CallToolResult, expected: &str) -> Result<()> {
+    assert_ne!(result.is_error, Some(true), "{result:?}");
+    assert_eq!(
+        serde_json::to_value(&result.content)?,
+        json!([{"type": "text", "text": expected}])
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -56,28 +84,59 @@ async fn direct_cli_mcp_negotiates_lists_and_calls_without_gateway() -> Result<(
         assert!(info.capabilities.prompts.is_none());
         assert!(info.protocol_version >= ProtocolVersion::V_2025_11_25);
         let listing = client.list_tools(None).await?;
-        assert_eq!(listing.tools.len(), 1);
-        assert_eq!(listing.tools[0].name, "hello");
+        assert_eq!(listing.tools.len(), 2);
+        let hello = listing
+            .tools
+            .iter()
+            .find(|tool| tool.name == "hello")
+            .context("hello tool")?;
+        assert_eq!(serde_json::to_value(&hello.input_schema)?, hello_schema());
+        let hints = hello.annotations.as_ref().context("hello annotations")?;
+        assert_eq!(hints.read_only_hint, Some(true));
+        assert_eq!(hints.destructive_hint, Some(false));
+        let fixed = listing
+            .tools
+            .iter()
+            .find(|tool| tool.name == "fixed")
+            .context("fixed tool")?;
         assert_eq!(
-            listing.tools[0].input_schema["properties"]["choice"]["enum"],
-            json!(["world"])
+            serde_json::to_value(&fixed.input_schema)?,
+            json!({"type": "object", "properties": {}, "additionalProperties": false})
         );
-        let passed = client
-            .call_tool(CallToolRequestParams::new("hello").with_arguments(hello_arguments("world")))
-            .await?;
-        assert_eq!(
-            serde_json::to_value(&passed)?["content"][0]["text"],
-            "Hello world"
-        );
-        assert!(
-            client
+
+        for (choice, expected) in [("world", HELLO_OUTPUT), ("literal", LITERAL_OUTPUT)] {
+            let result = client
                 .call_tool(
-                    CallToolRequestParams::new("hello")
-                        .with_arguments(hello_arguments("--unapproved"))
+                    CallToolRequestParams::new("hello").with_arguments(hello_arguments(choice)),
                 )
-                .await
-                .is_err()
-        );
+                .await?;
+            assert_text_result(&result, expected)?;
+        }
+        let result = client
+            .call_tool(CallToolRequestParams::new("fixed"))
+            .await?;
+        assert_text_result(&result, "fixed preset")?;
+
+        for (tool, args) in [
+            ("hello", json!({})),
+            ("hello", json!({"choice": 42})),
+            ("hello", json!({"choice": "missing"})),
+            ("hello", json!({"choice": "world", "args": ["unapproved"]})),
+            ("fixed", json!({"choice": "world"})),
+        ] {
+            let args = args
+                .as_object()
+                .context("invalid fixture arguments")?
+                .clone();
+            let denied = client
+                .call_tool(CallToolRequestParams::new(tool).with_arguments(args))
+                .await;
+            assert!(
+                matches!(denied, Err(ServiceError::McpError(ref error))
+                    if error.code == ErrorCode::INVALID_PARAMS),
+                "{tool} must reject the arguments: {denied:?}"
+            );
+        }
         client.cancel().await?;
         Ok::<(), anyhow::Error>(())
     })
@@ -205,7 +264,24 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
         let status = created.status();
         let body = created.text().await?;
         assert!(status.is_success(), "HTTP {status}: {body}");
-        assert!(std::fs::read_to_string(labby_home.join("config.toml"))?.contains("Approved CLI"));
+        let persisted: toml::Value =
+            toml::from_str(&std::fs::read_to_string(labby_home.join("config.toml"))?)?;
+        let upstreams = persisted["upstream"]
+            .as_array()
+            .context("persisted upstream list")?;
+        assert_eq!(
+            upstreams.len(),
+            1,
+            "a refused add should leave no extra upstream"
+        );
+        let upstream = &upstreams[0];
+        assert_eq!(upstream["name"].as_str(), Some("cli-presets"));
+        assert_eq!(upstream["display_name"].as_str(), Some("Approved CLI"));
+        assert_eq!(upstream["command"].as_str(), binary.to_str());
+        assert_eq!(
+            serde_json::to_value(&upstream["args"])?,
+            json!(["cli", "serve", "--manifest", manifest])
+        );
         let response = http
             .post(format!("{url}/v1/gateway"))
             .bearer_auth(TOKEN)
@@ -228,6 +304,11 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             "{}",
             String::from_utf8_lossy(&test.stderr)
         );
+        let tested: Value = serde_json::from_slice(&test.stdout)?;
+        assert_eq!(tested["name"], "cli-presets", "{tested}");
+        assert_eq!(tested["connected"], true, "{tested}");
+        assert_eq!(tested["tool_count"], 2, "{tested}");
+        assert_eq!(tested["server_name"], "labby-cli", "{tested}");
         let search = cli_child(&["code", "search", "cli-presets hello", "--json"])
             .output()
             .await?;
@@ -248,7 +329,7 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             "code",
             "run",
             "--code",
-            "async () => await callTool('cli-presets::hello', { choice: 'world' })",
+            "async () => await callTool('cli-presets::hello', { choice: 'literal' })",
             "--json",
         ])
         .output()
@@ -258,11 +339,20 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             "{}",
             String::from_utf8_lossy(&tool_call.stderr)
         );
-        assert!(
-            String::from_utf8_lossy(&tool_call.stdout).contains("Hello world"),
-            "{}",
-            String::from_utf8_lossy(&tool_call.stdout),
-        );
+        let output: Value = serde_json::from_slice(&tool_call.stdout)?;
+        assert_eq!(output["kind"], "code_mode_execute_trace", "{output}");
+        assert_eq!(output["call_count"], 1, "{output}");
+        assert_eq!(output["result"], LITERAL_OUTPUT, "{output}");
+        let rejected = cli_child(&[
+            "code",
+            "run",
+            "--code",
+            "async () => await callTool('cli-presets::hello', { choice: 42 })",
+            "--json",
+        ])
+        .output()
+        .await?;
+        assert!(!rejected.status.success(), "{rejected:?}");
         let palette_id = "mcp:cli-presets::hello";
         let team = live_labby::LiveLabbyGuard::HARNESS_TEAM_ID;
         let descriptor = http
@@ -275,6 +365,13 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             .error_for_status()?
             .json::<Value>()
             .await?;
+        assert_eq!(descriptor["id"], palette_id, "{descriptor}");
+        assert_eq!(descriptor["inputSchema"], hello_schema(), "{descriptor}");
+        assert_eq!(
+            descriptor["annotations"]["readOnlyHint"], true,
+            "{descriptor}"
+        );
+        assert_eq!(descriptor["destructive"], false, "{descriptor}");
         let contract = descriptor["contractHash"]
             .as_str()
             .context("palette returned no CLI tool contract")?;
@@ -292,9 +389,25 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             .error_for_status()?
             .json::<Value>()
             .await?;
+        assert_eq!(executed["result"], HELLO_OUTPUT, "{executed}");
+        assert_eq!(executed["receipt"]["toolId"], palette_id, "{executed}");
+        assert_eq!(executed["receipt"]["contractHash"], contract, "{executed}");
+        assert_eq!(executed["receipt"]["executionMode"], "exact", "{executed}");
+        let refused = http
+            .post(format!("{url}/v1/palette/execute"))
+            .bearer_auth(TOKEN)
+            .header("x-labby-team-id", team)
+            .json(&json!({
+                "id": palette_id,
+                "params": {"choice": "world", "args": ["unapproved"]},
+                "expectedContractHash": contract,
+            }))
+            .send()
+            .await?;
         assert!(
-            executed["result"].to_string().contains("Hello world"),
-            "{executed}"
+            refused.status().is_client_error(),
+            "{}",
+            refused.text().await?
         );
 
         // The root gateway deliberately hides raw upstream tools with Code
@@ -329,10 +442,8 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
                     .with_arguments(hello_arguments("world")),
             )
             .await?;
-        assert_eq!(
-            serde_json::to_value(&called)?["content"][0]["text"],
-            "Hello world"
-        );
+        assert_eq!(serde_json::to_value(&tool.input_schema)?, hello_schema());
+        assert_text_result(&called, HELLO_OUTPUT)?;
         peer.cancel().await?;
         Ok::<(), anyhow::Error>(())
     })

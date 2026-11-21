@@ -148,6 +148,76 @@ mod tests {
     }
 
     #[test]
+    fn canonicalizes_host_inputs_and_keeps_default_registration_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut input, binary, root) = fixture(dir.path());
+        let spaced_spec = root.join("approved spec.json");
+        fs::rename(&input.spec_path, &spaced_spec).unwrap();
+        input.spec_path = root.join(".").join("approved spec.json");
+        input.base_url = "https://API.EXAMPLE.COM:443/v1".into();
+        input.allowed_operations = vec!["listItems".into(), "catalog.get-one".into()];
+        let path_arg = format!(
+            "--spec-path={}",
+            fs::canonicalize(spaced_spec).unwrap().display()
+        );
+        let (command, args) = build_command(input, &binary, &root).unwrap();
+        assert_eq!(Path::new(&command), fs::canonicalize(binary).unwrap());
+        assert_eq!(
+            args,
+            [
+                path_arg,
+                "--base-url=https://api.example.com/v1".into(),
+                "--allow-operation=listItems".into(),
+                "--allow-operation=catalog.get-one".into(),
+            ]
+        );
+    }
+
+    #[test]
+    fn enforces_the_operation_count_and_tool_name_boundaries() {
+        let operations = |count| (0..count).map(|i| format!("operation-{i}")).collect();
+        for (ids, expected_message) in [
+            (
+                operations(0),
+                "select between 1 and 200 OpenAPI operation IDs",
+            ),
+            (
+                operations(201),
+                "select between 1 and 200 OpenAPI operation IDs",
+            ),
+            (
+                vec!["".into()],
+                "each operation ID must be a valid MCP tool name",
+            ),
+            (
+                vec!["a".repeat(129)],
+                "each operation ID must be a valid MCP tool name",
+            ),
+            (
+                vec!["with space".into()],
+                "each operation ID must be a valid MCP tool name",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut input, binary, root) = fixture(dir.path());
+            input.allowed_operations = ids;
+            assert!(
+                build_command(input, &binary, &root)
+                    .unwrap_err()
+                    .to_string()
+                    .starts_with(expected_message)
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (mut input, binary, root) = fixture(dir.path());
+        input.allowed_operations = operations(199);
+        input.allowed_operations.push("x".repeat(128));
+        let (_, args) = build_command(input, &binary, &root).unwrap();
+        assert_eq!(args.len(), 202);
+        assert_eq!(args[201], format!("--allow-operation={}", "x".repeat(128)));
+    }
+
+    #[test]
     fn rejects_invalid_or_duplicate_operations_and_untrusted_urls() {
         let dir = tempfile::tempdir().unwrap();
         let (mut input, binary, root) = fixture(dir.path());
