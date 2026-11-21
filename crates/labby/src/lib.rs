@@ -60,6 +60,8 @@ pub(crate) mod notifications;
 pub mod oauth;
 #[allow(unreachable_pub)]
 pub mod observability;
+#[cfg(feature = "gateway")]
+pub(crate) mod openapi_registration;
 pub mod output;
 #[allow(unreachable_pub)]
 pub mod process;

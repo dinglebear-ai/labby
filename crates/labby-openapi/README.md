@@ -215,6 +215,23 @@ labby server test vendor-api --json
 labby code search getUser
 ```
 
+### Add Server screen
+
+For the guided OpenAPI form, the gateway operator sets
+`LABBY_OPENAPI_MCP_BIN` to the absolute path of the installed executable
+and adds its canonical path to `[gateway].extra_stdio_commands`. Set
+`LABBY_OPENAPI_SPEC_ROOT` to an absolute, operator-managed directory that is
+not writable by gateway clients. The spec and its parent directories must
+remain under operator control while the upstream is configured.
+
+In Add Server, select OpenAPI and enter the name, an existing absolute
+gateway-host JSON spec path under that directory, the public HTTPS API base
+URL, and the exact operation IDs to expose. Writes are off unless explicitly
+enabled. Test starts a disposable MCP process; Create registers the server
+as an ordinary stdio upstream. This form does not upload spec files, fetch
+remote specs, or accept credentials. For those launch settings, use
+operator-managed stdio configuration as appropriate.
+
 A server-scoped Bearer token or header API key can be read from a named
 child environment variable (`--bearer-token-env` or `--api-key-env`, with an
 optional `--api-key-header`). Supply the secret through the launcher's
