@@ -1,11 +1,12 @@
 //! Independent stdio MCP server over Labby's guarded OpenAPI dispatcher.
 
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, future::Future, path::PathBuf, sync::Arc, time::Duration};
 
 use clap::{ArgGroup, Parser};
 use labby_openapi::{
-    OpenApiCredential, OpenApiProviderConfig, OpenApiRegistry, OpenApiSpecConfig, SpecSource,
-    dispatch_openapi_call, http::build_dispatch_client,
+    OpenApiCredential, OpenApiError, OpenApiProviderConfig, OpenApiRegistry, OpenApiSpecConfig,
+    SpecSource, dispatch_openapi_call, http::build_dispatch_client,
+    registry::validate_mcp_operation_ids,
 };
 use rmcp::{
     ServerHandler, ServiceExt,
@@ -17,8 +18,10 @@ use rmcp::{
     service::{RequestContext, RoleServer},
 };
 use serde_json::{Map, Value, json};
+use tokio::sync::Semaphore;
 
 const LABEL: &str = "mcp-upstream";
+const MAX_IN_FLIGHT: usize = 2;
 
 #[derive(Parser)]
 #[command(
@@ -94,19 +97,11 @@ fn credential(args: &Args) -> Result<Option<OpenApiCredential>, &'static str> {
     Ok(None)
 }
 
-fn valid_tool_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= 128
-        && name
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-}
-
-#[derive(Clone)]
 struct OpenApiMcp {
     registry: OpenApiRegistry,
     client: reqwest::Client,
-    tools: Arc<BTreeMap<String, Tool>>,
+    tools: BTreeMap<String, Tool>,
+    slots: Semaphore,
 }
 
 impl OpenApiMcp {
@@ -120,10 +115,8 @@ impl OpenApiMcp {
             }
             _ => return Err("must select exactly one spec source".into()),
         };
-        if args.allowed_operations.iter().any(|n| !valid_tool_name(n)) {
-            return Err("operation IDs must be valid MCP tool names (1–128 letters, digits, underscores, dots or hyphens)".into());
-        }
-        let registry = OpenApiRegistry::load(
+        validate_mcp_operation_ids(&args.allowed_operations).map_err(|error| error.to_string())?;
+        let registry = OpenApiRegistry::load_mcp(
             OpenApiProviderConfig {
                 specs: vec![OpenApiSpecConfig {
                     label: LABEL.into(),
@@ -139,29 +132,20 @@ impl OpenApiMcp {
         .await;
         let mut tools = BTreeMap::new();
         for name in args.allowed_operations {
-            let operation = registry.operation(LABEL, &name).map_err(|_| {
-                format!("operation {name} is absent or the OpenAPI document could not be loaded")
-            })?;
-            let (description, schema) = registry.mcp_tool(LABEL, &name).ok_or_else(|| {
-                format!("operation {name} has duplicate IDs or unsupported input metadata")
-            })?;
-            let read_only = matches!(operation.method.as_str(), "GET" | "HEAD");
-            if !read_only && !args.allow_write {
-                return Err(format!(
-                    "operation {name} is not read-only; review it and pass --allow-write to expose it"
-                ));
-            }
+            let selected = registry
+                .selected_mcp_tool(LABEL, &name, args.allow_write)
+                .map_err(|error| error.to_string())?;
             tools.insert(
                 name.clone(),
                 Tool::new_with_raw(
                     name,
-                    Some(description.to_owned().into()),
-                    Arc::new(schema.clone()),
+                    Some(selected.description.to_owned().into()),
+                    Arc::new(selected.schema.clone()),
                 )
                 .with_annotations(
                     ToolAnnotations::new()
-                        .read_only(read_only)
-                        .destructive(!read_only)
+                        .read_only(selected.read_only)
+                        .destructive(!selected.read_only)
                         .open_world(true),
                 ),
             );
@@ -170,7 +154,8 @@ impl OpenApiMcp {
         Ok(Self {
             registry,
             client,
-            tools: Arc::new(tools),
+            tools,
+            slots: Semaphore::new(MAX_IN_FLIGHT),
         })
     }
 }
@@ -213,6 +198,33 @@ fn validate_args(
     Ok(())
 }
 
+async fn dispatch_bounded<T>(
+    slots: &Semaphore,
+    cancelled: impl Future<Output = ()>,
+    dispatch: impl Future<Output = T>,
+) -> Result<T, ErrorData> {
+    // Bound concurrency inside the standalone process. A saturated server does
+    // not queue request futures; retry is the caller's decision.
+    let _permit = slots
+        .try_acquire()
+        .map_err(|_| ErrorData::internal_error("OpenAPI MCP is busy", None))?;
+    tokio::select! {
+        biased;
+        () = cancelled => {
+            Err(ErrorData::internal_error("OpenAPI MCP call cancelled", None))
+        }
+        result = dispatch => Ok(result),
+    }
+}
+
+fn tool_response(outcome: Result<Value, OpenApiError>) -> CallToolResponse {
+    match outcome {
+        Ok(value) => CallToolResult::structured(json!({"result": value})),
+        Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
+    }
+    .into()
+}
+
 impl ServerHandler for OpenApiMcp {
     fn get_info(&self) -> ServerConfig {
         let mut config = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
@@ -233,7 +245,7 @@ impl ServerHandler for OpenApiMcp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         let name = request.name.as_ref();
         let tool = self
@@ -243,19 +255,19 @@ impl ServerHandler for OpenApiMcp {
         let args = request.arguments.unwrap_or_default();
         validate_args(&tool.input_schema, &args)
             .map_err(|message| ErrorData::invalid_params(message, None))?;
-        let outcome = match dispatch_openapi_call(
-            &self.registry,
-            &self.client,
-            LABEL,
-            name,
-            Value::Object(args),
+        let outcome = dispatch_bounded(
+            &self.slots,
+            context.ct.cancelled(),
+            dispatch_openapi_call(
+                &self.registry,
+                &self.client,
+                LABEL,
+                name,
+                Value::Object(args),
+            ),
         )
-        .await
-        {
-            Ok(value) => CallToolResult::structured(json!({"result": value})),
-            Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
-        };
-        Ok(outcome.into())
+        .await?;
+        Ok(tool_response(outcome))
     }
 }
 
@@ -281,5 +293,91 @@ async fn main() -> std::process::ExitCode {
             eprintln!("labby-openapi-mcp: could not initialize MCP stdio");
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{cell::Cell, future};
+    use tokio::sync::Notify;
+
+    #[tokio::test]
+    async fn saturated_server_rejects_without_dispatching() {
+        let slots = Semaphore::new(MAX_IN_FLIGHT);
+        let _held = slots.acquire_many(MAX_IN_FLIGHT as u32).await.unwrap();
+        let polled = Cell::new(false);
+        let error = dispatch_bounded(&slots, future::pending(), async {
+            polled.set(true);
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "OpenAPI MCP is busy");
+        assert!(!polled.get());
+    }
+
+    #[tokio::test]
+    async fn cancellation_drops_dispatch_and_releases_permit() {
+        struct DispatchDrop<'a>(&'a Cell<bool>);
+        impl Drop for DispatchDrop<'_> {
+            fn drop(&mut self) {
+                self.0.set(true);
+            }
+        }
+
+        let slots = Semaphore::new(MAX_IN_FLIGHT);
+        let started = Notify::new();
+        let cancel = Notify::new();
+        let dropped = Cell::new(false);
+        let call = dispatch_bounded(&slots, cancel.notified(), async {
+            let _drop = DispatchDrop(&dropped);
+            started.notify_one();
+            future::pending::<()>().await;
+        });
+        let controller = async {
+            started.notified().await;
+            assert_eq!(slots.available_permits(), MAX_IN_FLIGHT - 1);
+            cancel.notify_one();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(call, controller)
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.unwrap_err().message, "OpenAPI MCP call cancelled");
+        assert!(dropped.get());
+        assert_eq!(slots.available_permits(), MAX_IN_FLIGHT);
+        assert_eq!(
+            dispatch_bounded(&slots, future::pending(), future::ready(7))
+                .await
+                .unwrap(),
+            7,
+        );
+    }
+
+    #[tokio::test]
+    async fn already_cancelled_call_does_not_start_dispatch() {
+        let slots = Semaphore::new(MAX_IN_FLIGHT);
+        let polled = Cell::new(false);
+        let err = dispatch_bounded(&slots, future::ready(()), async {
+            polled.set(true);
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(err.message, "OpenAPI MCP call cancelled");
+        assert!(!polled.get());
+    }
+
+    #[test]
+    fn maps_completed_dispatch_to_structured_mcp_success() {
+        let CallToolResponse::Complete(response) = tool_response(Ok(json!({"id": "fixture-1"})))
+        else {
+            panic!("expected a completed tool response");
+        };
+        assert_eq!(
+            response.structured_content,
+            Some(json!({"result": {"id": "fixture-1"}}))
+        );
+        assert_ne!(response.is_error, Some(true));
     }
 }

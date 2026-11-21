@@ -226,7 +226,58 @@ fi
 case "$LABBY_E2E_BINARY" in /*) ;; *) exit 64;; esac; [ -x "$LABBY_E2E_BINARY" ]
 build_id="$(shasum -a 256 "$LABBY_E2E_BINARY" | awk '{print $1}')"; binary_version="$($LABBY_E2E_BINARY --version)"; export LABBY_E2E_BUILD_IDENTITY="$build_id"
 printf '{"schema_version":1,"run_id":"%s","seed":"%s","build_identity":"%s","binary":"%s","binary_version":"%s","assets":"prebuilt"}\n' "$run_id" "$seed" "$build_id" "$LABBY_E2E_BINARY" "$binary_version" >"$run_root/build-manifest.json"; chmod a-w "$run_root/build-manifest.json"
+prepare_guided_openapi() {
+  [ "$(uname -s)" = Linux ] || return 0
+  local candidate="${LABBY_E2E_OPENAPI_MCP_BINARY:-}" target_dir resolved actual
+  if [ -z "$candidate" ]; then
+    if [ "${LABBY_E2E_PREBUILT:-0}" != 1 ]; then
+      cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked || return
+    fi
+    target_dir="$(cargo metadata --locked --no-deps --format-version 1 |
+      python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')" || return
+    candidate="$target_dir/debug/labby-openapi-mcp"
+  fi
+  case "$candidate" in
+    /*) ;;
+    *) echo 'LABBY_E2E_OPENAPI_MCP_BINARY must be absolute' >&2; return 64;;
+  esac
+  resolved="$(realpath -e -- "$candidate")" || return
+  if [ "${resolved##*/}" != labby-openapi-mcp ] || [ ! -f "$resolved" ] || [ ! -x "$resolved" ]; then
+    echo 'guided OpenAPI canaries require a regular executable named labby-openapi-mcp' >&2
+    return 66
+  fi
+  actual="$(shasum -a 256 "$resolved" | awk '{print $1}')" || return
+  case "$actual" in ''|*[!0-9a-f]*) return 65;; esac
+  [ "${#actual}" -eq 64 ] || return 65
+  if [ -n "${LABBY_E2E_OPENAPI_MCP_SHA256:-}" ] && [ "$LABBY_E2E_OPENAPI_MCP_SHA256" != "$actual" ]; then
+    echo 'guided OpenAPI executable digest changed since its run was prepared' >&2
+    return 65
+  fi
+  export LABBY_E2E_OPENAPI_MCP_BINARY="$resolved" LABBY_E2E_OPENAPI_MCP_SHA256="$actual"
+}
+write_guided_openapi_identity() {
+  [ "$(uname -s)" = Linux ] || return 0
+  python3 - "$run_root/artifacts/guided-openapi-identity.json" "$run_id" "$seed" "$build_id" "$LABBY_E2E_OPENAPI_MCP_SHA256" <<'GUIDED_IDENTITY'
+import json
+import sys
+
+path, run_id, seed, labby, openapi = sys.argv[1:]
+with open(path, "x") as receipt:
+    json.dump({
+        "schema_version": 1,
+        "run_id": run_id,
+        "seed": seed,
+        "build_identity": labby,
+        "openapi_mcp_sha256": openapi,
+        "shard": "browser-live",
+        "status": "passed",
+    }, receipt)
+    receipt.write("\n")
+GUIDED_IDENTITY
+}
 if [ "$tier" = repeat10 ]; then
+  # Its prebuilt children reuse and recheck this exact adapter, not a new build.
+  prepare_guided_openapi
   mkdir "$run_root/repeats"
   summaries=""
   for repeat_seed in 1 2 3 4 5 6 7 8 9 10; do
@@ -268,15 +319,12 @@ run_shard() {
     live-identity-protected-restart) cargo test -p labby --all-features --test live_identity_bootstrap --test live_protected_routes --test live_restart_persistence --locked -- --test-threads=1 >"$log" 2>&1;;
     mcp-app-host) PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" cargo test -p labby --all-features --test mcp_apps_host_qualification --locked -- q4_real_resources_render_in_distinct_openai_and_anthropic_emulators --exact --ignored --test-threads=1 >"$log" 2>&1;;
     browser-live)
-      # The hosted lane precompiles it; a direct local run prepares the same
-      # standalone executable unless explicitly supplied by the caller.
-      if [ "$(uname -s)" = Linux ] && [ "${LABBY_E2E_PREBUILT:-0}" != 1 ] && [ -z "${LABBY_E2E_OPENAPI_MCP_BINARY:-}" ]; then
-        cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked >"$log" 2>&1 || return
-      fi
+      prepare_guided_openapi >"$log" 2>&1 || return
       node_bin="$(command -v node)"
       case "$node_bin" in */mise/shims/*) node_bin="$(mise which node)";; esac
       PLAYWRIGHT_BROWSERS_PATH="${PLAYWRIGHT_BROWSERS_PATH:-/home/runner/.cache/ms-playwright}" LABBY_NODE_BIN="$node_bin" LABBY_LIVE_BROWSER_RUN=1 LABBY_LIVE_BROWSER_NIGHTLY="$([ "$tier" = nightly ] && echo true || echo false)" LABBY_LIVE_BROWSER_ASSETS_DIR="${LABBY_LIVE_BROWSER_ASSETS_DIR:-$repo_root/apps/web/out}" \
-        cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >>"$log" 2>&1
+        cargo test -p labby --all-features --test live_browser_supervisor --locked -- --test-threads=1 >>"$log" 2>&1 || return
+      write_guided_openapi_identity >>"$log" 2>&1 || return
       ;;
     fault-qualification) LABBY_E2E_FAULT_REPORT="$run_root/artifacts/fault-qualification.json" cargo test -p labby --all-features --test e2e_fault_qualification --locked -- --test-threads=1 >"$log" 2>&1;;
     wedged-cleanup-selftest) bash -c 'trap "" TERM; sleep 6; touch -- "$LABBY_E2E_WEDGED_MARKER"; while :; do sleep 1; done' >"$log" 2>&1;;

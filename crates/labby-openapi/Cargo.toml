@@ -11,7 +11,8 @@ readme = "../../README.md"
 publish = false
 
 [features]
-standalone-mcp = ["dep:clap", "dep:rmcp", "tokio/macros"]
+mcp-schema = []
+standalone-mcp = ["mcp-schema", "dep:clap", "dep:rmcp", "tokio/macros"]
 
 [[bin]]
 name = "labby-openapi-mcp"

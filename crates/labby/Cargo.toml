@@ -191,6 +191,7 @@ gateway = [
   "dep:labby-codemode",
   "dep:labby-gateway",
   "dep:labby-openapi",
+  "labby-openapi?/mcp-schema",
   "web-ui",
   # The gateway and its embedded operator UI expose Skills as a core surface;
   # every gateway-shaped build must therefore compile the implementation too.

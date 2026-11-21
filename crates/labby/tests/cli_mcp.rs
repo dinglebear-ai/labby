@@ -160,10 +160,7 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
     let (manifest_root, manifest) = manifest_fixture()?;
     let outside_manifest = manifest_fixture()?;
     let binary = PathBuf::from(env!("CARGO_BIN_EXE_labby")).canonicalize()?;
-    let config = format!(
-        "[code_mode]\nenabled = true\n\n[gateway]\nextra_stdio_commands = [{}]\n",
-        serde_json::to_string(&binary)?,
-    );
+    let config = "[code_mode]\nenabled = true\n";
     drop(rustls::crypto::ring::default_provider().install_default());
     let parent = std::env::temp_dir().join("labby-live-e2e");
     std::fs::create_dir_all(&parent)?;
@@ -260,6 +257,14 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
             let refused = authorized(bad).send().await?;
             assert_eq!(refused.status().as_u16(), 422, "{}", refused.text().await?);
         }
+        // Enabling the managed adapter must not enable generic spawning of the
+        // Labby binary. This harmless invocation must be refused before spawn.
+        let raw = authorized(json!({
+            "spec": {"name": "raw-labby", "command": binary, "args": ["--version"]}
+        }))
+        .send()
+        .await?;
+        assert_eq!(raw.status().as_u16(), 422, "{}", raw.text().await?);
         let created = authorized(params).send().await?;
         let status = created.status();
         let body = created.text().await?;
@@ -277,7 +282,10 @@ async fn cli_mcp_is_an_ordinary_gateway_upstream() -> Result<()> {
         let upstream = &upstreams[0];
         assert_eq!(upstream["name"].as_str(), Some("cli-presets"));
         assert_eq!(upstream["display_name"].as_str(), Some("Approved CLI"));
-        assert_eq!(upstream["command"].as_str(), binary.to_str());
+        assert_eq!(
+            upstream["command"].as_str(),
+            Some(labby_gateway::security::guided_cli::SELECTOR)
+        );
         assert_eq!(
             serde_json::to_value(&upstream["args"])?,
             json!(["cli", "serve", "--manifest", manifest])

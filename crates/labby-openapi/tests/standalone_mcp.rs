@@ -32,7 +32,7 @@ const SPEC: &str = r#"{
       "head": {"operationId":"headItem"},
       "patch": {
         "operationId":"updateItem",
-        "requestBody":{"content":{"application/json":{"schema":{
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{
           "type":"object",
           "properties":{"title":{"type":"string"},"published":{"type":"boolean"}},
           "required":["title"]

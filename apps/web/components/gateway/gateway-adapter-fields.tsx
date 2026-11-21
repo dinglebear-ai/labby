@@ -70,8 +70,8 @@ export function GatewayAdapterFields({
           spellCheck={false}
         />
         <FieldDescription id="adapter-manifest-help">
-          Enter the absolute path to an approved CLI manifest already on the Labby host.
-          An operator must configure its allowed directory and permit Labby&apos;s executable.
+          Linux gateway hosts only. Enter the absolute path to an approved CLI manifest already on the Labby host.
+          An operator must configure the approved manifest directory.
           This does not upload a file.
         </FieldDescription>
       </Field>

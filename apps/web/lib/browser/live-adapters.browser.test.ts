@@ -30,7 +30,14 @@ async function serverIsVisible(page: Page, displayName: string) {
   )
 }
 
-async function registerThroughUi(page: Page, kind: AdapterKind, id: string, displayName: string, tool: string) {
+async function registerThroughUi(
+  page: Page,
+  kind: AdapterKind,
+  id: string,
+  displayName: string,
+  tool: string,
+  readHarnessCsrf: () => string,
+) {
   await page.getByRole('button', { name: 'Gateway actions, search and filters', exact: true }).click({ timeout: 10_000 })
   await page.getByRole('menuitem', { name: 'Add server', exact: true }).click({ timeout: 10_000 })
   const dialog = page.getByRole('dialog', { name: 'Add server' })
@@ -93,6 +100,7 @@ async function registerThroughUi(page: Page, kind: AdapterKind, id: string, disp
   const followups = Promise.all([waitAction('gateway.test'), waitAction('gateway.discovered_tools')])
     .then(([tested, discovered]) => ({ tested, discovered }), error => ({ error }))
   const [created] = await Promise.all([waitAction('gateway.add'), add.click()])
+  assert.ok(await created.request().headerValue('x-csrf-token'), 'the real Add Server UI must attach its session CSRF header')
   if (created.status() !== 200) {
     const body = await created.json().catch(() => ({}))
     assert.fail('guided ' + kind + ' Add Server rejected valid input (HTTP ' + created.status()
@@ -111,7 +119,9 @@ async function registerThroughUi(page: Page, kind: AdapterKind, id: string, disp
   assert.equal(tested.status(), 200)
   const runtime = await tested.json()
   assert.equal(runtime.name, id)
-  assert.equal(runtime.connected, true)
+  assert.equal(runtime.connected, true, kind + ' MCP connection failed: '
+    + (typeof runtime.last_error === 'string' ? runtime.last_error : 'no runtime diagnostic'))
+  assert.equal(runtime.server_name, kind === 'cli' ? 'labby-cli' : 'labby-openapi-mcp')
   assert.equal(runtime.tool_count, 1)
   assert.equal(discovered.status(), 200)
   const tools = await discovered.json() as Array<{ name: string } | string>
@@ -120,21 +130,21 @@ async function registerThroughUi(page: Page, kind: AdapterKind, id: string, disp
   await page.getByText('Server added and connection verified', { exact: true }).last().waitFor({ state: 'visible', timeout: 10_000 })
   await serverIsVisible(page, displayName)
 
-  // Carry the normal UI request's scope into Code Mode; never copy credential
-  // or auth headers. The browser context still supplies its own session cookie.
+  // These explicit harness calls do not use the UI action client; pass the
+  // current fixture CSRF token here only. Real UI requests stay untouched.
   const scopeHeaders = Object.fromEntries(Object.entries(created.request().headers()).filter(
     ([name]) => name === 'x-labby-project-id' || name === 'x-labby-team-id',
   ))
   return async (service: 'gateway' | 'snippets', action: string, params: object) =>
-    page.evaluate(async ({ service, action, params, scopeHeaders }) => {
+    page.evaluate(async ({ service, action, params, scopeHeaders, csrf }) => {
       const response = await fetch('/v1/' + service, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'content-type': 'application/json', ...scopeHeaders },
+        headers: { 'content-type': 'application/json', ...scopeHeaders, 'x-csrf-token': csrf },
         body: JSON.stringify({ action, params }),
       })
       return { status: response.status, body: await response.json() }
-    }, { service, action, params, scopeHeaders })
+    }, { service, action, params, scopeHeaders, csrf: readHarnessCsrf() })
 }
 
 type BrowserAction = Awaited<ReturnType<typeof registerThroughUi>>
@@ -144,13 +154,16 @@ async function assertPersistedSchema(
   kind: AdapterKind,
   id: string,
   tool: string,
-  command: string,
 ) {
   const persisted = await action('gateway', 'gateway.get', { name: id })
   assert.equal(persisted.status, 200)
   assert.equal(persisted.body.config.name, id)
   assert.equal(persisted.body.config.url ?? null, null)
-  assert.ok(persisted.body.config.command?.endsWith(command))
+  if (kind === 'cli') {
+    assert.equal(persisted.body.config.command, 'labby::guided-cli')
+  } else {
+    assert.ok(persisted.body.config.command?.endsWith('/labby-openapi-mcp'))
+  }
   const catalog = await action('gateway', 'gateway.schema', { name: id })
   assert.equal(catalog.status, 200)
   assert.equal(catalog.body.name, id)
@@ -228,17 +241,12 @@ test('guided Add Server adapters in the real Gateway Admin', {
         const session = await response.json().catch(() => null)
         if (typeof session?.csrf_token === 'string') csrf = session.csrf_token
       })
-      await page.route('**/v1/**', async route => {
-        const headers = route.request().headers()
-        if (route.request().method() !== 'POST' || headers['x-csrf-token']) return route.continue()
-        return route.continue({ headers: { ...headers, 'x-csrf-token': csrf } })
-      })
       try {
         const registered: Array<{ canary: (typeof canaries)[number]; action: BrowserAction }> = []
         const canaries = [
           {
             kind: 'cli', id: 'guided-cli-browser', label: 'Browser CLI fixture', tool: 'fixture_greeting',
-            command: '/labby', args: { choice: 'world' }, expected: /Labby CLI browser canary/,
+            args: { choice: 'world' }, expected: /Labby CLI browser canary/,
           },
           {
             // The string is valid by MCP schema but invalid as a path segment.
@@ -246,15 +254,15 @@ test('guided Add Server adapters in the real Gateway Admin', {
             // stopping before DNS or network. Dispatch round trip is exercised
             // by labby-openapi's happy_path_calls_allowed_operation wiremock test.
             kind: 'openapi', id: 'guided-openapi-browser', label: 'Browser OpenAPI fixture', tool: 'getFixtureItem',
-            command: '/labby-openapi-mcp', args: { itemId: '' },
+            args: { itemId: '' },
             expected: /operation .getFixtureItem. path parameter .itemId. is missing or invalid/,
           },
         ] as const
         for (const canary of canaries) {
           await t.test(canary.kind + ' saves, discovers, and invokes its real MCP adapter', async () => {
             await page.goto('/gateways/', { waitUntil: 'domcontentloaded', timeout: 15_000 })
-            const action = await registerThroughUi(page, canary.kind, canary.id, canary.label, canary.tool)
-            await assertPersistedSchema(action, canary.kind, canary.id, canary.tool, canary.command)
+            const action = await registerThroughUi(page, canary.kind, canary.id, canary.label, canary.tool, () => csrf)
+            await assertPersistedSchema(action, canary.kind, canary.id, canary.tool)
             await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli')
             registered.push({ canary, action })
           })
@@ -270,7 +278,7 @@ test('guided Add Server adapters in the real Gateway Admin', {
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 15_000 })
         for (const { canary, action } of registered) {
           await serverIsVisible(page, canary.label)
-          await assertPersistedSchema(action, canary.kind, canary.id, canary.tool, canary.command)
+          await assertPersistedSchema(action, canary.kind, canary.id, canary.tool)
           await exerciseCodeMode(action, canary.id, canary.tool, canary.args, canary.expected, canary.kind === 'cli')
           appendFileSync(progress, 'guided-' + canary.kind + '-completed\n', { mode: 0o600 })
         }

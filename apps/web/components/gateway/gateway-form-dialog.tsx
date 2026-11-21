@@ -247,6 +247,8 @@ export function GatewayFormDialog({
   const [transport, setTransport] = useState<TransportType>('http')
   const [adapterKind, setAdapterKind] = useState<GatewayRegistrationAdapter['kind'] | null>(null)
   const [adapterDraft, setAdapterDraft] = useState(emptyAdapterDraft)
+  const [isVerifyingAdapter, setIsVerifyingAdapter] = useState(false)
+  const adapterVerificationToastRef = useRef<ReturnType<typeof toast.loading> | null>(null)
   const adapter = adapterKind ? registrationAdapter(adapterKind, adapterDraft) : null
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
@@ -318,12 +320,26 @@ export function GatewayFormDialog({
   )
   const setIsProbing = useCallback((value: boolean) => setUi('isProbing', value), [setUi])
 
-  useEffect(() => () => abortControllerRef.current?.abort(), [])
+  const committingAdapter = mode === 'custom' && adapterKind !== null && isSaving && !isVerifyingAdapter
+  const keepSavedAdapterNotice = useCallback(() => {
+    const id = adapterVerificationToastRef.current
+    if (id === null) return
+    adapterVerificationToastRef.current = null
+    toast.success('Server added', { id, description: 'You can test the connection from its detail page.' })
+  }, [])
+
+  useEffect(() => () => {
+    abortControllerRef.current?.abort()
+    keepSavedAdapterNotice()
+  }, [keepSavedAdapterNotice])
 
   const requestOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
+      // The normal add is a durable request, not a cancellable preview.
+      if (committingAdapter) return
       abortControllerRef.current?.abort()
       abortControllerRef.current = null
+      keepSavedAdapterNotice()
     }
     onOpenChange(nextOpen)
   }
@@ -523,6 +539,7 @@ export function GatewayFormDialog({
     setJsonDrawerOpen(false)
     setAdapterKind(null)
     setAdapterDraft(emptyAdapterDraft)
+    setIsVerifyingAdapter(false)
     setSaveError(null)
 
     if (gateway) {
@@ -932,19 +949,34 @@ export function GatewayFormDialog({
           config: {},
           adapter,
         }))
-        if (controller.signal.aborted) return
-        // The upstream is already committed. A probe failure must not invite a second create.
+        if (controller.signal.aborted) {
+          toast.success('Server added', { description: 'You can test the connection from its detail page.' })
+          return
+        }
+        // The add has committed. Closing now stops only the connection check.
+        setIsVerifyingAdapter(true)
+        const notice = toast.loading('Server added', { description: 'Checking the connection.' })
+        adapterVerificationToastRef.current = notice
+        const unverified = {
+          id: notice,
+          description: 'The server was added. You can test it again from its detail page.',
+        }
         try {
           const result = await testGateway(id, controller.signal)
           if (controller.signal.aborted) return
+          adapterVerificationToastRef.current = null
           if (result.success && result.severity !== 'warning') {
-            toast.success('Server added and connection verified')
+            toast.success('Server added and connection verified', { id: notice })
           } else {
-            toast.warning(result.detail || result.error || result.message, { description: 'The server was added. You can test it again from its detail page.' })
+            toast.warning(result.detail || result.error || result.message, unverified)
           }
         } catch (error) {
-          if (controller.signal.aborted || isAbortError(error)) return
-          toast.warning(getErrorMessage(error, 'Connection test failed'), { description: 'The server was added. You can test it again from its detail page.' })
+          if (controller.signal.aborted) return
+          adapterVerificationToastRef.current = null
+          toast.warning(
+            isAbortError(error) ? 'Connection check stopped' : getErrorMessage(error, 'Connection test failed'),
+            unverified,
+          )
         }
         requestOpenChange(false)
         return
@@ -998,6 +1030,7 @@ export function GatewayFormDialog({
       toast.error(message)
     } finally {
       setIsSaving(false)
+      setIsVerifyingAdapter(false)
     }
   }
 
@@ -1155,6 +1188,7 @@ export function GatewayFormDialog({
   return (
     <Dialog open={open} onOpenChange={requestOpenChange}>
         <DialogContent
+          showCloseButton={!committingAdapter}
           className={cn(
             'overflow-visible transition-[border-radius] duration-[250ms]',
             'sm:max-w-[540px]',
@@ -1839,6 +1873,11 @@ export function GatewayFormDialog({
           </div>
         </div>
 
+        {isVerifyingAdapter && (
+          <p role="status" className="shrink-0 text-sm text-aurora-text-muted">
+            Server added. Checking the connection.
+          </p>
+        )}
         {saveError && (
           <div role="alert" className="shrink-0 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertCircle className="size-4 mt-0.5 shrink-0" />
@@ -1862,8 +1901,8 @@ export function GatewayFormDialog({
               Test
             </Button>
           )}
-          <Button variant="outline" onClick={() => requestOpenChange(false)}>
-            Cancel
+          <Button variant="outline" disabled={committingAdapter} onClick={() => requestOpenChange(false)}>
+            {isVerifyingAdapter ? 'Stop checking' : 'Cancel'}
           </Button>
           <Button onClick={handleSave} disabled={isSaving || isTesting || Boolean(adapterKind && (!adapter || validateGatewayName(name.trim())))}>
             {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}

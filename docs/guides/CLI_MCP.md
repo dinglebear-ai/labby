@@ -39,25 +39,26 @@ capabilities are rejected rather than accepted as generic commands.
 
 ## Add it to the gateway
 
-Use the installed Labby binary's exact canonical path. A gateway administrator
-must approve that path under the ordinary spawn policy. Do not disable the
-guard or allow all paths with the same filename.
+For the browser's **Add Server → Add CLI** flow on Linux, the host operator
+sets `LABBY_CLI_MCP_MANIFEST_ROOT` in the gateway process environment to a
+trusted, absolute, canonical directory, for example
+`/var/lib/labby-upstreams`. The manifest and its parent directories must be
+owned by root or the gateway's effective user, must not be group- or
+other-writable, and must not have set-ID bits. The runtime account also needs
+read and directory-traversal access. Use canonical paths, not symlinks.
 
-```toml
-[gateway]
-extra_stdio_commands = ["/usr/local/bin/labby"]
-```
+An installation administrator enters the absolute manifest path and confirms
+in Add Server. This is a host path, not a browser file or upload. The
+gateway writes a restricted launch selector, then rechecks it on connect
+and reconnect. It only starts the running Labby executable as
+`cli serve --manifest <path>` and accepts no extra arguments, injected
+environment or credentials, or lifecycle override. Keep the spawn guard
+enabled. **Do not add the Labby binary to `extra_stdio_commands` for Add CLI.**
 
-For the browser's **Add Server → Add CLI** flow, set
-`LABBY_CLI_MCP_MANIFEST_ROOT` in the gateway process environment to a trusted,
-absolute, canonical host directory, for example `/var/lib/labby-upstreams`.
-The runtime account needs read and directory-traversal access. Enter the
-absolute manifest path in that directory. This is a host path, not a browser
-file or upload. An installation administrator can save the server using the
-normal gateway workflow; the UI cannot add an allowlist entry or override
-the spawn guard, command, environment, or capabilities.
-
-The equivalent manual registration from the CLI is:
+Manual operator-authored stdio registration is separate. It still uses
+the ordinary command allowlist and retains its existing semantics. If you
+intentionally approve this generic invocation, use the installed Labby
+binary's exact path rather than allowing by basename:
 
 ```bash
 labby server add my-cli --command /usr/local/bin/labby \

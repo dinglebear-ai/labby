@@ -15,7 +15,7 @@ pub struct OperationDescriptor {
     /// Path template, e.g. `/users/{id}`.
     pub path_template: String,
     /// Standalone MCP metadata; not used by direct Code Mode dispatch.
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-schema")]
     pub(crate) mcp: Option<crate::mcp_schema::McpDescriptor>,
 }
 
@@ -35,6 +35,27 @@ pub fn convert_spec(
     spec_json: &str,
     allowed: &[String],
 ) -> Result<Vec<OperationDescriptor>, OpenApiError> {
+    convert_spec_inner(label, spec_json, allowed, None)
+}
+
+#[cfg(feature = "mcp-schema")]
+pub(crate) fn convert_mcp_spec(
+    label: &str,
+    spec_json: &str,
+    allowed: &[String],
+    projection_cap: usize,
+) -> Result<Vec<OperationDescriptor>, OpenApiError> {
+    convert_spec_inner(label, spec_json, allowed, Some(projection_cap))
+}
+
+fn convert_spec_inner(
+    label: &str,
+    spec_json: &str,
+    allowed: &[String],
+    projection_cap: Option<usize>,
+) -> Result<Vec<OperationDescriptor>, OpenApiError> {
+    #[cfg(not(feature = "mcp-schema"))]
+    let _ = projection_cap;
     let value: serde_json::Value =
         serde_json::from_str(spec_json).map_err(|_| OpenApiError::SpecParse {
             label: label.to_string(),
@@ -69,13 +90,19 @@ pub fn convert_spec(
                 continue; // deny-by-default
             }
             let method = parse_method(label, operation_id, method_key);
-            #[cfg(feature = "standalone-mcp")]
-            let mcp = crate::mcp_schema::describe(&method, path_template, path_item, operation);
+            #[cfg(feature = "mcp-schema")]
+            // Still enumerate selected IDs after the cap to detect duplicates
+            // and preserve the registry's existing truncation diagnostics.
+            let mcp = if projection_cap.is_some_and(|cap| out.len() < cap) {
+                crate::mcp_schema::describe(&method, path_template, path_item, operation)
+            } else {
+                None
+            };
             out.push(OperationDescriptor {
                 operation_id: operation_id.to_string(),
                 method,
                 path_template: path_template.clone(),
-                #[cfg(feature = "standalone-mcp")]
+                #[cfg(feature = "mcp-schema")]
                 mcp,
             });
         }

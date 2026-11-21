@@ -61,7 +61,14 @@ pub(crate) async fn normalize(
         }
     };
     let config = manager.current_config().await.gateway;
-    if config.disable_spawn_guard || !config.extra_stdio_commands.contains(&command) {
+    if config.disable_spawn_guard {
+        return Err(invalid(
+            "guided adapters require the stdio spawn guard to be enabled",
+        ));
+    }
+    if command != labby_gateway::security::guided_cli::SELECTOR
+        && !config.extra_stdio_commands.contains(&command)
+    {
         return Err(invalid(
             "the host operator must explicitly allow the adapter executable's exact path with the stdio spawn guard enabled",
         ));

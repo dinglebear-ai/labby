@@ -6,7 +6,9 @@ bounded spec loading, an immutable registry, and hardened outbound HTTP.
 The host owns configuration discovery, caller authorization, and OAuth lookup.
 See [Code Mode](../../docs/dev/CODE_MODE.md) for the product-facing provider.
 
-This workspace library has `publish = false` and no declared Cargo features.
+This workspace library has `publish = false`. The opt-in `standalone-mcp`
+feature builds the `labby-openapi-mcp` stdio executable; the Code Mode
+provider uses the library without that feature.
 It depends on `labby-runtime` for shared error contracts and `labby-primitives`
 for canonical SSRF policy. It does not depend on `labby-codemode` or
 `labby-gateway`; those consumers adapt its public APIs. Code Mode carries the
@@ -227,9 +229,11 @@ remain under operator control while the upstream is configured.
 In Add Server, select OpenAPI and enter the name, an existing absolute
 gateway-host JSON spec path under that directory, the public HTTPS API base
 URL, and the exact operation IDs to expose. Writes are off unless explicitly
-enabled. Test starts a disposable MCP process; Create registers the server
-as an ordinary stdio upstream. This form does not upload spec files, fetch
-remote specs, or accept credentials. For those launch settings, use
+enabled. Select **Add server** to validate the form and register the server
+as an ordinary stdio upstream. Labby tests the connection after the server is
+saved. Stopping that check does not remove the server; you can test it again
+from its detail page. This form does not upload spec files, fetch remote specs,
+or accept credentials. For those launch settings, use
 operator-managed stdio configuration as appropriate.
 
 A server-scoped Bearer token or header API key can be read from a named
@@ -241,9 +245,12 @@ to limit who can call that server. The standalone server does not implement
 per-subject OAuth, and does not change the existing Code Mode OAuth behavior.
 
 The first release supports inline scalar path/query parameters and flat
-JSON object request bodies with scalar fields. It does not resolve `$ref`,
-load YAML, send caller-specified header or cookie parameters, or combine query
-parameters with a JSON write body. Unsupported required inputs prevent
-exposure. It preserves the existing HTTPS, DNS/address, redirect, path scope,
+JSON object request bodies with scalar fields. It refuses constraints it
+cannot enforce, such as enums, ranges and patterns, and separate inputs
+that share a name after flattening. A required JSON body must have at least one
+required field; an optional body must not have required fields. It does not
+resolve `$ref`, load YAML, send caller-specified header or cookie parameters,
+or combine query parameters with a JSON write body. Unsupported inputs
+that cannot be faithfully represented prevent exposure. It preserves the existing HTTPS, DNS/address, redirect, path scope,
 response-budget and credential boundaries. This binary is built on demand;
 it is not yet added to Labby's release bundles.

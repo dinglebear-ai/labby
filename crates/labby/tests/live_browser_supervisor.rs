@@ -39,6 +39,140 @@ async fn read_capped(mut input: impl AsyncRead + Unpin, limit: usize) -> Result<
     }
 }
 
+// Use the browser shard's built adapter and owned fixture paths, but test the
+// real REST boundary without launching a browser or dispatching to an API.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guided_openapi_rest_denies_non_admin_and_unapproved_spawn() {
+    if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
+        return;
+    }
+
+    let fixture = GuidedAdapterFixtures::new();
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("isolated loopback REST client");
+    let env = [
+        (
+            "LABBY_OPENAPI_SPEC_ROOT",
+            fixture.root.path().to_str().expect("UTF-8 fixture root"),
+        ),
+        (
+            "LABBY_OPENAPI_MCP_BIN",
+            fixture.openapi.to_str().expect("UTF-8 adapter path"),
+        ),
+    ];
+    let request = json!({
+        "action": "gateway.add",
+        "params": {
+            "spec": {"name": "denied-openapi"},
+            "adapter": {
+                "kind": "openapi",
+                "spec_path": fixture.spec,
+                "base_url": "https://catalog.example.invalid",
+                "allowed_operations": ["getFixtureItem"],
+            },
+            "confirm": true,
+        },
+    });
+
+    // Each case isolates one prerequisite: exact path allowlisting or an
+    // enabled guard. The disabled guard affects only its disposable daemon.
+    for (guard_disabled, allow_adapter) in [(false, false), (true, true)] {
+        let commands = if allow_adapter {
+            vec![&fixture.openapi]
+        } else {
+            Vec::new()
+        };
+        let scopes = live_identity::AUTHORITY_SCOPES;
+        let config = format!(
+            "{}\n[gateway]\ndisable_spawn_guard = {guard_disabled}\nextra_stdio_commands = {}\n",
+            policy(scopes),
+            serde_json::to_string(&commands).expect("serialize the exact executable allowlist"),
+        );
+        let identity = LiveIdentity::bootstrap_with_policy_scopes_and_env(
+            "adapter-denial-owner@labby.invalid",
+            &config,
+            scopes,
+            &env,
+        )
+        .await
+        .expect("boot an isolated installation and grant its owner");
+        let persisted = identity.root().join("labby-home/config.toml");
+        let before = fs::read(&persisted).expect("read original gateway configuration");
+        let add = |token: &str| {
+            client
+                .post(format!("{}/v1/gateway", identity.base()))
+                .bearer_auth(token)
+                .json(&request)
+        };
+
+        if !guard_disabled {
+            identity
+                .provision_stranger_behind_static_bearer(
+                    "adapter-denial-stranger",
+                    "Adapter Denial Stranger",
+                )
+                .await
+                .expect("bind the bearer to a non-admin principal");
+            let stranger_token = identity.static_token_for_request();
+            let read = client
+                .get(format!("{}/v1/stash/stats", identity.base()))
+                .bearer_auth(stranger_token)
+                .send()
+                .await
+                .expect("authenticate the non-admin on a personal capability");
+            assert_eq!(read.status(), reqwest::StatusCode::OK);
+            let response = add(stranger_token).send().await.expect("non-admin add");
+            let status = response.status();
+            let error: serde_json::Value = response.json().await.expect("authorization error");
+            assert_eq!(status, reqwest::StatusCode::FORBIDDEN, "{error}");
+            assert_eq!(error["kind"], "forbidden", "{error}");
+            assert_eq!(
+                error["message"], "Gateway operation is not authorized",
+                "{error}"
+            );
+            assert!(
+                fs::read(&persisted).expect("read gateway configuration") == before,
+                "a non-admin must not persist the adapter"
+            );
+        }
+
+        let response = add(identity.credential_for_request())
+            .send()
+            .await
+            .expect("owner add with an unapproved spawn policy");
+        let status = response.status();
+        let error: serde_json::Value = response.json().await.expect("adapter guard error");
+        assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+        assert_eq!(error["kind"], "invalid_param", "{error}");
+        assert_eq!(error["param"], "adapter", "{error}");
+        assert_eq!(
+            error["message"],
+            if guard_disabled {
+                "guided adapters require the stdio spawn guard to be enabled"
+            } else {
+                "the host operator must explicitly allow the adapter executable's exact path with the stdio spawn guard enabled"
+            },
+            "guard_disabled={guard_disabled}: {error}"
+        );
+        assert!(
+            fs::read(&persisted).expect("read gateway configuration") == before,
+            "a refused spawn policy must not persist the adapter"
+        );
+
+        let cleanup = identity
+            .cleanup()
+            .await
+            .expect("clean up the isolated daemon");
+        assert!(cleanup.is_clean(), "{cleanup:?}");
+    }
+}
+
 fn write_private_json(path: &Path, value: &serde_json::Value) {
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -70,7 +204,9 @@ async fn guided_add_server_adapters_complete_real_browser_canaries() {
         return;
     }
     let fixtures = GuidedAdapterFixtures::new();
+    fixtures.verify_openapi_identity();
     supervise_live_browser(Some(&fixtures)).await;
+    fixtures.verify_openapi_identity();
 }
 
 struct GuidedAdapterFixtures {
@@ -78,12 +214,38 @@ struct GuidedAdapterFixtures {
     root: tempfile::TempDir,
     manifest: PathBuf,
     spec: PathBuf,
-    labby: PathBuf,
     openapi: PathBuf,
 }
 
 #[cfg(target_os = "linux")]
 impl GuidedAdapterFixtures {
+    fn verify_openapi_identity(&self) {
+        use sha2::{Digest as _, Sha256};
+        use std::io::Read as _;
+
+        // Direct developer runs can select a local executable without a proof
+        // receipt. The shell qualification always supplies the expected digest.
+        let Some(expected) = std::env::var_os("LABBY_E2E_OPENAPI_MCP_SHA256") else {
+            return;
+        };
+        let expected = expected.to_str().expect("ASCII expected adapter SHA-256");
+        let mut binary = fs::File::open(&self.openapi).expect("resolved OpenAPI executable");
+        let mut digest = Sha256::new();
+        let mut bytes = [0_u8; 16 * 1024];
+        loop {
+            let read = binary.read(&mut bytes).expect("read OpenAPI executable");
+            if read == 0 {
+                break;
+            }
+            digest.update(&bytes[..read]);
+        }
+        assert_eq!(
+            hex::encode(digest.finalize()),
+            expected,
+            "browser canaries must use the fingerprinted OpenAPI executable",
+        );
+    }
+
     fn new() -> Self {
         // The CLI manifest guard rejects group/other-writable ancestors. Use
         // the owned checkout, not /tmp, for these non-secret source fixtures.
@@ -136,11 +298,6 @@ world = ["Labby CLI browser canary"]
         )
         .expect("write owned OpenAPI spec");
         let cargo_labby = PathBuf::from(env!("CARGO_BIN_EXE_labby"));
-        let labby = std::env::var_os("LABBY_E2E_BINARY")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| cargo_labby.clone())
-            .canonicalize()
-            .expect("actual fixture Labby executable");
         let openapi = std::env::var_os("LABBY_E2E_OPENAPI_MCP_BINARY")
             .map(PathBuf::from)
             .unwrap_or_else(|| cargo_labby.with_file_name("labby-openapi-mcp"))
@@ -150,7 +307,6 @@ world = ["Labby CLI browser canary"]
             root,
             manifest,
             spec,
-            labby,
             openapi,
         }
     }
@@ -188,22 +344,28 @@ async fn supervise_live_browser(adapters: Option<&GuidedAdapterFixtures>) {
     let mut identity = if let Some(adapters) = adapters {
         config.push_str(&format!(
             "\n[gateway]\nextra_stdio_commands = {}\n",
-            serde_json::to_string(&[&adapters.labby, &adapters.openapi])
+            serde_json::to_string(&[&adapters.openapi])
                 .expect("serialize exact adapter executable allowlist"),
         ));
         let root = adapters.root.path().to_str().expect("UTF-8 fixture root");
+        let mut daemon_env = vec![
+            ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
+            ("LABBY_OPENAPI_SPEC_ROOT", root),
+            (
+                "LABBY_OPENAPI_MCP_BIN",
+                adapters.openapi.to_str().expect("UTF-8 adapter path"),
+            ),
+        ];
+        if std::env::var_os("LABBY_LIVE_BROWSER_REQUIRE_STDIO_SANDBOX").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            daemon_env.push(("LABBY_STDIO_SANDBOX_REQUIRED", "1"));
+        }
         LiveIdentity::bootstrap_with_policy_scopes_and_env(
             "guided-adapters-browser@labby.invalid",
             &config,
             scopes,
-            &[
-                ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
-                ("LABBY_OPENAPI_SPEC_ROOT", root),
-                (
-                    "LABBY_OPENAPI_MCP_BIN",
-                    adapters.openapi.to_str().expect("UTF-8 adapter path"),
-                ),
-            ],
+            &daemon_env,
         )
         .await
     } else {

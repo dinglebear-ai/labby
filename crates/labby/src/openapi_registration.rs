@@ -1,16 +1,19 @@
 //! Adapter from Add Server's typed OpenAPI form to an ordinary stdio upstream.
 
 use std::{
-    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, ensure};
+use labby_openapi::registry::preflight_mcp_path;
 use serde::Deserialize;
 
 const BIN_ENV: &str = "LABBY_OPENAPI_MCP_BIN";
 const ROOT_ENV: &str = "LABBY_OPENAPI_SPEC_ROOT";
+#[cfg(windows)]
+const BINARY_NAME: &str = "labby-openapi-mcp.exe";
+#[cfg(not(windows))]
 const BINARY_NAME: &str = "labby-openapi-mcp";
 
 #[derive(Debug, Deserialize)]
@@ -43,7 +46,7 @@ fn build_command(
     let binary = fs::canonicalize(binary).context("the OpenAPI MCP executable does not exist")?;
     ensure!(
         binary.is_file() && binary.file_name().is_some_and(|name| name == BINARY_NAME),
-        "the OpenAPI MCP executable must resolve to a regular labby-openapi-mcp file"
+        "the OpenAPI MCP executable must resolve to a regular {BINARY_NAME} file"
     );
     let spec_root = fs::canonicalize(spec_root).context("the OpenAPI spec root does not exist")?;
     ensure!(
@@ -68,28 +71,16 @@ fn build_command(
                 "the API base URL must be public HTTPS without credentials, query, or fragment"
             )
         })?;
-    ensure!(
-        (1..=200).contains(&input.allowed_operations.len()),
-        "select between 1 and 200 OpenAPI operation IDs"
-    );
-    let mut seen = BTreeSet::new();
-    for operation in &input.allowed_operations {
-        ensure!(
-            (1..=128).contains(&operation.len())
-                && operation
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')),
-            "each operation ID must be a valid MCP tool name (letters, digits, underscores, dots or hyphens)"
-        );
-        ensure!(seen.insert(operation), "operation IDs must be unique");
-    }
+    preflight_mcp_path(&spec, &input.allowed_operations, input.allow_write)?;
 
     let command = binary
         .to_str()
         .context("the executable path must be UTF-8")?;
     let spec = spec.to_str().context("the spec path must be UTF-8")?;
     let mut args = vec![
-        format!("--spec-path={spec}"),
+        // The stdio sandbox discovers host paths as individual argv tokens.
+        "--spec-path".into(),
+        spec.to_owned(),
         format!("--base-url={base_url}"),
     ];
     args.extend(
@@ -108,13 +99,27 @@ fn build_command(
 mod tests {
     use super::*;
 
+    const FIXTURE_SPEC: &str = r#"{
+        "openapi": "3.0.0",
+        "paths": {
+            "/items": {
+                "get": {"operationId": "listItems"},
+                "post": {"operationId": "--not-an-option"}
+            },
+            "/catalog": {"head": {"operationId": "catalog.get-one"}},
+            "/ambiguous-a": {"get": {"operationId": "duplicateItem"}},
+            "/ambiguous-b": {"get": {"operationId": "duplicateItem"}},
+            "/unsupported": {"trace": {"operationId": "traceItem"}}
+        }
+    }"#;
+
     fn fixture(dir: &Path) -> (OpenApiRegistration, PathBuf, PathBuf) {
         let binary = dir.join(BINARY_NAME);
         let spec_root = dir.join("specs");
         fs::write(&binary, b"not executed in these tests").unwrap();
         fs::create_dir(&spec_root).unwrap();
         let spec_path = spec_root.join("api.json");
-        fs::write(&spec_path, b"{}").unwrap();
+        fs::write(&spec_path, FIXTURE_SPEC).unwrap();
         (
             OpenApiRegistration {
                 spec_path,
@@ -138,7 +143,8 @@ mod tests {
         assert_eq!(
             args,
             [
-                format!("--spec-path={}", expected_path.display()),
+                "--spec-path".into(),
+                expected_path.to_str().unwrap().to_owned(),
                 "--base-url=https://api.example.com/v1".into(),
                 "--allow-operation=listItems".into(),
                 "--allow-operation=--not-an-option".into(),
@@ -156,15 +162,14 @@ mod tests {
         input.spec_path = root.join(".").join("approved spec.json");
         input.base_url = "https://API.EXAMPLE.COM:443/v1".into();
         input.allowed_operations = vec!["listItems".into(), "catalog.get-one".into()];
-        let path_arg = format!(
-            "--spec-path={}",
-            fs::canonicalize(spaced_spec).unwrap().display()
-        );
+        let canonical = fs::canonicalize(spaced_spec).unwrap();
+        let path_arg = canonical.to_str().unwrap().to_owned();
         let (command, args) = build_command(input, &binary, &root).unwrap();
         assert_eq!(Path::new(&command), fs::canonicalize(binary).unwrap());
         assert_eq!(
             args,
             [
+                "--spec-path".into(),
                 path_arg,
                 "--base-url=https://api.example.com/v1".into(),
                 "--allow-operation=listItems".into(),
@@ -212,9 +217,25 @@ mod tests {
         let (mut input, binary, root) = fixture(dir.path());
         input.allowed_operations = operations(199);
         input.allowed_operations.push("x".repeat(128));
+        let paths = input
+            .allowed_operations
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                (
+                    format!("/path-{i}"),
+                    serde_json::json!({"get": {"operationId": id}}),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        fs::write(
+            &input.spec_path,
+            serde_json::to_vec(&serde_json::json!({"openapi": "3.0.0", "paths": paths})).unwrap(),
+        )
+        .unwrap();
         let (_, args) = build_command(input, &binary, &root).unwrap();
-        assert_eq!(args.len(), 202);
-        assert_eq!(args[201], format!("--allow-operation={}", "x".repeat(128)));
+        assert_eq!(args.len(), 203);
+        assert_eq!(args[202], format!("--allow-operation={}", "x".repeat(128)));
     }
 
     #[test]
@@ -236,6 +257,57 @@ mod tests {
             };
             assert!(build_command(input, &binary, &root).is_err());
         }
+    }
+
+    #[test]
+    fn rejects_missing_ambiguous_unsupported_or_unapproved_write_operations() {
+        for (operation, message) in [
+            ("missing", "is absent"),
+            ("duplicateItem", "has duplicate IDs"),
+            ("traceItem", "unsupported input metadata"),
+            ("--not-an-option", "is not read-only"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let (mut input, binary, root) = fixture(dir.path());
+            input.allowed_operations = vec![operation.into()];
+            let error = build_command(input, &binary, &root).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_or_oversized_specs_before_building_a_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut input, binary, root) = fixture(dir.path());
+        input.allowed_operations = vec!["listItems".into()];
+        fs::write(&input.spec_path, b"not JSON; private document content").unwrap();
+        let error = build_command(input, &binary, &root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to parse"), "{error}");
+        assert!(!error.contains("private document content"), "{error}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut input, binary, root) = fixture(dir.path());
+        input.allowed_operations = vec!["listItems".into()];
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&input.spec_path)
+            .unwrap()
+            .set_len(4 * 1024 * 1024 + 1)
+            .unwrap();
+        let error = build_command(input, &binary, &root)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exceeds the size cap"), "{error}");
+    }
+
+    #[test]
+    fn uses_the_platform_executable_name() {
+        assert_eq!(
+            BINARY_NAME,
+            format!("labby-openapi-mcp{}", env::consts::EXE_SUFFIX)
+        );
     }
 
     #[cfg(unix)]

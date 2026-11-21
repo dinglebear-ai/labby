@@ -1200,6 +1200,7 @@ async function waitForSignal(signal: Promise<void>, label: string) {
 async function renderOpenGatewayDialog(
   gateway: Gateway | null = null,
   onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<(() => Promise<void>) | void> = async () => {},
+  onOpenChange: (open: boolean) => void = () => {},
 ) {
   const { GatewayFormDialog } = await import('./gateway-form-dialog')
 
@@ -1207,7 +1208,7 @@ async function renderOpenGatewayDialog(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <GatewayFormDialog
         open
-        onOpenChange={() => {}}
+        onOpenChange={onOpenChange}
         gateway={gateway}
         onSave={onSave}
       />
@@ -1552,4 +1553,85 @@ test('OpenAPI Add Server keeps the form after a rejected registration and exclud
       assert.deepEqual(probes, [])
     } finally { await view.unmount() }
   } finally { globalThis.fetch = originalFetch }
+})
+
+test('stopping guided verification aborts only the test and leaves a saved-server notice', async () => {
+  const window = installGatewayDialogDom()
+  const { toast } = await import('sonner')
+  const originalFetch = globalThis.fetch
+  const originalLoading = toast.loading
+  const originalSuccess = toast.success
+  const closed: boolean[] = []
+  const messages: unknown[] = []
+  const notice = 'guided-adapter-connection'
+  let finishCommit: () => void = () => {}
+  const commit = new Promise<void>(resolve => { finishCommit = resolve })
+  let saveRequests = 0
+  let probeSignal: AbortSignal | undefined
+  let view: Awaited<ReturnType<typeof renderOpenGatewayDialog>> | undefined
+
+  toast.loading = (message) => {
+    messages.push({ type: 'loading', message })
+    return notice
+  }
+  toast.success = (message, options) => {
+    messages.push({ type: 'success', message, id: options?.id })
+    return notice
+  }
+  globalThis.fetch = (async (request, init) => {
+    if (String(request) === '/v1/gateway' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { action: string }
+      if (body.action === 'gateway.test') {
+        probeSignal = init.signal ?? undefined
+        return new Promise<Response>((_resolve, reject) => {
+          probeSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+        })
+      }
+      if (body.action === 'gateway.get') return jsonResponse({ config: { name: 'cli-fixture' } })
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+
+  try {
+    view = await renderOpenGatewayDialog(null, async () => {
+      saveRequests++
+      await commit
+    }, (nextOpen) => { closed.push(nextOpen) })
+    await act(async () => { document.querySelector<HTMLElement>('#transport-cli')?.click() })
+    await setInputValue(window, document.querySelector<HTMLInputElement>('#name')!, 'cli-fixture')
+    await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-manifest-path')!, '/srv/labby/cli/status.toml')
+    await clickSave()
+    await waitFor(() => {
+      assert.equal(saveRequests, 1)
+      const cancel = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Cancel')
+      assert.ok(cancel?.disabled)
+    })
+    assert.equal(Boolean(probeSignal), false)
+    assert.deepEqual(messages, [])
+    assert.deepEqual(closed, [])
+
+    await act(async () => { finishCommit() })
+    await waitFor(() => {
+      assert.ok(probeSignal)
+      assert.equal(document.querySelector('[role="status"]')?.textContent?.trim(), 'Server added. Checking the connection.')
+    })
+    const stop = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Stop checking')
+    assert.ok(stop && !stop.disabled)
+    await act(async () => { stop.click() })
+
+    assert.equal(probeSignal?.aborted, true)
+    assert.deepEqual(closed, [false])
+    assert.equal(saveRequests, 1)
+    assert.deepEqual(messages, [
+      { type: 'loading', message: 'Server added' },
+      { type: 'success', message: 'Server added', id: notice },
+    ])
+  } finally {
+    finishCommit()
+    try { await view?.unmount() } finally {
+      globalThis.fetch = originalFetch
+      toast.loading = originalLoading
+      toast.success = originalSuccess
+    }
+  }
 })
