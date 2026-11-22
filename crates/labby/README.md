@@ -74,11 +74,12 @@ does not exclude web assets or Skills.
 | `systemd` | Optional Unix `sd-notify` integration. |
 | `tailcat` | Gateway plus native Tailcat transport composition; native availability is checked separately. |
 | `codemode-microsandbox` | Gateway plus the Code Mode Microsandbox SDK backend. |
+| `openapi-mcp` | Builds the separate OpenAPI MCP stdio adapter without requiring `gateway`. |
 | `proxy-testkit` | Gateway/auth test hooks and the `stdio-mcp-fixture` binary; test support only. |
 | `all` | `lab-admin`, `api-docs`, `gateway-host`, `fs`, `systemd`, `skills`, and `tailcat`. |
 
-Cargo's `--all-features` also enables `codemode-microsandbox` and
-`proxy-testkit`; it is broader than `--features all`. No-default-feature builds
+Cargo's `--all-features` also enables `codemode-microsandbox`,
+`openapi-mcp`, and `proxy-testkit`; it is broader than `--features all`. No-default-feature builds
 retain the product shell and ungated services. A `skills`-only build does not
 implicitly enable the gateway.
 

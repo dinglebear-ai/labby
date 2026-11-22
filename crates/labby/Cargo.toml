@@ -19,6 +19,11 @@ path = "src/main.rs"
 test = false
 
 [[bin]]
+name = "labby-openapi-mcp"
+path = "src/bin/labby-openapi-mcp.rs"
+required-features = ["openapi-mcp"]
+
+[[bin]]
 name = "stdio-mcp-fixture"
 path = "tests/fixtures/stdio_mcp_fixture.rs"
 test = false
@@ -191,6 +196,7 @@ gateway = [
   "dep:labby-codemode",
   "dep:labby-gateway",
   "dep:labby-openapi",
+  "labby-openapi?/mcp-schema",
   "web-ui",
   # The gateway and its embedded operator UI expose Skills as a core surface;
   # every gateway-shaped build must therefore compile the implementation too.
@@ -200,6 +206,8 @@ gateway-host = ["gateway"]
 integrated-gateway = ["gateway"]
 web-ui = ["dep:labby-web"]
 api-docs = ["dep:utoipa"]
+# Independent stdio adapter; not included in the Labby daemon's default or all slice.
+openapi-mcp = ["dep:labby-openapi", "labby-openapi/mcp-registry"]
 # Agent Skills flow through `gateway`, so both plain production builds and
 # explicit gateway feature slices cannot ship a disabled Skills surface.
 default = ["gateway-host"]

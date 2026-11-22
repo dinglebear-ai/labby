@@ -39,6 +39,7 @@ import {
 } from '@/lib/hooks/use-gateways'
 import type {
   Gateway,
+  GatewayRegistrationAdapter,
   CreateGatewayInput,
   UpdateGatewayInput,
   TransportType,
@@ -80,6 +81,7 @@ import {
 } from './gateway-save-transaction'
 import { serviceFields } from './gateway-service-fields'
 import { GatewayCustomConnectionForm } from './gateway-custom-connection-form'
+import { emptyAdapterDraft, GatewayAdapterFields, registrationAdapter } from './gateway-adapter-fields'
 import { GatewayLabServiceForm } from './gateway-lab-service-form'
 
 export type { GatewaySaveRollback } from './gateway-save-transaction'
@@ -243,6 +245,11 @@ export function GatewayFormDialog({
 
   const [mode, setMode] = useState<FormMode>('custom')
   const [transport, setTransport] = useState<TransportType>('http')
+  const [adapterKind, setAdapterKind] = useState<GatewayRegistrationAdapter['kind'] | null>(null)
+  const [adapterDraft, setAdapterDraft] = useState(emptyAdapterDraft)
+  const [isVerifyingAdapter, setIsVerifyingAdapter] = useState(false)
+  const adapterVerificationToastRef = useRef<ReturnType<typeof toast.loading> | null>(null)
+  const adapter = adapterKind ? registrationAdapter(adapterKind, adapterDraft) : null
   const [name, setName] = useState('')
   const [displayName, setDisplayName] = useState('')
   const [url, setUrl] = useState('')
@@ -313,12 +320,26 @@ export function GatewayFormDialog({
   )
   const setIsProbing = useCallback((value: boolean) => setUi('isProbing', value), [setUi])
 
-  useEffect(() => () => abortControllerRef.current?.abort(), [])
+  const committingAdapter = mode === 'custom' && adapterKind !== null && isSaving && !isVerifyingAdapter
+  const keepSavedAdapterNotice = useCallback(() => {
+    const id = adapterVerificationToastRef.current
+    if (id === null) return
+    adapterVerificationToastRef.current = null
+    toast.success('Server added', { id, description: 'You can test the connection from its detail page.' })
+  }, [])
+
+  useEffect(() => () => {
+    abortControllerRef.current?.abort()
+    keepSavedAdapterNotice()
+  }, [keepSavedAdapterNotice])
 
   const requestOpenChange = (nextOpen: boolean) => {
     if (!nextOpen) {
+      // The normal add is a durable request, not a cancellable preview.
+      if (committingAdapter) return
       abortControllerRef.current?.abort()
       abortControllerRef.current = null
+      keepSavedAdapterNotice()
     }
     onOpenChange(nextOpen)
   }
@@ -373,6 +394,10 @@ export function GatewayFormDialog({
   // Resets probed state and authMode when URL changes so stale OAuth option disappears.
   useEffect(() => {
     currentProbeUrlRef.current = url.trim()
+    if (adapterKind) {
+      setIsProbing(false)
+      return
+    }
     if (transport !== 'http' || !url.trim()) {
       setOauthProbed(null)
       setIsProbing(false)
@@ -398,7 +423,7 @@ export function GatewayFormDialog({
       setIsProbing(false)
       clearTimeout(timer)
     }
-  }, [authMode, protectedPublicPath, setAuthMode, setIsProbing, setOauthProbed, transport, url])
+  }, [adapterKind, authMode, protectedPublicPath, setAuthMode, setIsProbing, setOauthProbed, transport, url])
 
   // Auto-fill the name from the URL hostname when the user hasn't typed a name yet.
   // A display name takes precedence: its slug already filled the ID.
@@ -512,6 +537,10 @@ export function GatewayFormDialog({
     if (!open || wasOpen) return
 
     setJsonDrawerOpen(false)
+    setAdapterKind(null)
+    setAdapterDraft(emptyAdapterDraft)
+    setIsVerifyingAdapter(false)
+    setSaveError(null)
 
     if (gateway) {
       if (gateway.source === 'in_process') {
@@ -581,7 +610,7 @@ export function GatewayFormDialog({
         nameAutoRef.current = false
       }
     setErrors({})
-  }, [open, gateway, protectedRoutes, setAuthMode, setErrors, setJsonDrawerOpen, setOauthProbed, setOauthState])
+  }, [open, gateway, protectedRoutes, setAuthMode, setErrors, setJsonDrawerOpen, setOauthProbed, setOauthState, setSaveError])
 
   useEffect(() => {
     if (!open || !gateway || gateway.source === 'in_process') return
@@ -909,6 +938,50 @@ export function GatewayFormDialog({
         return
       }
 
+      if (adapterKind) {
+        const id = name.trim()
+        if (!adapter || validateGatewayName(id)) return
+        setSaveError(null)
+        await runGatewaySaveTransaction(() => onSave({
+          name: id,
+          display_name: displayName.trim() || null,
+          transport: 'stdio',
+          config: {},
+          adapter,
+        }))
+        if (controller.signal.aborted) {
+          toast.success('Server added', { description: 'You can test the connection from its detail page.' })
+          return
+        }
+        // The add has committed. Closing now stops only the connection check.
+        setIsVerifyingAdapter(true)
+        const notice = toast.loading('Server added', { description: 'Checking the connection.' })
+        adapterVerificationToastRef.current = notice
+        const unverified = {
+          id: notice,
+          description: 'The server was added. You can test it again from its detail page.',
+        }
+        try {
+          const result = await testGateway(id, controller.signal)
+          if (controller.signal.aborted) return
+          adapterVerificationToastRef.current = null
+          if (result.success && result.severity !== 'warning') {
+            toast.success('Server added and connection verified', { id: notice })
+          } else {
+            toast.warning(result.detail || result.error || result.message, unverified)
+          }
+        } catch (error) {
+          if (controller.signal.aborted) return
+          adapterVerificationToastRef.current = null
+          toast.warning(
+            isAbortError(error) ? 'Connection check stopped' : getErrorMessage(error, 'Connection test failed'),
+            unverified,
+          )
+        }
+        requestOpenChange(false)
+        return
+      }
+
       if (!validateCustom()) return
       setSaveError(null)
       const normalizedProtectedPath = normalizeProtectedPublicPath(protectedPublicPath)
@@ -957,6 +1030,7 @@ export function GatewayFormDialog({
       toast.error(message)
     } finally {
       setIsSaving(false)
+      setIsVerifyingAdapter(false)
     }
   }
 
@@ -1114,6 +1188,7 @@ export function GatewayFormDialog({
   return (
     <Dialog open={open} onOpenChange={requestOpenChange}>
         <DialogContent
+          showCloseButton={!committingAdapter}
           className={cn(
             'overflow-visible transition-[border-radius] duration-[250ms]',
             'sm:max-w-[540px]',
@@ -1135,7 +1210,7 @@ export function GatewayFormDialog({
             <div
               className={cn(
                 'flex shrink-0 items-center gap-1.5 sm:mr-8',
-                mode === 'custom' ? 'visible' : 'invisible pointer-events-none',
+                mode === 'custom' && !adapterKind ? 'visible' : 'invisible pointer-events-none',
               )}
             >
               <Button
@@ -1180,7 +1255,23 @@ export function GatewayFormDialog({
             <GatewayCustomConnectionForm
               key={`${gateway?.id ?? 'new'}-${open}`}
               transport={transport}
-              onTransportChange={setTransport}
+              adapterKind={adapterKind}
+              allowAdapters={!isEditing}
+              saving={isSaving}
+              onConnectionChange={(kind) => {
+                setErrors({})
+                setSaveError(null)
+                if (kind === 'cli' || kind === 'openapi') {
+                  setJsonDrawerOpen(false)
+                  setAdapterKind(kind)
+                } else {
+                  setAdapterKind(null)
+                  setTransport(kind)
+                }
+              }}
+              adapterFields={adapterKind ? (
+                <GatewayAdapterFields kind={adapterKind} draft={adapterDraft} onChange={setAdapterDraft} disabled={isSaving} />
+              ) : null}
               name={name}
               onNameChange={(next) => { nameAutoRef.current = false; setName(next) }}
               displayName={displayName}
@@ -1205,6 +1296,7 @@ export function GatewayFormDialog({
               oauthDiscovered={Boolean(oauthProbed?.oauth_discovered)}
             />
 
+            {!adapterKind && <>
             <details
               className="group order-3 rounded-aurora-2 border border-aurora-border-default bg-aurora-panel-medium/50 p-4 shadow-[var(--aurora-highlight-medium)]"
               open={Boolean(protectedPublicPath.trim() || errors.protectedPublicPath)}
@@ -1645,6 +1737,7 @@ export function GatewayFormDialog({
                 </div>
               </div>
             </details>
+            </>}
           </TabsContent>
         </Tabs>
         </div>
@@ -1780,8 +1873,13 @@ export function GatewayFormDialog({
           </div>
         </div>
 
+        {isVerifyingAdapter && (
+          <p role="status" className="shrink-0 text-sm text-aurora-text-muted">
+            Server added. Checking the connection.
+          </p>
+        )}
         {saveError && (
-          <div className="shrink-0 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <div role="alert" className="shrink-0 flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <AlertCircle className="size-4 mt-0.5 shrink-0" />
             <span>{saveError}</span>
           </div>
@@ -1803,10 +1901,10 @@ export function GatewayFormDialog({
               Test
             </Button>
           )}
-          <Button variant="outline" onClick={() => requestOpenChange(false)}>
-            Cancel
+          <Button variant="outline" disabled={committingAdapter} onClick={() => requestOpenChange(false)}>
+            {isVerifyingAdapter ? 'Stop checking' : 'Cancel'}
           </Button>
-          <Button onClick={handleSave} disabled={isSaving || isTesting}>
+          <Button onClick={handleSave} disabled={isSaving || isTesting || Boolean(adapterKind && (!adapter || validateGatewayName(name.trim())))}>
             {isSaving && <Loader2 className="size-4 mr-2 animate-spin" />}
             {mode === 'lab'
               ? isEditing

@@ -11,10 +11,11 @@ Feature invariant status: clean.
 | labby | `codemode-microsandbox` | IntentionalException | false | false | - | `gateway`<br>`labby-codemode/microsandbox-sdk` |
 | labby | `default` | AggregateDefault | false | false | - | `gateway-host` |
 | labby | `fs` | ProductSlice | false | true | - | `dep:walkdir`<br>`dep:globset` |
-| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`web-ui`<br>`skills` |
+| labby | `gateway` | ProductSlice | true | true | - | `dep:labby-codemode`<br>`dep:labby-gateway`<br>`dep:labby-openapi`<br>`labby-openapi?/mcp-schema`<br>`web-ui`<br>`skills` |
 | labby | `gateway-host` | IntentionalException | true | true | - | `gateway` |
 | labby | `integrated-gateway` | IntentionalException | false | false | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
+| labby | `openapi-mcp` | BinaryOnly | false | false | - | `dep:labby-openapi`<br>`labby-openapi/mcp-registry` |
 | labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit`<br>`labby-auth/testkit` |
 | labby | `skills` | IntentionalException | true | true | - | `labby-gateway?/skills` |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |

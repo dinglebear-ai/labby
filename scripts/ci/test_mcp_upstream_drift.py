@@ -61,7 +61,7 @@ class OwnershipMappingTest(unittest.TestCase):
             Path(__file__).parents[2] / ".github/workflows/ci.yml"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "slice: [gateway, gateway-host, integrated-gateway, fs, skills]",
+            "slice: [gateway, gateway-host, integrated-gateway, fs, skills, openapi-mcp]",
             workflow,
         )
         self.assertIn("Accepted SEP-2640 server, client, and intermediary behavior", workflow)

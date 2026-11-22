@@ -9,7 +9,7 @@ Use `Cargo.toml` as the source of truth:
 - `default = ["gateway-host"]`
 - `gateway-host = ["gateway"]` and `integrated-gateway = ["gateway"]`; both include `web-ui` and `skills` through `gateway`.
 - `all = ["lab-admin", "api-docs", "gateway-host", "fs", "systemd", "skills", "tailcat"]`
-- `proxy-testkit` is test support only. `--all-features` also enables it and `codemode-microsandbox`, beyond the `all` feature.
+- `proxy-testkit` is test support only. `--all-features` also enables it, `codemode-microsandbox`, and the opt-in `openapi-mcp` helper, beyond the `all` feature.
 
 Retired ACP/Marketplace/Agent Artifact Manager/Fleet/Deploy surfaces are deleted rather than feature-gated. Current principal-scoped File Stash is a separate Linux-only contract, not a revival of the retired Stash product.
 

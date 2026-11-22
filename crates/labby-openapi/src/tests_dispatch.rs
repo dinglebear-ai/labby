@@ -24,7 +24,14 @@ fn registry_from_handle(label: &str, op: OperationHandle) -> OpenApiRegistry {
     let mut operations = HashMap::new();
     operations.insert(op.operation_id.clone(), op);
     let mut inner = HashMap::new();
-    inner.insert(label.to_string(), SpecEntry { operations });
+    inner.insert(
+        label.to_string(),
+        SpecEntry {
+            operations,
+            #[cfg(feature = "mcp-registry")]
+            mcp: Default::default(),
+        },
+    );
     OpenApiRegistry::from_map_for_test(inner)
 }
 
@@ -267,4 +274,49 @@ async fn base_path_prefix_is_preserved_in_request() {
     .await
     .unwrap();
     assert_eq!(out["id"], "7");
+}
+
+#[tokio::test]
+async fn typed_write_sends_only_body_fields_to_the_configured_base_path() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/tenant/v1/items/item-7"))
+        .and(wiremock::matchers::header("x-catalog-key", "fixture-key"))
+        .and(wiremock::matchers::body_json(json!({
+            "title": "Updated item",
+            "published": false,
+            "quantity": 4
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "item-7",
+            "updated": true
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let reg = registry_from_handle(
+        "catalog",
+        OperationHandle {
+            operation_id: "updateItem".into(),
+            method: reqwest::Method::PATCH,
+            path_template: "/items/{id}".into(),
+            base_url: format!("{}/tenant/v1", server.uri()).parse().unwrap(),
+            credential: Some(OpenApiCredential::ApiKey {
+                header: "x-catalog-key".into(),
+                value: "fixture-key".into(),
+            }),
+            oauth_upstream: None,
+        },
+    );
+    let out = dispatch_openapi_call(
+        &reg,
+        &loopback_client(),
+        "catalog",
+        "updateItem",
+        json!({"id":"item-7","title":"Updated item","published":false,"quantity":4}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out, json!({"id":"item-7","updated":true}));
 }
