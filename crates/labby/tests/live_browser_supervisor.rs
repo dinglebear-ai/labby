@@ -194,6 +194,132 @@ async fn guided_openapi_rest_denies_non_admin_and_unapproved_spawn() {
     }
 }
 
+// An operator must be able to recover a persisted adapter after separately
+// provisioning or removing host files. A broken spec is not a broken gateway.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guided_openapi_missing_spec_degrades_only_that_upstream_after_restart() {
+    if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
+        return;
+    }
+    let fixture = GuidedAdapterFixtures::new();
+    let root = fixture.root.path().to_str().expect("UTF-8 fixture root");
+    let env = [
+        ("LABBY_OPENAPI_SPEC_ROOT", root),
+        ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
+        (
+            "LABBY_OPENAPI_MCP_BIN",
+            fixture.openapi.to_str().expect("UTF-8 adapter path"),
+        ),
+    ];
+    let mut identity = LiveIdentity::bootstrap_with_policy_scopes_and_env(
+        "adapter-recovery-owner@labby.invalid",
+        &policy(live_identity::AUTHORITY_SCOPES),
+        live_identity::AUTHORITY_SCOPES,
+        &env,
+    )
+    .await
+    .expect("boot the isolated installation");
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("loopback REST client");
+    let action = |identity: &LiveIdentity, action: &str, params: serde_json::Value| {
+        client
+            .post(format!("{}/v1/gateway", identity.base()))
+            .bearer_auth(identity.credential_for_request())
+            .json(&json!({"action":action,"params":params}))
+    };
+    let assert_ok = |response: reqwest::Response| async move {
+        let status = response.status();
+        let json: serde_json::Value = response.json().await.expect("gateway response");
+        assert_eq!(status, reqwest::StatusCode::OK, "{json}");
+        json
+    };
+
+    let created = action(
+        &identity,
+        "gateway.add",
+        json!({
+            "spec":{"name":"openapi-recovery"},
+            "confirm":true,
+            "adapter":{
+                "kind":"openapi","spec_path":fixture.spec,
+                "base_url":"https://catalog.example.invalid",
+                "allowed_operations":["getFixtureItem"],
+            },
+        }),
+    )
+    .send()
+    .await
+    .expect("add the provisioned adapter");
+    assert_ok(created).await;
+    let openapi_status = |identity: &LiveIdentity| {
+        action(identity, "gateway.test", json!({"name":"openapi-recovery"}))
+    };
+    let tested = openapi_status(&identity)
+        .send()
+        .await
+        .expect("initial test");
+    assert_eq!(assert_ok(tested).await["connected"], true);
+
+    fs::remove_file(&fixture.spec).expect("remove only the owned spec fixture");
+    identity
+        .restart()
+        .await
+        .expect("gateway restarts without the spec");
+    let tested = openapi_status(&identity)
+        .send()
+        .await
+        .expect("test broken adapter");
+    let unavailable = assert_ok(tested).await;
+    assert_eq!(unavailable["connected"], false, "{unavailable}");
+    assert!(
+        unavailable["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("OpenAPI spec file does not exist"),
+        "{unavailable}"
+    );
+
+    let added = action(
+        &identity,
+        "gateway.add",
+        json!({
+            "spec":{"name":"independent-cli"},
+            "confirm":true,
+            "adapter":{"kind":"cli","manifest_path":fixture.manifest},
+        }),
+    )
+    .send()
+    .await
+    .expect("add an unrelated guided server with the broken adapter still saved");
+    assert_ok(added).await;
+    let tested = action(&identity, "gateway.test", json!({"name":"independent-cli"}))
+        .send()
+        .await
+        .expect("test unrelated server");
+    assert_eq!(assert_ok(tested).await["connected"], true);
+
+    let removed = action(
+        &identity,
+        "gateway.remove",
+        json!({"name":"openapi-recovery","confirm":true}),
+    )
+    .send()
+    .await
+    .expect("remove the broken adapter");
+    assert_ok(removed).await;
+    let saved = fs::read_to_string(identity.root().join("labby-home/config.toml"))
+        .expect("read resulting fixture configuration");
+    assert!(!saved.contains("openapi-recovery"));
+    assert!(saved.contains("independent-cli"));
+    let cleanup = identity.cleanup().await.expect("clean up recovery fixture");
+    assert!(cleanup.is_clean(), "{cleanup:?}");
+}
+
 fn write_private_json(path: &Path, value: &serde_json::Value) {
     let mut file = OpenOptions::new()
         .create_new(true)

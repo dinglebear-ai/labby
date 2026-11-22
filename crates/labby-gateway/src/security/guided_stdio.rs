@@ -20,12 +20,30 @@ impl GuidedStdio {
         }
     }
 
-    /// Run the same narrow policy at admission and again before connecting.
+    /// Durable config validation deliberately does not depend on the host
+    /// environment or filesystem. An unavailable adapter must not block repair.
+    pub(crate) fn validate(self, config: &UpstreamConfig) -> Result<(), ToolError> {
+        Self::validate_no_overrides(config)?;
+        match self {
+            Self::Cli => guided_cli::validate_argv(&config.args).map(|_| ()),
+            Self::Openapi => guided_openapi::validate_argv(&config.args).map(|_| ()),
+        }
+    }
+
+    /// Resolve host prerequisites for a newly selected target or an actual connection.
     pub(crate) fn prepare(
         self,
         config: &UpstreamConfig,
         args: &[String],
     ) -> Result<PathBuf, ToolError> {
+        Self::validate_no_overrides(config)?;
+        match self {
+            Self::Cli => guided_cli::prepare(args),
+            Self::Openapi => guided_openapi::prepare(args),
+        }
+    }
+
+    fn validate_no_overrides(config: &UpstreamConfig) -> Result<(), ToolError> {
         if !config.env.is_empty()
             || !config.secret_env.is_empty()
             || config.bearer_token_env.is_some()
@@ -39,10 +57,7 @@ impl GuidedStdio {
                 param: "command".into(),
             });
         }
-        match self {
-            Self::Cli => guided_cli::prepare(args),
-            Self::Openapi => guided_openapi::prepare(args),
-        }
+        Ok(())
     }
 }
 

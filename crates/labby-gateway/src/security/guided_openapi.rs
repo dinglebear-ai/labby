@@ -73,13 +73,14 @@ impl HostPaths {
 }
 
 pub(crate) fn prepare(args: &[String]) -> Result<PathBuf, ToolError> {
-    validate_argv(args)?;
-    launch_under(args, HostPaths::from_env().map_err(invalid)?)
+    let path = validate_argv(args)?;
+    launch_under(path, HostPaths::from_env().map_err(invalid)?)
 }
 
-fn validate_argv(args: &[String]) -> Result<(), ToolError> {
+/// Check the persisted argv grammar without resolving host files or environment.
+pub(crate) fn validate_argv(args: &[String]) -> Result<&Path, ToolError> {
     super::spawn_guard::validate_stdio_argv(SELECTOR, args)?;
-    let [flag, _, base, operations @ ..] = args else {
+    let [flag, spec, base, operations @ ..] = args else {
         return Err(invalid(
             "guided OpenAPI upstream requires its exact local spec invocation",
         ));
@@ -87,6 +88,12 @@ fn validate_argv(args: &[String]) -> Result<(), ToolError> {
     if flag != "--spec-path" {
         return Err(invalid(
             "guided OpenAPI upstream requires its exact local spec invocation",
+        ));
+    }
+    let spec = Path::new(spec);
+    if !spec.is_absolute() || spec.extension().is_none_or(|ext| ext != "json") {
+        return Err(invalid(
+            "guided OpenAPI requires an absolute .json spec path",
         ));
     }
     let base = base
@@ -110,13 +117,11 @@ fn validate_argv(args: &[String]) -> Result<(), ToolError> {
                 })
         })
         .collect::<Result<Vec<_>, ToolError>>()?;
-    validate_mcp_operation_ids(&ids).map_err(invalid)
+    validate_mcp_operation_ids(&ids).map_err(invalid)?;
+    Ok(spec)
 }
 
-fn launch_under(args: &[String], paths: HostPaths) -> Result<PathBuf, ToolError> {
-    // Callers first validate the exact argv grammar; the path is its own token
-    // so the normal stdio sandbox can grant that file (not its directory).
-    let path = Path::new(&args[1]);
+fn launch_under(path: &Path, paths: HostPaths) -> Result<PathBuf, ToolError> {
     let canonical = paths.canonical_spec(path).map_err(invalid)?;
     if path.as_os_str() != canonical.as_os_str() {
         return Err(invalid(
@@ -163,7 +168,7 @@ mod tests {
         argv.push("--allow-write".into());
         validate_argv(&argv).unwrap();
         assert_eq!(
-            launch_under(&argv, approved()).unwrap(),
+            launch_under(validate_argv(&argv).unwrap(), approved()).unwrap(),
             binary.canonicalize().unwrap()
         );
         assert_eq!(
@@ -173,13 +178,13 @@ mod tests {
 
         let outside = directory.path().join("other.json");
         std::fs::write(&outside, "{}").unwrap();
-        assert!(launch_under(&args(&outside.canonicalize().unwrap()), approved()).is_err());
+        assert!(launch_under(&outside.canonicalize().unwrap(), approved()).is_err());
         let noncanonical = canonical
             .parent()
             .unwrap()
             .join(".")
             .join(canonical.file_name().unwrap());
-        assert!(launch_under(&args(&noncanonical), approved()).is_err());
+        assert!(launch_under(&noncanonical, approved()).is_err());
     }
 
     #[test]

@@ -195,6 +195,7 @@ pub fn insert_upstream(cfg: &mut GatewayConfig, upstream: UpstreamConfig) -> Res
             existing_id: upstream.name.clone(),
         });
     }
+    validate_managed_launch_target(&upstream)?;
     cfg.upstream_import_tombstones
         .retain(|tombstone| !tombstone_matches_upstream(tombstone, &upstream));
     cfg.upstream.push(upstream);
@@ -215,6 +216,15 @@ pub(crate) fn update_upstream(
             message: format!("gateway `{name}` not found"),
         })?;
 
+    let current = &cfg.upstream[index];
+    let launch_target_changed = patch
+        .command
+        .as_ref()
+        .is_some_and(|command| command != &current.command)
+        || patch
+            .args
+            .as_ref()
+            .is_some_and(|args| args != &current.args);
     let renamed_to = patch.name.clone().filter(|new_name| new_name != name);
     if renamed_to.is_some() {
         ensure_no_startup_mounted_subset_depends_on(cfg, name, "rename")?;
@@ -293,7 +303,13 @@ pub(crate) fn update_upstream(
     if let Some(oauth) = patch.oauth {
         cfg.upstream[index].oauth = oauth;
     }
-    validate_upstream(&cfg.upstream[index], &cfg.gateway)?;
+    let upstream = &cfg.upstream[index];
+    validate_upstream(upstream, &cfg.gateway)?;
+    // A metadata-only edit, including disabling a broken entry, must remain
+    // possible even when the operator-provisioned files are unavailable.
+    if launch_target_changed {
+        validate_managed_launch_target(upstream)?;
+    }
     if let Some(new_name) = renamed_to {
         cascade_upstream_rename(cfg, name, &new_name);
     }
@@ -1266,10 +1282,22 @@ pub(crate) fn validate_upstream(
                     param: "command".into(),
                 });
             }
-            adapter.prepare(upstream, &upstream.args)?;
-            Ok(())
+            adapter.validate(upstream)
         }
     }
+}
+
+// This is only for a new or changed launch target, not a global config scan.
+// Runtime prepares the same target again before every connection attempt.
+fn validate_managed_launch_target(upstream: &UpstreamConfig) -> Result<(), ToolError> {
+    if let Some(adapter) = upstream
+        .command
+        .as_deref()
+        .and_then(crate::security::guided_stdio::GuidedStdio::from_command)
+    {
+        adapter.prepare(upstream, &upstream.args)?;
+    }
+    Ok(())
 }
 
 /// Validate the names in `secret_env`. Values live in the credential file and

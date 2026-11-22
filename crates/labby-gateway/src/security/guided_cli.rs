@@ -1,5 +1,5 @@
 //! Restricted spawn selector for the Linux guided CLI MCP adapter.
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use labby_runtime::error::ToolError;
 
@@ -13,6 +13,29 @@ fn invalid(message: &str) -> ToolError {
     }
 }
 
+/// Validate only the persisted argv shape; host files can disappear between launches.
+pub(crate) fn validate_argv(args: &[String]) -> Result<&Path, ToolError> {
+    if !cfg!(target_os = "linux") {
+        return Err(invalid("guided CLI upstreams are supported on Linux only"));
+    }
+    let [cli, serve, flag, manifest] = args else {
+        return Err(invalid(
+            "guided CLI upstream requires its exact manifest invocation",
+        ));
+    };
+    if cli != "cli" || serve != "serve" || flag != "--manifest" {
+        return Err(invalid(
+            "guided CLI upstream requires its exact manifest invocation",
+        ));
+    }
+    super::spawn_guard::validate_stdio_argv(SELECTOR, args)?;
+    let manifest = Path::new(manifest);
+    if !manifest.is_absolute() {
+        return Err(invalid("guided CLI requires an absolute manifest path"));
+    }
+    Ok(manifest)
+}
+
 /// Resolve the only executable this selector can launch after checking its
 /// manifest arguments. The child also parses and validates the manifest.
 pub fn prepare(args: &[String]) -> Result<PathBuf, ToolError> {
@@ -24,25 +47,14 @@ pub fn prepare(args: &[String]) -> Result<PathBuf, ToolError> {
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::fs::MetadataExt as _;
-        use std::path::Path;
 
-        let [cli, serve, flag, manifest] = args else {
-            return Err(invalid(
-                "guided CLI upstream requires its exact manifest invocation",
-            ));
-        };
-        if cli != "cli" || serve != "serve" || flag != "--manifest" {
-            return Err(invalid(
-                "guided CLI upstream requires its exact manifest invocation",
-            ));
-        }
-        super::spawn_guard::validate_stdio_argv(SELECTOR, args)?;
+        let manifest = validate_argv(args)?;
         let root = std::env::var_os("LABBY_CLI_MCP_MANIFEST_ROOT")
             .map(PathBuf::from)
             .ok_or_else(|| {
                 invalid("guided CLI requires LABBY_CLI_MCP_MANIFEST_ROOT on the host")
             })?;
-        validate_manifest(&root, Path::new(manifest))?;
+        validate_manifest(&root, manifest)?;
 
         let executable = std::env::current_exe()
             .and_then(std::fs::canonicalize)
@@ -74,7 +86,7 @@ fn trusted_metadata(metadata: &std::fs::Metadata) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn trusted_ancestors(path: &std::path::Path) -> bool {
+fn trusted_ancestors(path: &Path) -> bool {
     path.ancestors().skip(1).all(|directory| {
         directory
             .symlink_metadata()
@@ -83,8 +95,8 @@ fn trusted_ancestors(path: &std::path::Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-fn validate_manifest(root: &std::path::Path, manifest: &std::path::Path) -> Result<(), ToolError> {
-    fn is_exact_canonical(path: &std::path::Path) -> bool {
+fn validate_manifest(root: &Path, manifest: &Path) -> Result<(), ToolError> {
+    fn is_exact_canonical(path: &Path) -> bool {
         path.is_absolute()
             && path
                 .canonicalize()
