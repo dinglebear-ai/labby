@@ -1,4 +1,4 @@
-#![cfg(feature = "standalone-mcp")]
+#![cfg(feature = "openapi-mcp")]
 
 //! Deliberate live check of the built stdio child and its production HTTPS
 //! transport. Set LABBY_OPENAPI_MCP_SMOKE_BASE_URL to an operator-maintained,
@@ -7,7 +7,7 @@
 //! certificate, without redirects or credentials, returning HTTP 200 JSON:
 //! {"id":"labby-standalone-smoke","status":"ok"}
 //!
-//! cargo test --locked -p labby-openapi --features standalone-mcp \
+//! cargo test --locked -p labby --no-default-features --features openapi-mcp \
 //!   --test standalone_mcp_https -- live_https_read_returns_structured_result --exact --ignored
 
 use std::time::Duration;

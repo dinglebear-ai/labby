@@ -28,7 +28,7 @@ fn registry_from_handle(label: &str, op: OperationHandle) -> OpenApiRegistry {
         label.to_string(),
         SpecEntry {
             operations,
-            #[cfg(feature = "standalone-mcp")]
+            #[cfg(feature = "mcp-registry")]
             mcp: Default::default(),
         },
     );

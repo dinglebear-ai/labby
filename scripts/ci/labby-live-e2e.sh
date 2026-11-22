@@ -216,11 +216,23 @@ if [ "${LABBY_E2E_SECRET_SCAN_SELFTEST:-0}" = 1 ]; then
   exit 1
 fi
 cd "$repo_root"
+prebuild_live_browser() {
+  # Cargo builds both product binaries for this integration test. Use the
+  # exact test feature graph before hashing them so a later shard cannot
+  # replace an adapter built with a different profile or set of features.
+  cargo test -p labby --all-features --test live_browser_supervisor --locked --no-run
+}
 if [ "$tier" = release ]; then
   : "${LABBY_RELEASE_BINARY:?release tier requires packaged LABBY_RELEASE_BINARY}"; case "$LABBY_RELEASE_BINARY" in /*) ;; *) exit 64;; esac; [ -x "$LABBY_RELEASE_BINARY" ]
   LABBY_E2E_BINARY="$(cd "$(dirname "$LABBY_RELEASE_BINARY")" && pwd -P)/$(basename "$LABBY_RELEASE_BINARY")"; export LABBY_E2E_BINARY
 else
-  [ "${LABBY_E2E_PREBUILT:-0}" = 1 ] || cargo build -p labby --all-features --locked
+  if [ "${LABBY_E2E_PREBUILT:-0}" != 1 ]; then
+    if [ "$tier" = collision ]; then
+      cargo build -p labby --all-features --bin labby --locked
+    else
+      prebuild_live_browser
+    fi
+  fi
   export LABBY_E2E_BINARY="${LABBY_E2E_BINARY:-$repo_root/target/debug/labby}"
 fi
 case "$LABBY_E2E_BINARY" in /*) ;; *) exit 64;; esac; [ -x "$LABBY_E2E_BINARY" ]
@@ -230,8 +242,10 @@ prepare_guided_openapi() {
   [ "$(uname -s)" = Linux ] || return 0
   local candidate="${LABBY_E2E_OPENAPI_MCP_BINARY:-}" target_dir resolved actual
   if [ -z "$candidate" ]; then
-    if [ "${LABBY_E2E_PREBUILT:-0}" != 1 ]; then
-      cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked || return
+    # The release daemon is immutable and outside Cargo; only its source-tree
+    # helper may need a warm-up here. Other tiers prebuilt both before hashing.
+    if [ "${LABBY_E2E_PREBUILT:-0}" != 1 ] && [ "$tier" = release ]; then
+      prebuild_live_browser || return
     fi
     target_dir="$(cargo metadata --locked --no-deps --format-version 1 |
       python3 -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')" || return

@@ -467,13 +467,13 @@ mod tests {
             .selected_args(Some(&params))
             .map_err(anyhow::Error::from)?;
         assert_eq!(run_preset(&preset, args).await?, "Hello world");
-        assert!(
+        assert_eq!(
             preset
                 .tool()
                 .annotations
                 .as_ref()
-                .and_then(|a| a.read_only_hint)
-                == Some(true)
+                .and_then(|a| a.read_only_hint),
+            Some(true)
         );
         Ok(())
     }

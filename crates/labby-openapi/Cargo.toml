@@ -12,16 +12,10 @@ publish = false
 
 [features]
 mcp-schema = []
-standalone-mcp = ["mcp-schema", "dep:clap", "dep:rmcp", "tokio/macros"]
-
-[[bin]]
-name = "labby-openapi-mcp"
-path = "src/bin/labby-openapi-mcp.rs"
-required-features = ["standalone-mcp"]
+# Enable the registry projection without adding a CLI or MCP transport.
+mcp-registry = ["mcp-schema"]
 
 [dependencies]
-clap = { workspace = true, optional = true }
-rmcp = { workspace = true, optional = true }
 labby-runtime = { path = "../labby-runtime" }
 labby-primitives = { path = "../labby-primitives" }
 tokio = { workspace = true, features = ["sync", "time", "rt", "net", "fs", "io-util"] }

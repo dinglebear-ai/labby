@@ -1,4 +1,4 @@
-#![cfg(feature = "standalone-mcp")]
+#![cfg(feature = "openapi-mcp")]
 
 use std::{path::Path, time::Duration};
 
@@ -77,6 +77,24 @@ fn assert_invalid_params(error: ServiceError, message: &str) {
         matches!(&error, ServiceError::McpError(data)
             if data.code == ErrorCode::INVALID_PARAMS && data.message == message),
         "expected invalid params ({message}), got {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn reports_the_standalone_executable_name_and_workspace_version() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_labby-openapi-mcp"));
+    let output = tokio::time::timeout(
+        MCP_TIMEOUT,
+        child.kill_on_drop(true).arg("--version").output(),
+    )
+    .await
+    .expect("version command must exit")
+    .expect("run the standalone executable");
+    assert!(output.status.success());
+    assert_eq!(output.stderr.as_slice(), b"");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        concat!("labby-openapi-mcp ", env!("CARGO_PKG_VERSION")),
     );
 }
 

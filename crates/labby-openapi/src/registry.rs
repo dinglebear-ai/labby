@@ -40,7 +40,7 @@ pub struct OperationHandle {
 pub struct SpecEntry {
     /// operationId → handle.
     pub operations: HashMap<String, OperationHandle>,
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     pub(crate) mcp: crate::mcp_schema::Tools,
 }
 
@@ -61,7 +61,7 @@ impl OpenApiRegistry {
 
     /// Load the standalone profile, projecting MCP metadata only for retained
     /// operations. Ordinary registry loads do not project MCP schemas.
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     pub async fn load_mcp(cfg: OpenApiProviderConfig, per_spec_timeout: Duration) -> Self {
         Self::load_inner(cfg, per_spec_timeout, true).await
     }
@@ -166,7 +166,7 @@ impl OpenApiRegistry {
     /// Return standalone MCP metadata for a uniquely named operation the native
     /// dispatcher can represent. Metadata is populated only by
     /// [`Self::load_mcp`]; missing/ambiguous descriptors stay unexposed.
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     #[must_use]
     pub fn mcp_tool(
         &self,
@@ -184,7 +184,7 @@ impl OpenApiRegistry {
     /// # Errors
     /// Rejects missing or ambiguous operations, unsupported projections, and
     /// mutating operations without explicit opt-in.
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     pub fn selected_mcp_tool(
         &self,
         label: &str,
@@ -230,7 +230,7 @@ async fn load_one_spec(
 ) -> Result<(SpecEntry, Vec<String>), OpenApiError> {
     let base_url = crate::ssrf::validate_base_url(&spec)?;
     let spec_json = fetch_spec_json(&spec.spec_source, &spec.label).await?;
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     let descriptors = if project_mcp {
         crate::convert::convert_mcp_spec(
             &spec.label,
@@ -241,14 +241,14 @@ async fn load_one_spec(
     } else {
         crate::convert::convert_spec(&spec.label, &spec_json, &spec.allowed_operations)?
     };
-    #[cfg(not(feature = "standalone-mcp"))]
+    #[cfg(not(feature = "mcp-registry"))]
     let descriptors = {
         let _ = project_mcp;
         crate::convert::convert_spec(&spec.label, &spec_json, &spec.allowed_operations)?
     };
     let converted = descriptors.len();
     let mut operations = HashMap::new();
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     let mcp = if project_mcp {
         mcp_descriptors(&descriptors)
     } else {
@@ -301,7 +301,7 @@ async fn load_one_spec(
     Ok((
         SpecEntry {
             operations,
-            #[cfg(feature = "standalone-mcp")]
+            #[cfg(feature = "mcp-registry")]
             mcp,
         },
         warnings,
@@ -604,7 +604,7 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "standalone-mcp")]
+    #[cfg(feature = "mcp-registry")]
     #[tokio::test]
     async fn mcp_projection_is_explicit_and_selected_duplicates_beyond_cap_are_refused() {
         let spec = good_fixture_spec("mcp-profile");

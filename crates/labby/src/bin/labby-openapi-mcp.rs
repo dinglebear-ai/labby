@@ -25,6 +25,7 @@ const MAX_IN_FLIGHT: usize = 2;
 
 #[derive(Parser)]
 #[command(
+    name = "labby-openapi-mcp",
     version,
     about = "Serve selected OpenAPI operations as a standard stdio MCP server"
 )]

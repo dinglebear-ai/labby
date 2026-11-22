@@ -459,7 +459,7 @@ world = ["Labby CLI browser canary"]
             .map(PathBuf::from)
             .unwrap_or_else(|| cargo_labby.with_file_name("labby-openapi-mcp"))
             .canonicalize()
-            .expect("build the standalone adapter: cargo build -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp --locked");
+            .expect("build the standalone adapter: cargo build -p labby --no-default-features --features openapi-mcp --bin labby-openapi-mcp --locked");
         Self {
             root,
             manifest,

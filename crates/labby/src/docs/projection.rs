@@ -759,7 +759,7 @@ fn classify_lab_feature(
         "gateway" | "marketplace" | "fs" | "deploy" | "acp_registry" | "lab-admin"
     ) {
         FeatureClass::ProductSlice
-    } else if matches!(feature, "node-runtime") {
+    } else if matches!(feature, "node-runtime" | "openapi-mcp") {
         FeatureClass::BinaryOnly
     } else if deps
         .iter()

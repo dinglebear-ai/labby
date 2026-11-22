@@ -6,9 +6,10 @@ bounded spec loading, an immutable registry, and hardened outbound HTTP.
 The host owns configuration discovery, caller authorization, and OAuth lookup.
 See [Code Mode](../../docs/dev/CODE_MODE.md) for the product-facing provider.
 
-This workspace library has `publish = false`. The opt-in `standalone-mcp`
-feature builds the `labby-openapi-mcp` stdio executable; the Code Mode
-provider uses the library without that feature.
+This workspace library has `publish = false`. It provides the guarded
+runtime for the separate `labby-openapi-mcp` executable, built from the
+`labby` package with its opt-in `openapi-mcp` feature. The Code Mode
+provider uses the same library without the executable or its MCP transport.
 It depends on `labby-runtime` for shared error contracts and `labby-primitives`
 for canonical SSRF policy. It does not depend on `labby-codemode` or
 `labby-gateway`; those consumers adapt its public APIs. Code Mode carries the
@@ -190,7 +191,7 @@ Labby daemon and the `openapi.call` Code Mode provider. Build it from this
 workspace with the pinned Rust toolchain:
 
 ```bash
-cargo build --locked --release -p labby-openapi --features standalone-mcp --bin labby-openapi-mcp
+cargo build --locked --release -p labby --no-default-features --features openapi-mcp --bin labby-openapi-mcp
 ```
 
 Configure any standard MCP client to launch the built executable. Pass an
