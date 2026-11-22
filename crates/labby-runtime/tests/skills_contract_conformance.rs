@@ -179,21 +179,34 @@ fn contract_documents_the_error_kinds_it_classifies() {
 fn contract_documents_the_budget_values_in_force() {
     let text = contract_text();
     for (label, value) in [
-        ("skills per upstream", limits::MAX_SKILLS_PER_UPSTREAM),
-        ("resources per skill", limits::MAX_RESOURCES_PER_SKILL),
-        ("list pages", limits::MAX_LIST_PAGES),
-        ("URI segment chars", limits::MAX_URI_SEGMENT_CHARS),
-        ("URI chars", limits::MAX_URI_CHARS),
+        (
+            "Skills per upstream",
+            limits::MAX_SKILLS_PER_UPSTREAM.to_string(),
+        ),
+        (
+            "Resources per skill",
+            limits::MAX_RESOURCES_PER_SKILL.to_string(),
+        ),
+        ("`skills/list` pages", limits::MAX_LIST_PAGES.to_string()),
+        (
+            "`skills/list` wall clock",
+            format!("{}s", limits::SKILLS_LIST_TIMEOUT.as_secs()),
+        ),
+        (
+            "URI segment / whole URI",
+            format!(
+                "{} / {} chars",
+                limits::MAX_URI_SEGMENT_CHARS,
+                limits::MAX_URI_CHARS
+            ),
+        ),
     ] {
+        let row = format!("| {label} | {value} |");
         assert!(
-            text.contains(&value.to_string()),
-            "contract must document the {label} budget ({value})"
+            text.lines().any(|line| line.trim() == row),
+            "missing budget row: {row}"
         );
     }
-    assert!(
-        text.contains(&limits::SKILLS_LIST_TIMEOUT.as_secs().to_string()),
-        "contract must document the skills/list wall-clock budget"
-    );
 }
 
 #[test]

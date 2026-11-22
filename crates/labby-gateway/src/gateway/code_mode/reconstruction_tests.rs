@@ -132,7 +132,7 @@ async fn cold_manager_reconstruction_preserves_only_explicitly_flushed_state() {
         .await
         .expect("buffer unflushed row");
     manager_a
-        .record_code_mode_history(history_entry("durable"))
+        .record_code_mode_history([1; 32], history_entry("durable"))
         .await;
     manager_a.record_code_mode_source(source("durable")).await;
 

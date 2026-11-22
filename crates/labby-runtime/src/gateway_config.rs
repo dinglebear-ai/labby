@@ -365,7 +365,7 @@ pub struct CodeModeConfig {
     /// `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` env var.
     #[serde(default)]
     pub max_calls_per_run: Option<u64>,
-    /// Max `callTool` result size in MiB before truncation. Overridden by
+    /// Max `callTool` result size in MiB before rejection with `result_too_large`. Overridden by
     /// `LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB` env var.
     #[serde(default)]
     pub calltool_result_max_mib: Option<usize>,

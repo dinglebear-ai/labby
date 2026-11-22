@@ -190,6 +190,34 @@ impl UpstreamPool {
         self.ensure_upstream_ready(config, oauth_subject, runtime_owner, Readiness::Connection)
     }
 
+    /// Share a cold regular-resource connection with other catalog warmups.
+    /// Dropping a list request leaves the owner to publish success or record
+    /// its upstream timeout using the ordinary connection health policy.
+    pub(crate) async fn warm_regular_resource_connection(
+        self: &Arc<Self>,
+        config: UpstreamConfig,
+    ) -> anyhow::Result<()> {
+        if self
+            .upstream_is_ready(&config.name, Readiness::Connection)
+            .await
+        {
+            return Ok(());
+        }
+        let flight = self.resource_snapshot_warmup.acquire(&config.name).await;
+        let Ok(owner) = Arc::clone(&flight).try_lock_owned() else {
+            drop(flight.lock().await);
+            return Ok(());
+        };
+        let pool = Arc::clone(self);
+        tokio::spawn(async move {
+            let _owner = owner;
+            pool.ensure_connection_for_upstream(&config, None, None)
+                .await
+                .map(|_| ())
+        })
+        .await?
+    }
+
     async fn upstream_is_ready(&self, name: &str, readiness: Readiness) -> bool {
         match readiness {
             Readiness::Tools => self.has_healthy_tools_for_upstream(name).await,
@@ -517,20 +545,19 @@ impl UpstreamPool {
         );
     }
 
-    #[cfg(test)]
-    pub(crate) async fn hold_subject_connect_gate_for_tests(
+    pub(crate) async fn hold_subject_connect_gate(
         &self,
         name: &str,
         subject: &str,
     ) -> tokio::sync::OwnedMutexGuard<()> {
-        self.subject_connect_locks
+        let gate = self
+            .subject_connect_locks
             .write()
             .await
             .entry((name.to_owned(), subject.to_owned()))
             .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-            .lock_owned()
-            .await
+            .clone();
+        gate.lock_owned().await
     }
 
     #[cfg(test)]
@@ -660,6 +687,7 @@ impl UpstreamPool {
             }
         };
         self.subject_connect_errors.write().await.remove(&key);
+        entry.optional_catalogs.routed.take();
         entry.tools = tools.into();
         entry.optional_catalogs.tools_revision =
             entry.optional_catalogs.tools_revision.saturating_add(1);
@@ -1076,6 +1104,18 @@ mod tests {
             .expect("subject connection")
             .tools = vec![test_tool("tool_0")].into();
 
+        let key = (config.name.clone(), "alice".to_owned());
+        let old_revision = pool.subject_tool_list_revisions("alice").await;
+        {
+            let cache = pool.subject_connections.read().await;
+            let entry = &cache[&key];
+            let projected = entry.routed_tool(&config.name, "tool_0", None).unwrap();
+            assert!(std::ptr::eq(
+                projected,
+                entry.routed_tool(&config.name, "tool_0", None).unwrap()
+            ));
+            assert!(entry.routed_tool(&config.name, "tool_2", None).is_none());
+        }
         tool_count.store(3, Ordering::SeqCst);
 
         assert!(
@@ -1084,6 +1124,15 @@ mod tests {
                 .expect("subject reprobe")
         );
 
+        assert_ne!(
+            old_revision,
+            pool.subject_tool_list_revisions("alice").await
+        );
+        assert!(
+            pool.subject_connections.read().await[&key]
+                .routed_tool(&config.name, "tool_2", None)
+                .is_some()
+        );
         let listed = pool
             .cached_subject_scoped_tools_bounded(std::slice::from_ref(&config), "alice", 10)
             .await;

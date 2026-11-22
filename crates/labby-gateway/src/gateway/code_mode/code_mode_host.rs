@@ -159,6 +159,64 @@ fn configured_catalog_kinds(config: &CodeModeSearchConfig) -> Vec<CodeModeCatalo
 }
 
 impl GatewayManager {
+    async fn code_mode_catalog_for_caller(
+        &self,
+        caller: &CodeModeCaller,
+        surface: CodeModeSurface,
+        scope: &ToolScope,
+        include_snippets: bool,
+        use_cache: bool,
+        allow_cold_connect: bool,
+    ) -> Result<ToolsRender, ToolError> {
+        let owner = runtime_owner(caller, surface);
+        let oauth_subject = oauth_subject(caller);
+        let allowed = scope.allowed_namespaces();
+        let render = search::build_tools_render(
+            self,
+            allow_cold_connect,
+            &owner,
+            oauth_subject,
+            allowed,
+            scope,
+            include_snippets,
+            use_cache,
+            caller,
+            surface,
+        )
+        .await?;
+
+        let Some(provider) = self.core_provider_client.as_ref() else {
+            return Ok(render);
+        };
+        let Some(assertion) = caller.host_provider_token() else {
+            return Ok(render);
+        };
+        if scope
+            .allowed_namespaces()
+            .is_some_and(|allowed| !allowed.contains(crate::core_provider::CORE_PROVIDER_NAMESPACE))
+        {
+            return Ok(render);
+        }
+
+        match provider.code_mode_catalog(assertion).await {
+            Ok(core_tools) => crate::core_provider::merge_tools_render(render, core_tools, scope)
+                .map_err(|_| ToolError::Sdk {
+                    sdk_kind: "provider_incompatible".to_string(),
+                    message: "Unraid Core provider returned an incompatible catalog".to_string(),
+                }),
+            Err(error) => {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "code_mode",
+                    action = "core_provider.catalog",
+                    error = %error,
+                    "Unraid Core provider catalog is unavailable"
+                );
+                Ok(render)
+            }
+        }
+    }
+
     pub(crate) async fn code_mode_metadata_entries(
         &self,
         caller: &CodeModeCaller,
@@ -167,12 +225,11 @@ impl GatewayManager {
     ) -> Vec<CatalogDescriptor> {
         let mut entries = BTreeMap::<String, CatalogDescriptor>::new();
 
-        if matches!(
-            caller.without_authority(),
-            CodeModeCaller::TrustedLocal
-                | CodeModeCaller::ScopedSkills { .. }
-                | CodeModeCaller::ScopedHostProviderSkills { .. }
-        ) && let Some(provider) = self.code_mode_skill_provider.as_ref()
+        if (matches!(caller.without_authority(), CodeModeCaller::TrustedLocal)
+            || caller
+                .host_context()
+                .is_some_and(|context| context.skill_context_token.is_some()))
+            && let Some(provider) = self.code_mode_skill_provider.as_ref()
         {
             match tokio::time::timeout(
                 CODE_MODE_SKILL_CATALOG_TIMEOUT,
@@ -188,8 +245,9 @@ impl GatewayManager {
                             .and_then(|rest| rest.split('/').next())
                             .filter(|value| !value.is_empty())
                             .unwrap_or("skills");
-                        let mut tags = skill.tags;
-                        tags.push(format!("uri:{}", skill.uri));
+                        let tags = std::iter::once(format!("uri:{}", skill.uri))
+                            .chain(skill.tags)
+                            .collect();
                         let descriptor = CatalogDescriptor::metadata(
                             CodeModeCatalogKind::Skill,
                             namespace,
@@ -366,58 +424,18 @@ impl CodeModeHost for GatewayManager {
         include_snippets: bool,
         use_cache: bool,
     ) -> Result<ToolsRender, ToolError> {
-        // Catalog readers must receive a discoverable catalog even when the
-        // long-lived gateway has not contacted an upstream yet. Cold refresh
-        // is bounded by the catalog connect budget; once a real tool is warm,
-        // background probes keep it current without delaying every request.
-        let allow_cold_connect = true;
-        let owner = runtime_owner(caller, surface);
-        let oauth_subject = oauth_subject(caller);
-        let allowed = scope.allowed_namespaces();
-        let render = search::build_tools_render(
-            self,
-            allow_cold_connect,
-            &owner,
-            oauth_subject,
-            allowed,
-            scope,
-            include_snippets,
-            use_cache,
-            caller,
-            surface,
-        )
-        .await?;
+        self.code_mode_catalog_for_caller(caller, surface, scope, include_snippets, use_cache, true)
+            .await
+    }
 
-        let Some(provider) = self.core_provider_client.as_ref() else {
-            return Ok(render);
-        };
-        let Some(assertion) = caller.host_provider_token() else {
-            return Ok(render);
-        };
-        if scope
-            .allowed_namespaces()
-            .is_some_and(|allowed| !allowed.contains(crate::core_provider::CORE_PROVIDER_NAMESPACE))
-        {
-            return Ok(render);
-        }
-
-        match provider.code_mode_catalog(assertion).await {
-            Ok(core_tools) => crate::core_provider::merge_tools_render(render, core_tools, scope)
-                .map_err(|_| ToolError::Sdk {
-                    sdk_kind: "provider_incompatible".to_string(),
-                    message: "Unraid Core provider returned an incompatible catalog".to_string(),
-                }),
-            Err(error) => {
-                tracing::warn!(
-                    surface = "dispatch",
-                    service = "code_mode",
-                    action = "core_provider.catalog",
-                    error = %error,
-                    "Unraid Core provider catalog is unavailable"
-                );
-                Ok(render)
-            }
-        }
+    async fn catalog_proxy_cache(
+        &self,
+        render: &ToolsRender,
+    ) -> Option<Arc<labby_codemode::host::CatalogProxyCache>> {
+        self.cached_catalog_render(&render.fingerprint)
+            .await
+            .filter(|cache| Arc::ptr_eq(&cache.entries, &render.entries))
+            .map(|cache| cache.proxy_sources)
     }
 
     async fn call_tool(
@@ -508,7 +526,7 @@ impl CodeModeHost for GatewayManager {
             }
             .into());
         }
-        validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_ref())?;
+        validate_code_mode_params_against_schema(&params, upstream_tool.input_schema.as_deref())?;
         let tool_ui = extract_tool_ui_link(&upstream_tool);
         let checked_contract_hash =
             CapabilityContract::execution_hash_from_upstream_tool(&upstream_tool)?;
@@ -537,6 +555,7 @@ impl CodeModeHost for GatewayManager {
                 Some(PropagatedCallerUpstreamScope::new(
                     scope.allowed_namespaces().cloned(),
                 )),
+                Some(upstream_tool),
                 &checked_contract_hash,
                 destructive_permitted(surface, caller),
                 "forbidden",
@@ -583,6 +602,12 @@ impl CodeModeHost for GatewayManager {
         super::resources::validate_read_uri(&uri)?;
         if uri.starts_with("lab://gateway/") || uri == "lab://capabilities" {
             return super::resources::read_local_resource(self, &uri, caller, scope).await;
+        }
+        if !scope.allows_resources() {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".into(),
+                message: "upstream resources are disabled by the Code Mode scope".into(),
+            });
         }
         if let Some(upstream) = uri
             .strip_prefix("lab://upstream/")
@@ -645,14 +670,23 @@ impl CodeModeHost for GatewayManager {
                         ),
                     })?;
                 Some(
-                    pool.subject_scoped_read_resource(&config, subject, &uri)
-                        .await,
+                    pool.subject_scoped_read_resource_request_typed(
+                        &config,
+                        subject,
+                        rmcp::model::ReadResourceRequestParams::new(&*uri),
+                    )
+                    .await,
                 )
             } else {
-                pool.read_upstream_resource_allowed(&uri, allowed).await
+                pool.read_upstream_resource_request_allowed_typed(
+                    rmcp::model::ReadResourceRequestParams::new(&*uri),
+                    allowed,
+                )
+                .await
             }
         } else if uri.starts_with("ui://") {
-            pool.read_upstream_ui_resource_allowed(&uri, allowed).await
+            pool.read_upstream_ui_resource_allowed_typed(&uri, allowed)
+                .await
         } else {
             None
         };
@@ -661,9 +695,12 @@ impl CodeModeHost for GatewayManager {
             sdk_kind: "not_found".to_string(),
             message: format!("resource `{uri}` was not found or is not exposed"),
         })?;
-        let result = result.map_err(|message| ToolError::Sdk {
-            sdk_kind: "upstream_error".to_string(),
-            message,
+        let result = result.map_err(|error| {
+            let (kind, message) = code_mode_capability_error_info(&error);
+            ToolError::Sdk {
+                sdk_kind: kind.to_owned(),
+                message,
+            }
         })?;
         serde_json::to_value(result).map_err(|err| {
             ToolError::internal_message(format!("failed to serialize resource: {err}"))
@@ -707,10 +744,28 @@ impl CodeModeHost for GatewayManager {
                 sdk_kind: "not_found".to_string(),
                 message: format!("prompt upstream `{upstream}` is not configured"),
             })?;
-        if !config.enabled {
+        if !config.enabled || config.priority <= 0.0 {
             return Err(ToolError::Sdk {
                 sdk_kind: "not_found".to_string(),
                 message: format!("prompt upstream `{upstream}` is disabled"),
+            });
+        }
+
+        if !config.proxy_prompts {
+            return Err(ToolError::Sdk {
+                sdk_kind: "forbidden".into(),
+                message: format!("prompt proxying is disabled for upstream `{upstream}`"),
+            });
+        }
+
+        let exposure = crate::upstream::pool::entries::resolve_request_prompt_exposure_policy(
+            upstream,
+            config.expose_prompts.clone(),
+        );
+        if !crate::upstream::pool::entries::prompt_exposed(&exposure, upstream, native_name) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "not_found".into(),
+                message: "prompt is unavailable".into(),
             });
         }
 
@@ -776,10 +831,7 @@ impl CodeModeHost for GatewayManager {
         let Some(provider) = self.code_mode_skill_provider.as_ref() else {
             return Ok(serde_json::json!({ "skills": [] }));
         };
-        let skills = provider.list(caller, scope).await?;
-        serde_json::to_value(serde_json::json!({ "skills": skills })).map_err(|error| {
-            ToolError::internal_message(format!("failed to serialize Code Mode Skills: {error}"))
-        })
+        provider.list(caller, scope).await
     }
 
     async fn get_skill(
@@ -911,38 +963,24 @@ impl CodeModeHost for GatewayManager {
         scope: &ToolScope,
     ) -> Result<Vec<(String, f32)>, ToolError> {
         let config = self.code_mode_config().await.semantic_search;
-        if !config.is_configured() || query.trim().is_empty() {
+        if !config.is_configured()
+            || query.trim().is_empty()
+            || !self.semantic_search_available().await
+        {
             return Ok(Vec::new());
         }
-        // Recompute the SAME scope-filtered entries `list_tools` +
-        // `build_code_mode_proxy` would produce for this exact
-        // caller/surface/scope — this is what makes the design race-free: no
-        // shared "current fingerprint" state is read here, only this call's
-        // own arguments. `include_snippets`/`use_cache` come from
-        // labby-codemode's `discovery_render_params` — the SAME function
-        // `build_code_mode_proxy` calls — so the fingerprint computed here
-        // structurally cannot diverge from this execution's catalog. `allow_cold_connect` is hardcoded `false`
-        // (unlike `list_tools`'s `caller.can_execute()`): semantic ranking
-        // must never spend wall-clock cold-connecting upstreams — by the
-        // time a sandbox calls search(), the proxy build already connected
-        // everything this execution can see.
+        // Match discovery, including the caller's Core provider, using already connected upstreams.
         let (include_snippets, use_cache) = discovery_render_params(caller, surface, scope);
-        let owner = runtime_owner(caller, surface);
-        let oauth_subject = oauth_subject(caller);
-        let allowed = scope.allowed_namespaces();
-        let render = match search::build_tools_render(
-            self,
-            false,
-            &owner,
-            oauth_subject,
-            allowed,
-            scope,
-            include_snippets,
-            use_cache,
-            caller,
-            surface,
-        )
-        .await
+        let render = match self
+            .code_mode_catalog_for_caller(
+                caller,
+                surface,
+                scope,
+                include_snippets,
+                use_cache,
+                false,
+            )
+            .await
         {
             Ok(render) => render,
             // Fail-open: a catalog build failure must not break search().
@@ -960,8 +998,9 @@ impl CodeModeHost for GatewayManager {
         // invariant: `rank_by_similarity` is only ever given scope-allowed
         // ids, so it is structurally impossible to return an id the sandbox
         // cannot see.
+        let endpoint = config.tei_url.as_deref().expect("configured TEI endpoint");
         let vectors = self
-            .ensure_embeddings_for_fingerprint(&render.embedding_fingerprint, &render.entries)
+            .ensure_embeddings_at(endpoint, &render.embedding_fingerprint, &render.entries)
             .await;
         if vectors.is_empty() {
             return Ok(Vec::new());
@@ -973,15 +1012,7 @@ impl CodeModeHost for GatewayManager {
         {
             return Ok(Vec::new());
         }
-        let query_vec = match super::embeddings::embed_via_tei(
-            config
-                .tei_url
-                .as_deref()
-                .expect("is_configured() guarantees Some"),
-            &[query],
-        )
-        .await
-        {
+        let query_vec = match super::embeddings::embed_via_tei(endpoint, &[query]).await {
             Ok(mut v) if !v.is_empty() => v.remove(0),
             Ok(_) => return Ok(Vec::new()),
             Err(err) => {
@@ -1439,6 +1470,7 @@ impl GatewayManager {
             oauth_subject,
             caller_auth,
             caller_scope,
+            None,
             expected_contract_hash,
             destructive_allowed,
             destructive_denial_kind,
@@ -1458,6 +1490,7 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         caller_auth: Option<PropagatedCallerAuth>,
         caller_scope: Option<PropagatedCallerUpstreamScope>,
+        resolved_tool: Option<UpstreamTool>,
         expected_contract_hash: &str,
         destructive_allowed: bool,
         destructive_denial_kind: &'static str,
@@ -1472,6 +1505,7 @@ impl GatewayManager {
             oauth_subject,
             caller_auth,
             caller_scope,
+            resolved_tool,
             expected_contract_hash,
             destructive_allowed,
             destructive_denial_kind,
@@ -1491,6 +1525,7 @@ impl GatewayManager {
         oauth_subject: Option<&str>,
         caller_auth: Option<PropagatedCallerAuth>,
         caller_scope: Option<PropagatedCallerUpstreamScope>,
+        resolved_tool: Option<UpstreamTool>,
         expected_contract_hash: &str,
         destructive_allowed: bool,
         destructive_denial_kind: &'static str,
@@ -1514,10 +1549,13 @@ impl GatewayManager {
             .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
             .into());
         }
-        let previewed_tool = self
-            .resolve_code_mode_upstream_tool(upstream, tool, Some(owner), oauth_subject)
-            .await
-            .map_err(|error| CodeModeCallError::from(error))?;
+        let previewed_tool = match resolved_tool {
+            Some(tool) => tool,
+            None => self
+                .resolve_code_mode_upstream_tool(upstream, tool, Some(owner), oauth_subject)
+                .await
+                .map_err(CodeModeCallError::from)?,
+        };
         let previewed_contract_hash =
             CapabilityContract::execution_hash_from_upstream_tool(&previewed_tool)
                 .map_err(CodeModeCallError::from)?;
@@ -1537,7 +1575,7 @@ impl GatewayManager {
         self.ensure_upstream_tool_runtime_ready(upstream, Some(owner), oauth_subject)
             .await
             .map_err(CodeModeCallError::from)?;
-        let (config, pool) = self.published_config_and_pool().await;
+        let (enabled, upstream_config, pool) = self.published_code_mode_upstream(upstream).await;
         let Some(pool) = pool else {
             return Err(CodeModeCallError::new(
                 "upstream_error",
@@ -1548,7 +1586,7 @@ impl GatewayManager {
             .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
             .into());
         };
-        if !config.code_mode.enabled {
+        if !enabled {
             return Err(CodeModeCallError::new(
                 "contract_changed",
                 "the gateway Code Mode catalog changed before dispatch",
@@ -1558,13 +1596,8 @@ impl GatewayManager {
             .with_side_effects(CodeModeSideEffectRisk::NoneExpected)
             .into());
         }
-        let upstream_config = config
-            .upstream
-            .iter()
-            .find(|candidate| {
-                candidate.enabled && candidate.priority > 0.0 && candidate.name == upstream
-            })
-            .cloned()
+        let upstream_config = upstream_config
+            .filter(|candidate| candidate.priority > 0.0)
             .ok_or_else(|| {
                 CodeModeCallError::new("not_found", format!("upstream tool `{id}` was not found"))
                     .with_tool(id.clone())
@@ -1634,7 +1667,7 @@ impl GatewayManager {
                 }
                 validate_code_mode_params_against_schema(
                     &Value::Object(arguments.clone()),
-                    current_tool.input_schema.as_ref(),
+                    current_tool.input_schema.as_deref(),
                 )
                 .map_err(CodeModeCallError::from)
                 .map_err(Box::new)?;
@@ -1828,14 +1861,21 @@ fn map_checked_call_error(error: CheckedToolCallError, id: &str) -> CodeModeCall
         CheckedToolCallError::Check(error) => *error,
         CheckedToolCallError::MissingTool => contract_changed_call_error(id),
         CheckedToolCallError::Unavailable => upstream_not_connected_call_error(id),
-        CheckedToolCallError::Connect(message) => CodeModeCallError::new(
-            "auth_failed",
-            labby_runtime::agent_error::sanitize_error_text(
-                &message,
-                MAX_UPSTREAM_MCP_MESSAGE_CHARS,
-            ),
-        )
-        .with_tool(id.to_string()),
+        CheckedToolCallError::SubjectRequired => CodeModeCallError::new(
+            "auth_required", "An authenticated subject is required to connect to this upstream.",
+        ).with_tool(id.to_string()),
+        CheckedToolCallError::Connect(error) => {
+            if let Some(auth) = error.downcast_ref::<labby_auth::upstream::types::OauthError>() {
+                CodeModeCallError::new(auth.kind(), labby_runtime::agent_error::sanitize_error_text(
+                    &auth.to_string(), MAX_UPSTREAM_MCP_MESSAGE_CHARS,
+                )).with_tool(id.to_string()).with_side_effects(CodeModeSideEffectRisk::NoneExpected)
+            } else {
+                upstream_not_connected_call_error(id)
+            }
+        }
+        CheckedToolCallError::AuthorityChangedAfterDispatch => CodeModeCallError::new(
+            "authority_changed", "Upstream credentials changed after dispatch. Verify whether the tool completed before retrying.",
+        ).with_tool(id.to_string()),
         CheckedToolCallError::Catalog { kind, message } => CodeModeCallError::new(
             kind,
             labby_runtime::agent_error::sanitize_error_text(
@@ -2064,63 +2104,28 @@ fn is_in_process_upstream(upstream: &str) -> bool {
 /// an action whose requirements differ from Code Mode's is still evaluated
 /// correctly rather than against a stale yes/no.
 pub(crate) fn propagated_caller_auth(caller: &CodeModeCaller) -> PropagatedCallerAuth {
-    match caller.without_authority() {
-        CodeModeCaller::WithAuthority { .. } => unreachable!("authority wrapper was removed"),
-        CodeModeCaller::TrustedLocal => PropagatedCallerAuth::trusted_local(),
-        CodeModeCaller::Scoped { capabilities, sub } => {
-            // The kernel deliberately keeps Lab's scope vocabulary out of its
-            // own types, so this adapter boundary is where the names come back.
-            let mut scopes = Vec::new();
-            if capabilities.is_admin {
-                scopes.push("lab:admin".to_string());
-            }
-            if capabilities.can_execute {
-                scopes.push("lab".to_string());
-            }
-            if capabilities.can_read {
-                scopes.push("lab:read".to_string());
-            }
-            PropagatedCallerAuth::scoped(scopes, sub.clone())
-        }
-        CodeModeCaller::ScopedPrivate {
-            capabilities,
-            sub,
-            context_token,
-        } => {
-            let mut scopes = Vec::new();
-            if capabilities.is_admin {
-                scopes.push("lab:admin".to_string());
-            }
-            if capabilities.can_execute {
-                scopes.push("lab".to_string());
-            }
-            if capabilities.can_read {
-                scopes.push("lab:read".to_string());
-            }
-            PropagatedCallerAuth::scoped(scopes, sub.clone())
-                .with_private_context_token(context_token.clone())
-        }
-        CodeModeCaller::ScopedSkills {
-            capabilities, sub, ..
-        }
-        | CodeModeCaller::ScopedHostProvider {
-            capabilities, sub, ..
-        }
-        | CodeModeCaller::ScopedHostProviderSkills {
-            capabilities, sub, ..
-        } => {
-            let mut scopes = Vec::new();
-            if capabilities.is_admin {
-                scopes.push("lab:admin".to_string());
-            }
-            if capabilities.can_execute {
-                scopes.push("lab".to_string());
-            }
-            if capabilities.can_read {
-                scopes.push("lab:read".to_string());
-            }
-            PropagatedCallerAuth::scoped(scopes, sub.clone())
-        }
+    let caller = caller.without_authority();
+    if matches!(caller, CodeModeCaller::TrustedLocal) {
+        return PropagatedCallerAuth::trusted_local();
+    }
+    let mut scopes = Vec::new();
+    if caller.is_admin() {
+        scopes.push("lab:admin".to_string());
+    }
+    if caller.can_execute() {
+        scopes.push("lab".to_string());
+    }
+    if caller.can_read() {
+        scopes.push("lab:read".to_string());
+    }
+    let auth = PropagatedCallerAuth::scoped(scopes, caller.subject().map(str::to_owned));
+    if let Some(token) = caller
+        .host_context()
+        .and_then(|context| context.upstream_private_token.as_ref())
+    {
+        auth.with_private_context_token(token.clone())
+    } else {
+        auth
     }
 }
 
@@ -2151,6 +2156,39 @@ mod tests {
     use rmcp::model::{ContentBlock, ErrorCode, ErrorData, MetaObject};
     #[cfg(unix)]
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn checked_call_errors_preserve_dispatch_phase() {
+        for (error, kind, risk) in [
+            (
+                CheckedToolCallError::AuthorityChangedAfterDispatch,
+                "authority_changed",
+                "possible",
+            ),
+            (
+                CheckedToolCallError::Connect(anyhow::anyhow!("peer unavailable")),
+                "not_connected",
+                "none_expected",
+            ),
+            (
+                CheckedToolCallError::SubjectRequired,
+                "auth_required",
+                "none_expected",
+            ),
+            (
+                CheckedToolCallError::Catalog {
+                    kind: "timeout",
+                    message: "list timed out".into(),
+                },
+                "timeout",
+                "none_expected",
+            ),
+        ] {
+            let json = serde_json::to_value(map_checked_call_error(error, "demo::item")).unwrap();
+            assert_eq!(json["kind"], kind);
+            assert_eq!(json["side_effects"], risk);
+        }
+    }
 
     #[test]
     fn configured_catalog_kind_projection_is_exact() {
@@ -2239,6 +2277,7 @@ mod tests {
         );
         let caller = CodeModeCaller::WithAuthority {
             caller: Box::new(CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: labby_codemode::CodeModeCallerCapabilities {
                     can_read: true,
                     can_execute: true,
@@ -2291,6 +2330,7 @@ mod tests {
         for caller in [
             CodeModeCaller::TrustedLocal,
             CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: labby_codemode::CodeModeCallerCapabilities {
                     can_read: true,
                     can_execute: true,
@@ -2346,24 +2386,6 @@ mod tests {
         // This fixture intentionally publishes cheap static bootstrap hints.
         fn bootstrap<'a>(
             &'a self,
-            caller: &'a CodeModeCaller,
-            scope: &'a ToolScope,
-        ) -> std::pin::Pin<
-            Box<
-                dyn Future<
-                        Output = Result<
-                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
-                            ToolError,
-                        >,
-                    > + Send
-                    + 'a,
-            >,
-        > {
-            self.list(caller, scope)
-        }
-
-        fn list<'a>(
-            &'a self,
             _caller: &'a CodeModeCaller,
             _scope: &'a ToolScope,
         ) -> std::pin::Pin<
@@ -2389,6 +2411,15 @@ mod tests {
             })
         }
 
+        fn list<'a>(
+            &'a self,
+            caller: &'a CodeModeCaller,
+            scope: &'a ToolScope,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
+            Box::pin(async move {
+                Ok(serde_json::json!({"skills": self.bootstrap(caller,scope).await?}))
+            })
+        }
         fn get<'a>(
             &'a self,
             _uri: &'a str,
@@ -2430,17 +2461,8 @@ mod tests {
                 &'a self,
                 _: &'a CodeModeCaller,
                 _: &'a ToolScope,
-            ) -> std::pin::Pin<
-                Box<
-                    dyn Future<
-                            Output = Result<
-                                Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
-                                ToolError,
-                            >,
-                        > + Send
-                        + 'a,
-                >,
-            > {
+            ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>>
+            {
                 Box::pin(async { panic!("bootstrap must not invoke live Skill listing") })
             }
             fn get<'a>(
@@ -2485,17 +2507,7 @@ mod tests {
             &'a self,
             _caller: &'a CodeModeCaller,
             _scope: &'a ToolScope,
-        ) -> std::pin::Pin<
-            Box<
-                dyn Future<
-                        Output = Result<
-                            Vec<crate::gateway::code_mode::skills::CodeModeSkillSummary>,
-                            ToolError,
-                        >,
-                    > + Send
-                    + 'a,
-            >,
-        > {
+        ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
             Box::pin(std::future::pending())
         }
 
@@ -2756,7 +2768,12 @@ mod tests {
 
     #[test]
     fn scoped_skills_token_is_never_propagated_to_upstream_auth() {
-        let caller = CodeModeCaller::ScopedSkills {
+        let caller = CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some("skillctx_super_secret".to_string()),
+                ..Default::default()
+            },
+
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -2764,7 +2781,6 @@ mod tests {
                 is_admin: false,
             },
             sub: Some("alice".to_string()),
-            skill_context_token: "skillctx_super_secret".to_string(),
         };
 
         let auth = propagated_caller_auth(&caller);
@@ -2781,7 +2797,16 @@ mod tests {
 
     #[test]
     fn combined_host_provider_and_skills_preserves_provider_but_not_skill_token() {
-        let caller = CodeModeCaller::ScopedHostProviderSkills {
+        let caller = CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some("skillctx_super_secret".to_string()),
+                provider: Some(labby_codemode::CodeModeProviderContext {
+                    token: "provider_super_secret".to_string(),
+                    request_id: "req-123".to_string(),
+                }),
+                ..Default::default()
+            },
+
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -2789,9 +2814,6 @@ mod tests {
                 is_admin: false,
             },
             sub: Some("alice".to_string()),
-            provider_token: "provider_super_secret".to_string(),
-            provider_request_id: "req-123".to_string(),
-            skill_context_token: "skillctx_super_secret".to_string(),
         };
 
         assert_eq!(caller.host_provider_token(), Some("provider_super_secret"));
@@ -2808,6 +2830,31 @@ mod tests {
         assert!(!debug.contains("skillctx_super_secret"));
         assert!(!debug.contains("provider_super_secret"));
         assert!(debug.contains("req-123"));
+    }
+
+    #[test]
+    fn only_the_explicit_upstream_token_is_forwarded_from_combined_caller_context() {
+        let caller = CodeModeCaller::Scoped {
+            capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
+            sub: Some("reader".into()),
+            host_context: labby_codemode::CodeModeHostContext {
+                upstream_private_token: Some("private-hop".into()),
+                skill_context_token: Some("local-skills".into()),
+                provider: Some(labby_codemode::CodeModeProviderContext {
+                    token: "local-provider".into(),
+                    request_id: "request".into(),
+                }),
+            },
+        };
+        let auth = propagated_caller_auth(&caller);
+        assert_eq!(auth.private_context_token.as_deref(), Some("private-hop"));
+        let auth = serde_json::to_string(&auth).unwrap();
+        assert!(!auth.contains("local-skills"));
+        assert!(!auth.contains("local-provider"));
+        let debug = format!("{caller:?}");
+        for token in ["private-hop", "local-skills", "local-provider"] {
+            assert!(!debug.contains(token));
+        }
     }
 
     #[test]
@@ -2949,10 +2996,13 @@ mod tests {
                 .contract_hash
         );
         let mut oversized = checked.clone();
-        oversized.input_schema = Some(serde_json::json!({
-            "type": "object",
-            "description": "x".repeat(70 * 1024)
-        }));
+        oversized.input_schema = Some(
+            serde_json::json!({
+                "type": "object",
+                "description": "x".repeat(70 * 1024)
+            })
+            .into(),
+        );
         assert!(CapabilityContract::from_upstream_tool(&oversized).is_err());
         let oversized_hash = CapabilityContract::execution_hash_from_upstream_tool(&oversized)
             .expect("Code Mode execution hash must accept large schemas");

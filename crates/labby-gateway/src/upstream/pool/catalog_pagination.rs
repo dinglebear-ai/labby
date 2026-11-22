@@ -41,6 +41,8 @@ pub(super) enum CatalogPaginationError {
     PageItemLimit { limit: usize },
     #[error("upstream catalogs exceeded the shared {limit}-item limit")]
     ItemLimit { limit: usize },
+    #[error("upstream catalogs exceeded the shared {limit}-byte limit")]
+    SharedByteLimit { limit: usize },
     #[error("upstream catalog cursor exceeded the {limit}-byte limit")]
     CursorLimit { limit: usize },
     #[error("upstream catalog exceeded the {limit}-byte serialized limit")]
@@ -57,7 +59,7 @@ impl CatalogPaginationError {
             Self::PageItemLimit { .. } => "pagination_page_item_limit",
             Self::ItemLimit { .. } => "pagination_item_limit",
             Self::CursorLimit { .. } => "pagination_cursor_limit",
-            Self::ByteLimit { .. } => "response_too_large",
+            Self::ByteLimit { .. } | Self::SharedByteLimit { .. } => "response_too_large",
         }
     }
 
@@ -122,7 +124,7 @@ impl SharedCatalogBudget {
             .is_err()
         {
             self.items.fetch_sub(1, Ordering::AcqRel);
-            return Err(CatalogPaginationError::ByteLimit {
+            return Err(CatalogPaginationError::SharedByteLimit {
                 limit: self.byte_limit,
             });
         }

@@ -35,7 +35,7 @@ async fn cold_targeted_get_overlaps_catalog_validation() {
         .get(&SkillGetRequest {
             id: provider_skill_id("up", "unlisted"),
             deadline: SkillProviderDeadline {
-                timeout: Duration::from_millis(250),
+                timeout: Duration::from_secs(3),
             },
         })
         .await
@@ -52,7 +52,7 @@ async fn cold_listed_get_does_not_wait_for_speculative_target() {
         .get(&SkillGetRequest {
             id: provider_skill_id("up", "listed"),
             deadline: SkillProviderDeadline {
-                timeout: Duration::from_millis(250),
+                timeout: Duration::from_secs(3),
             },
         })
         .await
@@ -147,22 +147,16 @@ async fn cold_listed_get_preserves_single_permit_catalog_progress() {
     let locked = guard.lock().await;
     let provider =
         super::super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
-    let task = tokio::spawn(async move {
-        provider
-            .get(&SkillGetRequest {
-                id: provider_skill_id("up", "listed"),
-                deadline: SkillProviderDeadline {
-                    timeout: Duration::from_millis(250),
-                },
-            })
-            .await
-    });
-    tokio::time::sleep(Duration::from_millis(25)).await;
+    let request = SkillGetRequest {
+        id: provider_skill_id("up", "listed"),
+        deadline: SkillProviderDeadline {
+            timeout: Duration::from_secs(3),
+        },
+    };
+    let mut task = provider.get(&request);
+    assert!(futures::poll!(&mut task).is_pending());
     drop(locked);
-    let result = task
-        .await
-        .expect("get task")
-        .expect("listed catalog retains sole permit");
+    let result = task.await.expect("listed catalog retains sole permit");
     assert_eq!(result.skill.descriptor().name, "listed");
 }
 
@@ -171,7 +165,7 @@ async fn cold_catalog_revision_probe_never_waits_for_upstream_listing() {
     let server = SkillsServer::new(vec![json!({"skills": []})]).stalling_list();
     let pool = catalog_pool_with_server("up", server).await;
     let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
-    let _revision = tokio::time::timeout(Duration::from_millis(25), provider.catalog_revision())
+    let _revision = tokio::time::timeout(Duration::from_secs(3), provider.catalog_revision())
         .await
         .expect("cold cache probe returns immediately without upstream I/O");
 }

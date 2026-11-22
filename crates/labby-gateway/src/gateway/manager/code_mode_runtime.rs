@@ -227,8 +227,8 @@ impl GatewayManager {
         self.code_mode_runner_pool.shutdown().await;
     }
 
-    pub async fn record_code_mode_history(&self, entry: CodeModeHistoryEntry) {
-        self.code_mode_history.lock().await.push(entry);
+    pub async fn record_code_mode_history(&self, owner: [u8; 32], entry: CodeModeHistoryEntry) {
+        self.code_mode_history.lock().await.push(owner, entry);
     }
 
     pub async fn record_code_mode_source(&self, source: CodeModeExecutionSource) {
@@ -250,14 +250,14 @@ impl GatewayManager {
         self.code_mode_history.lock().await.snapshot()
     }
 
-    pub async fn code_mode_history_snapshot_for_route_scope(
+    pub async fn code_mode_history_snapshot_for_owner(
         &self,
-        route_scope: Option<&str>,
+        owner: &[u8; 32],
     ) -> Vec<CodeModeHistoryEntry> {
         self.code_mode_history
             .lock()
             .await
-            .snapshot_for_route_scope(route_scope)
+            .snapshot_for_owner(owner)
     }
 
     pub async fn code_mode_enabled(&self) -> bool {
@@ -349,12 +349,7 @@ impl GatewayManager {
         owner: Option<&UpstreamRuntimeOwner>,
         oauth_subject: Option<&str>,
     ) -> Result<(), ToolError> {
-        let cfg = self.config.read().await.clone();
-        let Some(upstream) = cfg
-            .upstream
-            .iter()
-            .find(|candidate| candidate.name == upstream_name)
-        else {
+        let Some(upstream) = self.upstream_config(upstream_name).await else {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_upstream".to_string(),
                 message: format!("unknown upstream `{upstream_name}`"),
@@ -364,13 +359,17 @@ impl GatewayManager {
         let pool = self.ensure_lazy_upstream_pool(owner).await;
 
         let subject = upstream.oauth.as_ref().and(oauth_subject);
-        pool.ensure_tools_for_upstream(upstream, subject, owner)
+        pool.ensure_tools_for_upstream(&upstream, subject, owner)
             .await
             .map_err(|err| {
-                if let Some(error) = err.downcast_ref::<ToolError>()
-                    && error.kind() == "upstream_credential_missing"
-                {
+                if let Some(error) = err.downcast_ref::<ToolError>() {
                     return error.clone();
+                }
+                if let Some(error) = err.downcast_ref::<labby_auth::upstream::types::OauthError>() {
+                    return ToolError::Sdk {
+                        sdk_kind: error.kind().to_owned(),
+                        message: labby_runtime::agent_error::sanitize_error_text(&error.to_string(), 512),
+                    };
                 }
                 let recovery = if subject.is_some_and(|subject| subject != SHARED_GATEWAY_OAUTH_SUBJECT)
                     && upstream.oauth.as_ref().is_some_and(|oauth| !oauth.credential.is_google_provider())
@@ -578,6 +577,9 @@ impl GatewayManager {
         } else {
             Vec::new()
         };
+        // Subject-only descriptors have their own lifecycle. An empty addition
+        // leaves the bracketed public projection valid for any caller.
+        let public_only = subject_scoped.is_empty();
         let visible = merge_visible_catalog_tools(global, subject_scoped);
         if refresh_timed_out && all_tools_are_in_process(&visible) {
             return Err(ToolError::Sdk {
@@ -586,14 +588,7 @@ impl GatewayManager {
                     .to_string(),
             });
         }
-        Ok((
-            visible,
-            if oauth_subject.is_none() {
-                generation
-            } else {
-                None
-            },
-        ))
+        Ok((visible, if public_only { generation } else { None }))
     }
 
     /// Background recovery keeps the live pool current; publish its healthy
@@ -1261,96 +1256,171 @@ impl GatewayManager {
         cache: crate::gateway::code_mode::CatalogRenderCache,
     ) {
         let mut guard = self.code_mode_catalog_render_cache.lock().await;
-        *guard = Some(cache);
+        guard.put(cache.fingerprint.clone(), cache);
     }
 
-    /// Return the cached catalog embedding vectors if the fingerprint still
-    /// matches.
-    ///
-    /// Production code goes through `ensure_embeddings_for_fingerprint`
-    /// (which serves warm hits itself); this read-only accessor exists for
-    /// tests asserting cache state without triggering an embed.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) async fn cached_embeddings(
         &self,
         fingerprint: &str,
-    ) -> Option<Vec<(String, Vec<f32>)>> {
-        let guard = self.code_mode_embedding_cache.read().await;
-        guard.as_ref().and_then(|cache| {
-            if cache.fingerprint == fingerprint {
-                Some(cache.vectors.as_ref().clone())
-            } else {
-                None
-            }
-        })
+    ) -> Option<super::EmbeddingRows> {
+        let endpoint = self.code_mode_config().await.semantic_search.tei_url?;
+        self.code_mode_embedding_cache
+            .lock()
+            .await
+            .get(&(
+                endpoint.trim_end_matches('/').to_owned(),
+                fingerprint.to_owned(),
+            ))
+            .map(|corpus| corpus.rows.clone())
     }
 
-    /// Single-flight per ranking corpus. The cache lock is never held during
-    /// TEI I/O, and warm hits share vectors without cloning their contents.
+    #[cfg(test)]
     pub(crate) async fn ensure_embeddings_for_fingerprint(
         &self,
         fingerprint: &str,
         entries: &[crate::gateway::code_mode::CatalogDescriptor],
-    ) -> Arc<Vec<(String, Vec<f32>)>> {
+    ) -> super::EmbeddingRows {
         let config = self.code_mode_config().await.semantic_search;
-        if !config.is_configured() || entries.is_empty() {
-            return Arc::new(Vec::new());
+        match config.tei_url.as_deref().filter(|_| config.is_configured()) {
+            Some(endpoint) => {
+                self.ensure_embeddings_at(endpoint, fingerprint, entries)
+                    .await
+            }
+            None => Arc::default(),
         }
-        if let Some(vectors) = self.cached_embeddings_shared(fingerprint).await {
-            return vectors;
+    }
+
+    /// Share vectors for identical TEI inputs across cached scopes. IDs come
+    /// only from this request's visible entries. Never hold a cache lock over I/O.
+    pub(crate) async fn ensure_embeddings_at(
+        &self,
+        endpoint: &str,
+        fingerprint: &str,
+        entries: &[crate::gateway::code_mode::CatalogDescriptor],
+    ) -> super::EmbeddingRows {
+        use sha2::{Digest as _, Sha256};
+        use std::collections::{HashMap, HashSet};
+
+        if entries.is_empty() {
+            return Arc::default();
+        }
+        let key = (
+            endpoint.trim_end_matches('/').to_owned(),
+            fingerprint.to_owned(),
+        );
+        if let Some(corpus) = self.code_mode_embedding_cache.lock().await.get(&key) {
+            return corpus.rows.clone();
         }
         let flight = {
             let mut flights = self.code_mode_embedding_flights.lock().await;
             flights.retain(|_, value| value.strong_count() > 0);
             flights
-                .get(fingerprint)
+                .get(&key)
                 .and_then(std::sync::Weak::upgrade)
                 .unwrap_or_else(|| {
                     let flight = Arc::new(CodeModeEmbeddingFlight::default());
-                    flights.insert(fingerprint.to_string(), Arc::downgrade(&flight));
+                    flights.insert(key.clone(), Arc::downgrade(&flight));
                     flight
                 })
         };
         let _build_guard = flight.build.lock().await;
-        if let Some(vectors) = self.cached_embeddings_shared(fingerprint).await {
-            return vectors;
-        }
-        if !self.semantic_search_available_locked().await {
-            return Arc::new(Vec::new());
-        }
-        let ids: Vec<String> = entries.iter().map(|e| e.id.clone()).collect();
-        let texts: Vec<String> = entries.iter().map(|e| e.description.clone()).collect();
-        let tei_url = config
-            .tei_url
-            .as_deref()
-            .expect("is_configured() guarantees tei_url is Some");
-        match crate::gateway::code_mode::embeddings::embed_via_tei(tei_url, &texts).await {
-            Ok(vectors) if vectors.len() == ids.len() => {
-                self.record_semantic_search_recovery().await;
-                let pairs = Arc::new(ids.into_iter().zip(vectors).collect());
-                *self.code_mode_embedding_cache.write().await =
-                    Some(crate::gateway::code_mode::CatalogEmbeddingCache {
-                        fingerprint: fingerprint.to_string(),
-                        vectors: Arc::clone(&pairs),
-                    });
-                pairs
+        let hashes: Vec<[u8; 32]> = entries
+            .iter()
+            .map(|entry| Sha256::digest(entry.description.as_bytes()).into())
+            .collect();
+        let mut by_text = HashMap::new();
+        let mut missing = Vec::new();
+        let mut texts = Vec::new();
+        {
+            let mut cache = self.code_mode_embedding_cache.lock().await;
+            if let Some(corpus) = cache.get(&key) {
+                return corpus.rows.clone();
             }
-            Ok(_) => Arc::new(Vec::new()),
-            Err(err) => {
-                self.record_semantic_search_failure(&err.to_string()).await;
-                Arc::new(Vec::new())
+            let mut seen = HashSet::new();
+            for (entry, &hash) in entries.iter().zip(&hashes) {
+                if !seen.insert(hash) {
+                    continue;
+                }
+                let reused = cache
+                    .iter()
+                    .filter(|((url, _), _)| url == &key.0)
+                    .find_map(|(_, corpus)| corpus.by_text.get(&hash));
+                if let Some(vector) = reused {
+                    by_text.insert(hash, vector.clone());
+                } else {
+                    missing.push(hash);
+                    texts.push(entry.description.clone());
+                }
             }
         }
-    }
-
-    async fn cached_embeddings_shared(
-        &self,
-        fingerprint: &str,
-    ) -> Option<Arc<Vec<(String, Vec<f32>)>>> {
-        let guard = self.code_mode_embedding_cache.read().await;
-        guard.as_ref().and_then(|cache| {
-            (cache.fingerprint == fingerprint).then(|| Arc::clone(&cache.vectors))
-        })
+        if !texts.is_empty() {
+            if !self.semantic_search_available_locked().await {
+                return Arc::default();
+            }
+            match crate::gateway::code_mode::embeddings::embed_via_tei(endpoint, &texts).await {
+                Ok(vectors) if vectors.len() == missing.len() => {
+                    by_text.extend(
+                        missing
+                            .into_iter()
+                            .zip(vectors.into_iter().map(Arc::<[f32]>::from)),
+                    );
+                    self.record_semantic_search_recovery().await;
+                }
+                Ok(_) => {
+                    self.record_semantic_search_failure(
+                        "TEI returned a different number of embeddings than inputs",
+                    )
+                    .await;
+                    return Arc::default();
+                }
+                Err(err) => {
+                    self.record_semantic_search_failure(&err.to_string()).await;
+                    return Arc::default();
+                }
+            }
+        }
+        let rows: super::EmbeddingRows = Arc::new(
+            entries
+                .iter()
+                .zip(hashes)
+                .map(|(entry, hash)| (entry.id.clone(), by_text[&hash].clone()))
+                .collect(),
+        );
+        // Conservative across scopes: shared arcs may be charged more than
+        // once. Caller-held rows do not extend the cache's memory budget.
+        let retained_bytes = by_text
+            .values()
+            .map(|v| size_of_val(v.as_ref()) + 32)
+            .sum::<usize>()
+            + rows
+                .iter()
+                .map(|(id, _)| id.len() + size_of::<(String, Arc<[f32]>)>())
+                .sum::<usize>();
+        const MAX_BYTES: usize = crate::gateway::code_mode::embeddings::TEI_MAX_RESPONSE_BYTES;
+        if retained_bytes <= MAX_BYTES {
+            let mut cache = self.code_mode_embedding_cache.lock().await;
+            let mut total = cache
+                .iter()
+                .map(|(_, corpus)| corpus.retained_bytes)
+                .sum::<usize>()
+                + retained_bytes;
+            while total > MAX_BYTES {
+                let Some((_, old)) = cache.pop_lru() else {
+                    break;
+                };
+                total -= old.retained_bytes;
+            }
+            cache.put(
+                key,
+                super::CachedEmbeddingCorpus {
+                    rows: rows.clone(),
+                    by_text,
+                    retained_bytes,
+                },
+            );
+        }
+        rows
     }
 
     /// True when the semantic search cooldown has elapsed (or no failure has
@@ -1409,35 +1479,16 @@ impl GatewayManager {
         }
     }
 
-    /// Return the cached catalog render if the fingerprint still matches.
-    ///
-    /// Returns `Some((entries, catalog_json, serialized_size))` on a hit,
-    /// `None` on a miss (caller must rebuild and call `store_catalog_render_cache`).
-    /// `entries`/`catalog_json` are `Arc`-wrapped, so a hit clones cheaply
-    /// (refcount bump) regardless of how many times this is called for the
-    /// same fingerprint within one execution — see `CatalogRenderCache`'s doc
-    /// comment for why that matters now that `describe()` calls this per
-    /// invocation, not just once at execution start.
+    /// Return the immutable descriptor and embedding identities from one publication.
     pub(crate) async fn cached_catalog_render(
         &self,
         fingerprint: &str,
-    ) -> Option<(
-        Arc<[crate::gateway::code_mode::CatalogDescriptor]>,
-        Arc<str>,
-        usize,
-    )> {
-        let guard = self.code_mode_catalog_render_cache.lock().await;
-        guard.as_ref().and_then(|cache| {
-            if cache.fingerprint == fingerprint {
-                Some((
-                    Arc::clone(&cache.entries),
-                    Arc::clone(&cache.catalog_json),
-                    cache.serialized_size,
-                ))
-            } else {
-                None
-            }
-        })
+    ) -> Option<crate::gateway::code_mode::CatalogRenderCache> {
+        self.code_mode_catalog_render_cache
+            .lock()
+            .await
+            .get(fingerprint)
+            .cloned()
     }
 
     pub(crate) async fn cached_snippet_metadata(

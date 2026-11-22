@@ -488,6 +488,7 @@ mod tests {
                     _server_task: Some(server_task),
                     peer,
                     runtime: super::super::UpstreamRuntimeMetadata::default(),
+                    header_refresh: Default::default(),
                     incarnation: None,
                 },
                 super::super::entries::healthy_in_process_entry(entry_name, HashMap::new()),

@@ -76,6 +76,8 @@ pub enum PublishedResourceReadError {
 pub enum PublishedToolCallError {
     #[error("published tool target is unavailable")]
     Unavailable,
+    #[error("tool publication changed after dispatch")]
+    AuthorityChanged,
     #[error("published tool call queue is unavailable")]
     QueueUnavailable,
     #[error("upstream tool returned an MCP error")]
@@ -235,6 +237,7 @@ impl GatewayManager {
         #[cfg(any(test, feature = "testkit"))]
         let agent_executions =
             super::super::agent_execution::AgentExecutionStore::open_in_memory()?;
+        let catalog_cache_capacity = std::num::NonZeroUsize::new(8).unwrap();
         Ok(Self {
             path,
             store,
@@ -294,7 +297,9 @@ impl GatewayManager {
             code_mode_warm_up_active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             #[cfg(test)]
             code_mode_warm_up_task_spawns: Arc::new(AtomicU64::new(0)),
-            code_mode_catalog_render_cache: Arc::new(Mutex::new(None)),
+            code_mode_catalog_render_cache: Arc::new(Mutex::new(lru::LruCache::new(
+                catalog_cache_capacity,
+            ))),
             code_mode_catalog_render_flights: Arc::new(
                 Mutex::new(std::collections::HashMap::new()),
             ),
@@ -302,7 +307,9 @@ impl GatewayManager {
             code_mode_catalog_cache_path: None,
             #[cfg(test)]
             _test_scratch_dir: None,
-            code_mode_embedding_cache: Arc::new(RwLock::new(None)),
+            code_mode_embedding_cache: Arc::new(Mutex::new(lru::LruCache::new(
+                catalog_cache_capacity,
+            ))),
             code_mode_embedding_flights: Arc::new(Mutex::new(std::collections::HashMap::new())),
             semantic_search_last_failure: Arc::new(RwLock::new(None)),
             code_mode_snippet_metadata_cache: Arc::new(Mutex::new(None)),
@@ -590,8 +597,7 @@ impl GatewayManager {
             .set_enabled(config.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&config.protected_mcp_routes);
-        *self.config.write().await = config;
-        self.advance_runtime_config_generation();
+        self.publish_runtime_config(config).await;
         // Startup may already have published a lazy pool before committing its
         // configuration. Apply recovery only to that published pool after the
         // config commit; no private candidate or suppressed runtime is armed.
@@ -685,6 +691,14 @@ impl GatewayManager {
         let prepared = pool
             .prepare_published_tool_exact(upstream_name, native_name, tool_generation, params)
             .await;
+        let publication_error = if matches!(
+            prepared,
+            Err(ExactToolCallError::Unavailable | ExactToolCallError::QueueUnavailable)
+        ) {
+            PublishedToolCallError::Unavailable
+        } else {
+            PublishedToolCallError::AuthorityChanged
+        };
         let applying_pool = Arc::clone(&pool);
         let result = self
             .runtime
@@ -695,9 +709,10 @@ impl GatewayManager {
                 }
             })
             .await
-            .ok_or(PublishedToolCallError::Unavailable)?;
+            .ok_or(publication_error)?;
         result.map_err(|error| match error {
             ExactToolCallError::Unavailable => PublishedToolCallError::Unavailable,
+            ExactToolCallError::AuthorityChanged => PublishedToolCallError::AuthorityChanged,
             ExactToolCallError::QueueUnavailable => PublishedToolCallError::QueueUnavailable,
             ExactToolCallError::Mcp(data) => PublishedToolCallError::Mcp(data),
             ExactToolCallError::Transport => PublishedToolCallError::Transport,

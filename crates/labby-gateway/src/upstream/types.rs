@@ -35,9 +35,9 @@ pub struct UpstreamTool {
     /// The original tool definition from the upstream server.
     pub tool: Tool,
     /// Cached input schema as a JSON value for `schema` action proxying.
-    pub input_schema: Option<Value>,
+    pub input_schema: Option<Arc<Value>>,
     /// Cached output schema as a JSON value for typed Code Mode returns.
-    pub output_schema: Option<Value>,
+    pub output_schema: Option<Arc<Value>>,
     /// Name of the upstream server this tool belongs to.
     pub upstream_name: Arc<str>,
     /// Whether this tool is destructive for gateway-side safety gates.

@@ -2,10 +2,13 @@
 //! upstream catalog entries for `execute`/`callTool` and the raw tool proxy.
 
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
+
+use labby_runtime::gateway_config::UpstreamConfig;
 
 use crate::gateway::code_mode::split_namespaced_id;
 use crate::upstream::pool::{
-    tool_is_mcp_app_host_visible_for_config, upstream_has_mcp_app_ui_owner_for_config,
+    UpstreamPool, tool_is_mcp_app_host_visible_for_config, upstream_has_mcp_app_ui_owner_for_config,
 };
 use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
@@ -18,7 +21,7 @@ use super::GatewayManager;
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodeModeExampleTool {
     tool: String,
-    input_schema: std::sync::Arc<serde_json::Map<String, serde_json::Value>>,
+    input_schema: Arc<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl CodeModeExampleTool {
@@ -74,22 +77,20 @@ impl CodeModeExampleMemo {
     }
 }
 
-pub(super) type SharedCodeModeExampleMemo = std::sync::Arc<std::sync::Mutex<CodeModeExampleMemo>>;
+pub(super) type SharedCodeModeExampleMemo = Arc<std::sync::Mutex<CodeModeExampleMemo>>;
 
-async fn routed_tools_for_upstream(
-    pool: &crate::upstream::pool::UpstreamPool,
-    config: &labby_runtime::gateway_config::UpstreamConfig,
+async fn routed_tool_for_upstream(
+    pool: &UpstreamPool,
+    config: &UpstreamConfig,
     oauth_subject: Option<&str>,
-) -> Vec<UpstreamTool> {
+    name: &str,
+) -> Option<UpstreamTool> {
     if config.oauth.is_some() {
-        let Some(subject) = oauth_subject else {
-            return Vec::new();
-        };
         return pool
-            .subject_scoped_upstream_tools_allowed(std::slice::from_ref(config), subject, None)
+            .subject_scoped_upstream_tool_allowed(config, oauth_subject?, name)
             .await;
     }
-    pool.healthy_tools_for_upstream(&config.name).await
+    pool.healthy_tool_for_upstream(&config.name, name).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +131,27 @@ impl GatewayManager {
                 self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, oauth_subject)
                     .await?;
             }
-            let upstream_tools = routed_tools_for_upstream(&pool, upstream, oauth_subject).await;
+            if lookup == CallbackToolLookup::LegacyAnyExposed {
+                if let Some(candidate) =
+                    routed_tool_for_upstream(&pool, upstream, oauth_subject, tool).await
+                {
+                    matches.push((upstream.name.clone(), candidate));
+                }
+                continue;
+            }
+            let upstream_tools = if upstream.oauth.is_some() {
+                let Some(subject) = oauth_subject else {
+                    continue;
+                };
+                pool.subject_scoped_upstream_tools_allowed(
+                    std::slice::from_ref(upstream),
+                    subject,
+                    None,
+                )
+                .await
+            } else {
+                pool.healthy_tools_for_upstream(&upstream.name).await
+            };
             let Some(candidate) = upstream_tools
                 .iter()
                 .find(|candidate| candidate.tool.name.as_ref() == tool)
@@ -320,6 +341,25 @@ impl GatewayManager {
         }
     }
 
+    /// Capture the Code Mode gate, named upstream and pool from one publication.
+    pub(crate) async fn published_code_mode_upstream(
+        &self,
+        name: &str,
+    ) -> (bool, Option<UpstreamConfig>, Option<Arc<UpstreamPool>>) {
+        let _publication = self.publication_barrier.read().await;
+        let cfg = self.config.read().await;
+        let upstream = cfg
+            .upstream
+            .iter()
+            .find(|upstream| upstream.enabled && upstream.name == name)
+            .cloned();
+        (
+            cfg.code_mode.enabled,
+            upstream,
+            self.runtime.current_pool_sync(),
+        )
+    }
+
     pub async fn resolve_code_mode_upstream_tool(
         &self,
         upstream: &str,
@@ -339,14 +379,14 @@ impl GatewayManager {
                     .to_string(),
             });
         }
-        let upstream_config = cfg
+        let routing = cfg
             .upstream
             .iter()
             .find(|candidate| candidate.name == upstream)
-            .cloned();
+            .map(|config| (config.priority, config.oauth.is_some()));
         drop(cfg);
 
-        let priority = upstream_config.as_ref().map(|c| c.priority).unwrap_or(1.0);
+        let (priority, requires_subject) = routing.unwrap_or((1.0, false));
         if !is_routable(priority) {
             tracing::warn!(
                 surface = "dispatch",
@@ -362,11 +402,7 @@ impl GatewayManager {
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
             });
         }
-        if upstream_config
-            .as_ref()
-            .is_some_and(|config| config.oauth.is_some())
-            && oauth_subject.is_none()
-        {
+        if requires_subject && oauth_subject.is_none() {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
@@ -378,8 +414,8 @@ impl GatewayManager {
         // Runtime readiness can race a reload. Re-snapshot both components so
         // execution never combines the old config with the newly published
         // pool (or vice versa).
-        let (published_cfg, pool) = self.published_config_and_pool().await;
-        if !published_cfg.code_mode.enabled {
+        let (enabled, upstream_config, pool) = self.published_code_mode_upstream(upstream).await;
+        if !enabled {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: "the gateway codemode surface is not enabled; set [code_mode] enabled = true in config".to_string(),
@@ -390,11 +426,7 @@ impl GatewayManager {
             message: format!("upstream tool `{upstream}::{tool}` was not found"),
         })?;
 
-        let Some(upstream_config) = published_cfg
-            .upstream
-            .iter()
-            .find(|candidate| candidate.name == upstream && candidate.enabled)
-        else {
+        let Some(upstream_config) = upstream_config else {
             return Err(ToolError::Sdk {
                 sdk_kind: "unknown_tool".to_string(),
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
@@ -406,14 +438,11 @@ impl GatewayManager {
                 message: format!("upstream tool `{upstream}::{tool}` was not found"),
             });
         }
-        routed_tools_for_upstream(&pool, upstream_config, oauth_subject)
-            .await
-            .into_iter()
-            .find(|candidate| candidate.tool.name.as_ref() == tool)
-            .ok_or_else(|| ToolError::Sdk {
-                sdk_kind: "unknown_tool".to_string(),
-                message: format!("upstream tool `{upstream}::{tool}` was not found"),
-            })
+        let selected = routed_tool_for_upstream(&pool, &upstream_config, oauth_subject, tool).await;
+        selected.ok_or_else(|| ToolError::Sdk {
+            sdk_kind: "unknown_tool".to_string(),
+            message: format!("upstream tool `{upstream}::{tool}` was not found"),
+        })
     }
 
     pub async fn resolve_raw_upstream_tool(
@@ -499,15 +528,18 @@ impl GatewayManager {
             }
             self.ensure_upstream_tool_runtime_ready(upstream_name, owner, oauth_subject)
                 .await?;
-            return routed_tools_for_upstream(&pool, upstream_config, oauth_subject)
-                .await
-                .into_iter()
-                .find(|candidate| candidate.tool.name.as_ref() == selector.tool_name)
-                .map(|tool| (upstream_name.to_string(), tool))
-                .ok_or_else(|| ToolError::Sdk {
-                    sdk_kind: "unknown_tool".to_string(),
-                    message: format!("unknown tool `{}`", selector.display_name()),
-                });
+            return routed_tool_for_upstream(
+                &pool,
+                upstream_config,
+                oauth_subject,
+                &selector.tool_name,
+            )
+            .await
+            .map(|tool| (upstream_name.to_string(), tool))
+            .ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "unknown_tool".to_string(),
+                message: format!("unknown tool `{}`", selector.display_name()),
+            });
         }
 
         let mut matches = pool
@@ -516,33 +548,19 @@ impl GatewayManager {
         matches.retain(|(upstream, _)| {
             is_routable(priority_by_upstream.get(upstream).copied().unwrap_or(1.0))
         });
-        for upstream in cfg
-            .upstream
-            .iter()
-            .filter(|upstream| upstream.enabled)
-            .filter(|upstream| {
-                allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
-            })
-            .filter(|upstream| is_routable(upstream.priority))
-        {
-            if upstream.oauth.is_some() && oauth_subject.is_none() {
-                continue;
-            }
-            if upstream.oauth.is_none()
-                && matches
-                    .iter()
-                    .any(|(candidate, _)| candidate == &upstream.name)
-            {
-                continue;
-            }
-            self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, oauth_subject)
-                .await?;
+        if let Some(subject) = oauth_subject {
+            let visible = cfg.upstream.iter().filter(|upstream| {
+                upstream.enabled
+                    && upstream.oauth.is_some()
+                    && is_routable(upstream.priority)
+                    && !upstream
+                        .name
+                        .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+                    && allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
+            });
             matches.extend(
-                routed_tools_for_upstream(&pool, upstream, oauth_subject)
-                    .await
-                    .into_iter()
-                    .filter(|candidate| candidate.tool.name.as_ref() == selector.tool_name)
-                    .map(|tool| (upstream.name.clone(), tool)),
+                pool.cached_subject_tool_candidates(visible, subject, &selector.tool_name)
+                    .await,
             );
         }
 

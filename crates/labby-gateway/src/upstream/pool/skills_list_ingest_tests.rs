@@ -41,7 +41,7 @@ fn oversized_entry_uri_never_enters_the_ownership_scan() {
     let mut out = UpstreamSkills::default();
     let mut owners = ObservedResourceOwners::new();
     ingest_page(
-        vec![entry(&owner, claims)],
+        vec![Ok(entry(&owner, claims))],
         &mut out,
         &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
@@ -64,7 +64,7 @@ fn over_long_resource_manifest_never_enters_the_ownership_scan() {
     let mut out = UpstreamSkills::default();
     let mut owners = ObservedResourceOwners::new();
     ingest_page(
-        vec![entry("skill://wide/SKILL.md", claims)],
+        vec![Ok(entry("skill://wide/SKILL.md", claims))],
         &mut out,
         &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
@@ -82,13 +82,13 @@ fn in_limit_entries_share_one_owner_allocation_across_claims() {
     let mut out = UpstreamSkills::default();
     let mut owners = ObservedResourceOwners::new();
     ingest_page(
-        vec![entry("skill://shared/SKILL.md", claims)],
+        vec![Ok(entry("skill://shared/SKILL.md", claims))],
         &mut out,
         &mut owners,
         limits::MAX_SKILLS_PER_UPSTREAM,
         limits::MAX_SKILL_CANDIDATES_PER_UPSTREAM,
     );
-    let shared: Vec<_> = owners.values().map(|(owner, _)| owner).collect();
+    let shared: Vec<_> = owners.values().map(|(owner, _, _)| owner).collect();
     assert!(shared.len() >= 8);
     assert!(
         shared.windows(2).all(|pair| Arc::ptr_eq(pair[0], pair[1])),
@@ -107,8 +107,8 @@ fn conflicting_claims_across_owners_are_still_ambiguous() {
     let mut owners = ObservedResourceOwners::new();
     ingest_page(
         vec![
-            entry("skill://a/SKILL.md", first),
-            entry("skill://a/b/SKILL.md", second),
+            Ok(entry("skill://a/SKILL.md", first)),
+            Ok(entry("skill://a/b/SKILL.md", second)),
         ],
         &mut out,
         &mut owners,

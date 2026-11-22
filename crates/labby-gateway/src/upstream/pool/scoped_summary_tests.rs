@@ -96,7 +96,7 @@ async fn optional_observation_preserves_failure_empty_and_age() {
     assert_eq!(failed.resources.state, State::Failed);
     assert!(failed.resources.error.is_some());
     assert_eq!(failed.tools.state, State::Known);
-    pool.record_subject_optional_catalog("alpha", "alice", &peer, Some(vec![]), Some(vec![]))
+    pool.record_subject_optional_catalog("alpha", "alice", &peer, Some((0, vec![])), Some(vec![]))
         .await;
     let empty = pool
         .cached_subject_summary(&config, Some("alice"))
@@ -141,6 +141,17 @@ async fn optional_observation_preserves_failure_empty_and_age() {
             .tools
             .state,
         State::Unknown
+    );
+    pool.invalidate_subject_resource_catalogs("alpha").await;
+    pool.record_subject_optional_catalog("alpha", "alice", &peer, Some((0, vec![])), None)
+        .await;
+    let cache = pool.subject_connections.read().await;
+    assert!(
+        cache[&("alpha".into(), "alice".into())]
+            .optional_catalogs
+            .resources
+            .is_none(),
+        "a reply admitted before list_changed must not restore the retired resource catalog"
     );
 }
 
@@ -232,8 +243,14 @@ async fn summaries_keep_subject_catalogs_isolated_and_empty_known() {
         .unwrap()
         .peer
         .clone();
-    pool.record_subject_optional_catalog("alpha", "bob", &bob_peer, Some(vec![]), Some(vec![]))
-        .await;
+    pool.record_subject_optional_catalog(
+        "alpha",
+        "bob",
+        &bob_peer,
+        Some((0, vec![])),
+        Some(vec![]),
+    )
+    .await;
     let bob = pool.cached_subject_summary(&config, Some("bob")).await;
     assert!(bob.resources_known && bob.prompts_known);
     assert!(

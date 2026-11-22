@@ -97,7 +97,7 @@ pub(super) fn is_ui_resource_uri(uri: &str) -> bool {
         .is_some_and(|scheme| scheme.eq_ignore_ascii_case("ui://"))
 }
 
-fn next_generation() -> ToolCatalogGeneration {
+pub(super) fn next_generation() -> ToolCatalogGeneration {
     ToolCatalogGeneration(
         NEXT_TOOL_CATALOG_GENERATION
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
@@ -194,6 +194,8 @@ pub enum PromptCatalogPublicationError {
 
 #[derive(Debug, Clone)]
 pub struct PublishedResourceRoute {
+    /// Shared across consecutive publications while this exact route remains unchanged.
+    pub publication: Arc<()>,
     pub upstream_name: Arc<str>,
     pub native_uri: Arc<str>,
     pub resource: Resource,
@@ -355,6 +357,7 @@ impl PublishedToolCatalogSnapshot {
 pub(super) struct CatalogState {
     #[cfg(test)]
     projection_builds: usize,
+    ui_owners: std::sync::OnceLock<HashMap<String, BTreeSet<String>>>,
     entries: HashMap<String, UpstreamEntry>,
     notification_incidents: HashMap<String, HashMap<String, (String, String)>>,
     incarnations: HashMap<String, super::incarnation::ConnectionIncarnation>,
@@ -487,8 +490,8 @@ struct RouteDeterminant {
     upstream_name: String,
     tool_name: String,
     tool: serde_json::Value,
-    input_schema: Option<serde_json::Value>,
-    output_schema: Option<serde_json::Value>,
+    input_schema: Option<Arc<serde_json::Value>>,
+    output_schema: Option<Arc<serde_json::Value>>,
     destructive: bool,
 }
 
@@ -508,19 +511,28 @@ impl CatalogState {
         })
     }
 
-    pub(super) fn contains_resource_route(
+    pub(super) fn resource_route(
         &self,
-        generation: ResourceCatalogGeneration,
         upstream: &str,
         native_uri: &str,
+    ) -> Option<&PublishedResourceRoute> {
+        self.published_resources
+            .as_ref()
+            .ok()?
+            .routes()
+            .iter()
+            .find(|route| {
+                route.upstream_name.as_ref() == upstream && route.native_uri.as_ref() == native_uri
+            })
+    }
+
+    pub(super) fn resource_generation_is_current(
+        &self,
+        generation: ResourceCatalogGeneration,
     ) -> bool {
-        self.published_resources.as_ref().is_ok_and(|snapshot| {
-            snapshot.generation() == generation
-                && snapshot.routes().iter().any(|route| {
-                    route.upstream_name.as_ref() == upstream
-                        && route.native_uri.as_ref() == native_uri
-                })
-        })
+        self.published_resources
+            .as_ref()
+            .is_ok_and(|snapshot| snapshot.generation() == generation)
     }
 
     pub(super) fn contains_prompt_route(
@@ -573,6 +585,7 @@ impl CatalogState {
         Self {
             #[cfg(test)]
             projection_builds: 0,
+            ui_owners: std::sync::OnceLock::new(),
             entries: HashMap::new(),
             notification_incidents: HashMap::new(),
             incarnations: HashMap::new(),
@@ -1288,6 +1301,7 @@ impl CatalogState {
                     resource: value,
                 });
                 routes.push(PublishedResourceRoute {
+                    publication: Arc::new(()),
                     upstream_name: Arc::from(upstream.as_str()),
                     native_uri: Arc::from(uri),
                     resource: resource.clone(),
@@ -1398,6 +1412,64 @@ impl CatalogState {
         }
     }
 
+    pub(super) fn refresh_unchanged_resources(
+        &mut self,
+        name: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+        rows: &[Resource],
+    ) -> bool {
+        let Some(ResourceSourceState::Ready(source)) = self.resource_sources.get_mut(name) else {
+            return false;
+        };
+        if source.incarnation != incarnation
+            || !rows
+                .iter()
+                .filter(|row| is_ui_resource_uri(&row.uri))
+                .eq(source.ui_resources.iter())
+            || !rows
+                .iter()
+                .filter(|row| !is_ui_resource_uri(&row.uri))
+                .eq(source.resources.iter())
+        {
+            return false;
+        }
+        source.listed_at = Instant::now();
+        true
+    }
+
+    pub(super) fn has_same_templates(
+        &self,
+        name: &str,
+        incarnation: super::incarnation::ConnectionIncarnation,
+        rows: &[ResourceTemplate],
+    ) -> bool {
+        matches!(self.resource_template_sources.get(name), Some(ResourceTemplateSourceState::Ready(source))
+            if source.incarnation == incarnation && rows.iter().filter(|row| !is_ui_resource_uri(&row.uri_template)).eq(source.templates.iter()))
+    }
+
+    pub(super) fn ui_resource_owners(&self, uri: &str) -> impl Iterator<Item = &String> {
+        let owners = self.ui_owners.get_or_init(|| {
+            let mut owners = HashMap::<String, BTreeSet<String>>::new();
+            for (name, entry) in &self.entries {
+                let listed = entry.resource_uris.iter().map(String::as_str);
+                let bindings = entry
+                    .tools
+                    .values()
+                    .filter(|tool| entry.exposure_policy.matches(tool.tool.name.as_ref()))
+                    .flat_map(|tool| super::tools::mcp_tool_resource_bindings(&tool.tool))
+                    .flatten();
+                for uri in listed.chain(bindings).filter(|uri| is_ui_resource_uri(uri)) {
+                    owners
+                        .entry(uri.to_owned())
+                        .or_default()
+                        .insert(name.clone());
+                }
+            }
+            owners
+        });
+        owners.get(uri).into_iter().flatten()
+    }
+
     fn publish_if_changed(&mut self) {
         #[cfg(test)]
         {
@@ -1424,20 +1496,65 @@ impl CatalogState {
                 })
             });
         }
+        self.publish_resources_if_changed();
+        self.publish_templates_if_changed();
+        let prompt_projection = self.prompt_projection();
+        let prompt_determinant = match &prompt_projection {
+            Ok((determinant, _)) => PromptProjectionDeterminant::Ready(determinant.clone()),
+            Err(error) => PromptProjectionDeterminant::Failed(*error),
+        };
+        if prompt_determinant != self.prompt_determinant {
+            self.prompt_determinant = prompt_determinant;
+            self.published_prompts = prompt_projection.map(|(_, routes)| {
+                Arc::new(PublishedPromptCatalogSnapshot {
+                    generation: next_prompt_generation(),
+                    routes,
+                })
+            });
+        }
+    }
+
+    pub(super) fn publish_resources_if_changed(&mut self) {
+        self.ui_owners.take();
         let resource_projection = self.resource_projection();
         let resource_determinant = match &resource_projection {
             Ok((determinant, _)) => ResourceProjectionDeterminant::Ready(determinant.clone()),
             Err(error) => ResourceProjectionDeterminant::Failed(*error),
         };
         if resource_determinant != self.resource_determinant {
-            self.resource_determinant = resource_determinant;
-            self.published_resources = resource_projection.map(|(_, routes)| {
+            self.published_resources = resource_projection.map(|(determinants, mut routes)| {
+                if let ResourceProjectionDeterminant::Ready(previous) = &self.resource_determinant
+                    && let Ok(published) = &self.published_resources
+                {
+                    let previous = previous
+                        .iter()
+                        .zip(published.routes())
+                        .map(|(key, route)| {
+                            (
+                                (key.upstream_name.as_str(), key.native_uri.as_str()),
+                                (key, route),
+                            )
+                        })
+                        .collect::<HashMap<_, _>>();
+                    for (key, route) in determinants.iter().zip(Arc::make_mut(&mut routes)) {
+                        if let Some((old_key, old_route)) =
+                            previous.get(&(key.upstream_name.as_str(), key.native_uri.as_str()))
+                            && *old_key == key
+                        {
+                            route.publication = Arc::clone(&old_route.publication);
+                        }
+                    }
+                }
                 Arc::new(PublishedResourceCatalogSnapshot {
                     generation: next_resource_generation(),
                     routes,
                 })
             });
+            self.resource_determinant = resource_determinant;
         }
+    }
+
+    pub(super) fn publish_templates_if_changed(&mut self) {
         let template_projection = self.resource_template_projection();
         let template_determinant = match &template_projection {
             Ok((determinant, _)) => {
@@ -1450,20 +1567,6 @@ impl CatalogState {
             self.published_resource_templates = template_projection.map(|(_, routes)| {
                 Arc::new(PublishedResourceTemplateCatalogSnapshot {
                     generation: next_resource_template_generation(),
-                    routes,
-                })
-            });
-        }
-        let prompt_projection = self.prompt_projection();
-        let prompt_determinant = match &prompt_projection {
-            Ok((determinant, _)) => PromptProjectionDeterminant::Ready(determinant.clone()),
-            Err(error) => PromptProjectionDeterminant::Failed(*error),
-        };
-        if prompt_determinant != self.prompt_determinant {
-            self.prompt_determinant = prompt_determinant;
-            self.published_prompts = prompt_projection.map(|(_, routes)| {
-                Arc::new(PublishedPromptCatalogSnapshot {
-                    generation: next_prompt_generation(),
                     routes,
                 })
             });
@@ -1551,7 +1654,8 @@ impl UpstreamPool {
         CatalogWriteGuard(self.catalog.write().await, None)
     }
 
-    /// Guard for health-only mutations; callers must not change descriptors or policy.
+    /// Rebuilds the full projection on health transitions. Callers updating a retained
+    /// resource or template source must publish that family under the same guard.
     pub(super) async fn catalog_health_write(&self, upstream: &str) -> CatalogWriteGuard<'_> {
         let state = self.catalog.write().await;
         let before = routing_health(&state, upstream);
@@ -1832,8 +1936,9 @@ impl UpstreamPool {
         let _ = catalog.set_resource_source(upstream, incarnation, &resources);
     }
 
-    #[cfg(test)]
-    pub(crate) async fn insert_resource_template_routes_for_tests(
+    #[cfg(any(test, feature = "testkit"))]
+    #[doc(hidden)]
+    pub async fn insert_resource_template_routes_for_tests(
         &self,
         upstream: &str,
         templates: Vec<ResourceTemplate>,
@@ -3270,7 +3375,7 @@ mod tests {
             Arc::new(serde_json::Map::new()),
         );
         let upstream_tool = UpstreamTool {
-            input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
+            input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone()).into()),
             output_schema: None,
             destructive: false,
             upstream_name: Arc::clone(&upstream_name),
@@ -3294,6 +3399,32 @@ mod tests {
         pool.published_tool_catalog()
             .await
             .expect("published catalog")
+    }
+
+    #[tokio::test]
+    async fn changed_resource_source_publishes_without_rebuilding_other_families() {
+        let pool = UpstreamPool::new();
+        pool.insert_resource_routes_for_tests("fast", vec![Resource::new("file:///one", "one")])
+            .await;
+        let original = snapshot(&pool).await;
+        let builds = pool.catalog.read().await.projection_builds;
+        {
+            let mut state = pool.catalog_health_write("fast").await;
+            let incarnation = state.incarnation("fast").unwrap();
+            state.get_mut("fast").unwrap().resource_uris = vec!["file:///two".into()];
+            let _ = state.set_resource_source(
+                "fast",
+                incarnation,
+                &[Resource::new("file:///two", "two")],
+            );
+            state.publish_resources_if_changed();
+        }
+        let state = pool.catalog.read().await;
+        assert_eq!(state.projection_builds, builds);
+        assert!(Arc::ptr_eq(&original, state.published.as_ref().unwrap()));
+        let rows = state.published_resources.as_ref().unwrap().routes();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].native_uri.as_ref(), "file:///two");
     }
 
     #[tokio::test]
@@ -3528,7 +3659,7 @@ mod tests {
                 .get_mut("alpha")
                 .and_then(|entry| entry.tools.get_mut("read"))
                 .expect("tool");
-            tool.output_schema = Some(serde_json::json!({"type": "string"}));
+            tool.output_schema = Some(serde_json::json!({"type": "string"}).into());
             tool.destructive = true;
         }
         assert_ne!(snapshot(&pool).await.generation(), original.generation());

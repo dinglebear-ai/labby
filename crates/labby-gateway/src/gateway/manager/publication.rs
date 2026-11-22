@@ -4,7 +4,7 @@ use std::future::{Future, ready};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use labby_runtime::gateway_config::{GatewayLoadoutConfig, VirtualServerConfig};
+use labby_runtime::gateway_config::{GatewayConfig, GatewayLoadoutConfig, VirtualServerConfig};
 use labby_runtime::gateway_config::{ProtectedMcpRouteConfig, ProtectedMcpRouteTarget};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::OwnedRwLockReadGuard;
@@ -594,11 +594,16 @@ impl PublishedLoadoutMcpCatalogSnapshot {
     /// identities is the complete comparison tuple.
     #[must_use]
     pub fn same_publication_as(&self, other: &Self) -> bool {
+        self.resources.resource_catalog_generation()
+            == other.resources.resource_catalog_generation()
+            && self.same_non_resource_publications_as(other)
+    }
+
+    /// Compare every common-interval source except the independently checked resource route.
+    pub fn same_non_resource_publications_as(&self, other: &Self) -> bool {
         self.tools.runtime_config_generation() == other.tools.runtime_config_generation()
             && self.tools.pool_publication_generation() == other.tools.pool_publication_generation()
             && self.tools.tool_catalog_generation() == other.tools.tool_catalog_generation()
-            && self.resources.resource_catalog_generation()
-                == other.resources.resource_catalog_generation()
             && self
                 .resource_templates
                 .resource_template_catalog_generation()
@@ -1348,6 +1353,28 @@ impl GatewayManager {
         }
     }
 
+    /// Commit the active revision and refresh the kernel limits under the
+    /// publication writer. A rollback publishes the prior limits here too.
+    pub(super) async fn publish_runtime_config(&self, config: GatewayConfig) {
+        let mut current = self.config.write().await;
+        let limits = &config.code_mode;
+        labby_codemode::install_artifact_config_defaults(
+            limits.artifact_retention_runs,
+            limits.artifact_max_mib,
+            limits.artifact_max_store_mib,
+        );
+        labby_codemode::install_call_budget_config_defaults(
+            limits.max_calls_per_run,
+            limits.calltool_result_max_mib,
+        );
+        *current = config;
+        self.advance_runtime_config_generation();
+    }
+
+    pub fn current_runtime_config_generation(&self) -> GatewayRuntimeConfigGeneration {
+        GatewayRuntimeConfigGeneration(self.runtime_config_generation.load(Ordering::Acquire))
+    }
+
     /// Advance the runtime-config publication identity while the caller holds
     /// the publication writer. Pool/catalog-only mutations are deliberately
     /// outside this Loadout snapshot contract. Overflow is a process-fatal
@@ -1730,11 +1757,13 @@ mod canonical_route_match_tests {
     fn canonical_resource_wire_uri_rejects_ambiguous_decompositions() {
         let routes = vec![
             PublishedResourceRoute {
+                publication: Arc::new(()),
                 upstream_name: Arc::from("alpha"),
                 native_uri: Arc::from("bravo/file:///one"),
                 resource: Resource::new("bravo/file:///one", "one"),
             },
             PublishedResourceRoute {
+                publication: Arc::new(()),
                 upstream_name: Arc::from("alpha/bravo"),
                 native_uri: Arc::from("file:///one"),
                 resource: Resource::new("file:///one", "one"),

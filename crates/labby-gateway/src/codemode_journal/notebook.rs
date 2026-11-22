@@ -121,7 +121,11 @@ pub fn project_notebook(
 
     // Attribute each call to the last step cell whose seq_base <= call.seq,
     // else to the prologue (calls before the first step or when there are none).
+    let first_omitted = sorted.get(step_spans.len()).map(|row| row.seq_base);
     for (seq, call) in calls {
+        if first_omitted.is_some_and(|start| *seq >= start) {
+            continue;
+        }
         let target = step_spans
             .iter()
             .rev()
@@ -205,8 +209,11 @@ mod tests {
     #[test]
     fn caps_cell_count() {
         let many = (0..500).map(|i| row(i, "s", i * 2)).collect::<Vec<_>>();
-        let nb = project_notebook(&many, &[], 50, 1_000_000);
-        assert!(nb.cells.len() <= 50 && nb.truncated);
+        let calls = vec![call(99, "up::kept"), call(100, "up::omitted")];
+        let nb = project_notebook(&many, &calls, 50, 1_000_000);
+        assert_eq!(nb.cells.len(), 50);
+        assert!(nb.truncated);
+        assert_eq!(nb.cells[49].calls.len(), 1);
     }
 
     #[test]

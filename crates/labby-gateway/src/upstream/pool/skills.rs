@@ -29,6 +29,7 @@ use super::skills_list::{UpstreamSkills, UpstreamSkillsError, peer_declares_skil
 struct RefreshStateGuard {
     cache: Arc<tokio::sync::RwLock<HashMap<SkillsCacheKey, CachedSkills>>>,
     key: SkillsCacheKey,
+    revision: u64,
     armed: bool,
 }
 
@@ -36,10 +37,12 @@ impl RefreshStateGuard {
     fn new(
         cache: Arc<tokio::sync::RwLock<HashMap<SkillsCacheKey, CachedSkills>>>,
         key: SkillsCacheKey,
+        revision: u64,
     ) -> Self {
         Self {
             cache,
             key,
+            revision,
             armed: true,
         }
     }
@@ -59,9 +62,13 @@ impl Drop for RefreshStateGuard {
         };
         let cache = Arc::clone(&self.cache);
         let key = self.key.clone();
+        let revision = self.revision;
         runtime.spawn(async move {
             let mut cache = cache.write().await;
-            if let Some(entry) = cache.get_mut(&key) {
+            if let Some(entry) = cache
+                .get_mut(&key)
+                .filter(|entry| entry.revision == revision)
+            {
                 entry.fail_refresh();
             }
         });
@@ -176,7 +183,14 @@ impl UpstreamPool {
             if cached.is_fresh() {
                 return Ok((cached, SkillDiscoverySource::Cached));
             }
-            self.spawn_skills_refresh(config.clone(), subject.map(str::to_string));
+            if !cached.refreshing
+                && cached
+                    .retry_after()
+                    .is_none_or(|duration| duration.is_zero())
+            {
+                self.spawn_skills_refresh(config, key, cached.revision)
+                    .await;
+            }
             return Ok((cached, SkillDiscoverySource::Cached));
         }
 
@@ -218,7 +232,15 @@ impl UpstreamPool {
             .iter()
             .map(|skill| OperatorSkill {
                 descriptor: SkillDescriptor::from_validated_entry(provider.clone(), skill),
-                exposure: SkillExposureDecision::evaluate(&policy, &skill.name),
+                exposure: if exposed.catalog.has_ambiguous_claim(skill) {
+                    SkillExposureDecision {
+                        exposed: false,
+                        reason: super::skills_exposure::SkillExposureReason::AmbiguousResource,
+                        matched_pattern: None,
+                    }
+                } else {
+                    SkillExposureDecision::evaluate(&policy, &skill.name)
+                },
             })
             .collect();
         let rejected = exposed
@@ -409,7 +431,7 @@ impl UpstreamPool {
             entry.retain_direct_from(previous);
         }
         cache.insert(key, entry);
-        let evicted = evict(&mut cache);
+        let evicted = evict(&mut cache, name);
         if evicted > 0 {
             tracing::info!(
                 action = "skills.cache.evict",
@@ -426,34 +448,40 @@ impl UpstreamPool {
     ///
     /// Marks the entry refreshing first so a burst of readers past the TTL
     /// spawns one task rather than one per reader.
-    fn spawn_skills_refresh(&self, config: UpstreamConfig, subject: Option<String>) {
-        let pool = self.clone();
-        let cancel = self.skills_refresh_cancel.clone();
-        self.skills_refresh_tasks.spawn(async move {
-            let key = (config.name.clone(), subject.clone());
-            {
-                let mut cache = pool.skills_cache.write().await;
-                let Some(entry) = cache.get_mut(&key) else {
-                    return;
-                };
-                if !entry.begin_refresh() {
-                    return;
-                }
+    pub(super) async fn spawn_skills_refresh(
+        &self,
+        config: &UpstreamConfig,
+        key: SkillsCacheKey,
+        revision: u64,
+    ) {
+        {
+            let mut cache = self.skills_cache.write().await;
+            let Some(entry) = cache.get_mut(&key) else {
+                return;
+            };
+            if entry.revision != revision || !entry.begin_refresh() {
+                return;
             }
-            // If this task panics or is aborted, Drop schedules a fail-refresh
-            // transition so stale-while-revalidate cannot remain permanently armed.
-            let mut state_guard =
-                RefreshStateGuard::new(Arc::clone(&pool.skills_cache), key.clone());
+        }
+        let pool = self.clone();
+        let config = config.clone();
+        let cancel = self.skills_refresh_cancel.clone();
+        let mut state_guard =
+            RefreshStateGuard::new(Arc::clone(&pool.skills_cache), key.clone(), revision);
+        self.skills_refresh_tasks.spawn(async move {
             let result = tokio::select! {
                 _ = cancel.cancelled() => return,
-                result = pool.fetch_and_cache_skills(&config, subject.as_deref()) => result,
+                result = pool.fetch_and_cache_skills(&config, key.1.as_deref()) => result,
             };
             if result.is_err() {
                 // Keep serving the stale snapshot, but do not retry a failed
                 // refresh on every read. The bounded cooldown grows with repeated
                 // failures and resets when a new snapshot is published.
                 let mut cache = pool.skills_cache.write().await;
-                if let Some(entry) = cache.get_mut(&key) {
+                if let Some(entry) = cache
+                    .get_mut(&key)
+                    .filter(|entry| entry.revision == revision)
+                {
                     entry.fail_refresh();
                 }
             }
@@ -463,7 +491,7 @@ impl UpstreamPool {
     }
 
     /// Apply `expose_skills` to a cached snapshot.
-    fn apply_skill_exposure(
+    pub(super) fn apply_skill_exposure(
         &self,
         config: &UpstreamConfig,
         cached: &CachedSkills,
@@ -492,29 +520,21 @@ impl UpstreamPool {
         let policy =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
         let total = cached.skills.skills.len();
+        let mut ambiguous_count = 0;
         let exposed_indices: BTreeSet<usize> = cached
             .skills
             .skills
             .iter()
             .enumerate()
             .filter_map(|(index, skill)| {
-                let has_ambiguous_resource = std::iter::once(&skill.entry.uri)
-                    .chain(
-                        skill
-                            .entry
-                            .resources
-                            .iter()
-                            .flatten()
-                            .map(|resource| &resource.uri),
-                    )
-                    .filter_map(|uri| parse_skill_resource_uri(uri).ok())
-                    .any(|uri| {
-                        cached
-                            .skills
-                            .ambiguous_resource_uris
-                            .contains(&uri.to_uri())
-                    });
-                (policy.matches(&skill.name) && !has_ambiguous_resource).then_some(index)
+                if !policy.matches(&skill.name) {
+                    return None;
+                }
+                if cached.skills.has_ambiguous_claim(skill) {
+                    ambiguous_count += 1;
+                    return None;
+                }
+                Some(index)
             })
             .collect();
         let visible_count = exposed_indices.len();
@@ -532,7 +552,7 @@ impl UpstreamPool {
         );
         ExposedSkills {
             skills,
-            excluded_count: cached.skills.excluded_count(),
+            excluded_count: cached.skills.excluded_count() + ambiguous_count,
             truncated: cached.skills.truncated || visible_count > max_items,
             age_secs: cached.age().as_secs(),
             ttl_ms: Some(cached.remaining_ttl().as_millis() as u64),
@@ -588,23 +608,26 @@ impl UpstreamPool {
         // Listed collisions are poisoned regardless of exposure. Direct-owner
         // collisions use the precomputed resource index rather than reparsing
         // every resource of every retained direct manifest under the cache lock.
-        if candidate
-            .owned_uris
-            .iter()
-            .any(|uri| cached.skills.resource_index.contains_key(uri))
-            || candidate.owned_uris.iter().any(|uri| {
-                cached
-                    .direct_resource_index
-                    .get(uri)
-                    .is_some_and(|existing| existing != &owner)
-            })
-        {
+        if candidate.owned_uris.iter().any(|uri| {
+            cached.skills.resource_index.contains_key(uri)
+                || cached.skills.ambiguous_resource_uris.contains(uri)
+        }) || candidate.owned_uris.iter().any(|uri| {
+            cached
+                .direct_resource_index
+                .get(uri)
+                .is_some_and(|existing| existing != &owner)
+        }) {
             return Err(UpstreamSkillsError::Collision);
         }
         if cached.direct.len() >= limits::MAX_SKILLS_PER_UPSTREAM
             && !cached.direct.contains_key(&owner)
+            && let Some(oldest) = cached
+                .direct
+                .iter()
+                .min_by_key(|(_, skill)| skill.last_used)
+                .map(|(owner, _)| owner.clone())
         {
-            return Err(UpstreamSkillsError::LimitExceeded);
+            cached.remove_direct(&oldest);
         }
         cached.insert_direct(owner, candidate);
         Ok(())
@@ -644,6 +667,10 @@ impl UpstreamPool {
     /// it came from would serve a catalog Labby can no longer honor a read
     /// against.
     pub async fn invalidate_upstream_skills(&self, name: &str) {
+        self.invalidate_skills_for_subject(name, None).await;
+    }
+
+    pub(super) async fn invalidate_skills_for_subject(&self, name: &str, subject: Option<&str>) {
         // Advance the epoch before touching the cache. Any refresh that captured
         // the previous value is prevented from publishing after this point.
         {
@@ -652,7 +679,9 @@ impl UpstreamPool {
             *epoch = epoch.wrapping_add(1);
         }
         let mut cache = self.skills_cache.write().await;
-        cache.retain(|(upstream, _), _| upstream != name);
+        cache.retain(|(upstream, owner), _| {
+            upstream != name || subject.is_some_and(|s| owner.as_deref().is_some_and(|v| v != s))
+        });
         drop(cache);
         let mut catalog = self.catalog_write().await;
         if let Some(entry) = catalog.get_mut(name) {

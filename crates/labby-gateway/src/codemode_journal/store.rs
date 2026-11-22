@@ -5,8 +5,9 @@
 //! it never gates, resumes, replays, or pauses a run.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex;
 
 use labby_runtime::agent_error::redact_secret_like_segments;
 use labby_runtime::error::ToolError;
@@ -43,9 +44,15 @@ CREATE TABLE IF NOT EXISTS step_journal (
     PRIMARY KEY (execution_id, step_ordinal)
 );";
 
+pub(super) enum ConnectionAccess {
+    Read,
+    Write,
+}
+
 #[derive(Clone)]
 pub struct StepJournalStore {
-    conns: Arc<Vec<Mutex<Connection>>>,
+    conns: Arc<[Arc<Mutex<Connection>>]>,
+    pub(super) receipts_available: bool,
     next_conn: Arc<AtomicUsize>,
     path: Arc<PathBuf>,
 }
@@ -61,14 +68,18 @@ impl std::fmt::Debug for StepJournalStore {
 impl StepJournalStore {
     pub async fn open(path: PathBuf) -> Result<Self, ToolError> {
         let path_for_open = path.clone();
-        let conns = tokio::task::spawn_blocking(move || {
+        let (conns, receipts_available) = tokio::task::spawn_blocking(move || {
             open_connections(path_for_open.as_path(), SQLITE_POOL_SIZE)
         })
         .await
         .map_err(|error| storage_error(format!("journal open task failed: {error}")))??;
         Ok(Self {
-            conns: Arc::new(conns.into_iter().map(Mutex::new).collect()),
+            conns: conns
+                .into_iter()
+                .map(|conn| Arc::new(Mutex::new(conn)))
+                .collect(),
             next_conn: Arc::new(AtomicUsize::new(0)),
+            receipts_available,
             path: Arc::new(path),
         })
     }
@@ -81,7 +92,7 @@ impl StepJournalStore {
         if rows.is_empty() {
             return Ok(());
         }
-        self.with_conn(move |conn| {
+        self.with_conn(ConnectionAccess::Write, move |conn| {
             let tx = conn.transaction().map_err(sqlite_error)?;
             {
                 let mut stmt = tx
@@ -119,7 +130,7 @@ impl StepJournalStore {
     /// Load every row for one execution, ascending by `step_ordinal`.
     pub async fn load(&self, execution_id: &str) -> Result<Vec<StepJournalRow>, ToolError> {
         let execution_id = execution_id.to_string();
-        self.with_conn(move |conn| {
+        self.with_conn(ConnectionAccess::Read, move |conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT execution_id, step_ordinal, seq_base, name, value, ok, elapsed_ms, \
@@ -159,7 +170,7 @@ impl StepJournalStore {
         let mut total_deleted: usize = 0;
         loop {
             let deleted = self
-                .with_conn(move |conn| {
+                .with_conn(ConnectionAccess::Write, move |conn| {
                     let deleted = conn
                         .execute(
                             "DELETE FROM step_journal WHERE rowid IN (
@@ -224,37 +235,62 @@ impl StepJournalStore {
         });
     }
 
-    pub(super) async fn with_conn<T, F>(&self, op: F) -> Result<T, ToolError>
+    pub(super) async fn with_conn<T, F>(
+        &self,
+        access: ConnectionAccess,
+        op: F,
+    ) -> Result<T, ToolError>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T, ToolError> + Send + 'static,
     {
-        let conns = Arc::clone(&self.conns);
-        let len = conns.len();
-        let idx = self.next_conn.fetch_add(1, Ordering::Relaxed) % len;
-        tokio::task::spawn_blocking(move || {
-            let mut guard = conns[idx]
-                .lock()
-                .map_err(|_| storage_error("journal conn mutex poisoned".to_string()))?;
-            op(&mut guard)
-        })
-        .await
-        .map_err(|error| storage_error(format!("journal task failed: {error}")))?
+        let len = self.conns.len();
+        let start = self.next_conn.fetch_add(1, Ordering::Relaxed) % len;
+        let available = (0..len).find_map(|offset| {
+            Arc::clone(&self.conns[(start + offset) % len])
+                .try_lock_owned()
+                .ok()
+        });
+        let mut guard = match (available, access) {
+            (Some(guard), _) => guard,
+            (None, ConnectionAccess::Read) => Arc::clone(&self.conns[start]).lock_owned().await,
+            (None, ConnectionAccess::Write) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "queue_saturated".into(),
+                    message: "Code Mode journal connections are busy".into(),
+                });
+            }
+        };
+        // The worker owns the connection through the actual SQLite result, even
+        // if the requesting task disappears after admission.
+        tokio::task::spawn_blocking(move || op(&mut guard))
+            .await
+            .map_err(|error| storage_error(format!("journal task failed: {error}")))?
     }
 }
 
-fn open_connections(path: &Path, count: usize) -> Result<Vec<Connection>, ToolError> {
+fn open_connections(path: &Path, count: usize) -> Result<(Vec<Connection>, bool), ToolError> {
     if path.exists() {
         validate_existing_database(path)?;
     } else {
         initialize_database(path)?;
     }
     let receipt_conn = open_validated_connection(path)?;
-    super::receipts::initialize(&receipt_conn)?;
+    // The index is additive and also applies to existing v1 journals.
+    receipt_conn
+        .execute_batch(
+            "CREATE INDEX IF NOT EXISTS step_journal_recorded_at ON step_journal(recorded_at)",
+        )
+        .map_err(sqlite_error)?;
+    let receipts = super::receipts::initialize(&receipt_conn);
+    if let Err(error) = &receipts {
+        tracing::warn!(kind = error.kind(), "snippet receipt storage unavailable");
+    }
     drop(receipt_conn);
-    (0..count)
+    let conns = (0..count)
         .map(|_| open_validated_connection(path))
-        .collect()
+        .collect::<Result<_, _>>()?;
+    Ok((conns, receipts.is_ok()))
 }
 
 #[derive(Clone, Copy)]
@@ -468,8 +504,12 @@ pub fn redact_journal_text(raw: &Value, cap_bytes: usize) -> String {
         // the value exceeded `cap_bytes`.
         return format!("{{\"__journal_truncated\":true,\"cap_bytes\":{cap_bytes}}}");
     }
-    let text = String::from_utf8_lossy(&buf).into_owned();
-    redact_secret_like_segments(&text)
+    let redacted = labby_runtime::redact::redact_trace_value(raw, cap_bytes);
+    let text = redact_secret_like_segments(&redacted.to_string());
+    if text.len() > cap_bytes {
+        return format!("{{\"__journal_truncated\":true,\"cap_bytes\":{cap_bytes}}}");
+    }
+    text
 }
 
 fn sqlite_error(error: rusqlite::Error) -> ToolError {
@@ -516,6 +556,32 @@ mod tests {
             capability_filter_fingerprint: None,
             replayed_from: None,
         }
+    }
+
+    #[tokio::test]
+    async fn a_full_connection_pool_refuses_writes_before_queueing_sqlite_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = StepJournalStore::open(dir.path().join("journal.db"))
+            .await
+            .unwrap();
+        let mut connections = store
+            .conns
+            .iter()
+            .map(|conn| Arc::clone(conn).try_lock_owned().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(connections.len(), store.conns.len());
+        let error = store
+            .flush(vec![row("refused", 0, "step")])
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "queue_saturated");
+        connections.pop();
+        store.flush(vec![row("accepted", 0, "step")]).await.unwrap();
+        assert_eq!(store.load("accepted").await.unwrap().len(), 1);
+        assert_eq!(
+            store.load("refused").await.unwrap(),
+            Vec::<StepJournalRow>::new()
+        );
     }
 
     #[tokio::test]
@@ -665,6 +731,10 @@ mod tests {
         assert!(out.contains("__journal_truncated"));
         // Secret-shaped: a value that looks like a token is masked.
         let secret = serde_json::json!({"authorization": "Bearer sk-abcdef1234567890extra"});
+        let keyed = serde_json::json!({"nested": [{"password": "plain-value"}], "count": 3});
+        let saved: Value = serde_json::from_str(&redact_journal_text(&keyed, 4096)).unwrap();
+        assert_eq!(saved["nested"][0]["password"], "[redacted]");
+        assert_eq!(saved["count"], 3);
         let red = redact_journal_text(&secret, 4096);
         assert!(
             !red.contains("sk-abcdef1234567890extra"),

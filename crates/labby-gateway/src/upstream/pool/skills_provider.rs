@@ -11,77 +11,12 @@ use labby_runtime::skills::{
 };
 
 use super::UpstreamPool;
-use super::capability_call::CapabilityCallError;
-use super::skills_list::UpstreamSkillsError;
+use super::skills_list::map_upstream_skills_error;
 
 /// Provider entries and whether an upstream traversal stopped before exhaustion.
 pub struct SkillSearchResult {
     pub skills: Vec<SkillProviderEntry>,
     pub incomplete: bool,
-}
-
-fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
-    match error {
-        UpstreamSkillsError::Capability(CapabilityCallError::Timeout { .. })
-        | UpstreamSkillsError::SearchIncomplete => SkillProviderError::DeadlineExceeded,
-        UpstreamSkillsError::Capability(CapabilityCallError::ResponseTooLarge { .. }) => {
-            SkillProviderError::LimitExceeded {
-                what: "response_bytes",
-                limit: labby_runtime::skills::limits::MAX_SKILL_RESOURCE_BYTES,
-            }
-        }
-        UpstreamSkillsError::Capability(CapabilityCallError::Transport { .. })
-        | UpstreamSkillsError::Unavailable
-        | UpstreamSkillsError::Invalidated
-        | UpstreamSkillsError::CacheMissing => SkillProviderError::Unavailable {
-            reason: "upstream_unavailable".to_owned(),
-        },
-        UpstreamSkillsError::Capability(CapabilityCallError::QueueSaturated { .. }) => {
-            SkillProviderError::Unavailable {
-                reason: "upstream_queue_saturated".to_owned(),
-            }
-        }
-        UpstreamSkillsError::LimitExceeded => SkillProviderError::LimitExceeded {
-            what: "direct_skills",
-            limit: labby_runtime::skills::limits::MAX_SKILLS_PER_UPSTREAM,
-        },
-        UpstreamSkillsError::Collision => SkillProviderError::ManifestStale,
-        UpstreamSkillsError::InvalidUri => SkillProviderError::InvalidRequest {
-            field: "skill.source_id",
-            reason: "invalid_skill_uri",
-        },
-        UpstreamSkillsError::InvalidManifest { reason } => SkillProviderError::Integrity { reason },
-        UpstreamSkillsError::Capability(CapabilityCallError::Mcp { .. }) => {
-            SkillProviderError::Provider {
-                reason: "upstream_mcp_error".to_owned(),
-            }
-        }
-        UpstreamSkillsError::Capability(CapabilityCallError::Protocol { .. })
-        | UpstreamSkillsError::CacheScopeChanged
-        | UpstreamSkillsError::IdentityMismatch => SkillProviderError::Provider {
-            reason: "upstream_protocol_error".to_owned(),
-        },
-        UpstreamSkillsError::Capability(CapabilityCallError::Cancelled { .. }) => {
-            SkillProviderError::Provider {
-                reason: "upstream_cancelled".to_owned(),
-            }
-        }
-        UpstreamSkillsError::Capability(CapabilityCallError::InputRequiredRoundsExceeded {
-            ..
-        }) => SkillProviderError::Provider {
-            reason: "input_required_rounds_exceeded".to_owned(),
-        },
-        UpstreamSkillsError::Capability(CapabilityCallError::NotExposed { .. }) => {
-            SkillProviderError::Provider {
-                reason: "not_exposed".to_owned(),
-            }
-        }
-        UpstreamSkillsError::Capability(CapabilityCallError::Other { .. }) => {
-            SkillProviderError::Provider {
-                reason: "upstream_error".to_owned(),
-            }
-        }
-    }
 }
 
 /// One caller-scoped SEP-2640 upstream exposed through the neutral provider seam.
@@ -108,16 +43,17 @@ impl SepSkillProvider {
         }
     }
 
-    /// Peek at a fresh caller-scoped immutable catalog without network I/O.
-    /// Cold and expired catalogs return None so the ordinary list operation
-    /// owns the single bounded discovery attempt and background refresh.
+    /// Peek at the current caller-scoped immutable catalog without waiting for a network call.
     pub async fn catalog_revision(&self) -> Option<(u64, Duration)> {
         let subject = super::skills::skills_cache_subject(&self.config, self.subject.as_deref());
         let key = (self.config.name.clone(), subject.map(str::to_string));
         let snapshot = self.pool.cached_skills(&key).await?;
-        snapshot
-            .is_fresh()
-            .then(|| (snapshot.revision, snapshot.remaining_ttl()))
+        if !snapshot.is_fresh() {
+            self.pool
+                .spawn_skills_refresh(&self.config, key, snapshot.revision)
+                .await;
+        }
+        Some((snapshot.revision, snapshot.remaining_ttl()))
     }
 
     fn validate_provider(&self, requested: &SkillProviderId) -> Result<(), SkillProviderError> {
@@ -132,6 +68,39 @@ impl SepSkillProvider {
     /// gateway timeout contract while still allowing callers to tighten it.
     fn operation_timeout(&self, requested: Duration) -> Duration {
         requested.min(self.pool.request_timeout)
+    }
+
+    /// Return the visible listed manifests that bind this resource. The cached
+    /// ownership index includes all parsed claims before policy filtering.
+    pub async fn listed_owners_for_resource(
+        &self,
+        resource_uri: &str,
+    ) -> Result<Vec<SkillProviderEntry>, SkillProviderError> {
+        if !self.config.proxy_skills {
+            return Ok(Vec::new());
+        }
+        let (snapshot, _) = tokio::time::timeout(
+            self.operation_timeout(labby_runtime::skills::limits::SKILLS_LIST_TIMEOUT),
+            self.pool
+                .upstream_skills_snapshot(&self.config, self.subject.as_deref()),
+        )
+        .await
+        .map_err(|_| SkillProviderError::DeadlineExceeded)?
+        .map_err(map_upstream_skills_error)?;
+        let catalog = &snapshot.skills;
+        let exposure = super::entries::resolve_request_skill_exposure_policy(
+            &self.config.name,
+            self.config.expose_skills.clone(),
+        );
+        Ok(catalog
+            .resource_index
+            .get(resource_uri)
+            .into_iter()
+            .flatten()
+            .map(|binding| &catalog.skills[binding.skill])
+            .filter(|skill| exposure.matches(&skill.name) && !catalog.has_ambiguous_claim(skill))
+            .map(|skill| SkillProviderEntry::from_validated(self.id.clone(), skill.clone()))
+            .collect())
     }
 
     /// Recover the exact direct-get manifest that uniquely owns `resource_id`.
@@ -153,26 +122,14 @@ impl SepSkillProvider {
         &self,
         request: &SkillGetRequest,
     ) -> Result<(SkillGetResult, SkillDiscoverResult), SkillProviderError> {
-        request.validate()?;
-        self.validate_provider(request.id.provider())?;
         let started = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            self.operation_timeout(request.deadline.timeout),
-            self.pool.targeted_skill_with_catalog(
-                &self.config,
-                self.subject.as_deref(),
-                request.id.source_id(),
-            ),
-        )
-        .await
-        .map_err(|_| SkillProviderError::DeadlineExceeded)?
-        .map_err(map_upstream_skills_error)?;
-        let (skill, exposed) = result;
-        let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
-        let get = SkillGetResult {
-            skill: SkillProviderEntry::from_validated(self.id.clone(), skill),
-        };
-        get.validate_for(&self.id, request)?;
+        let (get, (snapshot, source)) = self.get_target(request).await?;
+        let exposed = self.pool.apply_skill_exposure(
+            &self.config,
+            &snapshot,
+            self.subject.as_deref(),
+            source,
+        );
         let catalog = SkillDiscoverResult {
             skills: exposed
                 .skills
@@ -190,6 +147,41 @@ impl SepSkillProvider {
             source = ?catalog.source, catalog_items = catalog.skills.len(), elapsed_ms = started.elapsed().as_millis(),
             "completed targeted Skill retrieval with ownership catalog");
         Ok((get, catalog))
+    }
+
+    async fn get_target(
+        &self,
+        request: &SkillGetRequest,
+    ) -> Result<
+        (
+            SkillGetResult,
+            (super::skills_cache::CachedSkills, SkillDiscoverySource),
+        ),
+        SkillProviderError,
+    > {
+        request.validate()?;
+        self.validate_provider(request.id.provider())?;
+        if !self.config.proxy_skills {
+            return Err(SkillProviderError::SkillNotFound);
+        }
+        let result = tokio::time::timeout(
+            self.operation_timeout(request.deadline.timeout),
+            self.pool.targeted_skill_with_catalog(
+                &self.config,
+                self.subject.as_deref(),
+                request.id.source_id(),
+            ),
+        )
+        .await
+        .map_err(|_| SkillProviderError::DeadlineExceeded)?
+        .map_err(map_upstream_skills_error)?;
+        let (skill, exposed) = result;
+        let skill = skill.ok_or(SkillProviderError::SkillNotFound)?;
+        let get = SkillGetResult {
+            skill: SkillProviderEntry::from_validated(self.id.clone(), skill),
+        };
+        get.validate_for(&self.id, request)?;
+        Ok((get, exposed))
     }
 
     /// Search paginated Skill metadata without letting non-matching prefix
@@ -284,7 +276,7 @@ impl SkillProvider for SepSkillProvider {
     }
 
     fn get<'a>(&'a self, request: &'a SkillGetRequest) -> SkillProviderFuture<'a, SkillGetResult> {
-        Box::pin(async move { self.get_with_catalog(request).await.map(|(skill, _)| skill) })
+        Box::pin(async move { self.get_target(request).await.map(|(skill, _)| skill) })
     }
 
     fn read_resource<'a>(
@@ -305,24 +297,7 @@ impl SkillProvider for SepSkillProvider {
                 ),
             )
             .await
-            .map_err(|_| SkillProviderError::DeadlineExceeded)?
-            .map_err(|error| match error.kind() {
-                "response_too_large" => SkillProviderError::LimitExceeded {
-                    what: "resource_bytes",
-                    limit: request.max_bytes,
-                },
-                labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH => {
-                    SkillProviderError::Integrity {
-                        reason: "digest_or_frontmatter_mismatch",
-                    }
-                }
-                labby_runtime::skills::KIND_SKILL_MANIFEST_STALE => {
-                    SkillProviderError::ManifestStale
-                }
-                _ => SkillProviderError::Provider {
-                    reason: error.to_string(),
-                },
-            })?;
+            .map_err(|_| SkillProviderError::DeadlineExceeded)??;
             let result = SkillResourceReadResult {
                 skill_id: request.skill_id.clone(),
                 resource_id: request.resource_id.clone(),

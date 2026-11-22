@@ -23,6 +23,8 @@ use super::validation::{validate_id, validate_reference_id};
 use super::{ArtifactError, ArtifactStore, MaterializedSkill, invalid};
 
 pub const LIBRARY_SCHEMA_VERSION: u8 = 1;
+/// The active immutable Skill Library admission allowance for one tenant.
+pub const MAX_ACTIVE_SKILLS_PER_TENANT: usize = 256;
 pub const OWNERSHIP_PROJECTION_SCHEMA_VERSION: u8 = 1;
 const MAX_ID_BYTES: usize = 256;
 const MAX_RECEIPTS: usize = 1024;
@@ -666,6 +668,10 @@ impl SkillLibraryRecord {
 
     fn validate(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         self.validate_metadata()?;
+        self.validate_references(store)
+    }
+
+    fn validate_references(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         let artifact = store.get(&self.artifact_id)?;
         if artifact.descriptor.kind != "skill" {
             return Err(ArtifactError::Conflict("library_artifact_not_skill"));
@@ -902,6 +908,40 @@ impl Default for LibrarySnapshot {
 }
 
 impl LibrarySnapshot {
+    /// Check a new activation without charging a revision switch for an
+    /// already active record. The durable writer repeats this under its lock.
+    pub fn check_activation_capacity(
+        &self,
+        record: &SkillLibraryRecord,
+    ) -> Result<(), ArtifactError> {
+        if record.active_revision_id.is_some() {
+            return Ok(());
+        }
+        if self.active_names.len() >= super::store::MAX_ARTIFACT_LIST_RECORDS {
+            return Err(ArtifactError::LimitExceeded {
+                what: "active_skills",
+                limit: super::store::MAX_ARTIFACT_LIST_RECORDS as u64,
+            });
+        }
+        if self
+            .records
+            .values()
+            .filter(|other| {
+                other.ownership.tenant_id == record.ownership.tenant_id
+                    && !other.archived
+                    && other.active_revision_id.is_some()
+            })
+            .count()
+            >= MAX_ACTIVE_SKILLS_PER_TENANT
+        {
+            return Err(ArtifactError::LimitExceeded {
+                what: "tenant_active_skills",
+                limit: MAX_ACTIVE_SKILLS_PER_TENANT as u64,
+            });
+        }
+        Ok(())
+    }
+
     fn active_name_key(ownership: &LibraryOwnership, name: &str) -> Result<String, ArtifactError> {
         canonical_json::digest(&(ownership, name))
     }
@@ -1116,8 +1156,12 @@ impl LibrarySnapshot {
 
     pub(crate) fn validate(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         self.validate_metadata()?;
+        self.validate_references(store)
+    }
+
+    pub(super) fn validate_references(&self, store: &ArtifactStore) -> Result<(), ArtifactError> {
         for record in self.records.values() {
-            record.validate(store)?;
+            record.validate_references(store)?;
         }
         Ok(())
     }
@@ -1214,11 +1258,15 @@ impl LibraryMutation {
 }
 
 impl ArtifactStore {
-    /// Load and fully verify the committed library generation.
-    pub fn library_snapshot(&self) -> Result<LibrarySnapshot, ArtifactError> {
-        let _lock = self.library_lock()?;
-        self.recover_pending_skill_transaction_locked()?;
-        let mut snapshot = match self.read_library_snapshot() {
+    /// Verify and, when necessary, migrate the committed metadata under the library lock.
+    pub(super) fn load_library_snapshot_locked(&self) -> Result<LibrarySnapshot, ArtifactError> {
+        let metadata = self
+            .read_library_snapshot_unvalidated()
+            .and_then(|snapshot| {
+                snapshot.validate_metadata()?;
+                Ok(snapshot)
+            });
+        let mut snapshot = match metadata {
             Ok(snapshot) => snapshot,
             Err(ArtifactError::LibraryCorrupt("generation_digest_mismatch")) => {
                 let path = self.root.join("library").join("state.json");
@@ -1771,7 +1819,7 @@ impl ArtifactStore {
         self.persist_library_snapshot(&state)
     }
 
-    fn pending_skill_transaction_path(&self) -> std::path::PathBuf {
+    pub(super) fn pending_skill_transaction_path(&self) -> std::path::PathBuf {
         self.root.join("library").join("pending-skill.json")
     }
 
@@ -1861,7 +1909,7 @@ impl ArtifactStore {
         )
     }
 
-    fn recover_pending_skill_transaction_locked(&self) -> Result<(), ArtifactError> {
+    pub(super) fn recover_pending_skill_transaction_locked(&self) -> Result<(), ArtifactError> {
         let path = self.pending_skill_transaction_path();
         if !path.exists() {
             return Ok(());
@@ -2080,6 +2128,11 @@ fn apply_mutation(
             artifact_id,
             revision_id,
             updated_at,
+        }
+        | LibraryMutation::Rollback {
+            artifact_id,
+            revision_id,
+            updated_at,
         } => {
             let (name, archived) = {
                 let record =
@@ -2089,6 +2142,7 @@ fn apply_mutation(
             if archived {
                 return Err(ArtifactError::Conflict("archived_skill"));
             }
+            state.check_activation_capacity(&state.records[&artifact_id])?;
             let active_key = LibrarySnapshot::active_name_key(target_ownership, &name)?;
             if state
                 .active_names
@@ -2109,32 +2163,6 @@ fn apply_mutation(
         } => {
             let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
             record.updated_at = updated_at;
-        }
-        LibraryMutation::Rollback {
-            artifact_id,
-            revision_id,
-            updated_at,
-        } => {
-            let (name, archived) = {
-                let record =
-                    authorized_record(state, authorization, target_ownership, &artifact_id)?;
-                (record.name.clone(), record.archived)
-            };
-            if archived {
-                return Err(ArtifactError::Conflict("archived_skill"));
-            }
-            let active_key = LibrarySnapshot::active_name_key(target_ownership, &name)?;
-            if state
-                .active_names
-                .get(&active_key)
-                .is_some_and(|owner| owner != &artifact_id)
-            {
-                return Err(ArtifactError::Conflict("active_name_taken"));
-            }
-            let record = authorized_record(state, authorization, target_ownership, &artifact_id)?;
-            record.active_revision_id = Some(revision_id);
-            record.updated_at = updated_at;
-            state.active_names.insert(active_key, artifact_id);
         }
         LibraryMutation::Deactivate {
             artifact_id,
@@ -3639,6 +3667,51 @@ mod tests {
     }
 
     #[test]
+    fn warm_library_snapshot_checks_external_head_and_active_revision_changes() {
+        let data = tempdir().unwrap();
+        let source = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let owner = ownership("org-a", "alice");
+        let (artifact, revision) = add_skill(&store, &source, "team-a", "demo", &owner, 0);
+        let initial = store.library_snapshot().unwrap();
+        let mut state = initial.clone();
+        let record = state.records.values_mut().next().unwrap();
+        record.active_revision_id = Some(revision.clone());
+        state.active_names.insert(
+            LibrarySnapshot::active_name_key(&owner, "demo").unwrap(),
+            artifact.clone(),
+        );
+        write_snapshot(&store.root, &mut state);
+        assert_eq!(store.library_snapshot().unwrap(), state);
+        assert_eq!(store.library_snapshot().unwrap(), state);
+        #[cfg(unix)]
+        {
+            let _writer = store.library_lock().unwrap();
+            assert_eq!(
+                store.library_snapshot().unwrap(),
+                state,
+                "verified readers can proceed while an idle writer holds the lock"
+            );
+        }
+        let dir = store.artifact_dir(&artifact).unwrap();
+        let revision_path =
+            super::super::local_io::revision_dir(&dir, &revision).join("revision.json");
+        let original = std::fs::read(&revision_path).unwrap();
+        std::fs::write(&revision_path, vec![b' '; original.len()]).unwrap();
+        assert!(
+            store.library_snapshot().is_err(),
+            "cached state must recheck the changed revision"
+        );
+        std::fs::write(&revision_path, original).unwrap();
+        assert_eq!(store.library_snapshot().unwrap(), state);
+        std::fs::remove_file(dir.join("artifact.json")).unwrap();
+        assert!(
+            store.library_snapshot().is_err(),
+            "cached state must recheck missing heads"
+        );
+    }
+
+    #[test]
     fn corrupt_or_truncated_generation_fails_closed() {
         let data = tempdir().unwrap();
         let source = tempdir().unwrap();
@@ -3935,6 +4008,51 @@ mod tests {
             ArtifactStore::new(&root).unwrap().library_snapshot(),
             Err(ArtifactError::LibraryCorrupt("duplicate_active_name"))
         ));
+    }
+
+    #[test]
+    fn full_tenant_allows_another_tenant_to_activate_and_existing_revisions_to_switch() {
+        let data = tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("store")).unwrap();
+        let a = ownership("org-a", "alice");
+        let b = ownership("org-b", "bob");
+        let (id, rev) = add_skill(&store, &tempdir().unwrap(), "seed", "seed", &a, 0);
+        let mut state = store.library_snapshot().unwrap();
+        let template = state.records[&id].clone();
+        let activate = |state: &mut LibrarySnapshot, owner: &LibraryOwnership, id: &str| {
+            apply_mutation(
+                state,
+                &owner_auth(owner),
+                owner,
+                LibraryMutation::Activate {
+                    artifact_id: id.into(),
+                    revision_id: rev.clone(),
+                    updated_at: template.updated_at.clone(),
+                },
+            )
+        };
+        for i in 0..MAX_ACTIVE_SKILLS_PER_TENANT {
+            let name = format!("skill-{i}");
+            let mut record = template.clone();
+            record.artifact_id = name.clone();
+            record.name = name.clone();
+            state.records.insert(name.clone(), record);
+            activate(&mut state, &a, &name).unwrap();
+        }
+        assert!(matches!(
+            activate(&mut state, &a, &id),
+            Err(ArtifactError::LimitExceeded {
+                what: "tenant_active_skills",
+                limit: 256
+            })
+        ));
+        activate(&mut state, &a, "skill-0").unwrap();
+        let mut other = template.clone();
+        other.ownership = b.clone();
+        other.artifact_id = "other".into();
+        state.records.insert("other".into(), other);
+        activate(&mut state, &b, "other").unwrap();
+        assert_eq!(state.active_names.len(), MAX_ACTIVE_SKILLS_PER_TENANT + 1);
     }
 
     #[test]

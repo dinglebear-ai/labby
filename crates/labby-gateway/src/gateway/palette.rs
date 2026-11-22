@@ -162,14 +162,14 @@ pub struct CapabilityDescriptor {
 
 impl CapabilityContract {
     pub fn from_upstream_tool(tool: &UpstreamTool) -> Result<Self, ToolError> {
-        validate_contract_schema(tool.input_schema.as_ref())?;
-        validate_contract_schema(tool.output_schema.as_ref())?;
+        validate_contract_schema(tool.input_schema.as_deref())?;
+        validate_contract_schema(tool.output_schema.as_deref())?;
         let annotations = tool.tool.annotations.as_ref();
         let mut contract = Self {
             contract_version: CAPABILITY_CONTRACT_VERSION,
             id: format!("mcp:{}::{}", tool.upstream_name, tool.tool.name),
-            input_schema: project_contract_schema(tool.input_schema.as_ref())?,
-            output_schema: project_contract_schema(tool.output_schema.as_ref())?,
+            input_schema: project_contract_schema(tool.input_schema.as_deref())?,
+            output_schema: project_contract_schema(tool.output_schema.as_deref())?,
             annotations: CapabilityAnnotations {
                 read_only_hint: annotations.and_then(|value| value.read_only_hint),
                 destructive_hint: annotations.and_then(|value| value.destructive_hint),
@@ -180,7 +180,7 @@ impl CapabilityContract {
             contract_hash: String::new(),
         };
         contract.contract_hash =
-            contract.compute_hash(tool.input_schema.as_ref(), tool.output_schema.as_ref())?;
+            contract.compute_hash(tool.input_schema.as_deref(), tool.output_schema.as_deref())?;
         Ok(contract)
     }
 
@@ -190,11 +190,11 @@ impl CapabilityContract {
     ) -> Result<String, ToolError> {
         if tool
             .input_schema
-            .as_ref()
+            .as_deref()
             .is_some_and(schema_depth_exceeds_limit)
             || tool
                 .output_schema
-                .as_ref()
+                .as_deref()
                 .is_some_and(schema_depth_exceeds_limit)
         {
             return Err(descriptor_unsupported());
@@ -219,8 +219,8 @@ impl CapabilityContract {
         write_contract_canonical(
             &mut writer,
             &contract,
-            tool.input_schema.as_ref(),
-            tool.output_schema.as_ref(),
+            tool.input_schema.as_deref(),
+            tool.output_schema.as_deref(),
         )
         .map_err(|error| ToolError::Sdk {
             sdk_kind: "invalid_tool_schema".to_string(),
@@ -306,6 +306,7 @@ impl PaletteCaller {
             .unwrap_or_else(|| SHARED_GATEWAY_OAUTH_SUBJECT.to_string());
         Self {
             caller: CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: CodeModeCallerCapabilities {
                     can_read: true,
                     can_execute: true,
@@ -344,6 +345,7 @@ impl PaletteCaller {
             .collect();
         Self {
             caller: CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: CodeModeCallerCapabilities {
                     can_read: true,
                     can_execute: false,
@@ -377,6 +379,7 @@ impl PaletteCaller {
             scopes.iter().any(|scope| scope == "mcp:write") && !allowed_upstreams.is_empty();
         Self {
             caller: CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: CodeModeCallerCapabilities {
                     can_read,
                     can_execute,
@@ -843,7 +846,11 @@ impl GatewayManager {
             )
             .await
             .map_err(map_unknown_tool_to_not_found)?;
-        let schema = project_palette_schema(upstream_tool.input_schema);
+        let schema = project_palette_schema(
+            upstream_tool
+                .input_schema
+                .map(std::sync::Arc::unwrap_or_clone),
+        );
         tracing::info!(
             surface = "api",
             service = "palette",
@@ -898,7 +905,8 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
 fn mcp_entry(upstream: &str, tool: UpstreamTool) -> Result<McpToolLauncherEntry, ToolError> {
     let contract = CapabilityContract::from_upstream_tool(&tool)?;
     let name = tool.tool.name.to_string();
-    let input_schema = project_palette_schema(tool.input_schema);
+    let input_schema =
+        project_palette_schema(tool.input_schema.map(std::sync::Arc::unwrap_or_clone));
     let schema_fingerprint = input_schema.as_ref().map(stable_json_fingerprint);
     Ok(McpToolLauncherEntry {
         id: format!("mcp:{upstream}::{name}"),
@@ -1415,10 +1423,13 @@ mod tests {
                 "description is display-only",
                 Arc::new(serde_json::Map::new()),
             ),
-            input_schema: Some(json!({
-                "type": "object",
-                "properties": {"q": {"type": "string"}}
-            })),
+            input_schema: Some(
+                json!({
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}}
+                })
+                .into(),
+            ),
             output_schema: None,
             upstream_name,
             destructive: false,
@@ -1449,7 +1460,7 @@ mod tests {
             );
             UpstreamTool {
                 tool,
-                input_schema: Some(json!({"type": "object"})),
+                input_schema: Some(json!({"type": "object"}).into()),
                 output_schema: None,
                 upstream_name: Arc::from("alpha"),
                 destructive,
@@ -1475,10 +1486,13 @@ mod tests {
                 "ping",
                 Arc::new(serde_json::Map::new()),
             ),
-            input_schema: Some(json!({
-                "type": "object",
-                "properties": {property: schema}
-            })),
+            input_schema: Some(
+                json!({
+                    "type": "object",
+                    "properties": {property: schema}
+                })
+                .into(),
+            ),
             output_schema: None,
             upstream_name: Arc::from("alpha"),
             destructive: false,
@@ -1518,7 +1532,7 @@ mod tests {
                 "ping",
                 Arc::new(serde_json::Map::new()),
             ),
-            input_schema: Some(nested_schema(depth)),
+            input_schema: Some(nested_schema(depth).into()),
             output_schema: None,
             upstream_name: Arc::from("alpha"),
             destructive: false,
@@ -1541,7 +1555,7 @@ mod tests {
                 "ping",
                 Arc::new(serde_json::Map::new()),
             ),
-            input_schema: Some(json!({"type": "string", "enum": enum_values})),
+            input_schema: Some(json!({"type": "string", "enum": enum_values}).into()),
             output_schema: None,
             upstream_name: Arc::from("alpha"),
             destructive: false,

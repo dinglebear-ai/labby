@@ -18,6 +18,18 @@ impl GatewayManager {
     ) {
         let config = self.current_config().await;
         let budget = super::super::runtime::mcp_runtime_warm_timeout(&config);
+        self.warm_resource_upstreams(pool, allowed, config, budget)
+            .await;
+    }
+
+    /// Warm the selected resource peers within the caller's discovery budget.
+    pub async fn warm_resource_upstreams(
+        &self,
+        pool: &Arc<UpstreamPool>,
+        allowed: Option<&BTreeSet<String>>,
+        config: labby_runtime::gateway_config::GatewayConfig,
+        budget: std::time::Duration,
+    ) {
         let deadline = tokio::time::Instant::now() + budget;
         let concurrency =
             upstream_discovery_concurrency(config.gateway.upstream_discovery_concurrency);
@@ -32,16 +44,17 @@ impl GatewayManager {
                 if tokio::time::Instant::now() >= deadline {
                     return true;
                 }
+                let name = upstream.name.clone();
                 match tokio::time::timeout_at(
                     deadline,
-                    pool.ensure_connection_for_upstream(&upstream, None, None),
+                    pool.warm_regular_resource_connection(upstream),
                 )
                 .await
                 {
                     Ok(Ok(_)) => false,
                     Ok(Err(error)) => {
                         tracing::warn!(surface = "dispatch", service = "gateway",
-                            action = "resources.discovery", upstream = %upstream.name,
+                            action = "resources.discovery", upstream = %name,
                             error = %error, "resource upstream discovery failed");
                         false
                     }

@@ -139,7 +139,7 @@ async fn exact_cached_budget_marks_unvisited_oauth_cache_miss_incomplete() {
     assert!(result.tools.is_empty());
 }
 
-fn oauth_upstream_config(name: &str, expose_tools: &[&str]) -> UpstreamConfig {
+pub(super) fn oauth_upstream_config(name: &str, expose_tools: &[&str]) -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,
         lifecycle: None,

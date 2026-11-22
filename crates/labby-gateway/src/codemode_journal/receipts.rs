@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::StepJournalStore;
+use super::{StepJournalStore, store::ConnectionAccess};
 mod history;
 pub use history::SnippetReceiptHistory;
 
@@ -131,12 +131,24 @@ fn unknown_receipt() -> ToolError {
 }
 
 impl StepJournalStore {
+    fn check_receipt_schema(&self) -> Result<(), ToolError> {
+        if self.receipts_available {
+            Ok(())
+        } else {
+            Err(ToolError::Sdk {
+                sdk_kind: "service_unavailable".into(),
+                message: "Snippet receipt storage is unavailable".into(),
+            })
+        }
+    }
+
     /// Persist one bounded receipt, with transactional global and owner quotas.
     pub async fn record_snippet_receipt(
         &self,
         receipt: SnippetExecutionReceipt,
         owner: SnippetReceiptOwner,
     ) -> Result<(), ToolError> {
+        self.check_receipt_schema()?;
         let json = serde_json::to_string(&receipt)
             .map_err(|_| ToolError::internal_message("receipt serialization failed"))?;
         if json.len() > MAX_RECEIPT_BYTES {
@@ -144,7 +156,7 @@ impl StepJournalStore {
                 "snippet receipt exceeds 64 KiB",
             ));
         }
-        self.with_conn(move |conn| {
+        self.with_conn(ConnectionAccess::Write, move |conn| {
             let tx = conn.transaction().map_err(store_error)?;
             // Never replace a colliding execution identity belonging to another owner.
             tx.execute("INSERT INTO snippet_receipts VALUES (?1,?2,?3,?4,?5,?6)
@@ -165,6 +177,7 @@ impl StepJournalStore {
         execution_id: &str,
         owner: SnippetReceiptOwner,
     ) -> Result<SnippetExecutionReceipt, ToolError> {
+        self.check_receipt_schema()?;
         let execution_id = execution_id.to_owned();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -173,7 +186,7 @@ impl StepJournalStore {
         let cutoff = i64::try_from(now)
             .unwrap_or(i64::MAX)
             .saturating_sub(RETENTION_MS);
-        self.with_conn(move |conn| {
+        self.with_conn(ConnectionAccess::Read, move |conn| {
             let json: Option<String> = conn.query_row("SELECT receipt_json FROM snippet_receipts WHERE execution_id=?1 AND owner_key=?2 AND route_scope=?3 AND capability_fingerprint=?4 AND created_at_ms>=?5", params![execution_id, owner.owner_key, owner.route_scope, owner.capability_fingerprint, cutoff], |row| row.get(0)).optional().map_err(store_error)?;
             let json = json.ok_or_else(unknown_receipt)?;
             serde_json::from_str(&json).map_err(|_| ToolError::internal_message("invalid stored snippet receipt"))

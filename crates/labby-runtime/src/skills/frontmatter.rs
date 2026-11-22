@@ -215,6 +215,7 @@ pub fn parse_skill_md_frontmatter(content: &str) -> Result<Map<String, Value>, T
     let block = raw.join("\n");
     let mut options = Options::default();
     options.emit_comments = false;
+    options.strict_booleans = true;
     options.merge_keys = MergeKeyPolicy::Error;
     options.reject_unsupported_tags = true;
     options.alias_limits.max_total_replayed_events = 0;
@@ -261,12 +262,6 @@ fn validate_skill_frontmatter_depth(value: &Value, depth: usize) -> Result<(), T
 /// present on one side and absent on the other is a discrepancy, as is any
 /// differing value.
 ///
-/// One representational caveat: YAML admits non-finite floats (`.nan`, `.inf`)
-/// and JSON does not, so parsing collapses them to `null`. A `SKILL.md` field
-/// written as `.nan` therefore compares equal to a literal `null` in the entry.
-/// This cannot mask a meaningful change — `entry.frontmatter` arrives as JSON,
-/// which has no way to spell a non-finite float in the first place — but the
-/// comparison is exact over JSON values, not over the YAML that produced them.
 pub fn compare_frontmatter(
     entry: &Map<String, Value>,
     skill_md: &Map<String, Value>,
@@ -275,7 +270,7 @@ pub fn compare_frontmatter(
     for (key, expected) in entry {
         match skill_md.get(key) {
             None => differences.push(format!("`{key}` is missing from SKILL.md")),
-            Some(actual) if actual != expected => {
+            Some(actual) if !frontmatter_values_equal(actual, expected) => {
                 differences.push(format!("`{key}` differs between the entry and SKILL.md"));
             }
             Some(_) => {}
@@ -296,6 +291,35 @@ pub fn compare_frontmatter(
         "SKILL.md frontmatter does not match the skill entry: {}",
         differences.join("; ")
     )))
+}
+
+// JSON numbers are equal by mathematical value. Compare integral floats in
+// i128 space so rounding an integer above 2^53 cannot mask a mismatch.
+fn frontmatter_values_equal(a: &Value, b: &Value) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a, b) {
+        (Value::Number(a), Value::Number(b)) if a.is_f64() != b.is_f64() => {
+            let (float, integer) = if a.is_f64() { (a, b) } else { (b, a) };
+            let integer = integer
+                .as_i64()
+                .map(i128::from)
+                .or_else(|| integer.as_u64().map(i128::from));
+            float
+                .as_f64()
+                .is_some_and(|value| value.fract() == 0.0 && Some(value as i128) == integer)
+        }
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| frontmatter_values_equal(a, b))
+        }
+        (Value::Object(a), Value::Object(b)) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(key, a)| b.get(key).is_some_and(|b| frontmatter_values_equal(a, b)))
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -495,6 +519,20 @@ allowed-tools:
     fn rejects_unopened_or_unclosed_frontmatter() {
         assert!(parse_skill_md_frontmatter("# No frontmatter\n").is_err());
         assert!(parse_skill_md_frontmatter("---\nname: x\nnever closed\n").is_err());
+    }
+
+    #[test]
+    fn yaml_frontmatter_preserves_strings_and_compares_numeric_values_exactly() {
+        let actual = parse_skill_md_frontmatter("---\nflag: yes\nmetadata: [1.0]\n---\n").unwrap();
+        assert_eq!(actual["flag"], "yes");
+        assert!(frontmatter_values_equal(
+            &actual["metadata"],
+            &serde_json::json!([1])
+        ));
+        assert!(!frontmatter_values_equal(
+            &serde_json::json!(9_007_199_254_740_993_u64),
+            &serde_json::json!(9_007_199_254_740_992_f64)
+        ));
     }
 
     #[test]

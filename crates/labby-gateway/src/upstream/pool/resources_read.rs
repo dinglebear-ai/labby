@@ -49,7 +49,7 @@ pub(crate) enum ExactResourceReadError {
 
 pub(crate) struct PreparedExactResourceRead {
     observed: super::incarnation::ObservedConnectionCatalogEntry,
-    generation: ResourceCatalogGeneration,
+    publication: std::sync::Arc<()>,
     native_uri: String,
     gateway_uri: String,
     outcome: RawCallOutcome<ReadResourceResult>,
@@ -58,13 +58,10 @@ use super::logging::{
     UpstreamRequestLog, log_upstream_capability_skipped, log_upstream_request_error,
     log_upstream_request_start,
 };
-use super::tools::mcp_tool_owns_mcp_app_resource;
 
 impl UpstreamPool {
-    /// Read one regular non-OAuth Resource only while its exact publication
-    /// (which embodies routability and exposure) and connection incarnation
-    /// agree. The legacy `resource_upstreams` list is deliberately not an
-    /// authority here. This kernel is deliberately unmounted from handlers.
+    /// Exercise the two-phase exact read directly in pool tests.
+    #[cfg(test)]
     pub(crate) async fn read_published_resource_exact(
         &self,
         upstream_name: &str,
@@ -98,7 +95,7 @@ impl UpstreamPool {
             Ok(Ok(permit)) => permit,
             _ => return Err(ExactResourceReadError::QueueUnavailable),
         };
-        let Some(observed) = self
+        let Some((observed, publication)) = self
             .observe_resource_call(upstream_name, native_uri, generation)
             .await
         else {
@@ -113,7 +110,7 @@ impl UpstreamPool {
         );
         Ok(PreparedExactResourceRead {
             observed,
-            generation,
+            publication,
             native_uri: native_uri.to_string(),
             gateway_uri: format!("lab://upstream/{upstream_name}/{native_uri}"),
             outcome,
@@ -132,7 +129,7 @@ impl UpstreamPool {
                 let applied = self
                     .apply_to_observed_resource_call(
                         &prepared.observed,
-                        prepared.generation,
+                        &prepared.publication,
                         &prepared.native_uri,
                         |entry| {
                             super::health::record_success_on_entry(
@@ -158,7 +155,7 @@ impl UpstreamPool {
                 let applied = self
                     .apply_to_observed_resource_call(
                         &prepared.observed,
-                        prepared.generation,
+                        &prepared.publication,
                         &prepared.native_uri,
                         |entry| {
                             if affects_health {
@@ -188,7 +185,7 @@ impl UpstreamPool {
                 let applied = self
                     .apply_to_observed_resource_call(
                         &prepared.observed,
-                        prepared.generation,
+                        &prepared.publication,
                         &prepared.native_uri,
                         |entry| {
                             super::health::record_failure_on_entry(
@@ -310,35 +307,38 @@ impl UpstreamPool {
         let start = Instant::now();
         let redacted_uri = redact_resource_uri_for_logging(uri);
 
-        // Reverse-lookup the owning upstream by scanning cached resource URIs
+        // Reverse-lookup the owning upstream using indexed resource URIs
         // and tool metadata. Some MCP App servers advertise `ui://` widgets only
         // from a tool's `_meta.ui.resourceUri` and do not list the widget from
         // `resources/list`; the host still reads that URI verbatim after the
         // tool call, so tool metadata is ownership evidence too.
-        let cached_owner = {
+        let owner = {
             let catalog = self.catalog.read().await;
-            catalog
-                .iter()
-                .find(|(name, entry)| {
-                    allowed.is_none_or(|allowed| allowed.contains(name.as_str()))
-                        && entry.resource_health.is_routable()
-                        && (entry.resource_uris.iter().any(|cached| cached == uri)
-                            || entry.tools.values().any(|tool| {
-                                entry.exposure_policy.matches(tool.tool.name.as_ref())
-                                    && mcp_tool_owns_mcp_app_resource(&tool.tool, uri)
-                            }))
-                })
-                .map(|(name, _)| name.clone())
+            let eligible = |name: &str, entry: &super::super::types::UpstreamEntry| {
+                allowed.is_none_or(|allowed| allowed.contains(name))
+                    && entry.proxy_resources
+                    && entry.resource_health.is_routable()
+                    && resource_exposed(&entry.resource_exposure_policy, uri)
+            };
+            let mut owners = catalog.ui_resource_owners(uri).filter(|name| {
+                catalog
+                    .get(*name)
+                    .is_some_and(|entry| eligible(name, entry))
+            });
+            match (owners.next(), owners.next()) {
+                (Some(name), None) => Some((name.clone(), "cached_resource_uri")),
+                (None, _) => ui_uri_authority(uri)
+                    .filter(|name| {
+                        catalog
+                            .get(*name)
+                            .is_some_and(|entry| eligible(name, entry))
+                    })
+                    .map(|name| (name.to_owned(), "uri_authority")),
+                _ => None,
+            }
         };
 
-        let (upstream_name, resolution) = if let Some(name) = cached_owner {
-            (name, "cached_resource_uri")
-        } else if let Some(name) = ui_uri_authority(uri)
-            && allowed.is_none_or(|allowed| allowed.contains(name))
-            && self.catalog.read().await.contains_key(name)
-        {
-            (name.to_string(), "uri_authority")
-        } else {
+        let Some((upstream_name, resolution)) = owner else {
             tracing::warn!(
                 surface = "dispatch",
                 service = "upstream.pool",
@@ -718,6 +718,7 @@ mod tests {
             })
             .await;
         let caller = labby_codemode::CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -1151,6 +1152,54 @@ mod tests {
         .await
         .expect("exact publication remains the authoritative route");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exact_resource_kernel_preserves_an_unchanged_route_during_other_catalog_updates() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let pool = catalog_pool_with_server(
+            "alpha",
+            DelayedResourceReadServer {
+                started: started.clone(),
+                release: release.clone(),
+                fail: false,
+            },
+        )
+        .await;
+        let one = Resource::new("file:///one", "one");
+        pool.insert_resource_routes_for_tests("alpha", vec![one.clone()])
+            .await;
+        let generation = pool
+            .published_resource_catalog()
+            .await
+            .unwrap()
+            .generation();
+        let read = pool.read_published_resource_exact(
+            "alpha",
+            "file:///one",
+            generation,
+            ExactReadParams::new("file:///one"),
+        );
+        tokio::pin!(read);
+        tokio::select! {
+            result = &mut read => panic!("read should wait for fixture release: {result:?}"),
+            () = started.notified() => {}
+        }
+        pool.insert_resource_routes_for_tests(
+            "alpha",
+            vec![one, Resource::new("file:///two", "two")],
+        )
+        .await;
+        assert_ne!(
+            generation,
+            pool.published_resource_catalog()
+                .await
+                .unwrap()
+                .generation()
+        );
+        release.notify_one();
+        read.await.expect("unchanged route remains published");
     }
 
     #[tokio::test]
@@ -1773,6 +1822,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1868,6 +1918,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1888,6 +1939,17 @@ mod tests {
             other => panic!("expected text contents, got {other:?}"),
         }
 
+        let mut second = healthy_in_process_entry(Arc::from("second"), HashMap::new());
+        second.resource_uris.push(WIDGET_URI.into());
+        pool.catalog_write().await.insert("second".into(), second);
+        assert!(pool.read_upstream_ui_resource(WIDGET_URI).await.is_none());
+
+        {
+            let mut catalog = pool.catalog_write().await;
+            catalog.remove("second");
+            catalog.get_mut(upstream_name).unwrap().proxy_resources = false;
+        }
+        assert!(pool.read_upstream_ui_resource(WIDGET_URI).await.is_none());
         // An unknown ui:// URI is owned by no upstream → None (caller 404s).
         assert!(
             pool.read_upstream_ui_resource("ui://missing/widget")
@@ -1963,6 +2025,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -2058,6 +2121,7 @@ mod tests {
                 _server_task: Some(_server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -2158,6 +2222,7 @@ mod tests {
                     _server_task: Some(server_task),
                     peer,
                     runtime: UpstreamRuntimeMetadata::default(),
+                    header_refresh: Default::default(),
                     incarnation: None,
                 },
             );

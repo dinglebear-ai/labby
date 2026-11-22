@@ -1031,6 +1031,7 @@ fn send_relay_tool_request_with_header_recovery<'a>(
     deadline: tokio::time::Instant,
 ) -> RelayToolRequestFuture<'a> {
     Box::pin(async move {
+        let attempt = Instant::now();
         let retry_params = params.clone();
         let retry_request_meta = request_meta.clone();
         let retry_downstream_request_id = downstream_request_id.clone();
@@ -1058,7 +1059,7 @@ fn send_relay_tool_request_with_header_recovery<'a>(
 
         record_header_mismatch(pool, upstream_name);
         tokio::select! {
-            refreshed = refresh_tool_header_cache(pool, peer, upstream_name) => refreshed?,
+            refreshed = refresh_tool_header_cache(pool, peer, upstream_name, attempt) => refreshed?,
             () = retry_downstream_cancel.cancelled() => {
                 return Err(ServiceError::Cancelled {
                     reason: Some("downstream request cancelled during header-schema refresh".to_string()),
@@ -1163,7 +1164,7 @@ impl UpstreamPool {
         &self,
         config: &UpstreamConfig,
         subject: Option<&str>,
-        params: CallToolRequestParams,
+        mut params: CallToolRequestParams,
         downstream: Peer<RoleServer>,
         downstream_request_id: RequestId,
         downstream_cancel: CancellationToken,
@@ -1172,6 +1173,7 @@ impl UpstreamPool {
         caller_subject: Option<&str>,
         task_authorization: super::TaskRouteAuthorization,
     ) -> Option<Result<CallToolResponse, super::CapabilityCallError>> {
+        let capabilities = super::relay_client_capabilities(capabilities);
         let started = Instant::now();
         let tool_name = params.name.to_string();
         // Subject-scoped relay is the second OAuth execution entry point (the
@@ -1182,9 +1184,9 @@ impl UpstreamPool {
         if subject.is_some()
             && !super::tools_call::subject_scoped_tool_is_exposed(config, &tool_name)
         {
-            return Some(Err(super::CapabilityCallError::Other {
-                message: super::tools_call::hidden_tool_error(config, &tool_name),
-            }));
+            return Some(Err(super::tools_call::hidden_tool_call_error(
+                config, &tool_name,
+            )));
         }
         if downstream_cancel.is_cancelled() {
             return Some(Err(super::CapabilityCallError::Cancelled {
@@ -1202,7 +1204,10 @@ impl UpstreamPool {
             subject.map(str::to_owned),
             capability_fingerprint(&capabilities),
         );
-        let request_meta = params.meta.clone();
+        let request_meta = params.meta.as_mut().map(|meta| {
+            meta.set_client_capabilities(capabilities.clone());
+            meta.clone()
+        });
         let timeout = self.relay_timeout;
         let deadline = tokio::time::Instant::now() + timeout;
         let event = UpstreamRequestLog::tool(&config.name, &tool_name, subject.is_some())
@@ -1249,7 +1254,7 @@ impl UpstreamPool {
             );
             return None;
         };
-        let (peer, routes, cancellation_sender, generation) = connection;
+        let (peer, routes, cancellation_sender, generation, _active_call) = connection;
 
         // Mirror the pooled path's observability + circuit-breaker contract (see
         // `timed_capability_call`): emit `request.start`/`finish`/`error` and feed
@@ -1576,6 +1581,7 @@ impl UpstreamPool {
         session_id: u64,
         capabilities: ClientCapabilities,
     ) -> Option<Result<GetPromptResponse, super::CapabilityCallError>> {
+        let capabilities = super::relay_client_capabilities(capabilities);
         let started = Instant::now();
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();
         let prompt_name = params.name.to_string();
@@ -1610,7 +1616,10 @@ impl UpstreamPool {
                 message: downstream_cancelled("downstream request was already cancelled"),
             }));
         }
-        let request_meta = params.meta.clone();
+        let request_meta = params.meta.as_mut().map(|meta| {
+            meta.set_client_capabilities(capabilities.clone());
+            meta.clone()
+        });
         let timeout = self.relay_timeout;
         let deadline = tokio::time::Instant::now() + timeout;
         let relay_key = (
@@ -1661,7 +1670,7 @@ impl UpstreamPool {
             );
             return None;
         };
-        let (peer, routes, cancellation_sender, generation) = connection;
+        let (peer, routes, cancellation_sender, generation, _active_call) = connection;
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         let _permit = match await_relay_permit(
@@ -1872,6 +1881,7 @@ impl UpstreamPool {
         session_id: u64,
         capabilities: ClientCapabilities,
     ) -> Option<Result<ReadResourceResponse, super::CapabilityCallError>> {
+        let capabilities = super::relay_client_capabilities(capabilities);
         let started = Instant::now();
         let gateway_uri = params.uri.clone();
         let prefix = format!("lab://upstream/{}/", config.name);
@@ -1937,7 +1947,10 @@ impl UpstreamPool {
                 message: downstream_cancelled("downstream request was already cancelled"),
             }));
         }
-        let request_meta = params.meta.clone();
+        let request_meta = params.meta.as_mut().map(|meta| {
+            meta.set_client_capabilities(capabilities.clone());
+            meta.clone()
+        });
         let timeout = self.relay_timeout;
         let deadline = tokio::time::Instant::now() + timeout;
         let relay_key = (
@@ -1989,7 +2002,7 @@ impl UpstreamPool {
             );
             return None;
         };
-        let (peer, routes, cancellation_sender, generation) = connection;
+        let (peer, routes, cancellation_sender, generation, _active_call) = connection;
         let _stdio_inflight = super::stdio_transport::register_inflight(event, generation);
 
         let _permit = match await_relay_permit(
@@ -2193,6 +2206,7 @@ impl UpstreamPool {
         Arc<RelayRouteState>,
         Option<HttpCancellationSender>,
         Option<u64>,
+        Arc<()>,
     )> {
         self.drain_oauth_client_capacity_evictions().await;
         self.acquire_or_connect_relay_guarded(config, subject, downstream, session_id, capabilities)
@@ -2213,6 +2227,7 @@ impl UpstreamPool {
         Arc<RelayRouteState>,
         Option<HttpCancellationSender>,
         Option<u64>,
+        Arc<()>,
     )> {
         let key = (
             config.name.clone(),
@@ -2236,6 +2251,7 @@ impl UpstreamPool {
         Arc<RelayRouteState>,
         Option<HttpCancellationSender>,
         Option<u64>,
+        Arc<()>,
     )> {
         if !self.upstream_config_matches(config) {
             return None;
@@ -2253,7 +2269,8 @@ impl UpstreamPool {
         {
             let mut cache = self.relay_connections.write().await;
             if let Some(entry) = cache.get_mut(&key) {
-                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                if (entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                    || Arc::strong_count(&entry.active_calls) > 1)
                     && !entry.peer.is_transport_closed()
                 {
                     entry.last_used = Instant::now();
@@ -2262,6 +2279,7 @@ impl UpstreamPool {
                         Arc::clone(&entry.routes),
                         entry.cancellation_sender.clone(),
                         entry._connection.runtime.generation,
+                        Arc::clone(&entry.active_calls),
                     ));
                 }
                 cache.remove(&key);
@@ -2274,6 +2292,15 @@ impl UpstreamPool {
         // duplicate connections.
         let connect_lock: Arc<Mutex<()>> = {
             let mut locks = self.relay_connect_locks.write().await;
+            // Count admitted generations, including opens still in flight, before
+            // allocating a gate or starting a transport. Session zero hosts task companions.
+            if !(key.1 == 0 && key.3.starts_with("task:"))
+                && !locks.contains_key(&key)
+                && locks.keys().filter(|existing| existing.1 == key.1).count()
+                    >= self.call_concurrency
+            {
+                return None;
+            }
             locks
                 .entry(key.clone())
                 .or_insert_with(|| Arc::new(Mutex::new(())))
@@ -2285,7 +2312,8 @@ impl UpstreamPool {
         {
             let mut cache = self.relay_connections.write().await;
             if let Some(entry) = cache.get_mut(&key) {
-                if entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                if (entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                    || Arc::strong_count(&entry.active_calls) > 1)
                     && !entry.peer.is_transport_closed()
                 {
                     entry.last_used = Instant::now();
@@ -2294,6 +2322,7 @@ impl UpstreamPool {
                         Arc::clone(&entry.routes),
                         entry.cancellation_sender.clone(),
                         entry._connection.runtime.generation,
+                        Arc::clone(&entry.active_calls),
                     ));
                 }
                 cache.remove(&key);
@@ -2379,13 +2408,18 @@ impl UpstreamPool {
         // Enforce the LRU cap BEFORE inserting so a burst of unique sessions
         // cannot push the live-peer count past the bound; shut evicted peers
         // down off-lock.
+        let active_calls = Arc::new(());
         let mut conn = Some(conn);
         let evicted = self
             .with_current_relay_gate(&key, &connect_lock, |cache| {
                 let evicted = evict_relay_lru_over_cap(cache, SUBJECT_CONN_MAX_ENTRIES - 1, &key);
+                if cache.len() >= SUBJECT_CONN_MAX_ENTRIES {
+                    return evicted;
+                }
                 cache.insert(
                     key.clone(),
                     RelayCachedConnection {
+                        active_calls: Arc::clone(&active_calls),
                         _connection: conn.take().expect("connection published once"),
                         peer: peer.clone(),
                         capability_fingerprint: requested_capability_fingerprint,
@@ -2408,7 +2442,11 @@ impl UpstreamPool {
             evicted_conn.shutdown(&name, "relay.cache.lru_evict").await;
         }
 
-        Some((peer, routes, cancellation_sender, generation))
+        if let Some(unused) = conn {
+            unused.shutdown(&config.name, "relay.cache.full").await;
+            return None;
+        }
+        Some((peer, routes, cancellation_sender, generation, active_calls))
     }
 
     /// Evict and shut down the cached relay connection for one
@@ -2425,6 +2463,17 @@ impl UpstreamPool {
         }
     }
 
+    /// Stateless handlers mint one session ID per request. Task registrations
+    /// already own their transferred connection when that request finishes.
+    pub async fn finish_stateless_relay_session(&self, session: u64) {
+        let connections = self
+            .detach_relay_connections_matching(|key| key.1 == session)
+            .await;
+        for (name, connection) in connections {
+            connection.shutdown(&name, "relay.request.finished").await;
+        }
+    }
+
     /// Detach every cached relay connection for one upstream without waiting
     /// for transport shutdown. Selective publication uses this to keep the
     /// global publication writer free of upstream I/O.
@@ -2432,19 +2481,27 @@ impl UpstreamPool {
         &self,
         upstream_name: &str,
     ) -> Vec<(String, UpstreamConnection<RelayClientHandler>)> {
+        self.detach_relay_connections_matching(|key| key.0 == upstream_name)
+            .await
+    }
+
+    async fn detach_relay_connections_matching(
+        &self,
+        matches: impl Fn(&RelayCacheKey) -> bool,
+    ) -> Vec<(String, UpstreamConnection<RelayClientHandler>)> {
         let drained: Vec<_> = {
             let mut cache = self.relay_connections.write().await;
             let mut gates = self.relay_connect_locks.write().await;
             let keys = cache
                 .keys()
-                .filter(|(name, _, _, _)| name == upstream_name)
+                .filter(|key| matches(key))
                 .cloned()
                 .collect::<Vec<_>>();
             let drained = keys
                 .into_iter()
                 .filter_map(|key| cache.remove(&key).map(|entry| (key.0, entry._connection)))
                 .collect();
-            gates.retain(|(name, _, _, _), _| name != upstream_name);
+            gates.retain(|key, _| !matches(key));
             drained
         };
         drained
@@ -2488,7 +2545,8 @@ impl UpstreamPool {
             let stale_keys: Vec<RelayCacheKey> = cache
                 .iter()
                 .filter(|(_, entry)| {
-                    entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL
+                    (entry.last_used.elapsed() >= SUBJECT_CONN_IDLE_TTL
+                        && Arc::strong_count(&entry.active_calls) == 1)
                         || entry.peer.is_transport_closed()
                 })
                 .map(|(key, _)| key.clone())
@@ -3070,6 +3128,7 @@ mod tests {
         pool.relay_connections.write().await.insert(
             relay_cache_key_for_capabilities(&config.name, 1, None, &capabilities),
             RelayCachedConnection {
+                active_calls: Arc::new(()),
                 _connection: UpstreamConnection::new(
                     client_service,
                     Some(upstream_task),
@@ -3085,6 +3144,37 @@ mod tests {
         );
 
         (pool, config, downstream_server)
+    }
+
+    #[tokio::test]
+    async fn session_admission_keeps_the_existing_active_relay() {
+        let capabilities = relay_test_capabilities();
+        let (mut pool, config, downstream) =
+            cached_relay_pool(MisleadingRelayError, (), capabilities.clone()).await;
+        pool.call_concurrency = 1;
+        let key = relay_cache_key_for_capabilities(&config.name, 1, None, &capabilities);
+        pool.relay_connect_locks
+            .write()
+            .await
+            .insert(key.clone(), Arc::new(Mutex::new(())));
+        let active = pool
+            .acquire_or_connect_relay(&config, None, downstream.peer().clone(), 1, capabilities)
+            .await
+            .unwrap();
+        assert!(
+            pool.acquire_or_connect_relay(
+                &config,
+                None,
+                downstream.peer().clone(),
+                1,
+                ClientCapabilities::default()
+            )
+            .await
+            .is_none()
+        );
+        assert_eq!(pool.relay_connect_locks.read().await.len(), 1);
+        let cache = pool.relay_connections.read().await;
+        assert!(Arc::ptr_eq(&active.4, &cache[&key].active_calls));
     }
 
     #[derive(Clone)]
@@ -3348,7 +3438,7 @@ mod tests {
         assert_eq!(metrics.retry_failures, 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn relayed_header_refresh_never_extends_original_deadline() {
         #[derive(Clone)]
         struct SlowHeaderRefreshUpstream {
@@ -3397,7 +3487,7 @@ mod tests {
         let (pool, config, downstream_server) =
             cached_relay_pool(upstream, CapableAgent, capabilities.clone()).await;
         let pool = pool.with_relay_timeout(Duration::from_millis(80));
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
 
         let result = pool
             .call_tool_relayed(
@@ -3420,14 +3510,7 @@ mod tests {
             result,
             super::super::CapabilityCallError::Timeout { .. }
         ));
-        // The refresh fixture stalls for 30s, so this only has to prove the 80ms
-        // relay deadline ended the call. A 500ms ceiling proved the same thing
-        // but tripped on scheduler jitter under parallel test load.
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the original relay deadline must bound the call: {:?}",
-            started.elapsed()
-        );
+        assert_eq!(started.elapsed(), Duration::from_millis(80));
         assert_eq!(list_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             tool_calls.load(Ordering::SeqCst),
@@ -4104,10 +4187,12 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            header_refresh: Default::default(),
             incarnation: None,
         };
         (
             RelayCachedConnection {
+                active_calls: Arc::new(()),
                 _connection: conn,
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
@@ -4792,8 +4877,52 @@ mod tests {
         .expect("credential invalidations must share one deadlock-free barrier");
     }
 
-    /// `sweep_relay_connections` evicts entries past the idle TTL while keeping
-    /// fresh ones.
+    #[tokio::test]
+    async fn capability_variants_share_the_same_session_cache_capacity() {
+        let mut cache = HashMap::new();
+        let mut servers = Vec::new();
+        let mut keys = Vec::new();
+        for capabilities in [
+            ClientCapabilities::default(),
+            relay_test_capabilities(),
+            ClientCapabilities::builder().enable_tasks().build(),
+        ] {
+            let key = relay_cache_key_for_capabilities("fixture", 1, Some("alice"), &capabilities);
+            let (entry, server) = live_relay_cached_connection(Instant::now()).await;
+            servers.push(server);
+            assert!(cache.insert(key.clone(), entry).is_none());
+            let evicted = evict_relay_lru_over_cap(&mut cache, 2, &key);
+            assert_eq!(evicted.len(), usize::from(keys.len() == 2));
+            assert!(cache.len() <= 2);
+            keys.push(key);
+        }
+        assert!(!cache.contains_key(&keys[0]));
+        assert!(cache.contains_key(&keys[1]));
+        assert!(cache.contains_key(&keys[2]));
+        drop(servers);
+    }
+
+    #[tokio::test]
+    async fn stateless_relay_cleanup_is_scoped_and_lru_preserves_inflight_calls() {
+        let pool = UpstreamPool::new();
+        let (first, _first_downstream) = live_relay_cached_connection(Instant::now()).await;
+        let (second, _second_downstream) = live_relay_cached_connection(Instant::now()).await;
+        let first_key = relay_cache_key("fixture", 1, None);
+        let second_key = relay_cache_key("fixture", 2, None);
+        let _active = Arc::clone(&second.active_calls);
+        {
+            let mut cache = pool.relay_connections.write().await;
+            cache.insert(first_key.clone(), first);
+            cache.insert(second_key.clone(), second);
+            assert!(evict_relay_lru_over_cap(&mut cache, 1, &first_key).is_empty());
+        }
+        pool.finish_stateless_relay_session(1).await;
+        let cache = pool.relay_connections.read().await;
+        assert!(!cache.contains_key(&first_key));
+        assert!(cache.contains_key(&second_key));
+    }
+
+    /// Sweep expired idle connections while keeping fresh ones.
     #[tokio::test]
     async fn relay_cache_sweep_evicts_idle_entries() {
         use std::time::{Duration, Instant};
@@ -4930,11 +5059,13 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            header_refresh: Default::default(),
             incarnation: None,
         };
         pool.relay_connections.write().await.insert(
             relay_cache_key(&config.name, 1, None),
             RelayCachedConnection {
+                active_calls: Arc::new(()),
                 _connection: conn,
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),
@@ -5069,11 +5200,13 @@ mod tests {
             _server_task: None,
             peer: peer.clone(),
             runtime: UpstreamRuntimeMetadata::default(),
+            header_refresh: Default::default(),
             incarnation: None,
         };
         pool.relay_connections.write().await.insert(
             relay_cache_key(&config.name, 1, None),
             RelayCachedConnection {
+                active_calls: Arc::new(()),
                 _connection: conn,
                 peer,
                 capability_fingerprint: capability_fingerprint(&relay_test_capabilities()),

@@ -38,4 +38,4 @@ pub fn is_transport_local_tool(tool: &rmcp::model::Tool) -> bool {
 }
 
 #[cfg(test)]
-mod test_isolation;
+pub(crate) mod test_isolation;

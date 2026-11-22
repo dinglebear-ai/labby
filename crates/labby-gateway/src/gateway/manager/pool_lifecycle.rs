@@ -332,15 +332,6 @@ impl GatewayManager {
         crate::upstream::pool::install_upstream_discovery_concurrency_default(
             cfg.gateway.upstream_discovery_concurrency,
         );
-        labby_codemode::install_artifact_config_defaults(
-            cfg.code_mode.artifact_retention_runs,
-            cfg.code_mode.artifact_max_mib,
-            cfg.code_mode.artifact_max_store_mib,
-        );
-        labby_codemode::install_call_budget_config_defaults(
-            cfg.code_mode.max_calls_per_run,
-            cfg.code_mode.calltool_result_max_mib,
-        );
         let registry = self.builtin_service_registry();
         let (cfg, migration) = quarantine_unregistered_virtual_servers(cfg, registry.as_ref());
         if migration.changed() {
@@ -436,8 +427,7 @@ impl GatewayManager {
                 .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
             *self.protected_route_index.write().await =
                 ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
-            *self.config.write().await = runtime_cfg;
-            self.advance_runtime_config_generation();
+            self.publish_runtime_config(runtime_cfg).await;
             let diff = GatewayCatalogDiff {
                 tools_changed: lab_owned_surface_changed,
                 resources_changed: lab_owned_surface_changed,
@@ -486,8 +476,7 @@ impl GatewayManager {
                     .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
                 *self.protected_route_index.write().await =
                     ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
-                *self.config.write().await = runtime_cfg.clone();
-                self.advance_runtime_config_generation();
+                self.publish_runtime_config(runtime_cfg.clone()).await;
                 pool.apply_lazy_upstream_reconcile(
                     &cfg.upstream,
                     &changed_upstreams,
@@ -549,8 +538,7 @@ impl GatewayManager {
                         .set_enabled(previous_cfg.code_mode.mcp_ui_enabled);
                     *self.protected_route_index.write().await =
                         ProtectedRouteIndex::from_routes(&previous_cfg.protected_mcp_routes);
-                    *self.config.write().await = previous_cfg.clone();
-                    self.advance_runtime_config_generation();
+                    self.publish_runtime_config(previous_cfg.clone()).await;
                     pool.apply_lazy_upstream_reconcile(
                         &previous_cfg.upstream,
                         &changed_upstreams,
@@ -772,8 +760,7 @@ impl GatewayManager {
         }
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
-        *self.config.write().await = runtime_cfg;
-        self.advance_runtime_config_generation();
+        self.publish_runtime_config(runtime_cfg).await;
         drop(task_definition_guards);
         // A private candidate must not retain itself through background tasks
         // if validation/persistence fails or reload is cancelled before swap.

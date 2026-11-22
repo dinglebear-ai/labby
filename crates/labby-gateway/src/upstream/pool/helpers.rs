@@ -665,12 +665,12 @@ pub(super) fn cached_upstream_tool(
         name,
         UpstreamTool {
             input_schema: (!tool.input_schema.is_empty())
-                .then(|| Value::Object((*tool.input_schema).clone())),
+                .then(|| Arc::new(Value::Object((*tool.input_schema).clone()))),
             output_schema: tool
                 .output_schema
                 .as_ref()
                 .filter(|schema| !schema.is_empty())
-                .map(|schema| Value::Object((**schema).clone())),
+                .map(|schema| Arc::new(Value::Object((**schema).clone()))),
             tool,
             upstream_name: Arc::clone(upstream_name),
             destructive,
@@ -830,7 +830,10 @@ mod tests {
 
         let (_name, cached) = cached_upstream_tool(tool, &upstream_name);
 
-        assert_eq!(cached.output_schema, Some(Value::Object(output_schema)));
+        assert_eq!(
+            cached.output_schema.as_deref(),
+            Some(&Value::Object(output_schema))
+        );
     }
 
     /// FR-9a (issue #210, lab-41e7m.6) test (a): documentation-bearing text is

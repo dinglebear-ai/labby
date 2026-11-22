@@ -54,7 +54,7 @@ pub trait CodeModeSkillProvider: Send + Sync {
         &'a self,
         caller: &'a CodeModeCaller,
         scope: &'a ToolScope,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<CodeModeSkillSummary>, ToolError>> + Send + 'a>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>>;
 
     fn get<'a>(
         &'a self,

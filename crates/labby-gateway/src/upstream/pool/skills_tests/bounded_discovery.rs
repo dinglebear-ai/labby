@@ -10,6 +10,24 @@ fn preview(max_items: usize) -> SkillDiscoverRequest {
 }
 
 #[tokio::test]
+async fn duplicate_skill_owners_are_hidden_by_cold_and_warm_search() {
+    let first = json!({"skills": [entry("up","alpha")], "nextCursor": "second"});
+    let second = json!({"skills": [entry("up","alpha")]});
+    let server = SkillsServer::new(vec![first.clone(), second.clone(), first, second]);
+    let pool = catalog_pool_with_server("up", server).await;
+    let provider =
+        super::super::SepSkillProvider::new(Arc::clone(&pool), skills_config("up", None), None);
+    assert_eq!(provider.search("alpha", 1).await.unwrap().skills, []);
+    let exposed = pool
+        .upstream_skills(&skills_config("up", None), None)
+        .await
+        .unwrap();
+    assert_eq!(exposed.skills, []);
+    assert_eq!(exposed.excluded_count, 2);
+    assert_eq!(provider.search("alpha", 1).await.unwrap().skills, []);
+}
+
+#[tokio::test]
 async fn query_search_follows_pages_until_a_match_contributes() {
     let server = SkillsServer::new(vec![
         json!({"skills": [entry("up", "unrelated")], "nextCursor": "second"}),
@@ -19,7 +37,12 @@ async fn query_search_follows_pages_until_a_match_contributes() {
     let pool = catalog_pool_with_server("up", server).await;
     let provider = super::super::SepSkillProvider::new(pool, skills_config("up", None), None);
 
-    let result = provider.search("deep-match", 1).await.unwrap();
+    let (left, right) = tokio::join!(
+        provider.search("deep-match", 1),
+        provider.search("deep-match", 1)
+    );
+    let result = left.unwrap();
+    assert_eq!(right.unwrap().skills, result.skills);
 
     assert_eq!(result.skills.len(), 1);
     assert_eq!(result.skills[0].descriptor().name, "deep-match");
@@ -88,6 +111,11 @@ async fn query_search_preserves_matches_when_cursor_repeats() {
     assert_eq!(result.skills.len(), 1);
     assert!(result.incomplete);
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let calls_before = calls.load(Ordering::SeqCst);
+    let repeated = provider.search("match", 2).await.unwrap();
+    assert_eq!(repeated.skills.len(), 1);
+    assert!(repeated.incomplete);
+    assert_eq!(calls.load(Ordering::SeqCst), calls_before);
 }
 
 #[tokio::test]

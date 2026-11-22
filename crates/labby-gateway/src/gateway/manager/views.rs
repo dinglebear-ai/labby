@@ -19,6 +19,31 @@ use super::virtual_servers::find_virtual_server;
 
 const WARNING_UNKNOWN_SERVICE: &str = "unknown_service";
 
+async fn await_fleet_refresh(
+    task: &mut tokio::task::JoinHandle<Result<(), &'static str>>,
+    timeout: std::time::Duration,
+) -> Result<(), ToolError> {
+    match tokio::time::timeout(timeout, task).await {
+        Ok(Ok(result)) => result.map_err(ToolError::internal_message),
+        Ok(Err(error)) => {
+            tracing::error!(%error, "gateway fleet catalog refresh task failed");
+            Err(ToolError::internal_message(
+                "gateway fleet catalog refresh task failed",
+            ))
+        }
+        Err(_) => {
+            tracing::info!(
+                surface = "dispatch",
+                service = "gateway",
+                action = "gateway.status.refresh",
+                timeout_ms = timeout.as_millis(),
+                "gateway fleet catalog refresh continuing in background"
+            );
+            Ok(())
+        }
+    }
+}
+
 fn find_virtual_server_for_service<'a>(
     virtual_servers: &'a [labby_runtime::gateway_config::VirtualServerConfig],
     service: &str,
@@ -158,25 +183,7 @@ impl GatewayManager {
             });
             let (cfg, _) = self.published_config_and_pool().await;
             let timeout = super::super::runtime::mcp_runtime_warm_timeout(&cfg);
-            match tokio::time::timeout(timeout, &mut refresh).await {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(message))) => return Err(ToolError::internal_message(message)),
-                Ok(Err(error)) => tracing::error!(
-                    surface = "dispatch",
-                    service = "gateway",
-                    action = "gateway.status.refresh",
-                    error = %error,
-                    "gateway fleet catalog refresh task failed"
-                ),
-                Err(_) => tracing::info!(
-                    surface = "dispatch",
-                    service = "gateway",
-                    action = "gateway.status.refresh",
-                    timeout_ms = timeout.as_millis(),
-                    "gateway fleet catalog refresh continuing in background"
-                ),
-            }
-            return Ok(());
+            return await_fleet_refresh(&mut refresh, timeout).await;
         }
 
         let (cfg, pool) = self.published_config_and_pool().await;
@@ -337,14 +344,14 @@ impl GatewayManager {
     }
 
     pub async fn surface_enabled_for_service(&self, service: &str, surface: &str) -> bool {
-        if self.registered_service_meta(service).is_none() {
+        let registered = self.registered_service_meta(service).is_some();
+        if surface != "mcp" && !registered {
             return true;
         }
-
         let cfg = self.config.read().await;
         let Some(virtual_server) = find_virtual_server_for_service(&cfg.virtual_servers, service)
         else {
-            return surface != "mcp";
+            return surface != "mcp" || !registered;
         };
 
         if !virtual_server.enabled {
@@ -733,4 +740,21 @@ impl GatewayManager {
                 message: format!("unknown upstream: {name}"),
             })
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn fleet_refresh_reports_the_worker_failure() {
+    let mut failed = tokio::spawn(async { Err("catalog refresh panicked") });
+    let error = await_fleet_refresh(&mut failed, std::time::Duration::from_secs(5))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("catalog refresh panicked"));
+    let mut cancelled = tokio::spawn(std::future::pending());
+    cancelled.abort();
+    assert!(
+        await_fleet_refresh(&mut cancelled, std::time::Duration::from_secs(5))
+            .await
+            .is_err()
+    );
 }

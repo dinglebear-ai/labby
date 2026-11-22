@@ -156,7 +156,7 @@ pub fn enrich_completed_tool_error_result(
     let contract =
         agent_error_for_completed_tool_result(service, action, tool, upstream, &result, safety);
     let kind = contract
-        .get("kind")
+        .get("original_kind")
         .and_then(Value::as_str)
         .map(canonicalize_untrusted_upstream_kind)
         .unwrap_or("tool_error");
@@ -192,35 +192,7 @@ pub fn enrich_completed_tool_error_result(
 /// `original_kind`.
 #[must_use]
 pub fn canonicalize_untrusted_upstream_kind(kind: &str) -> &'static str {
-    match kind {
-        "unknown_action" => "unknown_action",
-        "unknown_subaction" => "unknown_subaction",
-        "missing_param" => "missing_param",
-        "invalid_param" => "invalid_param",
-        "unknown_instance" => "unknown_instance",
-        "confirmation_required" => "confirmation_required",
-        "conflict" => "conflict",
-        "forbidden" => "forbidden",
-        "unknown_tool" => "unknown_tool",
-        "route_scope_denied" => "route_scope_denied",
-        "path_traversal" => "path_traversal",
-        "permission_denied" => "permission_denied",
-        "timeout" => "timeout",
-        "budget_exceeded" => "budget_exceeded",
-        "quota_exceeded" => "quota_exceeded",
-        "invalid_code_mode_id" => "invalid_code_mode_id",
-        "snippet_not_found" => "snippet_not_found",
-        "artifact_too_large" => "artifact_too_large",
-        "auth_failed" => "auth_failed",
-        "oauth_needs_reauth" => "oauth_needs_reauth",
-        "not_found" => "not_found",
-        "rate_limited" => "rate_limited",
-        "validation_failed" => "validation_failed",
-        "tool_error" | "network_error" | "server_error" | "decode_error" | "internal_error"
-        | "upstream_error" => "tool_error",
-        "code_mode_timeout" => "code_mode_timeout",
-        _ => "tool_error",
-    }
+    known_stable_kind(kind).unwrap_or("tool_error")
 }
 
 /// The shared allowlist of stable caller-facing error kinds an upstream may
@@ -236,14 +208,12 @@ fn known_stable_kind(kind: &str) -> Option<&'static str> {
         "missing_param" => "missing_param",
         "invalid_param" | "invalid_params" => "invalid_param",
         "unknown_instance" => "unknown_instance",
-        "confirmation_required" => "confirmation_required",
         "conflict" => "conflict",
         "forbidden" => "forbidden",
         "unknown_tool" => "unknown_tool",
-        "route_scope_denied" => "route_scope_denied",
         "path_traversal" => "path_traversal",
         "permission_denied" => "permission_denied",
-        "auth_failed" => "auth_failed",
+        "auth_failed" => "oauth_needs_reauth",
         "not_found" => "not_found",
         "rate_limited" => "rate_limited",
         "validation_failed" => "validation_failed",
@@ -303,16 +273,14 @@ fn error_cause(result: &CallToolResult, parsed_error: Option<&Value>) -> String 
     {
         return sanitize_error_text(message, MAX_ERROR_TEXT_CHARS);
     }
-    let text = result
+    let text: String = result
         .content
         .iter()
         .filter_map(ContentBlock::as_text)
-        .map(|content| content.text.as_str())
-        .collect::<Vec<_>>()
-        .join(
-            "
-",
-        );
+        .flat_map(|block| std::iter::once('\n').chain(block.text.chars()))
+        .skip(1)
+        .take(MAX_ERROR_TEXT_CHARS + 1)
+        .collect();
     if text.is_empty() {
         format!(
             "upstream tool returned {} non-text error content block(s)",
@@ -431,6 +399,27 @@ fn error_object(value: &Value) -> Option<&Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upstream_kinds_describe_the_tool_and_cannot_claim_gateway_failures() {
+        for (kind, expected) in [
+            ("invalid_param", "invalid_param"),
+            ("auth_failed", "oauth_needs_reauth"),
+            ("code_mode_timeout", "tool_error"),
+            ("route_scope_denied", "tool_error"),
+        ] {
+            assert_eq!(canonicalize_untrusted_upstream_kind(kind), expected);
+            let rpc = rmcp::model::ErrorData::internal_error("fixture", Some(json!({"kind":kind})));
+            assert_eq!(
+                mcp_error_data_kind(&rpc),
+                if expected == "tool_error" {
+                    "server_error"
+                } else {
+                    expected
+                }
+            );
+        }
+    }
 
     #[test]
     fn finds_failure_after_success_block_and_structured_kind() {

@@ -33,14 +33,14 @@ fn tool_shape_digest(tool: &UpstreamTool) -> String {
     #[derive(serde::Serialize)]
     struct Shape<'a> {
         description: &'a Option<std::borrow::Cow<'static, str>>,
-        input_schema: &'a Option<serde_json::Value>,
-        output_schema: &'a Option<serde_json::Value>,
+        input_schema: Option<&'a serde_json::Value>,
+        output_schema: Option<&'a serde_json::Value>,
         safety: Option<CodeModeToolSafety>,
     }
     let shape = Shape {
         description: &tool.tool.description,
-        input_schema: &tool.input_schema,
-        output_schema: &tool.output_schema,
+        input_schema: tool.input_schema.as_deref(),
+        output_schema: tool.output_schema.as_deref(),
         safety,
     };
     let serialized = serde_json::to_vec(&shape).unwrap_or_default();
@@ -111,19 +111,13 @@ fn rendered_embedding_corpus_fingerprint(entries: &[CatalogDescriptor]) -> Strin
         .collect()
 }
 
-fn render_from_cached_catalog(
-    fingerprint: String,
-    entries: std::sync::Arc<[CatalogDescriptor]>,
-    catalog_json: std::sync::Arc<str>,
-    serialized_size: usize,
-) -> ToolsRender {
-    let embedding_fingerprint = rendered_embedding_corpus_fingerprint(&entries);
+fn render_from_cached_catalog(cache: super::CatalogRenderCache) -> ToolsRender {
     ToolsRender {
-        fingerprint,
-        embedding_fingerprint,
-        entries,
-        catalog_json,
-        serialized_size,
+        fingerprint: cache.fingerprint,
+        embedding_fingerprint: cache.embedding_fingerprint,
+        entries: cache.entries,
+        catalog_json: cache.catalog_json,
+        serialized_size: cache.serialized_size,
         withheld: std::sync::Arc::from([]),
     }
 }
@@ -180,11 +174,7 @@ pub(crate) async fn build_tools_render(
         tools,
         include_snippets,
         metadata_entries,
-        if oauth_subject.is_none() && allowed_upstreams.is_none() {
-            catalog_generation
-        } else {
-            None
-        },
+        catalog_generation,
     )
     .await?;
     render.withheld = withheld.into();
@@ -206,8 +196,12 @@ fn filter_in_process_for_access(
             else {
                 return true;
             };
-            // Synthetic peers have no product access runtime or transport
-            // AuthContext. Only published, non-admin actions may be offered.
+            // Only the request-bound OAuth adapter can dispatch a native action.
+            if service_name != "gateway"
+                || tool.tool.name.as_ref() != "gateway.gateway.oauth.authorize"
+            {
+                return false;
+            }
             let Some(action_name) = tool.tool.name.strip_prefix(&format!("{service_name}.")) else {
                 return false;
             };
@@ -228,19 +222,10 @@ fn filter_in_process_for_access(
             else {
                 return false;
             };
-            if action.requires_admin() {
-                return false;
-            }
-            if service_name == "gateway"
-                && !matches!(action_name, "help" | "schema")
-                && !(action_name == "gateway.oauth.authorize"
-                    && manager.has_code_mode_personal_oauth_provider()
-                    && caller.authority_token().is_some()
-                    && caller.can_execute())
-            {
-                return false;
-            }
-            true
+            !action.requires_admin()
+                && manager.has_code_mode_personal_oauth_provider()
+                && caller.authority_token().is_some()
+                && caller.can_execute()
         })
         .collect()
 }
@@ -320,44 +305,40 @@ async fn catalog_from_tools_with_generation(
     };
 
     let fingerprint = {
-        let mut ids: Vec<String> = raw_tools
-            .iter()
-            .map(|tool| match catalog_generation {
-                Some(_) => format!("{}::{}", tool.upstream_name, tool.tool.name),
-                None => format!(
-                    "{}::{}::{}",
-                    tool.upstream_name,
-                    tool.tool.name,
-                    tool_shape_digest(tool)
-                ),
-            })
-            .collect();
-        ids.extend(metadata_entries.iter().map(|entry| {
+        let mut rows: Vec<[u8; 32]> = Vec::with_capacity(raw_tools.len() + metadata_entries.len());
+        for tool in &raw_tools {
+            let shape = catalog_generation
+                .is_none()
+                .then(|| tool_shape_digest(tool));
+            let encoded =
+                serde_json::to_vec(&("tool", &tool.upstream_name, &tool.tool.name, shape))
+                    .expect("tool fingerprint is serializable");
+            rows.push(Sha256::digest(encoded).into());
+        }
+        for entry in &metadata_entries {
             let mut tags = entry.tags.clone();
-            tags.sort();
-            format!(
-                "{}::{}::{}::{}::{}::{}",
+            tags.sort_unstable();
+            let encoded = serde_json::to_vec(&(
                 entry.kind.as_str(),
-                entry.namespace,
-                entry.id,
-                entry.name,
-                entry.description,
-                tags.join("\u{1f}")
-            )
-        }));
-        ids.sort_unstable();
-        let generation = catalog_generation
-            .map(|generation| {
-                format!(
-                    "generation:{}\n",
-                    hex::encode(generation.fingerprint_bytes())
-                )
-            })
-            .unwrap_or_default();
-        format!(
-            "tools:\n{generation}{}\n{snippet_fingerprint}",
-            ids.join("\n")
-        )
+                &entry.namespace,
+                &entry.id,
+                &entry.name,
+                &entry.description,
+                tags,
+            ))
+            .expect("metadata fingerprint is serializable");
+            rows.push(Sha256::digest(encoded).into());
+        }
+        rows.sort_unstable();
+        let mut digest = Sha256::new();
+        digest.update(snippet_fingerprint.as_bytes());
+        if let Some(generation) = catalog_generation {
+            digest.update(generation.fingerprint_bytes());
+        }
+        for row in rows {
+            digest.update(row);
+        }
+        hex::encode(digest.finalize())
     };
 
     let cache_lookup_started = std::time::Instant::now();
@@ -370,38 +351,17 @@ async fn catalog_from_tools_with_generation(
         elapsed_ms = cache_lookup_started.elapsed().as_millis(),
         "checked Code Mode catalog render cache"
     );
-    if let Some((entries, catalog_json, serialized_size)) = cached_render {
-        tracing::debug!(
-            surface = "dispatch",
-            service = labby_codemode::SERVICE,
-            action = "catalog.build",
-            entry_count = entries.len(),
-            "Code Mode discovery catalog served from render cache"
-        );
-        let render =
-            render_from_cached_catalog(fingerprint, entries, catalog_json, serialized_size);
-        return Ok(render);
+    if let Some(cache) = cached_render {
+        return Ok(render_from_cached_catalog(cache));
     }
 
     let flight = manager.catalog_render_flight(&fingerprint).await;
     let _build_guard = flight.build.lock().await;
-    if let Some((entries, catalog_json, serialized_size)) =
-        manager.cached_catalog_render(&fingerprint).await
-    {
-        return Ok(render_from_cached_catalog(
-            fingerprint,
-            entries,
-            catalog_json,
-            serialized_size,
-        ));
+    if let Some(cache) = manager.cached_catalog_render(&fingerprint).await {
+        return Ok(render_from_cached_catalog(cache));
     }
     if let Some(cache) = flight.result.lock().await.clone() {
-        return Ok(render_from_cached_catalog(
-            fingerprint,
-            cache.entries,
-            cache.catalog_json,
-            cache.serialized_size,
-        ));
+        return Ok(render_from_cached_catalog(cache));
     }
 
     // Cache miss — build entries (includes `generate_tool_types` per entry).
@@ -422,8 +382,8 @@ async fn catalog_from_tools_with_generation(
                 &upstream,
                 &name,
                 &sanitize_tool_text(&description, 2048),
-                sanitize_schema(tool.input_schema),
-                sanitize_schema(tool.output_schema),
+                sanitize_schema(tool.input_schema.map(std::sync::Arc::unwrap_or_clone)),
+                sanitize_schema(tool.output_schema.map(std::sync::Arc::unwrap_or_clone)),
                 safety,
             )
         })
@@ -467,6 +427,8 @@ async fn catalog_from_tools_with_generation(
     let catalog_json: std::sync::Arc<str> = std::sync::Arc::from(catalog_json);
 
     let cache = super::CatalogRenderCache {
+        proxy_sources: Default::default(),
+        embedding_fingerprint: embedding_fingerprint.clone(),
         fingerprint: fingerprint.clone(),
         entries: std::sync::Arc::clone(&entries),
         catalog_json: std::sync::Arc::clone(&catalog_json),
@@ -516,21 +478,11 @@ async fn snippet_metadata_for_catalog(
 async fn snippet_directory_fingerprint(policy: &str) -> Result<Option<String>, ToolError> {
     let lab_home = lab_home();
     let user_dir = labby_codemode::snippet::store::user_snippet_dir(&lab_home);
-    let builtin_dir = builtin_snippet_dir();
     let policy = policy.to_string();
     tokio::task::spawn_blocking(move || {
-        let mut parts = vec![format!("snippet_policy:{policy}")];
-        let mut saw_dir = false;
-        for dir in [user_dir, builtin_dir] {
-            match directory_fingerprint_part(&dir)? {
-                Some(part) => {
-                    saw_dir = true;
-                    parts.push(part);
-                }
-                None => parts.push(format!("{}:absent", dir.display())),
-            }
-        }
-        Ok::<_, ToolError>(saw_dir.then(|| parts.join("\n")))
+        // Built-ins are immutable for this binary's lifetime.
+        let user = directory_fingerprint_part(&user_dir)?.unwrap_or_else(|| "user:absent".into());
+        Ok::<_, ToolError>(Some(format!("snippet_policy:{policy}\n{user}")))
     })
     .await
     .map_err(|err| ToolError::internal_message(format!("snippet fingerprint task failed: {err}")))?
@@ -708,13 +660,16 @@ mod tests {
             &ToolScope::default(),
             &CodeModeCaller::TrustedLocal,
         );
-        assert_eq!(filtered.len(), 1);
-        assert_eq!(filtered[0].tool.name.as_ref(), "fixture.list");
+        assert!(
+            filtered.is_empty(),
+            "Code Mode may only advertise callable native actions"
+        );
 
         let manager =
             manager.with_code_mode_personal_oauth_provider(Arc::new(TestPersonalOauthProvider));
         let caller = CodeModeCaller::WithAuthority {
             caller: Box::new(CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: labby_codemode::CodeModeCallerCapabilities {
                     can_read: true,
                     can_execute: true,
@@ -814,14 +769,20 @@ mod tests {
     #[test]
     fn borrowed_shape_digest_matches_legacy_shape_and_tracks_schema_changes() {
         let mut tool = safety_fixture(Some(rmcp::model::ToolAnnotations::new().read_only(true)));
-        tool.input_schema = Some(serde_json::json!({
-            "type": "object",
-            "properties": { "query": { "type": "string" } }
-        }));
-        tool.output_schema = Some(serde_json::json!({
-            "type": "object",
-            "properties": { "results": { "type": "array" } }
-        }));
+        tool.input_schema = Some(
+            serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } }
+            })
+            .into(),
+        );
+        tool.output_schema = Some(
+            serde_json::json!({
+                "type": "object",
+                "properties": { "results": { "type": "array" } }
+            })
+            .into(),
+        );
         let legacy_payload = serde_json::json!({
             "description": tool.tool.description,
             "input_schema": tool.input_schema,
@@ -834,13 +795,16 @@ mod tests {
         let original = tool_shape_digest(&tool);
         assert_eq!(original, legacy_digest);
 
-        tool.input_schema = Some(serde_json::json!({ "type": "integer" }));
+        tool.input_schema = Some(serde_json::json!({ "type": "integer" }).into());
         assert_ne!(tool_shape_digest(&tool), original);
-        tool.input_schema = Some(serde_json::json!({
-            "type": "object",
-            "properties": { "query": { "type": "string" } }
-        }));
-        tool.output_schema = Some(serde_json::json!({ "type": "boolean" }));
+        tool.input_schema = Some(
+            serde_json::json!({
+                "type": "object",
+                "properties": { "query": { "type": "string" } }
+            })
+            .into(),
+        );
+        tool.output_schema = Some(serde_json::json!({ "type": "boolean" }).into());
         assert_ne!(tool_shape_digest(&tool), original);
     }
 

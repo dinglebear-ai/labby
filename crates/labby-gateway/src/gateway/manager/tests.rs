@@ -569,7 +569,7 @@ fn healthy_entry_with_typed_tool(
     let upstream_tool = UpstreamTool {
         tool,
         input_schema: None,
-        output_schema: Some(output_schema),
+        output_schema: Some(output_schema.into()),
         upstream_name: Arc::clone(&upstream_name),
         destructive: false,
     };

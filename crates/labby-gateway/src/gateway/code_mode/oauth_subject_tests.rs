@@ -15,31 +15,52 @@ fn scoped_callers(sub: Option<&str>, is_admin: bool) -> Vec<CodeModeCaller> {
     let sub = sub.map(str::to_owned);
     let callers = vec![
         CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities,
             sub: sub.clone(),
         },
-        CodeModeCaller::ScopedPrivate {
+        CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                upstream_private_token: Some("test-context".into()),
+                ..Default::default()
+            },
+
             capabilities,
             sub: sub.clone(),
-            context_token: "test-context".into(),
         },
-        CodeModeCaller::ScopedSkills {
+        CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some("test-skills".into()),
+                ..Default::default()
+            },
+
             capabilities,
             sub: sub.clone(),
-            skill_context_token: "test-skills".into(),
         },
-        CodeModeCaller::ScopedHostProvider {
+        CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                provider: Some(labby_codemode::CodeModeProviderContext {
+                    token: "test-provider".into(),
+                    request_id: "test-request".into(),
+                }),
+                ..Default::default()
+            },
+
             capabilities,
             sub: sub.clone(),
-            provider_token: "test-provider".into(),
-            provider_request_id: "test-request".into(),
         },
-        CodeModeCaller::ScopedHostProviderSkills {
+        CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some("test-skills".into()),
+                provider: Some(labby_codemode::CodeModeProviderContext {
+                    token: "test-provider".into(),
+                    request_id: "test-request".into(),
+                }),
+                ..Default::default()
+            },
+
             capabilities,
             sub,
-            provider_token: "test-provider".into(),
-            provider_request_id: "test-request".into(),
-            skill_context_token: "test-skills".into(),
         },
     ];
     callers
