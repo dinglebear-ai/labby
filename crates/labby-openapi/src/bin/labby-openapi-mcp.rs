@@ -370,10 +370,11 @@ mod tests {
 
     #[test]
     fn maps_completed_dispatch_to_structured_mcp_success() {
-        let CallToolResponse::Complete(response) = tool_response(Ok(json!({"id": "fixture-1"})))
-        else {
-            panic!("expected a completed tool response");
-        };
+        let response = match tool_response(Ok(json!({"id": "fixture-1"}))) {
+            CallToolResponse::Complete(response) => Some(response),
+            _ => None,
+        }
+        .expect("completed tool response");
         assert_eq!(
             response.structured_content,
             Some(json!({"result": {"id": "fixture-1"}}))
