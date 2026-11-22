@@ -1200,6 +1200,7 @@ async function waitForSignal(signal: Promise<void>, label: string) {
 async function renderOpenGatewayDialog(
   gateway: Gateway | null = null,
   onSave: (input: CreateGatewayInput | UpdateGatewayInput) => Promise<(() => Promise<void>) | void> = async () => {},
+  onOpenChange: (open: boolean) => void = () => {},
 ) {
   const { GatewayFormDialog } = await import('./gateway-form-dialog')
 
@@ -1207,7 +1208,7 @@ async function renderOpenGatewayDialog(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
       <GatewayFormDialog
         open
-        onOpenChange={() => {}}
+        onOpenChange={onOpenChange}
         gateway={gateway}
         onSave={onSave}
       />
@@ -1466,3 +1467,171 @@ for (const projectedUrl of ['https://example.com/mcp?token=%5BREDACTED%5D', 'htt
     } finally { await view.unmount(); globalThis.fetch = originalFetch }
   })
 }
+
+test('CLI Add Server sends the approved host manifest and runs the registered gateway test', async () => {
+  const window = installGatewayDialogDom()
+  const { buildGatewayCreatePayload } = await import('@/lib/server/gateway-adapter')
+  const originalFetch = globalThis.fetch
+  const actions: Array<{ action: string; params: Record<string, unknown> }> = []
+  const saved: unknown[] = []
+  globalThis.fetch = (async (input, init) => {
+    if (String(input) === '/v1/gateway' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as typeof actions[number]
+      actions.push(body)
+      if (body.action === 'gateway.test') return jsonResponse({ connected: true, healthy: true, discovered_tool_count: 1 })
+      if (body.action === 'gateway.get') return jsonResponse({ config: { name: 'cli-fixture' } })
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+  try {
+    const view = await renderOpenGatewayDialog(null, async (input) => {
+      saved.push(buildGatewayCreatePayload(input as CreateGatewayInput))
+    })
+    try {
+      await act(async () => { document.querySelector<HTMLElement>('#transport-cli')?.click() })
+      assert.equal(document.querySelector('#url'), null)
+      assert.equal(document.querySelector('#command'), null)
+      assert.equal(document.querySelector('#protected-public-path'), null)
+      assert.match(document.body.textContent ?? '', /does not upload a file/)
+      const add = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Add server')
+      assert.ok(add?.disabled)
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#name')!, 'cli-fixture')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#display_name')!, 'CLI fixture')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-manifest-path')!, 'relative.toml')
+      assert.equal(add.disabled, true)
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-manifest-path')!, '/srv/labby/cli/status.toml')
+      assert.equal(add.disabled, false)
+      await clickSave()
+      await waitFor(() => assert.ok(actions.some(action => action.action === 'gateway.test')))
+      assert.deepEqual(saved, [{
+        spec: { name: 'cli-fixture', display_name: 'CLI fixture' },
+        adapter: { kind: 'cli', manifest_path: '/srv/labby/cli/status.toml' },
+      }])
+      assert.deepEqual(actions.find(action => action.action === 'gateway.test')?.params, { name: 'cli-fixture', confirm: true })
+    } finally { await view.unmount() }
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('OpenAPI Add Server keeps the form after a rejected registration and excludes duplicate operations', async () => {
+  const window = installGatewayDialogDom()
+  const originalFetch = globalThis.fetch
+  const probes: string[] = []
+  const calls: CreateGatewayInput[] = []
+  globalThis.fetch = (async (resource, init) => {
+    if (String(resource) === '/v1/gateway' && init?.method === 'POST') {
+      const request = JSON.parse(String(init.body)) as { action: string }
+      if (request.action === 'gateway.test') probes.push(request.action)
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+  try {
+    const view = await renderOpenGatewayDialog(null, async (next) => {
+      calls.push(next as CreateGatewayInput)
+      throw new Error('The gateway host could not open this specification')
+    })
+    try {
+      await act(async () => { document.querySelector<HTMLElement>('#transport-openapi')?.click() })
+      assert.equal(document.querySelector('#url'), null)
+      assert.equal(document.querySelector('#adapter-allow-write')?.getAttribute('aria-checked'), 'false')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#name')!, 'catalog')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-spec-path')!, '/srv/labby/catalog.json')
+      await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-base-url')!, 'https://api.example.com')
+      await setTextareaValue(window, document.querySelector<HTMLTextAreaElement>('#adapter-operations')!, 'listItems, listItems')
+      const add = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Add server')
+      assert.ok(add?.disabled)
+      await clickSave()
+      assert.equal(calls.length, 0)
+      await setTextareaValue(window, document.querySelector<HTMLTextAreaElement>('#adapter-operations')!, 'listItems\ngetItem')
+      assert.equal(add.disabled, false)
+      await clickSave()
+      await waitFor(() => assert.match(document.querySelector('[role="alert"]')?.textContent ?? '', /could not open this specification/))
+      assert.deepEqual(calls[0]?.adapter, {
+        kind: 'openapi', spec_path: '/srv/labby/catalog.json', base_url: 'https://api.example.com',
+        allowed_operations: ['listItems', 'getItem'],
+      })
+      assert.equal(document.querySelector<HTMLInputElement>('#adapter-spec-path')?.value, '/srv/labby/catalog.json')
+      assert.deepEqual(probes, [])
+    } finally { await view.unmount() }
+  } finally { globalThis.fetch = originalFetch }
+})
+
+test('stopping guided verification aborts only the test and leaves a saved-server notice', async () => {
+  const window = installGatewayDialogDom()
+  const { toast } = await import('sonner')
+  const originalFetch = globalThis.fetch
+  const originalLoading = toast.loading
+  const originalSuccess = toast.success
+  const closed: boolean[] = []
+  const messages: unknown[] = []
+  const notice = 'guided-adapter-connection'
+  let finishCommit: () => void = () => {}
+  const commit = new Promise<void>(resolve => { finishCommit = resolve })
+  let saveRequests = 0
+  let probeSignal: AbortSignal | undefined
+  let view: Awaited<ReturnType<typeof renderOpenGatewayDialog>> | undefined
+
+  toast.loading = (message) => {
+    messages.push({ type: 'loading', message })
+    return notice
+  }
+  toast.success = (message, options) => {
+    messages.push({ type: 'success', message, id: options?.id })
+    return notice
+  }
+  globalThis.fetch = (async (request, init) => {
+    if (String(request) === '/v1/gateway' && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body)) as { action: string }
+      if (body.action === 'gateway.test') {
+        probeSignal = init.signal ?? undefined
+        return new Promise<Response>((_resolve, reject) => {
+          probeSignal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+        })
+      }
+      if (body.action === 'gateway.get') return jsonResponse({ config: { name: 'cli-fixture' } })
+    }
+    return jsonResponse([])
+  }) as typeof fetch
+
+  try {
+    view = await renderOpenGatewayDialog(null, async () => {
+      saveRequests++
+      await commit
+    }, (nextOpen) => { closed.push(nextOpen) })
+    await act(async () => { document.querySelector<HTMLElement>('#transport-cli')?.click() })
+    await setInputValue(window, document.querySelector<HTMLInputElement>('#name')!, 'cli-fixture')
+    await setInputValue(window, document.querySelector<HTMLInputElement>('#adapter-manifest-path')!, '/srv/labby/cli/status.toml')
+    await clickSave()
+    await waitFor(() => {
+      assert.equal(saveRequests, 1)
+      const cancel = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Cancel')
+      assert.ok(cancel?.disabled)
+    })
+    assert.equal(Boolean(probeSignal), false)
+    assert.deepEqual(messages, [])
+    assert.deepEqual(closed, [])
+
+    await act(async () => { finishCommit() })
+    await waitFor(() => {
+      assert.ok(probeSignal)
+      assert.equal(document.querySelector('[role="status"]')?.textContent?.trim(), 'Server added. Checking the connection.')
+    })
+    const stop = [...document.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Stop checking')
+    assert.ok(stop && !stop.disabled)
+    await act(async () => { stop.click() })
+
+    assert.equal(probeSignal?.aborted, true)
+    assert.deepEqual(closed, [false])
+    assert.equal(saveRequests, 1)
+    assert.deepEqual(messages, [
+      { type: 'loading', message: 'Server added' },
+      { type: 'success', message: 'Server added', id: notice },
+    ])
+  } finally {
+    finishCommit()
+    try { await view?.unmount() } finally {
+      globalThis.fetch = originalFetch
+      toast.loading = originalLoading
+      toast.success = originalSuccess
+    }
+  }
+})

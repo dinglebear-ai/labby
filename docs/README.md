@@ -19,6 +19,7 @@ Historical material under `docs/archive/`, plans, and dated task records is not 
 - [Conventions](./CONVENTIONS.md) — engineering rules that current code is expected to follow.
 - [Service documentation index](./services/README.md) and [service model](./dev/SERVICES.md) — product behavior plus the current registered-service and onboarding contracts.
 - [CLI](./surfaces/CLI.md), [HTTP API](./surfaces/HTTP_API.md), [MCP](./surfaces/MCP.md), [MCP conformance](./surfaces/MCP_CONFORMANCE.md), and [Transport](./surfaces/TRANSPORT.md) — public surface behavior and protocol contracts.
+- [CLI-backed MCP servers](./guides/CLI_MCP.md) — serve approved local CLI tools over standard MCP stdio.
 - [Skills and Loadouts](./guides/SKILLS_AND_LOADOUTS.md) — Agent Skills trust/exposure and route Loadout projections.
 - [Claude and Codex Artifact authoring](./artifacts/provider-authoring-reference.md) — official provider formats/frontmatter, sidecars, manifests, validation rules, and Creator mapping.
 - [Phoenix Assistant](./services/PHOENIX_ASSISTANT.md) — App Server chronology, reasoning/tool event timeline, attachments, context usage, and verification oracles.

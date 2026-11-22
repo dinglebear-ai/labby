@@ -814,6 +814,9 @@ fn leaf_plan(path: &str) -> Option<LeafPlan> {
         | "state restore" => LeafPlan::Exempt(
             "requires a configuration/state fixture or intentionally mutates durable state",
         ),
+        "cli serve" => LeafPlan::Exempt(
+            "starts a long-running stdio transport; cli_mcp::direct_cli_mcp_negotiates_lists_and_calls_without_gateway owns its protocol and lifecycle checks",
+        ),
         "serve mcp" | "mcp" | "proxy" => {
             LeafPlan::Exempt("starts a long-running transport and requires lifecycle orchestration")
         }

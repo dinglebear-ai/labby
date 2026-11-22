@@ -796,7 +796,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slice: [gateway, gateway-host, integrated-gateway, fs, skills]
+        slice: [gateway, gateway-host, integrated-gateway, fs, skills, openapi-mcp]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:

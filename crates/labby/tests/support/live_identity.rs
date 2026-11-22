@@ -150,13 +150,23 @@ impl LiveIdentity {
         policy_text: &str,
         scopes: &[&str],
     ) -> Result<Self, String> {
-        Self::bootstrap_with_policy_issuer_and_loadout(
+        Self::bootstrap_with_policy_scopes_and_env(subject, policy_text, scopes, &[]).await
+    }
+
+    pub(crate) async fn bootstrap_with_policy_scopes_and_env(
+        subject: &str,
+        policy_text: &str,
+        scopes: &[&str],
+        daemon_env: &[(&str, &str)],
+    ) -> Result<Self, String> {
+        Self::bootstrap_with_policy_issuer_and_loadout_and_env(
             subject,
             300,
             policy_text,
             PUBLIC_HOST,
             LOADOUT_ID,
             scopes,
+            daemon_env,
         )
         .await
     }

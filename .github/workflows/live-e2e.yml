@@ -127,7 +127,7 @@ jobs:
           CARGO_BUILD_JOBS: "2"
         run: |
           set -euo pipefail
-          cargo build -p labby --all-features --bin labby --locked
+          cargo build -p labby --all-features --bin labby --bin labby-openapi-mcp --locked
           cargo test -p labby --all-features --locked --no-run \
             --test action_matrix_completeness \
             --test live_http_routes --test live_cli_actions --test live_api_actions \

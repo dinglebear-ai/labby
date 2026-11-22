@@ -569,6 +569,8 @@ pub async fn run() -> ExitCode {
                 false
             }
         };
+    #[cfg(target_os = "linux")]
+    let uses_default_config = uses_default_config || matches!(cli.command, cli::Command::Cli(_));
     if uses_default_config {
         return match cli::dispatch(cli, config::LabConfig::default()).await {
             Ok(code) => code,
