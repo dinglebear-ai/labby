@@ -36,6 +36,11 @@
       "manifest": "packages/labby-microsandbox/package.json",
       "lockfile": "packages/labby-microsandbox/package-lock.json",
       "manager": "npm"
+    },
+    {
+      "manifest": "tools/verification/conformance/package.json",
+      "lockfile": "tools/verification/conformance/package-lock.json",
+      "manager": "npm"
     }
   ],
   "ignored_advisories": []
