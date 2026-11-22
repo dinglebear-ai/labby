@@ -311,6 +311,7 @@ fn register_transient_manager(
     };
 
     let config = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,

@@ -20,7 +20,6 @@ mod subject_peer;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(feature = "skills")]
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -35,9 +34,9 @@ use labby_runtime::skills::digest::ResourceDigest;
 #[cfg(feature = "skills")]
 use labby_runtime::skills::{
     SkillDiscoverRequest, SkillGetRequest, SkillId, SkillProvider, SkillProviderDeadline,
-    SkillProviderError, SkillProviderId, SkillResourceReadRequest,
+    SkillProviderId, SkillResourceReadRequest,
 };
-use labby_runtime::skills::{SkillRejection, limits};
+use labby_runtime::skills::{SkillProviderError, SkillRejection, limits};
 
 use super::testsupport::*;
 
@@ -537,7 +536,9 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         "frontmatter": { "name": "generated", "description": "d" },
         "resources": "dynamic"
     });
-    let server = SkillsServer::new(vec![json!({ "skills": [good, bad, unverifiable] })]);
+    let server = SkillsServer::new(vec![
+        json!({ "skills": [good, bad, unverifiable, {"uri": 42}, {"frontmatter": []}] }),
+    ]);
     let pool = catalog_pool_with_server("up", server).await;
 
     let skills = pool
@@ -545,15 +546,22 @@ async fn one_malformed_skill_does_not_sink_the_upstream() {
         .await
         .expect("the upstream survives its own bad skills");
 
-    assert_eq!(skills.discovered_count, 3);
+    assert_eq!(skills.discovered_count, 5);
     assert_eq!(skills.skills.len(), 1);
     assert_eq!(skills.skills[0].name, "alpha");
-    assert_eq!(skills.excluded_count(), 2);
+    assert_eq!(skills.excluded_count(), 4);
     let reasons: Vec<SkillRejection> = skills
         .excluded
         .iter()
         .map(|excluded| excluded.reason)
         .collect();
+    assert_eq!(
+        reasons
+            .iter()
+            .filter(|r| **r == SkillRejection::MalformedEntry)
+            .count(),
+        2
+    );
     assert!(reasons.contains(&SkillRejection::ManifestMissingSkillMd));
     assert!(reasons.contains(&SkillRejection::MissingManifest));
     assert!(skills.excluded.iter().any(|excluded| {
@@ -1633,7 +1641,7 @@ async fn invalidation_drops_every_subject_for_one_upstream() {
         json!({ "skills": [entry("up", "alpha")], "ttlMs": 600_000 }),
     ]);
     let calls = Arc::clone(&server.list_calls);
-    let pool = subject_catalog_pool_with_server("up", server).await;
+    let pool = subject_catalog_pool_with_server("up", server.clone()).await;
     let config = oauth_skills_config("up", None);
 
     pool.upstream_skills(&config, Some("alice"))
@@ -1646,12 +1654,119 @@ async fn invalidation_drops_every_subject_for_one_upstream() {
 
     // A snapshot outliving its connection would serve a catalog Labby can no
     // longer honor a read against.
-    pool.invalidate_upstream_skills("up").await;
+    pool.invalidate_oauth_subject_sessions("up", "alice", "test")
+        .await;
+    assert!(
+        pool.skills_cache
+            .read()
+            .await
+            .contains_key(&("up".into(), Some("bob".into())))
+    );
+    assert!(
+        !pool
+            .skills_cache
+            .read()
+            .await
+            .contains_key(&("up".into(), Some("alice".into())))
+    );
+    pool.invalidate_oauth_upstream_sessions(&["up".into()], "test")
+        .await;
     assert!(pool.upstreams_with_cached_skills().await.is_empty());
 
+    pool.install_test_subject_server_for_upstream(&config, "alice", server)
+        .await;
     pool.upstream_skills(&config, Some("alice"))
         .await
         .expect("refetch");
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn full_direct_skill_cache_evicts_only_the_least_recent_owner() {
+    let pool = catalog_pool_with_server("up", SkillsServer::new(vec![json!({"skills":[]})])).await;
+    let config = skills_config("up", None);
+    pool.upstream_skills(&config, None).await.unwrap();
+    let candidate = |i| {
+        let wire = serde_json::from_value(entry("up", &format!("skill-{i}"))).unwrap();
+        labby_runtime::skills::validate_skill_entry(&wire).unwrap()
+    };
+    for i in 0..limits::MAX_SKILLS_PER_UPSTREAM {
+        pool.store_direct_skill(&config, None, candidate(i))
+            .await
+            .unwrap();
+    }
+    {
+        let mut cache = pool.skills_cache.write().await;
+        let direct = &mut cache.get_mut(&("up".into(), None)).unwrap().direct;
+        for i in [0, 1] {
+            direct.get_mut(&candidate(i).entry.uri).unwrap().last_used -=
+                Duration::from_secs(2 - i as u64);
+        }
+    }
+    // Keep the first owner hot while a different caller requests a new one.
+    assert!(
+        pool.cached_unlisted_skill_owner(&config, Some("reader"), &candidate(0).entry.uri)
+            .await
+            .is_some()
+    );
+    pool.store_direct_skill(
+        &config,
+        Some("other"),
+        candidate(limits::MAX_SKILLS_PER_UPSTREAM),
+    )
+    .await
+    .unwrap();
+    for i in 0..=limits::MAX_SKILLS_PER_UPSTREAM {
+        assert_eq!(
+            pool.cached_unlisted_skill_owner(&config, None, &candidate(i).entry.uri)
+                .await
+                .is_some(),
+            i != 1
+        );
+    }
+}
+
+#[tokio::test]
+async fn stale_skill_reads_share_refresh_and_cool_down_after_failure() {
+    let server = SkillsServer::new(vec![
+        json!({"skills":[entry("up","old")]}),
+        json!({"skills":[entry("up","new")]}),
+        json!({"skills":"malformed"}),
+    ]);
+    let calls = Arc::clone(&server.list_calls);
+    let pool = catalog_pool_with_server("up", server).await;
+    let config = skills_config("up", None);
+    let key = ("up".to_string(), None);
+    assert_eq!(
+        pool.upstream_skills(&config, None).await.unwrap().skills[0].name,
+        "old"
+    );
+    for expected in ["old", "new"] {
+        pool.skills_cache
+            .write()
+            .await
+            .get_mut(&key)
+            .unwrap()
+            .expire_now();
+        let served = pool.upstream_skills(&config, None).await.unwrap();
+        assert_eq!(served.skills[0].name, expected);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let cached = pool.cached_skills(&key).await.unwrap();
+                if !cached.refreshing && (cached.is_fresh() || cached.retry_after().is_some()) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    for _ in 0..3 {
+        let stale = pool.upstream_skills(&config, None).await.unwrap();
+        assert_eq!(stale.skills[0].name, "new");
+        assert!(stale.retry_after_ms.is_some());
+    }
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
@@ -1799,10 +1914,7 @@ async fn a_resource_whose_raw_size_disagrees_with_its_manifest_is_refused() {
         )
         .await
         .expect_err("manifest size is verified independently of its digest");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
-    );
+    assert!(matches!(error, SkillProviderError::Integrity { .. }));
 }
 
 #[tokio::test]
@@ -1837,11 +1949,7 @@ async fn a_body_whose_frontmatter_contradicts_its_entry_is_refused() {
         )
         .await
         .expect_err("a body that contradicts its entry must be refused");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH,
-        "the digest matched; the entry is what lied"
-    );
+    assert!(matches!(error, SkillProviderError::Integrity { .. }));
 }
 
 #[tokio::test]
@@ -1858,10 +1966,7 @@ async fn a_tampered_proxied_file_returns_zero_bytes() {
         )
         .await
         .expect_err("tampered content must be refused");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH
-    );
+    assert!(matches!(error, SkillProviderError::Integrity { .. }));
 }
 
 #[tokio::test]
@@ -1879,10 +1984,7 @@ async fn a_file_absent_from_the_manifest_is_refused_rather_than_fetched() {
         )
         .await
         .expect_err("an unlisted file must be refused");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
-    );
+    assert_eq!(error, SkillProviderError::ManifestStale);
 }
 
 #[tokio::test]
@@ -1901,10 +2003,7 @@ async fn duplicate_resource_bindings_are_refused_instead_of_using_iteration_orde
         )
         .await
         .expect_err("an ambiguous resource owner must never win by iteration order");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
-    );
+    assert_eq!(error, SkillProviderError::ManifestStale);
 }
 
 #[tokio::test]
@@ -1924,10 +2023,7 @@ async fn a_hidden_skills_files_are_not_readable_by_uri() {
         )
         .await
         .expect_err("a skill hidden from the listing must also be unreadable");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
-    );
+    assert_eq!(error, SkillProviderError::ManifestStale);
 }
 
 #[tokio::test]
@@ -1947,10 +2043,7 @@ async fn provider_read_binds_the_resource_to_the_requested_skill_identity() {
         )
         .await
         .expect_err("a resource owned by another skill must not be relabeled");
-    assert_eq!(
-        error.kind(),
-        labby_runtime::skills::KIND_SKILL_MANIFEST_STALE
-    );
+    assert_eq!(error, SkillProviderError::ManifestStale);
 }
 
 // ── Native upstream schemes (SEP: "No scheme is privileged") ─────────────────

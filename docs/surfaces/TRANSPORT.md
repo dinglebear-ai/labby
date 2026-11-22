@@ -46,8 +46,9 @@ labby serve --host 127.0.0.1 --port 8765
 ```
 
 When `labby mcp` starts, it probes the local daemon. If one is reachable, it
-becomes a transparent stdio-to-MCP bridge: tools, resources, prompts,
-notifications, cancellation, and task responses are forwarded to the daemon.
+forwards tool, resource, prompt, and task requests to the daemon. The bridge
+uses a separate MCP connection with its own request IDs. Daemon progress and
+logging notifications are not relayed to the stdio client.
 The bridge does not create a second gateway manager, upstream pool, or OAuth
 state, so the local client sees the same configuration and connections as the
 web UI and HTTP clients.

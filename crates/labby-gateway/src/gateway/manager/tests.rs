@@ -37,6 +37,7 @@ mod lifecycle;
 mod oauth;
 mod publication;
 mod recovery;
+mod secret_env;
 mod views;
 mod virtual_servers;
 
@@ -406,6 +407,7 @@ async fn fixture_oauth_resources(dir: &tempfile::TempDir) -> (SqliteStore, Encry
 
 fn fixture_stdio_upstream(name: &str) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -435,6 +437,7 @@ fn fixture_stdio_upstream(name: &str) -> UpstreamConfig {
 
 fn fixture_http_upstream(name: &str) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -566,7 +569,7 @@ fn healthy_entry_with_typed_tool(
     let upstream_tool = UpstreamTool {
         tool,
         input_schema: None,
-        output_schema: Some(output_schema),
+        output_schema: Some(output_schema.into()),
         upstream_name: Arc::clone(&upstream_name),
         destructive: false,
     };

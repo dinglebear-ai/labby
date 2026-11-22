@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
@@ -83,6 +84,7 @@ pub(crate) struct CatalogSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ToolCatalogSnapshot {
+    #[cfg(test)]
     pub(crate) tools: BTreeSet<String>,
     /// SHA-256 of the canonical, post-filter descriptor set presented to this
     /// peer. The digest includes every serialized Tool field, including schemas,
@@ -100,12 +102,14 @@ pub(crate) struct CatalogChangeSet {
 impl ToolCatalogSnapshot {
     #[must_use]
     pub(crate) fn from_descriptors(descriptors: &[Tool]) -> Self {
-        let tools = descriptors
-            .iter()
-            .map(|tool| tool.name.as_ref().to_string())
-            .collect();
+        #[cfg(test)]
+        super::peer_contract::CONTRACT_BUILD_COUNT.update(|count| count + 1);
         Self {
-            tools,
+            #[cfg(test)]
+            tools: descriptors
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect(),
             contract_hash: descriptor_contract_hash(descriptors),
         }
     }
@@ -121,6 +125,7 @@ impl ToolCatalogSnapshot {
         Self::from_descriptors(&descriptors)
     }
 
+    #[cfg(test)]
     pub(crate) fn changes_since(&self, before: &Self) -> CatalogChangeSet {
         CatalogChangeSet {
             tools_changed: before.contract_hash != self.contract_hash,
@@ -390,16 +395,6 @@ impl LabMcpServer {
         self.peer_contract().code_mode_visibility().await
     }
 
-    fn service_visible_by_env_or_gateway(&self, service: &str) -> bool {
-        #[cfg(feature = "gateway")]
-        let gateway_available = self.gateway_manager.is_some();
-        #[cfg(not(feature = "gateway"))]
-        let gateway_available = false;
-        crate::registry::lab_show_all_enabled()
-            || crate::registry::service_visible_with_env(service)
-            || gateway_available
-    }
-
     #[cfg(all(test, feature = "proxy-testkit"))]
     pub(crate) fn builtin_prompt_names(&self) -> Vec<String> {
         list_builtin_prompts()
@@ -421,30 +416,18 @@ impl LabMcpServer {
     }
 
     pub(crate) async fn catalog_json(&self) -> anyhow::Result<Value> {
-        let filtered;
-        #[cfg(feature = "gateway")]
-        let show_all_for_gateway = self.gateway_manager.is_some();
-        #[cfg(not(feature = "gateway"))]
-        let show_all_for_gateway = false;
-        let registry = if crate::registry::lab_show_all_enabled() || show_all_for_gateway {
-            &self.registry
-        } else {
-            filtered = crate::registry::filter_by_configured_env(&self.registry);
-            &filtered
-        };
-        let mut catalog = crate::catalog::build_catalog(registry);
+        Ok(serde_json::to_value(self.visible_catalog().await)?)
+    }
+
+    pub(crate) async fn visible_catalog(&self) -> crate::catalog::Catalog {
+        let mut catalog = crate::catalog::build_catalog(&self.registry);
         let mut services = Vec::new();
         for mut service in catalog.services {
             let visible_on_mcp = self.service_visible_on_mcp(&service.name).await;
             if !visible_on_mcp {
                 continue;
             }
-            if !self.service_visible_by_env_or_gateway(&service.name) {
-                continue;
-            }
-            if let Some(allowed_actions) = self.allowed_mcp_actions(&service.name).await
-                && !allowed_actions.is_empty()
-            {
+            if let Some(allowed_actions) = self.allowed_mcp_actions(&service.name).await {
                 service
                     .actions
                     .retain(|action| allowed_actions.contains(&action.name));
@@ -452,33 +435,32 @@ impl LabMcpServer {
             services.push(service);
         }
         catalog.services = services;
-        Ok(serde_json::to_value(catalog)?)
+        catalog
     }
 
-    pub(crate) async fn service_actions_json(&self, service: &str) -> anyhow::Result<Value> {
+    pub(crate) async fn service_actions_json(
+        &self,
+        service: &str,
+    ) -> Result<Value, rmcp::ErrorData> {
+        let uri = format!("lab://{service}/actions");
         if !self.service_visible_on_mcp(service).await {
-            anyhow::bail!("unknown service: {service}");
+            return Err(super::resource_errors::unknown(&uri, false));
         }
-        if !self.service_visible_by_env_or_gateway(service) {
-            anyhow::bail!("unknown service: {service}");
-        }
-
         let catalog = crate::catalog::build_catalog(&self.registry);
-        let mut entry = catalog
+        let Some(mut entry) = catalog
             .services
             .into_iter()
             .find(|entry| entry.name == service)
-            .ok_or_else(|| anyhow::anyhow!("unknown service: {service}"))?;
-
-        if let Some(allowed_actions) = self.allowed_mcp_actions(service).await
-            && !allowed_actions.is_empty()
-        {
+        else {
+            return Err(super::resource_errors::unknown(&uri, false));
+        };
+        if let Some(allowed_actions) = self.allowed_mcp_actions(service).await {
             entry
                 .actions
                 .retain(|action| allowed_actions.contains(&action.name));
         }
-
-        Ok(serde_json::to_value(entry.actions)?)
+        serde_json::to_value(entry.actions)
+            .map_err(|err| super::resource_errors::render(&uri, err.to_string()))
     }
 
     #[cfg(all(test, feature = "proxy-testkit"))]
@@ -562,6 +544,7 @@ impl LabMcpServer {
     }
 
     /// Full client-visible tool contract for one authenticated request.
+    #[cfg(test)]
     pub(crate) async fn snapshot_tool_catalog_for_request(
         &self,
         context: &RequestContext<RoleServer>,

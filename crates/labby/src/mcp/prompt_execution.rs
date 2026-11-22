@@ -260,7 +260,6 @@ mod tests {
         TransportBoundAccessContext, attach_project_access_observation, bind_access_context,
         validate_transport_credential_binding,
     };
-    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::mcp::server::LabMcpServer;
 
@@ -284,6 +283,22 @@ mod tests {
                 Some("exact"),
                 None,
             )]))
+        }
+
+        async fn complete(
+            &self,
+            request: rmcp::model::CompleteRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<rmcp::model::CompleteResult, ErrorData> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let name = request
+                .r#ref
+                .as_prompt_name()
+                .or_else(|| request.r#ref.as_resource_uri())
+                .unwrap();
+            Ok(rmcp::model::CompleteResult::new(
+                crate::mcp::completion::completion_info(vec![name.to_owned()]),
+            ))
         }
 
         async fn get_prompt(
@@ -330,6 +345,18 @@ mod tests {
     }
 
     impl ServerHandler for DelayedPromptServer {
+        async fn complete(
+            &self,
+            _: rmcp::model::CompleteRequestParams,
+            _: RequestContext<RoleServer>,
+        ) -> Result<rmcp::model::CompleteResult, ErrorData> {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(rmcp::model::CompleteResult::new(
+                crate::mcp::completion::completion_info(vec!["stale".into()]),
+            ))
+        }
+
         async fn get_prompt(
             &self,
             request: GetPromptRequestParams,
@@ -362,6 +389,7 @@ mod tests {
             upstream: ["alpha"]
                 .into_iter()
                 .map(|name| UpstreamConfig {
+                    secret_env: Default::default(),
                     display_name: None,
                     lifecycle: None,
                     enabled: true,
@@ -557,9 +585,6 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-                LoggingLevel::Emergency,
-            ))),
             route_scope: McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
@@ -689,6 +714,166 @@ mod tests {
             assert_eq!(error.data.as_ref().unwrap()["kind"], "upstream_error");
         }
         assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn project_completions_require_current_asset_use_and_exact_publication() {
+        use rmcp::model::{ArgumentInfo, CompleteRequestParams, Reference, ResourceTemplate};
+        let fixture = fixture().await;
+        let mut config = gateway_config(true);
+        config.upstream[0].proxy_resources = true;
+        config.loadouts[0].expose_resources = true;
+        fixture.manager.try_seed_config(config).await.unwrap();
+        fixture
+            .pool
+            .insert_resource_template_routes_for_tests(
+                "alpha",
+                vec![ResourceTemplate::new("file:///{path}", "files")],
+            )
+            .await;
+        let store = fixture.runtime.store().await.unwrap();
+        let (transport, _client) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(&fixture),
+            transport,
+            None,
+        );
+        for (sql, expected) in [
+            (
+                "UPDATE project_memberships SET role='owner' WHERE project_id='bootstrap-default'",
+                true,
+            ),
+            (
+                "UPDATE project_memberships SET role='member' WHERE project_id='bootstrap-default'",
+                true,
+            ),
+            (
+                "UPDATE project_memberships SET role='viewer' WHERE project_id='bootstrap-default'",
+                false,
+            ),
+        ] {
+            store.execute_test_statement(sql).await.unwrap();
+            for (reference, native) in [
+                (
+                    Reference::for_prompt("alpha/owner/nested/name"),
+                    Some("owner/nested/name"),
+                ),
+                (
+                    Reference::for_resource("lab://upstream/alpha/file:///{path}"),
+                    Some("file:///{path}"),
+                ),
+                (Reference::for_prompt("alpha/unpublished"), None),
+                (
+                    Reference::for_resource("lab://upstream/alpha/file:///{unpublished}"),
+                    None,
+                ),
+            ] {
+                let before = fixture.calls.load(Ordering::SeqCst);
+                let bound =
+                    transport_binding(&fixture, usize::MAX, std::time::SystemTime::now()).await;
+                let result = running
+                    .service()
+                    .complete(
+                        CompleteRequestParams::new(reference, ArgumentInfo::new("target", "")),
+                        handler_context(
+                            running.peer().clone(),
+                            Some(fixture.identity.clone()),
+                            Ok(bound),
+                        ),
+                    )
+                    .await
+                    .unwrap();
+                let values: Vec<_> = native.filter(|_| expected).into_iter().collect();
+                assert_eq!(result.completion.values, values);
+                assert_eq!(
+                    fixture.calls.load(Ordering::SeqCst),
+                    before + usize::from(!values.is_empty())
+                );
+            }
+        }
+        let bound = transport_binding(&fixture, usize::MAX, std::time::SystemTime::now()).await;
+        store
+            .execute_test_statement(
+                "DELETE FROM project_memberships WHERE project_id='bootstrap-default'",
+            )
+            .await
+            .unwrap();
+        let before = fixture.calls.load(Ordering::SeqCst);
+        let denied = running
+            .service()
+            .complete(
+                CompleteRequestParams::new(
+                    Reference::for_prompt("alpha/owner/nested/name"),
+                    ArgumentInfo::new("target", ""),
+                ),
+                handler_context(running.peer().clone(), Some(fixture.identity), Ok(bound)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.completion.values, Vec::<String>::new());
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), before);
+    }
+
+    #[tokio::test]
+    async fn project_completion_discards_results_after_revocation_or_pool_replacement() {
+        use rmcp::model::{ArgumentInfo, CompleteRequestParams, Reference};
+        for revoke in [true, false] {
+            let fixture = fixture().await;
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            fixture
+                .pool
+                .install_prompt_server_for_tests(
+                    "alpha",
+                    DelayedPromptServer {
+                        started: Arc::clone(&started),
+                        release: Arc::clone(&release),
+                        fail: false,
+                    },
+                )
+                .await;
+            fixture
+                .pool
+                .insert_prompt_routes_for_tests(
+                    "alpha",
+                    vec![Prompt::new("owner/nested/name", None::<String>, None)],
+                )
+                .await;
+            let bound = transport_binding(&fixture, usize::MAX, std::time::SystemTime::now()).await;
+            let runtime = Arc::clone(&fixture.runtime);
+            let manager = Arc::clone(&fixture.manager);
+            let identity = fixture.identity.clone();
+            let task = tokio::spawn(async move {
+                crate::mcp::completion::complete_project_reference(
+                    &runtime,
+                    &manager,
+                    &bound,
+                    &identity,
+                    CompleteRequestParams::new(
+                        Reference::for_prompt("alpha/owner/nested/name"),
+                        ArgumentInfo::new("target", ""),
+                    ),
+                )
+                .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), started.notified())
+                .await
+                .unwrap();
+            if revoke {
+                fixture.runtime.store().await.unwrap().execute_test_statement("UPDATE project_memberships SET role='viewer' WHERE project_id='bootstrap-default'").await.unwrap();
+            } else {
+                fixture
+                    .gateway_runtime
+                    .swap(Some(Arc::new(UpstreamPool::new())))
+                    .await;
+                fixture
+                    .gateway_runtime
+                    .swap(Some(Arc::clone(&fixture.pool)))
+                    .await;
+            }
+            release.notify_one();
+            assert!(task.await.unwrap().is_none());
+        }
     }
 
     #[tokio::test]

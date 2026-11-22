@@ -304,6 +304,7 @@ async fn concurrent_caller_content_is_isolated_between_executions() {
     let mut left = test_config(Duration::from_secs(10));
     let mut right = test_config(Duration::from_secs(10));
     left.caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: crate::CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -312,6 +313,7 @@ async fn concurrent_caller_content_is_isolated_between_executions() {
         sub: Some("caller-left".into()),
     };
     right.caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: crate::CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -396,6 +398,7 @@ async fn read_only_entrypoint_keeps_full_result_access_and_ordinary_call_admissi
     let mut config = test_config(Duration::from_secs(10));
     config.capability_filter = ToolScope::default().read_only();
     config.caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: crate::CodeModeCallerCapabilities {
             can_read: true,
             ..Default::default()

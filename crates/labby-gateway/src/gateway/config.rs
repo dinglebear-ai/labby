@@ -195,6 +195,7 @@ pub fn insert_upstream(cfg: &mut GatewayConfig, upstream: UpstreamConfig) -> Res
             existing_id: upstream.name.clone(),
         });
     }
+    validate_managed_launch_target(&upstream)?;
     cfg.upstream_import_tombstones
         .retain(|tombstone| !tombstone_matches_upstream(tombstone, &upstream));
     cfg.upstream.push(upstream);
@@ -215,6 +216,15 @@ pub(crate) fn update_upstream(
             message: format!("gateway `{name}` not found"),
         })?;
 
+    let current = &cfg.upstream[index];
+    let launch_target_changed = patch
+        .command
+        .as_ref()
+        .is_some_and(|command| command != &current.command)
+        || patch
+            .args
+            .as_ref()
+            .is_some_and(|args| args != &current.args);
     let renamed_to = patch.name.clone().filter(|new_name| new_name != name);
     if renamed_to.is_some() {
         ensure_no_startup_mounted_subset_depends_on(cfg, name, "rename")?;
@@ -293,7 +303,13 @@ pub(crate) fn update_upstream(
     if let Some(oauth) = patch.oauth {
         cfg.upstream[index].oauth = oauth;
     }
-    validate_upstream(&cfg.upstream[index], &cfg.gateway)?;
+    let upstream = &cfg.upstream[index];
+    validate_upstream(upstream, &cfg.gateway)?;
+    // A metadata-only edit, including disabling a broken entry, must remain
+    // possible even when the operator-provisioned files are unavailable.
+    if launch_target_changed {
+        validate_managed_launch_target(upstream)?;
+    }
     if let Some(new_name) = renamed_to {
         cascade_upstream_rename(cfg, name, &new_name);
     }
@@ -842,6 +858,7 @@ fn validate_protected_route_loadout_references(cfg: &GatewayConfig) -> Result<()
 pub fn validate_code_mode(
     code_mode: &labby_runtime::gateway_config::CodeModeConfig,
 ) -> Result<(), ToolError> {
+    use labby_runtime::gateway_config::ConfigError::InvalidCodeModeMaxProgrammaticResponseBytes as ProgrammaticBytes;
     code_mode.validate().map_err(|e| match e {
         labby_runtime::gateway_config::ConfigError::InvalidCodeModeTimeout { .. } => {
             ToolError::InvalidParam {
@@ -861,6 +878,10 @@ pub fn validate_code_mode(
                 param: "code_mode.max_response_tokens".to_string(),
             }
         }
+        ProgrammaticBytes { .. } => ToolError::InvalidParam {
+            message: e.to_string(),
+            param: "code_mode.max_programmatic_response_bytes".to_string(),
+        },
         labby_runtime::gateway_config::ConfigError::InvalidSemanticSearchBlendWeight { .. } => {
             ToolError::InvalidParam {
                 message: e.to_string(),
@@ -1191,7 +1212,7 @@ fn invalid_transport_param(reason: &str) -> &'static str {
     }
 }
 
-fn validate_upstream(
+pub(crate) fn validate_upstream(
     upstream: &UpstreamConfig,
     prefs: &GatewayPreferences,
 ) -> Result<(), ToolError> {
@@ -1238,6 +1259,8 @@ fn validate_upstream(
         }
     })?;
 
+    validate_secret_env_mapping(upstream)?;
+
     match (&upstream.url, &upstream.command) {
         (Some(_), Some(_)) => Err(ToolError::InvalidParam {
             message: "gateway must not set both `url` and `command`".to_string(),
@@ -1249,8 +1272,100 @@ fn validate_upstream(
         }),
         (Some(url), None) => validate_gateway_url(url),
         (None, Some(command)) => {
-            validate_stdio_upstream(command, &upstream.args, &upstream.env, prefs)
+            let Some(adapter) = crate::security::guided_stdio::GuidedStdio::from_command(command)
+            else {
+                return validate_stdio_upstream(command, &upstream.args, &upstream.env, prefs);
+            };
+            if prefs.disable_spawn_guard {
+                return Err(ToolError::InvalidParam {
+                    message: "guided adapters require the stdio spawn guard to be enabled".into(),
+                    param: "command".into(),
+                });
+            }
+            adapter.validate(upstream)
         }
+    }
+}
+
+// This is only for a new or changed launch target, not a global config scan.
+// Runtime prepares the same target again before every connection attempt.
+fn validate_managed_launch_target(upstream: &UpstreamConfig) -> Result<(), ToolError> {
+    if let Some(adapter) = upstream
+        .command
+        .as_deref()
+        .and_then(crate::security::guided_stdio::GuidedStdio::from_command)
+    {
+        adapter.prepare(upstream, &upstream.args)?;
+    }
+    Ok(())
+}
+
+/// Validate the names in `secret_env`. Values live in the credential file and
+/// are validated where they are written.
+fn validate_secret_env_mapping(upstream: &UpstreamConfig) -> Result<(), ToolError> {
+    use crate::security::stdio_secret_env::{
+        MAX_SECRET_ENV_ENTRIES, validate_secret_env_credential_name, validate_secret_env_name,
+    };
+
+    if upstream.secret_env.is_empty() {
+        return Ok(());
+    }
+    let invalid = |message: String| ToolError::InvalidParam {
+        message,
+        param: "secret_env".to_string(),
+    };
+    if upstream.command.is_none() {
+        return Err(invalid(
+            "secret env values apply only to stdio upstreams; set `command`".to_string(),
+        ));
+    }
+    if upstream.secret_env.len() > MAX_SECRET_ENV_ENTRIES {
+        return Err(invalid(format!(
+            "an upstream may hold at most {MAX_SECRET_ENV_ENTRIES} secret env values"
+        )));
+    }
+    for (child, credential) in &upstream.secret_env {
+        validate_secret_env_name(child)?;
+        if upstream.env.contains_key(child) {
+            return Err(invalid(format!(
+                "`{child}` is set in both `env` and `secret_env`"
+            )));
+        }
+        if upstream.bearer_token_env.as_deref() == Some(child.as_str()) {
+            return Err(invalid(format!(
+                "`{child}` is already this upstream's bearer_token_env variable"
+            )));
+        }
+        validate_secret_env_credential_name(child, credential)?;
+    }
+    Ok(())
+}
+
+/// Default credential-file key for secret env var `child` of upstream `name`.
+pub(crate) fn default_secret_env_credential_name(name: &str, child: &str) -> String {
+    format!("LABBY_GW_{}_ENV_{child}", normalized_env_segment(name))
+}
+
+fn normalized_env_segment(name: &str) -> String {
+    let normalized = name
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .split('_')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("_");
+    if normalized.is_empty() {
+        "GATEWAY".to_string()
+    } else {
+        normalized
     }
 }
 
@@ -1311,28 +1426,7 @@ pub(crate) fn validate_bearer_token_env_name(value: &str) -> Result<(), ToolErro
 }
 
 pub(crate) fn default_gateway_bearer_env_name(name: &str) -> String {
-    let normalized = name
-        .trim()
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .split('_')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>()
-        .join("_");
-
-    let inner = if normalized.is_empty() {
-        "GATEWAY".to_string()
-    } else {
-        normalized
-    };
-    format!("LABBY_GW_{inner}_AUTH_HEADER")
+    format!("LABBY_GW_{}_AUTH_HEADER", normalized_env_segment(name))
 }
 
 fn looks_like_raw_bearer_token(value: &str) -> bool {

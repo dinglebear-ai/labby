@@ -7,7 +7,7 @@ static EXTERNAL_ENVIRONMENT_KEYS: OnceLock<BTreeSet<String>> = OnceLock::new();
 mod file_update;
 mod header_value;
 pub(crate) use file_update::configured_bearer_token_after_file_update;
-pub(crate) use header_value::configured_header_value;
+pub(crate) use header_value::{configured_header_value, configured_raw_credential};
 
 /// Register the environment authority captured by the host before loading dotenv.
 /// Names only: file-managed credentials are read from the selected installation
@@ -323,6 +323,7 @@ mod tests {
 
     fn test_upstream_config() -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

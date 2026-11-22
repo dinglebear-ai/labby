@@ -307,11 +307,13 @@ impl BoundAccessContext {
     /// Compare every other access fact plus the exact catalog/route publication;
     /// never weaken the general same-permission publication comparison.
     pub(crate) fn authorizes_publish_from(&self, discovery: &Self) -> bool {
+        self.authorizes_from(discovery, Permission::ArtifactPublish)
+    }
+
+    pub(crate) fn authorizes_from(&self, discovery: &Self, permission: Permission) -> bool {
         let access = self.catalog.access();
         let expected = discovery.catalog.access();
-        if access.permission != Permission::ArtifactPublish
-            || expected.permission != Permission::AssetDiscover
-        {
+        if access.permission != permission || expected.permission != Permission::AssetDiscover {
             return false;
         }
         let normalized = crate::access::ProjectPermissionSnapshot {
@@ -373,6 +375,30 @@ impl BoundAccessContext {
                 .any(|candidate| {
                     candidate.upstream_name.as_ref() == upstream
                         && candidate.tool_name.as_ref() == native_name
+                })
+    }
+
+    pub(crate) fn allows_upstream_resource_template_pair(
+        &self,
+        upstream: &str,
+        native_uri_template: &str,
+    ) -> bool {
+        let route = self.route();
+        route.effective_loadout().expose_resources
+            && route
+                .effective_loadout()
+                .upstreams
+                .iter()
+                .any(|name| name == upstream)
+            && self
+                .catalog()
+                .catalog()
+                .resource_templates()
+                .routes()
+                .iter()
+                .any(|candidate| {
+                    candidate.upstream_name.as_ref() == upstream
+                        && candidate.native_uri_template.as_ref() == native_uri_template
                 })
     }
 
@@ -630,25 +656,10 @@ impl ProjectDiscoveryShadow<'_> {
         if binding.validate_not_expired(now).is_err() {
             return None;
         }
-        let core = binding.core();
-        let route = core.route();
         Some(
-            route.effective_loadout().expose_resources
-                && route
-                    .effective_loadout()
-                    .upstreams
-                    .iter()
-                    .any(|name| name == upstream)
-                && core
-                    .catalog()
-                    .catalog()
-                    .resource_templates()
-                    .routes()
-                    .iter()
-                    .any(|candidate| {
-                        candidate.upstream_name.as_ref() == upstream
-                            && candidate.native_uri_template.as_ref() == native_uri_template
-                    }),
+            binding
+                .core()
+                .allows_upstream_resource_template_pair(upstream, native_uri_template),
         )
     }
 
@@ -964,7 +975,6 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
                 "project-route",
                 std::iter::empty::<&str>(),
@@ -1275,6 +1285,7 @@ mod tests {
         .with_builtin_service_registry(Arc::new(crate::registry::build_default_registry()));
         let config = || GatewayConfig {
             upstream: vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -1737,10 +1748,11 @@ mod tests {
                 ),
                 "wave31".into(),
                 Arc::from(snapshot_items),
-                Arc::from([crate::mcp::runtime::ResourceProvenance {
-                    upstream: "alpha".into(),
-                    native_uri: "file:///100".into(),
-                }]),
+                crate::mcp::runtime::ResourceSnapshotDiagnostics {
+                    checked: 1,
+                    would_suppress: 1,
+                    ..Default::default()
+                },
                 Some(cursor_key),
             )
             .await;
@@ -1857,10 +1869,11 @@ mod tests {
                 crate::mcp::runtime::catalog_snapshot_audience(None),
                 "wave36".into(),
                 Arc::from(template_items),
-                Arc::from([crate::mcp::runtime::ResourceTemplateProvenance {
-                    upstream: "alpha".into(),
-                    native_uri_template: "file:///100/{id}".into(),
-                }]),
+                crate::mcp::runtime::ResourceSnapshotDiagnostics {
+                    checked: 1,
+                    would_suppress: 1,
+                    ..Default::default()
+                },
                 Some(template_key),
             )
             .await;
@@ -2346,12 +2359,24 @@ mod tests {
             );
 
             let mut server = project_shadow_test_server();
-            server.route_scope = crate::mcp::route_scope::McpRouteScope::protected_subset(
-                "project-route",
-                [upstream],
-                ["fs", "setup"],
-                false,
-            );
+            server.transport_label = "http";
+            server.route_scope =
+                crate::mcp::route_scope::McpRouteScope::protected_subset_with_capabilities(
+                    "project-route",
+                    [upstream],
+                    ["fs", "setup", "artifact_publish", "artifacts", "tasks"],
+                    crate::mcp::route_scope::McpRouteCapabilityGates::from_loadout(
+                        &GatewayLoadoutConfig {
+                            expose_tools,
+                            ..Default::default()
+                        },
+                    ),
+                );
+            if let crate::mcp::route_scope::McpRouteScope::ProtectedSubset { team_id, .. } =
+                &mut server.route_scope
+            {
+                *team_id = Some("alpha".to_owned());
+            }
             let (io, _client) = tokio::io::duplex(64 * 1024);
             let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, io::Error, _>(
                 server, io, None,
@@ -2366,6 +2391,109 @@ mod tests {
                 .unwrap()
                 .extensions
                 .insert(identity.clone());
+            let parts = context
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .unwrap();
+            parts
+                .extensions
+                .insert(labby_auth::auth_context::AuthContext {
+                    sub: "bound-owner".into(),
+                    issuer: "fixture".into(),
+                    scopes: vec!["lab:admin".into()],
+                    actor_key: None,
+                    email: None,
+                    via_session: false,
+                    csrf_token: None,
+                });
+            if !expose_tools {
+                for (tool, action) in [
+                    ("artifact_publish", "artifacts.publish_skill_archive"),
+                    #[cfg(feature = "skills")]
+                    ("artifacts", "artifacts.list"),
+                ] {
+                    let call = rmcp::model::CallToolRequestParams::new(tool).with_arguments(
+                        serde_json::Map::from_iter([("action".into(), serde_json::json!(action))]),
+                    );
+                    let result = Box::pin(running.service().call_tool_impl(call, context.clone()))
+                        .await
+                        .unwrap();
+                    let envelope: serde_json::Value =
+                        serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+                    assert_eq!(envelope["error"]["kind"], "route_scope_denied", "{tool}");
+                }
+            }
+            if expose_tools {
+                let mut task_context = context.clone();
+                task_context.meta = rmcp::model::RequestMetaObject::with_client_context(
+                    rmcp::model::ProtocolVersion::V_2026_07_28,
+                    rmcp::model::Implementation::new("bound-task-test", "1"),
+                    rmcp::model::ClientCapabilities::builder()
+                        .enable_tasks()
+                        .build(),
+                );
+                let seed = serde_json::json!({"task_id":"example"});
+                assert_eq!(
+                    running
+                        .service()
+                        .native_task_seed(&seed, &task_context)
+                        .await
+                        .unwrap_err()
+                        .kind(),
+                    "forbidden"
+                );
+                task_context
+                    .extensions
+                    .get_mut::<axum::http::request::Parts>()
+                    .unwrap()
+                    .extensions
+                    .remove::<ProjectAccessObservation>();
+                assert_ne!(
+                    running
+                        .service()
+                        .native_task_seed(&seed, &task_context)
+                        .await
+                        .unwrap_err()
+                        .kind(),
+                    "forbidden",
+                    "the same legacy request must reach the fixture's unavailable store"
+                );
+            }
+            #[cfg(feature = "skills")]
+            if expose_tools {
+                for (project, team, expected_message) in [
+                    ("other-project", "alpha", "route's Project"),
+                    ("bootstrap-default", "other-team", "route's Team"),
+                ] {
+                    let mut scoped = context.clone();
+                    let headers = &mut scoped
+                        .extensions
+                        .get_mut::<axum::http::request::Parts>()
+                        .unwrap()
+                        .headers;
+                    headers.insert("x-labby-project-id", project.parse().unwrap());
+                    headers.insert("x-labby-team-id", team.parse().unwrap());
+                    let call = rmcp::model::CallToolRequestParams::new("artifacts").with_arguments(
+                        serde_json::Map::from_iter([(
+                            "action".into(),
+                            serde_json::json!("artifacts.list"),
+                        )]),
+                    );
+                    let result = Box::pin(running.service().call_tool_impl(call, scoped))
+                        .await
+                        .unwrap();
+                    let envelope: serde_json::Value =
+                        serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+                    assert_eq!(envelope["error"]["kind"], "forbidden", "{envelope}");
+                    assert!(
+                        envelope["error"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .contains(expected_message),
+                        "{envelope}"
+                    );
+                }
+            }
             let descriptors = running
                 .service()
                 .peer_contract_for_request(&context)
@@ -2613,7 +2741,6 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             route_scope: crate::mcp::route_scope::McpRouteScope::protected_subset(
                 "project-route",
                 std::iter::empty::<&str>(),
@@ -2660,7 +2787,20 @@ mod tests {
             )
             .await
             .expect("same credential snapshot resumes");
-        assert_eq!(second.tools.len(), 6);
+        let mut listed = first
+            .tools
+            .iter()
+            .chain(&second.tools)
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        listed.sort();
+        let expected = (0..105)
+            .map(|index| format!("project_service_{index:03}"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed, expected,
+            "every granted service appears exactly once"
+        );
         assert!(second.next_cursor.is_none());
 
         let replay = running

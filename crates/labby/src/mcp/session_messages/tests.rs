@@ -89,15 +89,49 @@ async fn rpc(
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
+/// Calls the messages tool, repeating a contended store reply with the same
+/// arguments. The store bounds each operation and reports `Busy` and
+/// `Deadline` as retryable, so on a loaded runner with slow fsync a first
+/// `register` can miss its budget without any defect in the code under test.
 async fn call(router: &Router, token: &str, keys: &[&str], action: &str, params: Value) -> Value {
-    rpc(
-        router,
-        "tools/call",
-        json!({"name":"messages","arguments":{"action":action,"params":params}}),
-        token,
-        keys,
-    )
+    retry_contended_reply(|| {
+        rpc(
+            router,
+            "tools/call",
+            json!({"name":"messages","arguments":{"action":action,"params":params.clone()}}),
+            token,
+            keys,
+        )
+    })
     .await
+}
+
+/// Retries only the two outcomes the store contract makes retryable, on the
+/// shared contended-store backoff, then makes one final attempt. Capacity,
+/// conflict, identity, and outage replies are returned at once.
+async fn retry_contended_reply<Fut>(mut attempt: impl FnMut() -> Fut) -> Value
+where
+    Fut: Future<Output = Value>,
+{
+    for delay in crate::dispatch::codemode_notices::CONTENDED_BACKOFF_MS {
+        let reply = attempt().await;
+        if !is_contended_store_reply(&reply) {
+            return reply;
+        }
+        eprintln!("messages call returned {reply}, retrying the same arguments");
+        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+    }
+    attempt().await
+}
+
+fn is_contended_store_reply(reply: &Value) -> bool {
+    [NoticeError::Busy, NoticeError::Deadline]
+        .into_iter()
+        .map(tool_error)
+        .any(|expected| {
+            reply["error"]["message"].as_str() == Some(&*expected.message)
+                && Some(&reply["error"]["data"]) == expected.data.as_ref()
+        })
 }
 
 fn ok(reply: &Value) -> &Value {
@@ -123,10 +157,10 @@ async fn message_tool_requires_exact_session_proof() {
             json!({"label":"not registered"}),
         )
         .await;
-        assert!(
-            reply["result"]["structuredContent"]["session_id"].is_null(),
-            "{reply}"
-        );
+        let expected = hidden();
+        assert_eq!(reply["error"]["code"], expected.code.0);
+        assert_eq!(reply["error"]["message"], expected.message.as_ref());
+        assert!(reply.get("result").is_none());
     }
     let first = call(
         &router,
@@ -152,7 +186,8 @@ async fn message_tool_requires_exact_session_proof() {
         json!({"to":{"kind":"session","session_id":second_id},"body":"forgery","idempotency_key":"forgery","sender_session_id":second_id}),
     ).await;
     assert_eq!(forged["error"]["data"]["kind"], "invalid_param");
-    let body = "\\".repeat(16_384);
+    let sentinel = "private-proof-sentinel";
+    let body = format!("{sentinel}{}", "\\".repeat(16_384 - sentinel.len()));
     let send = call(&router, token, &[FIRST_KEY], "send",
         json!({"to":{"kind":"session","session_id":second_id},"body":body,"idempotency_key":"proof"})).await;
     let id = &ok(&send)["message_id"];
@@ -164,7 +199,8 @@ async fn message_tool_requires_exact_session_proof() {
         json!({"message_id":id}),
     )
     .await;
-    assert!(sibling["result"]["structuredContent"]["body"].is_null());
+    assert_eq!(sibling["error"]["data"]["kind"], "not_found");
+    assert!(!sibling.to_string().contains(sentinel));
     let read = call(
         &router,
         token,
@@ -432,4 +468,49 @@ async fn verified_oauth_owner_requires_current_consent_and_binds_client() {
     assert_eq!(denied["error"]["data"]["kind"], "forbidden", "{denied}");
     let still_current = call(&router, &tokens[1], &[FIRST_KEY], "sessions", json!({})).await;
     assert_eq!(ok(&still_current)["sessions"].as_array().unwrap().len(), 2);
+}
+
+fn store_reply(error: NoticeError) -> Value {
+    json!({"jsonrpc":"2.0","id":1,"error":tool_error(error)})
+}
+
+#[tokio::test]
+async fn fixture_retries_contended_store_replies_with_the_same_arguments() {
+    let success = json!({"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"session_id":"s"}}});
+    let mut replies = vec![
+        store_reply(NoticeError::Deadline),
+        store_reply(NoticeError::Busy),
+        store_reply(NoticeError::Deadline),
+        store_reply(NoticeError::Busy),
+        store_reply(NoticeError::Deadline),
+        success.clone(),
+    ]
+    .into_iter();
+    let mut attempts = 0;
+    let reply = retry_contended_reply(|| {
+        attempts += 1;
+        std::future::ready(replies.next().unwrap())
+    })
+    .await;
+    assert_eq!(reply, success);
+    assert_eq!(attempts, 6);
+}
+
+#[tokio::test]
+async fn fixture_returns_non_retryable_store_replies_at_once() {
+    for error in [
+        NoticeError::Full,
+        NoticeError::Conflict,
+        NoticeError::Unavailable,
+        NoticeError::Identity,
+    ] {
+        let mut attempts = 0;
+        let reply = retry_contended_reply(|| {
+            attempts += 1;
+            std::future::ready(store_reply(error))
+        })
+        .await;
+        assert_eq!(reply, store_reply(error));
+        assert_eq!(attempts, 1, "{error:?} must not be retried");
+    }
 }

@@ -19,7 +19,17 @@ async fn writable_driver_fixture_publishes_prunes_and_cleans_only_its_owned_stor
     let run = Ulid::from_string(&cfg.artifact_run_id).expect("valid owned run ID");
     let old =
         store.join(Ulid::from(u128::from(run).checked_sub(1).expect("nonzero run ID")).to_string());
-    std::fs::create_dir(&old).expect("owned inactive run");
+    let metadata = old.join(crate::artifact_access::METADATA_DIR);
+    std::fs::create_dir_all(&metadata).expect("owned inactive run");
+    std::fs::write(
+        metadata.join(crate::artifact_access::retention_owner(
+            &cfg.caller,
+            &cfg.capability_filter,
+            &old,
+        )),
+        [],
+    )
+    .unwrap();
     std::fs::write(old.join("old.txt"), b"old").expect("owned inactive payload");
     let outside = tempfile::tempdir().expect("separate disposable store");
     std::fs::write(outside.path().join("sentinel"), b"unchanged").expect("outside sentinel");

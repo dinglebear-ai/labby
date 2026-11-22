@@ -94,7 +94,7 @@ async fn quota_is_enforced_per_inbox_and_globally() {
         let tx = db.transaction()?;
         tx.execute_batch(
             "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<1991)
-             INSERT INTO agent_inboxes
+             INSERT INTO agent_inboxes(id,recipient,scope,expires)
              SELECT 'inbox-'||n,'owner-'||n,'authenticated_client',3600001 FROM seq;
              INSERT INTO agent_event_subscriptions
              (id,recipient,inbox_id,authority_key,callback,secret,secret_fingerprint,expires,generation)
@@ -172,6 +172,119 @@ fn subscribe_request_with_secret(url: &str, secret: &str) -> serde_json::Value {
             "secret":secret
         },
     })
+}
+
+/// True only for the two store outcomes the contention contract makes
+/// retryable with the same arguments, as either surface reports them: the
+/// HTTP error body (`kind` and `message`) or an MCP JSON-RPC error
+/// (`error.data.kind` and `error.message`).
+fn is_contended_store_reply(body: &serde_json::Value) -> bool {
+    [NoticeError::Busy, NoticeError::Deadline]
+        .into_iter()
+        .any(|error| {
+            let (kind, message) = (error.kind(), error.to_string());
+            (body["kind"] == kind && body["message"] == message)
+                || (body["error"]["data"]["kind"] == kind && body["error"]["message"] == message)
+        })
+}
+
+/// Repeat a request that drew a contended store reply, on the shared
+/// contended-store backoff, then make one final attempt. The events worker
+/// holds its own store handle, standing in for another process on the same
+/// file, so a request that overlaps one of its passes can miss the store's
+/// bound on a loaded runner. Publishing carries a dedupe key and
+/// unsubscribing is idempotent, so the same arguments are safe to repeat.
+async fn retry_contended_store<Fut>(
+    mut attempt: impl FnMut() -> Fut,
+) -> (axum::http::StatusCode, serde_json::Value)
+where
+    Fut: Future<Output = (axum::http::StatusCode, serde_json::Value)>,
+{
+    for delay in super::super::codemode_notices::CONTENDED_BACKOFF_MS {
+        let (status, body) = attempt().await;
+        if !is_contended_store_reply(&body) {
+            return (status, body);
+        }
+        eprintln!("store call returned {status} {body}, retrying the same arguments");
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+    }
+    attempt().await
+}
+
+async fn publish_error_body(error: NoticeError) -> (axum::http::StatusCode, serde_json::Value) {
+    use axum::response::IntoResponse as _;
+    // Built exactly as the agent publish route maps a store failure.
+    let response = crate::api::error::ApiError::new(crate::api::error::ToolError::Sdk {
+        sdk_kind: error.kind().to_owned(),
+        message: error.to_string(),
+    })
+    .with_service_action("notifications", "publish_agent")
+    .into_response();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn contended_store_replies_are_recognized_on_both_surfaces() {
+    for error in [NoticeError::Busy, NoticeError::Deadline] {
+        let (status, body) = publish_error_body(error).await;
+        assert!(is_contended_store_reply(&body), "{error:?} {status} {body}");
+        let mcp = serde_json::json!({"jsonrpc":"2.0","id":1,"error":{
+            "code":-32000,"message":error.to_string(),"data":{"kind":error.kind()}
+        }});
+        assert!(is_contended_store_reply(&mcp), "{mcp}");
+    }
+    // Capacity shares Busy's `rate_limited` kind but is not retryable.
+    for error in [
+        NoticeError::Full,
+        NoticeError::Conflict,
+        NoticeError::Unavailable,
+        NoticeError::Forbidden,
+    ] {
+        let (status, body) = publish_error_body(error).await;
+        assert!(
+            !is_contended_store_reply(&body),
+            "{error:?} {status} {body}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn contended_store_replies_are_repeated_until_they_succeed() {
+    let mut replies = Vec::new();
+    for error in [
+        NoticeError::Deadline,
+        NoticeError::Busy,
+        NoticeError::Deadline,
+        NoticeError::Busy,
+        NoticeError::Deadline,
+    ] {
+        replies.push(publish_error_body(error).await);
+    }
+    let success = (axum::http::StatusCode::OK, serde_json::json!({"id":"n"}));
+    replies.push(success.clone());
+    let mut replies = replies.into_iter();
+    let mut attempts = 0;
+    let reply = retry_contended_store(|| {
+        attempts += 1;
+        std::future::ready(replies.next().unwrap())
+    })
+    .await;
+    assert_eq!(reply, success);
+    assert_eq!(attempts, 6);
+
+    let full = publish_error_body(NoticeError::Full).await;
+    let mut attempts = 0;
+    let reply = retry_contended_store(|| {
+        attempts += 1;
+        std::future::ready(full.clone())
+    })
+    .await;
+    assert_eq!(reply, full);
+    assert_eq!(attempts, 1);
 }
 
 #[tokio::test]
@@ -447,24 +560,28 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
             "inbox_id":inbox,"source":source,"level":"info","message":"CI completed.","dedupe_key":key
         })
     };
-    let (status, filtered) = send(
-        enabled.clone(),
-        "/v1/notifications/agent",
-        "",
-        publish("logs", "filtered"),
-        true,
-        false,
-    )
+    let (status, filtered) = retry_contended_store(|| {
+        send(
+            enabled.clone(),
+            "/v1/notifications/agent",
+            "",
+            publish("logs", "filtered"),
+            true,
+            false,
+        )
+    })
     .await;
     assert_eq!(status, StatusCode::OK, "{filtered}");
-    let (status, published) = send(
-        enabled.clone(),
-        "/v1/notifications/agent",
-        "",
-        publish("ci", "matching"),
-        true,
-        false,
-    )
+    let (status, published) = retry_contended_store(|| {
+        send(
+            enabled.clone(),
+            "/v1/notifications/agent",
+            "",
+            publish("ci", "matching"),
+            true,
+            false,
+        )
+    })
     .await;
     assert_eq!(status, StatusCode::OK, "{published}");
     let (_, delivered) = tokio::time::timeout(Duration::from_secs(5), received.recv())
@@ -476,26 +593,30 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
     assert_eq!(delivered["data"]["message"], "CI completed.");
     https.await.unwrap();
     unsubscribe["_meta"] = modern_meta("c1");
-    let (_, removed) = send(
-        enabled.clone(),
-        "/mcp",
-        "events/unsubscribe",
-        unsubscribe,
-        true,
-        true,
-    )
+    let (_, removed) = retry_contended_store(|| {
+        send(
+            enabled.clone(),
+            "/mcp",
+            "events/unsubscribe",
+            unsubscribe.clone(),
+            true,
+            true,
+        )
+    })
     .await;
     assert_eq!(removed["result"], json!({}), "{removed}");
-    let (status, _) = send(
-        enabled,
-        "/v1/notifications/agent",
-        "",
-        publish("ci", "after"),
-        true,
-        false,
-    )
+    let (status, after) = retry_contended_store(|| {
+        send(
+            enabled.clone(),
+            "/v1/notifications/agent",
+            "",
+            publish("ci", "after"),
+            true,
+            false,
+        )
+    })
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::OK, "{after}");
     drop(guard);
     tokio::time::timeout(Duration::from_secs(3), worker)
         .await

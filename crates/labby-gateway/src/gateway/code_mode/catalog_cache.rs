@@ -107,8 +107,8 @@ struct CachedUpstreamFailure {
 #[derive(Clone, Serialize, Deserialize)]
 struct CachedTool {
     tool: rmcp::model::Tool,
-    input_schema: Option<Value>,
-    output_schema: Option<Value>,
+    input_schema: Option<Arc<Value>>,
+    output_schema: Option<Arc<Value>>,
     destructive: bool,
 }
 
@@ -424,7 +424,7 @@ fn merge_update_into_cache(
         .get(&update.upstream_name)
         .is_some_and(|existing| {
             existing.fingerprint == update.fingerprint
-                && existing.saved_at_unix == saved_at_unix
+                && saved_at_unix.saturating_sub(existing.saved_at_unix) < CACHE_TTL.as_secs() / 4
                 && tools_fingerprint_matches(existing, &tools)
         });
     if unchanged {
@@ -495,7 +495,7 @@ mod tests {
                 "test tool",
                 Arc::new(serde_json::Map::new()),
             ),
-            input_schema: Some(serde_json::json!({"type": "object"})),
+            input_schema: Some(serde_json::json!({"type": "object"}).into()),
             output_schema: None,
             upstream_name: Arc::from("alpha"),
             destructive: true,
@@ -529,7 +529,7 @@ mod tests {
                 saved_at_unix: now_unix(),
                 tools: vec![CachedTool {
                     tool: test_tool("ping").tool,
-                    input_schema: Some(serde_json::json!({"type": "object"})),
+                    input_schema: Some(serde_json::json!({"type": "object"}).into()),
                     output_schema: None,
                     destructive: true,
                 }],
@@ -561,8 +561,8 @@ mod tests {
                 saved_at_unix: now_unix(),
                 tools: vec![CachedTool {
                     tool: test_tool("typed").tool,
-                    input_schema: Some(serde_json::json!({"type": "object"})),
-                    output_schema: Some(output_schema.clone()),
+                    input_schema: Some(serde_json::json!({"type": "object"}).into()),
+                    output_schema: Some(output_schema.clone().into()),
                     destructive: false,
                 }],
             },
@@ -572,14 +572,14 @@ mod tests {
         let restored: CatalogCache = serde_json::from_slice(&bytes).expect("deserializes");
         let tools = restored.fresh_tools("alpha", "fp").expect("entry is fresh");
 
-        assert_eq!(tools[0].output_schema, Some(output_schema));
+        assert_eq!(tools[0].output_schema, Some(output_schema.into()));
     }
 
     #[test]
     fn cache_update_stores_output_schema_for_future_cli_catalogs() {
         let mut tool = test_tool("typed");
         let output_schema = typed_output_schema();
-        tool.output_schema = Some(output_schema.clone());
+        tool.output_schema = Some(output_schema.clone().into());
         let update = CatalogCacheUpdate {
             upstream_name: "alpha".to_string(),
             fingerprint: "fp".to_string(),
@@ -597,7 +597,7 @@ mod tests {
             })
             .collect();
 
-        assert_eq!(cached[0].output_schema, Some(output_schema));
+        assert_eq!(cached[0].output_schema, Some(output_schema.into()));
     }
 
     #[test]
@@ -644,7 +644,7 @@ mod tests {
         let stale_saved_at = now_unix() - CACHE_TTL.as_secs() - 60;
         let tool = CachedTool {
             tool: test_tool("ping").tool,
-            input_schema: Some(serde_json::json!({"type": "object"})),
+            input_schema: Some(serde_json::json!({"type": "object"}).into()),
             output_schema: None,
             destructive: false,
         };
@@ -688,6 +688,7 @@ mod tests {
     #[test]
     fn fingerprint_is_stable_and_config_sensitive() {
         let config = UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

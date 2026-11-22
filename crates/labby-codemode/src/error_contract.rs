@@ -73,6 +73,9 @@ pub struct CodeModeCallError {
     /// Sanitized evidence retained from a completed upstream tool failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<CodeModeErrorEvidence>,
+    /// Variant-specific caller diagnostics from the shared ToolError contract.
+    #[serde(flatten)]
+    diagnostics: Map<String, Value>,
 }
 
 impl<'de> Deserialize<'de> for CodeModeCallError {
@@ -102,9 +105,17 @@ impl<'de> Deserialize<'de> for CodeModeCallError {
             safety: CodeModeToolSafetyHints,
             #[serde(default)]
             evidence: Option<CodeModeErrorEvidence>,
+            #[serde(flatten)]
+            diagnostics: Map<String, Value>,
         }
 
-        let wire = WireError::deserialize(deserializer)?;
+        let mut wire = WireError::deserialize(deserializer)?;
+        wire.diagnostics.retain(|key, _| {
+            matches!(
+                key.as_str(),
+                "required_scopes" | "valid" | "param" | "hint" | "existing_id"
+            )
+        });
         let recovery = wire
             .recovery
             .unwrap_or_else(|| recovery_for_kind(&wire.kind, &wire.safety, None));
@@ -127,6 +138,7 @@ impl<'de> Deserialize<'de> for CodeModeCallError {
             cause: wire.cause,
             safety: wire.safety,
             evidence: wire.evidence,
+            diagnostics: wire.diagnostics,
         })
     }
 }
@@ -149,6 +161,7 @@ impl CodeModeCallError {
             cause: None,
             safety: CodeModeToolSafetyHints::default(),
             evidence: None,
+            diagnostics: Map::new(),
         }
     }
 
@@ -186,6 +199,7 @@ impl CodeModeCallError {
             cause: (!cause.is_empty()).then_some(cause),
             safety,
             evidence: (!evidence.is_empty()).then_some(evidence),
+            diagnostics: Map::new(),
         }
     }
 
@@ -238,6 +252,7 @@ Upstream transport error:
             cause: (!cause.is_empty()).then_some(cause),
             safety,
             evidence: None,
+            diagnostics: Map::new(),
         }
     }
 
@@ -285,6 +300,7 @@ Upstream transport error:
             cause: (!cause.is_empty()).then_some(cause),
             safety,
             evidence: None,
+            diagnostics: Map::new(),
         }
     }
 
@@ -444,7 +460,13 @@ impl From<ToolError> for CodeModeCallError {
                 ),
             }
         }
-        Self::new(error.kind(), error.user_message())
+        let mut result = Self::new(error.kind(), error.user_message());
+        if !matches!(error, ToolError::Contract { .. })
+            && let Value::Object(fields) = error.extra_fields()
+        {
+            result.diagnostics = fields;
+        }
+        result
     }
 }
 
@@ -489,6 +511,43 @@ fn recovery_for_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_errors_preserve_actionable_fields() {
+        for (error, key, expected) in [
+            (
+                ToolError::Forbidden {
+                    message: "denied".into(),
+                    required_scopes: vec!["lab".into()],
+                },
+                "required_scopes",
+                serde_json::json!(["lab"]),
+            ),
+            (
+                ToolError::InvalidParam {
+                    message: "invalid".into(),
+                    param: "name".into(),
+                },
+                "param",
+                serde_json::json!("name"),
+            ),
+            (
+                ToolError::AmbiguousTool {
+                    message: "choose one".into(),
+                    valid: vec!["demo::x".into()],
+                },
+                "valid",
+                serde_json::json!(["demo::x"]),
+            ),
+        ] {
+            let mapped = CodeModeCallError::from(error);
+            assert_eq!(serde_json::to_value(&mapped).unwrap()[key], expected);
+            assert_eq!(
+                CodeModeCallError::from(mapped.clone().into_contract_tool_error()),
+                mapped
+            );
+        }
+    }
 
     #[test]
     fn contract_round_trip_preserves_every_extra_field() {

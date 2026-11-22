@@ -118,10 +118,11 @@ async fn rejected_request(
     let runner = TransportQualification::start(TransportKind::StreamableHttp, "wire-oracle-canary")
         .await
         .expect("real Labby MCP process");
-    runner
+    let initialized = runner
         .call_raw("forge.safe", json!({}))
         .await
         .expect("initialize independent side-effect ledger");
+    assert_ne!(initialized.is_error, Some(true), "{initialized:?}");
     let baseline = runner.effect_counts().expect("baseline side effects");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))

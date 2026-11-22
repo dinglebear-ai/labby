@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 pub(crate) const DESTRUCTIVE_CONFIRMATION_INPUT: &str = "destructive_confirmation";
 const CONFIRMATION_TTL: Duration = Duration::from_mins(2);
-const MAX_CONFIRMATIONS: usize = 256;
+const MAX_CONFIRMATIONS: usize =
+    MAX_CONFIRMATIONS_PER_OWNER * labby_runtime::client_registry::MAX_CLIENTS;
 const MAX_CONFIRMATIONS_PER_OWNER: usize = 8;
 
 struct PendingConfirmation {
@@ -39,6 +40,7 @@ pub(crate) enum DestructiveConfirmation {
     Proceed,
     InputRequired(InputRequiredResult),
     Refused,
+    AtCapacity,
 }
 
 /// Apply the 2026-07-28 MRTR elicitation pattern to one destructive tool call.
@@ -153,7 +155,7 @@ pub(crate) fn destructive_confirmation(
         .filter(|value| value.owner == owner)
         .count();
     if pending.len() >= MAX_CONFIRMATIONS || owner_count >= MAX_CONFIRMATIONS_PER_OWNER {
-        return DestructiveConfirmation::Refused;
+        return DestructiveConfirmation::AtCapacity;
     }
     pending.insert(
         state.clone(),
@@ -317,7 +319,7 @@ mod tests {
         }
         assert!(matches!(
             destructive_confirmation(&request, "danger", "danger.delete", "overflow", &owner),
-            DestructiveConfirmation::Refused
+            DestructiveConfirmation::AtCapacity
         ));
         let other_owner = format!("other-owner-{}", ulid::Ulid::new());
         assert!(matches!(

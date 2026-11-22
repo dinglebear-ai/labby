@@ -331,6 +331,7 @@ impl PreparedLocalProxy {
             .take()
             .context("prepared proxy child is no longer owned")?;
         let peer = connection.peer().clone();
+        let client = connection.handler().clone();
 
         let cancellation = CancellationToken::new();
         let mut allowed_hosts = vec![
@@ -379,7 +380,7 @@ impl PreparedLocalProxy {
         };
         let mcp_service = StreamableHttpService::new(
             move || {
-                Ok(BridgeServerHandler::from_peer(peer.clone())
+                Ok(BridgeServerHandler::from_peer(peer.clone(), client.clone())
                     .with_tool_security_schemes(tool_security_schemes.clone()))
             },
             session_manager,

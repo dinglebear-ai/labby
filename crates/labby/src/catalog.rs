@@ -86,6 +86,50 @@ pub struct ParamEntry {
     pub description: String,
 }
 
+impl From<&labby_primitives::action::ActionSpec> for ActionEntry {
+    fn from(a: &labby_primitives::action::ActionSpec) -> Self {
+        Self {
+            name: a.name.into(),
+            description: a.description.into(),
+            destructive: a.destructive,
+            requires_admin: a.requires_admin,
+            required_scopes: if a.requires_admin {
+                vec!["lab:admin".to_string()]
+            } else {
+                Vec::new()
+            },
+            returns: a.returns.into(),
+            params: a
+                .params
+                .iter()
+                .map(|p| ParamEntry {
+                    name: p.name.into(),
+                    ty: p.ty.into(),
+                    required: p.required,
+                    description: p.description.into(),
+                })
+                .collect(),
+        }
+    }
+}
+
+impl ActionEntry {
+    /// Dispatch uses `type` for parameter types and `action` for schema requests.
+    pub(crate) fn dispatch_value(self, name_key: &str) -> serde_json::Value {
+        serde_json::json!({
+            (name_key): self.name,
+            "description": self.description,
+            "destructive": self.destructive,
+            "requires_admin": self.requires_admin,
+            "required_scopes": self.required_scopes,
+            "returns": self.returns,
+            "params": self.params.into_iter().map(|p| serde_json::json!({
+                "name": p.name, "type": p.ty, "required": p.required, "description": p.description,
+            })).collect::<Vec<_>>(),
+        })
+    }
+}
+
 /// Actions implemented only by authenticated HTTP adapters, never MCP discovery.
 pub(crate) fn http_only_action(service: &str, action: &str) -> bool {
     (service == "setup"
@@ -119,28 +163,7 @@ pub fn build_catalog(registry: &ToolRegistry) -> Catalog {
                 .actions
                 .iter()
                 .filter(|action| !http_only_action(svc.name, action.name))
-                .map(|a| ActionEntry {
-                    name: a.name.into(),
-                    description: a.description.into(),
-                    destructive: a.destructive,
-                    requires_admin: a.requires_admin,
-                    required_scopes: if a.requires_admin {
-                        vec!["lab:admin".to_string()]
-                    } else {
-                        Vec::new()
-                    },
-                    returns: a.returns.into(),
-                    params: a
-                        .params
-                        .iter()
-                        .map(|p| ParamEntry {
-                            name: p.name.into(),
-                            ty: p.ty.into(),
-                            required: p.required,
-                            description: p.description.into(),
-                        })
-                        .collect(),
-                })
+                .map(ActionEntry::from)
                 .collect(),
         })
         .collect();
@@ -165,6 +188,26 @@ pub fn actions_for(catalog: &Catalog, service: &str, transport: Transport) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_preserves_catalog_and_dispatch_parameter_spellings() {
+        let actions = crate::dispatch::setup::ACTIONS;
+        let spec = actions
+            .iter()
+            .find(|a| a.requires_admin && !a.params.is_empty())
+            .unwrap();
+        let catalog = serde_json::to_value(ActionEntry::from(spec)).unwrap();
+        let help = crate::dispatch::helpers::help_payload("setup", std::slice::from_ref(spec));
+        let schema = crate::dispatch::helpers::action_schema(actions, spec.name).unwrap();
+        assert_eq!(catalog["name"], help["actions"][0]["name"]);
+        assert_eq!(catalog["name"], schema["action"]);
+        assert_eq!(catalog["params"][0]["ty"], schema["params"][0]["type"]);
+        assert_eq!(help["actions"][0]["params"], schema["params"]);
+        assert_eq!(catalog["required_scopes"], schema["required_scopes"]);
+        assert_eq!(catalog["required_scopes"], serde_json::json!(["lab:admin"]));
+        assert!(catalog["params"][0].get("type").is_none());
+        assert!(schema["params"][0].get("ty").is_none());
+    }
 
     #[test]
     fn mcp_catalog_excludes_http_only_first_use_actions_but_retains_settings() {

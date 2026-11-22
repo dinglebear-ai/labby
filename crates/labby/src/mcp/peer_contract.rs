@@ -361,7 +361,89 @@ pub(crate) struct PeerContract {
     pub(crate) audience: PeerCatalogAudience,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static CONTRACT_BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl PeerContract {
+    /// Sharing one build during a fanout requires the same live data sources
+    /// and the same complete request-derived visibility inputs.
+    pub(super) fn same_inputs(&self, other: &Self) -> bool {
+        #[cfg(feature = "gateway")]
+        if !matches!(
+            (&self.gateway_manager, &other.gateway_manager),
+            (None, None)
+        ) && !self
+            .gateway_manager
+            .as_ref()
+            .zip(other.gateway_manager.as_ref())
+            .is_some_and(|(left, right)| Arc::ptr_eq(left, right))
+        {
+            return false;
+        }
+        Arc::ptr_eq(&self.registry, &other.registry)
+            && self
+                .code_mode_app_state
+                .shares_state_with(&other.code_mode_app_state)
+            && self.route_scope == other.route_scope
+            && self.audience == other.audience
+    }
+
+    /// Version the mutable sources behind Tools pagination without walking the tool descriptors.
+    pub(super) async fn tool_page_revision(&self, project_binding: Option<&str>) -> Option<String> {
+        use sha2::{Digest as _, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(project_binding.unwrap_or_default().as_bytes());
+        hash.update([
+            u8::from(self.code_mode_app_state.is_enabled()),
+            u8::from(crate::config::process_code_mode_enabled()),
+        ]);
+        #[cfg(feature = "gateway")]
+        if let Some(manager) = &self.gateway_manager {
+            hash.update(
+                manager
+                    .current_runtime_config_generation()
+                    .fingerprint_bytes(),
+            );
+            hash.update(
+                manager
+                    .current_pool_publication_generation()
+                    .fingerprint_bytes(),
+            );
+            if let Some(pool) = manager.current_pool_sync() {
+                hash.update(
+                    pool.published_tool_catalog()
+                        .await
+                        .ok()?
+                        .generation()
+                        .fingerprint_bytes(),
+                );
+                hash.update(
+                    pool.published_resource_catalog()
+                        .await
+                        .ok()?
+                        .generation()
+                        .fingerprint_bytes(),
+                );
+                if let Some(subject) = &self.audience.oauth_subject {
+                    for (name, identity, revision, epoch) in
+                        pool.subject_tool_list_revisions(subject).await
+                    {
+                        hash.update(name.len().to_be_bytes());
+                        hash.update(name.as_bytes());
+                        hash.update(identity);
+                        hash.update(revision.to_be_bytes());
+                        for part in epoch.into_iter().flatten() {
+                            hash.update(part.to_be_bytes());
+                        }
+                    }
+                }
+            }
+        }
+        Some(hex::encode(hash.finalize()))
+    }
+
     /// Which Code Mode regime applies to this peer.
     pub(crate) async fn code_mode_visibility(&self) -> CodeModeVisibility {
         #[cfg(feature = "gateway")]
@@ -570,10 +652,6 @@ impl PeerContract {
             mcp_apps: mcp_apps_config,
         } = mcp_app_visibility_snapshot(self.gateway_manager.as_deref(), &self.code_mode_app_state)
             .await;
-        #[cfg(feature = "gateway")]
-        if !hide_raw_tools {
-            self.ensure_protected_subset_tools().await;
-        }
         let mut descriptors = Vec::new();
         let mut builtin_names = HashSet::new();
         let mut advertised_names = HashSet::new();
@@ -616,13 +694,7 @@ impl PeerContract {
 
         let tool_projection_mode = self.registry.tool_projection_mode();
         for service in self.registry.services() {
-            #[cfg(feature = "skills")]
-            if service.name == "artifacts"
-                && !matches!(
-                    skill_library_mode,
-                    SkillLibraryDescriptorMode::Management { .. }
-                )
-            {
+            if !skill_library_mode.exposes_service(service.name) {
                 continue;
             }
             if self.service_visible_on_mcp(service.name).await {
@@ -728,7 +800,10 @@ impl PeerContract {
             let model_visible =
                 self.route_scope.is_root() && self.audience.code_mode_execute_allowed;
             let callback_visible = self.audience.code_mode_read_allowed;
-            if !self.registry.is_proxy_aggregate() && (model_visible || callback_visible) {
+            if !self.registry.is_proxy_aggregate()
+                && !matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                && (model_visible || callback_visible)
+            {
                 let tool = self
                     .registry
                     .permanent_tools()
@@ -739,7 +814,11 @@ impl PeerContract {
         }
 
         #[cfg(feature = "gateway")]
-        if self.audience.admin_apps_visible && self.add_server_app_available(mcp_apps_config).await
+        if self.audience.admin_apps_visible
+            && self.add_server_app_available(mcp_apps_config).await
+            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("gateway", project_started_at)
+                    == Some(true))
         {
             let tool = self.registry.permanent_tools().add_server_tool();
             advertised_names.insert(ADD_SERVER_TOOL_NAME.to_string());
@@ -749,6 +828,9 @@ impl PeerContract {
         #[cfg(feature = "gateway")]
         if self.audience.admin_apps_visible
             && self.gateway_status_app_available(mcp_apps_config).await
+            && (!matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
+                || project_shadow.allows_builtin_service("gateway", project_started_at)
+                    == Some(true))
         {
             let tool = self.registry.permanent_tools().gateway_status_tool();
             advertised_names.insert(GATEWAY_STATUS_TOOL_NAME.to_string());
@@ -774,7 +856,11 @@ impl PeerContract {
             && let Some(pool) = self.current_upstream_pool().await
         {
             let mut upstream_tool_count = 0usize;
-            let oauth_subject = self.audience.oauth_subject.as_deref();
+            let oauth_subject = if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_)) {
+                None
+            } else {
+                self.audience.oauth_subject.as_deref()
+            };
             let oauth_configs = if oauth_subject.is_some() {
                 self.route_scoped_oauth_upstream_configs().await
             } else {
@@ -789,30 +875,48 @@ impl PeerContract {
                         MAX_UPSTREAM_TOOLS,
                     )
                     .await
+                    .into_iter()
+                    .map(|entry| (entry.upstream_name, entry.tool, entry.destructive))
+                    .collect()
                 } else {
                     Vec::new()
                 }
             } else {
-                pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
-                    .await
+                pool.healthy_tools_allowed_as(self.route_scope.allowed_upstreams(), |entry| {
+                    (
+                        Arc::clone(&entry.upstream_name),
+                        entry.tool.clone(),
+                        entry.destructive,
+                    )
+                })
+                .await
             };
-            for upstream_tool in upstream_tools {
-                if hide_raw_tools
+            for (upstream_name, tool, destructive) in upstream_tools {
+                if upstream_name
+                    .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+                {
+                    continue;
+                }
+                if hide_raw_tools && !self.audience.code_mode_execute_allowed && destructive {
+                    continue;
+                }
+                // Same read/execute ceiling as the wire listing.
+                if !hide_raw_tools
                     && !self.audience.code_mode_execute_allowed
-                    && upstream_tool.destructive
+                    && !crate::mcp::context::upstream_tool_is_read_only(&tool)
                 {
                     continue;
                 }
                 let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
                     &self.registry,
-                    &upstream_tool.upstream_name,
-                    upstream_tool.tool.clone(),
+                    &upstream_name,
+                    tool.clone(),
                 );
                 let name = descriptor.name.as_ref();
                 if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
                     && project_shadow.allows_upstream_tool(
-                        &upstream_tool.upstream_name,
-                        upstream_tool.tool.name.as_ref(),
+                        &upstream_name,
+                        tool.name.as_ref(),
                         project_started_at,
                     ) != Some(true)
                 {
@@ -830,7 +934,7 @@ impl PeerContract {
 
             if !hide_raw_tools && let Some(subject) = oauth_subject {
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
-                for (_, tools) in pool
+                for (upstream, tools) in pool
                     .cached_subject_scoped_tools_bounded(
                         &oauth_configs,
                         subject,
@@ -839,14 +943,21 @@ impl PeerContract {
                     .await
                 {
                     for tool in tools {
+                        let tool = crate::mcp::permanent_tools::proxy_upstream_descriptor(
+                            &self.registry,
+                            &upstream,
+                            tool,
+                        );
                         let name = tool.name.as_ref();
-                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
+                        if (!self.audience.code_mode_execute_allowed
+                            && !crate::mcp::context::upstream_tool_is_read_only(&tool))
+                            || crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(name)
                             || builtin_names.contains(name)
                             || !advertised_names.insert(name.to_string())
                         {
                             continue;
                         }
-                        descriptors.push(crate::mcp::permanent_tools::with_labby_security(tool));
+                        descriptors.push(tool);
                     }
                 }
             }
@@ -859,6 +970,7 @@ impl PeerContract {
             return Vec::new();
         }
 
+        super::handlers_tools::apply_route_descriptor_gates(&self.route_scope, &mut descriptors);
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         descriptors
     }
@@ -1000,6 +1112,7 @@ mod tests {
             .expect("listener");
         let address = listener.local_addr().expect("address");
         let upstream = crate::config::UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

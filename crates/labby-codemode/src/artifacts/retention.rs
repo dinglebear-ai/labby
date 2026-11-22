@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Caller holds STORE_MUTATION; remember only completed passes so cancelled
+/// Caller holds the store lock; remember only completed passes so cancelled
 /// admission remains eligible for retry. Pressure-triggered pruning bypasses
 /// this routine coalescing while preserving the same storage mutation lock.
 pub(super) async fn prune_once(root: &Path, pass: impl Future<Output = ()>) -> bool {
@@ -21,11 +21,12 @@ async fn run_retention_once(
     root: &Path,
     pass: impl Future<Output = ()>,
 ) -> bool {
-    let mut completed = completed.lock().await;
-    if completed.iter().any(|path| path == root) {
+    if completed.lock().await.iter().any(|path| path == root) {
         return false;
     }
+    // The caller serializes this store. Other stores can prune during the I/O.
     pass.await;
+    let mut completed = completed.lock().await;
     while completed.len() >= 1024 {
         completed.pop_front();
     }
@@ -71,15 +72,32 @@ mod retention_once_tests {
     async fn concurrent_automatic_retention_is_coalesced() {
         let completed = tokio::sync::Mutex::new(VecDeque::new());
         let calls = AtomicUsize::new(0);
-        let root = Path::new("concurrent-run");
+        let store = tempfile::tempdir().unwrap();
+        let root = store.path().join("concurrent-run");
         let pass = || async {
             calls.fetch_add(1, Ordering::Relaxed);
             tokio::task::yield_now().await;
         };
-        tokio::join!(
-            run_retention_once(&completed, root, pass()),
-            run_retention_once(&completed, root, pass())
-        );
+        let prune = || async {
+            let _guard = crate::artifacts::publication::lock_store(store.path())
+                .await
+                .unwrap();
+            run_retention_once(&completed, &root, pass()).await
+        };
+        tokio::join!(prune(), prune());
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn a_pending_store_pass_does_not_block_another_store() {
+        let completed = tokio::sync::Mutex::new(VecDeque::new());
+        let mut pending = std::pin::pin!(run_retention_once(
+            &completed,
+            Path::new("store-a/run"),
+            std::future::pending()
+        ));
+        assert!(futures::poll!(&mut pending).is_pending());
+        let other = run_retention_once(&completed, Path::new("store-b/run"), async {});
+        assert!(futures::poll!(std::pin::pin!(other)).is_ready());
     }
 }

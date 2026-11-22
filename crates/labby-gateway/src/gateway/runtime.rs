@@ -1544,6 +1544,7 @@ mod tests {
         assert_eq!(protected, BTreeSet::from([pid]));
 
         let upstream = UpstreamConfig {
+            secret_env: Default::default(),
             name: "target".to_string(),
             display_name: None,
             lifecycle: None,

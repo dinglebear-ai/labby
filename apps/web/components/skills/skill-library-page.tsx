@@ -233,7 +233,6 @@ function ProjectScopedSkillLibraryPageContent() {
             artifactId: editingArtifact.artifactId,
             revisionId: editingArtifact.revisionId,
             files,
-            expectedLibraryVersion: page.library_version,
             idempotencyKey: requestKey('save'),
           })
         : await skillLibrary.create({

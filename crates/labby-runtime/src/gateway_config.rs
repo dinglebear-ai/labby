@@ -65,6 +65,10 @@ fn default_code_mode_max_response_bytes() -> usize {
     24 * 1024
 }
 
+fn default_code_mode_max_programmatic_response_bytes() -> usize {
+    crate::code_mode_response_budget::DEFAULT_MAX_PROGRAMMATIC_RESPONSE_BYTES
+}
+
 fn default_code_mode_max_response_tokens() -> usize {
     6_000
 }
@@ -313,6 +317,13 @@ pub struct CodeModeConfig {
     /// Approximate maximum response tokens returned by codemode.
     #[serde(default = "default_code_mode_max_response_tokens")]
     pub max_response_tokens: usize,
+    /// Largest response budget a programmatic MCP client may request for one
+    /// call through `_meta["ai.dinglebear.labby/responseBudget"]`. Requests
+    /// travel in protocol metadata, not tool arguments, so agents stay on
+    /// `max_response_bytes`. `0` disables requests. See
+    /// [`crate::code_mode_response_budget`].
+    #[serde(default = "default_code_mode_max_programmatic_response_bytes")]
+    pub max_programmatic_response_bytes: usize,
     /// Token estimation divisor. bytes/4 is intentionally conservative (real
     /// tokenization ≈ 1 token/3 bytes for JSON). Lower = more conservative =
     /// fewer tools per execution.
@@ -354,7 +365,7 @@ pub struct CodeModeConfig {
     /// `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` env var.
     #[serde(default)]
     pub max_calls_per_run: Option<u64>,
-    /// Max `callTool` result size in MiB before truncation. Overridden by
+    /// Max `callTool` result size in MiB before rejection with `result_too_large`. Overridden by
     /// `LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB` env var.
     #[serde(default)]
     pub calltool_result_max_mib: Option<usize>,
@@ -373,6 +384,7 @@ impl Default for CodeModeConfig {
             max_source_bytes: default_code_mode_max_source_bytes(),
             max_response_bytes: default_code_mode_max_response_bytes(),
             max_response_tokens: default_code_mode_max_response_tokens(),
+            max_programmatic_response_bytes: default_code_mode_max_programmatic_response_bytes(),
             token_estimate_divisor: default_token_estimate_divisor(),
             max_log_entries: default_max_log_entries(),
             max_log_bytes: default_max_log_bytes(),
@@ -434,6 +446,15 @@ impl CodeModeConfig {
         if !(256..=256_000).contains(&self.max_response_tokens) {
             return Err(ConfigError::InvalidCodeModeMaxResponseTokens {
                 value: self.max_response_tokens,
+            });
+        }
+        if self.max_programmatic_response_bytes != 0
+            && !(crate::code_mode_response_budget::MIN_REQUESTED_RESPONSE_BYTES
+                ..=crate::code_mode_response_budget::MAX_PROGRAMMATIC_RESPONSE_BYTES_CEILING)
+                .contains(&self.max_programmatic_response_bytes)
+        {
+            return Err(ConfigError::InvalidCodeModeMaxProgrammaticResponseBytes {
+                value: self.max_programmatic_response_bytes,
             });
         }
         if !(1..=64).contains(&self.token_estimate_divisor) {
@@ -650,6 +671,15 @@ pub struct UpstreamConfig {
     /// external config files into Lab config.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// Secret stdio environment: child environment variable names mapped to
+    /// the credential variable that holds each value in the selected
+    /// installation's `.env` file (or an explicit process override).
+    ///
+    /// Values resolve at spawn time and are never persisted in configuration
+    /// or returned by reads. Write them with `gateway.add`/`gateway.update`
+    /// `secret_env_values`, or `labby server add|set --env NAME` (stdin).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub secret_env: BTreeMap<String, String>,
     /// Whether to proxy resources from this upstream. Defaults to true.
     #[serde(default = "default_true")]
     pub proxy_resources: bool,
@@ -878,6 +908,15 @@ fn is_http_token_byte(byte: u8) -> bool {
 }
 
 impl UpstreamConfig {
+    /// Config-level precondition for proxying this upstream's resources: it is
+    /// enabled and has not opted out with `proxy_resources = false`. This is
+    /// not the whole read policy: callers must still enforce the route
+    /// allowlist, Team credential, exposure policy, and OAuth subject.
+    #[must_use]
+    pub fn serves_resources(&self) -> bool {
+        self.enabled && self.proxy_resources
+    }
+
     /// Validate the upstream name and mutually-exclusive auth shapes.
     /// `bearer_token_env` and `oauth` both configured is a config error.
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -1730,6 +1769,14 @@ pub enum ConfigError {
     #[error("gateway code_mode.max_response_bytes={value} is invalid — expected 1024..=1048576")]
     /// Code Mode response byte cap falls outside the supported range.
     InvalidCodeModeMaxResponseBytes {
+        /// Rejected byte limit.
+        value: usize,
+    },
+    #[error(
+        "gateway code_mode.max_programmatic_response_bytes={value} is invalid — expected 0 (disabled) or 1024..=4194304"
+    )]
+    /// Programmatic response-budget ceiling falls outside the supported range.
+    InvalidCodeModeMaxProgrammaticResponseBytes {
         /// Rejected byte limit.
         value: usize,
     },

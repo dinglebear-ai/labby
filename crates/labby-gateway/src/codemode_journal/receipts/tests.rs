@@ -119,7 +119,7 @@ async fn receipt_retention_and_owner_quota_are_bounded() {
     assert!(store.snippet_receipt("run-0", owner()).await.is_err());
     assert!(store.snippet_receipt("run-100", owner()).await.is_ok());
     let count = store
-        .with_conn(|conn| {
+        .with_conn(ConnectionAccess::Read, |conn| {
             conn.query_row("SELECT COUNT(*) FROM snippet_receipts", [], |row| {
                 row.get::<_, i64>(0)
             })
@@ -129,6 +129,34 @@ async fn receipt_retention_and_owner_quota_are_bounded() {
         .unwrap();
     assert_eq!(count, MAX_OWNER_RECEIPTS);
 }
+#[tokio::test]
+async fn installation_receipt_limit_spans_distinct_owners() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StepJournalStore::open(dir.path().join("journal.db"))
+        .await
+        .unwrap();
+    let time = now();
+    for index in 0..=MAX_RECEIPTS {
+        let mut writer = owner();
+        writer.owner_key = format!("owner-{}", index / MAX_OWNER_RECEIPTS);
+        store
+            .record_snippet_receipt(receipt(&format!("run-{index}"), time + index), writer)
+            .await
+            .unwrap();
+    }
+    let mut oldest = owner();
+    oldest.owner_key = "owner-0".into();
+    assert_eq!(
+        store
+            .snippet_receipt("run-0", oldest.clone())
+            .await
+            .unwrap_err()
+            .kind(),
+        "unknown_execution"
+    );
+    assert!(store.snippet_receipt("run-1", oldest).await.is_ok());
+}
+
 #[tokio::test]
 async fn receipt_size_limit_does_not_evict_existing_evidence() {
     let dir = tempfile::tempdir().unwrap();
@@ -150,7 +178,7 @@ async fn step_journal_v1_is_upgraded_without_changing_existing_rows() {
     let path = dir.path().join("journal.db");
     let store = StepJournalStore::open(path.clone()).await.unwrap();
     store
-        .with_conn(|conn| {
+        .with_conn(ConnectionAccess::Write, |conn| {
             conn.execute_batch("DROP TABLE snippet_receipts;")
                 .map_err(store_error)
         })
@@ -163,4 +191,31 @@ async fn step_journal_v1_is_upgraded_without_changing_existing_rows() {
         .await
         .unwrap();
     assert!(reopened.snippet_receipt("new", owner()).await.is_ok());
+}
+
+#[tokio::test]
+async fn incompatible_receipts_leave_step_journal_available() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("journal.db");
+    let store = StepJournalStore::open(path.clone()).await.unwrap();
+    store
+        .with_conn(ConnectionAccess::Write, |conn| {
+            conn.execute_batch(
+                "DROP TABLE snippet_receipts; CREATE TABLE snippet_receipts(unrelated TEXT);",
+            )
+            .map_err(store_error)
+        })
+        .await
+        .unwrap();
+    drop(store);
+    let store = StepJournalStore::open(path).await.unwrap();
+    assert_eq!(store.load("missing").await.unwrap(), []);
+    assert_eq!(
+        store
+            .snippet_receipt("missing", owner())
+            .await
+            .unwrap_err()
+            .kind(),
+        "service_unavailable"
+    );
 }

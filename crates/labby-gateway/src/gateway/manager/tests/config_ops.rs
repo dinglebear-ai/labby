@@ -129,6 +129,7 @@ async fn add_with_bearer_token_value_writes_env_and_references_generated_env_var
     let gateway = manager
         .add(
             UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -1593,4 +1594,44 @@ async fn atomic_route_save_rejects_team_qualified_routes_before_gateway_write() 
             initial.protected_mcp_routes
         );
     }
+}
+
+#[tokio::test]
+async fn reload_publishes_kernel_budgets_only_for_an_accepted_config() {
+    // Each process owns these environment/config fallbacks. Isolate the
+    // production reload from other gateway managers in a parallel test run.
+    const CHILD: &str = "LABBY_TEST_GATEWAY_KERNEL_BUDGET_RELOAD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "gateway::manager::tests::config_ops::reload_publishes_kernel_budgets_only_for_an_accepted_config"])
+            .env(CHILD, "1")
+            .env_remove("LABBY_CODE_MODE_MAX_CALLS_PER_RUN")
+            .env_remove("LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB")
+            .output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}"
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    let mut config = GatewayConfig::default();
+    for value in [3, 7] {
+        config.code_mode.max_calls_per_run = Some(value);
+        config.code_mode.artifact_max_store_mib = Some(value);
+        crate::gateway::config::write_gateway_config(&path, &config).unwrap();
+        manager.reload_with_origin(None, None).await.unwrap();
+        let limits = labby_codemode::effective_storage_limits();
+        assert_eq!(limits["max_calls_per_run"], value);
+        assert_eq!(limits["artifact_max_store_bytes"], value * 1024 * 1024);
+    }
+    std::fs::write(&path, "[code_mode").unwrap();
+    assert!(manager.reload_with_origin(None, None).await.is_err());
+    assert_eq!(
+        labby_codemode::effective_storage_limits()["max_calls_per_run"],
+        7
+    );
 }

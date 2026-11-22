@@ -1634,7 +1634,7 @@ fn typed_response_error(error: serde_json::Error) -> ToolError {
 mod snippet_source_compat;
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
@@ -1648,7 +1648,7 @@ mod tests {
         drop(rustls::crypto::ring::default_provider().install_default());
     }
 
-    pub(super) fn test_gateway(base_url: String, token: Option<String>) -> LiveGateway {
+    pub(crate) fn test_gateway(base_url: String, token: Option<String>) -> LiveGateway {
         ensure_tls_provider();
         LiveGateway {
             base_url: normalize_base_url(&base_url).expect("test URL parses"),

@@ -61,6 +61,7 @@ pub(crate) enum ResourceReadResolutionError {
 }
 
 struct ExactResourceTarget<'a> {
+    publication: &'a std::sync::Arc<()>,
     upstream: &'a str,
     native_uri: &'a str,
     pool_generation: labby_gateway::gateway::manager::PoolPublicationGeneration,
@@ -82,6 +83,7 @@ fn resolve_exact_target<'a>(
             published.native_uri.as_ref(),
         )
         .then_some(ExactResourceTarget {
+            publication: &published.publication,
             upstream: published.upstream_name.as_ref(),
             native_uri: published.native_uri.as_ref(),
             pool_generation: resources.pool_publication_generation(),
@@ -138,11 +140,17 @@ pub(crate) async fn read_exact_project_resource(
     let Some(second_target) = resolve_exact_target(&second, &wire_uri) else {
         return Err(ResourceReadResolutionError::Unavailable);
     };
-    if !first.same_publication_as(&second)
+    if first.credential_binding_fingerprint() != second.credential_binding_fingerprint()
+        || first.catalog().access() != second.catalog().access()
+        || !first.route().same_publication_as(second.route())
+        || !first
+            .catalog()
+            .catalog()
+            .same_non_resource_publications_as(second.catalog().catalog())
+        || !std::sync::Arc::ptr_eq(target.publication, second_target.publication)
         || second_target.upstream != upstream
         || second_target.native_uri != native_uri
         || second_target.pool_generation != pool_generation
-        || second_target.resource_generation != resource_generation
     {
         return Err(ResourceReadResolutionError::Unavailable);
     }
@@ -269,7 +277,6 @@ mod tests {
         TransportBoundAccessContext, attach_project_access_observation, bind_access_context,
         validate_transport_credential_binding,
     };
-    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::mcp::server::LabMcpServer;
 
@@ -384,6 +391,7 @@ mod tests {
     fn gateway_config(expose_resources: bool) -> GatewayConfig {
         GatewayConfig {
             upstream: vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,
@@ -562,9 +570,6 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-                LoggingLevel::Emergency,
-            ))),
             route_scope: McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,

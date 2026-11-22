@@ -245,6 +245,7 @@ impl Harness {
 
     fn upstream_cfg(&self, registration: UpstreamOauthRegistration) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

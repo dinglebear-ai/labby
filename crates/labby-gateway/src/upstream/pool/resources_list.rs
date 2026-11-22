@@ -23,7 +23,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::StreamExt;
-use futures::stream::FuturesUnordered;
 use rmcp::model::{Resource, ResourceTemplate};
 use serde_json::Value;
 
@@ -110,9 +109,12 @@ impl UpstreamPool {
         templates: &[ResourceTemplate],
     ) -> bool {
         let name = observed.upstream();
-        self.apply_to_observed_catalog(observed, |catalog| {
+        self.apply_to_observed_health_catalog(observed, |catalog| {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
+            if catalog.has_same_templates(name, observed.incarnation(), templates) {
+                return;
+            }
             // A rejected snapshot is recorded durably in the retained source
             // state, which is what `withheld_snapshots` reports to operator
             // surfaces. It deliberately does not go into the entry's
@@ -121,6 +123,7 @@ impl UpstreamPool {
             // the next sibling listing would erase the warning while the
             // upstream stayed withheld.
             let _ = catalog.set_resource_template_source(name, observed.incarnation(), templates);
+            catalog.publish_templates_if_changed();
         })
         .await
         .is_some()
@@ -132,7 +135,7 @@ impl UpstreamPool {
         error_text: &str,
     ) -> bool {
         let name = observed.upstream();
-        self.apply_to_observed_catalog(observed, |catalog| {
+        self.apply_to_observed_health_catalog(observed, |catalog| {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_failure_on_entry(
                 name,
@@ -141,6 +144,7 @@ impl UpstreamPool {
                 format!("failed to list resource templates from upstream: {error_text}"),
             );
             catalog.remove_resource_template_source(name);
+            catalog.publish_templates_if_changed();
         })
         .await
         .is_some()
@@ -156,9 +160,16 @@ impl UpstreamPool {
             .iter()
             .map(|resource| bare_upstream_resource_uri(&resource.uri).to_string())
             .collect::<Vec<_>>();
-        self.apply_to_observed_catalog(observed, |catalog| {
+        self.apply_to_observed_health_catalog(observed, |catalog| {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_success_on_entry(name, entry, UpstreamCapability::Resources);
+            let policy = entry.resource_exposure_policy.clone();
+            if entry.resource_uris == resource_uris
+                && catalog.refresh_unchanged_resources(name, observed.incarnation(), resources)
+            {
+                return (policy, false);
+            }
+            let entry = catalog.get_mut(name).expect("observed entry validated");
             let changed = entry.resource_uris != resource_uris;
             // `resource_count`/`resource_uris` describe what the upstream
             // *returned*, which the exposure editor still needs to show even
@@ -169,11 +180,11 @@ impl UpstreamPool {
             // here — that would hide the rejected rows from the editor.
             entry.resource_count = resources.len();
             entry.resource_uris = resource_uris;
-            let policy = entry.resource_exposure_policy.clone();
             // The rejection is durable in the retained source state (see
             // `apply_observed_resource_template_success`); it must not go into
             // the shared capability error slot, which the next listing clears.
             let _ = catalog.set_resource_source(name, observed.incarnation(), resources);
+            catalog.publish_resources_if_changed();
             (policy, changed)
         })
         .await
@@ -185,7 +196,7 @@ impl UpstreamPool {
         error_text: &str,
     ) -> bool {
         let name = observed.upstream();
-        self.apply_to_observed_catalog(observed, |catalog| {
+        self.apply_to_observed_health_catalog(observed, |catalog| {
             let entry = catalog.get_mut(name).expect("observed entry validated");
             super::health::record_failure_on_entry(
                 name,
@@ -199,6 +210,7 @@ impl UpstreamPool {
             entry.resource_count = 0;
             entry.resource_uris.clear();
             catalog.remove_resource_source(name);
+            catalog.publish_resources_if_changed();
         })
         .await
         .is_some()
@@ -270,7 +282,7 @@ impl UpstreamPool {
             .tools
             .values()
             .filter(|t| entry.exposure_policy.matches(&t.tool.name))
-            .map(|t| render_gateway_tool_row(&t.tool, t.input_schema.clone()))
+            .map(|t| render_gateway_tool_row(&t.tool, t.input_schema.as_deref()))
             .collect();
         tools.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
         Some(serde_json::json!({
@@ -442,18 +454,7 @@ impl UpstreamPool {
         let names = self.cold_resource_snapshots(allowed).await.names();
         let mut work = futures::stream::iter(names)
             .map(|name| async move {
-                let flight = {
-                    let mut flights = self.resource_snapshot_warmup.lock().await;
-                    flights.retain(|_, value| value.strong_count() > 0);
-                    flights
-                        .get(&name)
-                        .and_then(std::sync::Weak::upgrade)
-                        .unwrap_or_else(|| {
-                            let flight = Arc::new(tokio::sync::Mutex::new(()));
-                            flights.insert(name.clone(), Arc::downgrade(&flight));
-                            flight
-                        })
-                };
+                let flight = self.resource_snapshot_warmup.acquire(&name).await;
                 let _turn = flight.lock().await;
                 let names = BTreeSet::from([name]);
                 let cold = self.cold_resource_snapshots(Some(&names)).await;
@@ -508,10 +509,20 @@ impl UpstreamPool {
         if let Some(task) = warmup.task
             && !warmup.cold.missing.is_empty()
         {
-            drop(
-                tokio::time::timeout(self.request_timeout.min(Duration::from_millis(250)), task)
-                    .await,
-            );
+            if let Ok(Err(error)) = tokio::time::timeout(
+                self.request_timeout.min(super::helpers::COLD_SNAPSHOT_WAIT),
+                task,
+            )
+            .await
+            {
+                tracing::warn!(
+                    surface = "dispatch",
+                    service = "upstream.pool",
+                    action = "catalog.resources.warm",
+                    error = %error,
+                    "resource snapshot warm-up task failed"
+                );
+            }
         }
     }
 
@@ -741,21 +752,28 @@ impl UpstreamPool {
 
         // Deliberate bulkhead exception + partial-result semantics — same
         // contract as `list_upstream_resources_allowed` above.
-        let mut futures = FuturesUnordered::new();
-        let shared_budget = Arc::new(catalog_pagination::SharedCatalogBudget::new(
+        let budget = catalog_pagination::SharedCatalogBudget::new(
             MAX_UPSTREAM_RESOURCES,
             max_response_bytes(),
-        ));
-        for observed in observed_peers {
-            let peer = observed.peer.clone();
-            let shared_budget = Arc::clone(&shared_budget);
-            futures.push(async move {
-                let result = if peer_declares_resources(&peer) {
+        );
+        let deadline = tokio::time::Instant::now() + catalog_listing_timeout(self.request_timeout);
+        let mut futures = futures::stream::iter(observed_peers).map(|observed| {
+            let budget = &budget;
+            async move {
+                let Ok(Ok(_permit)) = tokio::time::timeout_at(deadline, self.acquire_catalog_fanout_permit()).await else {
+                    tracing::warn!(upstream = %observed.upstream(), "template listing could not enter the catalog queue within its deadline");
+                    return None;
+                };
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return None;
+                }
+                let result = if peer_declares_resources(&observed.peer) {
                     catalog_pagination::list_resource_templates_with_budget(
-                        &peer,
-                        self.request_timeout,
+                        &observed.peer,
+                        remaining,
                         MAX_UPSTREAM_RESOURCES,
-                        &shared_budget,
+                        budget,
                     )
                     .await
                 } else {
@@ -765,13 +783,13 @@ impl UpstreamPool {
                     );
                     Ok(Vec::new())
                 };
-                (observed, result)
-            });
-        }
+                Some((observed, result))
+            }
+        }).buffer_unordered(super::helpers::upstream_discovery_concurrency(None));
 
         let mut results = Vec::new();
         while let Some(item) = futures.next().await {
-            results.push(item);
+            results.extend(item);
         }
         results.sort_unstable_by(|left, right| left.0.upstream().cmp(right.0.upstream()));
 
@@ -821,6 +839,12 @@ impl UpstreamPool {
                         "upstream does not implement resources/templates/list — capability absent"
                     );
                 }
+                Err(
+                    error @ (catalog_pagination::CatalogPaginationError::ItemLimit { .. }
+                    | catalog_pagination::CatalogPaginationError::SharedByteLimit { .. }),
+                ) => {
+                    tracing::warn!(upstream = %name, kind = error.kind(), "merged template catalog reached the shared budget");
+                }
                 Err(error) => {
                     let error_text = error.bounded_text();
                     if !self
@@ -848,19 +872,151 @@ impl UpstreamPool {
         configs: &[UpstreamConfig],
         subject: &str,
     ) -> Vec<Resource> {
-        let mut futures = FuturesUnordered::new();
-        for config in configs
+        let configs = configs
             .iter()
             .filter(|config| config.oauth.is_some() && config.proxy_resources)
-        {
-            let config = config.clone();
-            let subject = subject.to_string();
+            .collect::<Vec<_>>();
+        if configs.len() > super::tools::MAX_SUBJECT_SCOPED_UPSTREAMS {
+            tracing::warn!("too many subject-scoped resource upstreams to list");
+            return Vec::new();
+        }
+        let mut cold = Vec::new();
+        let mut warm = Vec::new();
+        for config in configs {
+            if !self.upstream_config_matches(config) {
+                continue;
+            }
+            let key = (config.name.clone(), subject.to_owned());
+            let lifecycle = self.oauth_lifecycle_epoch(&config.name, subject);
+            let cached = self
+                .subject_connections
+                .read()
+                .await
+                .get(&key)
+                .and_then(|entry| {
+                    let catalog = &entry.optional_catalogs;
+                    let age = catalog.resources_listed_at?.elapsed();
+                    // Bound stale discovery to one refresh window on the same live subject peer.
+                    (!entry.peer.is_transport_closed()
+                        && entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                        && catalog.resources_error.is_none()
+                        && age < RESOURCE_SNAPSHOT_MAX_AGE * 2)
+                        .then_some((entry.peer.clone(), age, catalog.resources_epoch))
+                });
+            if let Some((peer, age, epoch)) = cached {
+                let policy = resolve_request_resource_exposure_policy(
+                    &config.name,
+                    config.expose_resources.clone(),
+                );
+                if age >= RESOURCE_SNAPSHOT_MAX_AGE {
+                    let flight = self
+                        .resource_snapshot_warmup
+                        .acquire(&format!("{}\0{}", config.name, subject))
+                        .await;
+                    if let Ok(guard) = flight.try_lock_owned()
+                        && let Ok(slot) = Arc::clone(&self.reprobe_semaphore).try_acquire_owned()
+                    {
+                        let pool = self.clone();
+                        let config = config.clone();
+                        let subject = subject.to_owned();
+                        let bound_peer = peer.clone();
+                        let bound_lifecycle = lifecycle.clone();
+                        tokio::spawn(async move {
+                            let _admission = (guard, slot);
+                            if bound_lifecycle
+                                .as_ref()
+                                .is_none_or(|epoch| epoch.is_current())
+                            {
+                                pool.subject_resource_results(
+                                    std::slice::from_ref(&config),
+                                    &subject,
+                                    Some(&bound_peer),
+                                )
+                                .await;
+                            }
+                        });
+                    }
+                }
+                warm.push((key, config, policy, peer.peer_info(), epoch, lifecycle));
+            } else {
+                cold.push(config.clone());
+            }
+        }
+        let mut results = self.subject_resource_results(&cold, subject, None).await;
+        let _publication = self.oauth_invalidation_barrier.read().await;
+        let cache = self.subject_connections.read().await;
+        for (key, config, policy, observed, epoch, lifecycle) in warm {
+            if let Some(entry) = cache.get(&key)
+                && lifecycle.is_none_or(|epoch| epoch.is_current())
+                && self.upstream_config_matches(config)
+                && !entry.peer.is_transport_closed()
+                && entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                && entry.peer.peer_info().is_some_and(|peer| {
+                    observed
+                        .as_ref()
+                        .is_some_and(|observed| Arc::ptr_eq(observed, &peer))
+                })
+                && entry.optional_catalogs.resources_epoch == epoch
+                && entry.optional_catalogs.resources_error.is_none()
+                && entry
+                    .optional_catalogs
+                    .resources_listed_at
+                    .is_some_and(|at| at.elapsed() < RESOURCE_SNAPSHOT_MAX_AGE * 2)
+                && let Some(rows) = &entry.optional_catalogs.resources
+            {
+                results.push((config.name.clone(), policy, Ok(rows.to_vec())));
+            }
+        }
+        drop(cache);
+        results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, max_response_bytes())
+    }
+
+    /// An exact listing can report its upstream's failure directly.
+    pub(crate) async fn subject_resource_listing(
+        &self,
+        config: &UpstreamConfig,
+        subject: &str,
+    ) -> Result<Vec<Resource>, String> {
+        let results = self
+            .subject_resource_results(std::slice::from_ref(config), subject, None)
+            .await;
+        if let Some((_, _, Err(error))) = results.first() {
+            return Err(error.clone());
+        }
+        Ok(aggregate_subject_resources(
+            results,
+            MAX_UPSTREAM_RESOURCES,
+            max_response_bytes(),
+        ))
+    }
+
+    async fn subject_resource_results(
+        &self,
+        configs: &[UpstreamConfig],
+        subject: &str,
+        bound_peer: Option<&rmcp::service::Peer<rmcp::RoleClient>>,
+    ) -> Vec<SubjectResourceResult> {
+        let request_timeout = catalog_listing_timeout(self.request_timeout);
+        let deadline = tokio::time::Instant::now() + request_timeout;
+        let eligible = configs
+            .iter()
+            .filter(|config| config.oauth.is_some() && config.proxy_resources);
+        if eligible.clone().count() > super::tools::MAX_SUBJECT_SCOPED_UPSTREAMS {
+            tracing::warn!("too many subject-scoped resource upstreams to list");
+            return Vec::new();
+        }
+        let eligible = eligible.cloned().collect::<Vec<_>>();
+        let mut futures = futures::stream::iter(eligible).map(|config| {
+            let subject = subject.to_owned();
             let pool = self.clone();
-            futures.push(async move {
+            async move {
                 let started = Instant::now();
-                let request_timeout = catalog_listing_timeout(pool.request_timeout);
                 let key = (config.name.clone(), subject.clone());
-                let cached = {
+                let lifecycle = pool.oauth_lifecycle_epoch(&config.name, &subject);
+                let current_rows = || async {
+                    let _publication = pool.oauth_publication_guard(lifecycle.as_ref()).await.ok()?;
+                    if !pool.upstream_config_matches(&config) { return None; }
                     let cache = pool.subject_connections.read().await;
                     cache.get(&key).and_then(|entry| {
                         if entry.peer.is_transport_closed()
@@ -882,7 +1038,7 @@ impl UpstreamPool {
                 // age bound is what keeps every downstream resources/list from
                 // becoming another OAuth upstream resources/list RPC without
                 // freezing the catalog for the life of the connection.
-                if let Some(resources) = cached {
+                if let Some(resources) = current_rows().await {
                     let policy = resolve_request_resource_exposure_policy(
                         &config.name,
                         config.expose_resources.clone(),
@@ -901,25 +1057,9 @@ impl UpstreamPool {
                 let event = UpstreamRequestLog::resources_list(&config.name, true)
                     .with_transport(upstream_transport(&config));
                 log_upstream_request_start(event);
-                let _fanout_permit = match tokio::time::timeout(
-                    request_timeout,
-                    pool.acquire_catalog_fanout_permit(),
-                )
-                .await
-                {
-                    Ok(Ok(permit)) => permit,
-                    Ok(Err(error)) => return (config.name, policy, Err(error)),
-                    Err(_) => {
-                        return (
-                            config.name,
-                            policy,
-                            Err("subject catalog concurrency wait timed out".to_string()),
-                        );
-                    }
-                };
-                let peer = match tokio::time::timeout(
-                    request_timeout,
-                    pool.acquire_subject_peer(&config, &subject),
+                let peer = match tokio::time::timeout_at(
+                    deadline,
+                    async { match bound_peer { Some(peer) => Ok(peer.clone()), None => pool.acquire_subject_peer(&config, &subject).await } },
                 )
                 .await
                 {
@@ -951,18 +1091,54 @@ impl UpstreamPool {
                         return (config.name, policy, Err(error));
                     }
                 };
+                // A connected peer no longer holds its acquisition gate. Reuse it
+                // to share one optional-resource refresh with concurrent listings.
+                let Ok(_turn) = tokio::time::timeout_at(deadline,
+                    pool.hold_subject_connect_gate(&config.name, &subject)).await else {
+                    return (config.name, policy, Err("subject resource refresh wait timed out".into()));
+                };
+                let current_peer = || async {
+                    let cache = pool.subject_connections.read().await;
+                    let entry = cache.get(&key)?;
+                    let current = entry.peer.peer_info()?;
+                    let observed = peer.peer_info()?;
+                    (!entry.peer.is_transport_closed() && pool.upstream_config_matches(&config) && Arc::ptr_eq(&current, &observed)).then_some(entry.optional_catalogs.resources_epoch)
+                };
+                let Some(epoch) = current_peer().await else {
+                    return (config.name, policy, Err("subject resource connection changed".into()));
+                };
+                if let Some(resources) = current_rows().await {
+                    return (config.name, policy, Ok(resources.to_vec()));
+                }
                 if !peer_declares_resources(&peer) {
                     pool.record_subject_optional_catalog(
                         &config.name,
                         &subject,
                         &peer,
-                        Some(Vec::new()),
+                        Some((epoch, Vec::new())),
                         None,
                     )
                     .await;
                     log_upstream_capability_skipped(event);
                     return (config.name, policy, Ok(Vec::new()));
                 }
+                let _fanout_permit = match tokio::time::timeout_at(
+                    deadline,
+                    pool.acquire_catalog_fanout_permit(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(error)) => return (config.name, policy, Err(error)),
+                    Err(_) => {
+                        return (
+                            config.name,
+                            policy,
+                            Err("subject catalog concurrency wait timed out".to_string()),
+                        );
+                    }
+                };
+                let request_timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let timeout_ms = request_timeout.as_millis();
                 let result = timed_capability_call_with_timeout(
                     &pool,
@@ -1003,21 +1179,27 @@ impl UpstreamPool {
                 )
                 .await
                 .map_err(|error| error.to_string());
+                let Ok(_publication) = pool.oauth_publication_guard(lifecycle.as_ref()).await else {
+                    return (config.name, policy, Err("subject resource credentials changed".into()));
+                };
                 if let Ok(resources) = &result {
                     pool.record_subject_optional_catalog(
                         &config.name,
                         &subject,
                         &peer,
-                        Some(resources.clone()),
+                        Some((epoch, resources.clone())),
                         None,
                     )
                     .await;
                 } else if let Err(error) = &result {
                     pool.record_subject_optional_failure(&config.name, &subject, &peer, true, error).await;
                 }
+                if current_peer().await != Some(epoch) {
+                    return (config.name, policy, Err("subject resource connection changed".into()));
+                }
                 (config.name.clone(), policy, result)
-            });
-        }
+            }
+        }).buffer_unordered(super::helpers::upstream_discovery_concurrency(None));
 
         // Subject-scoped resource lists reuse the per-(upstream, subject)
         // connection cache and execute concurrently under the ordinary request
@@ -1028,7 +1210,7 @@ impl UpstreamPool {
             results.push((name, policy, result));
         }
         results.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, max_response_bytes())
+        results
     }
 }
 
@@ -1059,7 +1241,9 @@ fn aggregate_subject_resources(
                         );
                         return resources;
                     }
-                    rewrite_resource_uri(&mut resource, &name);
+                    if !is_ui_resource_uri(&resource.uri) {
+                        rewrite_resource_uri(&mut resource, &name);
+                    }
                     let resource_bytes =
                         serde_json::to_vec(&resource).map_or(usize::MAX, |body| body.len());
                     if serialized_bytes.saturating_add(resource_bytes) > byte_limit {
@@ -1098,8 +1282,7 @@ fn render_subject_scoped_gateway_schema(
         .iter()
         .filter(|tool| exposure_policy.matches(tool.name.as_ref()))
         .map(|tool| {
-            let input_schema = (!tool.input_schema.is_empty())
-                .then(|| Value::Object((*tool.input_schema).clone()));
+            let input_schema = (!tool.input_schema.is_empty()).then_some(&*tool.input_schema);
             render_gateway_tool_row(tool, input_schema)
         })
         .collect();
@@ -1113,12 +1296,15 @@ fn render_subject_scoped_gateway_schema(
     })
 }
 
-fn render_gateway_tool_row(tool: &rmcp::model::Tool, input_schema: Option<Value>) -> Value {
+fn render_gateway_tool_row(
+    tool: &rmcp::model::Tool,
+    input_schema: Option<&impl serde::Serialize>,
+) -> Value {
     serde_json::json!({
         "name": tool.name.as_ref(),
         "description": tool.description.as_ref().map(|description| description.as_ref()),
         "input_schema": input_schema,
-        "output_schema": tool.output_schema.as_ref().map(|schema| Value::Object((**schema).clone())),
+        "output_schema": tool.output_schema.as_deref(),
         "meta": tool.meta,
     })
 }
@@ -1138,6 +1324,7 @@ fn capability_schema_error(upstream: &str, error: &CapabilityCallError) -> ToolE
         CapabilityCallError::Protocol { .. } => "decode_error",
         CapabilityCallError::Cancelled { .. } => "cancelled",
         CapabilityCallError::InputRequiredRoundsExceeded { .. } => "confirmation_required",
+        CapabilityCallError::NotExposed { .. } => "not_found",
         CapabilityCallError::Mcp { .. } | CapabilityCallError::Other { .. } => {
             match classify_upstream_error(&error.to_string()) {
                 kind @ ("auth_failed" | "auth_required") => kind,
@@ -1212,7 +1399,7 @@ mod tests {
             "alpha".to_string(),
             policy,
             Ok(vec![
-                Resource::new("file:///alpha/one", "x".repeat(128)),
+                Resource::new("ui://alpha/widget", "x".repeat(128)),
                 Resource::new("file:///alpha/two", "y".repeat(128)),
             ]),
         )];
@@ -1220,6 +1407,7 @@ mod tests {
         let resources = aggregate_subject_resources(results, MAX_UPSTREAM_RESOURCES, 300);
 
         assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].uri, "ui://alpha/widget");
     }
 
     #[tokio::test]
@@ -1413,6 +1601,7 @@ mod tests {
 
     fn oauth_schema_config(name: &str) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1806,6 +1995,83 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn template_catalog_shared_budget_keeps_healthy_upstreams_routable() {
+        struct Templates;
+        impl ServerHandler for Templates {
+            fn get_info(&self) -> ServerConfig {
+                ServerConfig::new(ServerCapabilities::builder().enable_resources().build())
+            }
+
+            async fn list_resource_templates(
+                &self,
+                _: Option<PaginatedRequestParams>,
+                _: RequestContext<RoleServer>,
+            ) -> Result<ListResourceTemplatesResult, ErrorData> {
+                let templates = (0..=MAX_UPSTREAM_RESOURCES / 2)
+                    .map(|n| ResourceTemplate::new(format!("file:///{n}/{{path}}"), n.to_string()))
+                    .collect();
+                Ok(ListResourceTemplatesResult::with_all_items(templates))
+            }
+        }
+        let pool = catalog_pool_with_server("alpha", Templates).await;
+        pool.install_prompt_server_for_tests("beta", Templates)
+            .await;
+        pool.resource_upstreams.write().await.push("beta".into());
+        let listed = pool.list_upstream_resource_templates_allowed(None).await;
+        assert_eq!(listed.len(), MAX_UPSTREAM_RESOURCES / 2 + 1);
+        let catalog = pool.catalog.read().await;
+        for name in ["alpha", "beta"] {
+            assert!(catalog[name].resource_health.is_routable());
+            assert!(catalog[name].resource_last_error.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn template_catalog_deadline_bounds_queued_and_stalled_reads() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let pool = super::super::testsupport::catalog_pool_with_server_and_timeout(
+            "slow",
+            DelayedResourceTemplateServer {
+                started: Arc::clone(&started),
+                release: Arc::new(tokio::sync::Notify::new()),
+                fail: false,
+            },
+            Some(Duration::from_millis(25)),
+        )
+        .await;
+        let permits = Arc::clone(&pool.catalog_fanout_semaphore)
+            .acquire_many_owned(pool.catalog_fanout_semaphore.available_permits() as u32)
+            .await
+            .unwrap();
+        let queued = tokio::time::timeout(
+            Duration::from_secs(2),
+            pool.list_upstream_resource_templates_allowed(None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(queued, []);
+        assert!(
+            pool.catalog.read().await["slow"]
+                .resource_last_error
+                .is_none()
+        );
+        drop(permits);
+
+        let stalled = tokio::time::timeout(
+            Duration::from_secs(2),
+            pool.list_upstream_resource_templates_allowed(None),
+        )
+        .await
+        .unwrap();
+        assert_eq!(stalled, []);
+        assert!(
+            pool.catalog.read().await["slow"]
+                .resource_last_error
+                .is_some()
+        );
+    }
+
     async fn assert_delayed_resource_template_result_is_discarded(fail: bool) {
         let started = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
@@ -1987,7 +2253,7 @@ mod tests {
                     "search the index",
                     Arc::new(serde_json::Map::new()),
                 ),
-                input_schema: Some(serde_json::json!({"type": "object"})),
+                input_schema: Some(serde_json::json!({"type": "object"}).into()),
                 output_schema: None,
                 upstream_name: Arc::from("alpha"),
                 destructive: false,
@@ -2018,7 +2284,7 @@ mod tests {
     async fn gateway_server_schema_respects_exposure_policy() {
         let make_tool = |name: &'static str| UpstreamTool {
             tool: Tool::new(name, "desc", Arc::new(serde_json::Map::new())),
-            input_schema: Some(serde_json::json!({"type": "object"})),
+            input_schema: Some(serde_json::json!({"type": "object"}).into()),
             output_schema: None,
             upstream_name: Arc::from("alpha"),
             destructive: false,
@@ -2061,7 +2327,7 @@ mod tests {
             Arc::new(input.as_object().unwrap().clone()),
         )
         .with_raw_output_schema(Arc::new(output.as_object().unwrap().clone()));
-        let row = render_gateway_tool_row(&tool, Some(input.clone()));
+        let row = render_gateway_tool_row(&tool, Some(&input));
         assert_eq!(row["input_schema"], input);
         assert_eq!(row["output_schema"], output);
         let hidden = Tool::new("hidden", "hidden", Arc::new(serde_json::Map::new()));
@@ -2733,9 +2999,11 @@ mod tests {
         pool.register_upstream_config_for_tests(&config);
 
         let baseline_calls = resource_calls.load(Ordering::SeqCst);
-        let resources = pool
-            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
-            .await;
+        let (resources, concurrent) = tokio::join!(
+            pool.subject_scoped_resources(std::slice::from_ref(&config), "alice"),
+            pool.subject_scoped_resources(std::slice::from_ref(&config), "alice")
+        );
+        assert_eq!(resources, concurrent);
         let uris = resources
             .iter()
             .map(|resource| resource.uri.as_str())
@@ -2777,15 +3045,45 @@ mod tests {
             RESOURCE_SNAPSHOT_MAX_AGE,
         )
         .await;
-        let refreshed = pool
-            .subject_scoped_resources(std::slice::from_ref(&config), "alice")
-            .await;
-        assert_eq!(refreshed.len(), uris.len());
-        assert_eq!(
-            resource_calls.load(Ordering::SeqCst),
-            baseline_calls + 2,
-            "an aged subject catalog is listed again"
+        let permits = futures::future::join_all(
+            (0..super::super::helpers::upstream_discovery_concurrency(None))
+                .map(|_| pool.acquire_catalog_fanout_permit()),
+        )
+        .await;
+        let started = Instant::now();
+        let (first, second) = tokio::time::timeout(Duration::from_millis(250), async {
+            tokio::join!(
+                pool.subject_scoped_resources(std::slice::from_ref(&config), "alice"),
+                pool.subject_scoped_resources(std::slice::from_ref(&config), "alice")
+            )
+        })
+        .await
+        .expect("warm OAuth catalogs return while every listing permit is held");
+        eprintln!(
+            "two warm OAuth resource listings returned in {:?}",
+            started.elapsed()
         );
+        assert_eq!(first, cached);
+        assert_eq!(second, cached);
+        assert_eq!(resource_calls.load(Ordering::SeqCst), baseline_calls + 1);
+        drop(permits);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let cache = pool.subject_connections.read().await;
+                let seen = cache[&("google-drive".to_owned(), "alice".to_owned())]
+                    .optional_catalogs
+                    .resources_listed_at
+                    .unwrap();
+                if seen.elapsed() < RESOURCE_SNAPSHOT_MAX_AGE {
+                    break;
+                }
+                drop(cache);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("one background refresh updated the live subject catalog");
+        assert_eq!(resource_calls.load(Ordering::SeqCst), baseline_calls + 2);
 
         // An upstream list_changed drops every subject's cached catalog for
         // that upstream without touching the connections themselves.

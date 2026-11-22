@@ -1298,6 +1298,33 @@ mod tests {
     // `tasks.get`/`tasks.list` and is denied by `tasks.result`; the creator
     // receives the full result only once the Task is terminal.
     #[tokio::test]
+    async fn team_bound_authority_filters_task_actions_and_pages() {
+        let (_dir, store, owner) = fixture().await;
+        create_agent(&store, &owner, "personal-agent").await;
+        let mut context = task_context(&store, &owner);
+        dispatch(
+            context.clone(),
+            "tasks.create",
+            task_params("personal-task", "personal-agent"),
+        )
+        .await
+        .unwrap();
+        context.ceiling.bound_team = Some(BOOTSTRAP_TEAM.to_owned());
+        let listed = dispatch(context.clone(), "tasks.list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(listed["tasks"], json!([]));
+        assert!(listed["next_cursor"].is_null());
+        assert_eq!(
+            dispatch(context, "tasks.get", json!({"task_id":"personal-task"}))
+                .await
+                .unwrap_err()
+                .kind(),
+            "forbidden"
+        );
+    }
+
+    #[tokio::test]
     async fn result_material_is_creator_only_and_terminal_only() {
         let (_dir, store, owner) = fixture().await;
         let admin = add_team_admin(&store, &owner).await;

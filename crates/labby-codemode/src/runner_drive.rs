@@ -9,15 +9,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc, OnceLock,
+    Arc,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
 
+use crate::runner_io::RunnerReplies;
 use futures::{StreamExt, stream::FuturesUnordered};
 use labby_primitives::trace::TraceContext;
 use serde_json::{Value, json};
-use tokio::process::ChildStdin;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 #[cfg(test)]
@@ -56,13 +56,15 @@ mod finalize;
 mod host_trace;
 mod protocol_boundary;
 use host_trace::HostTrace;
+pub(crate) use host_trace::MAX_HOST_TRACE_ROWS;
 use protocol_boundary::handle_tool_call_event;
 mod steps;
 use artifacts::{handle_artifact_write_event, handle_snippet_resolve_event};
 use finalize::{code_mode_timeout_error, finalize_done, sorted_calls};
 use steps::{handle_step_begin_event, handle_step_result_event};
 
-static LOCAL_PROVIDER_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+// Bounded stripe count; state and Git for one workspace always use the same mutex.
+static WORKSPACE_LOCKS: [Mutex<()>; 64] = [const { Mutex::const_new(()) }; 64];
 static RESULT_ACK_RESERVE_USES: AtomicU64 = AtomicU64::new(0);
 static SETTLEMENT_WATCHDOG_EXPIRIES: AtomicU64 = AtomicU64::new(0);
 
@@ -180,6 +182,12 @@ impl Drop for CancelExecutionOnDrop {
     }
 }
 
+struct PreparedOutcome {
+    outcome: ToolCallOutcome,
+    serialized_len: usize,
+    receipt: Option<CodeModeArtifactReceipt>,
+}
+
 // Concrete future type for pending tool calls.
 // Using Pin<Box<dyn Future>> keeps the FuturesUnordered type concrete so the
 // compiler can infer the element type at the declaration site without requiring
@@ -192,7 +200,7 @@ type ToolCallFut<'a> = std::pin::Pin<
                     String,
                     Option<Value>,
                     Option<String>,
-                    Result<ToolCallOutcome, CodeModeCallError>,
+                    Result<PreparedOutcome, CodeModeCallError>,
                     u128,
                     u128,
                 ),
@@ -279,6 +287,9 @@ struct DriveState {
     step_ordinals: std::collections::HashMap<u64, (u64, String)>,
     /// Aggregate serialized bytes accepted from `step_result` values.
     step_value_bytes: usize,
+    /// Serialized params bytes held by each queued or in-flight call, by seq.
+    /// Their sum is bounded per run.
+    pending_params: std::collections::HashMap<u64, usize>,
 }
 
 impl DriveState {
@@ -299,6 +310,41 @@ impl DriveState {
         let ordinal = self.next_trace_ordinal;
         self.next_trace_ordinal = self.next_trace_ordinal.saturating_add(1);
         Ok(ordinal)
+    }
+
+    fn pending_params_bytes(&self) -> usize {
+        self.pending_params.values().sum()
+    }
+
+    /// Reserve `bytes` for the call at `seq` until its completion releases it.
+    /// A seq that already holds a reservation is a protocol fault: overwriting
+    /// it would let the first completion release the second call's bytes and
+    /// undercount what the run still holds. Ordinary calls are also guarded by
+    /// the trace's seq check, but internal calls are not traced.
+    fn reserve_pending_params(
+        &mut self,
+        seq: u64,
+        bytes: usize,
+    ) -> Result<(), CodeModeExecutionError> {
+        match self.pending_params.entry(seq) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                Err(CodeModeExecutionError::with_trace(
+                    ToolError::Sdk {
+                        sdk_kind: "internal_error".into(),
+                        message: "Code Mode runner reused a pending protocol sequence".into(),
+                    },
+                    sorted_calls(&self.calls),
+                ))
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(bytes);
+                Ok(())
+            }
+        }
+    }
+
+    fn release_pending_params(&mut self, seq: u64) {
+        self.pending_params.remove(&seq);
     }
 
     fn record_call(
@@ -327,6 +373,7 @@ impl DriveState {
             internal_calls_enqueued: 0,
             calltool_result_max_bytes: calltool_result_max_bytes(),
             result_ack_reserve_observed: false,
+            pending_params: std::collections::HashMap::new(),
             next_step_ordinal: 0,
             step_ordinals: std::collections::HashMap::new(),
             step_value_bytes: 0,

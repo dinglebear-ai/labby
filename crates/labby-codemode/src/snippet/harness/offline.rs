@@ -6,29 +6,26 @@ use crate::{
 };
 use serde_json::Value;
 
-pub(super) struct OfflineHost {
-    pool: RunnerPool,
+pub(super) struct OfflineHost<'a> {
+    pool: &'a RunnerPool,
     config: CodeModeConfig,
     client: reqwest::Client,
 }
-impl OfflineHost {
-    pub(super) fn new(config: CodeModeConfig) -> Result<Self, ToolError> {
+impl<'a> OfflineHost<'a> {
+    pub(super) fn new(config: CodeModeConfig, pool: &'a RunnerPool) -> Result<Self, ToolError> {
         let client =
             labby_openapi::http::build_dispatch_client().map_err(|error| ToolError::Sdk {
                 sdk_kind: "fixture_setup_error".into(),
                 message: error.to_string(),
             })?;
         Ok(Self {
-            pool: RunnerPool::from_env()?,
+            pool,
             config,
             client,
         })
     }
-    pub(super) async fn shutdown(&self) {
-        self.pool.shutdown().await;
-    }
 }
-impl CodeModeHost for OfflineHost {
+impl CodeModeHost for OfflineHost<'_> {
     async fn list_tools(
         &self,
         _: &CodeModeCaller,
@@ -75,7 +72,7 @@ impl CodeModeHost for OfflineHost {
         self.config.clone()
     }
     fn runner_pool(&self) -> &RunnerPool {
-        &self.pool
+        self.pool
     }
     fn openapi_registry(&self) -> labby_openapi::OpenApiRegistry {
         labby_openapi::OpenApiRegistry::default()

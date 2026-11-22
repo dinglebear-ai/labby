@@ -20,8 +20,6 @@ pub(crate) mod catalog_coalesce;
 pub(crate) mod catalog_notifications;
 #[cfg(feature = "gateway")]
 pub(crate) mod claude_channel;
-#[cfg(feature = "gateway")]
-pub(crate) mod code_mode_authority;
 pub mod completion;
 pub mod context;
 pub mod elicitation;
@@ -53,7 +51,6 @@ pub(crate) mod resource_errors;
 pub(crate) mod resource_execution;
 #[cfg(feature = "gateway")]
 pub mod resource_proxy;
-pub mod resources;
 pub mod result_format;
 pub(crate) mod route_scope;
 pub(crate) mod runtime;

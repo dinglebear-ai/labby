@@ -21,6 +21,7 @@ fn response(result: Option<Value>) -> CodeModeExecutionResponse {
 #[test]
 fn owner_scoped_snippet_actions_share_the_contextual_surface_contract() {
     for action in [
+        "snippets.list",
         "snippets.exec",
         "snippets.test",
         "snippets.fixture",
@@ -33,12 +34,7 @@ fn owner_scoped_snippet_actions_share_the_contextual_surface_contract() {
     ] {
         assert!(requires_execution_context(action), "{action}");
     }
-    for action in [
-        "snippets.list",
-        "snippets.validate",
-        "snippets.create",
-        "snippets.get",
-    ] {
+    for action in ["snippets.validate", "snippets.create", "snippets.get"] {
         assert!(!requires_execution_context(action), "{action}");
     }
 }

@@ -54,8 +54,18 @@ fn unix_millis_now() -> Result<i64, String> {
     i64::try_from(millis).map_err(|_| "current timestamp exceeds SQLite range".to_string())
 }
 
+const TASK_NOT_FOUND: &str = "task not found";
+
+pub fn task_protocol_error(message: String) -> rmcp::ErrorData {
+    if message == TASK_NOT_FOUND {
+        rmcp::ErrorData::invalid_params(message, Some(serde_json::json!({"kind":"not_found"})))
+    } else {
+        rmcp::ErrorData::internal_error(message, None)
+    }
+}
+
 fn task_not_found() -> String {
-    "task not found".to_string()
+    TASK_NOT_FOUND.to_owned()
 }
 
 fn prune_task_routes(routes: &mut std::collections::HashMap<String, TaskRoute>) {
@@ -544,6 +554,17 @@ impl UpstreamPool {
 // `panic!` is how tests assert; `panic = "warn"` targets production paths.
 #[allow(clippy::panic)]
 pub(in crate::upstream::pool) mod tests {
+    #[test]
+    fn task_errors_preserve_the_public_protocol_contract() {
+        let missing = super::task_protocol_error(super::task_not_found());
+        assert_eq!(missing.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert_eq!(missing.data.unwrap()["kind"], "not_found");
+
+        let failure = super::task_protocol_error("task route store unavailable".to_owned());
+        assert_eq!(failure.code, rmcp::model::ErrorCode::INTERNAL_ERROR);
+        assert_eq!(failure.message, "task route store unavailable");
+    }
+
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -771,6 +792,7 @@ pub(in crate::upstream::pool) mod tests {
             .expect("task relay client connects");
         let peer = client_service.peer().clone();
         let connection = RelayCachedConnection {
+            active_calls: Arc::new(()),
             _connection: UpstreamConnection::new(
                 client_service,
                 Some(server_task),

@@ -14,7 +14,7 @@ authoring, validating, or reviewing saved snippets, use `$using-snippets`.
 ## Quick Start
 
 ```bash
-labby help                 # service/action catalog
+labby help                 # CLI command help
 labby doctor               # Full health/config audit
 labby gateway status               # Quick availability check
 labby --json doctor        # Machine-readable output
@@ -23,10 +23,9 @@ labby completions bash     # Generate shell completions
 
 Use `labby`, not the old `lab` command name.
 
-`labby help` is the human-readable service/action catalog. For shell command
-grammar, use `docs/generated/cli-help.md` or `labby <command> --help`. For exact
-service actions, read `docs/generated/service-catalog.md` and
-`docs/generated/action-catalog.md`, call `labby help <service>`, or use service
+For shell command grammar, use `labby help`, `labby <command> --help`, or
+`docs/generated/cli-help.md`. For service actions, read
+`docs/generated/service-catalog.md` and `docs/generated/action-catalog.md`, or use service
 `help`/`schema` actions through MCP/API dispatch.
 
 ## Common Top-Level Surfaces
@@ -52,8 +51,7 @@ service actions, read `docs/generated/service-catalog.md` and
 
 This is a common-workflow list, not a command inventory. Use
 `docs/generated/cli-help.md` for the current top-level command inventory and
-`labby <command> --help` for command-local grammar. Root `labby --help` and
-`labby help` intentionally render the service/action catalog instead. Prefer
+`labby <command> --help` for command-local grammar. Use `labby help --all` for the full CLI tree. Prefer
 `setup` and `gateway` for operator workflows.
 
 For command details and workflows, read:

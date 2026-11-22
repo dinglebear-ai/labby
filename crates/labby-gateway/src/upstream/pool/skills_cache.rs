@@ -65,7 +65,7 @@ pub(super) struct CachedDirectSkill {
     pub(super) skill: ValidatedSkill,
     pub(super) owned_uris: BTreeSet<String>,
     expires_at: Instant,
-    last_used: Instant,
+    pub(super) last_used: Instant,
 }
 
 impl CachedDirectSkill {
@@ -149,8 +149,11 @@ impl SkillsFetchState {
         epoch: u64,
         max_items: usize,
         exposure: Option<Vec<String>>,
-        snapshot: CachedSkills,
+        mut snapshot: CachedSkills,
     ) {
+        if snapshot.skills.truncated {
+            snapshot.expires_at = snapshot.expires_at.min(Instant::now() + SKILLS_TTL_FLOOR);
+        }
         self.preview = Some(SharedSkillsPreview {
             epoch,
             max_items,
@@ -350,26 +353,35 @@ pub(super) fn clamp_ttl(ttl_ms: Option<u64>) -> Duration {
 /// Eviction runs on insert rather than on a timer: the cache is only reachable
 /// through the fetch path, so an entry that is never read again is also never
 /// in anybody's way until the next insert needs the room.
-pub(super) fn evict(cache: &mut HashMap<SkillsCacheKey, CachedSkills>) -> usize {
+pub(super) fn evict(
+    cache: &mut HashMap<SkillsCacheKey, CachedSkills>,
+    inserted_upstream: &str,
+) -> usize {
+    const MAX_SHARDS: usize = 512;
     let before = cache.len();
     cache.retain(|_, entry| entry.last_used.elapsed() < SKILLS_CACHE_IDLE_TTL);
-
-    let mut by_upstream: HashMap<String, Vec<(SkillsCacheKey, Instant)>> = HashMap::new();
-    for (key @ (upstream, _), entry) in cache.iter() {
-        by_upstream
-            .entry(upstream.clone())
-            .or_default()
-            .push((key.clone(), entry.last_used));
-    }
-    for mut entries in by_upstream.into_values() {
-        if entries.len() <= SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM {
-            continue;
-        }
-        entries.sort_unstable_by_key(|(_, last_used)| *last_used);
-        let remove = entries.len() - SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM;
-        for (key, _) in entries.into_iter().take(remove) {
+    // One insertion can only increase the count for its own upstream.
+    let mut entries = cache
+        .iter()
+        .filter(|((upstream, _), _)| upstream == inserted_upstream)
+        .map(|(key, entry)| (key.clone(), entry.last_used))
+        .collect::<Vec<_>>();
+    if entries.len() > SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM {
+        entries.sort_unstable_by_key(|(_, used)| *used);
+        let excess = entries.len() - SKILLS_CACHE_MAX_SUBJECTS_PER_UPSTREAM;
+        for (key, _) in entries.into_iter().take(excess) {
             cache.remove(&key);
         }
+    }
+    while cache.len() > MAX_SHARDS {
+        let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(key, _)| key.clone())
+        else {
+            break;
+        };
+        cache.remove(&oldest);
     }
     before.saturating_sub(cache.len())
 }
@@ -389,10 +401,10 @@ impl SkillsFetchLocks {
     /// The guard for `key`, creating it if absent.
     pub(super) async fn guard_for(&self, key: &SkillsCacheKey) -> Arc<Mutex<SkillsFetchState>> {
         let mut locks = self.locks.lock().await;
-        // Cold previews do not publish cache entries or schedule refreshes.
-        // Reclaim idle guards here as well, including cancelled requests, so
-        // short-lived subject identities cannot accumulate forever.
-        locks.retain(|_, guard| Arc::strong_count(guard) > 1);
+        // Keep the requested caller's bounded preview for consecutive queries.
+        // Its epoch, exposure, budget and TTL are checked by preview(). Other
+        // idle guards are reclaimed so transient subjects cannot accumulate.
+        locks.retain(|candidate, guard| candidate == key || Arc::strong_count(guard) > 1);
         Arc::clone(locks.entry(key.clone()).or_default())
     }
 
@@ -457,7 +469,7 @@ mod tests {
             );
         }
 
-        evict(&mut cache);
+        evict(&mut cache, "busy");
 
         let busy = cache
             .keys()
@@ -468,6 +480,18 @@ mod tests {
         for i in 0..8 {
             assert!(cache.contains_key(&(format!("quiet-{i}"), None)));
         }
+    }
+
+    #[test]
+    fn cache_evicts_oldest_origin_when_process_limit_is_reached() {
+        let mut cache = HashMap::new();
+        for i in 0..513 {
+            cache.insert((format!("up-{i}"), None), CachedSkills::new(snapshot(None)));
+        }
+        cache.get_mut(&("up-0".into(), None)).unwrap().last_used -= Duration::from_secs(1);
+        assert_eq!(evict(&mut cache, "up-512"), 1);
+        assert!(!cache.contains_key(&("up-0".into(), None)));
+        assert!(cache.contains_key(&("up-512".into(), None)));
     }
 
     #[test]
@@ -504,7 +528,7 @@ mod tests {
             CachedSkills::new(snapshot(None)),
         );
 
-        evict(&mut cache);
+        evict(&mut cache, "live");
         assert!(!cache.contains_key(&("idle".to_string(), None)));
         assert!(cache.contains_key(&("live".to_string(), None)));
     }

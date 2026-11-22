@@ -14,16 +14,40 @@ async fn nested_runner_guard_does_not_release_final_preservation_retention() {
     tokio::fs::create_dir(store.path().join(newer_id))
         .await
         .unwrap();
+    for entry in std::fs::read_dir(store.path()).unwrap() {
+        let metadata = entry
+            .unwrap()
+            .path()
+            .join(crate::artifact_access::METADATA_DIR);
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(metadata.join("fixture-owner"), []).unwrap();
+    }
     let execution = ActiveArtifactRun::register(&run_id);
     let runner = ActiveArtifactRun::register(&run_id);
     drop(runner);
-    prune_artifact_runs_locked(store.path(), 1, 0, &active_artifact_runs_snapshot()).await;
+    prune_artifact_runs_locked(
+        store.path(),
+        1,
+        None,
+        &active_artifact_runs_snapshot(),
+        "fixture-owner",
+        None,
+    )
+    .await;
     assert_eq!(
         tokio::fs::read(root.join("result.json")).await.unwrap(),
         b"saved"
     );
     drop(execution);
-    prune_artifact_runs_locked(store.path(), 1, 0, &active_artifact_runs_snapshot()).await;
+    prune_artifact_runs_locked(
+        store.path(),
+        1,
+        None,
+        &active_artifact_runs_snapshot(),
+        "fixture-owner",
+        None,
+    )
+    .await;
     assert!(!root.exists());
 }
 
@@ -49,6 +73,7 @@ async fn artifact_writes_reject_metadata_aliases_before_publication() {
                 content_type: None,
             },
             1024,
+            "fixture-owner",
         )
         .await
         .unwrap_err();
@@ -67,7 +92,7 @@ async fn artifact_receipts_use_the_published_normalized_path_without_clobber() {
         content: "first".into(),
         content_type: None,
     };
-    let receipt = write_code_mode_artifact(&root, &request, 1024)
+    let receipt = write_code_mode_artifact(&root, &request, 1024, "fixture-owner")
         .await
         .unwrap();
     assert_eq!(receipt.path, "nested/.labby-artifact-metadata/payload.txt");
@@ -75,7 +100,7 @@ async fn artifact_receipts_use_the_published_normalized_path_without_clobber() {
     request.path = format!("./{}", receipt.path);
     request.content = "second".into();
     assert!(
-        write_code_mode_artifact(&root, &request, 1024)
+        write_code_mode_artifact(&root, &request, 1024, "fixture-owner")
             .await
             .is_err()
     );

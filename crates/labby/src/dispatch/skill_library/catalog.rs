@@ -247,7 +247,21 @@ pub(crate) const LOCAL_ACTIONS: [ActionSpec; 20] = [
         false,
         false,
         "SkillMutationReceipt",
-        &[ARTIFACT, REVISION, FILES, VERSION, IDEM],
+        &[
+            ARTIFACT,
+            ParamSpec {
+                required: false,
+                description: "Current skill revision. Supply this, a library version, or both.",
+                ..REVISION
+            },
+            FILES,
+            ParamSpec {
+                required: false,
+                description: "Require the entire library to have this version. Optional with a skill revision.",
+                ..VERSION
+            },
+            IDEM,
+        ],
     ),
     spec(
         "artifacts.activate",

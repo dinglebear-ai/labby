@@ -144,8 +144,7 @@ async fn handle(
                 let auth = request_auth.as_ref().ok_or_else(|| ToolError::Forbidden { message: "First-tool verification requires authentication".into(), required_scopes: vec![] })?;
                 if action == "mcp.verification.call" { super::require_session_csrf(&action, &request_headers, Some(auth))?; }
                 let store = access_runtime.store().await.map_err(|error| crate::dispatch::access_errors::map_runtime_error("setup", error))?;
-                let installation = match installation_id { Some(id) => id, None => store.installation_id().await.ok().flatten().unwrap_or_else(|| "installation".into()) };
-                let authority = crate::access::authorize_gateway_action(&access_runtime, identity.clone(), crate::access::AuthorityCeiling::from_auth_context(auth), &installation, None, &format!("gateway.setup.{action}")).await?.ok_or_else(|| ToolError::Forbidden { message: "Gateway verification is not authorized".into(), required_scopes: vec![] })?;
+                let authority = crate::access::authorize_gateway_action(&access_runtime, identity.clone(), crate::access::AuthorityCeiling::from_auth_context(auth), installation_id.as_deref(), None, &format!("gateway.setup.{action}")).await?.ok_or_else(|| ToolError::Forbidden { message: "Gateway verification is not authorized".into(), required_scopes: vec![] })?;
                 authority.validate_before_external_effect().await?;
                 let manager = gateway_manager.ok_or_else(|| ToolError::Sdk { sdk_kind: "service_unavailable".into(), message: "The gateway runtime is unavailable".into() })?;
                 if action == "mcp.verification.tools" { return crate::dispatch::setup::mcp_verification::tools(&manager, &params).await; }

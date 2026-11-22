@@ -14,6 +14,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // Record the stderr buffer position before this execution so we capture
         // only the lines this run produces (a pooled runner's buffer carries
         // prior executions' lines).
+        let fresh_process = runner.executions == 0;
         let stderr = runner.stderr.clone();
         let stderr_start = stderr.mark().await;
 
@@ -21,14 +22,18 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             code: cfg.code_to_run.clone(),
             proxy: cfg.proxy.clone(),
         };
-        if let Err(err) =
-            tokio::time::timeout_at(deadline, write_runner_input(&mut runner.stdin, &start))
-                .await
-                .map_err(|_| ToolError::Sdk {
-                    sdk_kind: "timeout".to_string(),
-                    message: "Code Mode execution timed out".to_string(),
-                })
-                .and_then(|result| result)
+        let Some(mut pipe) = runner.stdin.take() else {
+            return DriveOutcome::RunnerUnhealthy(
+                ToolError::internal_message("Code Mode runner stdin is unavailable").into(),
+            );
+        };
+        if let Err(err) = tokio::time::timeout_at(deadline, write_runner_input(&mut pipe, &start))
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "timeout".to_string(),
+                message: "Code Mode execution timed out".to_string(),
+            })
+            .and_then(|result| result)
         {
             // Failed to even send Start — the runner is suspect; evict it.
             return DriveOutcome::RunnerUnhealthy(err.into());
@@ -56,13 +61,24 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // these references for its duration; the runner is parked afterwards.
         let child = &mut runner.child;
         let child_pid = runner.child_pid;
-        let stdin = &mut runner.stdin;
+        let (replies, mut writer) = RunnerReplies::start(pipe);
+        let stdin = &replies;
         let lines = &mut runner.lines;
         let reuse_ready = &mut runner.reuse_ready;
 
         loop {
             let read_deadline = settlement_watch.map_or(deadline, |watch| watch.deadline);
             tokio::select! {
+                ended = &mut writer => {
+                    let error = match ended {
+                        Ok(Err(err)) => err,
+                        _ => ToolError::internal_message("Code Mode runner writer stopped unexpectedly"),
+                    };
+                    cancellation.cancel();
+                    pending_tool_calls.clear();
+                    terminate_code_mode_runner(child, child_pid).await;
+                    return DriveOutcome::RunnerUnhealthy(CodeModeExecutionError::with_trace(error, sorted_calls(&state.calls)));
+                }
                 line = tokio::time::timeout_at(read_deadline, lines.next()) => {
                     let line = match line {
                         Ok(line) => line,
@@ -137,7 +153,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             &diagnostics.join("\n"),
                             512,
                         );
-                        let message = if diagnostics.is_empty() {
+                        let message = if !fresh_process || diagnostics.is_empty() {
                             format!("Code Mode runner exited before completion ({status:?})")
                         } else {
                             format!(
@@ -283,10 +299,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                 return DriveOutcome::RunnerUnhealthy(err);
                             }
                         }
+                        CodeModeRunnerOutput::ProtocolVersion { .. } => {
+                            return DriveOutcome::RunnerUnhealthy(ToolError::internal_message("unexpected runner version frame during execution").into());
+                        }
                         CodeModeRunnerOutput::Done { result, logs, reuse_ready: qualified } => {
-                            // Preserve original invariant: Done with in-flight
-                            // tool calls is a protocol error → evict.
-                            if !pending_tool_calls.is_empty() {
+                            // A qualified runner must have consumed every reply.
+                            if qualified && !pending_tool_calls.is_empty() {
                                 terminate_code_mode_runner(child, child_pid).await;
                                 return DriveOutcome::RunnerUnhealthy(
                                     CodeModeExecutionError::with_trace(
@@ -300,20 +318,42 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                                     ),
                                 );
                             }
+                            if !pending_tool_calls.is_empty() {
+                                cancellation.cancel();
+                                pending_tool_calls.clear();
+                                state.calls.finish_outstanding();
+                            }
                             // Empty host futures do not prove reply consumption.
                             // Preserve caught success, but release only with the
                             // runner's native proof of a clean stdio boundary.
-                            *reuse_ready = qualified;
+                            if qualified {
+                                // The reader acknowledged a clean boundary. Restore the pipe
+                                // only after this run's writer has finished all queued bytes.
+                                drop(replies);
+                                let drained = tokio::time::timeout_at(deadline, &mut writer)
+                                    .await
+                                    .map_err(|_| code_mode_timeout_error(&state.calls))
+                                    .and_then(|joined| {
+                                        joined.unwrap_or_else(|err| Err(ToolError::internal_message(
+                                            format!("Code Mode runner writer task failed: {err}")
+                                        ))).map_err(|err| CodeModeExecutionError::with_trace(err, sorted_calls(&state.calls)))
+                                    });
+                                match drained {
+                                    Ok(pipe) => {
+                                        runner.stdin = Some(pipe);
+                                        *reuse_ready = true;
+                                    }
+                                    Err(err) => {
+                                        terminate_code_mode_runner(child, child_pid).await;
+                                        return DriveOutcome::RunnerUnhealthy(err);
+                                    }
+                                }
+                            }
                             let response = finalize_done(result, logs, &state);
-                            // Capture only this execution's stderr lines. The
-                            // runner is parked (it loops), so do not wait on it;
-                            // give the drain a brief window to flush console
-                            // output emitted before Done.
-                            stderr.flush_settle().await;
-                            let mut all_logs = response.logs.clone();
-                            all_logs.extend(stderr.take_since_and_clear(stderr_start).await);
+                            // Only the terminal frame identifies the execution owning each log.
+                            stderr.clear().await;
                             let all_logs = apply_log_caps(
-                                all_logs,
+                                response.logs,
                                 cfg.max_log_entries,
                                 cfg.max_log_bytes,
                             );
@@ -333,7 +373,6 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                             // the lease owner evicts without replaying the run.
                             cancellation.cancel();
                             pending_tool_calls.clear();
-                            stderr.flush_settle().await;
                             stderr.clear().await;
                             return DriveOutcome::ExecutionError(
                                 CodeModeExecutionError::with_trace(
@@ -348,7 +387,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     if !pending_tool_calls.is_empty() =>
                 {
                     if let Err(err) = handle_completed_tool_call(
-                        completed, stdin, child, child_pid, deadline, &mut state, &cfg,
+                        completed, stdin, child, child_pid, deadline, &mut state,
                     )
                     .await
                     {

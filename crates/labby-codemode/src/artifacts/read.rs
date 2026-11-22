@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-const MAX_DOWNLOAD_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_DOWNLOAD_BYTES: usize = super::budget::MAX_RUN_BYTES as usize;
 fn unavailable() -> ToolError {
     ToolError::Sdk {
         sdk_kind: "artifact_unavailable".into(),
@@ -32,9 +32,9 @@ pub async fn read_receipted_artifact(
     }
     let path = super::normalize_artifact_path(path)?;
     if expected_bytes > MAX_DOWNLOAD_BYTES {
-        return Err(ToolError::InvalidParam {
-            param: "path".into(),
-            message: "Artifact exceeds the 8 MiB download limit".into(),
+        return Err(ToolError::Sdk {
+            sdk_kind: "response_too_large".into(),
+            message: format!("Artifact exceeds the {MAX_DOWNLOAD_BYTES} byte download limit"),
         });
     }
     let home = home.to_owned();
@@ -52,7 +52,7 @@ pub async fn read_receipted_artifact(
         }
         let mut bytes = Vec::with_capacity(expected_bytes);
         file.by_ref()
-            .take((MAX_DOWNLOAD_BYTES + 1) as u64)
+            .take((expected_bytes + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|_| unavailable())?;
         if bytes.len() != expected_bytes || hex::encode(Sha256::digest(&bytes)) != expected_sha256 {

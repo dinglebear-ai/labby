@@ -35,7 +35,7 @@ pub(crate) struct AccessStore {
     #[cfg(test)]
     skill_library_authorizations: Arc<AtomicUsize>,
     #[cfg(test)]
-    bulk_authorization_transactions: Arc<AtomicUsize>,
+    authorization_transactions: Arc<AtomicUsize>,
 }
 
 impl std::fmt::Debug for AccessStore {
@@ -77,7 +77,7 @@ impl AccessStore {
         requests: Vec<super::AuthorityRequest>,
     ) -> AccessStoreResult<Vec<bool>> {
         #[cfg(test)]
-        let transaction_count = Arc::clone(&self.bulk_authorization_transactions);
+        let transaction_count = Arc::clone(&self.authorization_transactions);
         self.with_connection(move |connection| {
             let transaction = connection
                 .transaction_with_behavior(TransactionBehavior::Deferred)
@@ -99,8 +99,8 @@ impl AccessStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn bulk_authorization_transaction_count(&self) -> usize {
-        self.bulk_authorization_transactions.load(Ordering::Relaxed)
+    pub(crate) fn authorization_transaction_count(&self) -> usize {
+        self.authorization_transactions.load(Ordering::Relaxed)
     }
     #[cfg(feature = "gateway")]
     pub(crate) async fn get_team_gateway_credential_binding(
@@ -338,16 +338,16 @@ impl AccessStore {
         request: super::AuthorityRequest,
     ) -> AccessStoreResult<Vec<super::task::TaskRecord>> {
         #[cfg(test)]
-        let transaction_count = Arc::clone(&self.bulk_authorization_transactions);
+        let transaction_count = Arc::clone(&self.authorization_transactions);
         self.with_connection(move |connection| {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(map_sqlite_error)?;
             #[cfg(test)]
             transaction_count.fetch_add(1, Ordering::Relaxed);
             let principal = super::read::resolve_principal(&tx, request.identity()).map_err(super::authority::collapse_denial)?;
             let admin: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')", [&principal.id], |r| r.get(0)).map_err(map_sqlite_error)?;
-            let sql = format!("WITH {AUTHORIZED_OWNERS_CTE}, visible AS (SELECT t.* FROM agent_tasks t JOIN authorized_owners a USING(owner_kind,owner_id) UNION ALL SELECT t.* FROM agent_tasks t WHERE ?4 AND t.owner_kind='installation') SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code,created_at,updated_at FROM visible WHERE task_id>?1 ORDER BY task_id LIMIT ?2");
+            let sql = format!("WITH {AUTHORIZED_OWNERS_CTE}, visible AS (SELECT t.* FROM agent_tasks t JOIN authorized_owners a USING(owner_kind,owner_id) UNION ALL SELECT t.* FROM agent_tasks t WHERE ?4 AND t.owner_kind='installation') SELECT task_id,idempotency_key,owner_kind,owner_id,project_id,creator_principal_id,agent_id,agent_version,agent_revision_digest,input_digest,catalog_generation,authority_fingerprint,state,attempt,output_digest,error_code,created_at,updated_at FROM visible WHERE task_id>?1 AND (?5 IS NULL OR (owner_kind='team' AND owner_id=?5)) ORDER BY task_id LIMIT ?2");
             let mut statement = tx.prepare(&sql).map_err(map_sqlite_error)?;
-            let records = statement.query_map(rusqlite::params![after, i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?, principal.id, admin], super::task::decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)?;
+            let records = statement.query_map(rusqlite::params![after, i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?, principal.id, admin, request.bound_team()], super::task::decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)?;
             drop(statement);
             // Per-record re-authorization filters the page: a row the caller
             // may not act on is omitted, it does not abort the listing.
@@ -610,16 +610,16 @@ impl AccessStore {
         request: super::AuthorityRequest,
     ) -> AccessStoreResult<Vec<labby_primitives::agent::AgentDefinition>> {
         #[cfg(test)]
-        let transaction_count = Arc::clone(&self.bulk_authorization_transactions);
+        let transaction_count = Arc::clone(&self.authorization_transactions);
         self.with_connection(move |connection| {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(map_sqlite_error)?;
             #[cfg(test)]
             transaction_count.fetch_add(1, Ordering::Relaxed);
             let principal = super::read::resolve_principal(&tx, request.identity()).map_err(super::authority::collapse_denial)?;
             let admin: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM platform_administrators WHERE principal_id=?1 AND status='active')", [&principal.id], |r| r.get(0)).map_err(map_sqlite_error)?;
-            let sql = format!("WITH {AUTHORIZED_OWNERS_CTE}, visible AS (SELECT d.* FROM agent_definitions d JOIN authorized_owners a USING(owner_kind,owner_id) WHERE d.state!='deleted' UNION ALL SELECT d.* FROM agent_definitions d WHERE ?4 AND d.owner_kind='installation' AND d.state!='deleted') SELECT owner_kind,owner_id,version,definition_json,state,authority_epoch,publication_epoch FROM visible WHERE agent_id>?1 ORDER BY agent_id LIMIT ?2");
+            let sql = format!("WITH {AUTHORIZED_OWNERS_CTE}, visible AS (SELECT d.* FROM agent_definitions d JOIN authorized_owners a USING(owner_kind,owner_id) WHERE d.state!='deleted' UNION ALL SELECT d.* FROM agent_definitions d WHERE ?4 AND d.owner_kind='installation' AND d.state!='deleted') SELECT owner_kind,owner_id,version,definition_json,state,authority_epoch,publication_epoch FROM visible WHERE agent_id>?1 AND (?5 IS NULL OR (owner_kind='team' AND owner_id=?5)) ORDER BY agent_id LIMIT ?2");
             let mut statement = tx.prepare(&sql).map_err(map_sqlite_error)?;
-            let records = statement.query_map(rusqlite::params![after, i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?, principal.id, admin], super::agent::decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)?;
+            let records = statement.query_map(rusqlite::params![after, i64::try_from(limit).map_err(|_| AccessStoreError::MalformedVocabulary)?, principal.id, admin, request.bound_team()], super::agent::decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)?;
             drop(statement);
             let mut authorized = Vec::with_capacity(records.len());
             for record in records {
@@ -642,7 +642,7 @@ impl AccessStore {
         request: super::AuthorityRequest,
     ) -> AccessStoreResult<Vec<super::RecoveryRecord>> {
         #[cfg(test)]
-        let transaction_count = Arc::clone(&self.bulk_authorization_transactions);
+        let transaction_count = Arc::clone(&self.authorization_transactions);
         self.with_connection(move |connection| {
             let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred).map_err(map_sqlite_error)?;
             #[cfg(test)]
@@ -812,7 +812,7 @@ impl AccessStore {
             #[cfg(test)]
             skill_library_authorizations: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
-            bulk_authorization_transactions: Arc::new(AtomicUsize::new(0)),
+            authorization_transactions: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -834,7 +834,7 @@ impl AccessStore {
             #[cfg(test)]
             skill_library_authorizations: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
-            bulk_authorization_transactions: Arc::new(AtomicUsize::new(0)),
+            authorization_transactions: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -1305,46 +1305,6 @@ impl AccessStore {
         })
     }
 
-    pub(crate) async fn lease_file_stash_participants(
-        &self,
-        owner: super::AccessPrincipalId,
-        recipient: String,
-    ) -> AccessStoreResult<(
-        super::AccessPrincipalId,
-        super::ActiveFileStashPrincipalLease,
-    )> {
-        let recipient = recipient.trim().to_owned();
-        if recipient.is_empty() || recipient.len() > 255 || recipient.chars().any(char::is_control)
-        {
-            return Err(AccessStoreError::IdentityUnavailable);
-        }
-        let mut ids = [owner.as_str().to_owned(), recipient.clone()];
-        ids.sort();
-        let first = self.file_stash_principal_gate(&ids[0]).read_owned().await;
-        let second = self.file_stash_principal_gate(&ids[1]).read_owned().await;
-        let owner_for_query = owner.clone();
-        let recipient_for_query = recipient.clone();
-        let active = self
-            .with_connection(move |connection| {
-            connection
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM principals owner JOIN principals recipient ON recipient.organization_id=owner.organization_id JOIN organizations o ON o.organization_id=owner.organization_id WHERE owner.principal_id=?1 AND owner.status='active' AND recipient.principal_id=?2 AND recipient.status='active' AND o.status='active')",
-                    rusqlite::params![owner_for_query.as_str(), recipient_for_query],
-                    |row| row.get::<_, bool>(0),
-                )
-                .map_err(map_sqlite_error)
-        })
-        .await?;
-        if !active {
-            return Err(AccessStoreError::IdentityUnavailable);
-        }
-        Ok((
-            super::AccessPrincipalId(recipient),
-            super::ActiveFileStashPrincipalLease {
-                _guards: vec![first, second],
-            },
-        ))
-    }
     pub(crate) async fn select_project(
         &self,
         identity: labby_auth::VerifiedIdentity,
@@ -1368,6 +1328,9 @@ impl AccessStore {
         &self,
         input: AuthorizeProjectInput,
     ) -> AccessStoreResult<ProjectPermissionSnapshot> {
+        #[cfg(test)]
+        self.authorization_transactions
+            .fetch_add(1, Ordering::Relaxed);
         self.with_connection(move |connection| super::authorization::authorize(connection, &input))
             .await
     }
@@ -2120,7 +2083,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(decisions, vec![false; 100]);
-        assert_eq!(store.bulk_authorization_transaction_count(), 1);
+        assert_eq!(store.authorization_transaction_count(), 1);
     }
 
     #[tokio::test]
@@ -2171,7 +2134,7 @@ mod tests {
         assert_eq!(page.len(), 100);
         assert!(page.iter().all(|record| record.intent.owner
             == OwnerScope::Personal(PrincipalId::new("caller").unwrap())));
-        assert_eq!(store.bulk_authorization_transaction_count(), 1);
+        assert_eq!(store.authorization_transaction_count(), 1);
     }
 
     fn secure_test_path(directory: &tempfile::TempDir) -> PathBuf {

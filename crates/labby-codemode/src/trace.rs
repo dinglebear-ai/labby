@@ -6,7 +6,104 @@
 
 use serde_json::{Map, Value, json};
 
-use super::types::{CodeModeExecutionResponse, split_code_mode_call_id};
+use super::types::CodeModeExecutionResponse;
+use schemars::JsonSchema;
+use serde::Serialize;
+use serde::ser::SerializeStruct;
+
+/// A captured MCP Apps (mcp-ui) widget link.
+///
+/// Recorded by the host at the tool-call boundary when a tool result carries
+/// `_meta.ui.resourceUri`, before the result envelope is discarded. `ui_meta`
+/// holds the `_meta.ui` object verbatim (including `resourceUri`) so the final
+/// `execute` response can mirror the widget identically.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct UiLink {
+    /// Raw `_meta.ui` object advertised by the tool result.
+    pub ui_meta: Value,
+}
+
+#[allow(dead_code)]
+#[derive(JsonSchema)]
+pub(super) struct CodeModeExecutedCallSchema {
+    id: String,
+    namespace: String,
+    tool: String,
+    ok: bool,
+    elapsed_ms: u128,
+    start_ms: Option<u128>,
+    params: Option<Value>,
+    error_kind: Option<String>,
+    ui: Option<Value>,
+    upstream_content: Option<Value>,
+}
+
+/// Lightweight metadata for one host-brokered tool call. Cloudflare parity:
+/// full per-call result payload is not carried here. Independent upstream
+/// content is retained separately under bounded auxiliary/output budgets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CodeModeExecutedCall {
+    /// Independent upstream content, bounded per execution. Omission counters
+    /// describe blocks not delivered under auxiliary or final response budgets.
+    pub upstream_content: Option<Value>,
+    /// Fully-qualified `<namespace>::<tool>` identifier.
+    pub id: String,
+    /// Whether the brokered call completed successfully.
+    pub ok: bool,
+    /// Tool-call duration in milliseconds.
+    pub elapsed_ms: u128,
+    /// Offset from execution start to this call's dispatch, in ms. `None` for
+    /// synthetic entries (budget rejections, artifact pseudo-calls) that have
+    /// no meaningful dispatch time. Lets the inspector render a true waterfall
+    /// (sequential vs `Promise.all` fan-out) instead of bare duration bars.
+    pub start_ms: Option<u128>,
+    /// Redacted/capped params captured at the broker boundary. Raw params must
+    /// never be stored in this public trace type.
+    pub params: Option<Value>,
+    /// Versioned digest of redacted and capped trace arguments when parameter tracing is enabled.
+    /// Host-only execution metadata: deliberately omitted from Serialize and
+    /// the public schema, even when trace parameters are enabled.
+    pub params_digest: Option<String>,
+    /// Stable error kind when the brokered call failed.
+    pub error_kind: Option<String>,
+    /// Captured MCP Apps (mcp-ui) widget link for this specific tool call.
+    /// Stored as metadata only; the call result payload stays out of the trace.
+    pub ui: Option<UiLink>,
+}
+
+impl Serialize for CodeModeExecutedCall {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let (namespace, tool) = split_code_mode_call_id(&self.id);
+        let mut state = serializer.serialize_struct("CodeModeExecutedCall", 10)?;
+        state.serialize_field("id", &self.id)?;
+        state.serialize_field("namespace", namespace)?;
+        state.serialize_field("tool", tool)?;
+        state.serialize_field("ok", &self.ok)?;
+        state.serialize_field("elapsed_ms", &self.elapsed_ms)?;
+        if let Some(start_ms) = &self.start_ms {
+            state.serialize_field("start_ms", start_ms)?;
+        }
+        if let Some(params) = &self.params {
+            state.serialize_field("params", params)?;
+        }
+        if let Some(error_kind) = &self.error_kind {
+            state.serialize_field("error_kind", error_kind)?;
+        }
+        if let Some(ui) = &self.ui {
+            state.serialize_field("ui", &ui.ui_meta)?;
+        }
+        if let Some(content) = &self.upstream_content {
+            state.serialize_field("upstream_content", content)?;
+        }
+        state.end()
+    }
+}
+
+#[must_use]
+fn split_code_mode_call_id(id: &str) -> (&str, &str) {
+    id.split_once("::")
+        .map_or(("", id), |(namespace, tool)| (namespace, tool))
+}
 
 const DEFAULT_PARAM_BYTES: usize = 4096;
 

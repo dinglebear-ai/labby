@@ -820,18 +820,30 @@ async fn cancelled_code_mode_leader_releases_duplicate_waiters() {
 fn provider_caller(request_id: &str, skills: Option<&str>) -> labby_codemode::CodeModeCaller {
     let capabilities = labby_codemode::CodeModeCallerCapabilities::default();
     match skills {
-        None => labby_codemode::CodeModeCaller::ScopedHostProvider {
+        None => labby_codemode::CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                provider: Some(labby_codemode::CodeModeProviderContext {
+                    token: "token".to_string(),
+                    request_id: request_id.to_string(),
+                }),
+                ..Default::default()
+            },
+
             capabilities,
             sub: Some("sub".to_string()),
-            provider_token: "token".to_string(),
-            provider_request_id: request_id.to_string(),
         },
-        Some(skill) => labby_codemode::CodeModeCaller::ScopedHostProviderSkills {
+        Some(skill) => labby_codemode::CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some(skill.to_string()),
+                provider: Some(labby_codemode::CodeModeProviderContext {
+                    token: "token".to_string(),
+                    request_id: request_id.to_string(),
+                }),
+                ..Default::default()
+            },
+
             capabilities,
             sub: Some("sub".to_string()),
-            provider_token: "token".to_string(),
-            provider_request_id: request_id.to_string(),
-            skill_context_token: skill.to_string(),
         },
     }
 }
@@ -860,6 +872,7 @@ fn dedup_key_separates_runs_with_different_request_contexts() {
     );
 
     let plain = || labby_codemode::CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
         sub: None,
     };
@@ -870,15 +883,23 @@ fn dedup_key_separates_runs_with_different_request_contexts() {
     );
     assert_ne!(key(&plain()), key(&provider_caller("req-1", None)));
 
-    let private = |token: &str| labby_codemode::CodeModeCaller::ScopedPrivate {
+    let private = |token: &str| labby_codemode::CodeModeCaller::Scoped {
+        host_context: labby_codemode::CodeModeHostContext {
+            upstream_private_token: Some(token.to_string()),
+            ..Default::default()
+        },
+
         capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
         sub: None,
-        context_token: token.to_string(),
     };
-    let skills = |token: &str| labby_codemode::CodeModeCaller::ScopedSkills {
+    let skills = |token: &str| labby_codemode::CodeModeCaller::Scoped {
+        host_context: labby_codemode::CodeModeHostContext {
+            skill_context_token: Some(token.to_string()),
+            ..Default::default()
+        },
+
         capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
         sub: None,
-        skill_context_token: token.to_string(),
     };
     assert_ne!(key(&private("ctx-a")), key(&private("ctx-b")));
     assert_ne!(key(&skills("ctx-a")), key(&skills("ctx-b")));
@@ -909,21 +930,29 @@ fn authority_wrapped_runs_preserve_request_context_isolation() {
         key(&first),
         key(&wrapped(provider_caller("request-a", Some("skills-b"))))
     );
-    assert_eq!(
+    assert_ne!(
         key(&first),
         key(&provider_caller("request-a", Some("skills-a")))
     );
     assert!(!key(&first).contains("token"));
     assert!(!key(&first).contains("authority"));
-    let private = |token: &str| labby_codemode::CodeModeCaller::ScopedPrivate {
+    let private = |token: &str| labby_codemode::CodeModeCaller::Scoped {
+        host_context: labby_codemode::CodeModeHostContext {
+            upstream_private_token: Some(token.into()),
+            ..Default::default()
+        },
+
         capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
         sub: None,
-        context_token: token.into(),
     };
-    let skills = |token: &str| labby_codemode::CodeModeCaller::ScopedSkills {
+    let skills = |token: &str| labby_codemode::CodeModeCaller::Scoped {
+        host_context: labby_codemode::CodeModeHostContext {
+            skill_context_token: Some(token.into()),
+            ..Default::default()
+        },
+
         capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
         sub: None,
-        skill_context_token: token.into(),
     };
     assert_ne!(
         key(&wrapped(private("private-a"))),
@@ -985,7 +1014,7 @@ fn upstream_content_budget_counts_both_mcp_channels_and_preserves_status() {
     let mut result = CallToolResult::success(vec![ContentBlock::text(trace.to_string())]);
     result.structured_content = Some(trace);
     result.is_error = Some(false);
-    bound_upstream_content(&mut result, 1000, 1000);
+    bound_upstream_content(&mut result, 1000);
     assert_eq!(result.is_error, Some(false));
     assert!(serde_json::to_vec(&result).unwrap().len() < 1000);
     let structured = result.structured_content.as_ref().unwrap();

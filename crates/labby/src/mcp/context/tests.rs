@@ -94,6 +94,29 @@ fn caller_authorization_read_gate_handles_every_transport_shape() {
     assert!(!resolve_caller_authorization(None, AbsentAuth::Untrusted, None).can_read());
 }
 
+#[cfg(feature = "gateway")]
+#[test]
+fn relay_capabilities_preserve_standard_negotiation_fields() {
+    let raw = serde_json::json!({
+        "experimental":{"example-client":{}},
+        "sampling":{"tools":{"version":"example"}},
+        "elicitation":{"form":{"schemaValidation":true}},
+        "extensions":{"io.modelcontextprotocol/tasks":{}, "example.com/theme":{"color":"blue"}}
+    });
+    let meta = rmcp::model::RequestMetaObject::with_client_context(
+        rmcp::model::ProtocolVersion::V_2026_07_28,
+        rmcp::model::Implementation::new("fixture", "1"),
+        serde_json::from_value(raw).unwrap(),
+    );
+    assert_eq!(
+        serde_json::to_value(forwardable_client_capabilities(Some(&meta))).unwrap(),
+        serde_json::json!({
+            "sampling":{"tools":{}}, "elicitation":{"form":{"schemaValidation":true}},
+            "extensions":{"io.modelcontextprotocol/tasks":{}}
+        })
+    );
+}
+
 #[test]
 fn forwardable_capabilities_are_derived_from_current_request_metadata() {
     let capabilities = rmcp::model::ClientCapabilities::builder()
@@ -105,13 +128,10 @@ fn forwardable_capabilities_are_derived_from_current_request_metadata() {
         capabilities.clone(),
     );
 
-    assert_eq!(
-        forwardable_client_capabilities(Some(&meta)),
-        Some(capabilities)
-    );
+    assert_eq!(forwardable_client_capabilities(Some(&meta)), capabilities);
     assert_eq!(
         forwardable_client_capabilities(None),
-        Some(rmcp::model::ClientCapabilities::default())
+        rmcp::model::ClientCapabilities::default()
     );
 
     let empty = rmcp::model::RequestMetaObject::with_client_context(
@@ -121,7 +141,7 @@ fn forwardable_capabilities_are_derived_from_current_request_metadata() {
     );
     assert_eq!(
         forwardable_client_capabilities(Some(&empty)),
-        Some(rmcp::model::ClientCapabilities::default())
+        rmcp::model::ClientCapabilities::default()
     );
 }
 

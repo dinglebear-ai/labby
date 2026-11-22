@@ -112,6 +112,20 @@ state and the last 100 journal lines to
 owner must alert on that tag. The main unit's five-crash start limit prevents an
 unbounded restart loop.
 
+The stock unit limits the service to 4 GiB of memory and 1,000 tasks. Five
+starts within 60 seconds can exhaust its restart allowance. After a memory
+failure, inspect the effective limits, restart count and journal before recovery.
+
+```bash
+systemctl show labby.service -p MemoryMax -p MemoryHigh -p TasksMax -p Result -p NRestarts
+journalctl -u labby.service -b
+```
+
+For an `oom-kill` followed by `start-limit-hit`, reduce the Code Mode pool size
+and overflow to fit the host's memory budget, then run
+`systemctl reset-failed labby.service` and `systemctl start labby.service`.
+Verify the service and its loopback `/ready` response.
+
 The unit runs:
 
 ```text
@@ -203,7 +217,7 @@ but it now uses the same system-unit semantics as the Incus runtime. Build and
 install the binary into `/usr/local/bin`, then restart the service:
 
 ```bash
-cargo build --workspace --all-features --bin labby
+cargo build --workspace --features labby/product --bin labby
 sudo install -D -m 755 target/debug/labby /usr/local/bin/labby
 sudo labby host service restart -y
 ```
@@ -211,14 +225,14 @@ sudo labby host service restart -y
 Do not rely on `systemd --user`, linger, or `XDG_RUNTIME_DIR` for the supported
 self-hosted runtime.
 
-For the recommended Incus container, use the Incus sync command instead of a
-host-local install. It updates the in-container binary and the filesystem web
-asset directory that `labby serve` prefers over embedded fallback assets:
+For an Incus staging container, use the sync command with its own gateway URL.
+For production, use the release workflow and retain a verified pre-upgrade state export. A sync to the default production container also takes an Incus snapshot before changing its files. The staging command updates the binary and the filesystem web assets served by `labby serve`.
 
 ```bash
 just web-build
-cargo build --workspace --all-features --profile release-fast --bin labby
-target/release-fast/labby host incus sync --binary target/release-fast/labby
+cargo build --workspace --features labby/product --profile release-fast --bin labby
+target/release-fast/labby host incus sync --binary target/release-fast/labby \
+  --container labby-qa --check-url https://labby-qa.example.test/gateways/
 ```
 
 The web asset target is `/home/labby/.labby/web-assets`. Pass

@@ -166,6 +166,9 @@ pub enum Command {
     Serve(serve::ServeArgs),
     /// Run the Labby stdio MCP transport. stdout contains protocol bytes only.
     Mcp(serve::McpServeArgs),
+    /// Serve explicitly configured CLI tools over standard MCP stdio.
+    #[cfg(target_os = "linux")]
+    Cli(CliMcpArgs),
     /// Proxy a stdio upstream to Streamable HTTP.
     Proxy(proxy::ProxyArgs),
     /// Generate shell completions offline from the same command tree.
@@ -194,6 +197,24 @@ pub enum Command {
     #[command(hide = true)]
     Internal(internal::InternalArgs),
     // [lab-scaffold: cli-variants]
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, clap::Args)]
+pub struct CliMcpArgs {
+    #[command(subcommand)]
+    pub command: CliMcpCommand,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, Subcommand)]
+pub enum CliMcpCommand {
+    /// Launch a standalone MCP server from an approved CLI tool manifest.
+    Serve {
+        /// Absolute path of a trusted local TOML manifest.
+        #[arg(long)]
+        manifest: std::path::PathBuf,
+    },
 }
 
 impl Command {
@@ -249,6 +270,8 @@ impl Command {
             Self::Config(_) => "config",
             Self::Serve(_) => "serve",
             Self::Mcp(_) => "mcp",
+            #[cfg(target_os = "linux")]
+            Self::Cli(_) => "cli",
             Self::Doctor(_) => "doctor",
             Self::Docs(_) => "docs",
             Self::Health => "health",
@@ -331,6 +354,12 @@ fn dispatch_inner(mut cli: Cli, mut config: LabConfig) -> impl Future<Output = R
             )),
             Command::Serve(args) => serve::run(args, &config, stderr_format).await,
             Command::Mcp(args) => serve::run_mcp(args, &config, stderr_format).await,
+            #[cfg(target_os = "linux")]
+            Command::Cli(args) => {
+                let CliMcpCommand::Serve { manifest } = args.command;
+                crate::cli_mcp::serve(&manifest).await?;
+                Ok(ExitCode::SUCCESS)
+            }
             Command::Doctor(args) => doctor::run(args, format, &config).await,
             Command::Docs(args) => docs::run(args, format),
             Command::Health => health::run(format).await,

@@ -177,7 +177,7 @@ command changes.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Stable identifier, used as the tool-name prefix, skill origin label, OAuth state key, and route reference. Must be non-empty, unique, and URI-safe (ASCII letters, digits, `-`, `_`, `.`). With `proxy_skills` enabled it must also be lowercase letters, digits, and interior hyphens. |
+| `name` | string | yes | Stable identifier, used as the Code Mode tool namespace, skill origin label, OAuth state key, and route reference. Must be non-empty, unique, and URI-safe (ASCII letters, digits, `-`, `_`, `.`). With `proxy_skills` enabled it must also be lowercase letters, digits, and interior hyphens. |
 | `display_name` | string | no | Operator-facing label shown in the web UI instead of `name`. Presentation only: it never affects routing, tool names, auth, or exposure. 1-80 characters, single line. |
 | `lifecycle` | string | no | Handshake override. `auto` (default) tries `server/discover` and falls back to `initialize` when the peer proves it is legacy. `initialize` always opens with `initialize`, for legacy servers that exit on an unknown first request and so leave nothing to classify. |
 | `transport` | string | Unix socket only | Explicit `http`, `websocket`, `stdio`, or `unix_socket`. Legacy URL/command inference remains supported when omitted. |
@@ -188,8 +188,9 @@ command changes.
 | `command` | string | stdio | Command to run for stdio transport. |
 | `args` | string[] | no | Arguments to pass to a stdio command. |
 | `env` | table | no | Environment variables injected into a stdio child process. |
+| `secret_env` | table | no | Stdio only. Child environment variable names mapped to the credential-file variable that holds each value. Values are write-only; see [secret stdio environment values](#secret-stdio-environment-values). |
 | `bearer_token_env` | string | no | Required credential reference when configured: bearer auth for HTTP/WebSocket/Unix socket, or injection into a stdio child. Not the token itself. |
-| `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. |
+| `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. Also gates direct `lab://upstream/<name>/...` reads; a tools-only upstream's resources read as unknown. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
 | `proxy_skills` | bool | no | Whether to aggregate this upstream's Agent Skills (SEP-2640). Default: **`false`**, unlike the other `proxy_*` flags — see below. |
 | `expose_tools` | string[] | no | Optional allowlist of tool names/patterns to expose from this upstream. Supports exact names and `*` wildcards. An empty list exposes nothing; omit the key to expose all. |
@@ -510,8 +511,7 @@ code mode, exact tool execution, or Code Mode upstream call connects only the
 needed upstream. Background search-index refreshes use the same bounded
 discovery concurrency as bulk discovery paths.
 
-Each live discovery attempt gets a 15-second timeout for connection and tool
-discovery (`list_tools()`). Failed upstreams are marked unhealthy. Healthy
+Live discovery uses the larger of the configured request timeout and the transport floor (15 seconds for network upstreams, 60 seconds for stdio). With the default 30-second request timeout, the effective limits are 30 and 60 seconds respectively. Failed upstreams are marked unhealthy. Healthy
 upstreams continue operating. A single failed upstream does not prevent others
 from connecting later.
 
@@ -545,8 +545,8 @@ This internal precedence rule does not make upstream tools second-class. It is j
 
 When upstream tools are merged into the lab tool catalog:
 
-1. **Built-in lab services always take precedence.** If an upstream exposes a tool named `gateway`, the upstream tool is silently dropped (with a warning logged).
-2. **Cross-upstream duplicates: first discovered wins.** If two upstreams expose a tool named `my-tool`, the second is skipped with a warning.
+1. Built-in and reserved tool names take precedence. An upstream tool with a conflicting name is skipped.
+2. Upstream MCP tools keep their bare names. When several eligible upstreams advertise the same name, the first upstream in alphabetical order wins. Code Mode uses qualified IDs.
 
 Upstream tools appear alongside built-in tools in `list_tools()`. Callers do not need to know whether a tool is built-in or proxied.
 
@@ -709,10 +709,11 @@ lab://upstream/remote-lab/lab://gateway/actions
 ### Operations
 
 - `resources/list` serves the cached per-upstream snapshot for regular upstreams and returns namespaced URIs. Labby refreshes that snapshot with a live `resources/list` on connect, reconnect, gateway reload, an upstream `resources/list_changed`, and when discovery finds a connected upstream with no snapshot yet. A snapshot older than 60 seconds on an upstream without a live `subscriptions/listen` stream is re-listed in the background while its current rows are served. OAuth subject-scoped upstreams are listed over the per-subject connection and cached with it under the same 60-second bound; an upstream `resources/list_changed` clears every subject's cached catalog for it.
-- Upstream `tools/list_changed` and `resources/list_changed` refreshes run on a worker per upstream, off the notification consumer, with a 250 ms coalescing window so a burst from one upstream collapses into one re-list. The downstream `list_changed` for that upstream is forwarded only after its refresh completes, and one upstream's slow re-list never delays another upstream's notifications. `prompts/list_changed` travels through the same worker without a re-list, because `prompts/list` is served live, so that one upstream's notifications stay ordered with each other. Events for the *same* upstream are serialized: one arriving while that upstream's re-list is in flight waits for that refresh plus the coalescing window, bounded by `catalog_listing_timeout`.
-- `read_resource()` strips the prefix, identifies the upstream by name, and forwards the read.
+- Upstream `tools/list_changed` and `resources/list_changed` refreshes run on a worker per upstream, off the notification consumer, with a 250 ms coalescing window so a burst from one upstream collapses into one re-list. The downstream `list_changed` for that upstream is forwarded only after its refresh completes, and one upstream's slow re-list never delays another upstream's notifications. `prompts/list_changed` travels through the same worker and re-lists that upstream's cached prompt source (which Code Mode reads) before it is forwarded, so one upstream's notifications stay ordered with each other. Events for the *same* upstream are serialized: one arriving while that upstream's re-list is in flight waits for that refresh plus the coalescing window, bounded by `catalog_listing_timeout`.
+- `read_resource()` strips the prefix, identifies the upstream by name, and forwards the read only when the caller's route allows that upstream, any route Team credential validates, and the upstream is enabled with `proxy_resources = true`. The relay and pooled paths share this check. A read outside the route or from a tools-only upstream is reported as an unknown resource; an unvalidated Team credential is reported as `forbidden`.
+- Code Mode prompt metadata comes from each upstream's cached prompt listing, not a live `prompts/list` per run. A connected upstream with no listing yet gets a single-flight warm-up that the run waits on for at most 250 ms; a failed warm-up is retried after one minute. Unlike the published prompt catalog, this projection degrades per upstream.
 
-Failed resource listings from individual upstreams are logged as warnings. Other upstreams continue to serve. A listing whose rows Labby rejects when it admits them (a duplicate or malformed URI, a row over 1 MiB, or a breach of the 8 MiB fleet retention budget) is handled the same way: that upstream is omitted from the cached listing and from the published `lab://upstream/...` route catalog until it is re-listed, the rejection is logged once and shown as that server's resources warning in `gateway.status`, and every other upstream stays published. Two limits are still fleet-wide rather than per-upstream, and a breach of either makes the whole published resource catalog unavailable: the 1000-route cap across all upstreams, and the byte ceiling applied when the catalog is published. Prompt publication is likewise all-or-nothing today.
+Failed resource listings from individual upstreams are logged as warnings. Other upstreams continue to serve. A listing whose rows Labby rejects when it admits them (a duplicate or malformed URI, a row over 1 MiB, or a breach of the 8 MiB fleet retention budget) is handled the same way: that upstream is omitted from the cached listing and from the published `lab://upstream/...` route catalog until it is re-listed, the rejection is logged once and shown as that server's resources warning in `gateway.status`, and every other upstream stays published. Two limits are still fleet-wide rather than per-upstream, and a breach of either makes the whole published resource catalog unavailable: the 1000-route cap across all upstreams, and the byte ceiling applied when the catalog is published. Prompt publication is likewise all-or-nothing today; Code Mode's prompt metadata instead omits only the offending upstream.
 
 The same graceful-degradation rule applies to prompt/resource discovery and
 reads: one upstream failure must not prevent healthy upstreams from serving
@@ -933,7 +934,7 @@ Circuit breaker state changes are logged:
 - `WARN` when the breaker opens (3+ failures).
 - `INFO` when the breaker resets (successful call after failure).
 
-Tool collision warnings are logged at `WARN`.
+The gateway logs skipped duplicate upstream tools at `DEBUG`.
 
 ## Related Docs
 
@@ -997,3 +998,64 @@ labby server set account --clear-headers-env
 `labby server add` also accepts `--headers-env`. These commands carry only
 variable names; configure secret values through the selected installation's
 normal environment workflow.
+
+### Secret stdio environment values
+
+A stdio server that takes an API key or token in its environment uses
+`secret_env` instead of a plain `env` value. The upstream stores names only:
+
+```toml
+[[upstream]]
+name = "figma"
+command = "npx"
+args = ["-y", "figma-developer-mcp", "--stdio"]
+
+[upstream.secret_env]
+FIGMA_API_KEY = "LABBY_GW_FIGMA_ENV_FIGMA_API_KEY"
+```
+
+Set the values with `--env NAME`, which reads each value from standard input:
+
+```bash
+printf '%s\n' "$FIGMA_TOKEN" | labby server add figma --command npx --arg=-y --arg figma-developer-mcp --arg=--stdio --env FIGMA_API_KEY
+printf '%s\n%s\n' "$KEY_A" "$KEY_B" | labby server set figma --env FIGMA_API_KEY --env OTHER_TOKEN
+```
+
+- **Framing.** One value per line, in `--env` flag order. Lines end in LF or
+  CRLF, and the final newline is optional. The number of lines must equal the
+  number of flags. A value is taken verbatim apart from the line ending, so it
+  cannot contain a line break. Values never come from argv, and the command
+  refuses a terminal on standard input rather than echo a secret.
+- **Validation.** Names match `^[A-Z][A-Z0-9_]*$`. Labby refuses names the stdio
+  launcher forwards or sets (`PATH`, `HOME`, `TMPDIR`, TLS and locale variables,
+  and the rest of the parent allowlist), the sandbox grants
+  `UPSTREAM_STATE_DIR` and `UPSTREAM_READ_ONLY_PATHS`, loader and interpreter
+  injection names (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, and similar),
+  `LABBY_*`, and the upstream's own `bearer_token_env`. A `secret_env`
+  credential name must be `LABBY_GW_<UPSTREAM>_ENV_<NAME>`, so a configuration
+  cannot hand a child an unrelated installation secret. A value must be
+  non-empty and at most 16384 bytes; an upstream holds at most 32. Standard
+  input is capped at the sum of those limits. Invalid input fails before any
+  write, and errors name the variable, never the value.
+- **Storage.** The gateway writes each value to its credential file
+  (`$LABBY_HOME/.env`) through the same backed-up, transactional path as
+  `bearer_token_value`, under `LABBY_GW_<UPSTREAM>_ENV_<NAME>`. A later `set`
+  rotates the same key, also after a rename. `set` adds or replaces only the
+  named values and keeps every other `env` and `secret_env` entry; a plain
+  `env` entry with the same name becomes secret. A failed reconcile restores the
+  previous values. `server remove` leaves the credential-file entries in place,
+  as it does for bearer tokens.
+- **Spawn.** Values are read again from the credential file on every spawn (a
+  genuine external process override keeps precedence) and are layered over the
+  cleared, allowlisted child environment. A missing or empty value refuses the
+  spawn with `upstream_credential_missing`. A credential write reconnects every
+  upstream that references the key and revokes its retained tasks.
+- **Redaction.** Reads return names only: `gateway.get`/`gateway.list` and
+  `labby server show|list` report `secret_env` as a list of child variable
+  names. The spawn log records variable names only. Dry-run previews show
+  `[redacted]`, and Code Mode parameter traces redact `secret_env_values` and
+  `bearer_token_value`.
+
+API and MCP callers pass the values as the write-only `secret_env_values`
+object (child name to value) on `gateway.add` or `gateway.update`, with the
+same validation. No action returns a value.

@@ -59,19 +59,11 @@ async fn quota_case(files: usize, bytes: usize, preserve: bool) {
             receipt["artifact_id"].as_str().is_some(),
             "final preservation remains owner-bound"
         );
-        let absolute = receipt["absolute_path"].as_str().unwrap();
-        let path = absolute.strip_prefix("~/").map_or_else(
-            || std::path::PathBuf::from(absolute),
-            |relative| home.path().join(relative),
-        );
-        let run_id = path
-            .parent()
+        assert!(receipt.get("absolute_path").is_none());
+        let (run_id, _) = receipt["artifact_id"]
+            .as_str()
             .unwrap()
-            .parent()
-            .unwrap()
-            .file_name()
-            .unwrap()
-            .to_str()
+            .split_once(':')
             .unwrap();
         let stored = labby_codemode::read_receipted_artifact(
             home.path(),
@@ -122,19 +114,11 @@ async fn explicit_final_result_path_cannot_advertise_unrelated_returned_json() {
     assert_eq!(artifacts.len(), 1, "explicit artifact must not be replaced");
     let receipt = &artifacts[0];
     assert_eq!(receipt["path"], "automatic/final-result.json");
-    let stored_path = receipt["absolute_path"].as_str().unwrap();
-    let path = stored_path.strip_prefix("~/").map_or_else(
-        || std::path::PathBuf::from(stored_path),
-        |relative| home.path().join(relative),
-    );
-    let run_id = path
-        .parent()
+    assert!(receipt.get("absolute_path").is_none());
+    let (run_id, _) = receipt["artifact_id"]
+        .as_str()
         .unwrap()
-        .parent()
-        .unwrap()
-        .file_name()
-        .unwrap()
-        .to_str()
+        .split_once(':')
         .unwrap();
     let stored = labby_codemode::read_receipted_artifact(
         home.path(),

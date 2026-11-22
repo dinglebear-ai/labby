@@ -40,11 +40,11 @@ pub(crate) fn shape_final_result(
     max_response_bytes: usize,
     max_response_tokens: usize,
     token_estimate_divisor: u32,
+    envelope_will_truncate: bool,
 ) -> ShapedResult {
     let original_size = result
         .as_ref()
-        .and_then(|value| serde_json::to_vec(value).ok())
-        .map(|bytes| bytes.len())
+        .and_then(|value| crate::protocol::serialized_len_within(value, usize::MAX).ok())
         .unwrap_or(0);
     let budget = effective_result_budget(
         max_response_bytes,
@@ -53,6 +53,11 @@ pub(crate) fn shape_final_result(
     );
     let warning = large_result_warning(original_size, budget);
 
+    // The envelope marker computes its digest, preview and recovery handle from
+    // the original JSON. Passing a shaped string would identify the wrong bytes.
+    if envelope_will_truncate {
+        return unchanged(result, policy, original_size, None);
+    }
     match (policy, result) {
         (CodeModeResultShapePolicy::Off, result) => {
             unchanged(result, policy, original_size, warning)
@@ -117,19 +122,24 @@ fn shape_truncate(
         return unchanged(Some(value), policy, original_size_bytes, warning);
     }
 
-    let serialized = match &value {
-        Value::String(text) => text.clone(),
-        _ => serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()),
-    };
-    let marker_prefix = format!(
+    let mut marker = format!(
         "[code mode result truncated]\noriginal_size_bytes={original_size_bytes}, max_size_bytes={budget}\nOutput only; execution already ran. Do not replay mutations. See result_shaping.warning for recovery.\n"
     );
-    let room = budget.saturating_sub(marker_prefix.len());
-    let preview = utf8_prefix_by_bytes(&serialized, room);
-    let marker = format!("{marker_prefix}{preview}");
-    let shaped_size_bytes = serde_json::to_vec(&marker)
-        .map(|bytes| bytes.len())
-        .unwrap_or_else(|_| marker.len());
+    let room = budget.saturating_sub(marker.len());
+    if let Value::String(text) = &value {
+        marker.push_str(utf8_prefix_by_bytes(text, room));
+    } else {
+        // A fixed slice stops Serde as soon as the visible preview is full.
+        let mut bytes = vec![0; room];
+        let mut writer = std::io::Cursor::new(bytes.as_mut_slice());
+        drop(serde_json::to_writer_pretty(&mut writer, &value));
+        let written = writer.position() as usize;
+        if let Some(chunk) = bytes[..written].utf8_chunks().next() {
+            marker.push_str(chunk.valid());
+        }
+    }
+    let shaped_size_bytes =
+        crate::protocol::serialized_len_within(&marker, usize::MAX).unwrap_or(marker.len());
 
     ShapedResult {
         result: Some(Value::String(marker)),
@@ -179,6 +189,7 @@ mod tests {
             MAX_BYTES,
             MAX_TOKENS,
             TOKEN_DIVISOR,
+            false,
         );
 
         assert!(!shaped.metadata.changed);
@@ -196,6 +207,7 @@ mod tests {
             MAX_BYTES,
             MAX_TOKENS,
             TOKEN_DIVISOR,
+            false,
         );
 
         assert_eq!(shaped.result, Some(value));
@@ -219,6 +231,7 @@ mod tests {
             MAX_BYTES,
             MAX_TOKENS,
             TOKEN_DIVISOR,
+            false,
         );
 
         assert!(shaped.metadata.changed);
@@ -247,6 +260,7 @@ mod tests {
             MAX_BYTES,
             MAX_TOKENS,
             TOKEN_DIVISOR,
+            false,
         );
 
         assert!(shaped.metadata.truncated);
@@ -274,6 +288,7 @@ mod tests {
             MAX_BYTES,
             MAX_TOKENS,
             TOKEN_DIVISOR,
+            false,
         );
 
         assert!(shaped.metadata.truncated);

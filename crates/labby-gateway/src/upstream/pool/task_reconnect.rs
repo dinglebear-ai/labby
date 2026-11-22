@@ -95,15 +95,16 @@ impl UpstreamPool {
             // Definition and credential snapshots are revalidated after I/O;
             // holding the upstream gate here would block unrelated warm RPCs.
             drop(definition);
-            self.acquire_relay_for_key(
-                &config,
-                record.oauth_subject.as_deref(),
-                downstream,
-                context.capabilities.clone(),
-                key.clone(),
-            )
-            .await
-            .ok_or_else(|| "upstream task connection unavailable".to_string())?;
+            let _active_connection = self
+                .acquire_relay_for_key(
+                    &config,
+                    record.oauth_subject.as_deref(),
+                    downstream,
+                    context.capabilities.clone(),
+                    key.clone(),
+                )
+                .await
+                .ok_or_else(|| "upstream task connection unavailable".to_string())?;
             let connection = self
                 .relay_connections
                 .write()
@@ -323,7 +324,7 @@ impl UpstreamPool {
 
 pub(super) fn task_error(error: &ServiceError, upstream: &str, method: &str) -> String {
     if let ServiceError::McpError(data) = error
-        && data.message == "task not found"
+        && data.message == super::TASK_NOT_FOUND
     {
         return task_not_found();
     }

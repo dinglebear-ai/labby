@@ -45,6 +45,7 @@ threads-required = 'num-test-threads'
 filter = '''package(labby) & (
     binary(=agent_session_messaging)
     | binary(=browser_runtime_e2e)
+    | binary(=cli_mcp)
     | binary(=codemode_qualification)
     | binary(=e2e_coverage_report)
     | binary(=gateway_auto_reconnect)
@@ -70,6 +71,8 @@ filter = '''package(labby) & (
     | binary(=oauth_qualification)
     | binary(=proxy_qualification)
     | binary(=skills_mcp_e2e)
+    | binary(=standalone_mcp)
+    | binary(=standalone_mcp_https)
     | binary(=webmcp_browser_qualification)
 )'''
 threads-required = 'num-test-threads'
@@ -84,3 +87,9 @@ filter = '''package(labby) & (
     | test(=live_labby::guardian::tests::runtime_and_browser_guardians_reap_descendants_after_leader_exit)
 )'''
 threads-required = 'num-test-threads'
+
+# Each protocol case normally completes in seconds. Stop a blocked runner read
+# on both the developer and CI profiles.
+[[profile.default.overrides]]
+filter = 'package(labby) & binary(=code_mode_runner)'
+slow-timeout = { period = '30s', terminate-after = 2 }

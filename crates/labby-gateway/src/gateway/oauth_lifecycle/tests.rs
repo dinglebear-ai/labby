@@ -52,6 +52,7 @@ use labby_runtime::gateway_config::{
 
 fn lifecycle_test_upstream(name: &str, oauth: bool) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,

@@ -7,7 +7,7 @@ use tokio::time::Instant;
 
 use crate::gateway::config::{
     default_gateway_bearer_env_name, insert_upstream, remove_upstream, tombstone_removed_import,
-    update_upstream, validate_bearer_token_env_name, validate_code_mode,
+    update_upstream, validate_bearer_token_env_name, validate_code_mode, validate_upstream,
 };
 use crate::gateway::config_mutation::read_env_values;
 use crate::gateway::params::{
@@ -25,6 +25,7 @@ use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, McpAppsConfig, UpstreamConfig};
 
 use super::GatewayManager;
+use super::secret_env::{CredentialWrites, stage_secret_env_values};
 
 const MAX_BATCH_ENRICHMENT_SUGGESTIONS: usize = 10;
 
@@ -165,6 +166,7 @@ impl GatewayManager {
         self.add_scoped_with_route(
             spec,
             bearer_token_value,
+            BTreeMap::new(),
             origin,
             owner,
             enrichment_scope,
@@ -173,10 +175,12 @@ impl GatewayManager {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn add_scoped_with_route(
         &self,
         mut spec: UpstreamConfig,
         bearer_token_value: Option<String>,
+        secret_env_values: BTreeMap<String, String>,
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
         enrichment_scope: GatewayEnrichmentScope,
@@ -198,6 +202,7 @@ impl GatewayManager {
                 spec.bearer_token_env = Some(trimmed);
             }
 
+            let raw_credentials = stage_secret_env_values(&mut spec, secret_env_values)?;
             let credential = if let Some(token_value) = bearer_token_value.as_deref().map(str::trim)
                 && !token_value.is_empty()
             {
@@ -209,6 +214,10 @@ impl GatewayManager {
             } else {
                 insert_upstream(&mut cfg, spec.clone())?;
                 None
+            };
+            let credentials = CredentialWrites {
+                bearer: credential,
+                raw: raw_credentials,
             };
 
             if let Some(change) = protected_route.as_ref() {
@@ -234,7 +243,7 @@ impl GatewayManager {
                     cfg,
                     origin,
                     owner,
-                    credential,
+                    credentials,
                 )
                 .await?;
             tracing::info!(
@@ -397,15 +406,25 @@ impl GatewayManager {
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
     ) -> Result<GatewayView, ToolError> {
-        self.update_with_route(name, patch, bearer_token_value, origin, owner, None)
-            .await
+        self.update_with_route(
+            name,
+            patch,
+            bearer_token_value,
+            BTreeMap::new(),
+            origin,
+            owner,
+            None,
+        )
+        .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn update_with_route(
         &self,
         name: &str,
         patch: GatewayUpdatePatch,
         bearer_token_value: Option<String>,
+        secret_env_values: BTreeMap<String, String>,
         origin: Option<&str>,
         owner: Option<UpstreamRuntimeOwner>,
         protected_route: Option<GatewayProtectedRouteMutation>,
@@ -470,13 +489,31 @@ impl GatewayManager {
             update_upstream(&mut cfg, name, patch)?;
             None
         };
+        let raw_credentials = if secret_env_values.is_empty() {
+            Vec::new()
+        } else {
+            let index = cfg
+                .upstream
+                .iter()
+                .position(|upstream| upstream.name == updated_name)
+                .ok_or_else(|| ToolError::internal_message("updated gateway is missing"))?;
+            let mut upstream = cfg.upstream[index].clone();
+            let writes = stage_secret_env_values(&mut upstream, secret_env_values)?;
+            validate_upstream(&upstream, &cfg.gateway)?;
+            cfg.upstream[index] = upstream;
+            writes
+        };
+        let credentials = CredentialWrites {
+            bearer: credential,
+            raw: raw_credentials,
+        };
         if let Some(change) = protected_route.as_ref() {
             self.apply_protected_route_save(&mut cfg, change).await?;
         }
         // State-setting is idempotent only when both durable and currently
         // published configuration already match. Never skip a credential change
         // or reconciliation of externally changed state. The mutation lease is held.
-        let credential_changed = credential.is_some();
+        let credential_changed = !credentials.is_empty();
         let candidate_value = serde_json::to_value(&cfg)
             .map_err(|_| ToolError::internal_message("Cannot compare gateway configuration"))?;
         let current = self.config.read().await.clone();
@@ -500,7 +537,7 @@ impl GatewayManager {
                 cfg,
                 origin,
                 owner,
-                credential,
+                credentials,
             )
             .await?;
         tracing::info!(
@@ -637,6 +674,7 @@ impl GatewayManager {
             timeout_ms = next.timeout_ms,
             max_response_bytes = next.max_response_bytes,
             max_response_tokens = next.max_response_tokens,
+            max_programmatic_response_bytes = next.max_programmatic_response_bytes,
             "gateway mode changed"
         );
         Ok(self.code_mode_config().await)

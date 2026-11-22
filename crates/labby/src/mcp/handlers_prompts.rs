@@ -148,14 +148,13 @@ impl LabMcpServer {
                 elapsed_ms,
                 "prompt catalog hidden by loadout"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "list_prompts",
                 elapsed_ms,
                 DispatchLogOutcome::Success,
-            )
-            .await;
+            );
             return Ok(ListPromptsResult::with_all_items(Vec::new())
                 .with_ttl_ms(0)
                 .with_cache_scope(rmcp::model::CacheScope::Private));
@@ -176,7 +175,7 @@ impl LabMcpServer {
                     kind,
                     "prompt list failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     "lab",
                     "list_prompts",
@@ -185,8 +184,7 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: kind.into(),
                     },
-                )
-                .await;
+                );
                 return Err(error);
             }
         };
@@ -246,14 +244,13 @@ impl LabMcpServer {
                 project_shadow_would_suppress_prompt_count = project_shadow_would_suppress,
                 "prompt list ok"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "list_prompts",
                 elapsed_ms,
                 DispatchLogOutcome::Success,
-            )
-            .await;
+            );
             let mut result = ListPromptsResult::with_all_items(prompts)
                 .with_ttl_ms(0)
                 .with_cache_scope(rmcp::model::CacheScope::Private);
@@ -340,7 +337,7 @@ impl LabMcpServer {
                     kind,
                     "prompt list failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     "lab",
                     "list_prompts",
@@ -349,8 +346,7 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: kind.into(),
                     },
-                )
-                .await;
+                );
                 return Err(error);
             }
         };
@@ -407,14 +403,13 @@ impl LabMcpServer {
             project_shadow_would_suppress_prompt_count = project_shadow_would_suppress,
             "prompt list ok"
         );
-        self.emit_dispatch_notification(
+        self.trace_dispatch_outcome(
             &context,
             "lab",
             "list_prompts",
             elapsed_ms,
             DispatchLogOutcome::Success,
-        )
-        .await;
+        );
 
         let mut result = ListPromptsResult::with_all_items(prompts)
             .with_ttl_ms(0)
@@ -443,7 +438,7 @@ impl LabMcpServer {
             ProjectExecutionBinding::Legacy => {}
             ProjectExecutionBinding::Unavailable => {
                 let elapsed_ms = start.elapsed().as_millis();
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     "lab",
                     "get_prompt",
@@ -452,8 +447,7 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: "access_context_unavailable".into(),
                     },
-                )
-                .await;
+                );
                 let error_context = prompt_error_context(&request.name, None, None);
                 return Err(invalid_params_agent_error(
                     "upstream_error",
@@ -485,14 +479,13 @@ impl LabMcpServer {
                 let elapsed_ms = start.elapsed().as_millis();
                 return match result {
                     Ok(response) => {
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             &context,
                             "lab",
                             "get_prompt",
                             elapsed_ms,
                             DispatchLogOutcome::Success,
-                        )
-                        .await;
+                        );
                         Ok(response.into())
                     }
                     Err(error) => {
@@ -523,7 +516,7 @@ impl LabMcpServer {
                                 (LoggingLevel::Error, "upstream_error")
                             }
                         };
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             &context,
                             "lab",
                             "get_prompt",
@@ -532,8 +525,7 @@ impl LabMcpServer {
                                 level,
                                 kind: error_kind.into(),
                             },
-                        )
-                        .await;
+                        );
                         let error_context = prompt_error_context(&prompt_name, None, None);
                         if unavailable {
                             Err(invalid_params_agent_error(
@@ -581,7 +573,7 @@ impl LabMcpServer {
                 subject, prompt = %request.name, elapsed_ms, kind = error.kind(),
                 "built-in prompt arguments rejected"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "get_prompt",
@@ -590,8 +582,7 @@ impl LabMcpServer {
                     level: LoggingLevel::Warning,
                     kind: error.kind().to_owned().into(),
                 },
-            )
-            .await;
+            );
             return Err(ErrorData::invalid_params(
                 error.user_message().to_owned(),
                 Some(error.to_agent_value_with_context(&prompt_error_context(
@@ -628,7 +619,7 @@ impl LabMcpServer {
                 kind = "route_scope_denied",
                 "built-in prompt denied by protected route scope"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "get_prompt",
@@ -637,8 +628,7 @@ impl LabMcpServer {
                     level: LoggingLevel::Warning,
                     kind: "route_scope_denied".into(),
                 },
-            )
-            .await;
+            );
             let mut error_context = prompt_error_context(&request.name, None, None);
             error_context.origin = Some(AgentErrorOrigin::Policy);
             error_context.side_effects = Some(AgentSideEffectRisk::NoneExpected);
@@ -663,14 +653,13 @@ impl LabMcpServer {
                 elapsed_ms,
                 "prompt resolved"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "get_prompt",
                 elapsed_ms,
                 DispatchLogOutcome::Success,
-            )
-            .await;
+            );
             return Ok(prompt.into());
         }
 
@@ -700,20 +689,16 @@ impl LabMcpServer {
                 route = "upstream",
                 "dispatch route selected"
             );
-            let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
-            let relay_config = if relay_capabilities.is_some() {
-                match &self.gateway_manager {
-                    Some(manager) => manager
-                        .upstream_config(&upstream_name)
-                        .await
-                        .filter(crate::mcp::context::upstream_uses_capability_relay),
-                    None => None,
-                }
-            } else {
-                None
+            let capabilities = forwardable_client_capabilities(request.meta.as_ref());
+            let relay_config = match &self.gateway_manager {
+                Some(manager) => manager
+                    .upstream_config(&upstream_name)
+                    .await
+                    .filter(crate::mcp::context::upstream_uses_capability_relay),
+                None => None,
             };
-            let upstream_outcome = match (relay_config, relay_capabilities) {
-                (Some(config), Some(capabilities)) => {
+            let upstream_outcome = match relay_config {
+                Some(config) => {
                     pool.get_prompt_relayed_typed(
                         &config,
                         None,
@@ -745,14 +730,13 @@ impl LabMcpServer {
                         elapsed_ms,
                         "prompt proxy ok"
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         &context,
                         "lab",
                         "get_prompt",
                         elapsed_ms,
                         DispatchLogOutcome::Success,
-                    )
-                    .await;
+                    );
                     Ok(result)
                 }
                 Some(Err(message)) => {
@@ -773,7 +757,7 @@ impl LabMcpServer {
                         failure_summary = summary,
                         "prompt proxy failed"
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         &context,
                         "lab",
                         "get_prompt",
@@ -782,8 +766,7 @@ impl LabMcpServer {
                             level,
                             kind: kind.into(),
                         },
-                    )
-                    .await;
+                    );
                     let error_context =
                         prompt_error_context(&prompt_name, Some(&upstream_name), Some(summary));
                     Err(internal_agent_error(
@@ -807,7 +790,7 @@ impl LabMcpServer {
                         kind = "not_found",
                         "upstream not connected for prompt"
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         &context,
                         "lab",
                         "get_prompt",
@@ -816,8 +799,7 @@ impl LabMcpServer {
                             level: LoggingLevel::Warning,
                             kind: "not_found".into(),
                         },
-                    )
-                    .await;
+                    );
                     let error_context = prompt_error_context(
                         &prompt_name,
                         Some(&upstream_name),
@@ -863,31 +845,39 @@ impl LabMcpServer {
                     oauth_subject = %oauth_subject,
                     "dispatch route selected"
                 );
-                let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
-                let upstream_outcome = if let Some(capabilities) = relay_capabilities {
-                    match pool
-                        .get_prompt_relayed_typed(
+                let capabilities = forwardable_client_capabilities(request.meta.as_ref());
+                let upstream_outcome =
+                    if crate::mcp::context::upstream_uses_capability_relay(&config) {
+                        match pool
+                            .get_prompt_relayed_typed(
+                                &config,
+                                Some(oauth_subject.as_ref()),
+                                request,
+                                context.peer.clone(),
+                                context.id.clone(),
+                                context.ct.clone(),
+                                self.relay_session_id,
+                                capabilities,
+                            )
+                            .await
+                        {
+                            Some(outcome) => outcome,
+                            None => Err(CapabilityCallError::Other {
+                                message: format!(
+                                    "relayed upstream `{}` connect failed",
+                                    config.name
+                                ),
+                            }),
+                        }
+                    } else {
+                        pool.subject_scoped_get_prompt_typed(
                             &config,
-                            Some(oauth_subject.as_ref()),
+                            oauth_subject.as_ref(),
                             request,
-                            context.peer.clone(),
-                            context.id.clone(),
-                            context.ct.clone(),
-                            self.relay_session_id,
-                            capabilities,
                         )
                         .await
-                    {
-                        Some(outcome) => outcome,
-                        None => Err(CapabilityCallError::Other {
-                            message: format!("relayed upstream `{}` connect failed", config.name),
-                        }),
-                    }
-                } else {
-                    pool.subject_scoped_get_prompt_typed(&config, oauth_subject.as_ref(), request)
-                        .await
                         .map(Into::into)
-                };
+                    };
                 let outcome = match upstream_outcome {
                     Ok(result) => {
                         let elapsed_ms = start.elapsed().as_millis();
@@ -902,14 +892,13 @@ impl LabMcpServer {
                             elapsed_ms,
                             "subject-scoped prompt proxy ok"
                         );
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             &context,
                             "lab",
                             "get_prompt",
                             elapsed_ms,
                             DispatchLogOutcome::Success,
-                        )
-                        .await;
+                        );
                         Ok(result)
                     }
                     Err(message) => {
@@ -930,7 +919,7 @@ impl LabMcpServer {
                             failure_summary = summary,
                             "subject-scoped prompt proxy failed"
                         );
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             &context,
                             "lab",
                             "get_prompt",
@@ -939,8 +928,7 @@ impl LabMcpServer {
                                 level,
                                 kind: kind.into(),
                             },
-                        )
-                        .await;
+                        );
                         let error_context =
                             prompt_error_context(&prompt_name, Some(&config.name), Some(summary));
                         Err(invalid_params_agent_error(
@@ -968,7 +956,7 @@ impl LabMcpServer {
             kind = "not_found",
             "unknown prompt"
         );
-        self.emit_dispatch_notification(
+        self.trace_dispatch_outcome(
             &context,
             "lab",
             "get_prompt",
@@ -977,8 +965,7 @@ impl LabMcpServer {
                 level: LoggingLevel::Warning,
                 kind: "not_found".into(),
             },
-        )
-        .await;
+        );
         let error_context = prompt_error_context(&request.name, None, None);
         Err(invalid_params_agent_error(
             "not_found",
@@ -1005,13 +992,11 @@ fn builtin_prompt_service_arg<'a>(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::AtomicU8;
 
     use rmcp::model::{GetPromptRequestParams, NumberOrString, PaginatedRequestParams};
     use rmcp::service::RequestContext;
 
     use super::*;
-    use crate::mcp::logging::logging_level_rank;
     use crate::mcp::route_scope::McpRouteScope;
     use crate::registry::build_default_registry;
 
@@ -1088,7 +1073,6 @@ mod tests {
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
             route_scope,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,

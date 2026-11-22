@@ -9,7 +9,6 @@ pub(crate) enum LoggingLevel {
     Info,
     Warning,
     Error,
-    Emergency,
 }
 
 pub(crate) enum DispatchLogOutcome {
@@ -18,15 +17,6 @@ pub(crate) enum DispatchLogOutcome {
         level: LoggingLevel,
         kind: std::borrow::Cow<'static, str>,
     },
-}
-
-pub(crate) fn logging_level_rank(level: LoggingLevel) -> u8 {
-    match level {
-        LoggingLevel::Info => 0,
-        LoggingLevel::Warning => 1,
-        LoggingLevel::Error => 2,
-        LoggingLevel::Emergency => 3,
-    }
 }
 
 fn notification_payload(
@@ -57,33 +47,8 @@ fn notification_payload(
     (level, payload)
 }
 
-pub(crate) fn spawn_dispatch_notification(
-    _peer: rmcp::service::Peer<RoleServer>,
-    actor_key: Option<String>,
-    service: String,
-    action: String,
-    elapsed_ms: u128,
-    outcome: DispatchLogOutcome,
-) {
-    drop(notification_payload(
-        &service,
-        &action,
-        elapsed_ms,
-        outcome,
-        actor_key.as_deref(),
-    ));
-    // The 2026-07-28 protocol removed logging/setLevel and only permits
-    // notifications/message for requests carrying the per-request log-level
-    // metadata. Labby does not emit protocol logging notifications.
-}
-
 impl LabMcpServer {
-    pub(crate) fn should_emit_logging_notification(&self, level: LoggingLevel) -> bool {
-        let _ = level;
-        false
-    }
-
-    pub(crate) async fn emit_dispatch_notification(
+    pub(crate) fn trace_dispatch_outcome(
         &self,
         context: &RequestContext<RoleServer>,
         service: &str,
@@ -91,16 +56,16 @@ impl LabMcpServer {
         elapsed_ms: u128,
         outcome: DispatchLogOutcome,
     ) {
-        drop(notification_payload(
-            service,
-            action,
-            elapsed_ms,
-            outcome,
-            super::context::actor_key_from_extensions(&context.extensions),
-        ));
-        // Structured observability remains on tracing. Protocol logging is
-        // intentionally silent unless a future implementation honors the RC
-        // request-scoped log-level metadata.
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let (level, fields) = notification_payload(
+                service,
+                action,
+                elapsed_ms,
+                outcome,
+                super::context::actor_key_from_extensions(&context.extensions),
+            );
+            tracing::trace!(?level, %fields, "MCP dispatch outcome");
+        }
     }
 }
 

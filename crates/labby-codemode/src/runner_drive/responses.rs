@@ -5,7 +5,7 @@ pub(super) async fn reject_tool_call_over_budget(
     seq: u64,
     id: String,
     budget: u64,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
@@ -58,38 +58,22 @@ pub(super) async fn reject_tool_call_over_budget(
     Ok(())
 }
 
-/// Write a message back to the runner bounded by the execution deadline.
-///
-/// `write_runner_input`'s bare `write_all` + `flush` can block indefinitely if
-/// the child stops draining its stdin while the parent is mid-write — the classic
-/// two-pipe deadlock (child flooding stdout, which the parent isn't reading while
-/// it's blocked writing a large `ToolResult` to stdin). The read side of the loop
-/// is already guarded by `timeout_at(deadline, lines.next())`; without this, the
-/// parent→child writeback path was the one reachable *in-loop* `await` the 30 s
-/// wall-clock backstop did not cover, so a deadlocked child could hang the drive
-/// loop and leak the pool slot forever. On expiry we kill the child (killpg) so
-/// the pooled slot respawns, mirroring the read-timeout path, and surface the
-/// stable `timeout` kind — carrying the partial call trace like the other
-/// timeout paths. A plain write I/O error (not a timeout) propagates without a
-/// trace, matching the pre-existing bare-write behavior.
-/// The absolute execution budget starts before runner acquisition/spawn. Start
-/// applies that same deadline directly in the driver; in-loop replies use this
-/// helper. Both initial and subsequent writes are bounded.
+/// Enqueue a bounded reply without blocking reads from the child.
 pub(super) async fn write_runner_input_by_deadline(
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     input: &CodeModeRunnerInput,
     deadline: tokio::time::Instant,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     calls: &[(u64, CodeModeExecutedCall)],
 ) -> Result<(), CodeModeExecutionError> {
-    match tokio::time::timeout_at(deadline, write_runner_input(stdin, input)).await {
-        Ok(result) => result.map_err(Into::into),
-        Err(_) => {
-            terminate_code_mode_runner(child, child_pid).await;
-            Err(code_mode_timeout_error(calls))
-        }
+    if tokio::time::Instant::now() >= deadline {
+        terminate_code_mode_runner(child, child_pid).await;
+        return Err(code_mode_timeout_error(calls));
     }
+    stdin
+        .enqueue(input)
+        .map_err(|err| CodeModeExecutionError::with_trace(err, sorted_calls(calls)))
 }
 
 /// Handle a completed tool-call future from `pending_tool_calls`.
@@ -99,52 +83,35 @@ pub(super) async fn handle_completed_tool_call(
         String,
         Option<Value>,
         Option<String>,
-        Result<ToolCallOutcome, CodeModeCallError>,
+        Result<PreparedOutcome, CodeModeCallError>,
         u128,
         u128,
     )>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
     state: &mut DriveState,
-    cfg: &RunnerConfig,
 ) -> Result<(), CodeModeExecutionError> {
     let Some((seq, id, params, params_digest, result, elapsed_ms, start_ms)) = completed else {
         return Ok(());
     };
+    state.release_pending_params(seq);
     // Reserved host-internal pseudo-tool calls never appear in the call
     // trace (`state.calls`) — but their ToolResult/ToolError responses are
     // still written back unconditionally so the sandbox's `callTool(...)`
     // promise settles normally.
     let is_internal = protocol_boundary::is_internal_tool_id(&id);
     match result {
-        Ok(outcome) => {
+        Ok(PreparedOutcome {
+            outcome,
+            serialized_len,
+            receipt,
+        }) => {
             let upstream_content = outcome.full_result.as_ref().and_then(|full| {
                 crate::upstream_content::capture(full, &mut state.upstream_content_bytes)
             });
-            let serialized_len = serde_json::to_vec(&outcome.value)
-                .map(|v| v.len())
-                .unwrap_or(0);
             let ui = outcome.ui;
-            let receipt =
-                if !is_internal && serialized_len > crate::response_artifacts::inline_threshold() {
-                    tokio::time::timeout_at(
-                        deadline,
-                        crate::response_artifacts::preserve(
-                            &state.artifact_root,
-                            format!("automatic/tool-{seq}.json"),
-                            &outcome.value,
-                            &cfg.caller,
-                            &cfg.capability_filter,
-                        ),
-                    )
-                    .await
-                    .ok()
-                    .flatten()
-                } else {
-                    None
-                };
             if let Some(receipt) = receipt.as_ref() {
                 state.artifacts.push(receipt.clone());
             }

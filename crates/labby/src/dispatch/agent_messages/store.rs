@@ -144,6 +144,7 @@ fn register(
         db,
         &binding.recipient.key()?,
         binding.recipient.scope(),
+        None,
         now,
     )?;
     let session = Session {

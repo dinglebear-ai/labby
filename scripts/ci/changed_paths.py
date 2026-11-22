@@ -414,10 +414,18 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
         lambda p: starts(p, "tools/verification/", ".cargo/")
         or p in {"rust-toolchain.toml", "clippy.toml", "Justfile"},
     )
-    rust_compile = rust_sources or rust_manifests
+    embedded_inputs = any_match(paths, lambda p: starts(
+        p, "plugins/labby/.apm/skills/using-labby/", "plugins/labby/.apm/skills/using-codemode/",
+        "plugins/labby/.apm/skills/using-snippets/", "docs/contracts/schemas/",
+    ) or p == "docs/contracts/skills-extension.md" or (
+        p.rpartition("/")[0] == "docs/snippets" and p.endswith((".md", ".js", ".json"))
+    ))
+    rust_compile = rust_sources or rust_manifests or embedded_inputs
     # Dependency, lockfile, toolchain, and build-policy changes can alter test
     # compilation and runtime behavior just as directly as a Rust source edit.
-    rust_test = rust_sources or rust_manifests
+    rust_test = rust_compile or any_match(paths, lambda p: starts(p, "docs/contracts/fixtures/") or (
+        starts(p, "docs/snippets/") and p.endswith((".md", ".test.json"))
+    ))
     rust_test = rust_test or any_match(paths, is_auth_conformance_input)
     rust_test = rust_test or any_match(paths, is_skills_conformance_input)
     security = any_match(

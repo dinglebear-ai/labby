@@ -9,33 +9,19 @@ use labby_runtime::error::ToolError;
 use labby_runtime::skills::{FIRST_PARTY_ORIGIN, parse_skill_uri};
 use serde_json::{Value, json};
 
-use super::facade::{SkillRegistryContext, code_mode_skill_context};
+use super::facade::{SkillRegistryContext, code_mode_caller_skill_context};
 
 #[derive(Debug, Default)]
 pub(crate) struct CanonicalCodeModeSkillProvider;
 
-fn context_for(caller: &CodeModeCaller) -> Result<Arc<SkillRegistryContext>, ToolError> {
-    match caller.without_authority() {
-        CodeModeCaller::WithAuthority { .. } => unreachable!("authority wrapper was removed"),
-        CodeModeCaller::ScopedSkills {
-            skill_context_token,
-            ..
-        }
-        | CodeModeCaller::ScopedHostProviderSkills {
-            skill_context_token,
-            ..
-        } => code_mode_skill_context(skill_context_token).ok_or_else(|| ToolError::Sdk {
-            sdk_kind: "forbidden".to_string(),
-            message: "request-bound Skill context is unavailable or expired".to_string(),
-        }),
-        CodeModeCaller::TrustedLocal => Ok(Arc::new(SkillRegistryContext::first_party_only())),
-        CodeModeCaller::Scoped { .. }
-        | CodeModeCaller::ScopedPrivate { .. }
-        | CodeModeCaller::ScopedHostProvider { .. } => Err(ToolError::Sdk {
-            sdk_kind: "forbidden".to_string(),
-            message: "request-bound Skill authorization context is unavailable".to_string(),
-        }),
-    }
+fn context_for(
+    caller: &CodeModeCaller,
+    scope: &ToolScope,
+) -> Result<Arc<SkillRegistryContext>, ToolError> {
+    code_mode_caller_skill_context(caller, scope).ok_or_else(|| ToolError::Sdk {
+        sdk_kind: "forbidden".into(),
+        message: "request-bound Skill authorization context is unavailable or expired".into(),
+    })
 }
 
 fn origin_allowed(origin: &str, scope: &ToolScope) -> bool {
@@ -74,12 +60,12 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
     fn bootstrap<'a>(
         &'a self,
         caller: &'a CodeModeCaller,
-        _scope: &'a ToolScope,
+        scope: &'a ToolScope,
     ) -> std::pin::Pin<
         Box<dyn Future<Output = Result<Vec<CodeModeSkillSummary>, ToolError>> + Send + 'a>,
     > {
         Box::pin(async move {
-            let context = context_for(caller)?;
+            let context = context_for(caller, scope)?;
             let listing = super::facade::first_party_skill_listing(&context);
             let summaries = listing
                 .skills
@@ -116,13 +102,11 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
         &'a self,
         caller: &'a CodeModeCaller,
         scope: &'a ToolScope,
-    ) -> std::pin::Pin<
-        Box<dyn Future<Output = Result<Vec<CodeModeSkillSummary>, ToolError>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Value, ToolError>> + Send + 'a>> {
         Box::pin(async move {
-            let context = context_for(caller)?;
+            let context = context_for(caller, scope)?;
             let context = context.narrowed_to_upstreams(scope.allowed_namespaces());
-            let value = crate::dispatch::skills::dispatch_with_context(
+            let mut value = crate::dispatch::skills::dispatch_with_context(
                 &context,
                 "skills.list",
                 json!({ "limit": 500 }),
@@ -168,7 +152,8 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
                     tags: skill_tags,
                 });
             }
-            Ok(summaries)
+            value["skills"] = json!(summaries);
+            Ok(value)
         })
     }
 
@@ -185,7 +170,7 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
                     required_scopes: Vec::new(),
                 });
             }
-            let context = context_for(caller)?;
+            let context = context_for(caller, scope)?;
             crate::dispatch::skills::dispatch_with_context(
                 &context,
                 "skills.get",
@@ -208,7 +193,7 @@ impl CodeModeSkillProvider for CanonicalCodeModeSkillProvider {
                     required_scopes: Vec::new(),
                 });
             }
-            let context = context_for(caller)?;
+            let context = context_for(caller, scope)?;
             crate::dispatch::skills::dispatch_with_context(
                 &context,
                 "skills.read",

@@ -10,6 +10,11 @@ authors.workspace = true
 readme = "../../README.md"
 publish = false
 
+[features]
+mcp-schema = []
+# Enable the registry projection without adding a CLI or MCP transport.
+mcp-registry = ["mcp-schema"]
+
 [dependencies]
 labby-runtime = { path = "../labby-runtime" }
 labby-primitives = { path = "../labby-primitives" }

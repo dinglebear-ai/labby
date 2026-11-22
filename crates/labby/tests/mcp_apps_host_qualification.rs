@@ -297,10 +297,11 @@ async fn q4_stateless_http_cancellation_reaches_admitted_upstream() {
     let runner = TransportQualification::start(TransportKind::StreamableHttp, "q4-cancel-canary")
         .await
         .expect("real Labby MCP process");
-    runner
+    let initialized = runner
         .call_raw("forge.safe", serde_json::json!({}))
         .await
         .expect("initialize ledger");
+    assert_ne!(initialized.is_error, Some(true), "{initialized:?}");
     let before = runner.effect_counts().expect("initial ledger");
     let endpoint = runner.http_endpoint().expect("HTTP endpoint");
     let token = runner.http_token();

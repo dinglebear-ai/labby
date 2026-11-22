@@ -26,14 +26,12 @@ the in-sandbox Code Mode `callTool` boundary. Keywords per RFC 2119.
 | **Builtin service** | `gateway`, `doctor`, `setup`, `server_logs`, `snippets`, `fs`, `lab_admin` | Labby (`format_dispatch_result`) | Dispatch envelope (C2) |
 | **Code Mode** | `codemode`, `codemode_read`, `codemode_ui` | Labby (`code_mode_execute_trace`) | Trace schema (C4) |
 | **Synthetic / app** | `mcp_app`, `add_server`, `gateway_status`, `settings` | Labby, per-tool | Per audit — accurate schema or none |
-| **Upstream (proxied)** | any `<upstream>::<tool>` | The upstream server | Relayed (C5) |
+| **Upstream (proxied)** | the upstream’s bare MCP tool name | The upstream server | Relayed (C5) |
 
-> **Visibility caveat.** Under `hide_raw_tools` (whenever Code Mode is enabled), every builtin
-> service tool except `server_logs` and `gateway` is suppressed from the wire
-> `tools/list` by `handlers_tools.rs`. Eligible in-process action projections
-> have separate caller filtering. `peer_contract.rs` currently omits `gateway`
-> from its Code Mode hash projection; that runtime parity defect is not a
-> different intended wire contract.
+> With Code Mode enabled, `gateway`, `snippets`, and `server_logs` remain eligible
+> native routers. `stash` also requires the native caller context. The wire listing
+> and peer contract apply the shared `native_router_visible` predicate. Atomic
+> actions and upstream tools have their own caller and route checks.
 
 ---
 
@@ -51,8 +49,8 @@ A builtin service tool call that succeeds MUST return a `CallToolResult` with:
 { "ok": true, "service": "<service>", "action": "<dotted action>", "data": <any JSON value> }
 ```
 
-`build_success` (`crates/labby/src/mcp/envelope.rs:42-49`); attached by `format_dispatch_result`
-(`crates/labby/src/mcp/result_format.rs:111-114`).
+`build_success` (`crates/labby/src/mcp/envelope.rs`); attached by `format_dispatch_result`
+(`crates/labby/src/mcp/result_format.rs`).
 
 **Invariants**
 
@@ -70,7 +68,7 @@ use that advertised schema without inferring one from the router.
 
 > **Router limitation.** The `schema` built-in action
 > returns `ActionSpec.returns`, a `&'static str` documented as *"not a runtime contract —
-> purely informational"* (`crates/labby-primitives/src/action.rs:42-44`), with values such as
+> purely informational"* (`crates/labby-primitives/src/action.rs`), with values such as
 > `"DoctorReport"` that need not resolve to a definition. Some actions now have an
 > `ActionSpec.output_schema` builder, used by eligible atomic projections. Do not
 > infer a machine-readable result schema from `returns`, or assume every action
@@ -131,7 +129,7 @@ The decision to exclude errors nonetheless stands, for two reasons:
 1. Widening a tool's schema to also cover errors was explicitly rejected upstream as violating
    settled semantics ([cyanheads/mcp-ts-core#241](https://github.com/cyanheads/mcp-ts-core/issues/241)).
 2. **Repo-local, decisive:** `enrich_completed_tool_error_result`
-   (`crates/labby-gateway/src/upstream/tool_error.rs:148-180`, from `3e5ab3df`) rewraps error
+   (`crates/labby-gateway/src/upstream/tool_error.rs`, from `3e5ab3df`) rewraps error
    `structuredContent` into `{"error": <contract>, "upstream_structured_content": <original>}`
    — a published, schema-locked contract. One schema cannot describe both.
 
@@ -170,7 +168,7 @@ would make any future `build_success` field invalidate builtin router schemas
 simultaneously and client-side, *and* move `descriptor_contract_hash` in the same stroke — and
 this envelope family demonstrably grows (the error envelope already gained a versioned recovery
 contract). The detectability that `false` would buy is obtained internally instead, by the
-"exactly four keys" assertion in the conformance test. A comment at `envelope.rs:42` MUST bind
+"exactly four keys" assertion in the conformance test. A comment at `build_success` MUST bind
 `build_success` and this schema to the same commit.
 
 ---
@@ -200,7 +198,7 @@ adds MCP App metadata.
 
 ## C5. Upstream (proxied) tools
 
-- An upstream tool's `outputSchema` is relayed as declared (`handlers_tools.rs:277-290`).
+- An upstream tool's `outputSchema` is relayed as declared (`list_tools_impl`).
   Labby MUST NOT synthesize, widen, or narrow it.
 - A **successful** relayed result's `structuredContent` MUST reach the downstream client
   byte-identically.
@@ -249,7 +247,7 @@ and `callTool` retain the following precedence.
 
 | # | Condition | Result |
 |---|---|---|
-| 0 | `isError == Some(true)` | Not unwrapped. Caller (`:494`) converts to `CodeModeCallError`; surfaces in-sandbox as a thrown error. |
+| 0 | `isError == Some(true)` | Not unwrapped. The calling host converts to `CodeModeCallError`; surfaces in-sandbox as a thrown error. |
 | 1 | `structured_content` is `Some(v)` | `v` as-is — including falsy JSON (`false`, `0`, `null`, `""`). |
 | 2 | `content` non-empty and every block is text | Joined with `"\n"`, then parsed as JSON; on failure, the joined string. |
 | 3 | `content` empty | `Value::Null`. |
@@ -260,7 +258,7 @@ and `callTool` retain the following precedence.
 - Rule 1 MUST precede any inspection of `content`. When both are present the structured value
   wins in the convenience value. The original successful envelope is retained
   separately for `codemode.callToolResult`. mcp-ui links are unaffected — read from `_meta` via
-  `extract_ui_link` (`:583-590`), not `content`.
+  `extract_ui_link`, not `content`.
 - A present-but-falsy structured value MUST NOT be treated as absent (`if let Some(..)` tests
   presence, not truthiness).
 - The unwrap MUST NOT stringify a structured value.
@@ -330,8 +328,8 @@ for such handles has been implemented.
 
 | Path | Shape | Default |
 |---|---|---|
-| `labby-codemode/src/truncate.rs:178-192` | object: `{truncated: true, original_size, original_tokens, preview, artifacts, next_action}` | **yes** — always-on budget net |
-| `labby-codemode/src/shape.rs:99-135` | plain string `"[code mode result truncated]…"` | no — non-`Off` result-shape policy only |
+| `truncation_marker_serialized` | object: `{truncated: true, original_size, original_tokens, preview, artifacts, next_action, resource_read_example?, preserved_result_artifact_id?}` | **yes** — always-on budget net |
+| `shape_truncate` | plain string `"[code mode result truncated]…"` | no — non-`Off` result-shape policy only |
 
 - Only these reductions are permitted; shaping MUST NOT re-serialize a surviving structured
   value.

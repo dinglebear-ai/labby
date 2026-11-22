@@ -155,12 +155,12 @@ deny:
 # slowdown). Use `cargo build --workspace --all-features` directly for a debug-assertions/
 # full-unwind dev build instead.
 build: web-build
-    cargo build --workspace --all-features --profile {{local_release_profile}}
+    cargo build --workspace --features labby/product --profile {{local_release_profile}}
 
 # Build release binary with all features. The plugin does not ship a binary;
 # hosts install Labby via scripts/install.sh or Cargo.
 build-release: web-build
-    cargo build --workspace --all-features --release
+    cargo build --workspace --features labby/product --release
     just link-bin
 
 # Copy the compiled binary into PATH.
@@ -207,7 +207,7 @@ host-sync: web-build
     if command -v mold >/dev/null 2>&1; then
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
-    cargo build --workspace --all-features --profile "$profile" --bin labby
+    cargo build --workspace --features labby/product --profile "$profile" --bin labby
     LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
     case "$LABBY_TARGET_DIR" in
       /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;
@@ -245,7 +245,7 @@ host-service-install: web-build
     if command -v mold >/dev/null 2>&1; then
       export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-fuse-ld=mold"
     fi
-    cargo build --workspace --all-features --profile "$profile" --bin labby
+    cargo build --workspace --features labby/product --profile "$profile" --bin labby
     LABBY_TARGET_DIR="${CARGO_TARGET_DIR:-target}"
     case "$LABBY_TARGET_DIR" in
       /*) LABBY_BIN="$LABBY_TARGET_DIR/$profile/labby" ;;

@@ -7,7 +7,7 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use labby_apis::artifact_control::Operation;
+use futures::{StreamExt, stream};
 use labby_runtime::artifacts::{ArtifactError, canonical_json};
 use serde_json::{Value, json};
 use thiserror::Error;
@@ -39,7 +39,7 @@ const RECONCILE_INTERVAL: Duration = Duration::from_secs(30);
 const RECONCILE_BATCH_LIMIT: usize = 16;
 
 #[derive(Debug, Error)]
-enum FollowReconcileError {
+pub(in crate::dispatch) enum FollowReconcileError {
     #[error(transparent)]
     Runtime(#[from] AccessRuntimeError),
     #[error(transparent)]
@@ -108,6 +108,8 @@ async fn tick(
     access_runtime: &AccessRuntime,
     runtime: &ProcessSkillLibraryRuntime,
 ) -> Result<(), FollowReconcileError> {
+    let started = tokio::time::Instant::now();
+    let phase_budget = RECONCILE_INTERVAL / 3;
     let now = unix_seconds()?;
     let checked_before = now.saturating_sub(
         i64::try_from(RECONCILE_INTERVAL.as_secs())
@@ -117,26 +119,27 @@ async fn tick(
         return Ok(());
     };
 
-    for mirror in store
-        .managed_artifact_mirrors_for_reconciliation(checked_before, 64)
-        .await?
-    {
-        let mirror_id = mirror.mirror_id.clone();
-        if let Err(error) = reconcile_managed_authority(access_runtime, runtime, mirror, now).await
-        {
-            tracing::warn!(
-                mirror_id,
-                kind = reconcile_error_kind(&error),
-                "managed Artifact authority reconciliation failed"
-            );
-        }
-    }
+    reconcile_due_mirrors(
+        &store,
+        access_runtime,
+        &runtime.service.store,
+        &runtime.controls,
+        now,
+        checked_before,
+        started + phase_budget,
+    )
+    .await?;
 
     // Restriction commits before the purge; retry any purge an earlier tick could not finish.
     for mirror in store.managed_artifact_mirrors_pending_purge(64).await? {
+        if started.elapsed() >= phase_budget * 2 {
+            break;
+        }
         let mirror_id = mirror.mirror_id.clone();
         let restriction = mirror.status;
-        if let Err(error) = restrict(&store, runtime, &mirror, restriction, now).await {
+        if let Err(error) =
+            restrict(&store, &runtime.service.store, &mirror, restriction, now).await
+        {
             tracing::warn!(
                 mirror_id,
                 kind = reconcile_error_kind(&error),
@@ -148,25 +151,86 @@ async fn tick(
     let subscriptions = store
         .auto_approved_artifact_subscriptions_due(checked_before, RECONCILE_BATCH_LIMIT)
         .await?;
-    for subscription in subscriptions {
-        let mirror_id = subscription.mirror_id.clone();
-        if let Err(error) = reconcile_subscription(access_runtime, runtime, subscription, now).await
-        {
-            tracing::warn!(
-                mirror_id,
-                kind = reconcile_error_kind(&error),
-                "managed Artifact auto-follow reconciliation failed"
-            );
-        }
-    }
+    stream::iter(subscriptions)
+        .take_while(|_| std::future::ready(started.elapsed() < RECONCILE_INTERVAL))
+        .for_each_concurrent(4, |subscription| async move {
+            let mirror_id = subscription.mirror_id.clone();
+            if let Err(error) = reconcile_subscription(
+                access_runtime,
+                runtime,
+                subscription,
+                now,
+                started + RECONCILE_INTERVAL,
+            )
+            .await
+            {
+                tracing::warn!(
+                    mirror_id,
+                    kind = reconcile_error_kind(&error),
+                    "managed Artifact auto-follow reconciliation failed"
+                );
+            }
+        })
+        .await;
     Ok(())
 }
 
-async fn reconcile_managed_authority(
+pub(crate) async fn reconcile_due_mirrors(
+    store: &crate::access::AccessStore,
     access_runtime: &AccessRuntime,
-    runtime: &ProcessSkillLibraryRuntime,
+    artifacts: &Arc<labby_runtime::artifacts::ArtifactStore>,
+    controls: &crate::dispatch::artifact_control::ArtifactControlPlane,
+    now: i64,
+    checked_before: i64,
+    deadline: tokio::time::Instant,
+) -> Result<(), AccessStoreError> {
+    // Drain additional batches while the authority phase has spare capacity.
+    for _ in 0..10 {
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        let mirrors = store
+            .managed_artifact_mirrors_for_reconciliation(checked_before, 64)
+            .await?;
+        let batch_len = mirrors.len();
+        stream::iter(mirrors)
+            .take_while(|_| std::future::ready(tokio::time::Instant::now() < deadline))
+            .for_each_concurrent(4, |mirror| async move {
+                let mirror_id = mirror.mirror_id.clone();
+                if let Err(error) = reconcile_managed_authority(
+                    access_runtime,
+                    artifacts,
+                    controls,
+                    mirror,
+                    now,
+                    deadline,
+                )
+                .await
+                {
+                    tracing::warn!(
+                        mirror_id,
+                        kind = reconcile_error_kind(&error),
+                        "managed Artifact authority reconciliation failed"
+                    );
+                }
+            })
+            .await;
+
+        if batch_len < 64 {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+pub(in crate::dispatch) async fn reconcile_managed_authority(
+    access_runtime: &AccessRuntime,
+    artifacts: &Arc<labby_runtime::artifacts::ArtifactStore>,
+    controls: &crate::dispatch::artifact_control::ArtifactControlPlane,
     mirror: ManagedArtifactMirror,
     now: i64,
+    deadline: tokio::time::Instant,
 ) -> Result<(), FollowReconcileError> {
     let store = access_runtime.store().await?;
     let mirror = store
@@ -198,7 +262,7 @@ async fn reconcile_managed_authority(
         Err(SkillLibraryAuthorizationError::Denied) => {
             restrict(
                 &store,
-                runtime,
+                artifacts,
                 &mirror,
                 ManagedArtifactMirrorStatus::AccessRevoked,
                 now,
@@ -227,7 +291,7 @@ async fn reconcile_managed_authority(
         record_terminal(&decision.audit, &mirror.source_revision_id, false);
         restrict(
             &store,
-            runtime,
+            artifacts,
             &mirror,
             restriction_for_denial(policy.denied_by),
             now,
@@ -258,7 +322,7 @@ async fn reconcile_managed_authority(
             record_terminal(&decision.audit, &mirror.source_revision_id, false);
             restrict(
                 &store,
-                runtime,
+                artifacts,
                 &mirror,
                 ManagedArtifactMirrorStatus::AccessRevoked,
                 now,
@@ -269,13 +333,13 @@ async fn reconcile_managed_authority(
         Err(error) => return Err(error.into()),
     };
 
-    let head = match runtime
-        .controls
-        .execute(
-            Some(connection_id),
-            Operation::ArtifactsGet,
-            &json!({ "artifactId": mirror.source_artifact_id.clone() }),
-            Some(&control_context),
+    let head = match controls
+        .reconciliation_head(
+            connection_id,
+            &mirror.source_artifact_id,
+            &control_context,
+            now,
+            deadline,
         )
         .await
     {
@@ -284,7 +348,7 @@ async fn reconcile_managed_authority(
             record_terminal(&decision.audit, &mirror.source_revision_id, false);
             restrict(
                 &store,
-                runtime,
+                artifacts,
                 &mirror,
                 ManagedArtifactMirrorStatus::SourceWithdrawn,
                 now,
@@ -299,7 +363,7 @@ async fn reconcile_managed_authority(
         record_terminal(&decision.audit, &mirror.source_revision_id, false);
         restrict(
             &store,
-            runtime,
+            artifacts,
             &mirror,
             ManagedArtifactMirrorStatus::SourceWithdrawn,
             now,
@@ -314,8 +378,13 @@ async fn reconcile_subscription(
     runtime: &ProcessSkillLibraryRuntime,
     subscription: ManagedArtifactSubscription,
     now: i64,
+    deadline: tokio::time::Instant,
 ) -> Result<(), FollowReconcileError> {
     let store = access_runtime.store().await?;
+    // Advance the due cursor even if authority or acquisition fails below.
+    store
+        .mark_artifact_subscription_checked(subscription.mirror_id.clone(), now)
+        .await?;
     let mirror = store
         .managed_artifact_mirror(subscription.mirror_id.clone())
         .await?
@@ -348,7 +417,7 @@ async fn reconcile_subscription(
         Err(SkillLibraryAuthorizationError::Denied) => {
             restrict(
                 &store,
-                runtime,
+                &runtime.service.store,
                 &mirror,
                 ManagedArtifactMirrorStatus::AccessRevoked,
                 now,
@@ -385,7 +454,7 @@ async fn reconcile_subscription(
         Err(error) if error.kind() == "forbidden" => {
             restrict(
                 &store,
-                runtime,
+                &runtime.service.store,
                 &mirror,
                 ManagedArtifactMirrorStatus::AccessRevoked,
                 now,
@@ -398,11 +467,12 @@ async fn reconcile_subscription(
 
     let head = match runtime
         .controls
-        .execute(
-            Some(connection_id),
-            Operation::ArtifactsGet,
-            &json!({ "artifactId": mirror.source_artifact_id }),
-            Some(&control_context),
+        .reconciliation_head(
+            connection_id,
+            &mirror.source_artifact_id,
+            &control_context,
+            now,
+            deadline,
         )
         .await
     {
@@ -411,7 +481,7 @@ async fn reconcile_subscription(
             record_terminal(&preflight.audit, &mirror.source_revision_id, false);
             restrict(
                 &store,
-                runtime,
+                &runtime.service.store,
                 &mirror,
                 ManagedArtifactMirrorStatus::SourceWithdrawn,
                 now,
@@ -426,7 +496,7 @@ async fn reconcile_subscription(
         record_terminal(&preflight.audit, &mirror.source_revision_id, false);
         restrict(
             &store,
-            runtime,
+            &runtime.service.store,
             &mirror,
             ManagedArtifactMirrorStatus::SourceWithdrawn,
             now,
@@ -467,16 +537,18 @@ async fn reconcile_subscription(
         artifact_id: mirror.source_artifact_id.clone(),
         revision_id: target_revision.clone(),
     };
-    let acquisition = runtime
-        .imports
-        .acquire_selected_for_durable_distribution(
+    let acquisition = tokio::time::timeout_at(
+        deadline,
+        runtime.imports.acquire_selected_for_durable_distribution(
             access_runtime,
             identity,
             &mirror.authorization_project_id,
             mirror.authorization_team_id.as_deref(),
             source,
-        )
-        .await?;
+        ),
+    )
+    .await
+    .map_err(|_| FollowReconcileError::State("acquisition_deadline"))??;
 
     let (_identity, postflight) = match authorize_durable_distribution_at_boundary(
         access_runtime,
@@ -494,7 +566,7 @@ async fn reconcile_subscription(
             record_terminal(&preflight.audit, &target_revision, false);
             restrict(
                 &store,
-                runtime,
+                &runtime.service.store,
                 &mirror,
                 ManagedArtifactMirrorStatus::AccessRevoked,
                 now,
@@ -527,7 +599,7 @@ async fn reconcile_subscription(
         record_terminal(&postflight.audit, &target_revision, false);
         restrict(
             &current_store,
-            runtime,
+            &runtime.service.store,
             &mirror,
             restriction_for_denial(follow.denied_by),
             now,
@@ -559,13 +631,12 @@ async fn reconcile_subscription(
 
 async fn restrict(
     store: &crate::access::AccessStore,
-    runtime: &ProcessSkillLibraryRuntime,
+    artifacts: &Arc<labby_runtime::artifacts::ArtifactStore>,
     mirror: &ManagedArtifactMirror,
     restriction: ManagedArtifactMirrorStatus,
     now: i64,
 ) -> Result<(), FollowReconcileError> {
-    let coordinator =
-        ManagedArtifactCoordinator::new(store.clone(), Arc::clone(&runtime.service.store));
+    let coordinator = ManagedArtifactCoordinator::new(store.clone(), Arc::clone(artifacts));
     coordinator
         .restrict_and_purge_managed_mirror(mirror.mirror_id.clone(), restriction, now)
         .await?;

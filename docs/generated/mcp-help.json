@@ -1956,6 +1956,12 @@
               "description": "Approximate maximum response tokens"
             },
             {
+              "name": "max_programmatic_response_bytes",
+              "ty": "integer",
+              "required": false,
+              "description": "Largest response budget a programmatic MCP client may request through tools/call _meta; 0 disables requests"
+            },
+            {
               "name": "token_estimate_divisor",
               "ty": "integer",
               "required": false,
@@ -3150,6 +3156,12 @@
               "description": "Write-only: raw bearer token to store securely. Never returned on reads. If bearer_token_env is omitted from the spec, a default env var name is derived from the gateway name."
             },
             {
+              "name": "secret_env_values",
+              "ty": "object",
+              "required": false,
+              "description": "Write-only: secret stdio env values keyed by child variable name (^[A-Z][A-Z0-9_]*$; launcher, sandbox, loader, and LABBY_* names are refused). Stored in the credential file, referenced by name from the upstream's secret_env, and never returned on reads. Stdio upstreams only; each value is non-empty, single-line, and at most 16384 bytes; at most 32 per upstream. Replaces a plain env entry of the same name in the spec."
+            },
+            {
               "name": "protected_route",
               "ty": "object",
               "required": false,
@@ -3184,6 +3196,12 @@
               "ty": "string",
               "required": false,
               "description": "Write-only: raw bearer token to store securely. Never returned on reads. Requires bearer_token_env in patch or existing config."
+            },
+            {
+              "name": "secret_env_values",
+              "ty": "object",
+              "required": false,
+              "description": "Write-only: secret stdio env values keyed by child variable name (^[A-Z][A-Z0-9_]*$; launcher, sandbox, loader, and LABBY_* names are refused). Stored in the credential file, referenced by name from the upstream's secret_env, and never returned on reads. Stdio upstreams only; each value is non-empty, single-line, and at most 16384 bytes; at most 32 per upstream. Adds or replaces the named values and keeps every other env entry; a plain env entry with the same name becomes secret."
             },
             {
               "name": "protected_route",
@@ -4443,8 +4461,8 @@
             {
               "name": "expected_revision_id",
               "ty": "string",
-              "required": true,
-              "description": "Expected immutable revision precondition"
+              "required": false,
+              "description": "Current skill revision. Supply this, a library version, or both."
             },
             {
               "name": "files",
@@ -4455,8 +4473,8 @@
             {
               "name": "expected_library_version",
               "ty": "integer",
-              "required": true,
-              "description": "Expected committed Skill Library version"
+              "required": false,
+              "description": "Require the entire library to have this version. Optional with a skill revision."
             },
             {
               "name": "idempotency_key",
@@ -6361,7 +6379,7 @@
         {
           "name": "snippets.create",
           "description": "Create a user snippet under LABBY_HOME/snippets",
-          "destructive": false,
+          "destructive": true,
           "requires_admin": true,
           "required_scopes": [
             "lab:admin"
@@ -6396,6 +6414,12 @@
               "ty": "string",
               "required": false,
               "description": "Reject a stale edit unless the current user snippet has this content_digest"
+            },
+            {
+              "name": "shadow_builtin",
+              "ty": "boolean",
+              "required": false,
+              "description": "Allow creating a user snippet that shadows a built-in snippet"
             }
           ],
           "returns": "SnippetInfo"

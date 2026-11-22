@@ -119,10 +119,11 @@ impl AccessStore {
         &self,
         after: String,
         limit: u32,
+        bound_team: Option<String>,
     ) -> AccessStoreResult<Vec<TaskSchedule>> {
         self.with_connection(move |connection| {
-            let mut query = connection.prepare(&format!("SELECT {COLUMNS} FROM agent_task_schedules WHERE schedule_id>?1 ORDER BY schedule_id LIMIT ?2")).map_err(map_sqlite_error)?;
-            query.query_map(params![after, limit.min(100)], decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)
+            let mut query = connection.prepare(&format!("SELECT {COLUMNS} FROM agent_task_schedules WHERE schedule_id>?1 AND (?3 IS NULL OR (owner_kind='team' AND owner_id=?3)) ORDER BY schedule_id LIMIT ?2")).map_err(map_sqlite_error)?;
+            query.query_map(params![after, limit.min(100), bound_team], decode).map_err(map_sqlite_error)?.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite_error)
         }).await
     }
     pub(crate) async fn task_schedule_save(

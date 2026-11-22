@@ -40,6 +40,7 @@ pub(super) fn config_view(
         command,
         args,
         bearer_token_env: upstream.bearer_token_env.clone(),
+        secret_env: upstream.secret_env.keys().cloned().collect(),
         oauth_enabled: upstream.oauth.is_some(),
         proxy_resources: upstream.proxy_resources,
         proxy_prompts: upstream.proxy_prompts,
@@ -57,25 +58,7 @@ pub(super) fn config_view(
     }
 }
 
-pub(crate) fn sanitize_tool_text(input: &str, max_len: usize) -> String {
-    let mut sanitized = input.to_string();
-    sanitized.retain(|ch| {
-        !matches!(
-            ch,
-            '\u{0000}'..='\u{001F}'
-                | '\u{007F}'..='\u{009F}'
-                | '\u{202A}'..='\u{202E}'
-                | '\u{2066}'..='\u{2069}'
-        )
-    });
-    for marker in ["<system>", "[INST]", "###", "<<"] {
-        sanitized = sanitized.replace(marker, "");
-    }
-    redact_secret_like_segments(&sanitized)
-        .chars()
-        .take(max_len)
-        .collect()
-}
+pub(crate) use labby_runtime::redact::sanitize_tool_text;
 
 // Secret redaction is the canonical `labby_runtime::redact::redact_secret_like_segments`.
 // The former local copy here lagged the canonical patterns (no Bearer / PEM /
@@ -1118,6 +1101,7 @@ mod tests {
 
     fn upstream_fixture(command: Option<&str>, args: &[&str], url: Option<&str>) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

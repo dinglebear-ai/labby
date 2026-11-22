@@ -1,7 +1,10 @@
 #![cfg(feature = "skills")]
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use std::time::Duration;
+
+use rmcp::{ServiceExt, model::GetSkillRequestParams, transport::TokioChildProcess};
+use tokio::io::AsyncReadExt;
 
 use labby_runtime::artifacts::{
     ArtifactProvenance, ArtifactStore, LibraryActorId, LibraryAuthorization, LibraryGrant,
@@ -86,60 +89,60 @@ fn persist_active_skill(home: &std::path::Path) {
         .expect("activate persisted skill");
 }
 
-fn read_response(reader: &mut BufReader<std::process::ChildStdout>, id: u64) -> serde_json::Value {
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read stdio response");
-        assert!(!line.is_empty(), "stdio server exited before response {id}");
-        let value: serde_json::Value = serde_json::from_str(line.trim()).expect("JSON-RPC line");
-        if value["id"] == id {
-            return value;
-        }
-    }
-}
-
-#[test]
-fn standalone_stdio_bootstraps_persisted_active_skills() {
+#[tokio::test]
+async fn standalone_stdio_bootstraps_persisted_active_skills() {
     let home = tempfile::tempdir().expect("LABBY_HOME");
     persist_active_skill(home.path());
-
-    let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_labby"));
+    command
         .args(["mcp", "--services", "artifacts"])
         .env("LABBY_HOME", home.path())
         .env("LABBY_SERVER_URL", "")
         .env("CLAUDE_PLUGIN_OPTION_SERVER_URL", "")
         .env("LABBY_MCP_HTTP_PORT", "0")
-        .env("LABBY_LOG", "labby=info,warn")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn standalone stdio server");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
-
-    writeln!(
-        stdin,
-        "{}",
-        serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-06-18", "capabilities": {},
-                "clientInfo": {"name": "stdio-bootstrap-test", "version": "1"}
-            }
-        })
-    )
-    .unwrap();
-    assert!(read_response(&mut stdout, 1).get("result").is_some());
-    drop(stdin);
-    let output = child.wait_with_output().expect("wait for stdio server");
-    assert!(
-        output.status.success(),
-        "standalone stdio exited unsuccessfully"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("artifacts.ready") && stderr.contains("active_skill_count=1"),
-        "standalone stdio did not bootstrap the persisted active generation: {stderr}"
-    );
+        .env("LABBY_LOG", "labby=debug,warn")
+        .kill_on_drop(true);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let (transport, stderr) = TokioChildProcess::builder(command)
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let logs = tokio::spawn(async move {
+            let mut logs = String::new();
+            stderr.unwrap().read_to_string(&mut logs).await.unwrap();
+            logs
+        });
+        let client = ().serve(transport).await.expect("initialize stdio client");
+        let listed = client.list_skills(None).await.expect("list served Skills");
+        assert!(
+            listed
+                .skills
+                .iter()
+                .any(|s| s.uri.as_str() == "skill://labby/using-labby/SKILL.md")
+        );
+        // A standalone stdio request has no authenticated Artifact project.
+        assert!(
+            !listed
+                .skills
+                .iter()
+                .any(|s| s.uri.as_str() == "skill://labby/persisted-stdio/SKILL.md")
+        );
+        client
+            .get_skill(GetSkillRequestParams::new(
+                "skill://labby/persisted-stdio/SKILL.md",
+            ))
+            .await
+            .expect_err("protected artifact skill must require project authority");
+        client.cancel().await.expect("close stdio client");
+        let logs = logs.await.unwrap();
+        assert!(logs.contains("artifacts.ready") && logs.contains("active_skill_count=1"));
+        assert!(
+            logs.lines()
+                .any(|line| line.contains("captured Skill generation")
+                    && line.contains("skill_generation=2")),
+            "the native Skills request did not capture the persisted generation"
+        );
+    })
+    .await
+    .expect("standalone stdio test timed out");
 }

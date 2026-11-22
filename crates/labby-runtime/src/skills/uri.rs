@@ -104,7 +104,7 @@ impl SkillUri {
     /// True when this URI names a skill root document (`.../SKILL.md`).
     #[must_use]
     pub fn is_skill_md(&self) -> bool {
-        self.full == SKILL_MD_FILE || self.full.ends_with(concat!("/", "SKILL.md"))
+        self.skill_md_parts().is_some()
     }
 
     /// For a canonical `.../SKILL.md` URI, the `(skill_path, name)` pair the SEP
@@ -121,12 +121,7 @@ impl SkillUri {
     /// form outright, which is the SEP's own first example.
     #[must_use]
     pub fn skill_md_parts(&self) -> Option<(&str, &str)> {
-        let skill_path = self.full.strip_suffix(SKILL_MD_FILE)?;
-        let skill_path = skill_path.strip_suffix('/').unwrap_or(skill_path);
-        if skill_path.is_empty() {
-            // `skill://SKILL.md` names no skill at all.
-            return None;
-        }
+        let skill_path = self.full.strip_suffix("/SKILL.md")?;
         let name = skill_path.rsplit('/').next().unwrap_or(skill_path);
         Some((skill_path, name))
     }
@@ -401,6 +396,21 @@ mod tests {
         // The one genuinely nameless case: no `<skill-path>` at all.
         let uri = parse_skill_uri("skill://SKILL.md").expect("parses");
         assert_eq!(uri.skill_md_parts(), None);
+        assert!(!uri.is_skill_md());
+        for scheme in ["skill", "SKILL", "Skill"] {
+            for path in ["one", "two/levels", "three/path/segments"] {
+                for file in ["SKILL.md", "not-SKILL.md", "SKILL.md.bak", "docs/SKILL.md"] {
+                    let parsed = parse_skill_uri(&format!("{scheme}://{path}/{file}")).unwrap();
+                    assert_eq!(parsed.is_skill_md(), parsed.skill_md_parts().is_some());
+                    assert_eq!(parsed.to_uri(), format!("skill://{path}/{file}"));
+                }
+            }
+        }
+        for name in ["mySKILL.md", "references/not-SKILL.md", "SKILL.md.bak"] {
+            let file = parse_skill_uri(&format!("skill://example/{name}")).unwrap();
+            assert!(!file.is_skill_md());
+            assert!(file.skill_md_parts().is_none());
+        }
     }
 
     #[test]

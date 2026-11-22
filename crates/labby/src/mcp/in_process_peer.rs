@@ -1,9 +1,7 @@
 //! MCP-owned in-process peer construction for built-in Lab services.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
 
-use crate::mcp::logging::LoggingLevel;
 use rmcp::service::{ClientLifecycleMode, ClientServiceExt};
 use rmcp::{RoleClient, ServiceExt};
 
@@ -14,7 +12,6 @@ use crate::dispatch::upstream::pool::{
     InProcessConnector, InProcessRegistration, UpstreamConnection, in_process_upstream_name,
 };
 use crate::dispatch::upstream::types::UpstreamRuntimeMetadata;
-use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
 
@@ -81,7 +78,6 @@ pub(crate) fn build_peer_server(service: &RegisteredService) -> LabMcpServer {
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: IN_PROCESS_TRANSPORT_LABEL,
-        logging_level: Arc::new(AtomicU8::new(logging_level_rank(LoggingLevel::Emergency))),
         // FU-1 (issue #210, lab-48z4k): force Raw mode. Under `Root` the mini
         // server derives its visibility from the process-global code-mode
         // flag, so inside a serve process with Code Mode ENABLED the peer

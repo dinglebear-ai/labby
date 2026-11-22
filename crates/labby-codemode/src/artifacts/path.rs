@@ -36,6 +36,14 @@ pub(super) fn normalize_artifact_path(raw: &str) -> Result<String, ToolError> {
     if is_rooted_or_drive_absolute(&normalized) {
         return Err(invalid_path("artifact path must be a relative path"));
     }
+    if normalized.split('/').next().is_some_and(|name| {
+        name.trim_end_matches(['.', ' '])
+            .eq_ignore_ascii_case(crate::artifact_access::METADATA_DIR)
+    }) {
+        return Err(invalid_path(
+            "artifact path uses a reserved metadata directory",
+        ));
+    }
     Ok(normalized)
 }
 
@@ -57,6 +65,17 @@ fn is_rooted_or_drive_absolute(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_metadata_directory_names_are_reserved() {
+        for suffix in ["", ".", " ", ". "] {
+            let path = format!(
+                "{}{suffix}/example.json",
+                crate::artifact_access::METADATA_DIR
+            );
+            assert!(normalize_artifact_path(&path).is_err());
+        }
+    }
 
     #[test]
     fn normalization_preserves_traversal_and_drive_guards() {

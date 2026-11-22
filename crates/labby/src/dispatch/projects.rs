@@ -136,14 +136,15 @@ pub(crate) async fn dispatch(
         return Err(unknown_action(action));
     }
     if action == "projects.list" {
-        return serde_json::to_value(
-            context
-                .store
-                .list_managed_projects(context.identity)
-                .await
-                .map_err(map)?,
-        )
-        .map_err(|_| unavailable());
+        let mut projects = context
+            .store
+            .list_managed_projects(context.identity)
+            .await
+            .map_err(map)?;
+        if let Some(team) = &context.ceiling.bound_team {
+            projects.retain(|project| &project.team_id == team);
+        }
+        return serde_json::to_value(projects).map_err(|_| unavailable());
     }
     let team_id = required(&params, "team_id")?;
     let project_id = required(&params, "project_id")?;

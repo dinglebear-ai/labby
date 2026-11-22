@@ -12,6 +12,7 @@ pub(crate) enum SkillExposureReason {
     AllowAll,
     MatchedPattern,
     NotMatched,
+    AmbiguousResource,
 }
 
 impl SkillExposureReason {
@@ -19,6 +20,7 @@ impl SkillExposureReason {
         match self {
             Self::AllowAll => "allow_all",
             Self::MatchedPattern => "matched_pattern",
+            Self::AmbiguousResource => "ambiguous_resource",
             Self::NotMatched => "not_matched",
         }
     }

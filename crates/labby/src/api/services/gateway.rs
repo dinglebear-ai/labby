@@ -15,7 +15,6 @@ use crate::api::error::ApiError;
 use crate::api::oauth::AuthContext;
 use crate::api::services::helpers::{dispatch_meta_from_headers, handle_action_with_meta};
 use crate::api::{ActionRequest, state::AppState};
-use crate::dispatch::access_errors::map_runtime_error;
 use crate::dispatch::error::ToolError;
 
 pub fn routes(_state: AppState) -> crate::api::route_registry::RouteGroup {
@@ -214,26 +213,11 @@ pub(crate) async fn require_platform_authority(
         .filter(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"))
         .ok_or_else(denied)?;
     let identity = identity.ok_or_else(denied)?.clone();
-    let installation_id = match state.installation_id.as_deref() {
-        Some(id) => id.to_owned(),
-        None => state
-            .access_runtime
-            .store()
-            .await
-            .map_err(|error| map_runtime_error("gateway", error))?
-            .installation_id()
-            .await
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "service_unavailable".into(),
-                message: "Gateway authorization could not be evaluated".into(),
-            })?
-            .unwrap_or_else(|| "installation".to_owned()),
-    };
     crate::access::authorize_gateway_action(
         &state.access_runtime,
         identity,
         crate::access::AuthorityCeiling::from_auth_context(auth),
-        &installation_id,
+        state.installation_id.as_deref(),
         None,
         action,
     )
@@ -403,34 +387,19 @@ async fn handle(
             })
         })?
         .0;
-    // Installation-scoped platform actions authorize against the real
-    // installation id; a process without a bound id reads it from the durable
-    // store rather than guessing a literal.
-    // Until an installation binding exists the store has no id either; the
-    // evaluator authorizes installation scope on platform-administrator
-    // status, so the placeholder label only names the resource.
-    let installation_id = match state.installation_id.as_deref() {
-        Some(id) => id.to_owned(),
-        None => match state.access_runtime.store().await {
-            Ok(store) => store.installation_id().await.ok().flatten(),
-            Err(_) => None,
-        }
-        .unwrap_or_else(|| "installation".to_owned()),
-    };
     let team_id = selected_team_id(&headers)
         .map_err(|error| ApiError::new(error).with_service_action("gateway", &req.action))?;
     let gateway_authority = crate::access::authorize_gateway_action(
         &state.access_runtime,
         identity,
         crate::access::AuthorityCeiling::from_auth_context(&auth_context.0),
-        &installation_id,
+        state.installation_id.as_deref(),
         team_id,
         &req.action,
     )
     .await
     .map_err(ApiError::from)?;
     let team_id = team_id.map(str::to_owned);
-    let access_runtime = Arc::clone(&state.access_runtime);
     let subject = auth.as_ref().map(|value| value.0.sub.clone());
     let usage_actor_tag = auth_context
         .0
@@ -465,27 +434,21 @@ async fn handle(
             let auth = auth_for_dispatch.clone();
             let gateway_authority = gateway_authority_for_dispatch.clone();
             async move {
-                if let Some(team_id) = team_id.as_deref()
-                    && crate::dispatch::gateway::team_scoped_gateway_action(&action)
-                {
-                    let store = access_runtime
-                        .store()
-                        .await
-                        .map_err(|error| map_runtime_error("gateway", error))?;
-                    crate::dispatch::gateway::validate_team_scoped_upstream_references(
-                        &store, team_id, &action, &params,
-                    )
-                    .await?;
-                }
-                let params = crate::access::qualify_team_gateway_params(
+                let params = crate::access::prepare_gateway_action_params(
+                    gateway_authority.as_ref(),
                     &action,
                     team_id.as_deref(),
                     params,
-                )?;
-                let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
+                )
+                .await?;
                 if let Some(authority) = gateway_authority.as_ref() {
                     authority.validate_before_external_effect().await?;
                 }
+                let params = crate::dispatch::gateway::adapter_registration::normalize(
+                    &manager, &action, params,
+                )
+                .await?;
+                let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
                 // Unlike trusted stdio MCP, an unauthenticated HTTP request
                 // must never inherit the shared gateway OAuth credential.
                 let oauth_subject =
@@ -1761,6 +1724,7 @@ mod tests {
         let manager = test_manager();
         manager
             .replace_config_for_tests(vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,

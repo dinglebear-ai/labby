@@ -10,6 +10,7 @@ use super::*;
 
 fn stdio_upstream(name: &str, command: &str, args: Vec<&str>) -> UpstreamConfig {
     UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -104,6 +105,7 @@ fn ssh_cleanup_patterns_do_not_prefix_match_sibling_upstream_names() {
 #[test]
 fn github_chat_cleanup_patterns_cover_uv_wrappers() {
     let upstream = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -159,6 +161,7 @@ async fn cleanup_upstream_processes_invalidates_cached_upstream_catalog() {
     let runtime = GatewayRuntimeHandle::default();
     let manager = GatewayManager::new(path, runtime.clone());
     let upstream = UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,
@@ -225,6 +228,7 @@ async fn cleanup_upstream_processes_kills_matching_github_chat_runtime() {
 
     manager
         .replace_config_for_tests(vec![UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

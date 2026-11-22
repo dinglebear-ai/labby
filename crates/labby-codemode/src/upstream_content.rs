@@ -12,15 +12,16 @@ pub(crate) fn capture(full: &Value, used: &mut usize) -> Option<Value> {
     let mut omitted_blocks = 0;
     let mut omitted_bytes = 0;
     for block in content {
-        if block.get("type").and_then(Value::as_str) == Some("text")
+        if let Some(structured) = structured
+            && block.get("type").and_then(Value::as_str) == Some("text")
             && let Some(text) = block.get("text").and_then(Value::as_str)
-            && let Ok(parsed) = serde_json::from_str::<Value>(text)
-            && structured == Some(&parsed)
             && block.as_object().is_some_and(|object| {
                 object
                     .keys()
                     .all(|key| matches!(key.as_str(), "type" | "text"))
             })
+            && let Ok(parsed) = serde_json::from_str::<Value>(text)
+            && structured == &parsed
         {
             continue;
         }

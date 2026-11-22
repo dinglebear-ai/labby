@@ -1,5 +1,6 @@
 [package]
 name = "labby-codemode"
+build = "build.rs"
 description = "Client-neutral Code Mode JavaScript execution kernel (Javy/QuickJS sandbox runner, broker, result shaping, and snippet engine) injected with a tool source via the CodeModeHost trait."
 version.workspace = true
 edition.workspace = true
@@ -36,6 +37,7 @@ ulid = "1"
 sha2 = "0.11"
 hex = "0.4"
 regex.workspace = true
+jsonschema = { version = "0.37.4", default-features = false }
 tar = "0.4"
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
 url.workspace = true
@@ -49,6 +51,7 @@ anyhow = "1"
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = [
   "fs",
+  "inotify",
   "signal",
   "process",
   "user",

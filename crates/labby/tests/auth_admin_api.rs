@@ -102,6 +102,7 @@ impl Harness {
         gateway_manager
             .seed_config(GatewayConfig {
                 upstream: vec![UpstreamConfig {
+                    secret_env: Default::default(),
                     display_name: None,
                     lifecycle: None,
                     enabled: true,

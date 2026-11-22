@@ -126,6 +126,10 @@ test('artifact revision and archive methods retain exact concurrency guards', as
     files: [{ path: 'SKILL.md', content: '# Revised' }],
     expectedLibraryVersion: 2, idempotencyKey: 'save-1',
   })
+  await skillLibrary.save({
+    artifactId: 'skill-1', revisionId: 'revision-2',
+    files: [{ path: 'SKILL.md', content: '# Edited again' }], idempotencyKey: 'save-2',
+  })
   await skillLibrary.archive({
     artifactId: 'skill-1', expectedLibraryVersion: 3, idempotencyKey: 'archive-1',
   })
@@ -133,6 +137,7 @@ test('artifact revision and archive methods retain exact concurrency guards', as
   assert.deepEqual(requests, [
     { action: 'artifacts.read', params: { artifact_id: 'skill-1', revision_id: 'revision-1', path: 'SKILL.md' } },
     { action: 'artifacts.save', params: { artifact_id: 'skill-1', expected_revision_id: 'revision-1', files: [{ path: 'SKILL.md', content: '# Revised' }], expected_library_version: 2, idempotency_key: 'save-1' } },
+    { action: 'artifacts.save', params: { artifact_id: 'skill-1', expected_revision_id: 'revision-2', files: [{ path: 'SKILL.md', content: '# Edited again' }], idempotency_key: 'save-2' } },
     { action: 'artifacts.archive', params: { artifact_id: 'skill-1', expected_library_version: 3, idempotency_key: 'archive-1' } },
   ])
 })

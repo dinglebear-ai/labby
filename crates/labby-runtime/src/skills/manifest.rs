@@ -33,6 +33,8 @@ use crate::skills::wire::SkillEntry;
 /// and to agents as a bare completeness number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkillRejection {
+    /// The entry could not be decoded as a Skills descriptor.
+    MalformedEntry,
     /// The entry's own `uri` is not a well-formed `skill://` URI, or does not
     /// name a `SKILL.md`.
     InvalidSkillUri,
@@ -69,6 +71,7 @@ impl SkillRejection {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::MalformedEntry => "malformed_entry",
             Self::InvalidSkillUri => "invalid_skill_uri",
             Self::InvalidFrontmatter => "invalid_frontmatter",
             Self::MissingManifest => "missing_manifest",
@@ -89,7 +92,7 @@ pub struct ValidatedSkill {
     pub uri: SkillUri,
     /// The skill's `name`, equal to the final skill-path segment.
     pub name: String,
-    /// The entry as received, unmodified.
+    /// The admitted entry with canonical lowercase URI schemes.
     pub entry: SkillEntry,
 }
 
@@ -215,11 +218,13 @@ pub fn validate_skill_entry_detailed(
         ));
     }
 
-    Ok(ValidatedSkill {
-        uri,
-        name,
-        entry: entry.clone(),
-    })
+    let mut entry = entry.clone();
+    entry.uri = canonical_entry_uri;
+    for resource in entry.resources.iter_mut().flatten() {
+        // The validation above establishes the same ASCII scheme on every URI.
+        resource.uri[..uri.scheme().len()].make_ascii_lowercase();
+    }
+    Ok(ValidatedSkill { uri, name, entry })
 }
 
 impl ValidatedSkill {
@@ -230,22 +235,22 @@ impl ValidatedSkill {
     /// lookup miss. Callers must not fall back to reading it.
     #[must_use]
     pub fn digest_for(&self, uri: &str) -> Option<&str> {
-        self.entry
-            .resources
-            .as_ref()?
-            .iter()
-            .find(|resource| resource.uri == uri)
+        self.resource_for(uri)
             .map(|resource| resource.digest.as_str())
     }
 
     /// Look up the complete manifest binding for one resource URI.
     #[must_use]
     pub fn resource_for(&self, uri: &str) -> Option<&crate::skills::wire::SkillResource> {
+        let (scheme, path) = uri.split_once("://")?;
+        if !self.uri.scheme().eq_ignore_ascii_case(scheme) {
+            return None;
+        }
         self.entry
             .resources
             .as_ref()?
             .iter()
-            .find(|resource| resource.uri == uri)
+            .find(|resource| &resource.uri[self.uri.scheme().len() + 3..] == path)
     }
 }
 
@@ -343,7 +348,18 @@ mod tests {
             Some(vec![resource("github://owner/refunds/SKILL.md", b"body")]),
         );
 
-        validate_skill_entry(&entry).expect("URI schemes are case-insensitive");
+        let skill = validate_skill_entry(&entry).expect("URI schemes are case-insensitive");
+        assert_eq!(skill.entry.uri, "github://owner/refunds/SKILL.md");
+        assert!(
+            skill
+                .digest_for("GITHUB://owner/refunds/SKILL.md")
+                .is_some()
+        );
+        assert!(
+            skill
+                .resource_for("github://owner/REFUNDS/SKILL.md")
+                .is_none()
+        );
     }
 
     #[test]

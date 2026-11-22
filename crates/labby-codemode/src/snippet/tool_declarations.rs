@@ -45,10 +45,9 @@ impl TryFrom<Vec<String>> for SnippetToolDeclarations {
                     "snippet tool identifier is oversized or contains whitespace/control characters",
                 ));
             }
-            if matches!(
-                namespace,
-                "lab" | "snippet" | "__lab_internal" | "state" | "git" | "openapi"
-            ) {
+            if matches!(namespace, "lab" | "snippet" | "__lab_internal")
+                || crate::local_provider::is_reserved_provider_namespace(namespace)
+            {
                 return Err(invalid(
                     "snippet tools must name upstream tools, not reserved local capabilities",
                 ));
@@ -84,7 +83,12 @@ impl SnippetToolDeclarations {
                 tools.push(id.clone());
             }
         }
-        let scope = ToolScope::scoped_namespaces(namespaces, tools);
+        let scope = ToolScope::scoped_namespaces(namespaces, tools)
+            .with_resources_visible(parent.allows_resources());
+        let scope = match parent.request_skill_context() {
+            Some(token) => scope.with_request_skill_context(token),
+            None => scope,
+        };
         if parent.is_read_only() {
             scope.read_only()
         } else {
@@ -159,13 +163,15 @@ mod tests {
             "beta::read".into(),
         ])
         .unwrap();
-        let parent =
-            ToolScope::scoped_namespaces(vec!["alpha".into()], vec!["read".into()]).read_only();
+        let parent = ToolScope::scoped_namespaces(vec!["alpha".into()], vec!["read".into()])
+            .read_only()
+            .with_resources_visible(false);
         let child = declarations.intersect(&parent);
         assert!(child.allows("alpha", "read"));
         assert!(!child.allows("alpha", "write"));
         assert!(!child.allows("beta", "read"));
         assert!(child.is_read_only());
+        assert!(!child.allows_resources());
         assert_eq!(declarations.intersect(&child), child);
     }
 
@@ -183,6 +189,9 @@ mod tests {
 
     #[test]
     fn validation_is_bounded_and_cannot_admit_reserved_capabilities() {
+        for namespace in crate::LOCAL_PROVIDER_NAMESPACES {
+            assert!(SnippetToolDeclarations::try_from(vec![format!("{namespace}::test")]).is_err());
+        }
         for id in [
             "lab::fs",
             "state::get",

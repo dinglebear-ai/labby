@@ -44,7 +44,7 @@ async fn read_checks_digest_size_retention_and_containment() {
         .await
         .unwrap_err()
         .kind(),
-        "invalid_param"
+        "response_too_large"
     );
     std::fs::remove_file(root.join("report.txt")).unwrap();
     assert_eq!(

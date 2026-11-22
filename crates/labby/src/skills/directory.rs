@@ -90,7 +90,7 @@ pub(crate) fn directory_page(
             }
             if children.len() > MAX_CHILDREN {
                 return Err(ToolError::Sdk {
-                    sdk_kind: "resource_exhausted".into(),
+                    sdk_kind: "response_too_large".into(),
                     message: "skill directory exceeds the child count budget".into(),
                 });
             }

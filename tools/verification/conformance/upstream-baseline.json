@@ -18,11 +18,17 @@
   },
   "skills_extension": {
     "repository": "modelcontextprotocol/modelcontextprotocol",
-    "ref": "sep/skills-extension",
+    "ref": "main",
     "commit": "d6b31a03504c15677d49b922b6b6ace0ef65728d",
     "contract": "docs/contracts/skills-extension.md",
     "watched_paths": [
       "docs/seps/2640-skills-extension.mdx"
     ]
+  },
+  "rmcp_production_base": {
+    "repository": "modelcontextprotocol/rust-sdk",
+    "release_tag": "rmcp-v3.9.0",
+    "commit": "5596a8a0bba2a1ec5519cc855cdadf23e4dcecdc",
+    "crate_version": "3.9.0"
   }
 }

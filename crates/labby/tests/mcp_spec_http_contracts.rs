@@ -102,10 +102,11 @@ async fn establish_effectful_control(
     client: &Client,
     runner: &TransportQualification,
 ) -> (u64, u64) {
-    runner
+    let initialized = runner
         .call_raw("forge.safe", json!({}))
         .await
         .expect("initialize side-effect ledger");
+    assert_ne!(initialized.is_error, Some(true), "{initialized:?}");
     let before = runner.effect_counts().expect("pre-control side effects");
     let (status, response) = body(
         post(

@@ -16,7 +16,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
     deadline: tokio::time::Instant,
     cancellation: &CancellationToken,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     state: &mut DriveState,
@@ -34,36 +34,34 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         // pending future or echo them in the error's tool/message fields.
         drop(id);
         drop(params);
-        if !is_internal {
-            state.reserve_trace_call(seq, OVERSIZED_TOOL_CALL_ID)?;
-            state.record_call((
-                seq,
-                CodeModeExecutedCall {
-                    upstream_content: None,
-                    id: OVERSIZED_TOOL_CALL_ID.into(),
-                    ok: false,
-                    elapsed_ms: 0,
-                    start_ms: None,
-                    params: None,
-                    params_digest: None,
-                    error_kind: Some(error.kind.clone()),
-                    ui: None,
-                },
-            ))?;
-        }
-        return write_runner_input_by_deadline(
-            stdin,
-            &CodeModeRunnerInput::ToolError {
-                seq,
-                error: Box::new(error),
-            },
-            deadline,
-            child,
-            child_pid,
-            &state.calls,
-        )
-        .await;
+        let rejected = RejectedCall {
+            id: RejectedCallId::Oversized,
+            is_internal,
+            error,
+        };
+        return rejected
+            .write(seq, stdin, child, child_pid, deadline, state)
+            .await;
     }
+
+    // Bound params before they enter a pending future: per call, and across
+    // every call this run still holds. Drop them before writeback so a
+    // rejected payload is neither retained nor echoed.
+    let params_bytes =
+        match crate::protocol::admit_tool_params(&params, state.pending_params_bytes()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                drop(params);
+                let rejected = RejectedCall {
+                    id: RejectedCallId::Known(id),
+                    is_internal,
+                    error,
+                };
+                return rejected
+                    .write(seq, stdin, child, child_pid, deadline, state)
+                    .await;
+            }
+        };
 
     let call_ordinal = if is_internal {
         None
@@ -107,6 +105,10 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         .await;
     }
 
+    // Every branch below enqueues exactly one future for `seq`; its completion
+    // releases this reservation.
+    state.reserve_pending_params(seq, params_bytes)?;
+
     // Full-result calls cannot enter reserved/local providers or snippet routing.
     // Admit/count first, then reject before any host-visible operation.
     if full_result
@@ -132,6 +134,21 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         return Ok(());
     }
 
+    let in_flight = pending_tool_calls.len() as u64 + 1;
+    let tool_deadline = external_tool_deadline(tokio::time::Instant::now(), deadline, in_flight);
+    if tool_deadline < deadline && !state.result_ack_reserve_observed {
+        state.result_ack_reserve_observed = true;
+        let result_ack_reserve_use_count = record_result_ack_reserve_use();
+        tracing::debug!(
+            surface = "dispatch",
+            service = "code_mode",
+            action = "codemode.result_ack.reserve",
+            event = "armed",
+            reserve_ms = result_ack_reserve(in_flight).as_millis(),
+            result_ack_reserve_use_count,
+            "reserved Code Mode result acknowledgement budget"
+        );
+    }
     match crate::local_provider::try_parse_local_provider_call(&id) {
         Ok(Some(local)) => enqueue_local_provider_call(
             broker,
@@ -142,24 +159,12 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
             params,
             execution_start,
             cfg,
+            tool_deadline,
+            cancellation,
+            state.artifact_root.clone(),
             pending_tool_calls,
         ),
         Ok(None) => {
-            let tool_deadline =
-                external_tool_deadline(tokio::time::Instant::now(), deadline, state.calls_enqueued);
-            if tool_deadline < deadline && !state.result_ack_reserve_observed {
-                state.result_ack_reserve_observed = true;
-                let result_ack_reserve_use_count = record_result_ack_reserve_use();
-                tracing::debug!(
-                    surface = "dispatch",
-                    service = "code_mode",
-                    action = "codemode.result_ack.reserve",
-                    event = "armed",
-                    reserve_ms = result_ack_reserve(state.calls_enqueued).as_millis(),
-                    result_ack_reserve_use_count,
-                    "reserved Code Mode result acknowledgement budget"
-                );
-            }
             enqueue_tool_call(
                 broker,
                 seq,
@@ -171,12 +176,75 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
                 execution_start,
                 cfg,
                 cancellation,
+                state.artifact_root.clone(),
                 pending_tool_calls,
             );
         }
         Err(error) => enqueue_rejected_tool_call(seq, id, params, error, cfg, pending_tool_calls),
     }
     Ok(())
+}
+
+/// A call refused at the boundary, before any host-visible operation: it is
+/// traced (unless internal) and answered with a catchable `ToolError`.
+struct RejectedCall {
+    id: RejectedCallId,
+    is_internal: bool,
+    error: CodeModeCallError,
+}
+
+/// How a rejected call is named in its trace row and error.
+enum RejectedCallId {
+    /// The caller's ID was over the byte cap: it is neither traced nor echoed.
+    Oversized,
+    /// A bounded caller ID, traced and attached to the error as its tool.
+    Known(String),
+}
+
+impl RejectedCall {
+    async fn write(
+        self,
+        seq: u64,
+        stdin: &RunnerReplies,
+        child: &mut tokio::process::Child,
+        child_pid: Option<u32>,
+        deadline: tokio::time::Instant,
+        state: &mut DriveState,
+    ) -> Result<(), CodeModeExecutionError> {
+        let (trace_id, error) = match self.id {
+            RejectedCallId::Oversized => (OVERSIZED_TOOL_CALL_ID.to_string(), self.error),
+            RejectedCallId::Known(id) => (id.clone(), self.error.with_tool(id)),
+        };
+        if !self.is_internal {
+            state.reserve_trace_call(seq, &trace_id)?;
+            state.record_call((
+                seq,
+                CodeModeExecutedCall {
+                    upstream_content: None,
+                    id: trace_id,
+                    ok: false,
+                    elapsed_ms: 0,
+                    start_ms: None,
+                    params: None,
+                    params_digest: None,
+                    error_kind: Some(error.kind.clone()),
+                    ui: None,
+                },
+            ))?;
+        }
+        write_runner_input_by_deadline(
+            stdin,
+            &CodeModeRunnerInput::ToolError {
+                seq,
+                error: Box::new(error),
+            },
+            deadline,
+            child,
+            child_pid,
+            &state.calls,
+        )
+        .await
+    }
 }
 
 /// Only search/describe have a defined fail-open discovery result. Retrieval

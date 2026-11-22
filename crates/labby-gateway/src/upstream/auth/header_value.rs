@@ -8,9 +8,20 @@ use super::{EXTERNAL_ENVIRONMENT_KEYS, dotenv_path};
 /// Resolve a custom-header value without stripping a bearer prefix or padding.
 /// Validation and sensitive-header marking belong to the connection boundary.
 pub(crate) fn configured_header_value(env_name: &str) -> Option<String> {
+    configured_raw_credential(env_name, None)
+}
+
+/// Resolve a raw credential (custom header or secret stdio env value) with the
+/// same authority as [`configured_header_value`]. `dotenv_override` replaces the
+/// selected installation `.env`; `None` selects it.
+pub(crate) fn configured_raw_credential(
+    env_name: &str,
+    dotenv_override: Option<&Path>,
+) -> Option<String> {
+    let selected = dotenv_override.map_or_else(dotenv_path, |path| Some(path.to_path_buf()));
     configured_header_value_from_sources(
         env_name,
-        dotenv_path().as_deref(),
+        selected.as_deref(),
         std::env::var(env_name),
         EXTERNAL_ENVIRONMENT_KEYS.get(),
     )

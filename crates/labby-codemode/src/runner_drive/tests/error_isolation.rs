@@ -106,6 +106,7 @@ fn first_failure() -> CodeModeCallError {
 fn caller_config(subject: &str) -> RunnerConfig {
     let mut cfg = test_config(Duration::from_secs(10));
     cfg.caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -141,6 +142,8 @@ async fn failed_fan_out_evicts_late_frames_before_other_callers_and_keeps_done_r
     // first Error plus its late-reply terminal frame are emitted together.
     let script = format!(
         r#"
+IFS= read -r hello
+printf '%s\n' '{{"type":"protocol_version","version":1}}'
 printf '%s\n' "$$" >>"{spawned}"
 if [ ! -e "{first}" ]; then
   : >"{first}"
@@ -274,6 +277,8 @@ async fn caught_done_ownership(proof: &str) {
     // native runner can still have one unread reply and emit a stale Error.
     let script = format!(
         r#"
+IFS= read -r hello
+printf '%s\n' '{{"type":"protocol_version","version":1}}'
 printf '%s\n' "$$" >>"{spawned}"
 if [ ! -e "{first}" ]; then
   : >"{first}"

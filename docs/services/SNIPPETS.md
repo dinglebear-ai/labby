@@ -38,7 +38,7 @@ still cannot use nested snippet resolution to widen their authority.
 
 ## Administrative Actions
 
-Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Promotion and removal are destructive actions.
+Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Creation, promotion, and removal are destructive actions: a create installs code that later runs by name, and with `force` it overwrites a user snippet.
 
 The native MCP `snippets` router remains visible when Code Mode is enabled.
 Use its `help` and `schema` actions to discover the shared operation catalog,
@@ -47,7 +47,7 @@ the CLI's snippet operations without a local shell or SSH connection. Native
 calls preserve the original caller and route authority; privileged operations
 still require `lab:admin`.
 
-Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a promoted user snippet may replace a built-in name.
+The binary includes the shipped snippets and their JSON fixtures. User snippets continue to load from the configured Labby home. Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a created or promoted user snippet may replace a built-in name: `snippets.create` and `snippets.promote` refuse a built-in name with `confirmation_required` unless `shadow_builtin: true` is passed (`labby snippet add --shadow-builtin` on the CLI).
 
 ## Selected-Daemon CLI Execution
 
@@ -115,9 +115,10 @@ requested run creates a new execution; it does not recover the old receipt.
 Receipts retain exact snippet and merged-input digests, the effective tool scope,
 Labby runtime version/engine, surface, timestamps, status, wall time, final-result
 digest/byte count, and bounded tool-call identities, parameter digests and
-artifact references. Tool argument digests are captured before public trace
-redaction or truncation; their private capture does not enable public parameter
-tracing. They contain no raw source, parameters, logs or results.
+artifact references. New receipts omit tool argument digests when parameter tracing is disabled.
+When enabled, the `trace-sha256:` digest covers the redacted, size-limited trace
+arguments. Historical `sha256:` argument digests remain readable and use a
+different input representation. They contain no raw source, parameters, logs or results.
 The first 32 calls are retained with explicit total and omitted counts; artifact
 references are bounded to 16. Receipts identify output rather than providing a
 full-result replay store. Artifact bytes retain their existing authorization and

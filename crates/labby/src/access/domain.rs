@@ -451,7 +451,7 @@ impl ProjectRole {
         Permission::ArtifactPublish,
     ];
 
-    pub(super) const fn permissions(self) -> &'static [Permission] {
+    pub(crate) const fn permissions(self) -> &'static [Permission] {
         match self {
             Self::Owner | Self::Admin => &Self::ADMIN_PERMISSIONS,
             Self::Member => &Self::MEMBER_PERMISSIONS,

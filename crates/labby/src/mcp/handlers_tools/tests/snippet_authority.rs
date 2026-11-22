@@ -77,6 +77,7 @@ fn team_route(binding_generation: Option<u64>) -> McpRouteScope {
             .map(|_| vec!["shared".into()])
             .unwrap_or_default(),
         services: vec!["snippets".into()],
+        expose_code_mode: true,
         credential_bindings: binding_generation
             .map(|generation| {
                 vec![labby_runtime::gateway_config::GatewayCredentialBindingRef {
@@ -129,7 +130,7 @@ async fn manager(
 
 fn save_source(home: &Path) {
     crate::dispatch::snippets::store::create_user_snippet(home, "native-authority",
-        "---\nname: native-authority\ndescription: Native authority regression\ntools: []\n---\n```js\nasync () => { await writeArtifact('proof.txt', 'owner-only evidence', {contentType:'text/plain'}); return {ok:true}; }\n```", None, false).unwrap();
+        "---\nname: native-authority\ndescription: Native authority regression\ntools: []\n---\n```js\nasync () => { await codemode.step('snippet-owner-check', async () => 7); await writeArtifact('proof.txt', 'owner-only evidence', {contentType:'text/plain'}); return {ok:true}; }\n```", None, false).unwrap();
 }
 
 async fn native_call(
@@ -213,11 +214,23 @@ fn native_snippet_team_receipts_isolate_initiating_principals() {
     };
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         save_source(&home);
-        let server = test_server(crate::registry::build_default_registry(), Some(manager(&home, vec![]).await), team_route(None), crate::mcp::logging::LoggingLevel::Emergency);
+        let server = test_server(crate::registry::build_default_registry(), Some(manager(&home, vec![]).await), team_route(None));
         let (transport, _client) = tokio::io::duplex(256 * 1024);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(server, transport, None);
         let run = data(&native_call(running.service(), running.peer().clone(), "alice", "snippets.exec", json!({"name":"native-authority"})).await);
         assert_eq!(run["receipt_status"], "persisted");
+        let mut ctx = scoped_context(running.peer().clone(), &["lab:admin"]);
+        ctx.extensions.get_mut::<axum::http::request::Parts>().unwrap().extensions
+            .get_mut::<labby_auth::auth_context::AuthContext>().unwrap().sub = "alice".into();
+        let direct = running.service().call_tool_impl(
+            CallToolRequestParams::new(CODE_MODE_TOOL_NAME).with_arguments(
+                json!({"code":"async () => await codemode.step('mcp-owner-check', async () => 7)"}).as_object().unwrap().clone()
+            ), ctx,
+        ).await.unwrap();
+        assert_ne!(direct.is_error, Some(true), "{direct:?}");
+        let db = rusqlite::Connection::open(home.join("journal.db")).unwrap();
+        let expected: String = db.query_row("SELECT owner_key FROM snippet_receipts WHERE execution_id=?1",
+            [run["execution_id"].as_str().unwrap()], |row| row.get(0)).unwrap();
         let id = run["execution_id"].as_str().unwrap();
         let own = data(&native_call(running.service(), running.peer().clone(), "alice", "snippets.history", json!({"name":"native-authority"})).await);
         assert_eq!(own["receipts"].as_array().unwrap().len(), 1);
@@ -227,6 +240,20 @@ fn native_snippet_team_receipts_isolate_initiating_principals() {
         denied(&native_call(running.service(), running.peer().clone(), "bob", "snippets.artifact", json!({"execution_id":id,"path":"proof.txt"})).await, "unknown_execution");
         let artifact = data(&native_call(running.service(), running.peer().clone(), "alice", "snippets.artifact", json!({"execution_id":id,"path":"proof.txt"})).await);
         assert_eq!(artifact["bytes"], 19);
+        let mcp_id = direct.structured_content.as_ref().unwrap()["execution_id"].as_str().unwrap();
+        // MCP acknowledges execution before its journal task finishes.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let rows: u32 = db.query_row("SELECT COUNT(*) FROM step_journal WHERE execution_id=?1", [mcp_id], |row| row.get(0)).unwrap();
+                if rows > 0 { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("MCP step journal was not persisted");
+        for (execution_id, step) in [(mcp_id, "mcp-owner-check"), (id, "snippet-owner-check")] {
+            let owner: String = db.query_row("SELECT actor_key FROM step_journal WHERE execution_id=?1 AND name=?2", [execution_id, step], |r| r.get(0)).unwrap();
+            assert_eq!(owner, expected, "owner of {step}");
+        }
+
     });
 }
 
@@ -248,7 +275,7 @@ fn native_snippets_revalidate_team_binding_after_rotation_and_revocation() {
             custodian_principal_id: "bootstrap-owner".into(), rotated_at_millis: 1,
         };
         let first = store.put_team_gateway_credential_binding(binding()).await.unwrap();
-        let mut server = test_server(crate::registry::build_default_registry(), Some(manager(&home, vec![fixture_oauth_upstream_config("shared")]).await), team_route(Some(first.generation)), crate::mcp::logging::LoggingLevel::Emergency);
+        let mut server = test_server(crate::registry::build_default_registry(), Some(manager(&home, vec![fixture_oauth_upstream_config("shared")]).await), team_route(Some(first.generation)));
         server.access_runtime = access;
         let (transport, _client) = tokio::io::duplex(256 * 1024);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(server, transport, None);

@@ -14,10 +14,9 @@ Code Mode is the JavaScript execution surface behind the MCP `codemode` and
 compact docs, and run one async JavaScript function in a sandbox that can call
 the tools allowed by that entry point.
 
-Code Mode primarily exposes upstream capabilities. Root-scope catalogs can also
-include permitted non-admin built-in actions through in-process peers, described
-below. Use native management surfaces for admin operations; Code Mode does not
-grant those actions merely because its caller is an administrator.
+Code Mode exposes upstream capabilities. Its native Labby action is
+`gateway.oauth.authorize`, when the gateway has verified the caller's personal
+authority. Use the published native MCP tools for other Labby actions.
 
 The native `gateway`, `snippets`, and `server_logs` router tools remain visible
 while Code Mode is enabled. Call `snippets` directly with `action` and `params`
@@ -173,11 +172,20 @@ not a tool-specific descriptor. The stable catalog vocabulary is:
 - `resource`
 - `prompt`
 - `skill`
-- `agent`
+- `command`
+- `subagent`
 
-The live catalog currently projects Tools, Snippets, exposed MCP Resources,
-exposed MCP Prompts, and caller-visible Agent Skills. Agent entries remain
-reserved for a later adapter.
+Command and subagent results come from caller-visible Artifact sources.
+
+Resource and Prompt entries come from the gateway's cached snapshots, not a
+live `resources/list` or `prompts/list` fan-out per run or per `search()`. An
+upstream that has never been listed on its current connection gets a
+single-flight warm-up, and the run waits at most 250 ms for it. Prompt
+snapshots are re-listed on connect, on `prompts/list_changed`, and whenever a
+client calls MCP `prompts/list`; a failed warm-up is not retried for one
+minute. Prompt metadata degrades per upstream: an upstream whose listing was
+rejected is omitted without hiding other upstreams' prompts. OAuth
+subject-scoped prompts are still discovered live for the caller's subject.
 
 Resource, Prompt, and Skill descriptors are metadata-only catalog entries: they
 never become callable Tools and do not acquire Tool schemas. Progressive
@@ -287,7 +295,15 @@ Remote git URLs must be explicit `https://github.com/...` URLs without embedded
 credentials. Labby does not inject hidden credentials or host git config into
 Code Mode. Use `cwd` to run git commands inside a workspace-relative child repo,
 for example after cloning into `directory: "repo"`. Clones are shallow
-(`--depth 1`). V2 does not expose `fetch`, `pull`, or `push`; those remote
+(`--depth 1`).
+
+Git runs with `safe.bareRepository=explicit` and `core.fsmonitor=false`, and
+with `GIT_CEILING_DIRECTORIES` set to the parent of the workspace root, so
+repository discovery never leaves the workspace. A `cwd` whose ancestors up to
+the workspace root contain `HEAD`, `objects`, and `refs` is refused with
+`permission_denied` before git runs: such a directory is an implicit bare
+repository whose config could run host commands. Git 2.38 or newer enforces
+the `safe.bareRepository` fence; the layout refusal applies on any version. V2 does not expose `fetch`, `pull`, or `push`; those remote
 mutation methods are deferred until Code Mode has an explicit transaction and
 credential model for them.
 
@@ -567,34 +583,14 @@ cancels them immediately when either cap is exceeded, including when a server
 omits `Content-Length`. The static page contains no catalog fixture or tool
 definition, and safety metadata remains advisory rather than dispatch authority.
 
-### Builtin services as in-process peers
+### Native Labby actions
 
-Builtin Labby services (`gateway`, `doctor`, `setup`, …) join the Code Mode
-catalog as in-process upstream peers under synthetic
-`__in_process__<service>` namespaces, so the dispatch-envelope
-`outputSchema` and the callable capability arrive together (issue #210
-FU-1). Registration is lazy, single-flighted, and idempotent — it happens
-on the root-scope catalog build, with a cooldown so a failing peer is not
-retried on every call. Protected MCP routes never see them: the
-`__in_process__` prefix is **rejected at config load** both as an upstream
-name and in a route's `target.upstreams`, so the exclusion is enforced,
-not merely conventional.
-Each peer serves exactly its own service, pinned to Raw visibility and the
-combined router/atomic projection. Code Mode admission resolves atomic action
-names against the published service registry and excludes admin actions. The
-ordinary live annotation check still determines read-only admission; do not
-assume every built-in action has the same safety metadata. The legacy
-`trusted_read_only_tools` setting does not override missing live annotations.
-
-The peer transport carries no `AuthContext` — there is no HTTP layer to
-inject one — so it does **not** inherit the stdio trust model. Actions
-marked `requires_admin`, and the stdio-only `setup` actions, are refused
-over this transport; only permitted non-admin actions are reachable through Code
-Mode. Gateway actions are further restricted to `help`/`schema`, plus
-`gateway.oauth.authorize` when a personal OAuth provider and request-bound
-authority token are available. That OAuth action uses a dedicated host authority
-adapter, never the unauthenticated mini-peer. Without that guard a caller holding just `lab` (enough for Code Mode
-execute, deliberately not enough for admin) could reach admin builtins.
+Use the direct MCP action or its native service router for first-party operations.
+The Code Mode host exposes `__in_process__gateway::gateway.gateway.oauth.authorize`
+only when the personal OAuth provider and the requesting caller's authority are
+available. This action uses the verified transport identity. The generic
+`lab::*` action syntax is reserved. Only upstream names accepted by route
+configuration can appear in a route's upstream allowlist.
 
 ## Catalog Freshness
 
@@ -757,6 +753,8 @@ Defaults:
 - `max_source_bytes = 1048576`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
+- `max_programmatic_response_bytes = 1048576` (`0` disables; otherwise
+  1024 through 4194304); see [Programmatic response budgets](#programmatic-response-budgets)
 - `timeout_ms = 30000` (configurable from 1 through 300000 ms)
 - `max_calls_per_run = 512` (hard ceiling 2048); excess calls reject with
   `call_budget_exceeded` before dispatch
@@ -770,7 +768,12 @@ have a separate 32-call ceiling; snippet resolution is limited to 32 resolutions
 and 1 MiB total resolved source per execution.
 
 Tool IDs are limited to 1,024 UTF-8 bytes at both runner and host boundaries.
-Oversized IDs reject before dispatch without retaining the supplied ID. The host
+Oversized IDs reject before dispatch without retaining the supplied ID.
+Serialized `callTool` params are limited to 8 MiB per call, checked by the
+runner bridge and again by the host, and queued or in-flight calls may hold at
+most 64 MiB of params per run; await earlier calls before issuing more.
+`codemode.step` names are limited to 1,024 UTF-8 bytes. Each of these rejects
+with a catchable `budget_exceeded` before dispatch and never echoes the payload. The host
 trace is bounded to 4,096 rows and 4 MiB of serialized call records, including
 artifact writes and rejected calls. Exhaustion returns `trace_budget_exceeded`
 with the retained partial trace and cancels pending work. This host allocation
@@ -779,6 +782,65 @@ limit is separate from best-effort final envelope shaping.
 After the internal-call ceiling, search and describe retain their documented
 fallbacks. Resource, Artifact, Prompt and Skill operations return typed budget
 errors instead of a successful search-shaped value.
+
+### Programmatic response budgets
+
+`max_response_bytes` protects an agent's context window. A program that
+consumes the result itself, such as a dashboard running fixed read-only
+scripts over a persistent `labby mcp` session, can request a larger envelope
+for one `codemode` or `codemode_read` call. It sends the request in the
+`tools/call` request metadata, not in tool arguments:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "codemode_read",
+    "arguments": { "code": "async () => ..." },
+    "_meta": {
+      "ai.dinglebear.labby/responseBudget": { "maxResponseBytes": 1048576 }
+    }
+  }
+}
+```
+
+Rules:
+
+- **Agents stay on the default.** A model chooses tool `arguments`; the MCP
+  client program owns `_meta`. A caller that sends no request keeps
+  `max_response_bytes` and `max_response_tokens` unchanged, and the tool
+  schema is not changed.
+- **The operator sets the hard maximum.**
+  `code_mode.max_programmatic_response_bytes` (default 1 MiB) bounds every
+  request. `0` turns requests off. The configured value must be `0` or
+  1024 through 4194304 bytes. The 4 MiB ceiling keeps the complete MCP result
+  (escaped text plus structured trace) under the 16 MiB JSON body limit of
+  streamable HTTP clients, including the stdio bridge.
+- **A granted request replaces the byte budget and lifts the token estimate to
+  the same number**, so the agent-oriented token cap cannot truncate a program's
+  result. Per-call `calltool_result_max_mib`, artifact, log, and trace budgets
+  are unchanged.
+- **Clear errors, no silent fallback.** A malformed value, a request below 1024
+  bytes, a request above the maximum, or any request while requests are off
+  returns an `invalid_param` error before execution. The envelope names
+  `param` (`_meta.ai.dinglebear.labby/responseBudget.maxResponseBytes`),
+  `max_allowed` (the operator maximum, `0` when off) and `default_bytes`.
+- **Confirmation.** A successful result granted a budget carries
+  `_meta["ai.dinglebear.labby/responseBudget"] = { "maxResponseBytes": N }`.
+  An older gateway ignores the request and omits this key, so a program can
+  detect support and fall back.
+- A result larger than the granted budget is still truncated to a marker with
+  an automatic artifact receipt, exactly as for agents.
+- Identical concurrent runs are shared only when they request the same budget.
+- The stdio bridge forwards request `_meta` unchanged, so the daemon's
+  configuration decides the maximum when `labby mcp` bridges to it.
+
+This is a context-size control, not an authorization boundary. It grants no
+new data or scope: the same caller could already read the full output through
+artifacts or paginated reads. Unscoped admin callers can read the effective
+maximum from `lab://gateway/limits` (`max_programmatic_response_bytes`).
 
 ### Final Result Shaping
 
@@ -938,7 +1000,7 @@ Canonical error kinds:
 | `route_scope_denied` | Terminal | Protected-route policy denied the upstream/tool. |
 | `forbidden` / `permission_denied` | Terminal | Caller lacks permission, including destructive tool execution permission. |
 | `path_traversal` | Terminal | Path-safety checks rejected a workspace or artifact path. |
-| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, or call fan-out budget was exceeded. |
+| `quota_exceeded` / `budget_exceeded` / `call_budget_exceeded` | Retry with smaller work | Workspace, response, call fan-out, `callTool` params (8 MiB per call / 64 MiB pending per run), or step-name (1,024 bytes) budget was exceeded. |
 | `trace_budget_exceeded` | Reduce work and verify outcomes | Host call-record count or serialized byte capacity was exhausted; the execution stops with its retained partial trace. Pending work is canceled and prior mutations may have completed. |
 | `internal_call_budget_exceeded` | Retry with fewer internal operations | The internal Resource, Artifact, Prompt or Skill operation ceiling was exhausted before that operation dispatched. |
 | `result_too_large` / `artifact_too_large` | Retry with smaller output | Returned value or artifact exceeded configured caps. |
@@ -1020,7 +1082,7 @@ authority or expose trace baggage in results. See
 
 The stdio parent-broker protocol is:
 
-1. Parent starts (or reuses a pooled) `labby internal code-mode-runner` process.
+1. The parent starts or reuses a pooled `labby internal code-mode-runner` process. Every new process must answer the native `protocol_version` request with version 1 before the parent sends caller source. An incompatible response returns `runner_version_mismatch`.
 2. Parent sends a `start` line; the child builds a FRESH QuickJS runtime and
    evaluates the normalized async function.
 3. Child emits `tool_call` lines for `callTool` requests.
@@ -1051,12 +1113,16 @@ budgets and response semantics; older/missing proof defaults to false.
   fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
   `start`. The parent retains it only after native-qualified `done` and
   terminates it after unqualified `done`, `error`, timeout or protocol failure.
+  If an unqualified `done` arrives with calls still outstanding, the run can return
+  its result and its trace marks those calls `outcome_unknown`.
 - **Per-execution isolation.** Each run resets the `callTool` sequence counter and
   creates a fresh, empty per-execution QuickJS working-directory jail (removing
   the prior one), so a long-lived process never accumulates JS runtime state
   across callers. Code Mode's `state.*` and `git.*` local providers deliberately
   use a separate persistent workspace under `LABBY_HOME/code-mode-workspaces/`;
-  persistence is scoped to that workspace and guarded by virtual path, symlink,
+  the verified caller selects the workspace. Operations on the same workspace share
+  a lock. Operations on different workspaces can run concurrently when they select
+  different locks in the fixed pool. Workspaces enforce virtual path, symlink,
   quota, archive, and git remote restrictions. The 64 MiB heap, 30 s wall-clock
   timeout, and stack limit are enforced per execution.
 - **Bounded pool, one execution per runner.** `N` runners serve `N` concurrent
@@ -1064,19 +1130,20 @@ budgets and response semantics; older/missing proof defaults to false.
   ephemeral (overflow) runner rather than queueing unboundedly.
 - **Robustness.** If a pooled runner exits before emitting any valid protocol
   event, it is killed and the execution is replayed once on a guaranteed-fresh
-  ephemeral runner; at that boundary no host-visible side effect can have run.
+  process under the same admission lease. At that boundary no host-visible side effect can have run.
   A runner-reported `error` cancels/drops pending host work, preserves the
   structured error and completed partial trace, and kills the runner without
   replay. Even an empty pending set cannot prove that old replies or terminal
   frames have left the pipes. Caught tool errors that settle successfully with
   clean `done` still permit reuse. A crash after protocol activity, timeout, or
   protocol violation also kills without replay (`timeout` on wall-clock expiry). A
-  pooled runner is also recycled after a fixed number of executions as cheap
-  insurance against native-side leaks. External `callTool` operations reserve a
+  pooled runner is also recycled after a fixed number of executions. Terminal
+  retirement and refill run in the background under the existing lease. A checkout
+  that encounters a refill waits within its own admission deadline. Upstream and local provider calls reserve a
   result-ack window inside the same per-execution wall-clock budget when more
   than twice that window remains, so host work cannot consume the runner's
   acknowledgement budget without materially shortening normal calls. The window
-  is 250 ms plus 2 ms per call enqueued so far, capped at 2 s: the runner has to
+  is 250 ms plus 2 ms per in-flight call, including the new call, capped at 2 s. The runner has to
   drain one acknowledgement per in-flight call, so a constant window shrinks to
   microseconds per ack at high fanout and would report a completed run as a
   timeout. Each external call gets its deadline at enqueue time; later calls
@@ -1207,13 +1274,17 @@ available and must not be recreated by replaying completed mutations.
 
 Within a gateway process, artifact admission, publication, and retention are
 serialized. Each write reserves space against the configured store byte budget
-before publishing, including payloads from active runs. Inactive runs may be
-pruned to make room; active runs are retained and the new write is rejected when
-space is unavailable. Setting the store byte budget to zero disables that store
+before publishing, including payloads from active runs. Retention can reclaim the caller’s inactive runs. Active runs, other owners’ runs,
+and older runs without an owner marker stay in the store. A write fails when
+these retained payloads leave insufficient space. Setting the store byte budget to zero disables that store
 limit, but preserves the per-run limits. Retrieval metadata is excluded from
 payload accounting only at the run's top-level reserved metadata directory;
 nested directories with the same name count as payload. Admission and retention
-use the same accounting. Artifact paths are normalized before reserved-name
+use the same accounting. Admission keeps a bounded in-memory ledger of the
+last observed payload sizes and adjusts store and per-run totals for new,
+resized, and removed files. Each reconciliation checks file metadata to detect
+external in-place writes. On Unix, unchanged directory identities allow reuse
+of their membership lists. Artifact paths are normalized before reserved-name
 checks, publication and receipt creation, so dot and separator aliases cannot
 write retrieval metadata or bypass quotas. Routine retention is coalesced per
 run; byte pressure triggers an additional bounded inventory and final accounting

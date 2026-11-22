@@ -166,7 +166,7 @@ async fn auth_protected_resource_metadata(
             "oauth protected resource metadata served"
         );
         let auth_state = app_auth_state_with_protected_routes(&state).await?;
-        let public_url = auth_state
+        auth_state
             .config
             .public_url
             .as_ref()
@@ -174,14 +174,16 @@ async fn auth_protected_resource_metadata(
         return Ok(protected_resource_metadata_response(
             labby_auth::types::ProtectedResourceMetadata {
                 resource: route.public_resource(),
-                authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+                authorization_servers: vec![labby_auth::metadata::authorization_server_issuer(
+                    &auth_state,
+                )],
                 scopes_supported: route.scopes,
                 bearer_methods_supported: vec!["header".to_string()],
             },
         ));
     }
     let auth_state = app_auth_state(&state)?;
-    let public_url = auth_state
+    auth_state
         .config
         .public_url
         .as_ref()
@@ -189,7 +191,9 @@ async fn auth_protected_resource_metadata(
     Ok(protected_resource_metadata_response(
         labby_auth::types::ProtectedResourceMetadata {
             resource: labby_auth::metadata::canonical_resource_url(&auth_state),
-            authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+            authorization_servers: vec![labby_auth::metadata::authorization_server_issuer(
+                &auth_state,
+            )],
             scopes_supported: auth_state.config.scopes_supported.clone(),
             bearer_methods_supported: vec!["header".to_string()],
         },
@@ -235,17 +239,19 @@ async fn protected_route_metadata_response(
     let Ok(auth_state) = app_auth_state_with_protected_routes(&state).await else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let Some(public_url) = auth_state.config.public_url.as_ref() else {
+    if auth_state.config.public_url.is_none() {
         tracing::error!(
             route = %route.name,
             resource = %route.public_resource(),
             "oauth protected resource metadata failed: LABBY_PUBLIC_URL missing"
         );
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
+    }
     protected_resource_metadata_response(labby_auth::types::ProtectedResourceMetadata {
         resource: route.public_resource(),
-        authorization_servers: vec![public_url.as_str().trim_end_matches('/').to_string()],
+        authorization_servers: vec![labby_auth::metadata::authorization_server_issuer(
+            &auth_state,
+        )],
         scopes_supported: route.scopes,
         bearer_methods_supported: vec!["header".to_string()],
     })
@@ -4098,6 +4104,64 @@ mod tests {
 
     #[cfg(feature = "gateway")]
     #[tokio::test]
+    async fn protected_resource_metadata_names_the_exact_authorization_server_issuer() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(
+            crate::dispatch::gateway::config_store::test_gateway_manager(
+                tempdir.path().join("gateway.toml"),
+                crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+            ),
+        );
+        let config = protected_route_config(
+            "telemetry",
+            "mcp.example.com",
+            "/telemetry",
+            "http://10.0.0.2:3100",
+        );
+        manager
+            .seed_config_unchecked_for_tests(config.to_gateway_config())
+            .await;
+        let state = AppState::new()
+            .with_config(config)
+            .with_gateway_manager(manager);
+        let app = build_router(state, None, Some(test_lab_auth_state().await), None, &[]);
+
+        let mut documents = Vec::new();
+        for (uri, host) in [
+            ("/.well-known/oauth-authorization-server", None),
+            ("/.well-known/oauth-protected-resource", None),
+            (
+                "/.well-known/oauth-protected-resource/telemetry",
+                Some("mcp.example.com"),
+            ),
+        ] {
+            let mut request = Request::builder().method("GET").uri(uri);
+            if let Some(host) = host {
+                request = request.header(header::HOST, host);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            documents.push(serde_json::from_slice::<serde_json::Value>(&body).unwrap());
+        }
+        let issuer = documents[0]["issuer"].as_str().expect("issuer");
+        for metadata in &documents[1..] {
+            assert_eq!(
+                metadata["authorization_servers"],
+                serde_json::json!([issuer]),
+                "every protected resource document must name the exact metadata issuer"
+            );
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
     async fn protected_mcp_route_metadata_uses_host_and_path_resource() {
         let tempdir = tempfile::tempdir().unwrap();
         let manager = Arc::new(
@@ -4437,6 +4501,7 @@ mod tests {
         );
         let config = crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 name: "axon".to_string(),
@@ -5806,6 +5871,7 @@ mod tests {
     fn protected_named_upstream_config(backend_url: &str) -> crate::config::LabConfig {
         crate::config::LabConfig {
             upstream: vec![crate::config::UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 name: "restricted".to_string(),

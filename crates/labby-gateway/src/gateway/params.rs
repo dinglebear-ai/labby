@@ -187,6 +187,9 @@ pub(crate) struct GatewayAddParams {
     pub spec: UpstreamConfig,
     #[serde(default)]
     pub bearer_token_value: Option<String>,
+    /// Write-only secret stdio env values keyed by child variable name.
+    #[serde(default)]
+    pub secret_env_values: BTreeMap<String, String>,
     #[serde(default)]
     pub origin: Option<String>,
     #[serde(default)]
@@ -413,6 +416,9 @@ pub(crate) struct GatewayUpdateParams {
     pub patch: GatewayUpdatePatch,
     #[serde(default)]
     pub bearer_token_value: Option<String>,
+    /// Write-only secret stdio env values keyed by child variable name.
+    #[serde(default)]
+    pub secret_env_values: BTreeMap<String, String>,
     #[serde(default)]
     pub origin: Option<String>,
     #[serde(default)]
@@ -515,6 +521,8 @@ pub(crate) struct CodeModeSetParams {
     pub max_response_bytes: Option<usize>,
     #[serde(default)]
     pub max_response_tokens: Option<usize>,
+    #[serde(default)]
+    pub max_programmatic_response_bytes: Option<usize>,
     #[serde(default)]
     pub token_estimate_divisor: Option<u32>,
     #[serde(default)]

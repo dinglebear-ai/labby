@@ -25,7 +25,7 @@ use super::truncate::{
 use super::types::{
     CatalogDescriptor, CodeModeCaller, CodeModeCatalogKind, CodeModeDiscoveryEntry,
     CodeModeExecutionError, CodeModeExecutionOutcome, CodeModeExecutionResponse, CodeModeSurface,
-    CodeModeToolId, CodeModeToolRef, ToolScope,
+    CodeModeToolId, CodeModeToolRef,
 };
 
 /// Compatibility key a Code Mode snippet can return
@@ -212,12 +212,13 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         // `result` may be capped.
         self.apply_ui_opt_in(&mut response);
         // Preserve only outputs that the configured shaping/truncation path would change.
-        if result_would_be_truncated(
+        let envelope_will_truncate = result_would_be_truncated(
             &mut response,
             config.max_response_bytes,
             config.max_response_tokens,
             config.token_estimate_divisor,
-        ) {
+        );
+        if envelope_will_truncate {
             if let Some(value) = response.result.as_ref() {
                 let root = crate::artifacts::code_mode_artifact_root(&artifact_run_id);
                 if let Some(receipt) = crate::response_artifacts::preserve(
@@ -240,11 +241,11 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             config.max_response_bytes,
             config.max_response_tokens,
             config.token_estimate_divisor,
+            envelope_will_truncate,
         );
-        let result_shape_changed = shaped.metadata.changed;
-        let result_shape_truncated = shaped.metadata.truncated;
+        let result_shape_changed = shaped.metadata.changed || envelope_will_truncate;
+        let result_shape_truncated = shaped.metadata.truncated || envelope_will_truncate;
         let result_shape_original_size_bytes = shaped.metadata.original_size_bytes;
-        let result_shape_shaped_size_bytes = shaped.metadata.shaped_size_bytes;
         let result_shape_warning_requested = shaped.metadata.warning.is_some();
         response.result = shaped.result;
         if config.result_shape_policy != CodeModeResultShapePolicy::Off
@@ -270,17 +271,15 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             config.max_response_tokens,
             config.token_estimate_divisor,
         );
+        let result_shape_shaped_size_bytes =
+            response.result.as_ref().map_or(0, |v| v.to_string().len());
         tracing::info!(
             surface = "dispatch",
             service = "code_mode",
             action = "codemode",
             tool_calls = response.calls.len(),
             elapsed_ms = started.elapsed().as_millis(),
-            result_bytes = response
-                .result
-                .as_ref()
-                .map(|v| v.to_string().len())
-                .unwrap_or(0),
+            result_bytes = result_shape_shaped_size_bytes,
             result_shape_policy = ?config.result_shape_policy,
             result_shape_changed,
             result_shape_truncated,
@@ -350,9 +349,12 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
 mod dispatch;
 mod policy;
 mod proxy;
-pub(crate) use policy::openapi_provider_allowed;
 use policy::*;
-pub use policy::{discovery_entry_visible, discovery_render_params, local_providers_allowed};
+pub use policy::{
+    CodeModeToolAccess, ToolScope, discovery_entry_visible, discovery_render_params,
+    local_providers_allowed,
+};
+pub(crate) use policy::{openapi_provider_allowed, source_capability_within_lookup};
 #[cfg(test)]
 mod scoped_call_id_tests;
 #[cfg(test)]

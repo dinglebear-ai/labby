@@ -463,6 +463,7 @@ pub fn origin_for_kind(kind: &str) -> AgentErrorOrigin {
         | "provider_error"
         | "provider_unavailable"
         | "provider_timeout"
+        | "upstream_connect_error"
         | "not_connected"
         | "connection_error"
         | "connection_refused"
@@ -486,6 +487,9 @@ pub fn side_effects_for_kind(kind: &str) -> AgentSideEffectRisk {
     // Budget origin alone does not establish pre-execution rejection.
     // `authority_changed` is a policy outcome observed mid-execution: the run
     // may already have reached its provider before the fence closed.
+    if kind == "upstream_connect_error" {
+        return AgentSideEffectRisk::NoneExpected;
+    }
     if matches!(
         kind,
         "result_too_large"
@@ -589,6 +593,12 @@ pub fn recovery_for_kind(
                 retry_after_ms,
             }
         }
+        "upstream_connect_error" => AgentRecoveryAdvice {
+            action: AgentRecoveryAction::RetryLater,
+            same_arguments: AgentSameArgumentsRetry::Safe,
+            guidance: "The tool was not dispatched. Retry when the upstream connection is available.".to_string(),
+            retry_after_ms,
+        },
         "upstream_credential_missing" => AgentRecoveryAdvice {
             action: AgentRecoveryAction::InspectAndEscalate,
             same_arguments: AgentSameArgumentsRetry::Never,

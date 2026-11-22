@@ -339,8 +339,7 @@ fn bootstrap_skill_library(
 ) -> Result<Arc<crate::dispatch::skill_library::ProcessSkillLibraryRuntime>> {
     use crate::dispatch::skill_library::blocking::BoundedBlockingExecutor;
     use crate::dispatch::skill_library::dispatch::{
-        ActivationCoordinator, ArtifactFirstPartyProjection, GenerationProjection,
-        SkillLibraryService,
+        ArtifactFirstPartyProjection, GenerationProjection, SkillLibraryService,
     };
     use crate::skills::registry::{
         GenerationSeed, first_party_generation_manager, initialize_first_party_generation_manager,
@@ -388,10 +387,7 @@ fn bootstrap_skill_library(
     let candidate = projection
         .prepare(&store, &snapshot, None)
         .context("build persisted Skill Library generation")?;
-    let coordinator = Arc::new(ActivationCoordinator::from_cell(
-        manager.generation_cell(),
-        snapshot.version,
-    ));
+    let coordinator = Arc::new(manager.activation_coordinator(snapshot.version));
     coordinator.reconcile(candidate, snapshot.version);
     tracing::info!(
         subsystem = "startup",
@@ -821,6 +817,12 @@ async fn run_server(
         bootstrap_selected_skill_library_with(&registry, capability_health.as_ref(), || {
             bootstrap_skill_library(config)
         });
+    #[cfg(feature = "skills")]
+    if skill_library_runtime.is_none() && registry.service("skills").is_some() {
+        // Skills can be enabled without Artifact services. Scan the configured
+        // directory before accepting requests in that configuration too.
+        crate::skills::registry::first_party_generation_manager();
+    }
     #[cfg(feature = "skills")]
     if let Some(runtime) = skill_library_runtime.as_ref() {
         crate::dispatch::skill_library::follow_reconciler::start(&access_runtime, runtime);
@@ -2658,7 +2660,7 @@ async fn build_gateway_runtime(
         )?,
     ));
     let gateway_manager = gateway_manager.with_code_mode_personal_oauth_provider(Arc::new(
-        crate::mcp::code_mode_authority::CanonicalPersonalOauthProvider,
+        crate::dispatch::code_mode_authority::CanonicalPersonalOauthProvider,
     ));
 
     // Code Mode `openapi` provider: config-parse errors DO fail boot (bad TOML),
@@ -2917,11 +2919,7 @@ async fn run_stdio_bridge(
     };
     let handler = BridgeServerHandler::new(service)
         .with_local_messages(messages.clone())
-        .with_stdio_channel(
-            channel.clone(),
-            code_mode.max_response_bytes,
-            code_mode.max_response_tokens,
-        );
+        .with_stdio_channel(channel.clone(), code_mode.response_envelope_max_bytes());
     let running = handler.serve(rmcp::transport::stdio_pipes()).await?;
     tracing::info!(
         subsystem = "startup",
@@ -3098,9 +3096,6 @@ fn run_stdio(
             #[cfg(feature = "gateway")]
             client_registry: notifier.client_registry.clone(),
             transport_label: "stdio",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-                crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
-            )),
             route_scope: crate::mcp::route_scope::McpRouteScope::Root,
             relay_session_id: crate::mcp::server::next_relay_session_id(),
             #[cfg(test)]
@@ -3339,11 +3334,6 @@ fn build_mcp_service_with_scope(
                 #[cfg(feature = "gateway")]
                 client_registry,
                 transport_label: "http",
-                logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-                    crate::mcp::logging::logging_level_rank(
-                        crate::mcp::logging::LoggingLevel::Info,
-                    ),
-                )),
                 route_scope,
                 relay_session_id: crate::mcp::server::next_relay_session_id(),
                 #[cfg(test)]
@@ -3975,6 +3965,7 @@ mod tests {
         assert!(!stdio_guard_degrades_gateway(&config, true));
 
         config.upstream.push(crate::config::UpstreamConfig {
+            secret_env: Default::default(),
             name: "fixture".into(),
             display_name: None,
             lifecycle: None,

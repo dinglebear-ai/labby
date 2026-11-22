@@ -696,10 +696,14 @@ where
             ));
         }
         let files = gate.finish().await?;
-        let acquisition = ArtifactAcquisition { interchange, files };
-        acquisition.validate()?;
-        drop(permit);
-        Ok(acquisition)
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let acquisition = ArtifactAcquisition { interchange, files };
+            acquisition.validate()?;
+            Ok::<_, ArtifactError>(acquisition)
+        })
+        .await
+        .map_err(|_| ArtifactError::Conflict("provider_validation_failed"))?
     }
 }
 

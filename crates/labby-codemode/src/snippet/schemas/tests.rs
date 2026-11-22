@@ -32,6 +32,18 @@ fn shared_validation_allowance_cannot_reset_per_value() {
 }
 
 #[test]
+fn fixture_schema_preparation_shares_deadline_and_pattern_allowance() {
+    let mut expired =
+        crate::schema::SchemaValidationBudget::new(4096).until(std::time::Instant::now());
+    assert!(check_schema_with_budget(&json!({"type":"string"}), &mut expired).is_err());
+    let mut shared = crate::schema::SchemaValidationBudget::new(4096);
+    for i in 0..64 {
+        check_schema_with_budget(&json!({"pattern":format!("word{i}")}), &mut shared).unwrap();
+    }
+    assert!(check_schema_with_budget(&json!({"pattern":"extra"}), &mut shared).is_err());
+}
+
+#[test]
 fn fingerprints_ignore_object_order_and_include_both_contracts() {
     let a: FixtureSchemas = serde_json::from_str(r#"{"input_schema":{"type":"object","properties":{"a":{"type":"string"},"b":{"type":"integer"}}},"output_schema":{"type":"boolean"}}"#).unwrap();
     let mut b: FixtureSchemas = serde_json::from_str(r#"{"output_schema":{"type":"boolean"},"input_schema":{"properties":{"b":{"type":"integer"},"a":{"type":"string"}},"type":"object"}}"#).unwrap();

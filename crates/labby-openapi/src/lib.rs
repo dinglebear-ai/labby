@@ -9,6 +9,8 @@ pub mod convert;
 pub mod dispatch;
 pub mod error;
 pub mod http;
+#[cfg(feature = "mcp-schema")]
+mod mcp_schema;
 pub mod registry;
 pub mod ssrf;
 

@@ -47,6 +47,7 @@ impl StepJournalStore {
         limit: usize,
         cursor: Option<String>,
     ) -> Result<SnippetReceiptHistory, ToolError> {
+        self.check_receipt_schema()?;
         if !(1..=50).contains(&limit) {
             return Err(invalid("limit", "limit must be between 1 and 50"));
         }
@@ -87,7 +88,7 @@ impl StepJournalStore {
         let cutoff = i64::try_from(now)
             .unwrap_or(i64::MAX)
             .saturating_sub(RETENTION_MS);
-        self.with_conn(move |conn| {
+        self.with_conn(ConnectionAccess::Read, move |conn| {
             let mut stmt = conn.prepare("SELECT receipt_json FROM snippet_receipts
                 WHERE owner_key=?1 AND route_scope=?2 AND capability_fingerprint=?3 AND created_at_ms>=?4
                 AND (?5 IS NULL OR json_extract(receipt_json,'$.snippet_name')=?5)

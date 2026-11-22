@@ -120,6 +120,28 @@ pub fn sanitize_error_text(input: &str, max_len: usize) -> String {
     output
 }
 
+/// Neutralize and bound human-readable text received from an upstream catalog.
+#[must_use]
+pub fn sanitize_tool_text(input: &str, max_len: usize) -> String {
+    let mut sanitized = input.to_string();
+    sanitized.retain(|ch| {
+        !matches!(
+            ch,
+            '\u{0000}'..='\u{001F}'
+                | '\u{007F}'..='\u{009F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+    });
+    for marker in ["<system>", "[INST]", "###", "<<"] {
+        sanitized = sanitized.replace(marker, "");
+    }
+    redact_secret_like_segments(&sanitized)
+        .chars()
+        .take(max_len)
+        .collect()
+}
+
 /// Redact secret-shaped tokens from free-form text.
 ///
 /// First pass: whitespace-split prefix heuristic (fast path for standalone
@@ -199,6 +221,9 @@ pub fn is_sensitive_key(key: &str) -> bool {
             | "session_cookie"
             | "browser_session_cookie"
             | "secret_access_key"
+            // Write-only gateway credential params (`gateway.add`/`update`).
+            | "bearer_token_value"
+            | "secret_env_values"
     ) || normalized.ends_with("_token")
         || normalized.ends_with("_secret")
         || normalized.ends_with("_password")
@@ -506,6 +531,8 @@ mod tests {
             "INCUS_TS_AUTHKEY",
             "credential",
             "browser_session_cookie",
+            "bearer_token_value",
+            "secret_env_values",
         ] {
             assert!(is_sensitive_key(key), "expected `{key}` to be sensitive");
         }
@@ -727,6 +754,24 @@ mod tests {
     }
 
     // ── Trace-value redaction (moved from labby-codemode trace) ──────────────
+
+    #[test]
+    fn trace_redacts_write_only_gateway_credential_params() {
+        let raw = serde_json::json!({
+            "spec": {"name": "figma", "secret_env": {"MODE": "LABBY_GW_FIGMA_ENV_MODE"}},
+            "bearer_token_value": "fake-bearer-91c2",
+            "secret_env_values": {"MODE": "fake-mode-5d10"},
+        });
+
+        let serialized = redact_trace_value(&raw, 4096).to_string();
+
+        assert!(
+            serialized.contains("LABBY_GW_FIGMA_ENV_MODE"),
+            "names stay visible"
+        );
+        assert!(!serialized.contains("fake-bearer-91c2"));
+        assert!(!serialized.contains("fake-mode-5d10"));
+    }
 
     #[test]
     fn trace_redacts_nested_sensitive_keys_and_values() {

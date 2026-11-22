@@ -78,6 +78,7 @@ pub(super) async fn read_local_resource(
             let config = manager.code_mode_config().await;
             json!({"timeout_ms":config.timeout_ms,"max_source_bytes":config.max_source_bytes,
                 "max_response_bytes":config.max_response_bytes,"max_response_tokens":config.max_response_tokens,
+                "max_programmatic_response_bytes":config.max_programmatic_response_bytes,
                 "token_estimate_divisor":config.token_estimate_divisor,
                 "storage":labby_codemode::effective_storage_limits()})
         }
@@ -138,9 +139,10 @@ pub(super) async fn list_resources(
         ]}));
     }
     // Check scope before inspecting configuration or establishing a connection.
-    if scope
-        .allowed_namespaces()
-        .is_some_and(|allowed| !allowed.contains(upstream))
+    if !scope.allows_resources()
+        || scope
+            .allowed_namespaces()
+            .is_some_and(|allowed| !allowed.contains(upstream))
     {
         return Err(ToolError::Sdk {
             sdk_kind: "forbidden".to_string(),
@@ -150,7 +152,7 @@ pub(super) async fn list_resources(
     let config = manager
         .upstream_config(upstream)
         .await
-        .filter(|config| config.enabled && config.proxy_resources)
+        .filter(labby_runtime::gateway_config::UpstreamConfig::serves_resources)
         .ok_or_else(|| ToolError::Sdk {
             sdk_kind: "not_found".to_string(),
             message: "upstream is not available for resource discovery".to_string(),
@@ -176,10 +178,31 @@ pub(super) async fn list_resources(
         message: "gateway upstream pool is unavailable".to_string(),
     })?;
     let resources = if let Some(subject) = subject {
-        pool.subject_scoped_resources(&[config], subject).await
+        pool.subject_resource_listing(&config, subject)
+            .await
+            .map_err(|_| ToolError::Sdk {
+                sdk_kind: "provider_unavailable".into(),
+                message: "upstream resource listing failed".into(),
+            })?
     } else {
         let allowed = BTreeSet::from([upstream.to_string()]);
-        pool.list_upstream_resources_allowed(Some(&allowed)).await
+        pool.ensure_resource_snapshots_allowed(Some(&allowed)).await;
+        let observation = pool.cached_global_observation(upstream).await.resources;
+        use crate::gateway::view_models::CapabilityObservationState;
+        if matches!(
+            observation.state,
+            CapabilityObservationState::Failed | CapabilityObservationState::Unknown
+        ) {
+            return Err(ToolError::Sdk {
+                sdk_kind: "provider_unavailable".into(),
+                message: "upstream resource catalog is unavailable".into(),
+            });
+        }
+        pool.cached_upstream_resources_with_provenance_allowed(Some(&allowed))
+            .await
+            .into_iter()
+            .map(|listed| listed.resource)
+            .collect()
     };
     Ok(json!({ "resources": resources }))
 }

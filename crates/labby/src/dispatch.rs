@@ -19,6 +19,8 @@ pub mod artifacts;
 pub mod browser;
 pub mod clients;
 #[cfg(feature = "gateway")]
+pub(crate) mod code_mode_authority;
+#[cfg(feature = "gateway")]
 pub(crate) mod code_mode_search;
 #[cfg(feature = "gateway")]
 pub(crate) mod codemode_notices;

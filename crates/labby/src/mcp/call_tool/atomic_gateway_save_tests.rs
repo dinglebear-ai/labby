@@ -5,7 +5,6 @@ use rmcp::model::{CallToolRequestParams, NumberOrString};
 use rmcp::service::{RequestContext, serve_directly};
 use serde_json::json;
 
-use crate::mcp::logging::{LoggingLevel, logging_level_rank};
 use crate::mcp::server::LabMcpServer;
 use labby_auth::auth_context::AuthContext;
 
@@ -59,9 +58,6 @@ async fn atomic_gateway_save_mcp_rejects_selected_team_before_effects() {
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: "http",
-        logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-            LoggingLevel::Emergency,
-        ))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,

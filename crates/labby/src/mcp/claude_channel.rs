@@ -102,7 +102,11 @@ impl ChannelSession {
                     .await
                 {
                     Ok((Some(address), _)) => inbox_expires = address.expires_at_unix_ms,
-                    _ => continue,
+                    Err(error) => {
+                        tracing::warn!(kind = error.kind(), "channel inbox renewal failed");
+                        continue;
+                    }
+                    Ok((None, _)) => continue,
                 }
             }
             let include_references = match messages {
@@ -116,6 +120,9 @@ impl ChannelSession {
                 .store
                 .deliver_channel(self.recipient.clone(), include_references, accept)
                 .await;
+            if let Err(error) = &batch {
+                tracing::warn!(kind = error.kind(), "channel notice delivery read failed");
+            }
             if let Ok(Some(notices)) = batch {
                 for notice in notices {
                     if notice.message_id.is_some()

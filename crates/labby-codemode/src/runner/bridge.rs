@@ -199,9 +199,7 @@ pub(super) fn javy_emit_tool_call(args: javy::Args<'_>) -> javy::quickjs::Result
     }
 
     if let Err(error) = crate::protocol::check_tool_id_bytes(&id) {
-        let message = serde_json::to_string(&error)
-            .map_err(|error| javy_type_error(cx.clone(), error.to_string()))?;
-        return Err(javy_type_error(cx.clone(), message));
+        return Err(call_error_to_js(&cx, &error));
     }
 
     let params_json = args
@@ -213,6 +211,9 @@ pub(super) fn javy_emit_tool_call(args: javy::Args<'_>) -> javy::quickjs::Result
         .map(|params| params.to_string())
         .transpose()?
         .unwrap_or_else(|| "{}".to_string());
+    if let Err(error) = crate::protocol::check_tool_params_bytes(params_json.len()) {
+        return Err(call_error_to_js(&cx, &error));
+    }
     let params: Value = serde_json::from_str(&params_json).map_err(|err| {
         javy_type_error(
             cx.clone(),
@@ -341,6 +342,9 @@ pub(super) fn javy_emit_step_begin(args: javy::Args<'_>) -> javy::quickjs::Resul
             "codemode.step name must be a non-empty string",
         ));
     }
+    if let Err(error) = crate::protocol::check_step_name_bytes(&name) {
+        return Err(call_error_to_js(&cx, &error));
+    }
 
     let seq = next_runner_seq(&cx)?;
 
@@ -466,6 +470,17 @@ pub(super) fn javy_main_promise_state(
             }
         })
         .map_err(javy_error_message)
+}
+
+/// Throw a structured call error the sandbox can catch and classify by kind.
+fn call_error_to_js(
+    cx: &javy::quickjs::Ctx<'_>,
+    error: &CodeModeCallError,
+) -> javy::quickjs::Error {
+    match serde_json::to_string(error) {
+        Ok(message) => javy_type_error(cx.clone(), message),
+        Err(error) => javy_type_error(cx.clone(), error.to_string()),
+    }
 }
 
 pub(super) fn javy_type_error(

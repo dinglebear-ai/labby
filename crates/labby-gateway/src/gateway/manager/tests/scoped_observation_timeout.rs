@@ -14,9 +14,7 @@ async fn outer_discovery_timeout_remains_failed_until_explicit_refresh() {
     manager.oauth_status_discovery_cache.lock().await.clear();
     server.blocked.store(true, Ordering::SeqCst);
     let calls = server.requests.load(Ordering::SeqCst);
-    let gate = pool
-        .hold_subject_connect_gate_for_tests("alpha", "alice")
-        .await;
+    let gate = pool.hold_subject_connect_gate("alpha", "alice").await;
     let discovery = {
         let manager = manager.clone();
         let config = config.clone();
@@ -126,9 +124,7 @@ async fn cold_outer_discovery_timeout_is_visible_without_a_catalog() {
     let (manager, pool) = code_mode_manager_with_pool(config.clone()).await;
     pool.seed_lazy_upstreams(std::slice::from_ref(&config))
         .await;
-    let gate = pool
-        .hold_subject_connect_gate_for_tests("alpha", "alice")
-        .await;
+    let gate = pool.hold_subject_connect_gate("alpha", "alice").await;
     let discovery = {
         let manager = manager.clone();
         let config = config.clone();

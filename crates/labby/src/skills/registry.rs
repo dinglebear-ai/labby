@@ -322,8 +322,14 @@ impl FirstPartyGenerationManager {
         self.current.load_full()
     }
 
-    pub(crate) fn generation_cell(&self) -> Arc<ArcSwap<FirstPartyGeneration>> {
-        Arc::clone(&self.current)
+    pub(crate) fn activation_coordinator(
+        &self,
+        version: u64,
+    ) -> crate::dispatch::skill_library::dispatch::ActivationCoordinator<FirstPartyGeneration> {
+        crate::dispatch::skill_library::dispatch::ActivationCoordinator::from_cell(
+            Arc::clone(&self.current),
+            version,
+        )
     }
 
     // Directory-only refresh is intentionally test-only. Production publication
@@ -627,6 +633,7 @@ pub(crate) struct ArtifactSkillMaterializationCache {
 
 #[derive(Default)]
 struct ArtifactSkillMaterializationState {
+    retained_bytes: usize,
     entries: BTreeMap<ArtifactRevisionKey, Arc<super::local::LocalSkill>>,
     recency: VecDeque<ArtifactRevisionKey>,
 }
@@ -658,12 +665,17 @@ impl ArtifactSkillMaterializationCache {
             return existing;
         }
         state.recency.push_back(key.clone());
+        state.retained_bytes += skill.byte_len();
         state.entries.insert(key, Arc::clone(&skill));
-        while state.entries.len() > ARTIFACT_MATERIALIZATION_CACHE_MAX {
+        while state.entries.len() > ARTIFACT_MATERIALIZATION_CACHE_MAX
+            || state.retained_bytes > GenerationLimits::default().aggregate_bytes
+        {
             let Some(oldest) = state.recency.pop_front() else {
                 break;
             };
-            state.entries.remove(&oldest);
+            if let Some(evicted) = state.entries.remove(&oldest) {
+                state.retained_bytes -= evicted.byte_len();
+            }
         }
         skill
     }
@@ -679,19 +691,7 @@ impl ArtifactSkillMaterializationCache {
         if let Some(skill) = self.get(&key) {
             return Ok(skill);
         }
-        let revision = store.revision(artifact_id, revision_id)?;
-        let mut logical = Vec::with_capacity(revision.components.len());
-        for component in &revision.components {
-            let bytes =
-                store.read_skill_revision_file(artifact_id, revision_id, &component.path)?;
-            let content = String::from_utf8(bytes).map_err(|_| ArtifactError::SkillVerification)?;
-            logical.push(labby_runtime::artifacts::LogicalSkillFile::new(
-                component.path.clone(),
-                content,
-            ));
-        }
-        let materialized =
-            labby_runtime::artifacts::materialize_logical_skill(name, logical, Default::default())?;
+        let materialized = store.materialize_skill_revision(artifact_id, revision_id, name)?;
         let text_files = materialized
             .resources
             .into_iter()
@@ -705,7 +705,7 @@ impl ArtifactSkillMaterializationCache {
             key,
             Arc::new(super::local::LocalSkill {
                 entry: materialized.skill.entry,
-                files: text_files,
+                files: Arc::new(text_files),
             }),
         ))
     }
@@ -763,6 +763,7 @@ pub(crate) fn project_artifact_generation_cached(
                     .records
                     .get(artifact_id)
                     .ok_or(ArtifactError::NotFound("library_record"))?;
+                snapshot.check_activation_capacity(record)?;
                 active.insert(
                     artifact_id.clone(),
                     (record.name.clone(), revision_id.clone()),
@@ -779,6 +780,38 @@ pub(crate) fn project_artifact_generation_cached(
         }
     }
 
+    // During startup reconstruct the serving subset from the durable active
+    // records. Mutations still require a complete, admissible candidate.
+    let mut rejected = base.rejected.clone();
+    let mut reject = |skill: &str, reason: &str| {
+        tracing::warn!(skill, reason, "excluding active artifact during startup");
+        let rejection = LocalSkillRejection {
+            skill: skill.into(),
+            reason: reason.into(),
+        };
+        if !rejected.contains(&rejection) {
+            rejected.push(rejection);
+        }
+    };
+    let mut startup = mutation.is_none().then(|| {
+        let legacy = base.providers.with_artifact_skills([]);
+        let (skills, bytes, max_skill_bytes, resources) = legacy.admission_totals();
+        let mut names = BTreeMap::new();
+        for (name, _) in active.values() {
+            *names.entry(name.as_str()).or_insert(0usize) += 1;
+        }
+        (
+            legacy,
+            names,
+            AdmissionTotals {
+                skills,
+                bytes,
+                max_skill_bytes,
+                resources,
+            },
+        )
+    });
+    let mut accepted_per_tenant = BTreeMap::<&str, usize>::new();
     let mut local = Vec::with_capacity(active.len());
     for (artifact_id, (name, revision_id)) in &active {
         let record = snapshot
@@ -793,7 +826,52 @@ pub(crate) fn project_artifact_generation_cached(
             }) if changed == artifact_id => *visibility,
             _ => record.visibility,
         };
-        let materialized = materializations.materialize(store, artifact_id, name, revision_id)?;
+        let manifest = super::first_party_uri(name, "SKILL.md");
+        if let Some((legacy, names, _)) = &startup
+            && (names[name.as_str()] > 1
+                || legacy
+                    .find(&manifest)
+                    .is_some_and(|owner| owner.descriptor().id.source_id() == manifest))
+        {
+            reject(name, "active_skill_collision");
+            continue;
+        }
+        if startup.is_some()
+            && accepted_per_tenant
+                .get(record.ownership.tenant_id.as_str())
+                .copied()
+                .unwrap_or_default()
+                >= labby_runtime::artifacts::library::MAX_ACTIVE_SKILLS_PER_TENANT
+        {
+            reject(name, "tenant_active_skills");
+            continue;
+        }
+        let materialized = match materializations.materialize(store, artifact_id, name, revision_id)
+        {
+            Ok(skill) => skill,
+            Err(_) if startup.is_some() => {
+                reject(name, "artifact_materialization_failed");
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some((_, _, totals)) = &mut startup {
+            let bytes = materialized.files.values().map(String::len).sum::<usize>();
+            let candidate = AdmissionTotals {
+                skills: totals.skills + 1,
+                bytes: totals.bytes + bytes,
+                max_skill_bytes: totals.max_skill_bytes.max(bytes),
+                resources: totals.resources + materialized.files.len(),
+            };
+            if let Some(violation) = GenerationLimits::default().first_violation(candidate) {
+                reject(name, violation.kind);
+                continue;
+            }
+            *totals = candidate;
+            *accepted_per_tenant
+                .entry(record.ownership.tenant_id.as_str())
+                .or_default() += 1;
+        }
         local.push((
             (*materialized).clone(),
             ArtifactSkillAccess {
@@ -834,7 +912,7 @@ pub(crate) fn project_artifact_generation_cached(
         digest: digest.clone(),
         active_digest,
         providers,
-        rejected: base.rejected.clone(),
+        rejected,
         bytes,
         resources,
         degraded: None,
@@ -1063,6 +1141,73 @@ mod tests {
         let generation = manager.generation();
         assert_eq!(generation.id, seed.version);
         assert_eq!(generation.active_digest, seed.active_digest);
+    }
+
+    #[test]
+    fn generation_admits_a_second_tenant_after_the_first_fills_its_allowance() {
+        use labby_runtime::artifacts::library::MAX_ACTIVE_SKILLS_PER_TENANT;
+        use labby_runtime::artifacts::{
+            LibraryActorId, LibraryOwnership, LibraryTenantId, LibraryTimestamp,
+            SkillLibraryRecord, SkillVisibility,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let managed = temp.path().join("managed");
+        let store = ArtifactStore::new(temp.path().join("artifacts")).unwrap();
+        let cache = ArtifactSkillMaterializationCache::default();
+        let manager = FirstPartyGenerationManager::new(
+            temp.path().join("operator"),
+            GenerationLimits::default(),
+        );
+        let base = manager.generation();
+        let mut snapshot = LibrarySnapshot::default();
+        let now = LibraryTimestamp::parse("2026-08-26T00:00:00Z").unwrap();
+        for i in 0..=MAX_ACTIVE_SKILLS_PER_TENANT {
+            let name = format!("skill-{i:03}");
+            write_skill(&managed, &name, "active");
+            let last = i == MAX_ACTIVE_SKILLS_PER_TENANT;
+            let record = SkillLibraryRecord {
+                artifact_id: name.clone(),
+                name: name.clone(),
+                ownership: LibraryOwnership::canonical(
+                    LibraryTenantId::from_canonical_projection(if last { "b" } else { "a" })
+                        .unwrap(),
+                    LibraryActorId::from_canonical_projection("owner").unwrap(),
+                ),
+                visibility: SkillVisibility::Private,
+                archived: false,
+                active_revision_id: (!last).then(|| "revision".into()),
+                latest_revision_id: "revision".into(),
+                latest_revision_files: vec![],
+                search_metadata: vec![],
+                provenance_provider: None,
+                materialized: true,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+            };
+            snapshot.records.insert(name, record);
+        }
+        for (name, skill) in load_local_skills_bounded(&managed, None).unwrap().skills {
+            cache.insert((name, "revision".into()), Arc::new(skill));
+        }
+        let last = format!("skill-{MAX_ACTIVE_SKILLS_PER_TENANT:03}");
+        let mutation = LibraryMutation::Activate {
+            artifact_id: last.clone(),
+            revision_id: "revision".into(),
+            updated_at: now,
+        };
+        let accepted =
+            project_artifact_generation_cached(&store, &snapshot, Some(&mutation), &base, &cache)
+                .unwrap();
+        assert_eq!(
+            accepted.providers.discover().len(),
+            base.providers.discover().len() + MAX_ACTIVE_SKILLS_PER_TENANT + 1
+        );
+        assert!(
+            accepted
+                .providers
+                .find(&crate::skills::first_party_uri(&last, "SKILL.md"))
+                .is_some()
+        );
     }
 
     #[test]

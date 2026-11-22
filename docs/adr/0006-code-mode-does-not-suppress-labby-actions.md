@@ -10,6 +10,14 @@ Date: 2026-09-24
 
 Status: Accepted
 
+## Current implementation
+
+Use the native MCP action or its service router for first-party calls. The Code
+Mode kernel reserves `lab::*`. The gateway can publish one native Code Mode
+operation, `__in_process__gateway::gateway.gateway.oauth.authorize`, for a
+request with verified personal authority. The shared dispatcher described below
+is an architectural target. It does not grant additional execution paths today.
+
 ## Context
 
 ADR 0003 proposes Code Mode as Labby's bounded first-party execution plane and atomic MCP projection as the preferred representation for eligible first-party Labby operations. ADR 0003 remains `Proposed`; this accepted ADR establishes the additive availability constraint below without changing that broader proposal's status.
@@ -68,7 +76,7 @@ Atomic tools provide operation-specific schemas, annotations, approvals, descrip
 
 Clients/operators that need a smaller catalog should use explicit route scopes, project scopes, allowlists, loadouts, or equivalent capability-selection mechanisms rather than Code Mode enablement as an implicit first-party filter.
 
-## Required implementation behavior
+## Requirements for a shared first-party dispatcher
 
 1. `CodeModeVisibility::RootSynthetic` must not suppress eligible Labby atomic tools.
 2. `CodeModeVisibility::InProcessPeer` must not suppress eligible Labby atomic tools merely because it exposes Code Mode.
@@ -79,7 +87,7 @@ Clients/operators that need a smaller catalog should use explicit route scopes, 
 7. Route/project scoping, service/action allowlists, authorization, and destructive approval remain effective on both invocation paths.
 8. `codemode_read` remains safety-filtered independently from top-level atomic publication.
 
-## Verification requirements
+## Verification requirements for the shared dispatcher
 
 Tests must prove that:
 

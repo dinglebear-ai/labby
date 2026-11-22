@@ -7,7 +7,7 @@ pub(super) async fn handle_artifact_write_event(
     path: String,
     content: String,
     content_type: Option<String>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
@@ -64,7 +64,7 @@ pub(super) async fn handle_snippet_resolve_event<H: CodeModeHost>(
     seq: u64,
     name: String,
     input: Value,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
@@ -165,7 +165,7 @@ async fn resolve_snippet_for_runner<H: CodeModeHost>(
 }
 
 async fn handle_artifact_write(
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     artifact_root: &Path,
     artifacts: &mut Vec<CodeModeArtifactReceipt>,
     calls: &mut HostTrace,
@@ -193,18 +193,20 @@ async fn handle_artifact_write(
             redacted_params,
             Some(kind),
         ))?;
-        return write_runner_input(
-            stdin,
-            &CodeModeRunnerInput::ToolError {
-                seq,
-                error: Box::new(error),
-            },
-        )
-        .await;
+        return stdin.enqueue(&CodeModeRunnerInput::ToolError {
+            seq,
+            error: Box::new(error),
+        });
     }
     let mut file_persisted = false;
     let result = async {
-        let mut receipt = write_code_mode_artifact(artifact_root, &request, max_bytes).await?;
+        let mut receipt = write_code_mode_artifact(
+            artifact_root,
+            &request,
+            max_bytes,
+            &crate::artifact_access::retention_owner(caller, scope, artifact_root),
+        )
+        .await?;
         file_persisted = true;
         crate::artifact_access::enroll(artifact_root, &mut receipt, caller, scope).await?;
         Ok::<_, ToolError>(receipt)
@@ -221,7 +223,7 @@ async fn handle_artifact_write(
                 redacted_params,
                 None,
             ))?;
-            write_runner_input(stdin, &CodeModeRunnerInput::ToolResult { seq, result }).await
+            stdin.enqueue(&CodeModeRunnerInput::ToolResult { seq, result })
         }
         Err(error) => {
             let mut error = CodeModeCallError::from(error).with_tool(ARTIFACT_WRITE_CALL_ID);
@@ -237,14 +239,10 @@ async fn handle_artifact_write(
                 redacted_params,
                 Some(kind),
             ))?;
-            write_runner_input(
-                stdin,
-                &CodeModeRunnerInput::ToolError {
-                    seq,
-                    error: Box::new(error),
-                },
-            )
-            .await
+            stdin.enqueue(&CodeModeRunnerInput::ToolError {
+                seq,
+                error: Box::new(error),
+            })
         }
     }
 }
@@ -297,6 +295,7 @@ mod tests {
         ));
 
         let route_scoped_admin = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,

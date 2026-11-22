@@ -123,6 +123,7 @@ fn describe_exposes_only_visible_bounded_input_schema() {
 #[test]
 fn api_surface_is_not_trusted_local() {
     let caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities::default(),
         sub: None,
     };
@@ -281,6 +282,35 @@ fn progressive_disclosure_helpers_preserve_retrieval_identity() {
         "Review code adversarially",
         vec!["uri:skill://labby/adversarial-review".to_string()],
     );
+
+    let uri = format!("lab://upstream/example/{}", "segment/".repeat(90));
+    for kind in [
+        CodeModeCatalogKind::Skill,
+        CodeModeCatalogKind::Prompt,
+        CodeModeCatalogKind::Resource,
+    ] {
+        let mut tags = vec![format!("uri:{uri}")];
+        tags.extend(vec!["one\ntwo".to_owned(); 64]);
+        let descriptor = CatalogDescriptor::metadata(
+            kind,
+            "example",
+            "exact-id",
+            "display\nname",
+            "example\rdescription",
+            tags,
+        );
+        assert_eq!(descriptor.id, "exact-id");
+        assert_eq!(descriptor.name, "displayname");
+        assert_eq!(descriptor.description, "exampledescription");
+        assert_eq!(descriptor.tags.len(), 64);
+        assert_eq!(descriptor.tags[1], "onetwo");
+        if matches!(
+            kind,
+            CodeModeCatalogKind::Skill | CodeModeCatalogKind::Resource
+        ) {
+            assert!(descriptor.discovery_helper().contains(&uri));
+        }
+    }
 
     assert_eq!(
         resource.discovery_helper(),

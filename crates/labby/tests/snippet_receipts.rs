@@ -33,6 +33,7 @@ fn scoped(subject: &str) -> SnippetDispatchContext {
     context.execution_surface = CodeModeSurface::Api;
     context.is_admin = true;
     context.execution_caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         sub: Some(subject.into()),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
@@ -121,8 +122,12 @@ fn run_receipt_contract(home: &Path) {
         let manager = new_manager(home).await;
         let alice = scoped("alice");
         let input = json!({"secret":SECRET});
+        // Hold SQLite's writer lock beyond the former telemetry deadline.
+        let conn = rusqlite::Connection::open(home.join("journal.db")).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
         let observe_started = async {
-            let conn = rusqlite::Connection::open(home.join("journal.db")).unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            conn.execute_batch("COMMIT").unwrap();
             for _ in 0..40 {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 let receipt: Option<String> = conn.query_row(
@@ -283,6 +288,7 @@ fn run_receipt_contract(home: &Path) {
         );
         let mut unsubjected = local.clone();
         unsubjected.execution_caller = CodeModeCaller::Scoped {
+ host_context: Default::default(),
             sub: None,
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
@@ -336,7 +342,7 @@ fn super_source_failed() -> String {
 }
 
 #[test]
-fn saved_receipt_parameter_digests_identify_original_arguments_without_public_payloads() {
+fn saved_receipt_omits_argument_digests_when_parameter_tracing_is_disabled() {
     const CHILD: &str = "LABBY_ARGUMENT_DIGEST_TEST_CHILD";
     if let Ok(home) = std::env::var(CHILD) {
         let home = Path::new(&home);
@@ -361,7 +367,6 @@ fn saved_receipt_parameter_digests_identify_original_arguments_without_public_pa
                 json!({"payload":format!("{}-one", "x".repeat(6000))}),
                 json!({"payload":format!("{}-two", "x".repeat(6000))}),
             ];
-            let mut digests = Vec::new();
             for params in arguments {
                 let response = call(
                     &manager,
@@ -380,14 +385,9 @@ fn saved_receipt_parameter_digests_identify_original_arguments_without_public_pa
                 .await;
                 assert_eq!(receipt["tool_calls"], 1, "{receipt}");
                 let captured = &receipt["calls"][0];
-                // No upstream is configured: the real runner's failed invocation
-                // must retain the same argument identity as successful dispatch.
                 assert_eq!(captured["tool"], "synthetic::lookup");
                 assert_eq!(captured["ok"], false);
-                assert_eq!(
-                    captured["params_digest"],
-                    digest(&serde_json::to_vec(&params).unwrap())
-                );
+                assert!(captured["params_digest"].is_null());
                 let wire = serde_json::to_string(&response).unwrap();
                 assert!(!wire.contains("digest-secret-"));
                 assert!(response["calls"][0].get("params").is_none());
@@ -395,10 +395,7 @@ fn saved_receipt_parameter_digests_identify_original_arguments_without_public_pa
                     response["calls"][0].get("params_digest").is_none(),
                     "private digest leaked to trace"
                 );
-                digests.push(captured["params_digest"].clone());
             }
-            assert_ne!(digests[0], digests[1]);
-            assert_ne!(digests[2], digests[3]);
             manager.shutdown_code_mode_runner_pool().await;
         });
         for name in ["journal.db", "journal.db-wal", "journal.db-shm"] {
@@ -417,7 +414,7 @@ fn saved_receipt_parameter_digests_identify_original_arguments_without_public_pa
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "saved_receipt_parameter_digests_identify_original_arguments_without_public_payloads",
+            "saved_receipt_omits_argument_digests_when_parameter_tracing_is_disabled",
             "--nocapture",
         ])
         .env_clear()

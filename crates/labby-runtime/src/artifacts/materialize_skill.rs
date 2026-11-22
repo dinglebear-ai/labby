@@ -70,6 +70,27 @@ impl ArtifactStore {
             .bytes)
     }
 
+    /// Materialize all manifest-bound files from one verified revision.
+    pub fn materialize_skill_revision(
+        &self,
+        artifact_id: &str,
+        revision_id: &str,
+        name: &str,
+    ) -> Result<MaterializedSkill, ArtifactError> {
+        let revision = self.revision(artifact_id, revision_id)?;
+        let root = super::local_io::revision_dir(&self.artifact_dir(artifact_id)?, revision_id)
+            .join("files");
+        let files = super::local_io::load_revision_files(&root, &revision.components)?
+            .into_iter()
+            .map(|file| {
+                String::from_utf8(file.bytes)
+                    .map(|content| LogicalSkillFile::new(file.path, content))
+                    .map_err(|_| ArtifactError::SkillVerification)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        materialize_logical_skill(name, files, Default::default())
+    }
+
     /// Persist the exact retained bytes as a new immutable Skill revision.
     ///
     /// `expected_revision_id=None` creates a new Artifact; `Some` is a head CAS for save.
@@ -162,6 +183,9 @@ fn materialize_skill_bytes(
     files: Vec<(String, Vec<u8>)>,
     provenance: ArtifactProvenance,
 ) -> Result<MaterializedSkill, ArtifactError> {
+    if !crate::skills::is_valid_skill_name(name) {
+        return Err(logical_error("name", "invalid_skill_name"));
+    }
     let mut by_path = BTreeMap::new();
     let mut folded = BTreeSet::new();
     let mut total = 0usize;
@@ -470,6 +494,10 @@ mod tests {
 
     #[test]
     fn rejects_paths_frontmatter_and_tampering_without_content_in_error() {
+        assert!(matches!(
+            materialize_logical_skill("../demo", files(), ArtifactProvenance::default()),
+            Err(ArtifactError::LogicalSkillFile { path, reason: "invalid_skill_name" }) if path == "name"
+        ));
         for path in ["../x", "/x", "a\\b"] {
             let err = materialize_logical_skill(
                 "demo",

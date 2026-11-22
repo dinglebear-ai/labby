@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use axum::http::request::Parts;
 use base64::Engine as _;
 use rmcp::model::{ReadResourceResult, Resource, ResourceContents, ResourceTemplate};
 use rmcp::service::RequestContext;
@@ -12,6 +11,7 @@ use crate::dispatch::file_stash::{FileStashService, FileView, parse_stash_uri};
 use crate::file_stash::PrincipalId;
 use crate::mcp::context::{
     auth_context_from_extensions, propagated_caller_auth, resolve_caller_authorization,
+    verified_identity_from_extensions,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -19,7 +19,6 @@ pub(crate) const TEMPLATE_URI: &str = "stash://me/files/{file_id}";
 /// Request-scoped Stash owner selection. This value chooses a scope; it grants
 /// no authority and is always re-evaluated against the verified caller.
 pub(crate) const OWNER_META_KEY: &str = "ai.dinglebear.labby/stashOwner";
-const PRIVATE_IN_PROCESS_TRANSPORT: &str = "in-process";
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,73 +28,51 @@ struct StashOwnerSelection {
     id: Option<String>,
 }
 
-/// A Stash principal the MCP surface may act as. Verified callers carry the
-/// owner-scope authorization that is revalidated before commit; the private
-/// in-process peer carries a trusted principal plus the active-principal lease.
-pub(crate) struct AuthorizedStashPrincipal {
-    principal: PrincipalId,
-    authority: Option<crate::access::FileStashOwnerAuthorization>,
-    _lease: Option<crate::access::ActiveFileStashPrincipalLease>,
-}
-
-impl AuthorizedStashPrincipal {
-    fn sealed(authority: crate::access::FileStashOwnerAuthorization) -> Self {
-        Self {
-            principal: (*authority).clone(),
-            authority: Some(authority),
-            _lease: None,
-        }
-    }
-
-    fn trusted(
-        principal: PrincipalId,
-        lease: crate::access::ActiveFileStashPrincipalLease,
-    ) -> Self {
-        Self {
-            principal,
-            authority: None,
-            _lease: Some(lease),
-        }
-    }
-
-    async fn validate_before_commit(&self) -> Result<(), ToolError> {
-        if let Some(authority) = &self.authority {
-            authority
-                .validate_before_commit()
-                .await
-                .map_err(crate::dispatch::file_stash::map_principal_resolution)?;
-        }
-        Ok(())
-    }
-}
-
-impl std::ops::Deref for AuthorizedStashPrincipal {
-    type Target = PrincipalId;
-    fn deref(&self) -> &Self::Target {
-        &self.principal
-    }
-}
-
 impl LabMcpServer {
+    fn route_stash_owner<'a>(
+        &'a self,
+        kind: Option<&'a str>,
+        id: Option<&'a str>,
+    ) -> Result<(Option<&'a str>, Option<&'a str>), ToolError> {
+        let Some(team) = self.route_scope.bound_team_id() else {
+            return Ok((kind, id));
+        };
+        if kind.is_some_and(|kind| kind != "team") || id.is_some_and(|id| id != team) {
+            return Err(ToolError::InvalidParam {
+                param: "owner_id".into(),
+                message: "File Stash owner does not match the route's Team".into(),
+            });
+        }
+        Ok((Some("team"), Some(team)))
+    }
+
     pub(crate) fn file_stash_caller_bound(&self) -> bool {
         self.registry.dispatch_capability("stash")
             == Some(crate::registry::DispatchCapability::CallerBound)
     }
 
-    fn verified_identity(
+    pub(super) async fn file_stash_resources_visible(
+        &self,
         context: &RequestContext<RoleServer>,
-    ) -> Option<labby_auth::VerifiedIdentity> {
-        context
-            .extensions
-            .get::<labby_auth::VerifiedIdentity>()
-            .cloned()
-            .or_else(|| {
-                context
-                    .extensions
-                    .get::<Parts>()
-                    .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
-                    .cloned()
-            })
+    ) -> bool {
+        #[cfg(feature = "gateway")]
+        if !matches!(
+            super::bound_access::project_execution_binding(
+                &context.extensions,
+                std::time::SystemTime::now()
+            ),
+            super::bound_access::ProjectExecutionBinding::Legacy
+        ) {
+            return false;
+        }
+        #[cfg(not(feature = "gateway"))]
+        let _ = context;
+        self.file_stash_caller_bound()
+            && self.route_scope.exposes_resources()
+            && self.service_visible_on_mcp("stash").await
+            && self
+                .action_allowed_on_mcp("stash", "stash.resources.read")
+                .await
     }
 
     /// Transport authority ceiling for the caller. Absent auth is trusted as
@@ -129,12 +106,14 @@ impl LabMcpServer {
         action: &str,
         params: serde_json::Value,
         context: &RequestContext<RoleServer>,
-        meta: Option<&rmcp::model::RequestMetaObject>,
     ) -> Result<serde_json::Value, ToolError> {
         match service {
             "agents" | "tasks" | "projects" => {
-                let identity = Self::verified_identity(context).ok_or_else(forbidden)?;
-                let ceiling = self.authority_ceiling(context)?;
+                let identity = verified_identity_from_extensions(&context.extensions)
+                    .cloned()
+                    .ok_or_else(forbidden)?;
+                let mut ceiling = self.authority_ceiling(context)?;
+                ceiling.bound_team = self.route_scope.bound_team_id().map(str::to_owned);
                 // Store lifecycle failures are typed outages, never denials.
                 let store = self.access_runtime.store().await.map_err(|error| {
                     crate::dispatch::access_errors::map_runtime_error(
@@ -200,43 +179,37 @@ impl LabMcpServer {
                 } else {
                     None
                 };
-                let (principal, validated_grantee) =
-                    if let Some(identity) = Self::verified_identity(context) {
-                        let authority = crate::dispatch::file_stash::authorize_owner(
-                            &self.access_runtime,
-                            identity.clone(),
-                            self.authority_ceiling(context)?,
-                            params.get("owner_kind").and_then(serde_json::Value::as_str),
-                            params.get("owner_id").and_then(serde_json::Value::as_str),
-                            action,
-                        )
-                        .await?;
-                        let grantee = match recipient {
-                            Some(recipient) => {
-                                let (_owner, recipient, lease) = self
-                                    .access_runtime
-                                    .resolve_and_lease_file_stash_participants(identity, recipient)
-                                    .await
-                                    .map_err(|_| forbidden())?;
-                                Some((recipient, Some(lease)))
-                            }
-                            None => None,
-                        };
-                        (AuthorizedStashPrincipal::sealed(authority), grantee)
-                    } else if let Some(recipient) = recipient {
-                        let (owner, recipient, lease) = self
-                            .file_stash_participants(context, meta, recipient)
-                            .await?;
-                        (
-                            AuthorizedStashPrincipal::trusted(owner, lease),
-                            // The participants lease covers both principals; the
-                            // grantee needs no second lease of its own.
-                            Some((recipient, None)),
-                        )
-                    } else {
-                        (self.file_stash_principal(context, meta).await?, None)
-                    };
-                principal.validate_before_commit().await?;
+                let identity = verified_identity_from_extensions(&context.extensions)
+                    .cloned()
+                    .ok_or_else(forbidden)?;
+                let (kind, id) = self.route_stash_owner(
+                    params.get("owner_kind").and_then(serde_json::Value::as_str),
+                    params.get("owner_id").and_then(serde_json::Value::as_str),
+                )?;
+                let principal = crate::dispatch::file_stash::authorize_owner(
+                    &self.access_runtime,
+                    identity.clone(),
+                    self.authority_ceiling(context)?,
+                    kind,
+                    id,
+                    action,
+                )
+                .await?;
+                let validated_grantee = match recipient {
+                    Some(recipient) => {
+                        let (_owner, recipient, lease) = self
+                            .access_runtime
+                            .resolve_and_lease_file_stash_participants(identity, recipient)
+                            .await
+                            .map_err(|_| forbidden())?;
+                        Some((recipient, lease))
+                    }
+                    None => None,
+                };
+                principal
+                    .validate_before_commit()
+                    .await
+                    .map_err(crate::dispatch::file_stash::map_principal_resolution)?;
                 let service = self.file_stash_service();
                 if action == "stash.save_text" {
                     let action = action.to_owned();
@@ -280,7 +253,7 @@ impl LabMcpServer {
         &self,
         context: &RequestContext<RoleServer>,
         meta: Option<&rmcp::model::RequestMetaObject>,
-    ) -> Result<AuthorizedStashPrincipal, ToolError> {
+    ) -> Result<crate::access::FileStashOwnerAuthorization, ToolError> {
         let caller = resolve_caller_authorization(
             auth_context_from_extensions(&context.extensions),
             self.absent_auth_trust(),
@@ -289,75 +262,18 @@ impl LabMcpServer {
         if !caller.can_read() {
             return Err(forbidden());
         }
-        if let Some(parts) = context.extensions.get::<Parts>()
-            && let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>()
-        {
+        if let Some(identity) = verified_identity_from_extensions(&context.extensions) {
             let (kind, id) = selected_stash_owner(meta)?;
+            let (kind, id) = self.route_stash_owner(kind.as_deref(), id.as_deref())?;
             return crate::dispatch::file_stash::authorize_owner(
                 &self.access_runtime,
                 identity.clone(),
                 self.authority_ceiling(context)?,
-                kind.as_deref(),
-                id.as_deref(),
+                kind,
+                id,
                 "stash.resources.read",
             )
-            .await
-            .map(AuthorizedStashPrincipal::sealed);
-        }
-        // Serialized principal IDs are trusted on only the private in-process
-        // peer. Network and stdio routes must resolve a VerifiedIdentity.
-        if let Some(principal) =
-            propagated_file_stash_principal(self.transport_label, propagated_caller_auth(meta))
-        {
-            return self
-                .access_runtime
-                .lease_active_file_stash_principal(principal.clone())
-                .await
-                .map(|lease| AuthorizedStashPrincipal::trusted(principal, lease))
-                .map_err(crate::dispatch::file_stash::map_principal_resolution);
-        }
-        Err(forbidden())
-    }
-
-    async fn file_stash_participants(
-        &self,
-        context: &RequestContext<RoleServer>,
-        meta: Option<&rmcp::model::RequestMetaObject>,
-        recipient: String,
-    ) -> Result<
-        (
-            PrincipalId,
-            PrincipalId,
-            crate::access::ActiveFileStashPrincipalLease,
-        ),
-        ToolError,
-    > {
-        let caller = resolve_caller_authorization(
-            auth_context_from_extensions(&context.extensions),
-            self.absent_auth_trust(),
-            propagated_caller_auth(meta),
-        );
-        if !caller.can_read() {
-            return Err(forbidden());
-        }
-        if let Some(parts) = context.extensions.get::<Parts>()
-            && let Some(identity) = parts.extensions.get::<labby_auth::VerifiedIdentity>()
-        {
-            return self
-                .access_runtime
-                .resolve_and_lease_file_stash_participants(identity.clone(), recipient)
-                .await
-                .map_err(|_| forbidden());
-        }
-        if let Some(owner) =
-            propagated_file_stash_principal(self.transport_label, propagated_caller_auth(meta))
-        {
-            let (recipient, lease) = self
-                .access_runtime
-                .lease_file_stash_participants(owner.clone(), recipient)
-                .await
-                .map_err(|_| forbidden())?;
-            return Ok((owner, recipient, lease));
+            .await;
         }
         Err(forbidden())
     }
@@ -377,19 +293,9 @@ impl LabMcpServer {
         if !caller.can_read() {
             return Ok(Vec::new());
         }
-        let verified_identity = context
-            .extensions
-            .get::<Parts>()
-            .and_then(|parts| parts.extensions.get::<labby_auth::VerifiedIdentity>())
-            .cloned();
-        let has_private_principal = propagated_file_stash_principal(
-            self.transport_label,
-            propagated_caller_auth(Some(&context.meta)),
-        )
-        .is_some();
-        if verified_identity.is_none() && !has_private_principal {
+        let Some(identity) = verified_identity_from_extensions(&context.extensions).cloned() else {
             return Ok(Vec::new());
-        }
+        };
         crate::dispatch::file_stash::observe_result(
             "mcp",
             "stash.resources.list",
@@ -398,25 +304,25 @@ impl LabMcpServer {
             None,
             false,
             async {
-                if !self.file_stash_caller_bound()
-                    || !self.route_scope.allows_service("stash")
-                    || !self.service_visible_on_mcp("stash").await
+                if !self.file_stash_resources_visible(context).await
+                    || !self.action_allowed_on_mcp("stash", "stash.list").await
                 {
                     return Ok(Vec::new());
                 }
-                let principal = if let Some(identity) = verified_identity {
+                let principal = {
                     let (kind, id) = selected_stash_owner(Some(&context.meta))?;
+                    let (kind, id) = self.route_stash_owner(kind.as_deref(), id.as_deref())?;
                     match crate::dispatch::file_stash::authorize_owner(
                         &self.access_runtime,
                         identity,
                         self.authority_ceiling(context)?,
-                        kind.as_deref(),
-                        id.as_deref(),
+                        kind,
+                        id,
                         "stash.resources.read",
                     )
                     .await
                     {
-                        Ok(authority) => AuthorizedStashPrincipal::sealed(authority),
+                        Ok(authority) => authority,
                         // Resource listing is additive. A verified identity
                         // without durable Stash authority in the selected scope
                         // contributes no Stash resources without hiding other
@@ -424,9 +330,6 @@ impl LabMcpServer {
                         Err(error) if error.kind() == "not_found" => return Ok(Vec::new()),
                         Err(error) => return Err(error),
                     }
-                } else {
-                    self.file_stash_principal(context, Some(&context.meta))
-                        .await?
                 };
                 if principal.validate_before_commit().await.is_err() {
                     return Ok(Vec::new());
@@ -463,7 +366,10 @@ impl LabMcpServer {
                     .await?;
                 let stash = self.file_stash_service();
                 let (metadata, mut blob) = stash.open_download(&principal, &file_id, true).await?;
-                principal.validate_before_commit().await?;
+                principal
+                    .validate_before_commit()
+                    .await
+                    .map_err(crate::dispatch::file_stash::map_principal_resolution)?;
                 let capacity = usize::try_from(blob.size).map_err(|_| ToolError::Sdk {
                     sdk_kind: "quota_exceeded".to_owned(),
                     message: "File Stash operation failed".to_owned(),
@@ -517,13 +423,10 @@ impl LabMcpServer {
 /// Keep the caller and any grantee leases alive through the shared commit gate.
 async fn checked_stash_action(
     service: &FileStashService,
-    principal: AuthorizedStashPrincipal,
+    principal: crate::access::FileStashOwnerAuthorization,
     action: &str,
     params: serde_json::Value,
-    validated_grantee: Option<(
-        PrincipalId,
-        Option<crate::access::ActiveFileStashPrincipalLease>,
-    )>,
+    validated_grantee: Option<(PrincipalId, crate::access::ActiveFileStashPrincipalLease)>,
 ) -> Result<serde_json::Value, ToolError> {
     let owner = (*principal).clone();
     let grantee = validated_grantee
@@ -537,7 +440,10 @@ async fn checked_stash_action(
         params,
         grantee.as_ref(),
         async move {
-            principal.validate_before_commit().await?;
+            principal
+                .validate_before_commit()
+                .await
+                .map_err(crate::dispatch::file_stash::map_principal_resolution)?;
             Ok((principal, validated_grantee))
         },
     )
@@ -569,7 +475,7 @@ fn setup_required_error(error: &ToolError, action: &str) -> ErrorData {
     )
 }
 
-fn list_error(error: &ToolError) -> ErrorData {
+pub(super) fn list_error(error: &ToolError) -> ErrorData {
     if error.kind() == "access_setup_required" {
         return setup_required_error(error, "stash.resources.list");
     }
@@ -613,16 +519,6 @@ async fn collect_file_stash_resources(
         cursor = Some(next);
     }
     Ok(files.into_iter().map(resource_for_file).collect())
-}
-
-fn propagated_file_stash_principal(
-    transport: &str,
-    auth: Option<labby_runtime::caller_auth::PropagatedCallerAuth>,
-) -> Option<PrincipalId> {
-    (transport == PRIVATE_IN_PROCESS_TRANSPORT)
-        .then_some(auth?)?
-        .access_principal_id
-        .and_then(PrincipalId::from_propagated)
 }
 
 fn resource_for_file(file: FileView) -> Resource {
@@ -694,7 +590,6 @@ fn quota_exceeded(uri: &str) -> ErrorData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use labby_runtime::caller_auth::PropagatedCallerAuth;
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
@@ -732,7 +627,7 @@ mod tests {
             crate::file_stash::FileStashRuntime::initialize(directory.path().join("stash")).await,
         );
         let server = LabMcpServer {
-            registry: Arc::new(crate::registry::ToolRegistry::new()),
+            registry: Arc::new(crate::registry::build_default_registry()),
             access_runtime: access,
             installation_id: None,
             file_stash_runtime: Arc::clone(&runtime),
@@ -745,9 +640,6 @@ mod tests {
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "http",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-                crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
-            )),
             route_scope: crate::mcp::route_scope::McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
@@ -779,8 +671,42 @@ mod tests {
         };
         let content = "# Handoff\nExact café 🦀 context\n";
         let writer = context_for(1, identity.clone());
-        let saved = running.service().dispatch_caller_bound_service("stash", "stash.save_text", serde_json::json!({"filename":"handoff.md","content":content,"folder":"dinglebear-ai/labby"}), &writer, None).await.unwrap();
+        let saved = running.service().dispatch_caller_bound_service("stash", "stash.save_text", serde_json::json!({"filename":"handoff.md","content":content,"folder":"dinglebear-ai/labby"}), &writer).await.unwrap();
         let uri = saved["uri"].as_str().unwrap();
+        #[cfg(feature = "gateway")]
+        {
+            let mut unavailable = context_for(4, identity.clone());
+            assert!(
+                running
+                    .service()
+                    .file_stash_resources_visible(&unavailable)
+                    .await
+            );
+            unavailable
+                .extensions
+                .get_mut::<axum::http::request::Parts>()
+                .unwrap()
+                .extensions
+                .insert(crate::mcp::bound_access::ProjectAccessObservation::Unavailable);
+            assert_eq!(
+                running
+                    .service()
+                    .file_stash_resources(&unavailable)
+                    .await
+                    .unwrap(),
+                []
+            );
+            let denied = running
+                .service()
+                .read_resource_impl(
+                    rmcp::model::ReadResourceRequestParams::new(uri),
+                    unavailable,
+                )
+                .await
+                .unwrap_err();
+            assert!(!serde_json::to_string(&denied).unwrap().contains(content));
+            assert_eq!(denied.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+        }
         let reader = context_for(2, identity);
         let result = running
             .service()
@@ -912,20 +838,6 @@ mod tests {
     }
 
     #[test]
-    fn propagated_principal_is_honored_only_on_private_in_process_transport() {
-        let propagated = PropagatedCallerAuth::scoped(vec!["lab:read".into()], Some("sub".into()))
-            .with_access_principal_id("principal-1".into());
-        assert_eq!(
-            propagated_file_stash_principal("in-process", Some(propagated.clone()))
-                .map(|value| value.as_str().to_owned()),
-            Some("principal-1".into())
-        );
-        assert!(propagated_file_stash_principal("http", Some(propagated.clone())).is_none());
-        assert!(propagated_file_stash_principal("stdio", Some(propagated)).is_none());
-        assert!(propagated_file_stash_principal("in-process", None).is_none());
-    }
-
-    #[test]
     fn malformed_and_noncanonical_stash_uris_are_rejected_before_dispatch() {
         for uri in [
             "stash://me/files/not-an-id",
@@ -1019,11 +931,13 @@ mod tests {
             2,
             64,
         );
-        let principal = PrincipalId::from_propagated("principal-1".into()).expect("principal");
+        let principal = PrincipalId::for_test("principal-1");
         let resources = collect_file_stash_resources(&service, &principal, 2)
             .await
             .expect("resources");
         assert_eq!(resources.len(), 3, "must not freeze the first service page");
+        let page = rmcp::model::ListResourcesResult::with_all_items(resources);
+        assert!(!serde_json::to_string(&page).unwrap().contains("data:image"));
         runtime.shutdown().await;
     }
 }

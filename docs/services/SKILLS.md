@@ -77,15 +77,28 @@ The canonical action catalog is generated from code. The lifecycle groups are:
 | Author | `artifacts.validate`, `.create`, `.save` | Logical UTF-8 files; validation is side-effect free; create/save do not activate |
 | Publish | `artifacts.activate`, `.deactivate`, `.rollback`, `.refresh` | Exact revision and optimistic library-version preconditions; publication is atomic |
 | Acquire | `artifacts.import`, `.import_batch` | Exact immutable selectors through server-configured connections; no caller-supplied endpoint, path, bytes, or credential |
+| Managed distribution | `artifacts.transfer_options`, `.pin`, `.follow_managed`, `.follow_update`, `.fork_personal` | Inspect transfer rights, materialize or update an authorized mirror, or create a personal fork |
 | Remote discovery | `artifacts.search_remote`, `.list_remote`, `.get_remote`, `.list_candidates`, `.search_skills_sh`, `.search_ard`, `.search_marketplace`, `.list_mcp_registry`, `.list_acp_registry`, `.authority_status` | Provider-neutral views over configured and public discovery authorities |
 | Remote Skill reads | `artifacts.list_remote_skills`, `.get_remote_skill`, `.load_remote_skill`, `.read_remote_skill` | Explicit reads against one configured remote authority; separate from the local and aggregated native Skills facade |
 | Remote lifecycle | `artifacts.intake_candidate`, `.follow`, `.fork`, `.set_publication`, `.set_license` | Candidate evidence, lineage, publication, redistribution, and takedown policy remain enforced by the remote authority |
 | Retire | `artifacts.archive` | Hides the record from other readers while retaining immutable owner/admin history |
 
-Mutation requests carry an `expected_library_version` and a bounded
-`idempotency_key`. Revision-sensitive operations also carry an
-`expected_revision_id`. Stale editors and conflicting replays fail closed rather
-than silently overwriting current state.
+To save an edit, send the `expected_revision_id` returned when you opened the
+skill. Another tenant can update its own skills while your edit is open.
+Callers that require a particular whole-library state can send
+`expected_library_version` instead. When a save supplies both, both must match.
+Each mutation requires a bounded `idempotency_key`. Retrying a committed
+request with the same key and input returns its original receipt.
+
+Every Artifact action, local or remote, passes one transport gate: scope,
+audience, and product-credential binding to the requested Project. On a
+Project-bound route the requested Project must be the route's own, and on a
+Team-bound route the Team is the route's Team; `x-labby-project-id` and
+`x-labby-team-id` may restate them but never redirect a call. The owned
+`artifacts` and Depot publish tools also honor a loadout that disables Tools.
+`artifacts.transfer_options` performs a server-credentialed exact acquisition,
+so it requires the same write scope and `AssetUse` permission as
+`artifacts.import`.
 
 The MCP App presents these actions through the `artifacts` tool. It is
 a compact conversation card with an expandable, multi-file authoring view. Host
@@ -128,7 +141,15 @@ directory Skills remain a separate startup input under `$LABBY_HOME/skills`.
 The Artifact store uses immutable revisions plus a durable, checksummed library
 authority. Publication commits durable authority before installing the exact
 candidate generation. On startup, Labby reconstructs the committed active
-generation before serving Skills.
+generation before serving Skills. During reconstruction it reports unreadable
+revisions, colliding names, and entries that exceed admission limits. Other
+verified records remain available under their original ownership policies.
+
+Each tenant can activate 256 managed Skills across its owners, Teams, and
+Projects. Activating a different revision of an active Skill uses the same
+slot. The process also limits the entire first-party generation to 16,384
+Skills, 64 MiB of content, and 131,072 resources across all tenants and
+local providers.
 
 An interrupted or failed refresh leaves the last published generation readable.
 `artifacts.refresh` republishes the current durable Artifact active set through the
@@ -154,6 +175,13 @@ placement, and address-pinning requirements, see
 Operator directory Skills under `$LABBY_HOME/skills` coexist with managed
 Artifacts. Active first-party names are globally unique in Labby's
 `skill://labby/...` namespace; a conflicting activation has exactly one winner.
+Artifact Skill URIs derive from the name alone, so same-name Artifact records
+from different owners, in any Project or tenant, collide: a mutation that would
+make a second one active is refused with `active_skill_collision`, and the
+first stays served under its own access policy. The refusal reveals only that
+some active Skill already uses the name. If duplicates are already active (for
+example from an older release), neither is served and the gateway logs the
+conflicting Skill name so an operator can rename or deactivate all but one.
 
 The remote control plane extends `artifacts.*` and exposes four supporting
 HTTP-context-only service families (not MCP or in-process Code Mode tools):

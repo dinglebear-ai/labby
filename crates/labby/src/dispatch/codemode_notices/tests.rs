@@ -39,6 +39,29 @@ fn take(db: &mut Connection, key: &str, now: i64) -> Option<NoticeBatch> {
 }
 
 #[test]
+fn conversation_quota_leaves_capacity_for_another_actor() {
+    let mut db = Connection::open_in_memory().unwrap();
+    schema::migrate(&mut db).unwrap();
+    let tx = db.transaction().unwrap();
+    for n in 0..MAX_CONVERSATION_INBOXES_PER_ACTOR {
+        register_in(
+            &tx,
+            &format!("alice-{n}"),
+            "conversation_routing",
+            Some("alice"),
+            1000,
+        )
+        .unwrap();
+    }
+    assert!(matches!(
+        register_in(&tx, "extra", "conversation_routing", Some("alice"), 1000),
+        Err(NoticeError::Full)
+    ));
+    register_in(&tx, "alice-0", "conversation_routing", Some("alice"), 1000).unwrap();
+    register_in(&tx, "bob-0", "conversation_routing", Some("bob"), 1000).unwrap();
+}
+
+#[test]
 fn notice_production_lease_retry_ack_and_dedupe_are_durable() {
     let dir = tempfile::tempdir().unwrap();
     let store = NoticeStore::open_at(dir.path()).unwrap();
@@ -796,10 +819,10 @@ fn v1_migration_preserves_notice_state() {
     drop(v1);
     let migrated = NoticeStore::from_connection(Connection::open(file).unwrap()).unwrap();
     let mut db = migrated.connection.as_ref().unwrap().lock().unwrap();
-    let version: u32 = db
+    let version: i64 = db
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, SCHEMA_VERSION);
     assert!(take(&mut db, &who, 1006).is_none());
     let original = publish_at(&mut db, "admin", &message(&inbox, "v1"), 1006).unwrap();
     assert!(original.duplicate);

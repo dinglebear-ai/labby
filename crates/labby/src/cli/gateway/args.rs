@@ -560,6 +560,14 @@ pub struct GatewayAddArgs {
     /// JSON object mapping custom HTTP header names to environment variable names.
     #[arg(long, value_parser = parse_headers_env)]
     pub headers_env: Option<std::collections::BTreeMap<String, String>>,
+    /// Secret stdio environment variable to set (repeat for multiple).
+    ///
+    /// Each `--env NAME` reads its value from standard input, one value per
+    /// line in flag order (LF or CRLF; final newline optional). Values never
+    /// come from the command line, are never echoed, and are stored write-only
+    /// in the gateway credential file. A terminal on stdin is refused.
+    #[arg(long = "env", value_name = "NAME")]
+    pub env: Vec<String>,
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub proxy_resources: bool,
     /// Aggregate this upstream's Agent Skills (SEP-2640) through the gateway.
@@ -612,6 +620,15 @@ pub struct GatewayUpdateArgs {
     /// Clear all environment-backed custom HTTP headers.
     #[arg(long, conflicts_with = "headers_env")]
     pub clear_headers_env: bool,
+    /// Secret stdio environment variable to set (repeat for multiple).
+    ///
+    /// Each `--env NAME` reads its value from standard input, one value per
+    /// line in flag order (LF or CRLF; final newline optional). Values never
+    /// come from the command line, are never echoed, and are stored write-only
+    /// in the gateway credential file. A terminal on stdin is refused.
+    /// Adds or replaces the named values and keeps every other env entry.
+    #[arg(long = "env", value_name = "NAME")]
+    pub env: Vec<String>,
     #[arg(long)]
     pub proxy_resources: Option<bool>,
     /// Turn Agent Skills aggregation on or off for this upstream.

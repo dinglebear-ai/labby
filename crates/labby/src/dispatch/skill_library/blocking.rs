@@ -164,6 +164,17 @@ pub(crate) trait FaultInjector: Send + Sync {
     fn check(&self, stage: FaultStage) -> Result<(), InjectedFault>;
 }
 
+#[cfg(test)]
+impl FaultInjector for FaultStage {
+    fn check(&self, stage: FaultStage) -> Result<(), InjectedFault> {
+        if *self == stage {
+            Err(InjectedFault { stage })
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct NoFaultInjector;
 
@@ -249,25 +260,24 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn single_worker_heartbeat_continues_during_max_legal_blocking_work() {
-        let executor = executor(1, 100, 2_000);
-        let heartbeat = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let observed = Arc::clone(&heartbeat);
+        let executor = executor(1, 5_000, 10_000);
+        let (started_tx, started_rx) = oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
         let ticker = tokio::spawn(async move {
-            for _ in 0..20 {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-                observed.fetch_add(1, Ordering::SeqCst);
-            }
+            started_rx.await.unwrap();
+            release_tx.send(()).unwrap();
         });
-        let value = executor
-            .run("max_legal", || {
-                std::thread::sleep(Duration::from_millis(120));
-                Ok::<_, ()>(7)
+        executor
+            .run("max_legal", move || {
+                started_tx.send(()).unwrap();
+                release_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("runtime scheduled heartbeat during blocking work");
+                Ok::<_, ()>(())
             })
             .await
             .unwrap();
         ticker.await.unwrap();
-        assert_eq!(value, 7);
-        assert!(heartbeat.load(Ordering::SeqCst) >= 10);
     }
 
     #[tokio::test]
@@ -298,7 +308,12 @@ mod tests {
             })
         ));
         release_tx.send(()).unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        drop(
+            tokio::time::timeout(Duration::from_secs(5), executor.permits.acquire())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
         executor.run("third", || Ok::<_, ()>(())).await.unwrap();
     }
 
@@ -336,7 +351,7 @@ mod tests {
                 })
                 .await
         });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        tokio::task::yield_now().await;
         revoked.store(true, Ordering::SeqCst);
         release_tx.send(()).unwrap();
         first.await.unwrap().unwrap();
@@ -348,12 +363,10 @@ mod tests {
     #[tokio::test]
     async fn timeout_retains_capacity_until_slow_fsync_finishes() {
         let executor = executor(1, 20, 20);
-        let finished = Arc::new(AtomicBool::new(false));
-        let marker = Arc::clone(&finished);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
         let timed_out = executor
             .run("file_sync", move || {
-                std::thread::sleep(Duration::from_millis(100));
-                marker.store(true, Ordering::SeqCst);
+                release_rx.recv_timeout(Duration::from_secs(10)).unwrap();
                 Ok::<_, DiskBoundaryError>(())
             })
             .await;
@@ -369,8 +382,13 @@ mod tests {
                 .await,
             Err(BlockingError::Busy { .. })
         ));
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(finished.load(Ordering::SeqCst));
+        release_tx.send(()).unwrap();
+        drop(
+            tokio::time::timeout(Duration::from_secs(5), executor.permits.acquire())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
         executor
             .run("recovered", || Ok::<_, DiskBoundaryError>(()))
             .await

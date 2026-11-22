@@ -260,6 +260,7 @@ pub async fn add_subscription_server(
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
             entry,

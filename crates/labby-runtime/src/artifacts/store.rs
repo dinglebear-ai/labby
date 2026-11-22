@@ -135,6 +135,11 @@ impl HeadFingerprint {
 
 #[derive(Debug, Default)]
 struct CatalogCache {
+    library: Option<(
+        HeadFingerprint,
+        Arc<LibrarySnapshot>,
+        Arc<[HeadFingerprint]>,
+    )>,
     heads: BTreeMap<PathBuf, (HeadFingerprint, Arc<ArtifactRecord>)>,
     sorted: Vec<Arc<ArtifactRecord>>,
 }
@@ -298,12 +303,11 @@ impl ArtifactStore {
             sorted
         };
         if cfg!(unix) && cache_bytes <= MAX_CATALOG_CACHE_BYTES {
-            *cache = CatalogCache {
-                heads,
-                sorted: sorted.clone(),
-            };
+            cache.heads = heads;
+            cache.sorted.clone_from(&sorted);
         } else {
-            *cache = CatalogCache::default();
+            cache.heads.clear();
+            cache.sorted.clear();
         }
         tracing::debug!(
             elapsed_ms = started.elapsed().as_millis(),
@@ -625,6 +629,102 @@ impl ArtifactStore {
         reject_existing_symlink_ancestors(&locks_root, &path)
             .map_err(|_| ArtifactError::UnsafePath("lock_symlink"))?;
         MutationLock::acquire_wait(&path)
+    }
+
+    /// Read the committed library after recovering pending intents and checking
+    /// all referenced heads and active revision manifests. On Unix, unmodified
+    /// state metadata can reuse its verified parse and scoped active-name index.
+    pub fn library_snapshot(&self) -> Result<LibrarySnapshot, ArtifactError> {
+        let path = self.root.join("library").join("state.json");
+        let fingerprint = || -> Result<Option<HeadFingerprint>, ArtifactError> {
+            reject_existing_symlinks_in_path(&path)
+                .map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+            match std::fs::symlink_metadata(&path) {
+                Ok(meta) if meta.is_file() => Ok(Some(HeadFingerprint::from_metadata(&meta))),
+                Ok(_) => Err(ArtifactError::UnsafePath("stored_entry")),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error.into()),
+            }
+        };
+        // Pending intents always use the locked recovery path. Check both
+        // sides of a cache observation so it cannot cross a durable write.
+        let pending = self.pending_skill_transaction_path();
+        let no_pending = || {
+            matches!(std::fs::symlink_metadata(&pending),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        };
+        if cfg!(unix)
+            && no_pending()
+            && let Ok(Some(before)) = fingerprint()
+        {
+            let cached = self
+                .catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .library
+                .as_ref()
+                .filter(|(stamp, _, _)| *stamp == before)
+                .map(|(_, snapshot, refs)| (Arc::clone(snapshot), Arc::clone(refs)));
+            if let Some((snapshot, refs)) = cached
+                && self
+                    .library_reference_fingerprints(&snapshot)
+                    .ok()
+                    .flatten()
+                    .as_deref()
+                    == Some(&*refs)
+                && fingerprint().ok().flatten().as_ref() == Some(&before)
+                && no_pending()
+            {
+                return Ok((*snapshot).clone());
+            }
+        }
+        let _lock = self.library_lock()?;
+        self.recover_pending_skill_transaction_locked()?;
+        let before = fingerprint()?;
+        let snapshot = Arc::new(self.load_library_snapshot_locked()?);
+        if !cfg!(unix) {
+            snapshot.validate_references(self)?;
+            return Ok(Arc::unwrap_or_clone(snapshot));
+        }
+        let refs = self.library_reference_fingerprints(&snapshot)?;
+        snapshot.validate_references(self)?;
+        if let (Some(stamp), Some(refs)) = (before, refs)
+            && Some(&stamp) == fingerprint()?.as_ref()
+            && self.library_reference_fingerprints(&snapshot)?.as_ref() == Some(&refs)
+        {
+            self.catalog
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .library = Some((stamp, Arc::clone(&snapshot), refs.into()));
+        }
+        Ok(Arc::unwrap_or_clone(snapshot))
+    }
+
+    fn library_reference_fingerprints(
+        &self,
+        snapshot: &LibrarySnapshot,
+    ) -> Result<Option<Vec<HeadFingerprint>>, ArtifactError> {
+        let mut stamps = Vec::with_capacity(snapshot.records.len());
+        for record in snapshot.records.values() {
+            let dir = self.artifact_dir(&record.artifact_id)?;
+            let revision = record
+                .active_revision_id
+                .as_ref()
+                .map(|id| revision_dir(&dir, id).join("revision.json"));
+            for file in std::iter::once(dir.join("artifact.json")).chain(revision) {
+                reject_existing_symlinks_in_path(&file)
+                    .map_err(|_| ArtifactError::UnsafePath("stored_symlink"))?;
+                match std::fs::symlink_metadata(&file) {
+                    Ok(meta) if meta.is_file() => {
+                        stamps.push(HeadFingerprint::from_metadata(&meta))
+                    }
+                    Ok(_) => return Ok(None),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        }
+        Ok(Some(stamps))
     }
 
     pub(crate) fn read_library_snapshot(&self) -> Result<LibrarySnapshot, ArtifactError> {

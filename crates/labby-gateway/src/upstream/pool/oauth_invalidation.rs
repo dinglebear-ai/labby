@@ -171,6 +171,8 @@ impl UpstreamPool {
             tracing::error!(action = "task.routes.revoke", error = %error, "durable task revocation failed");
             self.close_task_companions(reason).await;
         }
+        self.invalidate_skills_for_subject(upstream, Some(subject))
+            .await;
         let counts = OAuthSessionInvalidation {
             generic_connections: usize::from(generic_connection.is_some()),
             subject_connections: usize::from(subject_connection.is_some()),
@@ -281,6 +283,9 @@ impl UpstreamPool {
         if let Err(error) = &task_routes {
             tracing::error!(action = "task.routes.revoke", error = %error, "durable task revocation failed");
             self.close_task_companions(reason).await;
+        }
+        for name in &upstreams {
+            self.invalidate_upstream_skills(name).await;
         }
         let counts = OAuthSessionInvalidation {
             generic_connections: generic_connections.len(),

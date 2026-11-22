@@ -35,7 +35,9 @@ impl ReplyOwnership {
             CodeModeRunnerOutput::SnippetResolve { seq, .. } => (*seq, ReplyKind::Snippet),
             CodeModeRunnerOutput::StepBegin { seq, .. } => (*seq, ReplyKind::StepDecision),
             CodeModeRunnerOutput::StepResult { seq, .. } => (*seq, ReplyKind::StepRecorded),
-            CodeModeRunnerOutput::Done { .. } | CodeModeRunnerOutput::Error { .. } => return,
+            CodeModeRunnerOutput::ProtocolVersion { .. }
+            | CodeModeRunnerOutput::Done { .. }
+            | CodeModeRunnerOutput::Error { .. } => return,
         };
         if self.disqualified {
             return;
@@ -65,7 +67,7 @@ impl ReplyOwnership {
                 .keys()
                 .find(|(pending_seq, _)| pending_seq == seq)
                 .copied(),
-            CodeModeRunnerInput::Start { .. } => None,
+            CodeModeRunnerInput::ProtocolVersion | CodeModeRunnerInput::Start { .. } => None,
         };
         if let Some(key) = key
             && let Some(count) = self.pending.get_mut(&key)

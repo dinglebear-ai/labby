@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-fetch-response-v1.json",
-  "title": "Labby Code Mode Retained Fetch Response",
-  "description": "Successful return value of the sandbox helper `codemode.fetch(handle)`, dispatched host-side as `__lab_internal::codemode_result_fetch`. Metadata is ALWAYS present; the payload is inlined only when it fits the per-call result ceiling (`calltool_result_max_bytes`).",
+  "$comment": "Proposal. See docs/features/codemode-retained-results/README.md.",
+  "title": "Proposed Labby Code Mode Retained Fetch Response",
+  "description": "Proposed wire contract, pending implementation. Successful return value of the sandbox helper `codemode.fetch(handle)`, dispatched host-side as `__lab_internal::codemode_result_fetch`. Metadata is ALWAYS present; the payload is inlined only when it fits the per-call result ceiling (`calltool_result_max_bytes`).",
   "type": "object",
   "required": [
     "handle",

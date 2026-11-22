@@ -16,13 +16,13 @@ pub(crate) enum LocalProviderName {
     Git,
     /// OpenAPI-derived operations dispatched by `labby-openapi`. Unlike `State`/
     /// `Git`, `Openapi` carries a `<label>.<operationId>` method and is
-    /// dispatched WITHOUT the `LOCAL_PROVIDER_LOCK`.
+    /// dispatched outside state/Git workspace locks.
     Openapi,
     Sandbox,
 }
 
 impl LocalProviderName {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::State => "state",
             Self::Git => "git",
@@ -41,7 +41,12 @@ pub(crate) struct LocalProviderCall {
 
 /// Code Mode namespaces served by in-process local providers rather than
 /// configured upstreams.
-pub const LOCAL_PROVIDER_NAMESPACES: &[&str] = &["state", "git", "openapi", "sandbox"];
+pub const LOCAL_PROVIDER_NAMESPACES: &[&str] = &[
+    LocalProviderName::State.as_str(),
+    LocalProviderName::Git.as_str(),
+    LocalProviderName::Openapi.as_str(),
+    LocalProviderName::Sandbox.as_str(),
+];
 
 pub(crate) fn is_reserved_provider_namespace(namespace: &str) -> bool {
     LOCAL_PROVIDER_NAMESPACES.contains(&namespace)

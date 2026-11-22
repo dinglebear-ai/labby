@@ -27,7 +27,30 @@ async fn refresh_returns_after_acknowledgement_is_visible() {
     let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
     assert!(
         pool.subscribable_resource_uris_snapshot()
-            .contains(&expected)
+            .contains_key(&expected)
+    );
+}
+
+#[tokio::test]
+async fn acknowledged_ui_uri_preserves_its_upstream_owners() {
+    let pool = UpstreamPool::new();
+    let filter = SubscriptionFilter::builder()
+        .resource_subscriptions(vec!["ui://vendor/app".to_string()])
+        .build();
+    for owner in ["one", "two"] {
+        let generation = pool.begin_subscription_generation(owner).await;
+        assert!(
+            pool.record_subscription_resources_if_current(owner, &generation, &filter)
+                .await
+        );
+    }
+    let snapshot = pool.subscribable_resource_uris_snapshot();
+    assert_eq!(
+        snapshot["ui://vendor/app"]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["one", "two"]
     );
 }
 
@@ -58,7 +81,7 @@ async fn older_generation_cannot_publish_or_clear_newer_acknowledgement() {
     let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
     assert!(
         pool.subscribable_resource_uris_snapshot()
-            .contains(&expected)
+            .contains_key(&expected)
     );
 }
 
@@ -82,11 +105,11 @@ async fn batch_refresh_waits_for_acknowledgements_concurrently() {
         started.elapsed()
     );
     let snapshot = pool.subscribable_resource_uris_snapshot();
-    assert!(snapshot.contains(&UpstreamPool::gateway_resource_uri(
+    assert!(snapshot.contains_key(&UpstreamPool::gateway_resource_uri(
         "alpha",
         NATIVE_RESOURCE_URI
     )));
-    assert!(snapshot.contains(&UpstreamPool::gateway_resource_uri(
+    assert!(snapshot.contains_key(&UpstreamPool::gateway_resource_uri(
         "bravo",
         NATIVE_RESOURCE_URI
     )));
@@ -163,7 +186,7 @@ async fn initial_failure_is_retried_and_eventually_published() {
     let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
     assert!(
         pool.subscribable_resource_uris_snapshot()
-            .contains(&expected)
+            .contains_key(&expected)
     );
 }
 
@@ -289,7 +312,7 @@ async fn failed_subscription_reconnects_after_its_jittered_deadline() {
     let expected = UpstreamPool::gateway_resource_uri("leaf", NATIVE_RESOURCE_URI);
     assert!(
         pool.subscribable_resource_uris_snapshot()
-            .contains(&expected)
+            .contains_key(&expected)
     );
 }
 

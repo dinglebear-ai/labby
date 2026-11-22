@@ -707,6 +707,10 @@ jobs:
           cargo run -p labby --bin labby --all-features --locked -- --json code run \
             --code 'async () => ({ ok: true, sum: 1 + 1 })' \
             | grep -q '"sum":2'
+      - name: Verify offline snippet harness exit codes and deadlines
+        run: |
+          cargo build --locked -p labby-codemode --example snippet_harness
+          python3 crates/labby-codemode/tests/snippet_harness_acceptance.py target/debug/examples/snippet_harness
 
   npm-launcher:
     name: npm launcher
@@ -796,7 +800,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        slice: [gateway, gateway-host, integrated-gateway, fs, skills]
+        slice: [gateway, gateway-host, integrated-gateway, fs, skills, openapi-mcp]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd
         with:
@@ -1177,9 +1181,9 @@ jobs:
       - name: Elicitation and relay controls
         if: matrix.shard == 'relay-controls'
         run: |
-          cargo test -p labby --all-features --locked destructive_builtin_uses_stateless_mrtr_elicitation
+          cargo test -p labby --all-features --locked destructive_builtin_uses_single_use_bound_mrtr_elicitation
           cargo test -p labby-gateway --lib --locked upstream_input_required_is_preserved_for_downstream
-          cargo test -p labby-gateway --lib --locked stateless_adapter_ignores_legacy_session_ids_in_both_directions
+          cargo test -p labby-gateway --lib --locked adapter_forwards_legacy_session_ids_in_both_directions
       - name: Lifecycle, SEP-2243 headers, caching, and subscriptions
         if: matrix.shard == 'lifecycle'
         run: |

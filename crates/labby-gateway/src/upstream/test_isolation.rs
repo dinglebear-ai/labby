@@ -1,9 +1,9 @@
-//! Hermetic libtest subprocesses for fixtures that register process-wide authority.
+//! Hermetic libtest subprocesses for fixtures that depend on process-wide state.
 use std::time::Duration;
 
 const CHILD_TEST: &str = "LABBY_GATEWAY_ISOLATED_TEST";
 
-pub(super) async fn run(test: &str, environment: &[(&str, &str)]) -> bool {
+pub(crate) async fn run(test: &str, environment: &[(&str, &str)]) -> bool {
     if std::env::var(CHILD_TEST).as_deref() == Ok(test) {
         return false;
     }

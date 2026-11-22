@@ -238,6 +238,44 @@ fn capability_filter_fingerprint_separates_read_only_from_full_access() {
 }
 
 #[test]
+fn promotion_source_requires_tool_and_access_scope_containment() {
+    use crate::types::{
+        CodeModeExecutionSource, CodeModeSourceLookup, CodeModeSourceStore, CodeModeSurface,
+    };
+    let mut store = CodeModeSourceStore::default();
+    let scope = ToolScope::new(vec!["repo".into()], vec![]);
+    store.push(CodeModeExecutionSource {
+        execution_id: "run".into(),
+        created_at_ms: 0,
+        actor_key: None,
+        is_admin: true,
+        route_scope: "route".into(),
+        surface: CodeModeSurface::Cli,
+        capability_filter_fingerprint: scope.fingerprint(),
+        code: "1".into(),
+    });
+    for (lookup, expected) in [
+        (scope.clone().read_only(), false),
+        (
+            ToolScope::new(vec!["repo".into()], vec!["list".into()]),
+            false,
+        ),
+        (ToolScope::default(), true),
+    ] {
+        let result = store.resolve(
+            "run",
+            &CodeModeSourceLookup {
+                actor_key: None,
+                is_admin: true,
+                route_scope: "route".into(),
+                capability_filter_fingerprint: lookup.fingerprint(),
+            },
+        );
+        assert_eq!(result.is_ok(), expected);
+    }
+}
+
+#[test]
 fn scoped_tool_scope_with_empty_namespaces_denies_all_tool_calls() {
     let filter = ToolScope::scoped_namespaces(Vec::new(), Vec::new());
 
@@ -530,6 +568,67 @@ fn code_mode_schema_validator_rejects_cortex_action_field_mismatches() {
             .expect_err("invalid Cortex action fields fail before dispatch");
         assert_eq!(error.kind(), "invalid_param", "{params}: {error}");
     }
+}
+
+#[test]
+fn code_mode_schema_validator_accepts_recursion_on_child_values() {
+    let schema = json!({"type":"object","properties":{
+        "name":{"type":"string"}, "children":{"type":"array","items":{"$ref":"#"}}
+    }});
+    validate_code_mode_params_against_schema(
+        &json!({"children":[{"children":[{"name":"leaf"}]}]}),
+        Some(&schema),
+    )
+    .unwrap();
+    let error = validate_code_mode_params_against_schema(
+        &json!({"children":[{"children":[{"name":5}]}]}),
+        Some(&schema),
+    )
+    .unwrap_err();
+    assert!(schema_error_message(error).contains("params.children[0].children[0].name"));
+}
+
+#[test]
+fn schema_pattern_budget_limits_length_and_distinct_compilations() {
+    let mut budget = crate::schema::SchemaValidationBudget::new(1000);
+    assert_eq!(
+        budget.pattern(&"a".repeat(4097)).err(),
+        Some("pattern exceeds the schema pattern length limit")
+    );
+    for index in 0..64 {
+        budget.pattern(&format!("item{index}")).unwrap();
+    }
+    assert!(budget.pattern("item0").is_ok());
+    assert_eq!(
+        budget.pattern("another").err(),
+        Some("schema exceeds the distinct pattern limit")
+    );
+}
+
+#[test]
+fn code_mode_schema_validator_reuses_ecma_patterns() {
+    let mut budget = crate::schema::SchemaValidationBudget::new(20);
+    let pattern = r"^(?=foo)(foo)\1$";
+    let schema =
+        json!({"patternProperties":{(pattern):{"pattern":pattern}},"additionalProperties":false});
+    let compiled = budget.pattern(pattern).unwrap();
+    crate::schema::validate_json_schema_value_with_budget(
+        &json!({"foofoo":"foofoo"}),
+        &schema,
+        &mut budget,
+    )
+    .unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &compiled,
+        &budget.pattern(pattern).unwrap()
+    ));
+    let error = crate::schema::validate_json_schema_value_with_budget(
+        &json!({"foofoo":"foo"}),
+        &schema,
+        &mut budget,
+    )
+    .unwrap_err();
+    assert!(schema_error_message(error).contains("does not match pattern"));
 }
 
 #[test]

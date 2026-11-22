@@ -68,15 +68,24 @@ fn invalid(message: impl Into<String>) -> ToolError {
 /// Reject assertions outside the runtime validator's supported subset instead of
 /// presenting partial validation as a complete contract check.
 pub fn check_schema(schema: &Value) -> Result<(), ToolError> {
+    check_schema_with_budget(
+        schema,
+        &mut crate::schema::SchemaValidationBudget::new(4096),
+    )
+}
+
+pub(super) fn check_schema_with_budget(
+    schema: &Value,
+    budget: &mut crate::schema::SchemaValidationBudget,
+) -> Result<(), ToolError> {
     fn walk(
         schema: &Value,
         root: &Value,
         depth: usize,
-        visits: &mut usize,
+        budget: &mut crate::schema::SchemaValidationBudget,
         references: &mut std::collections::BTreeSet<String>,
     ) -> Result<(), ToolError> {
-        *visits += 1;
-        if depth > 32 || *visits > 4096 {
+        if depth > 32 || !budget.visit() {
             return Err(invalid("fixture schema exceeds nesting or work limit"));
         }
         if schema.is_boolean() {
@@ -102,7 +111,7 @@ pub fn check_schema(schema: &Value) -> Result<(), ToolError> {
                     if !references.insert(reference.to_owned()) {
                         return Err(invalid("cyclic fixture schema reference"));
                     }
-                    walk(target, root, depth + 1, visits, references)?;
+                    walk(target, root, depth + 1, budget, references)?;
                     references.remove(reference);
                 }
                 "type" => {
@@ -130,14 +139,13 @@ pub fn check_schema(schema: &Value) -> Result<(), ToolError> {
                         .ok_or_else(|| invalid("schema field map must be an object"))?;
                     for (name, child) in fields {
                         if key == "patternProperties" {
-                            regex::Regex::new(name)
-                                .map_err(|_| invalid("invalid patternProperties schema pattern"))?;
+                            budget.pattern(name).map_err(invalid)?;
                         }
-                        walk(child, root, depth + 1, visits, references)?;
+                        walk(child, root, depth + 1, budget, references)?;
                     }
                 }
                 "items" | "additionalProperties" => {
-                    walk(value, root, depth + 1, visits, references)?
+                    walk(value, root, depth + 1, budget, references)?
                 }
                 "anyOf" | "oneOf" | "allOf" => {
                     let branches = value
@@ -145,7 +153,7 @@ pub fn check_schema(schema: &Value) -> Result<(), ToolError> {
                         .filter(|v| !v.is_empty())
                         .ok_or_else(|| invalid("schema composition must be a nonempty array"))?;
                     for child in branches {
-                        walk(child, root, depth + 1, visits, references)?;
+                        walk(child, root, depth + 1, budget, references)?;
                     }
                 }
                 "required" => {
@@ -176,7 +184,7 @@ pub fn check_schema(schema: &Value) -> Result<(), ToolError> {
                     let pattern = value
                         .as_str()
                         .ok_or_else(|| invalid("schema pattern must be a string"))?;
-                    regex::Regex::new(pattern).map_err(|_| invalid("invalid schema pattern"))?;
+                    budget.pattern(pattern).map_err(invalid)?;
                 }
                 "uniqueItems" | "nullable" => {
                     if !value.is_boolean() {
@@ -196,7 +204,7 @@ pub fn check_schema(schema: &Value) -> Result<(), ToolError> {
         schema,
         schema,
         0,
-        &mut 0,
+        budget,
         &mut std::collections::BTreeSet::new(),
     )
 }
